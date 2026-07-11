@@ -108,6 +108,15 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   assert.match(g[0]?.body ?? "", /gate parked at review/);
 });
 
+test("a session entering awaiting_review alerts too (needs a decision)", () => {
+  const working = mkSession({ id: "a", state: "working" });
+  const review = mkSession({ id: "a", state: "awaiting_review" });
+  const r = detectAlerts(fleet([working]), fleet([review]), WATCHING);
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "needs-input");
+  assert.equal(r[0]?.body, "needs review");
+});
+
 test("a review landing on an already-waiting session still alerts (stacked causes)", () => {
   const waiting = mkSession({ id: "a", state: "awaiting_input", pendingReviews: 0 });
   const plusReview = mkSession({ id: "a", state: "awaiting_input", pendingReviews: 1 });

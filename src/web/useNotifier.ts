@@ -8,11 +8,18 @@ function canNotify(): boolean {
 }
 
 function notify(title: string, body: string, tag: string): void {
-  const n = new Notification(title, { body, tag });
-  n.onclick = () => {
-    window.focus();
-    n.close();
-  };
+  // Some platforms (e.g. Android Chrome) throw from `new Notification` even when
+  // permission is granted (they require the service-worker path); never let that
+  // escape the effect / digest timer.
+  try {
+    const n = new Notification(title, { body, tag });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+  } catch {
+    /* notifications unavailable on this platform - sound still plays */
+  }
 }
 
 /**

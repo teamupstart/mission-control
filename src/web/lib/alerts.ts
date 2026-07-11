@@ -50,13 +50,14 @@ export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings):
     const before = prevSessions.get(s.id);
     const label = sessionLabel(s);
 
-    // needs-input: the agent asked and is blocked on you.
-    if (s.state === "awaiting_input" && before?.state !== "awaiting_input") {
+    // needs-input: the agent is blocked on you (awaiting input or a review decision).
+    const blocked = (st: Session["state"]) => st === "awaiting_input" || st === "awaiting_review";
+    if (blocked(s.state) && !(before && blocked(before.state))) {
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
         title: `${label} needs you`,
-        body: "needs input",
+        body: s.state === "awaiting_review" ? "needs review" : "needs input",
         sessionId: s.id,
         severity: "attention",
       });

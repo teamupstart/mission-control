@@ -10,6 +10,14 @@ export const HOST = "127.0.0.1";
 export const STATE_DIR = process.env.HARNESS_HOME ?? join(homedir(), ".ai-harness");
 export const DB_PATH = join(STATE_DIR, "harness.db");
 export const TOKEN_PATH = join(STATE_DIR, "token");
+/** Isolated worktrees the daemon creates for dispatched tasks (git-worktree fallback). */
+export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
+
+/** Resolve the CLI to launch for a dispatched agent, overridable per agent. */
+export function resolveAgentBin(agent: "claude" | "codex"): string {
+  if (agent === "claude") return process.env.HARNESS_CLAUDE_BIN ?? "claude";
+  return process.env.HARNESS_CODEX_BIN ?? "codex";
+}
 
 /** How often the passive discovery poller sweeps the system. */
 export const POLL_INTERVAL_MS = Number(process.env.HARNESS_POLL_MS ?? 1500);

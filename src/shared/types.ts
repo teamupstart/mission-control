@@ -72,6 +72,68 @@ export interface Session {
   pendingReviews: number;
   /** Live no-mistakes run status for this repo, when gated and a run exists. */
   nomistakes: NmRunSummary | null;
+  /** The dispatched task this session is executing, matched by cwd === worktreePath. */
+  task: TaskSummary | null;
+}
+
+// ---- dispatched tasks (crewmates) ----
+
+/** ship = deliver a change (PR/merge); scout = investigate/plan/audit and report. */
+export type TaskKind = "ship" | "scout";
+
+/**
+ * Coarse lifecycle of a dispatched task. Deliberately does NOT mirror the live
+ * session's runtime state (working/idle/needs-input) - that stays a property of
+ * the Session so runtime status is never duplicated. A task is queued in the
+ * backlog, provisioned (`dispatching`), bound to a live session (`running`), and
+ * then reaches a terminal state.
+ */
+export type TaskStatus =
+  | "queued"
+  | "dispatching"
+  | "running"
+  | "done"
+  | "cancelled"
+  | "failed";
+
+export interface Task {
+  id: string;
+  /** Short label - source of the tmux session slug and the card title. */
+  title: string;
+  /** The full task prompt injected as the agent's first message. */
+  intent: string;
+  kind: TaskKind;
+  agent: AgentType;
+  /** Absolute path of the source repo the worktree is cut from. */
+  repoRoot: string;
+  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while queued. */
+  worktreePath: string | null;
+  /** Worktree branch, once known (carried here since gitInfo can't read linked-worktree .git). */
+  branch: string | null;
+  /** The detached tmux session we created for this task. */
+  tmuxSession: string | null;
+  /** Bound live session's synthetic id, once discovered. */
+  sessionId: string | null;
+  status: TaskStatus;
+  /** Free text set on completion (e.g. "opened PR #123"). */
+  outcome: string | null;
+  outcomeUrl: string | null;
+  /** Failure reason when status = failed. */
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+  dispatchedAt: number | null;
+  completedAt: number | null;
+}
+
+/** Compact task view denormalized onto a Session card (like NmRunSummary). */
+export interface TaskSummary {
+  id: string;
+  title: string;
+  kind: TaskKind;
+  status: TaskStatus;
+  outcome: string | null;
+  outcomeUrl: string | null;
 }
 
 // ---- no-mistakes surfacing ----
@@ -124,14 +186,52 @@ export interface ReviewItem {
   resolvedAt: number | null;
 }
 
+// ---- fleet report (/bearings) ----
+
+/** One line in a fleet report - a live session (with its intent) or a task. */
+export interface ReportItem {
+  sessionId: string | null;
+  name: string;
+  kind: TaskKind | null;
+  branch: string | null;
+  activity: string | null;
+  /** Why this session needs you (needsYou items only); "" otherwise. */
+  reason: string;
+  taskTitle: string | null;
+  outcome: string | null;
+  outcomeUrl: string | null;
+}
+
+/** A point-in-time snapshot of the whole fleet, for the report panel + markdown digest. */
+export interface FleetReport {
+  generatedAt: number;
+  counts: {
+    sessions: number;
+    working: number;
+    idle: number;
+    needsYou: number;
+    exited: number;
+    queued: number;
+  };
+  needsYou: ReportItem[];
+  working: ReportItem[];
+  idle: ReportItem[];
+  backlog: Task[];
+  recent: Task[];
+  /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
+  recentTruncated: boolean;
+}
+
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
-  | { type: "snapshot"; sessions: Session[]; reviews: ReviewItem[] }
+  | { type: "snapshot"; sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
   | { type: "review_upsert"; review: ReviewItem }
-  | { type: "review_remove"; id: string };
+  | { type: "review_remove"; id: string }
+  | { type: "task_upsert"; task: Task }
+  | { type: "task_remove"; id: string };
 
 // ---- session transcript (expanded card) ----
 

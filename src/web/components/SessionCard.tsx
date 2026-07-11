@@ -100,6 +100,31 @@ export function SessionCard({
         )}
       </dl>
 
+      {session.task && (
+        <div className={`task-chip task-${session.task.status}`} title={`${session.task.kind} task`}>
+          <span className="task-kind">{session.task.kind}</span>
+          <span className="task-title" title={session.task.title}>
+            {session.task.title}
+          </span>
+          {session.task.status === "dispatching" && <span className="task-status">dispatching…</span>}
+          {session.task.status === "failed" && <span className="task-status">failed</span>}
+          {session.task.outcome &&
+            (session.task.outcomeUrl ? (
+              <a
+                className="task-outcome"
+                href={session.task.outcomeUrl}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {session.task.outcome}
+              </a>
+            ) : (
+              <span className="task-outcome">{session.task.outcome}</span>
+            ))}
+        </div>
+      )}
+
       {session.activity && <p className="activity">{session.activity}</p>}
 
       {session.nomistakes && <NomistakesStrip sessionId={session.id} nm={session.nomistakes} />}

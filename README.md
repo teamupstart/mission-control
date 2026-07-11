@@ -193,6 +193,37 @@ launches. It exposes four tools:
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
 
+## Dispatch a crewmate
+
+The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
+Dispatch**, pick a repo, describe the task, and the daemon:
+
+1. provisions an **isolated worktree** for the task (a pooled
+   [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
+   else a plain `git worktree` on a fresh `harness/…` branch - so a crewmate never shares
+   a working tree with another session),
+2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there, and
+3. injects your task as its first prompt once passive discovery binds the session.
+
+The new session then shows up on the grid like any other, with an **intent chip** naming
+what it's working on. It's headless until you want it - click **Focus** on the card to open
+it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a task without
+launching it yet.
+
+Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
+persisted in SQLite, so the backlog and a running crew's intent survive a daemon restart.
+Set `HARNESS_CLAUDE_BIN` / `HARNESS_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
+
+## Fleet report (bearings)
+
+Click **Report** for a one-look snapshot of the whole fleet, assembled from the same live
+data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
+gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
+and **recent outcomes**. Dispatch a queued task or drop it right from the panel, and **Mark
+done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
+markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
+/api/report`).
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)

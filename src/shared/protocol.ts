@@ -78,3 +78,25 @@ export const StatusSchema = z.object({
   activity: z.string().min(1),
 });
 export type StatusReport = z.infer<typeof StatusSchema>;
+
+/**
+ * Dispatch (or queue) a new crewmate: launch an agent in an isolated worktree of
+ * `repoRoot` with `intent` as its first prompt. `queue: true` only adds it to the
+ * backlog (no worktree/session yet); dispatch it later.
+ */
+export const DispatchSchema = z.object({
+  repoRoot: z.string().min(1),
+  intent: z.string().min(1),
+  title: z.string().optional(),
+  kind: z.enum(["ship", "scout"]).default("ship"),
+  agent: z.enum(["claude", "codex"]).default("claude"),
+  queue: z.boolean().optional().default(false),
+});
+export type Dispatch = z.infer<typeof DispatchSchema>;
+
+/** Close a task with a human-recorded outcome (the `/stow` intent -> result loop). */
+export const CompleteTaskSchema = z.object({
+  outcome: z.string().min(1),
+  outcomeUrl: z.string().url().optional(),
+});
+export type CompleteTask = z.infer<typeof CompleteTaskSchema>;

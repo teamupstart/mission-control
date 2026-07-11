@@ -4,6 +4,8 @@ import { useEventStream } from "./useEventStream.ts";
 import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
+import { DispatchModal } from "./components/DispatchModal.tsx";
+import { ReportPanel } from "./components/ReportPanel.tsx";
 import { stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then gone.
@@ -16,10 +18,12 @@ const TONE_ORDER: Record<Tone, number> = {
 };
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, connected } = useEventStream();
+  const { sessions, reviews, tasks, connected } = useEventStream();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -55,6 +59,16 @@ export function App(): React.JSX.Element {
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
+
+  // Repo suggestions for the dispatch form: distinct cwds of live sessions. The
+  // daemon resolves each to its git top-level, so a pane path is a fine starting point.
+  const repos = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of sessions) if (s.cwd) set.add(s.cwd);
+    return [...set].sort();
+  }, [sessions]);
+
+  const backlogCount = useMemo(() => tasks.filter((t) => t.status === "queued").length, [tasks]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -174,6 +188,12 @@ export function App(): React.JSX.Element {
             </button>
           )}
         </div>
+        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings)">
+          Report{backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
+        </button>
+        <button className="dispatch-btn" onClick={() => setDispatchOpen(true)} title="Dispatch a new crewmate">
+          <span aria-hidden>＋</span> Dispatch
+        </button>
         <div className={`link ${connected ? "up" : "down"}`}>
           <span className="link-dot" />
           {connected ? "live" : "reconnecting"}
@@ -201,6 +221,20 @@ export function App(): React.JSX.Element {
           session={modalSession}
           reviews={modalReviews}
           onClose={() => setReviewSessionId(null)}
+        />
+      )}
+
+      {dispatchOpen && <DispatchModal repos={repos} onClose={() => setDispatchOpen(false)} />}
+
+      {reportOpen && (
+        <ReportPanel
+          sessions={sessions}
+          tasks={tasks}
+          onClose={() => setReportOpen(false)}
+          onOpenReviews={(id) => {
+            setReportOpen(false);
+            setReviewSessionId(id);
+          }}
         />
       )}
 

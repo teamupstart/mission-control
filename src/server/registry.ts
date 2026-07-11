@@ -1,8 +1,22 @@
 import { EventEmitter } from "node:events";
-import type { NmRunSummary, ReviewItem, ServerEvent, Session, SessionState } from "@shared/types.ts";
+import type {
+  NmRunSummary,
+  ReviewItem,
+  ServerEvent,
+  Session,
+  SessionState,
+  Task,
+  TaskSummary,
+} from "@shared/types.ts";
 import type { HookIngest } from "@shared/protocol.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import { loadPendingReviews, logEvent } from "./db.ts";
+import {
+  deleteTask as dbDeleteTask,
+  loadActiveTasks,
+  loadPendingReviews,
+  logEvent,
+  upsertTask as dbUpsertTask,
+} from "./db.ts";
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
@@ -30,6 +44,7 @@ interface HookOverlay {
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   private reviews = new Map<string, ReviewItem>();
+  private tasks = new Map<string, Task>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** overlay keyed by pane token ("tmux:%12" | "wez:12"). */
   private overlays = new Map<string, HookOverlay>();
@@ -37,12 +52,14 @@ export class Registry extends EventEmitter {
   constructor() {
     super();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
+    for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
   }
 
-  snapshot(): { sessions: Session[]; reviews: ReviewItem[] } {
+  snapshot(): { sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] } {
     return {
       sessions: [...this.sessions.values()],
       reviews: [...this.reviews.values()],
+      tasks: [...this.tasks.values()],
     };
   }
 
@@ -119,6 +136,7 @@ export class Registry extends EventEmitter {
       lastActivity: prev?.lastActivity ?? null,
       pendingReviews: this.countPending(d.syntheticId),
       nomistakes: prev?.nomistakes ?? null,
+      task: this.taskSummaryForCwd(d.cwd),
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -292,6 +310,98 @@ export class Registry extends EventEmitter {
       this.emitSession(next);
     }
   }
+
+  // ---- tasks (dispatch, phase: crewmates) ----
+
+  getTask(id: string): Task | undefined {
+    return this.tasks.get(id);
+  }
+
+  listTasks(): Task[] {
+    return [...this.tasks.values()];
+  }
+
+  /** Persist + broadcast a task, and refresh any session bound to its worktree. */
+  upsertTask(task: Task): void {
+    dbUpsertTask(task);
+    this.tasks.set(task.id, task);
+    this.emitEvent({ type: "task_upsert", task });
+    this.syncSessionsForWorktree(task.worktreePath);
+  }
+
+  removeTask(id: string): void {
+    const t = this.tasks.get(id);
+    dbDeleteTask(id);
+    if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
+    if (t) this.syncSessionsForWorktree(t.worktreePath);
+  }
+
+  /**
+   * Resolve a session running in a given worktree, once discovery has bound one.
+   * Used by the dispatcher to know the agent's pane is up before injecting the
+   * first prompt. Resolves immediately if already present, else waits for the
+   * next matching `session_upsert`, else null on timeout.
+   */
+  waitForSessionAtCwd(cwd: string, timeoutMs: number): Promise<Session | null> {
+    const existing = this.firstSessionAtCwd(cwd);
+    if (existing) return Promise.resolve(existing);
+    return new Promise<Session | null>((resolve) => {
+      const timer = setTimeout(() => {
+        unsub();
+        resolve(null);
+      }, timeoutMs);
+      if (typeof timer === "object" && "unref" in timer) timer.unref();
+      const unsub = this.subscribe((e) => {
+        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state !== "exited") {
+          clearTimeout(timer);
+          unsub();
+          resolve(e.session);
+        }
+      });
+    });
+  }
+
+  private firstSessionAtCwd(cwd: string): Session | undefined {
+    for (const s of this.sessions.values())
+      if (s.cwd === cwd && s.state !== "exited") return s;
+    return undefined;
+  }
+
+  /** The active task a session in `cwd` is executing, as a compact card summary. */
+  private taskSummaryForCwd(cwd: string | null): TaskSummary | null {
+    const t = this.activeTaskForCwd(cwd);
+    return t
+      ? { id: t.id, title: t.title, kind: t.kind, status: t.status, outcome: t.outcome, outcomeUrl: t.outcomeUrl }
+      : null;
+  }
+
+  /**
+   * Most-recently-updated task bound to a worktree that still has (or had) a live
+   * session: dispatching / running / done. Queued tasks have no worktree yet;
+   * cancelled / failed ones shouldn't decorate a card.
+   */
+  private activeTaskForCwd(cwd: string | null): Task | undefined {
+    if (!cwd) return undefined;
+    let best: Task | undefined;
+    for (const t of this.tasks.values()) {
+      if (t.worktreePath !== cwd) continue;
+      if (t.status === "queued" || t.status === "cancelled" || t.status === "failed") continue;
+      if (!best || t.updatedAt > best.updatedAt) best = t;
+    }
+    return best;
+  }
+
+  private syncSessionsForWorktree(cwd: string | null): void {
+    if (!cwd) return;
+    const summary = this.taskSummaryForCwd(cwd);
+    for (const [id, s] of this.sessions) {
+      if (s.cwd !== cwd) continue;
+      if (JSON.stringify(s.task) === JSON.stringify(summary)) continue;
+      const next = { ...s, task: summary };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
 }
 
 // ---- pure helpers ----
@@ -357,6 +467,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.pendingReviews === b.pendingReviews &&
     a.wezterm?.isActive === b.wezterm?.isActive &&
     a.tmux?.window === b.tmux?.window &&
-    JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes)
+    JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
+    JSON.stringify(a.task) === JSON.stringify(b.task)
   );
 }

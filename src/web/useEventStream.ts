@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { ReviewItem, ServerEvent, Session } from "@shared/types.ts";
+import type { ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
 
 export interface FleetState {
   sessions: Session[];
   reviews: ReviewItem[];
+  tasks: Task[];
   connected: boolean;
 }
 
@@ -16,6 +17,7 @@ export interface FleetState {
 export function useEventStream(): FleetState {
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
+  const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
@@ -37,6 +39,7 @@ export function useEventStream(): FleetState {
         case "snapshot":
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
+          setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setConnected(true);
           break;
         case "session_upsert":
@@ -59,6 +62,16 @@ export function useEventStream(): FleetState {
             return next;
           });
           break;
+        case "task_upsert":
+          setTasks((prev) => new Map(prev).set(msg.task.id, msg.task));
+          break;
+        case "task_remove":
+          setTasks((prev) => {
+            const next = new Map(prev);
+            next.delete(msg.id);
+            return next;
+          });
+          break;
       }
     };
 
@@ -71,6 +84,7 @@ export function useEventStream(): FleetState {
   return {
     sessions: [...sessions.values()],
     reviews: [...reviews.values()],
+    tasks: [...tasks.values()],
     connected,
   };
 }

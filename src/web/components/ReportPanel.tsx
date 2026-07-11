@@ -89,11 +89,16 @@ export function ReportPanel({
     setConfirmCancel(null);
   }
 
-  // Stop a live crewmate and reclaim its worktree. Two-click confirm so a stray
-  // click can't take one down. Also offered for a failed-but-alive task (it keeps
-  // its worktree, so it still decorates its session row).
+  async function reclaim(taskId: string): Promise<void> {
+    await api.reclaimTask(taskId);
+    setConfirmCancel(null);
+  }
+
+  // Abort an active crewmate and reclaim its worktree. Two-click confirm so a stray
+  // click can't take one down. Terminal tasks that still hold a tree are reclaimed
+  // from Recent outcomes instead (single surface), so this is active tasks only.
   function cancelControl(task: TaskSummary): React.JSX.Element | null {
-    if (task.status !== "running" && task.status !== "dispatching" && task.status !== "failed") {
+    if (task.status !== "running" && task.status !== "dispatching") {
       return null;
     }
     if (confirmCancel !== task.id) {
@@ -167,7 +172,11 @@ export function ReportPanel({
                       </button>
                     </span>
                   ) : (
-                    <button className="btn" onClick={() => setMarking(s.task!.id)}>
+                    <button
+                      className="btn"
+                      title="Record an outcome. The worktree + agent stay until you Clean up."
+                      onClick={() => setMarking(s.task!.id)}
+                    >
                       Mark done…
                     </button>
                   )
@@ -226,14 +235,15 @@ export function ReportPanel({
                     ))}
                   {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
                 </div>
-                {/* A failed dispatch that kept its worktree (its agent may still be
-                    running) is otherwise unreachable - offer to reclaim it. */}
-                {t.status === "failed" && t.worktreePath && (
+                {/* A terminal task that still holds a worktree - a done task
+                    awaiting reclaim, or a failed-but-alive dispatch whose agent may
+                    still be running - is freed here (keeping its status + outcome). */}
+                {t.worktreePath && (
                   <div className="report-row-actions">
                     {confirmCancel === t.id ? (
                       <span className="report-cancel">
-                        <span className="report-sub">reclaim?</span>
-                        <button className="btn btn-danger" onClick={() => void cancel(t.id)}>
+                        <span className="report-sub">reclaim worktree &amp; stop agent?</span>
+                        <button className="btn btn-danger" onClick={() => void reclaim(t.id)}>
                           Clean up
                         </button>
                         <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>

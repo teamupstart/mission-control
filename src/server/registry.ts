@@ -13,7 +13,7 @@ import type { DiscoveredSession } from "./discovery/correlate.ts";
 import {
   deleteTask as dbDeleteTask,
   loadActiveTasks,
-  loadFailedAliveTasks,
+  loadResourceHoldingTerminalTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
   logEvent,
@@ -59,9 +59,10 @@ export class Registry extends EventEmitter {
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
-    // Always load failed-but-alive tasks so their live resources get reconciled,
-    // even if newer terminal tasks would push them past the recent cap.
-    for (const t of loadFailedAliveTasks()) this.tasks.set(t.id, t);
+    // Always load terminal tasks that still hold a worktree (done-awaiting-reclaim
+    // or failed-but-alive) so their live resources get reconciled, even if newer
+    // terminal tasks would push them past the recent cap.
+    for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
   }
 
   snapshot(): { sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] } {

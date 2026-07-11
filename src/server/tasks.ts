@@ -36,10 +36,11 @@ export class TaskManager {
     for (const t of registry.listTasks()) {
       // Every `dispatching` task needs reconciling even before it acquired a
       // worktree (a restart mid-provision would otherwise strand it forever);
-      // running/failed only when they still hold a worktree to check/reclaim.
+      // running/failed/done only when they still hold a worktree to check/reclaim.
       const needsReconcile =
         t.status === "dispatching" ||
-        (Boolean(t.worktreePath) && (t.status === "running" || t.status === "failed"));
+        (Boolean(t.worktreePath) &&
+          (t.status === "running" || t.status === "failed" || t.status === "done"));
       if (needsReconcile) void this.reconcileOnStartup(t);
     }
   }
@@ -132,29 +133,48 @@ export class TaskManager {
     return { ok: true };
   }
 
-  /** Record a task's outcome and reclaim its worktree - the crewmate's job is done. */
-  async complete(id: string, outcome: string, outcomeUrl?: string): Promise<Task | null> {
+  /**
+   * Record a task's outcome. Deliberately does NOT tear down the worktree/agent -
+   * "Mark done" annotates a result, it must not silently discard unpushed work.
+   * The tree is freed later by an explicit, confirmed `reclaim` (or `remove`).
+   */
+  complete(id: string, outcome: string, outcomeUrl?: string): Task | null {
     const t = this.registry.getTask(id);
     if (!t) return null;
-    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
-    const cur = this.registry.getTask(id) ?? t;
     const now = Date.now();
     const updated: Task = {
-      ...cur,
+      ...t,
       status: "done",
       outcome,
       outcomeUrl: outcomeUrl ?? null,
       error: null,
-      worktreePath: null,
-      branch: null,
-      provider: null,
-      tmuxSession: null,
-      sessionId: null,
       completedAt: now,
       updatedAt: now,
     };
     this.registry.upsertTask(updated);
     return updated;
+  }
+
+  /**
+   * Free a terminal task's leftover worktree + agent (the explicit, confirmed
+   * "reclaim" action) while KEEPING its status and outcome - unlike cancel, which
+   * aborts an active task.
+   */
+  async reclaim(id: string): Promise<Ok> {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
+    const cur = this.registry.getTask(id) ?? t;
+    this.registry.upsertTask({
+      ...cur,
+      worktreePath: null,
+      branch: null,
+      provider: null,
+      tmuxSession: null,
+      sessionId: null,
+      updatedAt: Date.now(),
+    });
+    return { ok: true };
   }
 
   async remove(id: string): Promise<Ok> {
@@ -188,16 +208,20 @@ export class TaskManager {
           updatedAt: Date.now(),
         });
       }
-      return; // running / failed stay as loaded; their session re-binds by cwd
+      return; // running / failed / done stay as loaded; their session re-binds by cwd
     }
+    // The agent is gone - reclaim its worktree. A `done` task keeps its status and
+    // outcome (its work was already recorded); everything else becomes `failed`.
     await teardownWorktree(t).catch(() => {});
     this.registry.upsertTask({
       ...t,
-      status: "failed",
+      status: t.status === "done" ? "done" : "failed",
       error:
-        t.status === "dispatching"
-          ? "dispatch interrupted by a restart - re-dispatch"
-          : "the agent's session did not survive a restart",
+        t.status === "done"
+          ? t.error
+          : t.status === "dispatching"
+            ? "dispatch interrupted by a restart - re-dispatch"
+            : "the agent's session did not survive a restart",
       worktreePath: null,
       branch: null,
       provider: null,

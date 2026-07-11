@@ -251,13 +251,16 @@ export function loadRecentTerminalTasks(limit: number): Task[] {
 }
 
 /**
- * Failed-but-alive tasks (a dispatch that kept its live agent + worktree): loaded
- * regardless of the recent cap so their leaked resources are always reconciled on
- * start rather than orphaned once newer terminal tasks push them past the cap.
+ * Terminal tasks that still hold a worktree (a `done` task awaiting reclaim, or a
+ * failed-but-alive dispatch). Loaded regardless of the recent cap so their live
+ * resources are always reconciled on start rather than orphaned once newer terminal
+ * tasks push them past the cap.
  */
-export function loadFailedAliveTasks(): Task[] {
+export function loadResourceHoldingTerminalTasks(): Task[] {
   const rows = openDb()
-    .prepare(`SELECT * FROM tasks WHERE status = 'failed' AND worktree_path IS NOT NULL`)
+    .prepare(
+      `SELECT * FROM tasks WHERE status IN ('done','failed') AND worktree_path IS NOT NULL`,
+    )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);
 }

@@ -40,6 +40,18 @@ function readVersion(): string {
 export function buildApp(registry: Registry, reviews: ReviewManager, tasks: TaskManager): Hono {
   const app = new Hono();
 
+  // The daemon binds to loopback, but that alone doesn't stop a web page the user
+  // visits from POSTing here via DNS-rebinding (the browser sends the *attacker's*
+  // Host). Dispatch would then be remote code execution. Require a loopback Host on
+  // every state-changing API call; same-origin UI + Vite-proxied dev both qualify.
+  app.use("/api/*", async (c, next) => {
+    const m = c.req.method;
+    if (m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE") {
+      if (!hostIsLoopback(c.req.header("host"))) return c.json({ error: "forbidden" }, 403);
+    }
+    return next();
+  });
+
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "ai-harness", version: VERSION, pid: process.pid }),
   );
@@ -160,6 +172,12 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(r, r.ok ? 200 : 404);
   });
 
+  // Free a terminal task's leftover worktree/agent, keeping its status + outcome.
+  app.post("/api/tasks/:id/reclaim", async (c) => {
+    const r = await tasks.reclaim(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : 404);
+  });
+
   app.post("/api/tasks/:id/complete", async (c) => {
     const parsed = CompleteTaskSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
@@ -174,6 +192,14 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   });
 
   return app;
+}
+
+/** True when the Host header names a loopback address (defeats DNS-rebinding). */
+export function hostIsLoopback(host: string | undefined): boolean {
+  if (!host) return false;
+  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
+  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
 }
 
 /** Validate a dispatch target is a git repo and return its realpath top-level. */

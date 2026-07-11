@@ -24,6 +24,10 @@ and get your decision back.
   backlog for later).
 - **Reports** the fleet's bearings: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
+- **Alerts** you when the fleet needs you: a desktop notification + sound the
+  moment a session needs input, a review lands, a no-mistakes gate parks, or a
+  dispatched task fails - with an **AFK mode** that also pings on idle sessions and
+  finished tasks and sends periodic fleet digests.
 
 ## Quick start
 
@@ -325,7 +329,7 @@ make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

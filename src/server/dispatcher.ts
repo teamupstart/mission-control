@@ -12,7 +12,7 @@ const READY_TIMEOUT_MS = Number(process.env.HARNESS_DISPATCH_READY_MS ?? 30000);
 const SETTLE_MS = Number(process.env.HARNESS_DISPATCH_SETTLE_MS ?? 2000);
 
 /**
- * Turns a task into a live crewmate: provision an isolated worktree, launch the
+ * Turns a task into a live agent: provision an isolated worktree, launch the
  * agent in a detached tmux session there, wait for passive discovery to bind the
  * session (by worktree cwd), then inject the task as its first prompt.
  *

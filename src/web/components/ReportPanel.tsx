@@ -59,7 +59,7 @@ export function ReportPanel({
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
-  // gitInfo can't read a linked-worktree's .git, so a dispatched crewmate's
+  // gitInfo can't read a linked-worktree's .git, so a dispatched agent's
   // session has gitBranch === null; fall back to the task's branch (matching the
   // server's markdown digest, so the panel and the copied text agree).
   const branchOf = (s: Session): string | null =>
@@ -94,7 +94,7 @@ export function ReportPanel({
     setConfirmCancel(null);
   }
 
-  // Abort an active crewmate and reclaim its worktree. Two-click confirm so a stray
+  // Abort an active agent and reclaim its worktree. Two-click confirm so a stray
   // click can't take one down. Terminal tasks that still hold a tree are reclaimed
   // from Recent outcomes instead (single surface), so this is active tasks only.
   function cancelControl(task: TaskSummary): React.JSX.Element | null {
@@ -150,7 +150,7 @@ export function ReportPanel({
             ))}
           </Section>
 
-          <Section title="Working" tone="working" count={working.length} empty="No crew running.">
+          <Section title="Working" tone="working" count={working.length} empty="No agents running.">
             {working.map((s) => (
               <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={s.activity ?? ""}>
                 {s.task && (s.task.status === "running" || s.task.status === "dispatching") ? (

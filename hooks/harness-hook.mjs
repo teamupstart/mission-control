@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Claude Code hook -> AI Harness bridge.
+// Claude Code hook -> Fleet Control bridge.
 //
 // Configured to run for every hook event (the event name is passed as argv[2]).
 // It reads the hook JSON on stdin, captures the terminal env that lets the

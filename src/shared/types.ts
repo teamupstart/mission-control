@@ -82,7 +82,7 @@ export interface Session {
   nomistakesNarration: string | null;
 }
 
-// ---- dispatched tasks (crewmates) ----
+// ---- dispatched tasks (agents) ----
 
 /** ship = deliver a change (PR/merge); scout = investigate/plan/audit and report. */
 export type TaskKind = "ship" | "scout";

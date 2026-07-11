@@ -75,11 +75,16 @@ export class TaskManager {
     return task;
   }
 
-  /** Dispatch a task that's sitting in the backlog (queued) or retry a failed one. */
+  /**
+   * Dispatch a queued task, or retry a failed one - but only when the failure was
+   * cleanly torn down (no lingering worktree). A failed task that still holds a
+   * worktree means its agent may still be running; the user should Cancel it first
+   * (which reclaims the tree) rather than dispatch a second agent onto it.
+   */
   dispatch(id: string): Task | null {
     const t = this.registry.getTask(id);
     if (!t) return null;
-    if (t.status === "queued" || t.status === "failed") {
+    if (t.status === "queued" || (t.status === "failed" && !t.worktreePath)) {
       void this.dispatcher.dispatch(id);
     }
     return this.registry.getTask(id) ?? t;

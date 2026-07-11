@@ -109,7 +109,9 @@ export function App(): React.JSX.Element {
   // modal keep their own keys.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (modalOpen) return;
+      // Stand down while any overlay owns the screen, so grid shortcuts (s/f/k/
+      // arrows/Tab/Esc) don't drive a background card behind the panel/modal.
+      if (modalOpen || dispatchOpen || reportOpen) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
 
@@ -167,7 +169,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sorted, selectedId, modalOpen, toggleExpand]);
+  }, [sorted, selectedId, modalOpen, dispatchOpen, reportOpen, toggleExpand]);
 
   return (
     <div className="app">

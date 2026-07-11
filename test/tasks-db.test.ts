@@ -111,6 +111,20 @@ test("a session gets its task summary when cwd matches an active task's worktree
   assert.equal(s?.task?.status, "running");
 });
 
+test("the in-memory task map is bounded: terminal tasks are trimmed to the recent cap", () => {
+  const r = new Registry();
+  // Insert well over the 50-task cap of finished tasks, newest updated_at last.
+  for (let i = 0; i < 60; i++) {
+    r.upsertTask(mkTask({ id: `bulk-${i}`, status: "done", updatedAt: 100000 + i }));
+  }
+  const terminal = r
+    .snapshot()
+    .tasks.filter((t) => t.status === "done" || t.status === "failed" || t.status === "cancelled");
+  assert.ok(terminal.length <= 50, `expected <= 50 terminal tasks in memory, got ${terminal.length}`);
+  assert.ok(r.getTask("bulk-59"), "newest terminal task is kept");
+  assert.equal(r.getTask("bulk-0"), undefined, "oldest terminal task is evicted from memory");
+});
+
 test("a queued task (no worktree) never decorates a session", () => {
   const r = new Registry();
   r.upsertTask(mkTask({ id: "tB", status: "queued", worktreePath: null }));

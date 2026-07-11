@@ -332,6 +332,22 @@ export class Registry extends EventEmitter {
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
     this.syncSessionsForWorktree(task.worktreePath);
+    if (isTerminalTask(task.status)) this.pruneTerminalTasks();
+  }
+
+  /**
+   * Keep the in-memory map bounded: evict all but the most recent terminal tasks
+   * (the DB retains the full history; a restart rehydrates the same cap). Without
+   * this, every finished task would linger in memory and in every SSE snapshot.
+   */
+  private pruneTerminalTasks(): void {
+    const terminal = [...this.tasks.values()].filter((t) => isTerminalTask(t.status));
+    if (terminal.length <= RECENT_TERMINAL_TASKS) return;
+    terminal.sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const t of terminal.slice(RECENT_TERMINAL_TASKS)) {
+      this.tasks.delete(t.id);
+      this.emitEvent({ type: "task_remove", id: t.id });
+    }
   }
 
   removeTask(id: string): void {
@@ -410,6 +426,11 @@ export class Registry extends EventEmitter {
 }
 
 // ---- pure helpers ----
+
+/** A task in a terminal state has no further lifecycle - safe to evict from memory. */
+function isTerminalTask(status: Task["status"]): boolean {
+  return status === "done" || status === "failed" || status === "cancelled";
+}
 
 /** Pane token for a hook's captured env: tmux pane wins over the outer wezterm pane. */
 export function overlayKeyFromEnv(env: HookIngest["env"]): string | null {

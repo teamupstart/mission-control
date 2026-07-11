@@ -24,10 +24,10 @@ export class Dispatcher {
   constructor(private registry: Registry) {}
 
   async dispatch(taskId: string): Promise<void> {
-    let task = this.registry.getTask(taskId);
+    const task = this.registry.getTask(taskId);
     if (!task) return;
     // Clear any stale error from a prior failed attempt so a retry starts honest.
-    task = this.patch(task, {
+    this.patch(taskId, {
       status: "dispatching",
       error: null,
       dispatchedAt: task.dispatchedAt ?? Date.now(),
@@ -39,14 +39,14 @@ export class Dispatcher {
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
 
       const slug = slugify(task.title);
-      const shortId = task.id.slice(0, 6);
+      const shortId = taskId.slice(0, 6);
 
-      const wt = await provisionWorktree(task.repoRoot, task.id, slug, shortId);
+      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId);
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
-      task = this.patch(task, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
+      this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
 
       const tmuxSession = await spawnUniquely(slug, shortId, wt.path, agentBin);
-      task = this.patch(task, { tmuxSession });
+      this.patch(taskId, { tmuxSession });
 
       const session = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!session) {
@@ -57,29 +57,51 @@ export class Dispatcher {
       const sent = await injectPrompt(session, task.intent);
       if (!sent.ok) throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
 
-      this.patch(task, { status: "running", sessionId: session.id });
+      // A concurrent cancel may have finished the task while we were dispatching;
+      // don't resurrect it to `running`.
+      if (this.cancelledOrGone(taskId)) return;
+      this.patch(taskId, { status: "running", sessionId: session.id });
     } catch (err) {
-      // A partial dispatch may have already spawned the agent + worktree. Tear
-      // that orphan down and clear the worktree fields so a retry starts clean
-      // (a leftover `harness/…` branch or worktree dir would make the retry's
-      // `git worktree add -b` fail permanently).
-      await teardownWorktree(task).catch(() => {});
-      this.patch(this.registry.getTask(task.id) ?? task, {
-        status: "failed",
-        error: err instanceof Error ? err.message : String(err),
-        worktreePath: null,
-        branch: null,
-        provider: null,
-        tmuxSession: null,
-        sessionId: null,
-      });
+      if (this.cancelledOrGone(taskId)) return; // cancel already owns the terminal state
+      const cur = this.registry.getTask(taskId);
+      if (!cur) return;
+      const message = err instanceof Error ? err.message : String(err);
+      // If the agent actually launched and is still running (e.g. discovery was
+      // merely slow, or only the prompt send failed), do NOT destroy its work:
+      // keep the session + worktree and fail the task with guidance. Only when no
+      // live agent remains do we tear the (empty) tree down for a clean retry.
+      const alive = cur.tmuxSession ? await tmuxSessionAlive(cur.tmuxSession) : false;
+      if (alive) {
+        this.patch(taskId, {
+          status: "failed",
+          error: `${message} - the agent is still running; Focus or Cancel it`,
+        });
+      } else {
+        await teardownWorktree(cur).catch(() => {});
+        this.patch(taskId, {
+          status: "failed",
+          error: message,
+          worktreePath: null,
+          branch: null,
+          provider: null,
+          tmuxSession: null,
+          sessionId: null,
+        });
+      }
     }
   }
 
-  private patch(task: Task, fields: Partial<Task>): Task {
-    const next: Task = { ...task, ...fields, updatedAt: Date.now() };
-    this.registry.upsertTask(next);
-    return next;
+  /** True if the task was cancelled or removed while a dispatch was in flight. */
+  private cancelledOrGone(taskId: string): boolean {
+    const t = this.registry.getTask(taskId);
+    return !t || t.status === "cancelled";
+  }
+
+  /** Merge fields onto the CURRENT registry task, never a stale local snapshot. */
+  private patch(taskId: string, fields: Partial<Task>): void {
+    const cur = this.registry.getTask(taskId);
+    if (!cur) return;
+    this.registry.upsertTask({ ...cur, ...fields, updatedAt: Date.now() });
   }
 }
 
@@ -222,6 +244,10 @@ async function spawnUniquely(
     await spawnDetachedSession(alt, cwd, agentBin);
     return alt;
   }
+}
+
+async function tmuxSessionAlive(name: string): Promise<boolean> {
+  return (await run("tmux", ["has-session", "-t", name])).code === 0;
 }
 
 async function currentBranch(dir: string): Promise<string | null> {

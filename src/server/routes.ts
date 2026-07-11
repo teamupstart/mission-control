@@ -14,14 +14,30 @@ import { transcriptStreamHandler } from "./transcript.ts";
 import { checkToken } from "./auth.ts";
 import { focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath, URL } from "node:url";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
 
+/** Service version, read once from package.json; "unknown" if unreadable. */
+const VERSION = readVersion();
+function readVersion(): string {
+  try {
+    const raw = readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8");
+    const v = (JSON.parse(raw) as { version?: unknown }).version;
+    return typeof v === "string" ? v : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export function buildApp(registry: Registry, reviews: ReviewManager): Hono {
   const app = new Hono();
 
-  app.get("/api/health", (c) => c.json({ ok: true, service: "ai-harness", pid: process.pid }));
+  app.get("/api/health", (c) =>
+    c.json({ ok: true, service: "ai-harness", version: VERSION, pid: process.pid }),
+  );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/events", sseHandler(registry));

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import type { Session } from "@shared/types.ts";
 import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";

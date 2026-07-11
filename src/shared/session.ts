@@ -78,26 +78,27 @@ export function gateParked(s: Session, fleet: Session[] = [s]): boolean {
 }
 
 /**
- * Which report section a session belongs to. Mirrors the card's badge precedence:
- * a pending review or a parked gate always means "needs you", regardless of the
- * agent's own reported state; an uninstrumented ("running") session counts as
- * active crew rather than idle, since we can't prove it's waiting. `fleet` lets a
- * parked gate defer to a same-run session that's still driving it (see gateParked).
+ * Which report section a session belongs to:
+ *  - needs-you: prompting you - a pending review, a parked gate that needs you,
+ *    or the agent explicitly awaiting your input/review.
+ *  - working: an agent we can *confirm* is running. That takes hook
+ *    instrumentation (starting/working); an uninstrumented session reports no
+ *    live state, so we don't claim it's busy.
+ *  - idle: open but not prompting you and not confirmed running - instrumented
+ *    sessions the agent has parked at idle, plus every uninstrumented session.
+ *
+ * `fleet` lets a parked gate defer to a same-run session that's still driving it
+ * (see gateParked).
  */
 export function reportBucket(s: Session, fleet: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
   if (s.pendingReviews > 0) return "needs-you";
   if (gateParked(s, fleet)) return "needs-you";
-  if (!s.instrumented) return "working";
-  switch (s.state) {
-    case "awaiting_input":
-    case "awaiting_review":
-      return "needs-you";
-    case "idle":
-      return "idle";
-    default:
-      return "working"; // starting / working
+  if (s.instrumented) {
+    if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
+    if (s.state === "starting" || s.state === "working") return "working";
   }
+  return "idle"; // instrumented-idle, or uninstrumented (open, not confirmed busy)
 }
 
 /** A one-line reason a session needs you, or null when it doesn't. */

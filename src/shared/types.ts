@@ -268,3 +268,30 @@ export type TranscriptStreamMsg =
   | { type: "init"; messages: TranscriptMessage[] }
   | { type: "append"; messages: TranscriptMessage[] }
   | { type: "unavailable"; reason: string };
+
+// ---- session diff (changes vs the source branch) ----
+
+/**
+ * A session's changes against its source branch (typically `main`):
+ * `GET /api/sessions/:id/diff`. The patch is everything the branch + worktree
+ * changed since it diverged (committed since the merge-base, staged, unstaged,
+ * and untracked) - so it captures the work done in that checkout. Diff stats are
+ * from `--numstat`, so they stay accurate even when a huge `patch` is truncated.
+ */
+export interface SessionDiff {
+  ok: boolean;
+  error: string | null;
+  /** Source branch the diff is against (e.g. "main"), or null if none was found. */
+  base: string | null;
+  /** Short sha of the merge-base actually diffed against, or null (diffed vs HEAD). */
+  baseSha: string | null;
+  headSha: string | null;
+  branch: string | null;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  /** Raw unified diff (tracked changes then untracked-as-new-files), possibly capped. */
+  patch: string;
+  /** True when `patch` was truncated for size (stats above are still complete). */
+  truncated: boolean;
+}

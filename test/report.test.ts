@@ -120,6 +120,33 @@ test("buildReport buckets sessions the same way the shared helper does", () => {
   assert.equal(r.recentTruncated, false);
 });
 
+test("reportBucket: working is confirmed-running, idle is everything else that's open", () => {
+  // Working = an agent we can confirm is running (needs hook instrumentation).
+  assert.equal(reportBucket(mkSession({ state: "working", instrumented: true })), "working");
+  assert.equal(reportBucket(mkSession({ state: "starting", instrumented: true })), "working");
+
+  // Idle = open, not prompting you, not confirmed running: instrumented-idle,
+  // AND every uninstrumented session (no live signal to prove it's busy).
+  assert.equal(reportBucket(mkSession({ state: "idle", instrumented: true })), "idle");
+  assert.equal(reportBucket(mkSession({ state: "working", instrumented: false })), "idle");
+  assert.equal(reportBucket(mkSession({ state: "starting", instrumented: false })), "idle");
+
+  // Needs you = prompting you for input (or a review / parked gate).
+  assert.equal(reportBucket(mkSession({ state: "awaiting_input", instrumented: true })), "needs-you");
+  assert.equal(reportBucket(mkSession({ state: "awaiting_review", instrumented: true })), "needs-you");
+  assert.equal(reportBucket(mkSession({ state: "idle", pendingReviews: 1 })), "needs-you");
+
+  // A fleet of uninstrumented sessions must produce a non-empty Idle section.
+  const fleet = [
+    mkSession({ id: "a", state: "working", instrumented: false }),
+    mkSession({ id: "b", state: "working", instrumented: false }),
+    mkSession({ id: "c", state: "working", instrumented: true }), // the only confirmed-running one
+  ];
+  const r = buildReport({ sessions: fleet, tasks: [] }, 0);
+  assert.deepEqual(r.idle.map((i) => i.sessionId).sort(), ["a", "b"]);
+  assert.deepEqual(r.working.map((i) => i.sessionId), ["c"]);
+});
+
 function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
   return {
     status: "running",
@@ -157,7 +184,9 @@ test("a parked gate only needs you once the agent has stopped driving it", () =>
   assert.equal(gateParked(idle), true);
 
   assert.equal(reportBucket(working), "working");
-  assert.equal(reportBucket(uninstrumented), "working");
+  // Uninstrumented: not nagging (gate deferred), but not confirmed running either,
+  // so it buckets as idle rather than padding "working".
+  assert.equal(reportBucket(uninstrumented), "idle");
   assert.equal(reportBucket(idle), "needs-you");
   assert.equal(needsYouReason(idle), "gate parked at review");
 

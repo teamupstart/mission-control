@@ -7,6 +7,7 @@ import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchModal } from "./components/DispatchModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
+import { DiffViewer } from "./components/DiffViewer.tsx";
 import { stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then gone.
@@ -25,6 +26,7 @@ export function App(): React.JSX.Element {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -85,16 +87,18 @@ export function App(): React.JSX.Element {
   const modalOpen = Boolean(modalSession && modalReviews.length > 0);
 
   const selected = selectedId ? sorted.find((s) => s.id === selectedId) ?? null : null;
+  const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
 
   function openReviews(): void {
     const first = pendingReviews[0];
     if (first) setReviewSessionId(first.sessionId);
   }
 
-  // Drop selection if the session disappears (exited + reaped, name change, etc.).
+  // Drop selection / close the diff if the session disappears (exited + reaped, etc.).
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
-  }, [sessions, selectedId]);
+    if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) setDiffSessionId(null);
+  }, [sessions, selectedId, diffSessionId]);
 
   // Forget expand state for sessions that are gone so the set can't grow unbounded.
   useEffect(() => {
@@ -117,11 +121,29 @@ export function App(): React.JSX.Element {
   // modal keep their own keys.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
+      const target = e.target as HTMLElement | null;
+      const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+
+      // "r" toggles the fleet report - works whether it's open or closed. Held
+      // back only while a review/dispatch overlay owns the screen or you're typing.
+      if (
+        !typing &&
+        !modalOpen &&
+        !dispatchOpen &&
+        !diffSession &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "r"
+      ) {
+        e.preventDefault();
+        setReportOpen((v) => !v);
+        return;
+      }
+
       // Stand down while any overlay owns the screen, so grid shortcuts (s/f/k/
       // arrows/Tab/Esc) don't drive a background card behind the panel/modal.
-      if (modalOpen || dispatchOpen || reportOpen) return;
-      const target = e.target as HTMLElement | null;
-      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (modalOpen || dispatchOpen || reportOpen || diffSession || typing) return;
 
       const ids = sorted.map((s) => s.id);
       if (ids.length === 0) return;
@@ -165,6 +187,12 @@ export function App(): React.JSX.Element {
             toggleExpand(selectedId);
             return;
           }
+          if (k === "d") {
+            if (!selectedId) return;
+            e.preventDefault();
+            setDiffSessionId(selectedId);
+            return;
+          }
           if (k !== "s" && k !== "f" && k !== "k") return;
           const h = handle();
           if (!h) return;
@@ -177,7 +205,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sorted, selectedId, modalOpen, dispatchOpen, reportOpen, toggleExpand]);
+  }, [sorted, selectedId, modalOpen, dispatchOpen, reportOpen, diffSession, toggleExpand]);
 
   return (
     <div className="app">
@@ -198,8 +226,12 @@ export function App(): React.JSX.Element {
             </button>
           )}
         </div>
-        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings)">
-          Report{backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
+        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings) - press r">
+          Report
+          <kbd className="ghost-key" aria-hidden>
+            r
+          </kbd>
+          {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
         </button>
         <button className="dispatch-btn" onClick={() => setDispatchOpen(true)} title="Dispatch a new crewmate">
           <span aria-hidden>＋</span> Dispatch
@@ -221,6 +253,7 @@ export function App(): React.JSX.Element {
             expanded={expandedIds.has(s.id)}
             onToggleExpand={() => toggleExpand(s.id)}
             onOpenReviews={() => setReviewSessionId(s.id)}
+            onOpenDiff={() => setDiffSessionId(s.id)}
             registerEl={registerEl}
             registerActions={registerActions}
           />
@@ -249,6 +282,10 @@ export function App(): React.JSX.Element {
         />
       )}
 
+      {diffSession && (
+        <DiffViewer session={diffSession} onClose={() => setDiffSessionId(null)} />
+      )}
+
       {sessions.length === 0 && (
         <div className="empty">
           <p className="empty-title">No agent sessions detected</p>
@@ -265,6 +302,7 @@ export function App(): React.JSX.Element {
           expanded={expandedIds.has(selected.id)}
           onToggleExpand={() => toggleExpand(selected.id)}
           onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
+          onDiff={() => setDiffSessionId(selected.id)}
           onDeselect={() => setSelectedId(null)}
         />
       )}
@@ -282,12 +320,14 @@ function CommandBar({
   expanded,
   onToggleExpand,
   onAction,
+  onDiff,
   onDeselect,
 }: {
   session: Session;
   expanded: boolean;
   onToggleExpand: () => void;
   onAction: (action: "startSend" | "focusPane" | "requestKill") => void;
+  onDiff: () => void;
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
@@ -310,6 +350,11 @@ function CommandBar({
               <kbd>k</kbd> kill
             </button>
           </>
+        )}
+        {session.cwd && (
+          <button className="keycap-btn" onClick={onDiff}>
+            <kbd>d</kbd> diff
+          </button>
         )}
         <button className="keycap-btn" onClick={onToggleExpand}>
           <kbd>e</kbd> {expanded ? "collapse" : "expand"}

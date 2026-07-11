@@ -201,8 +201,16 @@ export class Registry extends EventEmitter {
   applyNomistakes(cwd: string, summary: NmRunSummary | null): void {
     for (const [id, s] of this.sessions) {
       if (s.cwd !== cwd) continue;
-      if (JSON.stringify(s.nomistakes) === JSON.stringify(summary)) continue;
-      const next = { ...s, nomistakes: summary };
+      // no-mistakes status is per-repo: querying from one worktree returns the
+      // repo's active run even when it belongs to a sibling worktree on another
+      // branch. Only decorate sessions whose branch matches the run's - git
+      // allows a branch in a single worktree, so the branch uniquely identifies
+      // the worktree that owns the run. Sessions in the same dir on a different
+      // branch are cleared, so a run for branch X never leaks onto every session
+      // that merely shares the repo.
+      const owned = summary && s.gitBranch === summary.branch ? summary : null;
+      if (JSON.stringify(s.nomistakes) === JSON.stringify(owned)) continue;
+      const next = { ...s, nomistakes: owned };
       this.sessions.set(id, next);
       this.emitSession(next);
     }

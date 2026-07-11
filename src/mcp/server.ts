@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ReviewItem } from "@shared/types.ts";
@@ -11,11 +11,20 @@ import type { ReviewItem } from "@shared/types.ts";
 // WEZTERM_PANE), which lets the daemon bind every call to the right session -
 // the same join key the hook bridge uses.
 
-const PORT = process.env.HARNESS_PORT ?? "7317";
+const PORT = process.env.FLEET_PORT ?? process.env.HARNESS_PORT ?? "7317";
 const BASE = `http://127.0.0.1:${PORT}`;
-const TOKEN_PATH = process.env.HARNESS_HOME
-  ? join(process.env.HARNESS_HOME, "token")
-  : join(homedir(), ".ai-harness", "token");
+
+// Must resolve to the same token as the daemon (see config.ts): honor the legacy
+// HARNESS_ env + ~/.ai-harness dir so an upgraded install still authenticates.
+function stateDir(): string {
+  const override = process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
+  if (override) return override;
+  const preferred = join(homedir(), ".fleet-control");
+  const legacy = join(homedir(), ".ai-harness");
+  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
+  return preferred;
+}
+const TOKEN_PATH = join(stateDir(), "token");
 
 function token(): string {
   try {
@@ -67,7 +76,7 @@ function textResult(text: string, isError = false) {
   return { content: [{ type: "text" as const, text }], isError };
 }
 
-const server = new McpServer({ name: "ai-harness", version: "0.1.0" });
+const server = new McpServer({ name: "fleet-control", version: "0.1.0" });
 
 server.registerTool(
   "share_plan",

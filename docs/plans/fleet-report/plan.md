@@ -25,7 +25,7 @@ no-mistakes summaries already denormalized onto each session.
 
 ## Why it fits (and why it depends on dispatch)
 
-- The **intent** side of `/bearings` ("what is each crew member doing") is exactly
+- The **intent** side of `/bearings` ("what is each agent doing") is exactly
   `session.task`, delivered by dispatch. Without the tasks model there's nothing to report
   beyond raw session state - hence the hard dependency and serial build.
 - The report needs no new data source: `Registry.snapshot()` already returns sessions
@@ -75,7 +75,7 @@ export interface FleetReport {
   ```
   # Fleet bearings - 2026-07-11 14:03
   Needs you (2)
-  - crew "auth-refactor" (ship) - 2 to review  [feat/auth]
+  - agent "auth-refactor" (ship) - 2 to review  [feat/auth]
   - "flaky-tests" - gate parked at review
   Working (3) ...
   Backlog (4) ...
@@ -100,7 +100,7 @@ No new storage or endpoints for the backlog itself: it's `GET /api/tasks` filter
 - `src/web/components/ReportPanel.tsx` (new): slide-over rendering the `FleetReport`:
   - **Needs you** (attention-toned rows; each row deep-links: focus the session, or open
     its reviews via the existing `ReviewModal`).
-  - **Working** (crew rows with intent chip + activity + branch).
+  - **Working** (agent rows with intent chip + activity + branch).
   - **Idle**.
   - **Backlog**: each queued task with **Dispatch** (calls `api.dispatchQueued`) and
     **Delete**; a **`+ New`** shortcut into `DispatchModal` pre-set to "Add to backlog".
@@ -111,7 +111,7 @@ No new storage or endpoints for the backlog itself: it's `GET /api/tasks` filter
     updates, and use `/api/report.md` only for the copy action (single source of truth for
     the text digest). Client bucketing reuses the shared attention helper from `report.ts`.
 - **Outcome capture** (the `/stow` intent/outcome bit): in the report's **Working**
-  section, each crew row whose task is still `running`/`dispatching` gets a small
+  section, each agent row whose task is still `running`/`dispatching` gets a small
   **Mark done…** affordance that collects `{ outcome, outcomeUrl? }` and calls
   `api.completeTask`. (Kept in the panel rather than on the card to avoid cluttering the
   grid; the panel is where you review outcomes anyway.) This is what makes "recent

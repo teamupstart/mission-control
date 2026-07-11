@@ -1,7 +1,7 @@
-# Plan: Dispatch (crewmate launch)
+# Plan: Dispatch (agent launch)
 
 Status: proposed
-Owner: ai-harness
+Owner: fleet-control
 Related: [First Mate](https://github.com/kunchenguid/firstmate) idea #1; shares its
 task/backlog data model with [`../fleet-report/plan.md`](../fleet-report/plan.md) (idea #4).
 
@@ -14,7 +14,7 @@ injects the task as the agent's first prompt. The new session shows up on the gr
 one poll, **bound to a persistent task record** that carries its intent (and later its
 outcome).
 
-This is First Mate's "dispatch a crewmate into its own session + worktree", built from
+This is First Mate's "dispatch an agent into its own session + worktree", built from
 primitives this repo already has, and driven through the same dashboard the human already
 watches.
 
@@ -140,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_worktree ON tasks(worktree_path);
 
 Helpers: `insertTask`, `updateTask(patch)`, `getTask`, `listTasks`, `loadActiveTasks`
 (status in queued/dispatching/running - reloaded into the registry on start so a restart
-doesn't drop the backlog or a running crew's intent).
+doesn't drop the backlog or a running agent's intent).
 
 Rationale for storing the coarse *task* lifecycle only (not runtime state): the live
 session already reports working/idle/needs-input. The task adds intent + kind + outcome.

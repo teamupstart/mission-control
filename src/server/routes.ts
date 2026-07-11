@@ -56,7 +56,7 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
-    c.json({ ok: true, service: "ai-harness", version: VERSION, pid: process.pid }),
+    c.json({ ok: true, service: "fleet-control", version: VERSION, pid: process.pid }),
   );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));

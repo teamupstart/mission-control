@@ -1,15 +1,15 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, WorktreeProvider } from "@shared/types.ts";
-import { WORKTREES_DIR, resolveAgentBin } from "./config.ts";
+import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
-const READY_TIMEOUT_MS = Number(process.env.HARNESS_DISPATCH_READY_MS ?? 30000);
+const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
 /** Settle time after discovery so the agent's input is ready for the first prompt. */
-const SETTLE_MS = Number(process.env.HARNESS_DISPATCH_SETTLE_MS ?? 2000);
+const SETTLE_MS = Number(envVar("DISPATCH_SETTLE_MS") ?? 2000);
 
 /**
  * Turns a task into a live agent: provision an isolated worktree, launch the
@@ -163,7 +163,7 @@ export async function provisionWorktree(
   }
 
   if ((await hasBin("treehouse")) && existsSync(join(repoRoot, "treehouse.toml"))) {
-    const r = await run("treehouse", ["get", "--lease", "--lease-holder", "ai-harness"], {
+    const r = await run("treehouse", ["get", "--lease", "--lease-holder", "fleet-control"], {
       cwd: repoRoot,
       timeoutMs: 180000,
     });

@@ -18,8 +18,11 @@ import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const dir = process.argv[2] ?? process.cwd();
-const skipInstall = process.env.HARNESS_WORKTREE_SKIP_INSTALL === "1";
-const skipGate = process.env.HARNESS_WORKTREE_SKIP_GATE === "1";
+// FLEET_ names, with the legacy HARNESS_ names still honored.
+const skipInstall =
+  (process.env.FLEET_WORKTREE_SKIP_INSTALL ?? process.env.HARNESS_WORKTREE_SKIP_INSTALL) === "1";
+const skipGate =
+  (process.env.FLEET_WORKTREE_SKIP_GATE ?? process.env.HARNESS_WORKTREE_SKIP_GATE) === "1";
 
 const log = (m) => console.log(`  ${m}`);
 const warn = (m) => console.warn(`  ⚠ ${m}`);
@@ -51,7 +54,7 @@ try {
 // build cache elsewhere is warm, so install once here. Prefer a clean, lockfile-
 // exact install when we can.
 if (skipInstall) {
-  log("dep install skipped (HARNESS_WORKTREE_SKIP_INSTALL=1)");
+  log("dep install skipped (FLEET_WORKTREE_SKIP_INSTALL=1)");
 } else if (!existsSync(join(dir, "package.json"))) {
   log("no package.json - skipping dependency install");
 } else if (existsSync(join(dir, "node_modules"))) {
@@ -73,7 +76,7 @@ if (skipInstall) {
 // backing repo is gated every worktree of it is covered; running init again is a
 // harmless refresh. We only try when there is an origin to gate.
 if (skipGate) {
-  log("no-mistakes gating skipped (HARNESS_WORKTREE_SKIP_GATE=1)");
+  log("no-mistakes gating skipped (FLEET_WORKTREE_SKIP_GATE=1)");
 } else if (!have("no-mistakes")) {
   log("no-mistakes not installed - skipping gate (run `make init` to set it up)");
 } else {

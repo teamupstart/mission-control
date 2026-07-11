@@ -159,7 +159,7 @@ every invocation. Paths are absolute (your `node` and this repo):
 ```
 
 Each fired hook POSTs `{ event, sessionId, cwd, env }` to
-`http://127.0.0.1:7317/hooks/<event>` with the `~/.ai-harness/token`. The daemon
+`http://127.0.0.1:7317/hooks/<event>` with the `~/.fleet-control/token`. The daemon
 binds it to the right card via the terminal pane env (`TMUX_PANE` /
 `WEZTERM_PANE`) and maps the event to a state (see the table below).
 
@@ -186,7 +186,7 @@ for Claude Code, green for Codex).
 
 ```sh
 npm run build                    # builds the MCP server bundle
-claude mcp add -s user ai-harness -- node /ABSOLUTE/PATH/dist/mcp/server.mjs
+claude mcp add -s user fleet-control -- node /ABSOLUTE/PATH/dist/mcp/server.mjs
 ```
 
 (`npm run install-hooks` prints the exact command with your paths.)
@@ -221,7 +221,7 @@ launching it yet.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
-Set `HARNESS_CLAUDE_BIN` / `HARNESS_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
+Set `FLEET_CLAUDE_BIN` / `FLEET_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
 ## Fleet report (bearings)
 
@@ -315,16 +315,21 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `HARNESS_PORT` | `7317` | daemon / dashboard port |
-| `HARNESS_HOME` | `~/.ai-harness` | state dir (db, token, logs, dispatch worktrees) |
-| `HARNESS_POLL_MS` | `1500` | discovery interval |
-| `HARNESS_NM_POLL_MS` | `5000` | no-mistakes status interval |
-| `HARNESS_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `HARNESS_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
-| `HARNESS_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |
-| `HARNESS_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
+| `FLEET_PORT` | `7317` | daemon / dashboard port |
+| `FLEET_HOME` | `~/.fleet-control` | state dir (db, token, logs, dispatch worktrees) |
+| `FLEET_POLL_MS` | `1500` | discovery interval |
+| `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
+| `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
+| `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
+| `FLEET_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |
+| `FLEET_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
+
+> **Upgrading from `HARNESS_*`?** The old `HARNESS_*` env names are still honored as
+> a fallback, and an existing `~/.ai-harness` state dir is kept in place (the new
+> `~/.fleet-control` default only applies to fresh installs), so nothing breaks on
+> an in-place update. Prefer the `FLEET_*` names going forward.
 
 ## Commands
 
@@ -346,6 +351,6 @@ The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)
 additionally requires a loopback `Host` header so a web page you visit can't reach
 it via DNS-rebinding - a defense that matters now that dispatch can launch agents
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
-and MCP ingress is authenticated with a per-machine token in `~/.ai-harness/token`
+and MCP ingress is authenticated with a per-machine token in `~/.fleet-control/token`
 so other local processes can't spoof session or task state. Session and task
 actions (send / focus / kill, dispatch / cancel / complete) are localhost-only.

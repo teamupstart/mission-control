@@ -32,7 +32,7 @@ test("/api/health reports ok, service, the package.json version, and pid", async
     pid: number;
   };
   assert.equal(body.ok, true);
-  assert.equal(body.service, "ai-harness");
+  assert.equal(body.service, "fleet-control");
   assert.equal(typeof body.version, "string");
   assert.equal(body.version, pkgVersion);
   assert.equal(body.pid, process.pid);

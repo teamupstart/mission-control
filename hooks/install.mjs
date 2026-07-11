@@ -132,16 +132,16 @@ writeFileSync(settingsPath, text);
 
 if (uninstall) {
   console.log(`Removed Fleet Control hooks from ${settingsPath} (your other settings were left intact)`);
-  console.log(`\nTo remove the review-channel MCP server:\n  claude mcp remove -s user ai-harness`);
+  console.log(`\nTo remove the review-channel MCP server:\n  claude mcp remove -s user fleet-control`);
 } else {
   console.log(`Wired Fleet Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);
   console.log(`  events: ${EVENTS.join(", ")}`);
   console.log(`  script: ${scriptPath}`);
-  console.log(`\nStart a new Claude Code session; it will report live status to the harness.`);
+  console.log(`\nStart a new Claude Code session; it will report live status to Fleet Control.`);
 
   console.log(`\nTo enable the review channel (agents push diffs/plans for you to review),`);
   console.log(`register the MCP server once (needs \`npm run build\` first):\n`);
-  console.log(`  claude mcp add -s user ai-harness -- "${process.execPath}" "${mcpPath}"\n`);
+  console.log(`  claude mcp add -s user fleet-control -- "${process.execPath}" "${mcpPath}"\n`);
   if (!existsSync(mcpPath)) {
     console.log(`  (not built yet - run \`npm run build\`, or \`npm run setup\` to do both)`);
   }

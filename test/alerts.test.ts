@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { detectAlerts, digestLine, type Fleet, type AlertSettings } from "../src/web/lib/alerts.ts";
+import {
+  batchSeverity,
+  detectAlerts,
+  digestLine,
+  hasReportable,
+  type Alert,
+  type AlertSettings,
+  type Fleet,
+} from "../src/web/lib/alerts.ts";
 import type { NmRunSummary, Session, SessionState, Task } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -122,6 +130,23 @@ test("idle + task-done alerts are AFK-only", () => {
   const kinds = r.map((a) => a.kind).sort();
   assert.deepEqual(kinds, ["idle", "task-done"]);
   assert.ok(r.every((a) => a.severity === "info"));
+});
+
+test("batchSeverity is attention if any alert is attention, else info", () => {
+  const a = (severity: Alert["severity"]): Alert => ({
+    id: "x", kind: "idle", title: "", body: "", sessionId: null, severity,
+  });
+  assert.equal(batchSeverity([a("info"), a("attention"), a("info")]), "attention");
+  assert.equal(batchSeverity([a("info"), a("info")]), "info");
+  assert.equal(batchSeverity([]), "info");
+});
+
+test("hasReportable is false for an empty/all-exited fleet, true when there's activity", () => {
+  assert.equal(hasReportable(fleet([])), false);
+  assert.equal(hasReportable(fleet([mkSession({ state: "exited" })])), false);
+  assert.equal(hasReportable(fleet([mkSession({ state: "idle" })])), true);
+  assert.equal(hasReportable(fleet([], [mkTask({ status: "queued" })])), true);
+  assert.equal(hasReportable(fleet([], [mkTask({ status: "done" })])), false);
 });
 
 test("digestLine counts sessions by bucket and includes queued tasks", () => {

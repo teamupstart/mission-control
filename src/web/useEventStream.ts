@@ -6,6 +6,10 @@ export interface FleetState {
   reviews: ReviewItem[];
   tasks: Task[];
   connected: boolean;
+  /** True once the initial `snapshot` has populated state (distinct from the SSE
+   * connection opening). Alerting keys off this so opening the dashboard doesn't
+   * diff the real snapshot against the empty first render. */
+  hasSnapshot: boolean;
 }
 
 /**
@@ -19,6 +23,7 @@ export function useEventStream(): FleetState {
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
   const [connected, setConnected] = useState(false);
+  const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -41,6 +46,7 @@ export function useEventStream(): FleetState {
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
           setConnected(true);
+          setHasSnapshot(true);
           break;
         case "session_upsert":
           setSessions((prev) => new Map(prev).set(msg.session.id, msg.session));
@@ -86,5 +92,6 @@ export function useEventStream(): FleetState {
     reviews: [...reviews.values()],
     tasks: [...tasks.values()],
     connected,
+    hasSnapshot,
   };
 }

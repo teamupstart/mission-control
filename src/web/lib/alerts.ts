@@ -105,6 +105,17 @@ export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings):
   return alerts;
 }
 
+/** The most urgent severity in a batch - an "attention" alert must not be masked. */
+export function batchSeverity(alerts: Alert[]): AlertSeverity {
+  return alerts.some((a) => a.severity === "attention") ? "attention" : "info";
+}
+
+/** Whether the fleet has anything worth reporting, so a quiet digest can be skipped. */
+export function hasReportable(fleet: Fleet): boolean {
+  for (const s of fleet.sessions) if (reportBucket(s) !== "exited") return true;
+  return fleet.tasks.some((t) => t.status === "queued");
+}
+
 /** Compact fleet digest, e.g. "2 need you · 3 working · 1 idle · 1 queued". */
 export function digestLine(fleet: Fleet): string {
   let needsYou = 0;

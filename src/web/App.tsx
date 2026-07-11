@@ -21,9 +21,9 @@ const TONE_ORDER: Record<Tone, number> = {
 };
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, connected } = useEventStream();
+  const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
-  useNotifier({ sessions, tasks }, alertSettings);
+  useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());

@@ -138,15 +138,17 @@ function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
 test("a parked gate only needs you once the agent has stopped driving it", () => {
   // The /no-mistakes skill answers the gate itself while the session works, so a
   // gate parked under a working (or presumed-working) agent must NOT nag you.
-  const working = mkSession({ id: "w", state: "working", nomistakes: parkedGate() });
-  const starting = mkSession({ id: "st", state: "starting", nomistakes: parkedGate() });
+  // Distinct branches: these are four independent runs (one run per branch), not
+  // four terminals co-driving one - so each session's own state decides its gate.
+  const working = mkSession({ id: "w", state: "working", nomistakes: parkedGate({ branch: "feat/w" }) });
+  const starting = mkSession({ id: "st", state: "starting", nomistakes: parkedGate({ branch: "feat/st" }) });
   const uninstrumented = mkSession({
     id: "u",
     state: "working",
     instrumented: false,
-    nomistakes: parkedGate(),
+    nomistakes: parkedGate({ branch: "feat/u" }),
   });
-  const idle = mkSession({ id: "i", state: "idle", nomistakes: parkedGate() });
+  const idle = mkSession({ id: "i", state: "idle", nomistakes: parkedGate({ branch: "feat/i" }) });
 
   assert.equal(gateParked(working), false);
   assert.equal(gateParked(starting), false);

@@ -3,6 +3,7 @@ import { listProcesses, type Proc } from "./processes.ts";
 import { listTmuxPanes, type TmuxPane } from "./tmux.ts";
 import { listWeztermPanes, weztermCwdToPath, type WeztermPane } from "./wezterm.ts";
 import { gitInfo } from "../util/git.ts";
+import { annotateNomistakesLaunches } from "./nomistakes-launch.ts";
 
 /** basename of a path, or "" for null/root - used for name fallbacks. */
 function basename(p: string | null): string {
@@ -31,6 +32,19 @@ export interface DiscoveredSession {
   tmux: TmuxInfo | null;
   /** Agent process start time (epoch ms), 0 when unparseable. */
   startedAt: number;
+  /**
+   * Worktrees where this session is currently driving a no-mistakes run, seen as
+   * live `no-mistakes axi run/respond/...` processes in its subtree (added by
+   * annotateNomistakesLaunches). Present only while such a process is alive; the
+   * registry remembers the binding so attribution survives a parked gate.
+   */
+  nomistakesRuns?: NmLaunch[];
+}
+
+/** A worktree a session is driving a no-mistakes run in (its cwd + that checkout's branch). */
+export interface NmLaunch {
+  cwd: string;
+  branch: string | null;
 }
 
 export interface DiscoveryInput {
@@ -166,7 +180,10 @@ export function correlate(input: DiscoveryInput): DiscoveredSession[] {
   return sessions;
 }
 
-/** Convenience: gather + correlate in one call. */
+/** Convenience: gather + correlate in one call, annotating no-mistakes launches. */
 export async function discover(): Promise<DiscoveredSession[]> {
-  return correlate(await gatherDiscoveryInput());
+  const input = await gatherDiscoveryInput();
+  const sessions = correlate(input);
+  await annotateNomistakesLaunches(sessions, input.procs);
+  return sessions;
 }

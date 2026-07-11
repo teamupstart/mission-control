@@ -12,11 +12,17 @@ LOG  := .harness.log
 MATCH := src/server/index.ts
 
 .DEFAULT_GOAL := help
-.PHONY: help dev server web up down restart status logs build test check hooks setup
+.PHONY: help init session dev server web up down restart status logs build test check hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-9s\033[0m %s\n", $$1, $$2}'
+
+init: ## First-run bootstrap: deps, build, hooks, treehouse + no-mistakes, gate repo
+	node scripts/init.mjs
+
+session: ## Start an agent in a fresh, gated worktree (e.g. make session ARGS="-- claude")
+	node scripts/new-session.mjs $(ARGS)
 
 dev: ## Daemon + web in the foreground, both auto-reload (Ctrl-C to stop)
 	npm run dev

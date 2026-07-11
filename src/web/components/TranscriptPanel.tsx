@@ -61,6 +61,12 @@ export function TranscriptPanel({
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Drop the cursor into the reply box when the panel opens (e.g. via `e`), so
+  // you can start typing immediately. A disabled box (no pane) ignores focus.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
   function onScroll(): void {
     const el = logRef.current;
     if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
@@ -109,6 +115,9 @@ export function TranscriptPanel({
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 void send();
+              } else if (e.key === "Escape") {
+                // Blur back to the grid so card keyboard nav (e to collapse) works.
+                e.currentTarget.blur();
               }
             }}
           />

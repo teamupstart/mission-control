@@ -1,0 +1,21 @@
+# treehouse pool config for the AI Harness.
+#
+# treehouse keeps a pool of pre-warmed git worktrees so parallel agent sessions
+# never share one working tree. `make session` leases one of these, warms it,
+# and gates it with no-mistakes (see scripts/new-session.mjs).
+#
+# NOTE: treehouse ignores a [hooks] block in this repo-level file on purpose - a
+# cloned repo must not be able to run commands on your machine. `make session`
+# runs scripts/worktree-setup.mjs itself, so no hook is needed for that flow.
+# If you want EVERY `treehouse get` (not just `make session`) to auto-warm and
+# gate, add this to your user config at ~/.config/treehouse/config.toml:
+#
+#   [hooks]
+#   post_create = ["node /ABSOLUTE/PATH/TO/ai-harness/scripts/worktree-setup.mjs"]
+
+# Maximum number of worktrees kept in the pool.
+max_trees = 16
+
+# Worktree root. "" = $HOME, so worktrees live under ~/.treehouse/<repo>-<hash>/.
+# May be relative to the repo root or an absolute path.
+root = ""

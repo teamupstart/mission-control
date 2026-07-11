@@ -1,13 +1,35 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
+
+/**
+ * Imperative surface an ActionBar registers with the App so keyboard shortcuts
+ * (s / f / k / esc on the selected card) drive the exact same compose and
+ * confirm-kill flow as the on-card buttons - one source of truth for both.
+ */
+export interface ActionBarHandle {
+  startSend: () => void;
+  focusPane: () => void;
+  requestKill: () => void;
+  cancel: () => void;
+}
 
 /**
  * Per-session controls: focus its pane, send a message into its prompt, or
  * terminate it. "Send" reveals an inline input; "Kill" requires a second
  * confirming click so a stray click can't take down a session.
  */
-export function ActionBar({ session }: { session: Session }): React.JSX.Element {
+export function ActionBar({
+  session,
+  expanded = false,
+  registerActions,
+}: {
+  session: Session;
+  /** When the card is expanded, the transcript panel owns the reply box, so we
+   * hide this bar's Send button to avoid two send surfaces. */
+  expanded?: boolean;
+  registerActions?: (id: string, handle: ActionBarHandle | null) => void;
+}): React.JSX.Element {
   const [composing, setComposing] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -37,6 +59,51 @@ export function ActionBar({ session }: { session: Session }): React.JSX.Element 
     }
   }
 
+  async function doKill() {
+    await run("kill", () => api.kill(session.id));
+    setConfirmKill(false);
+  }
+
+  function startSend() {
+    if (!canSend) return;
+    setConfirmKill(false);
+    setComposing(true);
+  }
+
+  function focusPane() {
+    void run("focus", () => api.focus(session.id));
+  }
+
+  // First press arms the confirm; a second press commits - mirrors the mouse flow.
+  function requestKill() {
+    if (confirmKill) void doKill();
+    else {
+      setComposing(false);
+      setConfirmKill(true);
+    }
+  }
+
+  function cancel() {
+    setComposing(false);
+    setConfirmKill(false);
+  }
+
+  // Register a stable handle that always calls the latest closures, so App can
+  // drive this bar by keyboard without re-registering on every render.
+  const latest = useRef({ startSend, focusPane, requestKill, cancel });
+  latest.current = { startSend, focusPane, requestKill, cancel };
+  useEffect(() => {
+    if (!registerActions) return;
+    const handle: ActionBarHandle = {
+      startSend: () => latest.current.startSend(),
+      focusPane: () => latest.current.focusPane(),
+      requestKill: () => latest.current.requestKill(),
+      cancel: () => latest.current.cancel(),
+    };
+    registerActions(session.id, handle);
+    return () => registerActions(session.id, null);
+  }, [session.id, registerActions]);
+
   return (
     <div className="actions">
       {composing ? (
@@ -60,26 +127,22 @@ export function ActionBar({ session }: { session: Session }): React.JSX.Element 
         </div>
       ) : (
         <>
-          <button
-            className="btn"
-            disabled={!canSend}
-            title={canSend ? "Type into this session's prompt" : "No pane to send to"}
-            onClick={() => setComposing(true)}
-          >
-            Send
-          </button>
-          <button className="btn" onClick={() => void run("focus", () => api.focus(session.id))}>
+          {!expanded && (
+            <button
+              className="btn"
+              disabled={!canSend}
+              title={canSend ? "Type into this session's prompt" : "No pane to send to"}
+              onClick={startSend}
+            >
+              Send
+            </button>
+          )}
+          <button className="btn" onClick={focusPane}>
             Focus
           </button>
           <span className="actions-spacer" />
           {confirmKill ? (
-            <button
-              className="btn btn-danger"
-              onClick={async () => {
-                await run("kill", () => api.kill(session.id));
-                setConfirmKill(false);
-              }}
-            >
+            <button className="btn btn-danger" onClick={() => void doKill()}>
               Confirm kill
             </button>
           ) : (

@@ -23,6 +23,16 @@ and get your decision back.
 ## Quick start
 
 ```sh
+make init          # one-time bootstrap (deps, build, hooks, treehouse + no-mistakes)
+make dev           # daemon + Vite, open http://127.0.0.1:5173
+```
+
+`make init` is idempotent - it installs dependencies, builds, wires the Claude
+hooks, makes sure [treehouse](#isolated-worktrees-per-session-treehouse) and
+[no-mistakes](#no-mistakes) are installed, and gates this repo. If you'd rather
+do the minimum by hand:
+
+```sh
 npm install
 npm run dev        # daemon + Vite, open http://127.0.0.1:5173
 ```
@@ -70,7 +80,10 @@ actively working, sitting idle, or waiting on you. Claude Code **hooks** close
 that gap: a tiny bridge reports each lifecycle event to the daemon so every card
 shows a live, precise state and a one-line activity.
 
-**1. Install** (idempotent, and it preserves any hooks you already have):
+**1. Install** (idempotent - it merges into `settings.json` in place, rewriting
+only the hook arrays it changes, so your other settings, your own hooks, and
+even comments are preserved; re-running when nothing changed doesn't touch the
+file):
 
 ```sh
 npm run install-hooks
@@ -197,6 +210,44 @@ add guidance). Approve and skip confirm first since they advance the pipeline
 toward pushing your branch. Set `NOMISTAKES_BIN` if the binary isn't on the
 daemon's PATH.
 
+## Isolated worktrees per session (treehouse)
+
+Running several agents in **one** working tree is a recipe for clobbering - one
+agent's branch switch or edit lands under another's feet. [`kunchenguid/treehouse`](https://github.com/kunchenguid/treehouse)
+solves this with a pool of pre-warmed git worktrees ("manage worktrees without
+managing worktrees"): each session gets its own isolated tree, and dependencies
+/ build cache aren't re-paid every time.
+
+`make session` wires treehouse and no-mistakes together into a one-command
+"start a clean session":
+
+```sh
+make session                      # lease a worktree, warm it, gate it, drop you in a subshell
+make session ARGS="-- claude"     # …or launch an agent in it directly
+node scripts/new-session.mjs -- claude   # equivalent, without make
+```
+
+Under the hood (`scripts/new-session.mjs`):
+
+1. **Lease** a worktree from this repo's pool (`treehouse get --lease`), creating
+   one if the pool is empty (up to `max_trees` in `treehouse.toml`).
+2. **Warm + gate** it (`scripts/worktree-setup.mjs`): install dependencies so the
+   session starts fast, and run `no-mistakes init` so the tree is gated.
+3. **Hand it over** - open your `$SHELL` (or the command after `--`) in the tree.
+
+The lease is durable, so a backgrounded agent keeps its tree after you exit.
+Release it when done:
+
+```sh
+treehouse status                 # see the pool
+treehouse return <path>          # give the worktree back to the pool
+```
+
+Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
+safety, the warm+gate step is run by `make session` itself. To make **every**
+`treehouse get` (not just `make session`) warm and gate automatically, add a
+`post_create` hook to your user config - see the comments in `treehouse.toml`.
+
 ## Configuration
 
 | Env | Default | Meaning |
@@ -211,6 +262,8 @@ daemon's PATH.
 ## Commands
 
 ```sh
+make init              # one-time bootstrap (deps, build, hooks, treehouse + no-mistakes)
+make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run build          # build web + MCP bundle

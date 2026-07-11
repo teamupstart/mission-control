@@ -19,6 +19,9 @@
     "start": "tsx src/server/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx 'test/**/*.test.ts'",
+    "init": "node scripts/init.mjs",
+    "session": "node scripts/new-session.mjs",
+    "worktree-setup": "node scripts/worktree-setup.mjs",
     "setup": "npm run build && npm run install-hooks",
     "install-hooks": "tsx hooks/install.mjs",
     "install-service": "node scripts/install-service.mjs"
@@ -27,6 +30,7 @@
     "@hono/node-server": "^1.13.7",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "hono": "^4.6.14",
+    "jsonc-parser": "^3.3.1",
     "react": "^19.0.0",
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.0.0",

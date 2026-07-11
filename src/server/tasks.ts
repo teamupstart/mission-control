@@ -34,10 +34,13 @@ export class TaskManager {
     // sessions on disk. Reconcile every task that still holds resources by checking
     // whether its agent's tmux session survived.
     for (const t of registry.listTasks()) {
-      const holdsResources =
-        Boolean(t.worktreePath) &&
-        (t.status === "dispatching" || t.status === "running" || t.status === "failed");
-      if (holdsResources) void this.reconcileOnStartup(t);
+      // Every `dispatching` task needs reconciling even before it acquired a
+      // worktree (a restart mid-provision would otherwise strand it forever);
+      // running/failed only when they still hold a worktree to check/reclaim.
+      const needsReconcile =
+        t.status === "dispatching" ||
+        (Boolean(t.worktreePath) && (t.status === "running" || t.status === "failed"));
+      if (needsReconcile) void this.reconcileOnStartup(t);
     }
   }
 
@@ -108,12 +111,16 @@ export class TaskManager {
       const s = this.registry.getSession(t.sessionId);
       if (s) kill(s);
     }
-    // teardownWorktree also kills the tmux session and returns/removes the tree.
-    await teardownWorktree(t).catch(() => {});
+    // Re-read before tearing down so we don't miss resources a concurrent dispatch
+    // created during the kill above. teardownWorktree also kills the tmux session.
+    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
 
+    // Merge onto the LATEST snapshot, not a stale one, so we don't resurrect fields
+    // the dispatcher patched during the awaits.
+    const cur = this.registry.getTask(id) ?? t;
     const now = Date.now();
     this.registry.upsertTask({
-      ...t,
+      ...cur,
       status: "cancelled",
       worktreePath: null,
       branch: null,
@@ -129,10 +136,11 @@ export class TaskManager {
   async complete(id: string, outcome: string, outcomeUrl?: string): Promise<Task | null> {
     const t = this.registry.getTask(id);
     if (!t) return null;
-    await teardownWorktree(t).catch(() => {});
+    await teardownWorktree(this.registry.getTask(id) ?? t).catch(() => {});
+    const cur = this.registry.getTask(id) ?? t;
     const now = Date.now();
     const updated: Task = {
-      ...t,
+      ...cur,
       status: "done",
       outcome,
       outcomeUrl: outcomeUrl ?? null,
@@ -186,7 +194,10 @@ export class TaskManager {
     this.registry.upsertTask({
       ...t,
       status: "failed",
-      error: "the agent's session did not survive a restart",
+      error:
+        t.status === "dispatching"
+          ? "dispatch interrupted by a restart - re-dispatch"
+          : "the agent's session did not survive a restart",
       worktreePath: null,
       branch: null,
       provider: null,

@@ -14,8 +14,9 @@ import type {
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
- * from the OS on every poll, so the only things worth surviving a restart are
- * review items (a human decision may be pending) and the session event log.
+ * from the OS on every poll. What survives a restart is state the OS can't rebuild:
+ * pending review items (a human decision may be waiting), dispatched tasks (their
+ * backlog, running intent, and recent outcomes), and the session event log.
  */
 let db: DatabaseSync;
 

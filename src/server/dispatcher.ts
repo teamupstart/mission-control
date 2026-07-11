@@ -44,27 +44,33 @@ export class Dispatcher {
       const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId);
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
+      if (await this.abortIfCancelled(taskId)) return;
 
       const tmuxSession = await spawnUniquely(slug, shortId, wt.path, agentBin);
       this.patch(taskId, { tmuxSession });
+      if (await this.abortIfCancelled(taskId)) return;
 
       const session = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!session) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
+      if (await this.abortIfCancelled(taskId)) return;
       await delay(SETTLE_MS);
 
       const sent = await injectPrompt(session, task.intent);
       if (!sent.ok) throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
 
-      // A concurrent cancel may have finished the task while we were dispatching;
-      // don't resurrect it to `running`.
-      if (this.cancelledOrGone(taskId)) return;
+      if (await this.abortIfCancelled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: session.id });
     } catch (err) {
-      if (this.cancelledOrGone(taskId)) return; // cancel already owns the terminal state
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
+      // A cancel that landed before we created these resources couldn't tear them
+      // down, so do it here rather than orphan a live agent + worktree.
+      if (cur.status === "cancelled") {
+        await teardownWorktree(cur).catch(() => {});
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       // If the agent actually launched and is still running (e.g. discovery was
       // merely slow, or only the prompt send failed), do NOT destroy its work:
@@ -95,6 +101,18 @@ export class Dispatcher {
   private cancelledOrGone(taskId: string): boolean {
     const t = this.registry.getTask(taskId);
     return !t || t.status === "cancelled";
+  }
+
+  /**
+   * Checkpoint between dispatch steps: if a cancel landed in flight, tear down
+   * whatever this dispatch has already created (the cancel may have run before
+   * those resources existed and so couldn't clean them up) and signal to stop.
+   */
+  private async abortIfCancelled(taskId: string): Promise<boolean> {
+    if (!this.cancelledOrGone(taskId)) return false;
+    const cur = this.registry.getTask(taskId);
+    if (cur) await teardownWorktree(cur).catch(() => {});
+    return true;
   }
 
   /** Merge fields onto the CURRENT registry task, never a stale local snapshot. */

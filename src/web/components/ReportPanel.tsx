@@ -47,6 +47,13 @@ export function ReportPanel({
 
   const backlog = useMemo(() => queuedTasks(tasks), [tasks]);
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
+  const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
+
+  // gitInfo can't read a linked-worktree's .git, so a dispatched crewmate's
+  // session has gitBranch === null; fall back to the task's branch (matching the
+  // server's markdown digest, so the panel and the copied text agree).
+  const branchOf = (s: Session): string | null =>
+    s.gitBranch ?? (s.task ? taskById.get(s.task.id)?.branch ?? null : null);
 
   async function copyMarkdown(): Promise<void> {
     try {
@@ -115,7 +122,7 @@ export function ReportPanel({
         <div className="report-body">
           <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
             {needsYou.map((s) => (
-              <SessionRow key={s.id} s={s} reason={needsYouReason(s) ?? "needs you"}>
+              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s) ?? "needs you"}>
                 {s.pendingReviews > 0 && (
                   <button className="btn" onClick={() => onOpenReviews(s.id)}>
                     Review
@@ -131,7 +138,7 @@ export function ReportPanel({
 
           <Section title="Working" tone="working" count={working.length} empty="No crew running.">
             {working.map((s) => (
-              <SessionRow key={s.id} s={s} reason={s.activity ?? ""}>
+              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={s.activity ?? ""}>
                 {s.task && (s.task.status === "running" || s.task.status === "dispatching") ? (
                   marking === s.task.id ? (
                     <span className="report-mark">
@@ -166,7 +173,7 @@ export function ReportPanel({
 
           <Section title="Idle" tone="idle" count={idle.length} empty="Nothing sitting idle.">
             {idle.map((s) => (
-              <SessionRow key={s.id} s={s} reason="">
+              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason="">
                 <button className="btn" onClick={() => void api.focus(s.id)}>
                   Focus
                 </button>
@@ -210,6 +217,27 @@ export function ReportPanel({
                     ))}
                   {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
                 </div>
+                {/* A failed dispatch that kept its worktree (its agent may still be
+                    running) is otherwise unreachable - offer to reclaim it. */}
+                {t.status === "failed" && t.worktreePath && (
+                  <div className="report-row-actions">
+                    {confirmCancel === t.id ? (
+                      <span className="report-cancel">
+                        <span className="report-sub">reclaim?</span>
+                        <button className="btn btn-danger" onClick={() => void cancel(t.id, true)}>
+                          Clean up
+                        </button>
+                        <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
+                          ✕
+                        </button>
+                      </span>
+                    ) : (
+                      <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
+                        Clean up
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </Section>
@@ -244,10 +272,12 @@ function Section({
 
 function SessionRow({
   s,
+  branch,
   reason,
   children,
 }: {
   s: Session;
+  branch: string | null;
   reason: string;
   children?: React.ReactNode;
 }): React.JSX.Element {
@@ -260,7 +290,7 @@ function SessionRow({
           {label}
         </span>
         {s.task && <span className="task-kind">{s.task.kind}</span>}
-        {s.gitBranch && <span className="report-sub mono branch">{s.gitBranch}</span>}
+        {branch && <span className="report-sub mono branch">{branch}</span>}
         {reason && <span className="report-sub">{reason}</span>}
       </div>
       <div className="report-row-actions">{children}</div>

@@ -7,7 +7,7 @@ import {
   hasReportable,
   summarizeAlerts,
 } from "./lib/alerts.ts";
-import { playChime } from "./lib/chime.ts";
+import { playChime, unlockAudio } from "./lib/chime.ts";
 
 function canNotify(): boolean {
   return typeof Notification !== "undefined" && Notification.permission === "granted";
@@ -46,14 +46,31 @@ export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolea
   const fleetRef = useRef(fleet);
   fleetRef.current = fleet;
 
+  // Sound defaults on, but a fresh page load starts a suspended AudioContext that
+  // only a user gesture can resume. Unlock on the first interaction anywhere, so
+  // chimes aren't silently dropped after a refresh until the alert controls are used.
+  useEffect(() => {
+    const unlock = (): void => {
+      unlockAudio();
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+    window.addEventListener("pointerdown", unlock);
+    window.addEventListener("keydown", unlock);
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
   useEffect(() => {
     const justConnected = ready && !wasReadyRef.current;
     wasReadyRef.current = ready;
 
-    if (!ready) {
-      prevRef.current = fleet;
-      return;
-    }
+    // Do NOT touch prevRef while disconnected: on initial open it must stay null so
+    // the snapshot seeds silently; across a disconnect it retains the last baseline
+    // so the reconnect catch-up has something to diff against.
+    if (!ready) return;
 
     if (justConnected) {
       const prev = prevRef.current;

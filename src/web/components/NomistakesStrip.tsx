@@ -14,7 +14,10 @@ const STEP_TONE: Record<string, string> = {
 
 /**
  * Compact surface of a no-mistakes run for a gated repo: the pipeline as status
- * dots, the gate it's parked at, and the findings.
+ * dots, the active stage and findings summary while it runs, a live narration of
+ * what the skill is doing now (from the session's transcript), the gate it's
+ * parked at, and the findings. The active-stage, summary, and narration lines
+ * hide while parked.
  *
  * A parked gate is `awaiting_agent` - the run is waiting on the agent's
  * `axi respond`, which the `/no-mistakes` skill issues autonomously. So we only
@@ -28,21 +31,45 @@ export function NomistakesStrip({
   sessionId,
   nm,
   needsYou,
+  narration,
 }: {
   sessionId: string;
   nm: NmRunSummary;
   needsYou: boolean;
+  narration?: string | null;
 }): React.JSX.Element {
   const label = nm.outcome ?? nm.status;
+  // The active pipeline stage: the step currently running (only present when the
+  // run isn't parked at a gate - that gets its own line below).
+  const runningIdx = nm.steps.findIndex((s) => s.status === "running");
+  const running = runningIdx >= 0 ? nm.steps[runningIdx]! : null;
   return (
     <div className="nm-strip">
       <div className="nm-head">
         <span className="nm-brand">◇ no-mistakes</span>
         <span className={`nm-status nm-status-${nm.outcome ? "done" : nm.status}`}>{label}</span>
-        {nm.awaitingAgent && (
+        {nm.awaitingAgent ? (
           <span className={needsYou ? "nm-parked" : "nm-resolving"}>{nm.awaitingAgent}</span>
+        ) : (
+          nm.findingsSummary && <span className="nm-summary">{nm.findingsSummary}</span>
         )}
       </div>
+
+      {running && (
+        <div className="nm-stage">
+          <strong>{running.step}</strong>
+          <span className="nm-stage-pos">
+            {" · "}
+            step {runningIdx + 1} of {nm.steps.length}
+          </span>
+          {running.findings > 0 && (
+            <span className="nm-stage-find">
+              {" · "}
+              {running.findings} finding{running.findings > 1 ? "s" : ""} so far
+            </span>
+          )}
+        </div>
+      )}
 
       {nm.steps.length > 0 && (
         <div className="nm-pipe" role="list">
@@ -54,6 +81,12 @@ export function NomistakesStrip({
               title={`${s.step}: ${s.status}${s.findings ? ` · ${s.findings} finding${s.findings > 1 ? "s" : ""}` : ""}`}
             />
           ))}
+        </div>
+      )}
+
+      {narration && !nm.gateStep && !nm.outcome && (
+        <div className="nm-narration" title={narration}>
+          ↳ {narration}
         </div>
       )}
 

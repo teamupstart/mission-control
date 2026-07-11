@@ -238,8 +238,13 @@ runs no-mistakes as a **component**.
 
 If `no-mistakes` is installed and a session's repo is gated, the card surfaces
 the live run: a `◇ gated` chip plus a strip showing the pipeline
-(intent → review → test → … → ci as status dots), the gate it's parked at, and
-the findings - polled via `no-mistakes axi status` (its TOON agent interface).
+(intent → review → test → … → ci as status dots), the active stage it's on
+(e.g. `review · step 3 of 9 · 1 finding so far`), a running findings summary in
+the header, the gate it's parked at, and the findings - all polled via
+`no-mistakes axi status` (its TOON agent interface). A separate live narration
+line echoes what the skill is doing right now, read from the in-progress to-do in
+the session's Claude transcript. The active-stage, summary, and narration lines
+step aside while a run is parked, where the gate line already conveys that state.
 When a run is parked at a gate you can **approve / fix / skip** it right there;
 those map to `no-mistakes axi respond --action …` (fix lets you pick findings and
 add guidance). Approve and skip confirm first since they advance the pipeline

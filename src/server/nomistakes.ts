@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { run } from "./util/exec.ts";
+import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
 import type { Registry } from "./registry.ts";
 import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 
@@ -151,6 +152,15 @@ export function startNomistakesPoller(registry: Registry): () => void {
     if (stopped) return;
     try {
       await pollAndReconcile(registry);
+      // For sessions with an *active* run, surface what the skill is doing right
+      // now from its Claude transcript (a bounded tail read, no subprocess). A
+      // run that has reached an outcome is finished, so its narration is cleared.
+      // Attribution is precise now, so only the launcher/owner sessions narrate.
+      for (const s of registry.nomistakesSessions()) {
+        const active = s.nomistakes && !s.nomistakes.outcome;
+        const path = active ? resolveTranscriptPath(s) : null;
+        registry.applyNomistakesNarration(s.id, path ? readCurrentTodo(path) : null);
+      }
     } catch (err) {
       console.error("[nomistakes] poll failed:", err);
     }

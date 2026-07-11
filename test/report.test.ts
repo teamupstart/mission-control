@@ -27,6 +27,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastActivity: null,
     pendingReviews: 0,
     nomistakes: null,
+    nomistakesNarration: null,
     task: null,
     ...over,
   };

@@ -157,6 +157,7 @@ export class Registry extends EventEmitter {
       pendingReviews: this.countPending(d.syntheticId),
       nomistakes: prev?.nomistakes ?? null,
       task: this.taskSummaryForCwd(d.cwd),
+      nomistakesNarration: prev?.nomistakesNarration ?? null,
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -283,8 +284,13 @@ export class Registry extends EventEmitter {
 
     for (const [id, s] of this.sessions) {
       const owned = this.ownedRun(id, s, byBranch);
-      if (JSON.stringify(s.nomistakes) === JSON.stringify(owned)) continue;
-      const next = { ...s, nomistakes: owned };
+      const narration = owned ? s.nomistakesNarration : null; // narration clears with its run
+      if (
+        JSON.stringify(s.nomistakes) === JSON.stringify(owned) &&
+        s.nomistakesNarration === narration
+      )
+        continue;
+      const next = { ...s, nomistakes: owned, nomistakesNarration: narration };
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -300,6 +306,24 @@ export class Registry extends EventEmitter {
       }
     }
     return null;
+  }
+
+  /**
+   * Update the "what the skill is doing now" narration for a session, sourced
+   * from its Claude transcript (see readCurrentTodo). Cleared to null when there
+   * is no active run or nothing is in progress.
+   */
+  applyNomistakesNarration(sessionId: string, narration: string | null): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.nomistakesNarration === narration) return;
+    const next: Session = { ...s, nomistakesNarration: narration };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  /** Sessions currently showing a no-mistakes run (for narration polling). */
+  nomistakesSessions(): Session[] {
+    return [...this.sessions.values()].filter((s) => s.nomistakes !== null);
   }
 
   /** MCP `report_status`: update a session's activity line without a hook. */
@@ -551,6 +575,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.pendingReviews === b.pendingReviews &&
     a.wezterm?.isActive === b.wezterm?.isActive &&
     a.tmux?.window === b.tmux?.window &&
+    a.nomistakesNarration === b.nomistakesNarration &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task)
   );

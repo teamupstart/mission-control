@@ -135,6 +135,7 @@ export function SessionCard({
           sessionId={session.id}
           nm={session.nomistakes}
           needsYou={gateNeedsYou}
+          narration={session.nomistakesNarration}
         />
       )}
 

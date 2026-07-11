@@ -133,10 +133,12 @@ export function startNomistakesPoller(registry: Registry): () => void {
           registry.applyNomistakes(cwd, await fetchStatus(cwd));
         }
       }
-      // For sessions now showing a run, surface what the skill is doing right
-      // now from its Claude transcript (a bounded tail read, no subprocess).
+      // For sessions with an *active* run, surface what the skill is doing right
+      // now from its Claude transcript (a bounded tail read, no subprocess). A
+      // run that has reached an outcome is finished, so its narration is cleared.
       for (const s of registry.nomistakesSessions()) {
-        const path = resolveTranscriptPath(s);
+        const active = s.nomistakes && !s.nomistakes.outcome;
+        const path = active ? resolveTranscriptPath(s) : null;
         registry.applyNomistakesNarration(s.id, path ? readCurrentTodo(path) : null);
       }
     } catch (err) {

@@ -81,7 +81,7 @@ export function NomistakesStrip({
         </div>
       )}
 
-      {narration && !nm.gateStep && (
+      {narration && !nm.gateStep && !nm.outcome && (
         <div className="nm-narration" title={narration}>
           ↳ {narration}
         </div>

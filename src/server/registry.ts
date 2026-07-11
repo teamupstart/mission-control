@@ -241,8 +241,13 @@ export class Registry extends EventEmitter {
     for (const [id, s] of this.sessions) {
       if (s.cwd !== cwd) continue;
       const owned = summary && s.gitBranch === summary.branch ? summary : null;
-      if (JSON.stringify(s.nomistakes) === JSON.stringify(owned)) continue;
-      const next = { ...s, nomistakes: owned };
+      const narration = owned ? s.nomistakesNarration : null;
+      if (
+        JSON.stringify(s.nomistakes) === JSON.stringify(owned) &&
+        s.nomistakesNarration === narration
+      )
+        continue;
+      const next = { ...s, nomistakes: owned, nomistakesNarration: narration };
       this.sessions.set(id, next);
       this.emitSession(next);
     }

@@ -9,7 +9,7 @@
 // Usage: node scripts/new-session.mjs [--holder <label>] [-- <command…>]
 //   (no command)     open your $SHELL in the worktree
 //   -- claude        launch an agent directly in the worktree
-//   --holder <label> record who holds the lease (default: ai-harness)
+//   --holder <label> record who holds the lease (default: fleet-control)
 //
 // The lease is durable: the worktree stays yours after you exit, so a
 // backgrounded agent keeps its tree. Release it later with:
@@ -23,7 +23,7 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // --- args -------------------------------------------------------------------
 const args = process.argv.slice(2);
-let holder = "ai-harness";
+let holder = "fleet-control";
 let command = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--") {
@@ -73,7 +73,7 @@ if (!worktree) {
 spawnSync(process.execPath, [join(repo, "scripts", "worktree-setup.mjs"), worktree], { stdio: "inherit" });
 
 // --- hand it over -----------------------------------------------------------
-const env = { ...process.env, HARNESS_WORKTREE: worktree, TREEHOUSE_LEASE_HOLDER: holder };
+const env = { ...process.env, FLEET_WORKTREE: worktree, TREEHOUSE_LEASE_HOLDER: holder };
 const [cmd, ...rest] = command.length > 0 ? command : [process.env.SHELL || "/bin/bash"];
 console.error(`\n🌳 session ready in ${worktree}\n   (lease held by "${holder}"; return it later with: treehouse return ${worktree})\n`);
 

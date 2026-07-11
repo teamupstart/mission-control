@@ -10,14 +10,23 @@
 // into the model's context), swallow every error, and always exit 0 so a hook
 // never blocks or fails the agent - even when the daemon is down.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const PORT = process.env.HARNESS_PORT ?? "7317";
-const TOKEN_PATH = process.env.HARNESS_HOME
-  ? join(process.env.HARNESS_HOME, "token")
-  : join(homedir(), ".ai-harness", "token");
+const PORT = process.env.FLEET_PORT ?? process.env.HARNESS_PORT ?? "7317";
+
+// Must resolve to the same token as the daemon (see config.ts): honor the legacy
+// HARNESS_ env + ~/.ai-harness dir so an upgraded install still authenticates.
+function stateDir() {
+  const override = process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
+  if (override) return override;
+  const preferred = join(homedir(), ".fleet-control");
+  const legacy = join(homedir(), ".ai-harness");
+  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
+  return preferred;
+}
+const TOKEN_PATH = join(stateDir(), "token");
 
 function readToken() {
   try {

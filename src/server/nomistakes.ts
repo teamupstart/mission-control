@@ -2,12 +2,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { run } from "./util/exec.ts";
+import { envVar } from "./config.ts";
 import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
 import type { Registry } from "./registry.ts";
 import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 
 /** How often to refresh no-mistakes status for gated repos (ms). */
-const NM_POLL_MS = Number(process.env.HARNESS_NM_POLL_MS ?? 5000);
+const NM_POLL_MS = Number(envVar("NM_POLL_MS") ?? 5000);
 
 // Surfaces the live status of a no-mistakes run for a gated repo by shelling out
 // to `no-mistakes axi status` (the agent-facing TOON interface) and parsing it.

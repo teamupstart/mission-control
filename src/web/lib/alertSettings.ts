@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AlertSettings } from "./alerts.ts";
 
-const KEY = "ai-harness.alerts";
+const KEY = "fleet-control.alerts";
+const LEGACY_KEY = "ai-harness.alerts";
 const DEFAULTS: AlertSettings = { notifications: false, sound: true, afk: false, digestMinutes: 15 };
 
 function load(): AlertSettings {
   try {
-    const raw = localStorage.getItem(KEY);
+    // Fall back to the pre-rename key so saved preferences carry over.
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY);
     if (!raw) return DEFAULTS;
     return { ...DEFAULTS, ...(JSON.parse(raw) as Partial<AlertSettings>) };
   } catch {

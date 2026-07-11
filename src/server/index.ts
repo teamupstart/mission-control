@@ -35,7 +35,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;
-  console.log(`[ai-harness] listening on ${where}`);
+  console.log(`[fleet-control] listening on ${where}`);
 });
 
 function shutdown(): void {

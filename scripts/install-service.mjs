@@ -13,14 +13,29 @@ if (platform() !== "darwin") {
   process.exit(1);
 }
 
-const LABEL = "com.ai-harness.daemon";
+const LABEL = "com.fleet-control.daemon";
+// Prior label(s) we may still need to unload/remove on an in-place upgrade so a
+// stale daemon under the old label doesn't linger (or double-bind the port).
+const LEGACY_LABELS = ["com.ai-harness.daemon"];
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const node = process.execPath;
 const tsx = join(repo, "node_modules", "tsx", "dist", "cli.mjs");
 const entry = join(repo, "src", "server", "index.ts");
-const stateDir = process.env.HARNESS_HOME ?? join(homedir(), ".ai-harness");
+
+// Same state-dir resolution as the daemon (config.ts): honor the legacy HARNESS_
+// env + ~/.ai-harness dir so an upgraded install keeps its logs/db in place.
+function resolveStateDir() {
+  const override = process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
+  if (override) return override;
+  const preferred = join(homedir(), ".fleet-control");
+  const legacy = join(homedir(), ".ai-harness");
+  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
+  return preferred;
+}
+const stateDir = resolveStateDir();
 const logFile = join(stateDir, "daemon.log");
-const plistPath = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
+const plistFor = (label) => join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
+const plistPath = plistFor(LABEL);
 const uninstall = process.argv.includes("--uninstall");
 
 // launchd starts with a minimal PATH; include node's dir + common tool dirs so
@@ -35,9 +50,19 @@ function tryLaunchctl(...args) {
   }
 }
 
+/** Unload + delete a label's plist, if present. */
+function removeLabel(label) {
+  const p = plistFor(label);
+  tryLaunchctl("unload", p);
+  if (existsSync(p)) rmSync(p);
+}
+
+// Always clear any prior-label install first, so an upgrade never leaves a
+// second daemon running (both would fight over the port).
+for (const legacy of LEGACY_LABELS) removeLabel(legacy);
+
 if (uninstall) {
-  tryLaunchctl("unload", plistPath);
-  if (existsSync(plistPath)) rmSync(plistPath);
+  removeLabel(LABEL);
   console.log(`Removed LaunchAgent ${LABEL}`);
   process.exit(0);
 }
@@ -82,5 +107,5 @@ execFileSync("launchctl", ["load", plistPath], { stdio: "inherit" });
 console.log(`Installed and started LaunchAgent ${LABEL}`);
 console.log(`  plist: ${plistPath}`);
 console.log(`  logs:  ${logFile}`);
-console.log(`\nThe dashboard is at http://127.0.0.1:${process.env.HARNESS_PORT ?? 7317}`);
+console.log(`\nThe dashboard is at http://127.0.0.1:${process.env.FLEET_PORT ?? process.env.HARNESS_PORT ?? 7317}`);
 console.log(`Stop/remove with:  npm run install-service -- --uninstall`);

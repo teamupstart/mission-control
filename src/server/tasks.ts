@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentType, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
-import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
+import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
 import { kill } from "./actions.ts";
 
 export interface CreateTaskInput {
@@ -30,10 +30,14 @@ export class TaskManager {
 
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
-    // A daemon restart can leave tasks stuck mid-dispatch (worktree/session state
-    // is on disk, but the in-flight dispatch promise is gone). Re-reconcile them.
+    // A restart severs the in-flight dispatch promises but leaves worktrees + tmux
+    // sessions on disk. Reconcile every task that still holds resources by checking
+    // whether its agent's tmux session survived.
     for (const t of registry.listTasks()) {
-      if (t.status === "dispatching") void this.reconcileDispatching(t);
+      const holdsResources =
+        Boolean(t.worktreePath) &&
+        (t.status === "dispatching" || t.status === "running" || t.status === "failed");
+      if (holdsResources) void this.reconcileOnStartup(t);
     }
   }
 
@@ -159,19 +163,30 @@ export class TaskManager {
   }
 
   /**
-   * Reconcile a task left in `dispatching` by a restart. A task only stays
-   * `dispatching` because the initial prompt hadn't been delivered yet (status
-   * flips to `running` immediately after send succeeds), so any tmux session that
-   * survived is an agent sitting at an empty prompt - it would never do the task.
-   * Don't fake a live crewmate: tear the orphan down and fail it so it can be
-   * re-dispatched cleanly.
+   * Reconcile a resource-holding task after a restart. If its agent's tmux session
+   * survived, keep it (a `running`/`failed` task re-binds to its rediscovered
+   * session; a `dispatching` one can't confirm its prompt landed, so it fails
+   * honestly but keeps the live agent to Focus/Cancel). If the session is gone, the
+   * agent died with the daemon - reclaim its worktree so nothing leaks invisibly.
    */
-  private async reconcileDispatching(t: Task): Promise<void> {
+  private async reconcileOnStartup(t: Task): Promise<void> {
+    const alive = t.tmuxSession ? await tmuxSessionAlive(t.tmuxSession) : false;
+    if (alive) {
+      if (t.status === "dispatching") {
+        this.registry.upsertTask({
+          ...t,
+          status: "failed",
+          error: "dispatch interrupted by a restart - Focus or Cancel it",
+          updatedAt: Date.now(),
+        });
+      }
+      return; // running / failed stay as loaded; their session re-binds by cwd
+    }
     await teardownWorktree(t).catch(() => {});
     this.registry.upsertTask({
       ...t,
       status: "failed",
-      error: "dispatch interrupted by a restart - re-dispatch",
+      error: "the agent's session did not survive a restart",
       worktreePath: null,
       branch: null,
       provider: null,

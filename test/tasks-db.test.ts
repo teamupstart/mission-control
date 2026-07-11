@@ -125,6 +125,16 @@ test("the in-memory task map is bounded: terminal tasks are trimmed to the recen
   assert.equal(r.getTask("bulk-0"), undefined, "oldest terminal task is evicted from memory");
 });
 
+test("prune never evicts a failed-but-alive task that still holds a worktree", () => {
+  const r = new Registry();
+  // Oldest by updatedAt, but it holds a live worktree, so it must survive.
+  r.upsertTask(mkTask({ id: "alive-fail", status: "failed", worktreePath: "/wt/alive", updatedAt: 1 }));
+  for (let i = 0; i < 60; i++) {
+    r.upsertTask(mkTask({ id: `done-${i}`, status: "done", updatedAt: 1000 + i }));
+  }
+  assert.ok(r.getTask("alive-fail"), "a failed task with a worktree is never evicted");
+});
+
 test("a queued task (no worktree) never decorates a session", () => {
   const r = new Registry();
   r.upsertTask(mkTask({ id: "tB", status: "queued", worktreePath: null }));

@@ -13,6 +13,7 @@ import type { DiscoveredSession } from "./discovery/correlate.ts";
 import {
   deleteTask as dbDeleteTask,
   loadActiveTasks,
+  loadFailedAliveTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
   logEvent,
@@ -58,6 +59,9 @@ export class Registry extends EventEmitter {
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
+    // Always load failed-but-alive tasks so their live resources get reconciled,
+    // even if newer terminal tasks would push them past the recent cap.
+    for (const t of loadFailedAliveTasks()) this.tasks.set(t.id, t);
   }
 
   snapshot(): { sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] } {
@@ -341,10 +345,15 @@ export class Registry extends EventEmitter {
    * this, every finished task would linger in memory and in every SSE snapshot.
    */
   private pruneTerminalTasks(): void {
-    const terminal = [...this.tasks.values()].filter((t) => isTerminalTask(t.status));
-    if (terminal.length <= RECENT_TERMINAL_TASKS) return;
-    terminal.sort((a, b) => b.updatedAt - a.updatedAt);
-    for (const t of terminal.slice(RECENT_TERMINAL_TASKS)) {
+    // Only evict fully-cleaned terminal tasks. A failed-but-alive task still holds
+    // a worktree + tmux session and decorates its live card, so it must never be
+    // evicted (that would orphan its resources and drop the card's chip).
+    const evictable = [...this.tasks.values()].filter(
+      (t) => isTerminalTask(t.status) && !t.worktreePath,
+    );
+    if (evictable.length <= RECENT_TERMINAL_TASKS) return;
+    evictable.sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const t of evictable.slice(RECENT_TERMINAL_TASKS)) {
       this.tasks.delete(t.id);
       this.emitEvent({ type: "task_remove", id: t.id });
     }

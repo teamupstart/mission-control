@@ -277,7 +277,7 @@ async function spawnUniquely(
   }
 }
 
-async function tmuxSessionAlive(name: string): Promise<boolean> {
+export async function tmuxSessionAlive(name: string): Promise<boolean> {
   return (await run("tmux", ["has-session", "-t", name])).code === 0;
 }
 

@@ -47,7 +47,7 @@ export function ReportPanel({
     const wk: Session[] = [];
     const id: Session[] = [];
     for (const s of sessions) {
-      const b = reportBucket(s);
+      const b = reportBucket(s, sessions);
       if (b === "needs-you") nY.push(s);
       else if (b === "working") wk.push(s);
       else if (b === "idle") id.push(s);
@@ -136,7 +136,7 @@ export function ReportPanel({
         <div className="report-body">
           <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
             {needsYou.map((s) => (
-              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s) ?? "needs you"}>
+              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>
                 {s.pendingReviews > 0 && (
                   <button className="btn" onClick={() => onOpenReviews(s.id)}>
                     Review

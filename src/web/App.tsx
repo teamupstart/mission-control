@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
+import { gateParked } from "@shared/session.ts";
 import { useEventStream } from "./useEventStream.ts";
 import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -58,6 +59,13 @@ export function App(): React.JSX.Element {
   }, [sessions]);
 
   const counts = useMemo(() => summarize(sessions), [sessions]);
+  // Which sessions have a parked no-mistakes gate that actually needs you - a
+  // run being driven by any same-worktree/branch session is left to that agent
+  // (see gateParked). Computed once so each card just reads a boolean.
+  const gateAlerts = useMemo(
+    () => new Set(sessions.filter((s) => gateParked(s, sessions)).map((s) => s.id)),
+    [sessions],
+  );
   const pendingReviews = reviews.filter((r) => r.status === "pending");
 
   // Repo suggestions for the dispatch form: distinct cwds of live sessions. The
@@ -207,6 +215,7 @@ export function App(): React.JSX.Element {
           <SessionCard
             key={s.id}
             session={s}
+            gateNeedsYou={gateAlerts.has(s.id)}
             selected={s.id === selectedId}
             onSelect={() => setSelectedId(s.id)}
             expanded={expandedIds.has(s.id)}

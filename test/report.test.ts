@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildReport, renderReportMarkdown } from "../src/server/report.ts";
-import { reportBucket } from "../src/shared/session.ts";
-import type { Session, SessionState, Task, TaskSummary } from "../src/shared/types.ts";
+import { gateParked, needsYouReason, reportBucket } from "../src/shared/session.ts";
+import type { NmRunSummary, Session, SessionState, Task, TaskSummary } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -117,6 +117,80 @@ test("buildReport buckets sessions the same way the shared helper does", () => {
   assert.equal(r.recent.length, 1);
   assert.equal(r.recent[0]?.id, "d1");
   assert.equal(r.recentTruncated, false);
+});
+
+function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
+  return {
+    status: "running",
+    branch: "feature/x",
+    awaitingAgent: "parked 0s",
+    findingsSummary: "1 awaiting",
+    gateStep: "review",
+    gateSummary: "found 1 issue",
+    gateRisk: "medium",
+    steps: [],
+    findings: [],
+    outcome: null,
+    ...over,
+  };
+}
+
+test("a parked gate only needs you once the agent has stopped driving it", () => {
+  // The /no-mistakes skill answers the gate itself while the session works, so a
+  // gate parked under a working (or presumed-working) agent must NOT nag you.
+  const working = mkSession({ id: "w", state: "working", nomistakes: parkedGate() });
+  const starting = mkSession({ id: "st", state: "starting", nomistakes: parkedGate() });
+  const uninstrumented = mkSession({
+    id: "u",
+    state: "working",
+    instrumented: false,
+    nomistakes: parkedGate(),
+  });
+  const idle = mkSession({ id: "i", state: "idle", nomistakes: parkedGate() });
+
+  assert.equal(gateParked(working), false);
+  assert.equal(gateParked(starting), false);
+  assert.equal(gateParked(uninstrumented), false);
+  assert.equal(gateParked(idle), true);
+
+  assert.equal(reportBucket(working), "working");
+  assert.equal(reportBucket(uninstrumented), "working");
+  assert.equal(reportBucket(idle), "needs-you");
+  assert.equal(needsYouReason(idle), "gate parked at review");
+
+  const r = buildReport({ sessions: [working, starting, uninstrumented, idle], tasks: [] }, 0);
+  assert.deepEqual(
+    r.needsYou.map((i) => i.sessionId),
+    ["i"],
+  );
+  assert.equal(r.counts.needsYou, 1);
+});
+
+test("a parked gate defers to a same-worktree sibling still driving the run", () => {
+  // no-mistakes decorates the one run onto every session sharing its worktree +
+  // branch (sibling terminals in a checkout, or a dispatched crewmate). Three
+  // terminals in /repo on main; one runs /no-mistakes (working), two sit idle.
+  const run = parkedGate({ branch: "main" });
+  const driver = mkSession({ id: "ai1", cwd: "/repo", gitBranch: "main", state: "working", nomistakes: run });
+  const idleA = mkSession({ id: "ai2", cwd: "/repo", gitBranch: "main", state: "idle", nomistakes: run });
+  const idleB = mkSession({ id: "ai3", cwd: "/repo", gitBranch: "main", state: "idle", nomistakes: run });
+  const fleet = [driver, idleA, idleB];
+
+  // The working sibling drives the gate, so no one - not even the idle ones - is nagged.
+  assert.equal(gateParked(idleA, fleet), false);
+  assert.equal(gateParked(idleB, fleet), false);
+  assert.equal(gateParked(driver, fleet), false);
+  assert.equal(buildReport({ sessions: fleet, tasks: [] }, 0).counts.needsYou, 0);
+
+  // A busy session on a *different* branch is a different run - it must not
+  // suppress the parked gate on main.
+  const elsewhere = mkSession({ id: "x", cwd: "/repo", gitBranch: "other", state: "working" });
+  assert.equal(gateParked(idleA, [idleA, elsewhere]), true);
+
+  // Once every same-run session has stopped, the parked gate genuinely needs you.
+  const allIdle = [{ ...driver, state: "idle" as SessionState }, idleA, idleB];
+  assert.equal(gateParked(idleA, allIdle), true);
+  assert.equal(buildReport({ sessions: allIdle, tasks: [] }, 0).counts.needsYou, 3);
 });
 
 test("renderReportMarkdown reflects sections, counts, and outcomes", () => {

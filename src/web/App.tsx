@@ -6,6 +6,9 @@ import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchModal } from "./components/DispatchModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
+import { AlertBar } from "./components/AlertBar.tsx";
+import { useNotifier } from "./useNotifier.ts";
+import { useAlertSettings } from "./lib/alertSettings.ts";
 import { stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then gone.
@@ -19,6 +22,8 @@ const TONE_ORDER: Record<Tone, number> = {
 
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected } = useEventStream();
+  const [alertSettings, updateAlerts] = useAlertSettings();
+  useNotifier({ sessions, tasks }, alertSettings);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -190,6 +195,7 @@ export function App(): React.JSX.Element {
             </button>
           )}
         </div>
+        <AlertBar settings={alertSettings} update={updateAlerts} />
         <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings)">
           Report{backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
         </button>

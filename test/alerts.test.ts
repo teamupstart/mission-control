@@ -1,0 +1,140 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { detectAlerts, digestLine, type Fleet, type AlertSettings } from "../src/web/lib/alerts.ts";
+import type { NmRunSummary, Session, SessionState, Task } from "../src/shared/types.ts";
+
+function mkSession(over: Partial<Session> = {}): Session {
+  return {
+    id: "s",
+    agent: "claude",
+    name: "sess",
+    nameSource: "process",
+    state: "working" as SessionState,
+    cwd: null,
+    gitBranch: null,
+    nomistakesGated: false,
+    pid: 1,
+    tty: null,
+    wezterm: null,
+    tmux: null,
+    agentSessionId: null,
+    instrumented: true,
+    activity: null,
+    startedAt: null,
+    firstSeen: 0,
+    lastSeen: 0,
+    lastActivity: null,
+    pendingReviews: 0,
+    nomistakes: null,
+    task: null,
+    ...over,
+  };
+}
+
+function mkTask(over: Partial<Task> = {}): Task {
+  return {
+    id: "t",
+    title: "T",
+    intent: "do",
+    kind: "ship",
+    agent: "claude",
+    repoRoot: "/repo",
+    worktreePath: null,
+    branch: null,
+    provider: null,
+    tmuxSession: null,
+    sessionId: null,
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    error: null,
+    createdAt: 0,
+    updatedAt: 0,
+    dispatchedAt: null,
+    completedAt: null,
+    ...over,
+  };
+}
+
+const WATCHING: AlertSettings = { notifications: true, sound: true, afk: false, digestMinutes: 15 };
+const AFK: AlertSettings = { ...WATCHING, afk: true };
+const fleet = (sessions: Session[], tasks: Task[] = []): Fleet => ({ sessions, tasks });
+
+test("a session entering awaiting_input alerts once (attention), then stays quiet", () => {
+  const working = mkSession({ id: "a", state: "working" });
+  const waiting = mkSession({ id: "a", state: "awaiting_input" });
+
+  const first = detectAlerts(fleet([working]), fleet([waiting]), WATCHING);
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.kind, "needs-input");
+  assert.equal(first[0]?.severity, "attention");
+  assert.equal(first[0]?.body, "needs input");
+
+  // Same state on the next tick -> no repeat.
+  assert.equal(detectAlerts(fleet([waiting]), fleet([waiting]), WATCHING).length, 0);
+});
+
+test("a new pending review alerts as a review, a parked gate as a gate", () => {
+  const idle = mkSession({ id: "a", state: "idle" });
+  const review = mkSession({ id: "a", state: "idle", pendingReviews: 2 });
+  const r = detectAlerts(fleet([idle]), fleet([review]), WATCHING);
+  assert.equal(r[0]?.kind, "review");
+  assert.equal(r[0]?.body, "2 to review");
+
+  const gate: NmRunSummary = {
+    status: "running",
+    branch: "x",
+    awaitingAgent: "parked 1m",
+    findingsSummary: null,
+    gateStep: "review",
+    gateSummary: null,
+    gateRisk: null,
+    steps: [],
+    findings: [],
+    outcome: null,
+  };
+  const parked = mkSession({ id: "b", state: "working", nomistakes: gate });
+  const g = detectAlerts(fleet([mkSession({ id: "b" })]), fleet([parked]), WATCHING);
+  assert.equal(g[0]?.kind, "gate");
+  assert.match(g[0]?.body ?? "", /gate parked at review/);
+});
+
+test("a task reaching failed alerts (attention) in any mode", () => {
+  const running = mkTask({ id: "t1", status: "running" });
+  const failed = mkTask({ id: "t1", status: "failed", error: "boom" });
+  const r = detectAlerts(fleet([], [running]), fleet([], [failed]), WATCHING);
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "task-failed");
+  assert.equal(r[0]?.body, "boom");
+});
+
+test("idle + task-done alerts are AFK-only", () => {
+  const busy = mkSession({ id: "a", state: "working" });
+  const idle = mkSession({ id: "a", state: "idle" });
+  const running = mkTask({ id: "t1", status: "running" });
+  const done = mkTask({ id: "t1", status: "done", outcome: "shipped" });
+
+  // Watching: neither idle nor done fire.
+  assert.equal(detectAlerts(fleet([busy], [running]), fleet([idle], [done]), WATCHING).length, 0);
+
+  // AFK: both fire (info).
+  const r = detectAlerts(fleet([busy], [running]), fleet([idle], [done]), AFK);
+  const kinds = r.map((a) => a.kind).sort();
+  assert.deepEqual(kinds, ["idle", "task-done"]);
+  assert.ok(r.every((a) => a.severity === "info"));
+});
+
+test("digestLine counts sessions by bucket and includes queued tasks", () => {
+  const line = digestLine(
+    fleet(
+      [
+        mkSession({ id: "1", state: "awaiting_input" }),
+        mkSession({ id: "2", state: "working" }),
+        mkSession({ id: "3", state: "working" }),
+        mkSession({ id: "4", state: "idle" }),
+      ],
+      [mkTask({ id: "q", status: "queued" })],
+    ),
+  );
+  assert.equal(line, "1 need you · 2 working · 1 idle · 1 queued");
+});

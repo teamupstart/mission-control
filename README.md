@@ -229,6 +229,24 @@ done** a running task with its outcome (e.g. "opened PR #123") to close the loop
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
 
+## Alerts & AFK mode
+
+So you don't have to watch the grid, the dashboard can **alert you when the fleet
+needs you**. The daemon already streams every attention event over SSE; the browser
+turns those into a **desktop (Chrome) notification + a short sound** the moment a
+session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
+dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
+watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
+
+Open the **🔔 Alerts** control in the top bar to **Enable desktop alerts** (grants the
+browser Notification permission and unlocks the chime), toggle **Sound**, and flip
+**AFK mode**. AFK also alerts on sessions going idle and tasks finishing, and sends a
+periodic **fleet digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
+the browser; the chime is synthesized with the Web Audio API (no asset, no network).
+Alerts fire on the *transition* into attention (once, not every tick) and de-dupe, so
+a waiting session pings you once. Delivery needs the tab open (foreground or
+background); a closed tab can't receive one.
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)

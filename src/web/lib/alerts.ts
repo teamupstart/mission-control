@@ -132,6 +132,13 @@ export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings):
   return alerts;
 }
 
+/** Compact one-line summary of several alerts, for the reconnect catch-up toast. */
+export function summarizeAlerts(alerts: Alert[]): string {
+  const titles = alerts.map((a) => a.title);
+  const shown = titles.slice(0, 3).join(" · ");
+  return titles.length > 3 ? `${shown} · +${titles.length - 3} more` : shown;
+}
+
 /** The most urgent severity in a batch - an "attention" alert must not be masked. */
 export function batchSeverity(alerts: Alert[]): AlertSeverity {
   return alerts.some((a) => a.severity === "attention") ? "attention" : "info";

@@ -5,6 +5,7 @@ import {
   detectAlerts,
   digestLine,
   hasReportable,
+  summarizeAlerts,
   type Alert,
   type AlertSettings,
   type Fleet,
@@ -150,6 +151,18 @@ test("idle + task-done alerts are AFK-only", () => {
   const kinds = r.map((a) => a.kind).sort();
   assert.deepEqual(kinds, ["idle", "task-done"]);
   assert.ok(r.every((a) => a.severity === "info"));
+});
+
+test("summarizeAlerts lists titles and caps the overflow", () => {
+  const a = (title: string): Alert => ({
+    id: title, kind: "needs-input", title, body: "", sessionId: null, severity: "attention",
+  });
+  assert.equal(summarizeAlerts([a("one")]), "one");
+  assert.equal(summarizeAlerts([a("one"), a("two")]), "one · two");
+  assert.equal(
+    summarizeAlerts([a("one"), a("two"), a("three"), a("four"), a("five")]),
+    "one · two · three · +2 more",
+  );
 });
 
 test("batchSeverity is attention if any alert is attention, else info", () => {

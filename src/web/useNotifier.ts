@@ -1,6 +1,12 @@
 import { useEffect, useRef } from "react";
 import type { AlertSettings, Fleet } from "./lib/alerts.ts";
-import { batchSeverity, detectAlerts, digestLine, hasReportable } from "./lib/alerts.ts";
+import {
+  batchSeverity,
+  detectAlerts,
+  digestLine,
+  hasReportable,
+  summarizeAlerts,
+} from "./lib/alerts.ts";
 import { playChime } from "./lib/chime.ts";
 
 function canNotify(): boolean {
@@ -30,9 +36,9 @@ function notify(title: string, body: string, tag: string): void {
  *
  * `ready` (the SSE snapshot has landed) gates alerting. `useEventStream` returns
  * empty state on the first render and drops `ready` on disconnect, re-raising it on
- * each (re)connect snapshot. We baseline off the fleet at every ready false->true
- * edge and alert only on later changes - so neither opening the dashboard nor a
- * reconnect after sleep/wake storms for everything that was already/gap-waiting.
+ * each (re)connect snapshot. On INITIAL open we baseline silently; on RECONNECT we
+ * neither storm (one alert per gap change) nor swallow (miss what happened while
+ * away) - we coalesce the attention events missed during the gap into one catch-up.
  */
 export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolean): void {
   const prevRef = useRef<Fleet | null>(null);
@@ -43,11 +49,28 @@ export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolea
   useEffect(() => {
     const justConnected = ready && !wasReadyRef.current;
     wasReadyRef.current = ready;
-    // Not connected, or the (re)connect snapshot just arrived: (re)baseline, no alert.
-    if (!ready || justConnected) {
+
+    if (!ready) {
       prevRef.current = fleet;
       return;
     }
+
+    if (justConnected) {
+      const prev = prevRef.current;
+      prevRef.current = fleet;
+      // Initial open: no prior baseline, so nothing was "missed" - seed silently.
+      if (!prev) return;
+      // Reconnect: summarize the attention-level events that happened during the
+      // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
+      const missed = detectAlerts(prev, fleet, settings).filter((a) => a.severity === "attention");
+      if (missed.length === 0) return;
+      if (settings.notifications && canNotify()) {
+        notify("While you were away", summarizeAlerts(missed), "reconnect-catchup");
+      }
+      if (settings.sound) playChime("attention");
+      return;
+    }
+
     const prev = prevRef.current ?? fleet;
     prevRef.current = fleet;
 

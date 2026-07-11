@@ -2,12 +2,21 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DB_PATH } from "./config.ts";
-import type { ReviewItem, ReviewKind, ReviewStatus } from "@shared/types.ts";
+import type {
+  ReviewItem,
+  ReviewKind,
+  ReviewStatus,
+  Task,
+  TaskKind,
+  TaskStatus,
+  WorktreeProvider,
+} from "@shared/types.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
- * from the OS on every poll, so the only things worth surviving a restart are
- * review items (a human decision may be pending) and the session event log.
+ * from the OS on every poll. What survives a restart is state the OS can't rebuild:
+ * pending review items (a human decision may be waiting), dispatched tasks (their
+ * backlog, running intent, and recent outcomes), and the session event log.
  */
 let db: DatabaseSync;
 
@@ -39,6 +48,30 @@ export function openDb(): DatabaseSync {
       payload    TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, ts);
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id            TEXT PRIMARY KEY,
+      title         TEXT NOT NULL,
+      intent        TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      agent         TEXT NOT NULL,
+      repo_root     TEXT NOT NULL,
+      worktree_path TEXT,
+      branch        TEXT,
+      provider      TEXT,
+      tmux_session  TEXT,
+      session_id    TEXT,
+      status        TEXT NOT NULL,
+      outcome       TEXT,
+      outcome_url   TEXT,
+      error         TEXT,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      dispatched_at INTEGER,
+      completed_at  INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_tasks_worktree ON tasks(worktree_path);
   `);
   return db;
 }
@@ -101,4 +134,133 @@ export function logEvent(sessionId: string, ts: number, kind: string, payload: u
   openDb()
     .prepare(`INSERT INTO session_events (session_id, ts, kind, payload) VALUES (?, ?, ?, ?)`)
     .run(sessionId, ts, kind, payload === undefined ? null : JSON.stringify(payload));
+}
+
+// ---- tasks ----
+
+interface TaskRow {
+  id: string;
+  title: string;
+  intent: string;
+  kind: string;
+  agent: string;
+  repo_root: string;
+  worktree_path: string | null;
+  branch: string | null;
+  provider: string | null;
+  tmux_session: string | null;
+  session_id: string | null;
+  status: string;
+  outcome: string | null;
+  outcome_url: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  dispatched_at: number | null;
+  completed_at: number | null;
+}
+
+function rowToTask(r: TaskRow): Task {
+  return {
+    id: r.id,
+    title: r.title,
+    intent: r.intent,
+    kind: r.kind as TaskKind,
+    agent: r.agent as Task["agent"],
+    repoRoot: r.repo_root,
+    worktreePath: r.worktree_path,
+    branch: r.branch,
+    provider: r.provider as WorktreeProvider | null,
+    tmuxSession: r.tmux_session,
+    sessionId: r.session_id,
+    status: r.status as TaskStatus,
+    outcome: r.outcome,
+    outcomeUrl: r.outcome_url,
+    error: r.error,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    dispatchedAt: r.dispatched_at,
+    completedAt: r.completed_at,
+  };
+}
+
+export function upsertTask(t: Task): void {
+  openDb()
+    .prepare(
+      `INSERT INTO tasks (
+         id, title, intent, kind, agent, repo_root, worktree_path, branch, provider, tmux_session,
+         session_id, status, outcome, outcome_url, error, created_at, updated_at,
+         dispatched_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
+         repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
+         provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
+         status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
+         error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
+         completed_at=excluded.completed_at`,
+    )
+    .run(
+      t.id, t.title, t.intent, t.kind, t.agent, t.repoRoot, t.worktreePath, t.branch, t.provider,
+      t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.updatedAt, t.dispatchedAt, t.completedAt,
+    );
+}
+
+export function getTask(id: string): Task | undefined {
+  const r = openDb().prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as unknown as
+    | TaskRow
+    | undefined;
+  return r ? rowToTask(r) : undefined;
+}
+
+export function deleteTask(id: string): void {
+  openDb().prepare(`DELETE FROM tasks WHERE id = ?`).run(id);
+}
+
+export function listTasks(): Task[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM tasks ORDER BY created_at DESC`)
+    .all() as unknown as TaskRow[];
+  return rows.map(rowToTask);
+}
+
+/** Tasks still in flight (queued/dispatching/running) - reloaded into the registry on start. */
+export function loadActiveTasks(): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE status IN ('queued','dispatching','running') ORDER BY created_at ASC`,
+    )
+    .all() as unknown as TaskRow[];
+  return rows.map(rowToTask);
+}
+
+/**
+ * The most recent terminal tasks (done/failed/cancelled), so the fleet report's
+ * "recent outcomes" survives a daemon restart instead of vanishing even though
+ * the row is still stored. Bounded so a long-lived history doesn't bloat memory.
+ */
+export function loadRecentTerminalTasks(limit: number): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE status IN ('done','failed','cancelled')
+       ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(limit) as unknown as TaskRow[];
+  return rows.map(rowToTask);
+}
+
+/**
+ * Terminal tasks that still hold a worktree (a `done` task awaiting reclaim, or a
+ * failed-but-alive dispatch). Loaded regardless of the recent cap so their live
+ * resources are always reconciled on start rather than orphaned once newer terminal
+ * tasks push them past the cap.
+ */
+export function loadResourceHoldingTerminalTasks(): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE status IN ('done','failed') AND worktree_path IS NOT NULL`,
+    )
+    .all() as unknown as TaskRow[];
+  return rows.map(rowToTask);
 }

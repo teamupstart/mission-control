@@ -3,19 +3,33 @@ export interface ActionResult {
   error?: string;
 }
 
-async function post(path: string, body?: unknown): Promise<ActionResult> {
+async function request(method: string, path: string, body?: unknown): Promise<ActionResult> {
   try {
     const res = await fetch(path, {
-      method: "POST",
+      method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = (await res.json().catch(() => ({}))) as ActionResult;
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
-    return data;
+    // Task endpoints return the Task object (no `ok` field); a 2xx is success.
+    // Errors always arrive as a non-2xx (handled above), so this can't mask one.
+    return { ...data, ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+const post = (path: string, body?: unknown) => request("POST", path, body);
+const del = (path: string) => request("DELETE", path);
+
+export interface DispatchInput {
+  repoRoot: string;
+  intent: string;
+  title?: string;
+  kind: "ship" | "scout";
+  agent: "claude" | "codex";
+  queue?: boolean;
 }
 
 export const api = {
@@ -30,4 +44,13 @@ export const api = {
     action: "approve" | "fix" | "skip",
     opts: { findings?: string[]; instructions?: string } = {},
   ) => post(`/api/sessions/${encodeURIComponent(id)}/nomistakes/respond`, { action, ...opts }),
+
+  // --- dispatch (crewmates) ---
+  dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
+  dispatchQueued: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
+  cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
+  reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
+  completeTask: (id: string, outcome: string, outcomeUrl?: string) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/complete`, { outcome, outcomeUrl }),
+  deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
 };

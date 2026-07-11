@@ -19,6 +19,11 @@ and get your decision back.
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
+- **Dispatches** new agents: pick a repo, describe a task, and it launches an
+  agent in its own isolated worktree + detached tmux session (or queues it in a
+  backlog for later).
+- **Reports** the fleet's bearings: who needs you, who's working, what's idle,
+  the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 
 ## Quick start
 
@@ -70,8 +75,8 @@ Three layers, most-to-least automatic:
 One long-lived **daemon** (`src/server`) serves the React SPA (`src/web`) plus a
 JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps
 `ps` + `wezterm cli list` + `tmux list-panes` and reconciles an in-memory
-registry that broadcasts changes over SSE. Reviews are persisted in SQLite
-(`node:sqlite`).
+registry that broadcasts changes over SSE. Reviews and dispatched tasks are
+persisted in SQLite (`node:sqlite`).
 
 ### Precise status (Claude hooks)
 
@@ -193,6 +198,37 @@ launches. It exposes four tools:
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
 
+## Dispatch a crewmate
+
+The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
+Dispatch**, pick a repo, describe the task, and the daemon:
+
+1. provisions an **isolated worktree** for the task (a pooled
+   [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
+   else a plain `git worktree` on a fresh `harness/…` branch - so a crewmate never shares
+   a working tree with another session),
+2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there, and
+3. injects your task as its first prompt once passive discovery binds the session.
+
+The new session then shows up on the grid like any other, with an **intent chip** naming
+what it's working on. It's headless until you want it - click **Focus** on the card to open
+it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a task without
+launching it yet.
+
+Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
+persisted in SQLite, so the backlog and a running crew's intent survive a daemon restart.
+Set `HARNESS_CLAUDE_BIN` / `HARNESS_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
+
+## Fleet report (bearings)
+
+Click **Report** for a one-look snapshot of the whole fleet, assembled from the same live
+data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
+gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
+and **recent outcomes**. Dispatch a queued task or drop it right from the panel, and **Mark
+done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
+markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
+/api/report`).
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)
@@ -253,9 +289,13 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `HARNESS_PORT` | `7317` | daemon / dashboard port |
-| `HARNESS_HOME` | `~/.ai-harness` | state dir (db, token, logs) |
+| `HARNESS_HOME` | `~/.ai-harness` | state dir (db, token, logs, dispatch worktrees) |
 | `HARNESS_POLL_MS` | `1500` | discovery interval |
 | `HARNESS_NM_POLL_MS` | `5000` | no-mistakes status interval |
+| `HARNESS_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
+| `HARNESS_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
+| `HARNESS_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |
+| `HARNESS_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 
@@ -267,7 +307,7 @@ make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)
@@ -275,6 +315,10 @@ npm run install-service# LaunchAgent (macOS)
 
 ## Security
 
-The daemon binds to loopback only. Hook and MCP ingress is authenticated with a
-per-machine token in `~/.ai-harness/token` so other local processes can't spoof
-session state. Session actions (send / focus / kill) are localhost-only.
+The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)
+additionally requires a loopback `Host` header so a web page you visit can't reach
+it via DNS-rebinding - a defense that matters now that dispatch can launch agents
+(effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
+and MCP ingress is authenticated with a per-machine token in `~/.ai-harness/token`
+so other local processes can't spoof session or task state. Session and task
+actions (send / focus / kill, dispatch / cancel / complete) are localhost-only.

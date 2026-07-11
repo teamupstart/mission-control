@@ -7,6 +7,7 @@ import { openDb } from "./db.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
 import { ReviewManager } from "./reviews.ts";
+import { TaskManager } from "./tasks.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { buildApp } from "./routes.ts";
@@ -15,10 +16,11 @@ openDb();
 ensureToken();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
+const tasks = new TaskManager(registry);
 const stopPoller = startPoller(registry);
 const stopNomistakes = startNomistakesPoller(registry);
 
-const app = buildApp(registry, reviews);
+const app = buildApp(registry, reviews, tasks);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

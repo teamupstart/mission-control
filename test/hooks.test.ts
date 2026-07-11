@@ -52,6 +52,7 @@ test("sessionKey matches a session's own pane, tmux preferred", () => {
     lastActivity: null,
     pendingReviews: 0,
     nomistakes: null,
+    task: null,
   };
   assert.equal(sessionKey(base), "tmux:%3");
   assert.equal(sessionKey({ ...base, tmux: null }), "wez:7");

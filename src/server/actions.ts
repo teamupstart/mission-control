@@ -49,6 +49,39 @@ export async function sendText(
   return { ok: false, error: "session has no tmux or wezterm handle to send to" };
 }
 
+/**
+ * Deliver a whole prompt (possibly multi-line) into a session's input as a single
+ * submission. Unlike `sendText`, newlines here must NOT each submit - so we send
+ * the body via bracketed paste (tmux `paste-buffer -p` / wezterm's default paste),
+ * which agent TUIs treat as one pasted block, then press Enter once to submit.
+ * Used by dispatch to seed a crewmate's first task.
+ */
+export async function injectPrompt(session: Session, text: string): Promise<ActionResult> {
+  if (session.tmux) {
+    const target = session.tmux.paneId;
+    const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
+    const set = await run("tmux", ["set-buffer", "-b", buf, "--", text]);
+    if (set.code !== 0) return { ok: false, error: set.stderr.trim() || "tmux set-buffer failed" };
+    // -p: bracketed paste (so embedded newlines don't submit); -d: drop the buffer after.
+    const paste = await run("tmux", ["paste-buffer", "-p", "-d", "-b", buf, "-t", target]);
+    if (paste.code !== 0) return { ok: false, error: paste.stderr.trim() || "tmux paste-buffer failed" };
+    const enter = await run("tmux", ["send-keys", "-t", target, "Enter"]);
+    if (enter.code !== 0) return { ok: false, error: enter.stderr.trim() || "tmux Enter failed" };
+    return { ok: true };
+  }
+  if (session.wezterm) {
+    const bin = resolveWeztermBin();
+    const id = String(session.wezterm.paneId);
+    // Omitting --no-paste makes wezterm send the text as a bracketed paste.
+    const r1 = await run(bin, ["cli", "send-text", "--pane-id", id, text]);
+    if (r1.code !== 0) return { ok: false, error: r1.stderr.trim() || "wezterm send-text failed" };
+    const r2 = await run(bin, ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"]);
+    if (r2.code !== 0) return { ok: false, error: r2.stderr.trim() || "wezterm Enter failed" };
+    return { ok: true };
+  }
+  return { ok: false, error: "session has no tmux or wezterm handle to send to" };
+}
+
 /** Bring the session's pane/tab into focus. */
 export async function focus(session: Session): Promise<ActionResult> {
   if (session.wezterm) {

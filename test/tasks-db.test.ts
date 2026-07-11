@@ -1,0 +1,144 @@
+import { test, after } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Task } from "../src/shared/types.ts";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+
+// Point the daemon's state dir at a throwaway home BEFORE anything reads config,
+// so this test never touches the real ~/.ai-harness db. config.ts resolves
+// HARNESS_HOME at module load, so db/registry must be imported dynamically after.
+const home = mkdtempSync(join(tmpdir(), "harness-db-"));
+process.env.HARNESS_HOME = home;
+const { openDb, upsertTask, getTask, listTasks, loadActiveTasks, loadRecentTerminalTasks, deleteTask } =
+  await import("../src/server/db.ts");
+const { Registry } = await import("../src/server/registry.ts");
+
+after(() => rmSync(home, { recursive: true, force: true }));
+
+function mkTask(over: Partial<Task> = {}): Task {
+  const now = 1000;
+  return {
+    id: "t1",
+    title: "T",
+    intent: "do the thing",
+    kind: "ship",
+    agent: "claude",
+    repoRoot: "/repo",
+    worktreePath: null,
+    branch: null,
+    provider: null,
+    tmuxSession: null,
+    sessionId: null,
+    status: "queued",
+    outcome: null,
+    outcomeUrl: null,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    dispatchedAt: null,
+    completedAt: null,
+    ...over,
+  };
+}
+
+function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
+  return {
+    syntheticId: "sid",
+    agent: "claude",
+    name: "n",
+    nameSource: "process",
+    cwd: "/wt/a",
+    gitBranch: null,
+    nomistakesGated: false,
+    pid: 1,
+    tty: "ttys1",
+    wezterm: null,
+    tmux: null,
+    startedAt: 0,
+    ...over,
+  };
+}
+
+test("task round-trips and upsert updates in place (no duplicate row)", () => {
+  openDb();
+  upsertTask(mkTask());
+  assert.equal(getTask("t1")?.status, "queued");
+
+  upsertTask(mkTask({ status: "running", worktreePath: "/wt", sessionId: "s1", updatedAt: 2000 }));
+  assert.equal(getTask("t1")?.status, "running");
+  assert.equal(getTask("t1")?.worktreePath, "/wt");
+  assert.equal(listTasks().length, 1);
+});
+
+test("loadActiveTasks keeps queued/dispatching/running, drops terminal states", () => {
+  upsertTask(mkTask({ id: "t2", status: "done" }));
+  upsertTask(mkTask({ id: "t3", status: "running" }));
+  upsertTask(mkTask({ id: "t4", status: "cancelled" }));
+  const active = loadActiveTasks().map((t) => t.id);
+  assert.ok(active.includes("t3"));
+  assert.ok(!active.includes("t2"));
+  assert.ok(!active.includes("t4"));
+});
+
+test("loadRecentTerminalTasks returns finished tasks newest-first, bounded", () => {
+  upsertTask(mkTask({ id: "done-old", status: "done", updatedAt: 10 }));
+  upsertTask(mkTask({ id: "done-new", status: "done", updatedAt: 9000 }));
+  const recent = loadRecentTerminalTasks(1);
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0]?.id, "done-new"); // most recent by updated_at
+});
+
+test("a finished task rehydrates into a fresh Registry (recent outcomes survive restart)", () => {
+  upsertTask(mkTask({ id: "tDone", status: "done", outcome: "shipped", updatedAt: 5000 }));
+  const r = new Registry();
+  assert.ok(r.snapshot().tasks.some((t) => t.id === "tDone"));
+});
+
+test("deleteTask removes the row", () => {
+  deleteTask("t3");
+  assert.equal(getTask("t3"), undefined);
+});
+
+test("a session gets its task summary when cwd matches an active task's worktree", () => {
+  const r = new Registry();
+  r.upsertTask(mkTask({ id: "tA", status: "running", worktreePath: "/wt/a", title: "Wire it up" }));
+  r.applyDiscovery([mkDiscovered({ cwd: "/wt/a" })]);
+  const s = r.snapshot().sessions.find((x) => x.cwd === "/wt/a");
+  assert.equal(s?.task?.id, "tA");
+  assert.equal(s?.task?.title, "Wire it up");
+  assert.equal(s?.task?.status, "running");
+});
+
+test("the in-memory task map is bounded: terminal tasks are trimmed to the recent cap", () => {
+  const r = new Registry();
+  // Insert well over the 50-task cap of finished tasks, newest updated_at last.
+  for (let i = 0; i < 60; i++) {
+    r.upsertTask(mkTask({ id: `bulk-${i}`, status: "done", updatedAt: 100000 + i }));
+  }
+  const terminal = r
+    .snapshot()
+    .tasks.filter((t) => t.status === "done" || t.status === "failed" || t.status === "cancelled");
+  assert.ok(terminal.length <= 50, `expected <= 50 terminal tasks in memory, got ${terminal.length}`);
+  assert.ok(r.getTask("bulk-59"), "newest terminal task is kept");
+  assert.equal(r.getTask("bulk-0"), undefined, "oldest terminal task is evicted from memory");
+});
+
+test("prune never evicts a failed-but-alive task that still holds a worktree", () => {
+  const r = new Registry();
+  // Oldest by updatedAt, but it holds a live worktree, so it must survive.
+  r.upsertTask(mkTask({ id: "alive-fail", status: "failed", worktreePath: "/wt/alive", updatedAt: 1 }));
+  for (let i = 0; i < 60; i++) {
+    r.upsertTask(mkTask({ id: `done-${i}`, status: "done", updatedAt: 1000 + i }));
+  }
+  assert.ok(r.getTask("alive-fail"), "a failed task with a worktree is never evicted");
+});
+
+test("a queued task (no worktree) never decorates a session", () => {
+  const r = new Registry();
+  r.upsertTask(mkTask({ id: "tB", status: "queued", worktreePath: null }));
+  r.applyDiscovery([mkDiscovered({ cwd: "/some/other/dir" })]);
+  const s = r.snapshot().sessions.find((x) => x.cwd === "/some/other/dir");
+  assert.equal(s?.task, null);
+});

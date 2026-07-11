@@ -1,6 +1,9 @@
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import {
+  CompleteTaskSchema,
   CreateReviewSchema,
+  DispatchSchema,
   HookIngestSchema,
   NomistakesRespondSchema,
   ResolveReviewSchema,
@@ -9,12 +12,15 @@ import {
 } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
 import type { ReviewManager } from "./reviews.ts";
+import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { transcriptStreamHandler } from "./transcript.ts";
 import { checkToken } from "./auth.ts";
 import { focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
-import { readFileSync } from "node:fs";
+import { buildReport, renderReportMarkdown } from "./report.ts";
+import { run } from "./util/exec.ts";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
@@ -32,14 +38,32 @@ function readVersion(): string {
   }
 }
 
-export function buildApp(registry: Registry, reviews: ReviewManager): Hono {
+export function buildApp(registry: Registry, reviews: ReviewManager, tasks: TaskManager): Hono {
   const app = new Hono();
+
+  // The daemon binds to loopback, but that alone doesn't stop a web page the user
+  // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
+  // Host but the rebound request still hits 127.0.0.1). Writes would be RCE; reads
+  // leak task prompts, repo paths, and transcripts. Require a loopback Host on every
+  // data endpoint - the same-origin UI and Vite's changeOrigin proxy both qualify,
+  // but a rebound cross-site request can't forge it.
+  const requireLoopback: MiddlewareHandler = async (c, next) => {
+    if (!hostIsLoopback(c.req.header("host"))) return c.json({ error: "forbidden" }, 403);
+    await next();
+  };
+  app.use("/api/*", requireLoopback);
+  app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "ai-harness", version: VERSION, pid: process.pid }),
   );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
+  app.get("/api/tasks", (c) => c.json(tasks.list()));
+  // Fleet report (/bearings): a projection of the live snapshot, as JSON or a
+  // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
+  app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
+  app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
   app.get("/events", sseHandler(registry));
   // Live transcript for the expanded card (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
@@ -129,5 +153,66 @@ export function buildApp(registry: Registry, reviews: ReviewManager): Hono {
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  // --- dispatch: launch/queue crewmates (localhost only) ---
+  app.post("/api/tasks", async (c) => {
+    const parsed = DispatchSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const repoRoot = await resolveRepoRoot(parsed.data.repoRoot);
+    if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.repoRoot}` }, 400);
+    const task = tasks.create({ ...parsed.data, repoRoot });
+    return c.json(task);
+  });
+
+  app.post("/api/tasks/:id/dispatch", (c) => {
+    const t = tasks.dispatch(c.req.param("id"));
+    if (!t) return c.json({ error: "no such task" }, 404);
+    return c.json(t);
+  });
+
+  app.post("/api/tasks/:id/cancel", async (c) => {
+    const r = await tasks.cancel(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : 404);
+  });
+
+  // Free a terminal task's leftover worktree/agent, keeping its status + outcome.
+  app.post("/api/tasks/:id/reclaim", async (c) => {
+    const r = await tasks.reclaim(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : 404);
+  });
+
+  app.post("/api/tasks/:id/complete", async (c) => {
+    const parsed = CompleteTaskSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const t = await tasks.complete(c.req.param("id"), parsed.data.outcome, parsed.data.outcomeUrl);
+    if (!t) return c.json({ error: "no such task" }, 404);
+    return c.json(t);
+  });
+
+  app.delete("/api/tasks/:id", async (c) => {
+    const r = await tasks.remove(c.req.param("id"));
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
+  });
+
   return app;
+}
+
+/** True when the Host header names a loopback address (defeats DNS-rebinding). */
+export function hostIsLoopback(host: string | undefined): boolean {
+  if (!host) return false;
+  // Strip a trailing :port and any [] IPv6 brackets, then match loopback names.
+  const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
+  return h === "127.0.0.1" || h === "localhost" || h === "::1";
+}
+
+/** Validate a dispatch target is a git repo and return its realpath top-level. */
+async function resolveRepoRoot(p: string): Promise<string | null> {
+  if (!existsSync(p)) return null;
+  const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
+  const top = r.stdout.trim();
+  if (r.code !== 0 || !top) return null;
+  try {
+    return realpathSync(top);
+  } catch {
+    return top;
+  }
 }

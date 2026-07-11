@@ -13,12 +13,13 @@ import { useNotifier } from "./useNotifier.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { stateDisplay, type Tone } from "./lib/format.ts";
 
-// Sort priority: things needing you first, then busy, then calm, then gone.
+// Sort priority: things needing you first, then busy, then calm, then
+// unconfirmed (uninstrumented "running"), then gone.
 const TONE_ORDER: Record<Tone, number> = {
   attention: 0,
   working: 1,
-  neutral: 2,
-  idle: 3,
+  idle: 2,
+  neutral: 3,
   exited: 4,
 };
 

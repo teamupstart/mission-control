@@ -1,0 +1,52 @@
+name: CI
+
+# Exercises the repository's quality gates - typecheck, unit tests, and build -
+# on every push to main and every pull request. Mirrors `make check` (typecheck +
+# tests) plus a production build so a broken bundle can't merge unnoticed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref so a fresh push doesn't queue behind stale work.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # >=24 is required (node:sqlite is used unflagged from Node 24). 24 is the
+        # supported floor; 25 matches the current dev environment.
+        node-version: ['24', '25']
+
+    name: check (node ${{ matrix.node-version }})
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build

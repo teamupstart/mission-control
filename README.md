@@ -24,6 +24,10 @@ and get your decision back.
   backlog for later).
 - **Reports** the fleet's bearings: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
+- **Alerts** you when the fleet needs you: a desktop notification + sound the
+  moment a session needs input, a review lands, a no-mistakes gate parks, or a
+  dispatched task fails - with an **AFK mode** that also pings on idle sessions and
+  finished tasks and sends periodic fleet digests.
 
 ## Quick start
 
@@ -229,6 +233,24 @@ done** a running task with its outcome (e.g. "opened PR #123") to close the loop
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
 
+## Alerts & AFK mode
+
+So you don't have to watch the grid, the dashboard can **alert you when the fleet
+needs you**. The daemon already streams every attention event over SSE; the browser
+turns those into a **desktop (Chrome) notification + a short sound** the moment a
+session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
+dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
+watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
+
+Open the **🔔 Alerts** control in the top bar to **Enable desktop alerts** (grants the
+browser Notification permission and unlocks the chime), toggle **Sound**, and flip
+**AFK mode**. AFK also alerts on sessions going idle and tasks finishing, and sends a
+periodic **fleet digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
+the browser; the chime is synthesized with the Web Audio API (no asset, no network).
+Alerts fire on the *transition* into attention (once, not every tick) and de-dupe, so
+a waiting session pings you once. Delivery needs the tab open (foreground or
+background); a closed tab can't receive one.
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)
@@ -312,7 +334,7 @@ make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

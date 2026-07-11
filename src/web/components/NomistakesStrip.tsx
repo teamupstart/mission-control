@@ -14,7 +14,10 @@ const STEP_TONE: Record<string, string> = {
 
 /**
  * Compact surface of a no-mistakes run for a gated repo: the pipeline as status
- * dots, the gate it's parked at, and the findings.
+ * dots, the active stage and findings summary while it runs, a live narration of
+ * what the skill is doing now (from the session's transcript), the gate it's
+ * parked at, and the findings. The active-stage, summary, and narration lines
+ * hide while parked.
  *
  * A parked gate is `awaiting_agent` - the run is waiting on the agent's
  * `axi respond`, which the `/no-mistakes` skill issues autonomously. So we only

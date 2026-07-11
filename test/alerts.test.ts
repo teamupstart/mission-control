@@ -23,6 +23,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: null,
     gitBranch: null,
     nomistakesGated: false,
+    nomistakesNarration: null,
     pid: 1,
     tty: null,
     wezterm: null,
@@ -103,7 +104,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
     findings: [],
     outcome: null,
   };
-  const parked = mkSession({ id: "b", state: "working", nomistakes: gate });
+  const parked = mkSession({ id: "b", state: "idle", nomistakes: gate });
   const g = detectAlerts(fleet([mkSession({ id: "b" })]), fleet([parked]), WATCHING);
   assert.equal(g[0]?.kind, "gate");
   assert.match(g[0]?.body ?? "", /gate parked at review/);

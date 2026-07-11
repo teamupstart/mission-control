@@ -42,6 +42,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     repoRoot: "/repo",
     worktreePath: null,
     branch: null,
+    provider: null,
     tmuxSession: null,
     sessionId: null,
     status: "queued",

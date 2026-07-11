@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentType, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
-import { Dispatcher, deriveTitle } from "./dispatcher.ts";
+import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
 import { kill } from "./actions.ts";
 import { run } from "./util/exec.ts";
 
@@ -58,6 +58,7 @@ export class TaskManager {
       repoRoot: input.repoRoot,
       worktreePath: null,
       branch: null,
+      provider: null,
       tmuxSession: null,
       sessionId: null,
       status: input.queue ? "queued" : "dispatching",
@@ -93,13 +94,16 @@ export class TaskManager {
       const s = this.registry.getSession(t.sessionId);
       if (s) kill(s);
     }
-    if (t.tmuxSession) {
+    if (removeWorktree) {
+      // teardownWorktree also kills the tmux session and returns/removes the tree.
+      await teardownWorktree(t);
+    } else if (t.tmuxSession) {
       await run("tmux", ["kill-session", "-t", t.tmuxSession], { timeoutMs: 10000 });
     }
-    if (removeWorktree && t.worktreePath) await this.cleanupWorktree(t);
 
     const now = Date.now();
-    this.registry.upsertTask({ ...t, status: "cancelled", completedAt: now, updatedAt: now });
+    const kept = removeWorktree ? { worktreePath: null, branch: null, provider: null, tmuxSession: null } : {};
+    this.registry.upsertTask({ ...t, ...kept, status: "cancelled", completedAt: now, updatedAt: now });
     return { ok: true };
   }
 
@@ -129,32 +133,26 @@ export class TaskManager {
     return { ok: true };
   }
 
-  /** Best-effort worktree teardown: try git first, then hand a treehouse lease back. */
-  private async cleanupWorktree(t: Task): Promise<void> {
-    if (!t.worktreePath) return;
-    const g = await run("git", ["-C", t.repoRoot, "worktree", "remove", "--force", t.worktreePath], {
-      timeoutMs: 30000,
-    });
-    if (g.code !== 0) await run("treehouse", ["return", t.worktreePath], { timeoutMs: 30000 });
-  }
-
   /**
-   * Reconcile a task left in `dispatching` across a restart: if its tmux session
-   * is alive, resume the wait+bind; otherwise the launch is gone, so fail it.
+   * Reconcile a task left in `dispatching` by a restart. A task only stays
+   * `dispatching` because the initial prompt hadn't been delivered yet (status
+   * flips to `running` immediately after send succeeds), so any tmux session that
+   * survived is an agent sitting at an empty prompt - it would never do the task.
+   * Don't fake a live crewmate: tear the orphan down and fail it so it can be
+   * re-dispatched cleanly.
    */
   private async reconcileDispatching(t: Task): Promise<void> {
-    if (!t.tmuxSession || !t.worktreePath) {
-      this.registry.upsertTask({ ...t, status: "failed", error: "dispatch interrupted by a restart", updatedAt: Date.now() });
-      return;
-    }
-    const ls = await run("tmux", ["has-session", "-t", t.tmuxSession], { timeoutMs: 10000 });
-    if (ls.code !== 0) {
-      this.registry.upsertTask({ ...t, status: "failed", error: "session gone after restart", updatedAt: Date.now() });
-      return;
-    }
-    // Session still up: rebind when discovery re-observes it. Mark running; the
-    // initial prompt was already delivered before the restart.
-    const s = this.registry.getSession(t.sessionId ?? "") ?? null;
-    this.registry.upsertTask({ ...t, status: "running", sessionId: s?.id ?? t.sessionId, updatedAt: Date.now() });
+    await teardownWorktree(t).catch(() => {});
+    this.registry.upsertTask({
+      ...t,
+      status: "failed",
+      error: "dispatch interrupted by a restart - re-dispatch",
+      worktreePath: null,
+      branch: null,
+      provider: null,
+      tmuxSession: null,
+      sessionId: null,
+      updatedAt: Date.now(),
+    });
   }
 }

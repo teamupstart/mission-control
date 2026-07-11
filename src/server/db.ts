@@ -9,6 +9,7 @@ import type {
   Task,
   TaskKind,
   TaskStatus,
+  WorktreeProvider,
 } from "@shared/types.ts";
 
 /**
@@ -56,6 +57,7 @@ export function openDb(): DatabaseSync {
       repo_root     TEXT NOT NULL,
       worktree_path TEXT,
       branch        TEXT,
+      provider      TEXT,
       tmux_session  TEXT,
       session_id    TEXT,
       status        TEXT NOT NULL,
@@ -144,6 +146,7 @@ interface TaskRow {
   repo_root: string;
   worktree_path: string | null;
   branch: string | null;
+  provider: string | null;
   tmux_session: string | null;
   session_id: string | null;
   status: string;
@@ -166,6 +169,7 @@ function rowToTask(r: TaskRow): Task {
     repoRoot: r.repo_root,
     worktreePath: r.worktree_path,
     branch: r.branch,
+    provider: r.provider as WorktreeProvider | null,
     tmuxSession: r.tmux_session,
     sessionId: r.session_id,
     status: r.status as TaskStatus,
@@ -183,22 +187,22 @@ export function upsertTask(t: Task): void {
   openDb()
     .prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, repo_root, worktree_path, branch, tmux_session,
+         id, title, intent, kind, agent, repo_root, worktree_path, branch, provider, tmux_session,
          session_id, status, outcome, outcome_url, error, created_at, updated_at,
          dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
-         tmux_session=excluded.tmux_session, session_id=excluded.session_id, status=excluded.status,
-         outcome=excluded.outcome, outcome_url=excluded.outcome_url, error=excluded.error,
-         updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
+         provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
+         status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
+         error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
     )
     .run(
-      t.id, t.title, t.intent, t.kind, t.agent, t.repoRoot, t.worktreePath, t.branch, t.tmuxSession,
-      t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt, t.updatedAt,
-      t.dispatchedAt, t.completedAt,
+      t.id, t.title, t.intent, t.kind, t.agent, t.repoRoot, t.worktreePath, t.branch, t.provider,
+      t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
+      t.updatedAt, t.dispatchedAt, t.completedAt,
     );
 }
 

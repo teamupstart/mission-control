@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { Task } from "@shared/types.ts";
+import type { Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin } from "./config.ts";
 import { sendText } from "./actions.ts";
 import type { Registry } from "./registry.ts";
@@ -41,6 +41,7 @@ export class Dispatcher {
       task = this.patch(task, {
         worktreePath: wt.path,
         branch: wt.branch,
+        provider: wt.provider,
         tmuxSession,
       });
 
@@ -57,7 +58,20 @@ export class Dispatcher {
 
       this.patch(task, { status: "running", sessionId: session.id });
     } catch (err) {
-      this.patch(task, { status: "failed", error: err instanceof Error ? err.message : String(err) });
+      // A partial dispatch may have already spawned the agent + worktree. Tear
+      // that orphan down and clear the worktree fields so a retry starts clean
+      // (a leftover `harness/…` branch or worktree dir would make the retry's
+      // `git worktree add -b` fail permanently).
+      await teardownWorktree(task).catch(() => {});
+      this.patch(this.registry.getTask(task.id) ?? task, {
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+        worktreePath: null,
+        branch: null,
+        provider: null,
+        tmuxSession: null,
+        sessionId: null,
+      });
     }
   }
 
@@ -114,6 +128,37 @@ export async function provisionWorktree(
   });
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
   return { path: realpathSync(path), branch, provider: "git" };
+}
+
+/**
+ * Tear down a task's live resources (best-effort): kill its detached tmux session
+ * and return/remove its worktree + throwaway branch. Provider-aware so a treehouse
+ * lease is handed back to the pool rather than leaked by a bare `git worktree remove`.
+ */
+export async function teardownWorktree(task: {
+  repoRoot: string;
+  worktreePath: string | null;
+  branch: string | null;
+  provider: WorktreeProvider | null;
+  tmuxSession: string | null;
+}): Promise<void> {
+  if (task.tmuxSession) {
+    await run("tmux", ["kill-session", "-t", task.tmuxSession], { timeoutMs: 10000 });
+  }
+  if (!task.worktreePath) return;
+
+  if (task.provider === "treehouse") {
+    const r = await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    if (r.code === 0) return; // pool reclaims the checkout + its branch
+  }
+  await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
+    timeoutMs: 30000,
+  });
+  // Our git-fallback trees sit on a throwaway `harness/…` branch; drop it so a
+  // retry of the same task can recreate it. Never touch a non-harness branch.
+  if (task.branch && task.branch.startsWith("harness/")) {
+    await run("git", ["-C", task.repoRoot, "branch", "-D", task.branch], { timeoutMs: 15000 });
+  }
 }
 
 /** Launch `agentBin` in a new detached tmux session rooted at `cwd`. */

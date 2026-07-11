@@ -66,11 +66,14 @@ export class Dispatcher {
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
       // A cancel/complete that settled the task in flight owns its terminal state
-      // (and outcome). Don't overwrite it to `failed`; just tear down any resources
-      // we created that the settling path couldn't (it may have run before them).
+      // (and outcome) - don't overwrite it to `failed`. Only a cancel tears down;
+      // a mid-flight complete keeps its worktree (Mark done must not discard work),
+      // leaving it as a reclaimable done-with-worktree task.
       if (cur.status !== "dispatching") {
-        await teardownWorktree(cur).catch(() => {});
-        this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+        if (cur.status === "cancelled") {
+          await teardownWorktree(cur).catch(() => {});
+          this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+        }
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -115,11 +118,11 @@ export class Dispatcher {
    */
   private async abortIfSettled(taskId: string): Promise<boolean> {
     if (this.stillDispatching(taskId)) return false;
+    // A cancel wants resources gone; a mid-flight complete ("done") explicitly wants
+    // them KEPT (Mark done must not discard work). Only tear down for a cancel.
     const cur = this.registry.getTask(taskId);
-    if (cur) {
+    if (cur?.status === "cancelled") {
       await teardownWorktree(cur).catch(() => {});
-      // Clear fields we re-patched during the continued dispatch, so the settled
-      // record doesn't point at a torn-down tree.
       this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
     }
     return true;

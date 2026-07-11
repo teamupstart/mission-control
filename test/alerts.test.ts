@@ -108,6 +108,16 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   assert.match(g[0]?.body ?? "", /gate parked at review/);
 });
 
+test("a review landing on an already-waiting session still alerts (stacked causes)", () => {
+  const waiting = mkSession({ id: "a", state: "awaiting_input", pendingReviews: 0 });
+  const plusReview = mkSession({ id: "a", state: "awaiting_input", pendingReviews: 1 });
+  const r = detectAlerts(fleet([waiting]), fleet([plusReview]), WATCHING);
+  // Still awaiting input (no new input alert), but a fresh review alert fires.
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "review");
+  assert.equal(r[0]?.body, "to review");
+});
+
 test("a task reaching failed alerts (attention) in any mode", () => {
   const running = mkTask({ id: "t1", status: "running" });
   const failed = mkTask({ id: "t1", status: "failed", error: "boom" });

@@ -3,7 +3,7 @@
 // the shared bucketing so "who needs you" matches the report exactly.
 
 import type { Session, Task } from "@shared/types.ts";
-import { needsYouReason, reportBucket } from "@shared/session.ts";
+import { gateParked, reportBucket } from "@shared/session.ts";
 
 export type AlertKind = "needs-input" | "review" | "gate" | "task-done" | "task-failed" | "idle";
 export type AlertSeverity = "attention" | "info";
@@ -35,17 +35,12 @@ function sessionLabel(s: Session): string {
   return s.task?.title || s.name || "a session";
 }
 
-function kindFromReason(reason: string): AlertKind {
-  // Check gate first - "gate parked at review" contains both words.
-  if (/gate/i.test(reason)) return "gate";
-  if (/review/i.test(reason)) return "review";
-  return "needs-input";
-}
-
 /**
- * The NEW alerts implied by the transition prev -> next. Fires on the edge into an
- * attention state (not every tick a session sits there), so a waiting session
- * alerts once. In AFK mode it also reports sessions going idle and tasks finishing.
+ * The NEW alerts implied by the transition prev -> next. Each attention cause is
+ * detected from session FIELDS directly (not the coarse bucket or a reason string),
+ * edge-triggered per cause - so a review landing on a session that's already
+ * awaiting input still alerts, and the alert kind can't drift from wording changes.
+ * In AFK mode it also reports sessions going idle and tasks finishing.
  */
 export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings): Alert[] {
   const alerts: Alert[] = [];
@@ -53,24 +48,55 @@ export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings):
 
   for (const s of next.sessions) {
     const before = prevSessions.get(s.id);
-    const beforeBucket = before ? reportBucket(before) : "exited";
-    const nowBucket = reportBucket(s);
+    const label = sessionLabel(s);
 
-    if (nowBucket === "needs-you" && beforeBucket !== "needs-you") {
-      const reason = needsYouReason(s) ?? "needs you";
+    // needs-input: the agent asked and is blocked on you.
+    if (s.state === "awaiting_input" && before?.state !== "awaiting_input") {
       alerts.push({
-        id: `needs:${s.id}`,
-        kind: kindFromReason(reason),
-        title: `${sessionLabel(s)} needs you`,
-        body: reason,
+        id: `input:${s.id}`,
+        kind: "needs-input",
+        title: `${label} needs you`,
+        body: "needs input",
         sessionId: s.id,
         severity: "attention",
       });
-    } else if (settings.afk && nowBucket === "idle" && beforeBucket === "working") {
+    }
+
+    // review: a review item landed (pending count rose from zero).
+    if (s.pendingReviews > 0 && (before?.pendingReviews ?? 0) === 0) {
+      alerts.push({
+        id: `review:${s.id}`,
+        kind: "review",
+        title: `${label} needs review`,
+        body: s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review",
+        sessionId: s.id,
+        severity: "attention",
+      });
+    }
+
+    // gate: a no-mistakes run parked awaiting a decision.
+    if (gateParked(s) && !(before && gateParked(before))) {
+      alerts.push({
+        id: `gate:${s.id}`,
+        kind: "gate",
+        title: `${label} - gate parked`,
+        body: `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`,
+        sessionId: s.id,
+        severity: "attention",
+      });
+    }
+
+    // idle (AFK): finished a burst of work and is now waiting.
+    if (
+      settings.afk &&
+      before &&
+      reportBucket(s) === "idle" &&
+      reportBucket(before) === "working"
+    ) {
       alerts.push({
         id: `idle:${s.id}`,
         kind: "idle",
-        title: `${sessionLabel(s)} went idle`,
+        title: `${label} went idle`,
         body: s.activity ?? "idle",
         sessionId: s.id,
         severity: "info",

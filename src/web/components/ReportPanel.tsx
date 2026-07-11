@@ -1,6 +1,12 @@
 import { useMemo, useState } from "react";
-import type { Session, Task } from "@shared/types.ts";
-import { needsYouReason, reportBucket } from "@shared/session.ts";
+import type { Session, Task, TaskSummary } from "@shared/types.ts";
+import {
+  RECENT_TASKS_CAP,
+  finishedTasks,
+  needsYouReason,
+  queuedTasks,
+  reportBucket,
+} from "@shared/session.ts";
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 
@@ -24,6 +30,7 @@ export function ReportPanel({
   const [copied, setCopied] = useState(false);
   const [marking, setMarking] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
+  const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
 
   const { needsYou, working, idle } = useMemo(() => {
     const nY: Session[] = [];
@@ -38,18 +45,8 @@ export function ReportPanel({
     return { needsYou: nY, working: wk, idle: id };
   }, [sessions]);
 
-  const backlog = useMemo(
-    () => tasks.filter((t) => t.status === "queued").sort((a, b) => a.createdAt - b.createdAt),
-    [tasks],
-  );
-  const recent = useMemo(
-    () =>
-      tasks
-        .filter((t) => t.status === "done" || t.status === "failed" || t.status === "cancelled")
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 20),
-    [tasks],
-  );
+  const backlog = useMemo(() => queuedTasks(tasks), [tasks]);
+  const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
 
   async function copyMarkdown(): Promise<void> {
     try {
@@ -68,6 +65,38 @@ export function ReportPanel({
     await api.completeTask(taskId, o);
     setMarking(null);
     setOutcome("");
+  }
+
+  async function cancel(taskId: string, removeWorktree: boolean): Promise<void> {
+    await api.cancelTask(taskId, removeWorktree);
+    setConfirmCancel(null);
+  }
+
+  // Stop a live crewmate. Two-step: the second row lets you keep or reclaim its
+  // isolated worktree (reclaiming returns a treehouse lease / removes the tree).
+  function cancelControl(task: TaskSummary): React.JSX.Element | null {
+    if (task.status !== "running" && task.status !== "dispatching") return null;
+    if (confirmCancel !== task.id) {
+      return (
+        <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(task.id)}>
+          Cancel
+        </button>
+      );
+    }
+    return (
+      <span className="report-cancel">
+        <span className="report-sub">stop &amp;</span>
+        <button className="btn" onClick={() => void cancel(task.id, false)}>
+          keep tree
+        </button>
+        <button className="btn btn-danger" onClick={() => void cancel(task.id, true)}>
+          remove tree
+        </button>
+        <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
+          ✕
+        </button>
+      </span>
+    );
   }
 
   return (
@@ -92,6 +121,7 @@ export function ReportPanel({
                     Review
                   </button>
                 )}
+                {s.task && cancelControl(s.task)}
                 <button className="btn" onClick={() => void api.focus(s.id)}>
                   Focus
                 </button>
@@ -126,6 +156,7 @@ export function ReportPanel({
                     </button>
                   )
                 ) : null}
+                {s.task && cancelControl(s.task)}
                 <button className="btn" onClick={() => void api.focus(s.id)}>
                   Focus
                 </button>

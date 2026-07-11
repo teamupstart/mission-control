@@ -26,7 +26,12 @@ export class Dispatcher {
   async dispatch(taskId: string): Promise<void> {
     let task = this.registry.getTask(taskId);
     if (!task) return;
-    task = this.patch(task, { status: "dispatching", dispatchedAt: task.dispatchedAt ?? Date.now() });
+    // Clear any stale error from a prior failed attempt so a retry starts honest.
+    task = this.patch(task, {
+      status: "dispatching",
+      error: null,
+      dispatchedAt: task.dispatchedAt ?? Date.now(),
+    });
 
     try {
       const configured = resolveAgentBin(task.agent);

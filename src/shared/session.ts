@@ -3,9 +3,26 @@
 // never disagree about who "needs you". Keep this in sync conceptually with the
 // card's `stateDisplay` in src/web/lib/format.ts (same attention precedence).
 
-import type { Session } from "./types.ts";
+import type { Session, Task } from "./types.ts";
 
 export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
+
+// ---- task list projections (shared by server report + web panel, single source) ----
+
+/** How many finished tasks the report surfaces. */
+export const RECENT_TASKS_CAP = 20;
+
+/** Backlog: queued tasks, oldest first. */
+export function queuedTasks(tasks: Task[]): Task[] {
+  return tasks.filter((t) => t.status === "queued").sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/** Finished tasks (done/failed/cancelled), newest first. Caller slices to RECENT_TASKS_CAP. */
+export function finishedTasks(tasks: Task[]): Task[] {
+  return tasks
+    .filter((t) => t.status === "done" || t.status === "failed" || t.status === "cancelled")
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
 
 /** True when a no-mistakes run is parked waiting on a decision for this session. */
 export function gateParked(s: Session): boolean {

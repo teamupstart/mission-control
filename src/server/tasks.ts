@@ -116,6 +116,7 @@ export class TaskManager {
       status: "done",
       outcome,
       outcomeUrl: outcomeUrl ?? null,
+      error: null,
       completedAt: now,
       updatedAt: now,
     };

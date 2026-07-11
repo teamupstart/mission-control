@@ -1550,3 +1550,9 @@ kbd {
 .status-cancelled {
   color: var(--exited);
 }
+
+.report-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

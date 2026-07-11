@@ -1,8 +1,11 @@
 import type { FleetReport, ReportItem, Session, Task } from "@shared/types.ts";
-import { needsYouReason, reportBucket } from "@shared/session.ts";
-
-/** Cap on how many finished tasks the report lists, so the digest stays bounded. */
-const RECENT_CAP = 20;
+import {
+  RECENT_TASKS_CAP,
+  finishedTasks,
+  needsYouReason,
+  queuedTasks,
+  reportBucket,
+} from "@shared/session.ts";
 
 /**
  * Project the live registry snapshot into a fleet report - the `/bearings`
@@ -47,14 +50,9 @@ export function buildReport(
     else working.push(toItem(s));
   }
 
-  const backlog = snap.tasks
-    .filter((t) => t.status === "queued")
-    .sort((a, b) => a.createdAt - b.createdAt);
-
-  const finished = snap.tasks
-    .filter((t) => t.status === "done" || t.status === "failed" || t.status === "cancelled")
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-  const recent = finished.slice(0, RECENT_CAP);
+  const backlog = queuedTasks(snap.tasks);
+  const finished = finishedTasks(snap.tasks);
+  const recent = finished.slice(0, RECENT_TASKS_CAP);
 
   return {
     generatedAt: now,

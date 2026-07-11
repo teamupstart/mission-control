@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Install (or remove) the AI Harness daemon as a macOS LaunchAgent so it starts
+// Install (or remove) the Fleet Control daemon as a macOS LaunchAgent so it starts
 // at login and stays running. Opt-in: the user runs `npm run install-service`.
 
 import { writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";

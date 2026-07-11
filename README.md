@@ -1,4 +1,4 @@
-# AI Harness
+# Fleet Control
 
 A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
 across your **wezterm tabs** and **tmux sessions**. See every agent at a glance,
@@ -101,7 +101,7 @@ npm run install-hooks
 Expected output:
 
 ```
-Wired AI Harness hooks into /Users/you/.claude/settings.json
+Wired Fleet Control hooks into /Users/you/.claude/settings.json
   events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd
   script: /Users/you/workspace/ai-harness/hooks/harness-hook.mjs
 ```
@@ -202,14 +202,14 @@ launches. It exposes four tools:
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
 
-## Dispatch a crewmate
+## Dispatch an agent
 
 The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
-Dispatch**, pick a repo, describe the task, and the daemon:
+Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daemon:
 
 1. provisions an **isolated worktree** for the task (a pooled
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
-   else a plain `git worktree` on a fresh `harness/…` branch - so a crewmate never shares
+   else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
 2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there, and
 3. injects your task as its first prompt once passive discovery binds the session.
@@ -220,7 +220,7 @@ it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a ta
 launching it yet.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
-persisted in SQLite, so the backlog and a running crew's intent survive a daemon restart.
+persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `HARNESS_CLAUDE_BIN` / `HARNESS_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
 ## Fleet report (bearings)

@@ -29,7 +29,7 @@ export function finishedTasks(tasks: Task[]): Task[] {
  * so it will answer a parked no-mistakes gate itself rather than waiting on you.
  * A hook-instrumented session is active in `starting`/`working`; an
  * uninstrumented session only ever reports `working` while alive, so we treat it
- * as active crew too (same "can't prove it's waiting" stance as reportBucket).
+ * as an active agent too (same "can't prove it's waiting" stance as reportBucket).
  */
 export function agentActive(s: Session): boolean {
   return s.state === "starting" || s.state === "working";
@@ -62,7 +62,7 @@ function sameRun(a: Session, b: Session): boolean {
  * as "needs you" nags you for decisions the skill self-resolves.
  *
  * One run can be driven by more than one session - the launcher plus a dispatched
- * crewmate checked out on its branch - so it's still being driven as long as ANY
+ * agent checked out on its branch - so it's still being driven as long as ANY
  * session carrying that same run (see sameRun) is active; the agent behind that
  * one will answer the gate. Only once they've all stopped does it need you. Pass
  * `fleet` (all live sessions) for that cross-session check; it defaults to `s`
@@ -81,7 +81,7 @@ export function gateParked(s: Session, fleet: Session[] = [s]): boolean {
  * Which report section a session belongs to. Mirrors the card's badge precedence:
  * a pending review or a parked gate always means "needs you", regardless of the
  * agent's own reported state; an uninstrumented ("running") session counts as
- * active crew rather than idle, since we can't prove it's waiting. `fleet` lets a
+ * an active agent rather than idle, since we can't prove it's waiting. `fleet` lets a
  * parked gate defer to a same-run session that's still driving it (see gateParked).
  */
 export function reportBucket(s: Session, fleet: Session[] = [s]): ReportBucket {

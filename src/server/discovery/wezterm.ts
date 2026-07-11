@@ -34,13 +34,38 @@ function normTty(raw: string | undefined): string | null {
 }
 
 /**
+ * Environment for wezterm CLI calls, with `WEZTERM_UNIX_SOCKET` stripped.
+ *
+ * When the daemon is launched from inside a wezterm pane it inherits that pane's
+ * `WEZTERM_UNIX_SOCKET`, which pins the CLI to *that* GUI instance's mux socket.
+ * If the pane's GUI later exits/restarts (a new `gui-sock-<pid>`), the inherited
+ * socket goes stale and every `wezterm cli` call fails - so all wezterm tabs fall
+ * back to `claude <pid>` names and Focus can't raise them. Dropping the var lets
+ * wezterm resolve its live default socket, exactly as a plain shell would.
+ */
+export function weztermEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...base };
+  delete env.WEZTERM_UNIX_SOCKET;
+  return env;
+}
+
+/**
+ * Run a `wezterm cli` subcommand against the live default mux. `--no-auto-start`
+ * makes it fail fast when no GUI is running instead of blocking ~2.5s trying to
+ * spawn a mux server, so discovery degrades silently as promised.
+ */
+function weztermCli(bin: string, args: string[]): Promise<RunResult> {
+  return run(bin, ["cli", "--no-auto-start", ...args], { env: weztermEnv() });
+}
+
+/**
  * List wezterm panes across the mux. Returns [] when wezterm isn't running or
  * the CLI isn't reachable - the harness works fine with tmux-only or bare
  * terminals, so this must degrade silently.
  */
 export async function listWeztermPanes(): Promise<WeztermPane[]> {
   const bin = resolveWeztermBin();
-  const res = await run(bin, ["cli", "list", "--format", "json"]);
+  const res = await weztermCli(bin, ["list", "--format", "json"]);
   if (res.code !== 0 || !res.stdout.trim()) return [];
   let raw: RawPane[];
   try {
@@ -63,8 +88,8 @@ export async function listWeztermPanes(): Promise<WeztermPane[]> {
 /** Raise a wezterm tab and pane so it's frontmost. */
 export async function activateWeztermPane(tabId: number, paneId: number): Promise<RunResult> {
   const bin = resolveWeztermBin();
-  await run(bin, ["cli", "activate-tab", "--tab-id", String(tabId)]);
-  return run(bin, ["cli", "activate-pane", "--pane-id", String(paneId)]);
+  await weztermCli(bin, ["activate-tab", "--tab-id", String(tabId)]);
+  return weztermCli(bin, ["activate-pane", "--pane-id", String(paneId)]);
 }
 
 /**
@@ -74,11 +99,11 @@ export async function activateWeztermPane(tabId: number, paneId: number): Promis
  */
 export async function spawnWeztermTab(argv: string[], title: string): Promise<number | null> {
   const bin = resolveWeztermBin();
-  const res = await run(bin, ["cli", "spawn", "--", ...argv]);
+  const res = await weztermCli(bin, ["spawn", "--", ...argv]);
   if (res.code !== 0) return null;
   const paneId = Number(res.stdout.trim());
   if (!Number.isInteger(paneId)) return null;
-  if (title) await run(bin, ["cli", "set-tab-title", "--pane-id", String(paneId), title]);
+  if (title) await weztermCli(bin, ["set-tab-title", "--pane-id", String(paneId), title]);
   return paneId;
 }
 

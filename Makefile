@@ -12,7 +12,7 @@ LOG  := .harness.log
 MATCH := src/server/index.ts
 
 .DEFAULT_GOAL := help
-.PHONY: help init session dev server web up down restart status logs build test check hooks setup
+.PHONY: help init session claude dev server web up down restart status logs build test check hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -23,6 +23,13 @@ init: ## First-run bootstrap: deps, build, hooks, treehouse + no-mistakes, gate 
 
 session: ## Start an agent in a fresh, gated worktree (e.g. make session ARGS="-- claude")
 	node scripts/new-session.mjs $(ARGS)
+
+claude: ## One shot: bootstrap, ensure the daemon, lease a gated worktree, open Claude in it (harness-ready). Pass flags via ARGS="--resume"
+	@$(MAKE) --no-print-directory init
+	@lsof -ti tcp:$(PORT) >/dev/null 2>&1 \
+		&& echo "✓ harness daemon already up on http://127.0.0.1:$(PORT)" \
+		|| $(MAKE) --no-print-directory up
+	node scripts/new-session.mjs -- claude $(ARGS)
 
 dev: ## Daemon + web in the foreground, both auto-reload (Ctrl-C to stop)
 	npm run dev

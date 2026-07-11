@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findSessionHostPane, type WeztermPane } from "../src/server/discovery/wezterm.ts";
+import { findSessionHostPane, weztermEnv, type WeztermPane } from "../src/server/discovery/wezterm.ts";
 
 function pane(paneId: number, tabId: number, tty: string | null): WeztermPane {
   return {
@@ -49,4 +49,23 @@ test("findSessionHostPane: returns null when the session has no client at all", 
 test("findSessionHostPane: ignores panes with no tty", () => {
   const withNullTty = [pane(5, 3, null), ...panes];
   assert.equal(findSessionHostPane("AI2", clients, withNullTty)?.paneId, 17);
+});
+
+test("weztermEnv drops an inherited (possibly stale) WEZTERM_UNIX_SOCKET", () => {
+  // Launched-from-a-wezterm-pane daemon inherits a socket pinned to that pane's
+  // GUI; if that GUI later restarts the socket goes stale and every `wezterm cli`
+  // call fails, so all wezterm tabs fall back to `claude <pid>` names. Stripping
+  // the var lets wezterm resolve its live default socket.
+  const env = weztermEnv({
+    WEZTERM_UNIX_SOCKET: "/Users/x/.local/share/wezterm/gui-sock-79736",
+    PATH: "/usr/bin",
+  });
+  assert.equal(env.WEZTERM_UNIX_SOCKET, undefined);
+  assert.equal(env.PATH, "/usr/bin"); // other vars pass through untouched
+});
+
+test("weztermEnv is a no-op when no socket is inherited", () => {
+  const env = weztermEnv({ PATH: "/usr/bin" });
+  assert.equal(env.WEZTERM_UNIX_SOCKET, undefined);
+  assert.equal(env.PATH, "/usr/bin");
 });

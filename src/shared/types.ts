@@ -132,3 +132,28 @@ export type ServerEvent =
   | { type: "session_remove"; id: string }
   | { type: "review_upsert"; review: ReviewItem }
   | { type: "review_remove"; id: string };
+
+// ---- session transcript (expanded card) ----
+
+/** One normalized turn from a Claude/Codex transcript, for the expanded card. */
+export interface TranscriptMessage {
+  /** Stable id (the record uuid) - used to de-dupe across init/append. */
+  id: string;
+  role: "user" | "assistant";
+  /** Prose the human/agent wrote. May be empty on a pure tool-call turn. */
+  text: string;
+  /** Names of tools invoked in this turn, rendered as compact chips. */
+  tools: string[];
+  /** epoch ms of the turn, 0 when the record had no timestamp. */
+  ts: number;
+}
+
+/**
+ * Messages on the per-session transcript SSE stream
+ * (`GET /api/sessions/:id/transcript/stream`). `init` carries the recent
+ * history on connect; `append` streams new turns as the agent writes them.
+ */
+export type TranscriptStreamMsg =
+  | { type: "init"; messages: TranscriptMessage[] }
+  | { type: "append"; messages: TranscriptMessage[] }
+  | { type: "unavailable"; reason: string };

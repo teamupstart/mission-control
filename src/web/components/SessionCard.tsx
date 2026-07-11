@@ -1,7 +1,9 @@
+import { useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { ActionBar } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
+import { TranscriptPanel } from "./TranscriptPanel.tsx";
 
 function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) {
@@ -25,6 +27,8 @@ export function SessionCard({
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
+  const [expanded, setExpanded] = useState(false);
+  const canSend = Boolean(session.tmux || session.wezterm);
 
   return (
     <article
@@ -48,6 +52,15 @@ export function SessionCard({
             {st.label}
           </span>
         )}
+        <button
+          className={`expand-toggle${expanded ? " open" : ""}`}
+          aria-label={expanded ? "Collapse conversation" : "Expand conversation"}
+          aria-expanded={expanded}
+          title={expanded ? "Hide conversation" : "Show conversation"}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          ⌃
+        </button>
       </header>
 
       <dl className="card-meta">
@@ -96,6 +109,10 @@ export function SessionCard({
       </footer>
 
       {session.state !== "exited" && <ActionBar session={session} />}
+
+      {expanded && (
+        <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
+      )}
     </article>
   );
 }

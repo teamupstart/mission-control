@@ -235,6 +235,15 @@ export function ReportPanel({
                     ))}
                   {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
                 </div>
+                {/* A cleanly-failed task (torn down, no worktree) can be retried in
+                    place - it re-provisions from scratch. */}
+                {t.status === "failed" && !t.worktreePath && (
+                  <div className="report-row-actions">
+                    <button className="btn btn-send" onClick={() => void api.dispatchQueued(t.id)}>
+                      Retry
+                    </button>
+                  </div>
+                )}
                 {/* A terminal task that still holds a worktree - a done task
                     awaiting reclaim, or a failed-but-alive dispatch whose agent may
                     still be running - is freed here (keeping its status + outcome). */}

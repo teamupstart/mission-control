@@ -22,7 +22,7 @@ const pkgVersion = (
 ).version;
 
 test("/api/health reports ok, service, the package.json version, and pid", async () => {
-  const res = await app.request("/api/health");
+  const res = await app.request("/api/health", { headers: { host: "127.0.0.1:7317" } });
   assert.equal(res.status, 200);
 
   const body = (await res.json()) as {
@@ -36,4 +36,9 @@ test("/api/health reports ok, service, the package.json version, and pid", async
   assert.equal(typeof body.version, "string");
   assert.equal(body.version, pkgVersion);
   assert.equal(body.pid, process.pid);
+});
+
+test("the loopback guard rejects a non-loopback Host (DNS-rebinding defense)", async () => {
+  const res = await app.request("/api/health", { headers: { host: "evil.example.com" } });
+  assert.equal(res.status, 403);
 });

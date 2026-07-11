@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import {
   CompleteTaskSchema,
   CreateReviewSchema,
@@ -41,16 +42,17 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   const app = new Hono();
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
-  // visits from POSTing here via DNS-rebinding (the browser sends the *attacker's*
-  // Host). Dispatch would then be remote code execution. Require a loopback Host on
-  // every state-changing API call; same-origin UI + Vite-proxied dev both qualify.
-  app.use("/api/*", async (c, next) => {
-    const m = c.req.method;
-    if (m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE") {
-      if (!hostIsLoopback(c.req.header("host"))) return c.json({ error: "forbidden" }, 403);
-    }
-    return next();
-  });
+  // visits from reaching here via DNS-rebinding (the browser sends the *attacker's*
+  // Host but the rebound request still hits 127.0.0.1). Writes would be RCE; reads
+  // leak task prompts, repo paths, and transcripts. Require a loopback Host on every
+  // data endpoint - the same-origin UI and Vite's changeOrigin proxy both qualify,
+  // but a rebound cross-site request can't forge it.
+  const requireLoopback: MiddlewareHandler = async (c, next) => {
+    if (!hostIsLoopback(c.req.header("host"))) return c.json({ error: "forbidden" }, 403);
+    await next();
+  };
+  app.use("/api/*", requireLoopback);
+  app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
     c.json({ ok: true, service: "ai-harness", version: VERSION, pid: process.pid }),

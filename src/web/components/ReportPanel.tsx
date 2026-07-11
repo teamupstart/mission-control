@@ -90,9 +90,12 @@ export function ReportPanel({
   }
 
   // Stop a live crewmate and reclaim its worktree. Two-click confirm so a stray
-  // click can't take one down.
+  // click can't take one down. Also offered for a failed-but-alive task (it keeps
+  // its worktree, so it still decorates its session row).
   function cancelControl(task: TaskSummary): React.JSX.Element | null {
-    if (task.status !== "running" && task.status !== "dispatching") return null;
+    if (task.status !== "running" && task.status !== "dispatching" && task.status !== "failed") {
+      return null;
+    }
     if (confirmCancel !== task.id) {
       return (
         <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(task.id)}>

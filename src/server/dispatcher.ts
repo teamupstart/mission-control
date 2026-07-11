@@ -44,30 +44,31 @@ export class Dispatcher {
       const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId);
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
-      if (await this.abortIfCancelled(taskId)) return;
+      if (await this.abortIfSettled(taskId)) return;
 
       const tmuxSession = await spawnUniquely(slug, shortId, wt.path, agentBin);
       this.patch(taskId, { tmuxSession });
-      if (await this.abortIfCancelled(taskId)) return;
+      if (await this.abortIfSettled(taskId)) return;
 
       const session = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!session) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
-      if (await this.abortIfCancelled(taskId)) return;
+      if (await this.abortIfSettled(taskId)) return;
       await delay(SETTLE_MS);
 
       const sent = await injectPrompt(session, task.intent);
       if (!sent.ok) throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
 
-      if (await this.abortIfCancelled(taskId)) return;
+      if (await this.abortIfSettled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: session.id });
     } catch (err) {
       const cur = this.registry.getTask(taskId);
       if (!cur) return;
-      // A cancel that landed before we created these resources couldn't tear them
-      // down, so do it here rather than orphan a live agent + worktree.
-      if (cur.status === "cancelled") {
+      // A cancel/complete that settled the task in flight owns its terminal state
+      // (and outcome). Don't overwrite it to `failed`; just tear down any resources
+      // we created that the settling path couldn't (it may have run before them).
+      if (cur.status !== "dispatching") {
         await teardownWorktree(cur).catch(() => {});
         this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
         return;
@@ -98,23 +99,26 @@ export class Dispatcher {
     }
   }
 
-  /** True if the task was cancelled or removed while a dispatch was in flight. */
-  private cancelledOrGone(taskId: string): boolean {
-    const t = this.registry.getTask(taskId);
-    return !t || t.status === "cancelled";
+  /**
+   * A dispatch stays `dispatching` until its own final transition; if the status
+   * changed underneath it (a cancel or a mid-flight complete), that transition
+   * owns the task and this dispatch must stand down.
+   */
+  private stillDispatching(taskId: string): boolean {
+    return this.registry.getTask(taskId)?.status === "dispatching";
   }
 
   /**
-   * Checkpoint between dispatch steps: if a cancel landed in flight, tear down
-   * whatever this dispatch has already created (the cancel may have run before
-   * those resources existed and so couldn't clean them up) and signal to stop.
+   * Checkpoint between dispatch steps: if a cancel/complete settled the task in
+   * flight, tear down whatever this dispatch already created (it may have run
+   * before those resources existed and so couldn't clean them up) and stop.
    */
-  private async abortIfCancelled(taskId: string): Promise<boolean> {
-    if (!this.cancelledOrGone(taskId)) return false;
+  private async abortIfSettled(taskId: string): Promise<boolean> {
+    if (this.stillDispatching(taskId)) return false;
     const cur = this.registry.getTask(taskId);
     if (cur) {
       await teardownWorktree(cur).catch(() => {});
-      // Clear fields we re-patched during the continued dispatch, so the cancelled
+      // Clear fields we re-patched during the continued dispatch, so the settled
       // record doesn't point at a torn-down tree.
       this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
     }
@@ -195,8 +199,11 @@ export async function teardownWorktree(task: {
   if (!task.worktreePath) return;
 
   if (task.provider === "treehouse") {
-    const r = await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
-    if (r.code === 0) return; // pool reclaims the checkout + its branch
+    // Hand the lease back to the pool. Never fall back to `git worktree remove` for
+    // a pooled checkout - that would delete a tree behind treehouse's bookkeeping
+    // and leak the lease. If return fails, leave it for the pool to reconcile.
+    await run("treehouse", ["return", task.worktreePath], { timeoutMs: 30000 });
+    return;
   }
   await run("git", ["-C", task.repoRoot, "worktree", "remove", "--force", task.worktreePath], {
     timeoutMs: 30000,

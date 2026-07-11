@@ -12,7 +12,9 @@ async function request(method: string, path: string, body?: unknown): Promise<Ac
     });
     const data = (await res.json().catch(() => ({}))) as ActionResult;
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
-    return data;
+    // Task endpoints return the Task object (no `ok` field); a 2xx is success.
+    // Errors always arrive as a non-2xx (handled above), so this can't mask one.
+    return { ...data, ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

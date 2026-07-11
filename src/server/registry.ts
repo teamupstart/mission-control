@@ -397,16 +397,17 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Most-recently-updated task bound to a worktree that still has (or had) a live
-   * session: dispatching / running / done. Queued tasks have no worktree yet;
-   * cancelled / failed ones shouldn't decorate a card.
+   * Most-recently-updated task whose worktree matches this cwd. A queued task has
+   * no worktree; a cancelled or cleanly-failed task cleared its worktree fields, so
+   * it can't match a cwd here. A failed-but-alive task keeps its worktree, so it
+   * still decorates its live session's card - the crewmate stays actionable there.
    */
   private activeTaskForCwd(cwd: string | null): Task | undefined {
     if (!cwd) return undefined;
     let best: Task | undefined;
     for (const t of this.tasks.values()) {
       if (t.worktreePath !== cwd) continue;
-      if (t.status === "queued" || t.status === "cancelled" || t.status === "failed") continue;
+      if (t.status === "queued" || t.status === "cancelled") continue;
       if (!best || t.updatedAt > best.updatedAt) best = t;
     }
     return best;

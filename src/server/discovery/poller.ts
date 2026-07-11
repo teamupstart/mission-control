@@ -1,5 +1,6 @@
 import { POLL_INTERVAL_MS } from "../config.ts";
 import type { Registry } from "../registry.ts";
+import { unref } from "../util/timers.ts";
 import { discover } from "./correlate.ts";
 
 /**
@@ -20,8 +21,7 @@ export function startPoller(registry: Registry): () => void {
       console.error("[poller] sweep failed:", err);
     }
     if (stopped) return;
-    timer = setTimeout(tick, POLL_INTERVAL_MS);
-    if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
+    timer = unref(setTimeout(tick, POLL_INTERVAL_MS));
   };
 
   void tick();

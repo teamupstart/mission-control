@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ReviewItem, ReviewKind, ReviewStatus } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { insertReview, updateReviewStatus } from "./db.ts";
+import { unref } from "./util/timers.ts";
 
 export type ReviewAction = "approve" | "reject" | "answer";
 
@@ -54,11 +55,12 @@ export class ReviewManager {
         set!.delete(waiter);
         resolve(r);
       };
-      const timer = setTimeout(() => {
-        set!.delete(waiter);
-        resolve(this.registry.getReview(id) ?? null);
-      }, timeoutMs);
-      if (typeof timer === "object" && "unref" in timer) timer.unref();
+      const timer = unref(
+        setTimeout(() => {
+          set!.delete(waiter);
+          resolve(this.registry.getReview(id) ?? null);
+        }, timeoutMs),
+      );
 
       set.add(waiter);
     });

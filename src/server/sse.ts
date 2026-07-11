@@ -2,6 +2,7 @@ import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { ServerEvent } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
+import { unref } from "./util/timers.ts";
 
 const HEARTBEAT_MS = 15000;
 
@@ -36,8 +37,7 @@ export function sseHandler(registry: Registry) {
             // Wait for an event or the heartbeat interval, whichever first.
             await new Promise<void>((resolve) => {
               wake = resolve;
-              const t = setTimeout(resolve, HEARTBEAT_MS);
-              if (typeof t === "object" && "unref" in t) t.unref();
+              unref(setTimeout(resolve, HEARTBEAT_MS));
             });
             wake = null;
             if (queue.length === 0 && !stream.aborted) {

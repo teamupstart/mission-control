@@ -19,6 +19,7 @@ import {
   logEvent,
   upsertTask as dbUpsertTask,
 } from "./db.ts";
+import { unref } from "./util/timers.ts";
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
@@ -123,8 +124,7 @@ export class Registry extends EventEmitter {
       const exited: Session = { ...s, state: "exited" };
       this.sessions.set(id, exited);
       this.emitSession(exited);
-      const t = setTimeout(() => this.remove(id), EXIT_LINGER_MS);
-      if (typeof t === "object" && "unref" in t) t.unref();
+      const t = unref(setTimeout(() => this.remove(id), EXIT_LINGER_MS));
       this.exitTimers.set(id, t);
     }
   }
@@ -448,11 +448,12 @@ export class Registry extends EventEmitter {
     const existing = this.firstSessionAtCwd(cwd);
     if (existing) return Promise.resolve(existing);
     return new Promise<Session | null>((resolve) => {
-      const timer = setTimeout(() => {
-        unsub();
-        resolve(null);
-      }, timeoutMs);
-      if (typeof timer === "object" && "unref" in timer) timer.unref();
+      const timer = unref(
+        setTimeout(() => {
+          unsub();
+          resolve(null);
+        }, timeoutMs),
+      );
       const unsub = this.subscribe((e) => {
         if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state !== "exited") {
           clearTimeout(timer);

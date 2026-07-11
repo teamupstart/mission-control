@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import type { TypeOf, ZodTypeAny } from "zod";
 import {
   CompleteTaskSchema,
   CreateReviewSchema,
@@ -26,6 +27,20 @@ import { fileURLToPath, URL } from "node:url";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
+
+/**
+ * Parse + validate a JSON request body against a schema. Returns the typed data,
+ * or a ready-to-return 400 response - collapsing the safeParse/400 boilerplate
+ * every write endpoint otherwise repeats.
+ */
+async function parseBody<S extends ZodTypeAny>(
+  c: Context,
+  schema: S,
+): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; res: Response }> {
+  const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) return { ok: false, res: c.json({ error: parsed.error.message }, 400) };
+  return { ok: true, data: parsed.data };
+}
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
 const VERSION = readVersion();
@@ -93,8 +108,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   // --- MCP review channel (token-guarded) ---
   app.post("/mcp/reviews", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const parsed = CreateReviewSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, CreateReviewSchema);
+    if (!parsed.ok) return parsed.res;
     const { env, sessionId, cwd, kind, title, body } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
@@ -111,16 +126,16 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
 
   app.post("/mcp/status", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
-    const parsed = StatusSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, StatusSchema);
+    if (!parsed.ok) return parsed.res;
     registry.applyStatus(parsed.data.env, parsed.data.sessionId, parsed.data.activity);
     return c.body(null, 204);
   });
 
   // --- review resolution (from the dashboard, localhost) ---
   app.post("/api/reviews/:id/resolve", async (c) => {
-    const parsed = ResolveReviewSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, ResolveReviewSchema);
+    if (!parsed.ok) return parsed.res;
     const updated = reviews.resolve(c.req.param("id"), parsed.data.action, parsed.data.response);
     if (!updated) return c.json({ error: "no such review" }, 404);
     return c.json(updated);
@@ -130,8 +145,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.post("/api/sessions/:id/send", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const parsed = SendTextSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, SendTextSchema);
+    if (!parsed.ok) return parsed.res;
     const r = await sendText(session, parsed.data.text, parsed.data.submit);
     return c.json(r, r.ok ? 200 : 500);
   });
@@ -155,16 +170,16 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
-    const parsed = NomistakesRespondSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, NomistakesRespondSchema);
+    if (!parsed.ok) return parsed.res;
     const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, parsed.data);
     return c.json(r, r.ok ? 200 : 409);
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---
   app.post("/api/tasks", async (c) => {
-    const parsed = DispatchSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, DispatchSchema);
+    if (!parsed.ok) return parsed.res;
     const repoRoot = await resolveRepoRoot(parsed.data.repoRoot);
     if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.repoRoot}` }, 400);
     const task = tasks.create({ ...parsed.data, repoRoot });
@@ -189,8 +204,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   });
 
   app.post("/api/tasks/:id/complete", async (c) => {
-    const parsed = CompleteTaskSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
+    const parsed = await parseBody(c, CompleteTaskSchema);
+    if (!parsed.ok) return parsed.res;
     const t = await tasks.complete(c.req.param("id"), parsed.data.outcome, parsed.data.outcomeUrl);
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);

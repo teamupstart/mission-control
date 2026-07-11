@@ -10,31 +10,7 @@
 // into the model's context), swallow every error, and always exit 0 so a hook
 // never blocks or fails the agent - even when the daemon is down.
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-const PORT = process.env.FLEET_PORT ?? process.env.HARNESS_PORT ?? "7317";
-
-// Must resolve to the same token as the daemon (see config.ts): honor the legacy
-// HARNESS_ env + ~/.ai-harness dir so an upgraded install still authenticates.
-function stateDir() {
-  const override = process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
-  if (override) return override;
-  const preferred = join(homedir(), ".fleet-control");
-  const legacy = join(homedir(), ".ai-harness");
-  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
-  return preferred;
-}
-const TOKEN_PATH = join(stateDir(), "token");
-
-function readToken() {
-  try {
-    return readFileSync(TOKEN_PATH, "utf8").trim();
-  } catch {
-    return "";
-  }
-}
+import { BASE_URL, captureTerminalEnv, readToken } from "../src/shared/harness-runtime.mjs";
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -62,11 +38,7 @@ async function main() {
     sessionId: payload.session_id ?? null,
     cwd: payload.cwd ?? null,
     ts: Date.now(),
-    env: {
-      tmuxPane: process.env.TMUX_PANE || undefined,
-      weztermPane: process.env.WEZTERM_PANE || undefined,
-      termProgram: process.env.TERM_PROGRAM || undefined,
-    },
+    env: captureTerminalEnv(),
     toolName: payload.tool_name,
     prompt: payload.prompt,
     message: payload.message,
@@ -77,7 +49,7 @@ async function main() {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 800);
   try {
-    await fetch(`http://127.0.0.1:${PORT}/hooks/${encodeURIComponent(body.event)}`, {
+    await fetch(`${BASE_URL}/hooks/${encodeURIComponent(body.event)}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-harness-token": readToken() },
       body: JSON.stringify(body),

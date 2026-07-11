@@ -1,50 +1,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { ReviewItem } from "@shared/types.ts";
+import { BASE_URL, captureTerminalEnv, readToken } from "@shared/harness-runtime.mjs";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
 // it's a child of the agent it inherits the terminal env (TMUX_PANE /
 // WEZTERM_PANE), which lets the daemon bind every call to the right session -
 // the same join key the hook bridge uses.
 
-const PORT = process.env.FLEET_PORT ?? process.env.HARNESS_PORT ?? "7317";
-const BASE = `http://127.0.0.1:${PORT}`;
-
-// Must resolve to the same token as the daemon (see config.ts): honor the legacy
-// HARNESS_ env + ~/.ai-harness dir so an upgraded install still authenticates.
-function stateDir(): string {
-  const override = process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
-  if (override) return override;
-  const preferred = join(homedir(), ".fleet-control");
-  const legacy = join(homedir(), ".ai-harness");
-  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
-  return preferred;
-}
-const TOKEN_PATH = join(stateDir(), "token");
-
-function token(): string {
-  try {
-    return readFileSync(TOKEN_PATH, "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-
-const ENV = {
-  tmuxPane: process.env.TMUX_PANE || undefined,
-  weztermPane: process.env.WEZTERM_PANE || undefined,
-  termProgram: process.env.TERM_PROGRAM || undefined,
-};
+const ENV = captureTerminalEnv();
 const SESSION_ID = process.env.CLAUDE_SESSION_ID ?? null;
 
 async function http(path: string, method: string, body?: unknown): Promise<Response> {
-  return fetch(BASE + path, {
+  return fetch(BASE_URL + path, {
     method,
-    headers: { "content-type": "application/json", "x-harness-token": token() },
+    headers: { "content-type": "application/json", "x-harness-token": readToken() },
     body: body ? JSON.stringify(body) : undefined,
   });
 }

@@ -1,4 +1,5 @@
 import { run } from "../util/exec.ts";
+import { normTty } from "./tty.ts";
 import type { AgentType } from "@shared/types.ts";
 
 export interface Proc {
@@ -13,12 +14,6 @@ export interface Proc {
   command: string;
   /** Which agent this process is, if any. */
   agent: AgentType | null;
-}
-
-function normTty(raw: string): string | null {
-  const t = raw.trim();
-  if (!t || t === "?" || t === "??" || t === "-") return null;
-  return t.replace(/^\/dev\//, "");
 }
 
 /**

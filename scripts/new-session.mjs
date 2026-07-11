@@ -18,6 +18,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
+import { have } from "./lib.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -32,15 +33,6 @@ for (let i = 0; i < args.length; i++) {
   }
   if (args[i] === "--holder") {
     holder = args[++i] ?? holder;
-  }
-}
-
-function have(bin) {
-  try {
-    execFileSync("which", [bin], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
   }
 }
 

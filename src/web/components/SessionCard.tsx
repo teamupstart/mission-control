@@ -1,0 +1,101 @@
+import type { Session } from "@shared/types.ts";
+import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
+import { ActionBar } from "./ActionBar.tsx";
+import { NomistakesStrip } from "./NomistakesStrip.tsx";
+
+function subtitle(session: Session): string {
+  if (session.nameSource === "tmux" && session.tmux) {
+    return `tmux · ${session.tmux.paneId}`;
+  }
+  if (session.nameSource === "wezterm") return "wezterm";
+  return "process";
+}
+
+const AGENT_LABEL: Record<Session["agent"], string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+};
+
+export function SessionCard({
+  session,
+  onOpenReviews,
+}: {
+  session: Session;
+  onOpenReviews?: () => void;
+}): React.JSX.Element {
+  const st = stateDisplay(session);
+  const attention = st.tone === "attention";
+
+  return (
+    <article
+      className={`card tone-${st.tone}${attention ? " attention" : ""}`}
+      data-agent={session.agent}
+    >
+      <header className="card-head">
+        <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+        <div className="card-title">
+          <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
+          <span className="name-source">{subtitle(session)}</span>
+        </div>
+        {session.pendingReviews > 0 ? (
+          <button className={`badge badge-${st.tone} badge-btn`} onClick={onOpenReviews}>
+            <span className="badge-dot" />
+            {st.label} →
+          </button>
+        ) : (
+          <span className={`badge badge-${st.tone}`}>
+            <span className="badge-dot" />
+            {st.label}
+          </span>
+        )}
+      </header>
+
+      <dl className="card-meta">
+        <div>
+          <dt>path</dt>
+          <dd className="mono" title={session.cwd ?? ""}>
+            {shortenCwd(session.cwd)}
+          </dd>
+        </div>
+        {session.gitBranch && (
+          <div>
+            <dt>branch</dt>
+            <dd className="mono branch">{session.gitBranch}</dd>
+          </div>
+        )}
+      </dl>
+
+      {session.activity && <p className="activity">{session.activity}</p>}
+
+      {session.nomistakes && <NomistakesStrip sessionId={session.id} nm={session.nomistakes} />}
+
+      <footer className="card-foot">
+        <span className="agent-name">{AGENT_LABEL[session.agent]}</span>
+        {session.nomistakesGated && (
+          <span className="gated" title="This repo is gated by no-mistakes">
+            ◇ gated
+          </span>
+        )}
+        <span className="dot-sep">·</span>
+        <span className="mono dim">pid {session.pid}</span>
+        {session.tty && (
+          <>
+            <span className="dot-sep">·</span>
+            <span className="mono dim">{session.tty}</span>
+          </>
+        )}
+        <span className="spacer" />
+        {!session.instrumented && (
+          <span className="hint" title="No hooks reporting - status is coarse">
+            uninstrumented
+          </span>
+        )}
+        <span className="dim seen">
+          {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
+        </span>
+      </footer>
+
+      {session.state !== "exited" && <ActionBar session={session} />}
+    </article>
+  );
+}

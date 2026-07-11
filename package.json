@@ -1,0 +1,47 @@
+{
+  "name": "ai-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local, auto-refreshing dashboard for Claude Code / Codex sessions across wezterm tabs and tmux sessions",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "ai-harness": "src/server/index.ts"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/index.ts",
+    "dev:web": "vite",
+    "build": "vite build && npm run build:mcp",
+    "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
+    "start": "tsx src/server/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx 'test/**/*.test.ts'",
+    "setup": "npm run build && npm run install-hooks",
+    "install-hooks": "tsx hooks/install.mjs",
+    "install-service": "node scripts/install-service.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "hono": "^4.6.14",
+    "react": "^19.0.0",
+    "react-diff-view": "^3.3.3",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

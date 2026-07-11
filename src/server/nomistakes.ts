@@ -96,18 +96,14 @@ export async function respond(
   if (opts.step) args.push("--step", opts.step);
 
   responding.add(cwd);
-  // Optimistic: the gate is being acted on; reflect it immediately.
-  void fetchStatus(cwd).then((s) => registry.applyNomistakes(cwd, s));
+  // Optimistic: reflect the acted-on gate immediately, before the blocking respond returns.
+  void pollAndReconcile(registry);
 
-  // Background: run to completion, then apply the resulting state. respond
-  // prints the next state as TOON on success, so prefer that over a re-poll.
+  // Background: run to completion, then reconcile the resulting fleet-wide state.
   run(bin, args, { cwd, timeoutMs: 10 * 60 * 1000 })
     .then(async (res) => {
       if (res.code !== 0) console.error(`[nomistakes] respond ${action} failed:`, res.stderr.trim());
-      const summary = res.stdout.trim()
-        ? summarize(parseAxiStatus(res.stdout))
-        : await fetchStatus(cwd);
-      registry.applyNomistakes(cwd, summary);
+      await pollAndReconcile(registry);
     })
     .catch((err) => console.error("[nomistakes] respond error:", err))
     .finally(() => responding.delete(cwd));
@@ -116,9 +112,37 @@ export async function respond(
 }
 
 /**
- * Poll no-mistakes status for gated repos on an interval. Only queries repos
- * discovery already flagged as gated, so it's a no-op (no subprocesses) when no
- * session is in a no-mistakes repo, or when no-mistakes isn't installed.
+ * Poll `no-mistakes axi status` from every worktree the registry cares about and
+ * reconcile the active runs onto the sessions that own them.
+ *
+ * A repo can have several concurrent runs (different launchers, different
+ * branches), and `axi status` reports one run per invocation - but it is
+ * branch-scoped when run from a worktree checked out on a run's branch. So we
+ * poll each relevant worktree (every gated session's checkout plus every
+ * remembered launcher worktree), collect the distinct runs by branch, and hand
+ * the full set to the registry in one pass. Cheap when nothing is gated: no
+ * worktrees to poll means no subprocesses.
+ */
+export async function pollAndReconcile(registry: Registry): Promise<void> {
+  const cwds = registry.nomistakesPollCwds();
+  if (cwds.length === 0) {
+    registry.reconcileNomistakes([]); // clear any lingering decoration
+    return;
+  }
+  if (!(await resolveNomistakesBin())) return;
+  const runs = new Map<string, NmRunSummary>();
+  await Promise.all(
+    cwds.map(async (cwd) => {
+      const s = await fetchStatus(cwd);
+      if (s && s.branch) runs.set(s.branch, s); // dedup: several worktrees can report one run
+    }),
+  );
+  registry.reconcileNomistakes([...runs.values()]);
+}
+
+/**
+ * Drive no-mistakes reconciliation on an interval. A no-op (no subprocesses)
+ * when no session is in a no-mistakes repo, or when no-mistakes isn't installed.
  */
 export function startNomistakesPoller(registry: Registry): () => void {
   let stopped = false;
@@ -127,15 +151,11 @@ export function startNomistakesPoller(registry: Registry): () => void {
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      const cwds = registry.gatedCwds();
-      if (cwds.length > 0 && (await resolveNomistakesBin())) {
-        for (const cwd of cwds) {
-          registry.applyNomistakes(cwd, await fetchStatus(cwd));
-        }
-      }
+      await pollAndReconcile(registry);
       // For sessions with an *active* run, surface what the skill is doing right
       // now from its Claude transcript (a bounded tail read, no subprocess). A
       // run that has reached an outcome is finished, so its narration is cleared.
+      // Attribution is precise now, so only the launcher/owner sessions narrate.
       for (const s of registry.nomistakesSessions()) {
         const active = s.nomistakes && !s.nomistakes.outcome;
         const path = active ? resolveTranscriptPath(s) : null;

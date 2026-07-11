@@ -53,6 +53,14 @@ export class Registry extends EventEmitter {
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** overlay keyed by pane token ("tmux:%12" | "wez:12"). */
   private overlays = new Map<string, HookOverlay>();
+  /**
+   * No-mistakes launcher bindings: sessionId -> worktree cwd -> {branch, seen}.
+   * Records which worktree(s) a session is driving a run in, so a run dispatched
+   * off `main` is attributed to its launcher and not to idle same-checkout
+   * siblings. Refreshed by discovery, remembered across a parked gate (when the
+   * driver process is momentarily gone), and dropped by TTL or on session exit.
+   */
+  private nmBindings = new Map<string, Map<string, { branch: string | null; updatedAt: number }>>();
 
   constructor() {
     super();
@@ -105,8 +113,10 @@ export class Registry extends EventEmitter {
       const prev = this.sessions.get(d.syntheticId);
       const next = this.mergeDiscovered(prev, d, now);
       this.sessions.set(d.syntheticId, next);
+      this.recordNmLaunches(d, now);
       if (!prev || !sessionEqual(prev, next)) this.emitSession(next);
     }
+    this.pruneNmBindings(now);
 
     for (const [id, s] of this.sessions) {
       if (seen.has(id) || s.state === "exited") continue;
@@ -226,22 +236,55 @@ export class Registry extends EventEmitter {
     return undefined;
   }
 
+  /** Refresh a session's launcher bindings from this discovery sweep (never clears). */
+  private recordNmLaunches(d: DiscoveredSession, now: number): void {
+    if (!d.nomistakesRuns || d.nomistakesRuns.length === 0) return;
+    let map = this.nmBindings.get(d.syntheticId);
+    if (!map) this.nmBindings.set(d.syntheticId, (map = new Map()));
+    for (const { cwd, branch } of d.nomistakesRuns) map.set(cwd, { branch, updatedAt: now });
+  }
+
+  /** Drop launcher bindings that haven't been re-seen within the TTL. */
+  private pruneNmBindings(now: number): void {
+    for (const [id, map] of this.nmBindings) {
+      for (const [cwd, b] of map) if (now - b.updatedAt > OVERLAY_TTL_MS) map.delete(cwd);
+      if (map.size === 0) this.nmBindings.delete(id);
+    }
+  }
+
   /**
-   * Apply a no-mistakes run status to the sessions it belongs to in a repo dir.
-   *
-   * `no-mistakes axi status` reports per-repo (shared `.git`), so querying from
-   * one worktree returns the repo's active run even when it belongs to a sibling
-   * worktree on a different branch. We therefore only decorate sessions whose
-   * branch matches the run's - git allows a branch in a single worktree, so the
-   * branch uniquely identifies the worktree that owns the run. Sessions in the
-   * same dir on a different branch are cleared, so a run for branch X never
-   * leaks onto every session that merely shares the repo.
+   * Worktree dirs to poll `no-mistakes axi status` from. `axi status` is
+   * branch-scoped when run from a worktree checked out on a run's branch, so we
+   * poll each gated session's own checkout (a session literally on a run branch)
+   * plus every remembered launcher worktree (where a run dispatched off `main`
+   * actually lives). Distinct, so one worktree is polled once.
    */
-  applyNomistakes(cwd: string, summary: NmRunSummary | null): void {
+  nomistakesPollCwds(): string[] {
+    const set = new Set<string>();
+    for (const s of this.sessions.values()) {
+      if (s.nomistakesGated && s.cwd && s.state !== "exited") set.add(s.cwd);
+    }
+    for (const map of this.nmBindings.values()) for (const cwd of map.keys()) set.add(cwd);
+    return [...set];
+  }
+
+  /**
+   * Set each session's no-mistakes run from the full set of active runs (keyed by
+   * branch). A session owns a run when it is literally checked out on the run's
+   * branch (exact worktree owner), or when it launched that run in a worktree it
+   * drives (remembered binding on the run's branch). Sessions that merely share a
+   * checkout with a launcher get nothing - a run never leaks onto idle siblings.
+   *
+   * The full run set is applied in one pass so two concurrent runs don't clobber
+   * each other (each launcher keeps its own run rather than fighting over one).
+   */
+  reconcileNomistakes(runs: NmRunSummary[]): void {
+    const byBranch = new Map<string, NmRunSummary>();
+    for (const r of runs) if (r.branch) byBranch.set(r.branch, r);
+
     for (const [id, s] of this.sessions) {
-      if (s.cwd !== cwd) continue;
-      const owned = summary && s.gitBranch === summary.branch ? summary : null;
-      const narration = owned ? s.nomistakesNarration : null;
+      const owned = this.ownedRun(id, s, byBranch);
+      const narration = owned ? s.nomistakesNarration : null; // narration clears with its run
       if (
         JSON.stringify(s.nomistakes) === JSON.stringify(owned) &&
         s.nomistakesNarration === narration
@@ -251,6 +294,18 @@ export class Registry extends EventEmitter {
       this.sessions.set(id, next);
       this.emitSession(next);
     }
+  }
+
+  /** The active run this session owns, by exact branch or a launcher binding. */
+  private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
+    if (s.gitBranch && byBranch.has(s.gitBranch)) return byBranch.get(s.gitBranch)!;
+    const map = this.nmBindings.get(id);
+    if (map) {
+      for (const { branch } of map.values()) {
+        if (branch && byBranch.has(branch)) return byBranch.get(branch)!;
+      }
+    }
+    return null;
   }
 
   /**
@@ -269,15 +324,6 @@ export class Registry extends EventEmitter {
   /** Sessions currently showing a no-mistakes run (for narration polling). */
   nomistakesSessions(): Session[] {
     return [...this.sessions.values()].filter((s) => s.nomistakes !== null);
-  }
-
-  /** Distinct cwds of sessions whose repo is gated by no-mistakes. */
-  gatedCwds(): string[] {
-    const set = new Set<string>();
-    for (const s of this.sessions.values()) {
-      if (s.nomistakesGated && s.cwd) set.add(s.cwd);
-    }
-    return [...set];
   }
 
   /** MCP `report_status`: update a session's activity line without a hook. */
@@ -312,6 +358,7 @@ export class Registry extends EventEmitter {
 
   private remove(id: string): void {
     this.exitTimers.delete(id);
+    this.nmBindings.delete(id);
     if (this.sessions.delete(id)) this.emitEvent({ type: "session_remove", id });
   }
 

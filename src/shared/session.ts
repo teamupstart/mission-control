@@ -40,9 +40,16 @@ function gatePending(s: Session): boolean {
   return Boolean(s.nomistakes && (s.nomistakes.awaitingAgent || s.nomistakes.gateStep));
 }
 
-/** Two sessions share the same no-mistakes run: same worktree (cwd) on the same branch. */
+/**
+ * Two sessions are driving the *same* no-mistakes run. Keyed on the run itself
+ * (its branch), not on cwd+branch: several terminals share one checkout on one
+ * branch yet each may be driving a different run (or none), so a shared cwd is
+ * not proof of a shared run. The registry attributes a run only to the sessions
+ * that actually launched or own it, so both carrying a summary on the same
+ * branch is the precise "same run" signal.
+ */
 function sameRun(a: Session, b: Session): boolean {
-  return a.cwd !== null && a.cwd === b.cwd && a.gitBranch === b.gitBranch;
+  return Boolean(a.nomistakes && b.nomistakes && a.nomistakes.branch === b.nomistakes.branch);
 }
 
 /**
@@ -54,15 +61,12 @@ function sameRun(a: Session, b: Session): boolean {
  * skill issues autonomously while the session works. Surfacing every parked gate
  * as "needs you" nags you for decisions the skill self-resolves.
  *
- * The same run is decorated onto *every* session sharing its worktree+branch (a
- * dispatched crewmate, or sibling terminals in the same checkout), so it's still
- * being driven as long as ANY of those sessions is active - the agent behind that
+ * One run can be driven by more than one session - the launcher plus a dispatched
+ * crewmate checked out on its branch - so it's still being driven as long as ANY
+ * session carrying that same run (see sameRun) is active; the agent behind that
  * one will answer the gate. Only once they've all stopped does it need you. Pass
  * `fleet` (all live sessions) for that cross-session check; it defaults to `s`
  * alone, which reduces to "parked and this agent has stopped".
- *
- * Tradeoff: a same-worktree session working on something unrelated also suppresses
- * the prompt. That's rare (one active run per repo) and errs toward not nagging.
  */
 export function gateParked(s: Session, fleet: Session[] = [s]): boolean {
   if (!gatePending(s)) return false;

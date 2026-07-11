@@ -85,6 +85,56 @@ body {
   margin: 0;
 }
 
+/* ---- nav-bar filter ---- */
+.filter-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  height: 30px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  transition: border-color 0.14s ease;
+}
+.filter-box:focus-within {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+}
+.filter-icon {
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1;
+}
+.filter-input {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  outline: none;
+  width: 150px;
+  padding: 0;
+}
+.filter-input::placeholder {
+  color: var(--dim);
+}
+.filter-clear {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.filter-clear:hover {
+  color: var(--fg);
+  background: var(--panel-2);
+}
+
 .summary {
   display: flex;
   gap: 10px;
@@ -1123,6 +1173,18 @@ kbd {
   border-radius: 5px;
   border: 1px solid var(--border-soft);
 }
+.link-btn {
+  font: inherit;
+  color: var(--working);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn:hover {
+  color: #fff;
+}
 
 /* ---- expandable conversation ---- */
 .expand-toggle {
@@ -1261,7 +1323,7 @@ kbd {
   border-color: color-mix(in oklab, var(--working) 60%, var(--border));
 }
 
-/* ---- task (crewmate) intent chip on a card ---- */
+/* ---- task (agent) intent chip on a card ---- */
 .task-chip {
   display: flex;
   align-items: center;
@@ -1401,6 +1463,42 @@ kbd {
   resize: vertical;
   min-height: 90px;
   line-height: 1.5;
+}
+
+/* ---- themed repo combobox (replaces the un-styleable native datalist) ---- */
+.combobox {
+  position: relative;
+}
+.combobox-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.combobox-option {
+  padding: 7px 9px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  color: var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combobox-option.is-active {
+  color: #fff;
+  background: color-mix(in oklab, var(--working) 20%, var(--panel-2));
 }
 .dispatch-error {
   margin: 0;
@@ -1814,4 +1912,53 @@ kbd {
 }
 .dl-hunk .dl-text {
   color: color-mix(in oklab, var(--working) 55%, var(--muted));
+}
+/* ---- alerts / AFK control ---- */
+.alertbar {
+  position: relative;
+}
+.alert-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+}
+.alert-enable {
+  width: 100%;
+}
+.alert-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.alert-row input[type="checkbox"] {
+  accent-color: var(--working);
+}
+.alert-row select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-left: auto;
+}
+.alert-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--dim);
 }

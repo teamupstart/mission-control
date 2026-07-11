@@ -8,6 +8,9 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchModal } from "./components/DispatchModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
+import { AlertBar } from "./components/AlertBar.tsx";
+import { useNotifier } from "./useNotifier.ts";
+import { useAlertSettings } from "./lib/alertSettings.ts";
 import { stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then gone.
@@ -20,18 +23,22 @@ const TONE_ORDER: Record<Tone, number> = {
 };
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, connected } = useEventStream();
+  const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
+  const [alertSettings, updateAlerts] = useAlertSettings();
+  useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
   const gridRef = useRef<HTMLElement>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
     if (el) cardEls.current.set(id, el);
@@ -60,6 +67,15 @@ export function App(): React.JSX.Element {
     });
   }, [sessions]);
 
+  // Nav-bar filter: live substring match over each card's title, status, and
+  // agent. Empty filter shows everything; keyboard nav and the grid both read
+  // this list so they stay in lockstep with what's on screen.
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((s) => matchesFilter(s, q));
+  }, [sorted, filter]);
+
   const counts = useMemo(() => summarize(sessions), [sessions]);
   // Which sessions have a parked no-mistakes gate that actually needs you - a
   // run being driven by any same-worktree/branch session is left to that agent
@@ -86,7 +102,7 @@ export function App(): React.JSX.Element {
     : [];
   const modalOpen = Boolean(modalSession && modalReviews.length > 0);
 
-  const selected = selectedId ? sorted.find((s) => s.id === selectedId) ?? null : null;
+  const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
 
   function openReviews(): void {
@@ -145,7 +161,22 @@ export function App(): React.JSX.Element {
       // arrows/Tab/Esc) don't drive a background card behind the panel/modal.
       if (modalOpen || dispatchOpen || reportOpen || diffSession || typing) return;
 
-      const ids = sorted.map((s) => s.id);
+      // Global chords that don't need a selected card. Kept above the empty-grid
+      // guard so "+" still opens dispatch when there are no sessions yet.
+      if (!(e.metaKey || e.ctrlKey || e.altKey)) {
+        if (e.key === "+") {
+          e.preventDefault();
+          setDispatchOpen(true);
+          return;
+        }
+        if (e.key === "/") {
+          e.preventDefault();
+          filterRef.current?.focus();
+          return;
+        }
+      }
+
+      const ids = visible.map((s) => s.id);
       if (ids.length === 0) return;
       const idx = selectedId ? ids.indexOf(selectedId) : -1;
       const handle = (): ActionBarHandle | undefined =>
@@ -205,7 +236,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sorted, selectedId, modalOpen, dispatchOpen, reportOpen, diffSession, toggleExpand]);
+  }, [visible, selectedId, modalOpen, dispatchOpen, reportOpen, diffSession, toggleExpand]);
 
   return (
     <div className="app">
@@ -214,7 +245,40 @@ export function App(): React.JSX.Element {
           <span className="brand-mark" aria-hidden>
             ◆
           </span>
-          <h1>AI Harness</h1>
+          <h1>Fleet Control</h1>
+        </div>
+        <div className="filter-box">
+          <span className="filter-icon" aria-hidden>
+            ⌕
+          </span>
+          <input
+            ref={filterRef}
+            className="filter-input"
+            type="text"
+            placeholder="Filter (/)"
+            aria-label="Filter sessions by title or status"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                if (filter) setFilter("");
+                else e.currentTarget.blur();
+              }
+            }}
+          />
+          {filter && (
+            <button
+              className="filter-clear"
+              aria-label="Clear filter"
+              onClick={() => {
+                setFilter("");
+                filterRef.current?.focus();
+              }}
+            >
+              ✕
+            </button>
+          )}
         </div>
         <div className="summary">
           <Stat n={sessions.length} label="sessions" />
@@ -226,6 +290,7 @@ export function App(): React.JSX.Element {
             </button>
           )}
         </div>
+        <AlertBar settings={alertSettings} update={updateAlerts} />
         <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings) - press r">
           Report
           <kbd className="ghost-key" aria-hidden>
@@ -233,7 +298,7 @@ export function App(): React.JSX.Element {
           </kbd>
           {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
         </button>
-        <button className="dispatch-btn" onClick={() => setDispatchOpen(true)} title="Dispatch a new crewmate">
+        <button className="dispatch-btn" onClick={() => setDispatchOpen(true)} title="Dispatch a new agent (+)">
           <span aria-hidden>＋</span> Dispatch
         </button>
         <div className={`link ${connected ? "up" : "down"}`}>
@@ -243,7 +308,7 @@ export function App(): React.JSX.Element {
       </header>
 
       <main className="grid" ref={gridRef}>
-        {sorted.map((s) => (
+        {visible.map((s) => (
           <SessionCard
             key={s.id}
             session={s}
@@ -292,6 +357,19 @@ export function App(): React.JSX.Element {
           <p className="empty-sub">
             Start a <code>claude</code> or <code>codex</code> session in a wezterm tab or tmux
             session and it will appear here.
+          </p>
+        </div>
+      )}
+
+      {sessions.length > 0 && visible.length === 0 && (
+        <div className="empty">
+          <p className="empty-title">No sessions match "{filter}"</p>
+          <p className="empty-sub">
+            Nothing matches that title or status.{" "}
+            <button className="link-btn" onClick={() => setFilter("")}>
+              Clear the filter
+            </button>{" "}
+            to see all {sessions.length} sessions.
           </p>
         </div>
       )}
@@ -375,6 +453,19 @@ function columnCount(grid: HTMLElement | null): number {
   if (!grid) return 1;
   const tracks = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean);
   return Math.max(1, tracks.length);
+}
+
+/**
+ * True when a session matches the nav-bar filter. Matches on the card's title,
+ * its human status *label* ("running", "needs input", "working", …), and the
+ * agent type - so typing "codex", "idle", or a repo name all narrow the grid.
+ * Deliberately uses the display label, not the raw `state`: a passively-discovered
+ * session's raw state is "working" even though its badge reads "running", so
+ * matching raw state would make "working" hit every alive session.
+ */
+function matchesFilter(s: Session, q: string): boolean {
+  const haystack = `${s.name} ${stateDisplay(s).label} ${s.agent}`.toLowerCase();
+  return haystack.includes(q);
 }
 
 function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): React.JSX.Element {

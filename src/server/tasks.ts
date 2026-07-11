@@ -98,8 +98,8 @@ export class TaskManager {
   }
 
   /**
-   * Stop a task's crewmate and reclaim its (ephemeral) worktree, marking it
-   * cancelled. A dispatched crewmate's tree is throwaway - to preserve work you
+   * Stop a task's agent and reclaim its (ephemeral) worktree, marking it
+   * cancelled. A dispatched agent's tree is throwaway - to preserve work you
    * Focus and commit/PR it before cancelling - so cancel always reclaims, which
    * keeps the teardown model simple and leak-free (no keep/remove ambiguity that
    * an in-flight dispatch could race).

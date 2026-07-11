@@ -54,7 +54,7 @@ export async function sendText(
  * submission. Unlike `sendText`, newlines here must NOT each submit - so we send
  * the body via bracketed paste (tmux `paste-buffer -p` / wezterm's default paste),
  * which agent TUIs treat as one pasted block, then press Enter once to submit.
- * Used by dispatch to seed a crewmate's first task.
+ * Used by dispatch to seed an agent's first task.
  */
 export async function injectPrompt(session: Session, text: string): Promise<ActionResult> {
   if (session.tmux) {

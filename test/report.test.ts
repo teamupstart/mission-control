@@ -200,7 +200,7 @@ test("a parked gate only needs you once the agent has stopped driving it", () =>
 
 test("a parked gate defers to a same-worktree sibling still driving the run", () => {
   // no-mistakes decorates the one run onto every session sharing its worktree +
-  // branch (sibling terminals in a checkout, or a dispatched crewmate). Three
+  // branch (sibling terminals in a checkout, or a dispatched agent). Three
   // terminals in /repo on main; one runs /no-mistakes (working), two sit idle.
   const run = parkedGate({ branch: "main" });
   const driver = mkSession({ id: "ai1", cwd: "/repo", gitBranch: "main", state: "working", nomistakes: run });

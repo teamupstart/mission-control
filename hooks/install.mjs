@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Idempotently wire the AI Harness hook into Claude Code's settings.json.
+// Idempotently wire the Fleet Control hook into Claude Code's settings.json.
 //
 // Adds one command hook per event that runs harness-hook.mjs. Re-running updates
 // the path in place (matched by the "harness-hook.mjs" marker) without touching
@@ -121,8 +121,8 @@ const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "mcp
 if (text === original) {
   console.log(
     uninstall
-      ? `No AI Harness hooks found in ${settingsPath} - nothing to remove.`
-      : `AI Harness hooks already up to date in ${settingsPath} (left unchanged).`,
+      ? `No Fleet Control hooks found in ${settingsPath} - nothing to remove.`
+      : `Fleet Control hooks already up to date in ${settingsPath} (left unchanged).`,
   );
   process.exit(0);
 }
@@ -131,10 +131,10 @@ mkdirSync(dirname(settingsPath), { recursive: true });
 writeFileSync(settingsPath, text);
 
 if (uninstall) {
-  console.log(`Removed AI Harness hooks from ${settingsPath} (your other settings were left intact)`);
+  console.log(`Removed Fleet Control hooks from ${settingsPath} (your other settings were left intact)`);
   console.log(`\nTo remove the review-channel MCP server:\n  claude mcp remove -s user ai-harness`);
 } else {
-  console.log(`Wired AI Harness hooks into ${settingsPath} (merged in place; your other settings untouched)`);
+  console.log(`Wired Fleet Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);
   console.log(`  events: ${EVENTS.join(", ")}`);
   console.log(`  script: ${scriptPath}`);
   console.log(`\nStart a new Claude Code session; it will report live status to the harness.`);

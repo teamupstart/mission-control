@@ -3,7 +3,7 @@ import type { TaskKind, AgentType } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 
 /**
- * Launch (or queue) a new crewmate: pick a repo, describe the task, and dispatch.
+ * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
  */
@@ -58,11 +58,11 @@ export function DispatchModal({
       <div
         className="modal dispatch-modal"
         role="dialog"
-        aria-label="Dispatch a crewmate"
+        aria-label="Dispatch an agent"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="modal-head">
-          <h2>Dispatch a crewmate</h2>
+          <h2>Dispatch an agent</h2>
           <button className="icon-btn" aria-label="Close" onClick={onClose}>
             ✕
           </button>
@@ -71,18 +71,7 @@ export function DispatchModal({
         <div className="dispatch-body">
           <label className="field">
             <span className="field-label">Repo</span>
-            <input
-              className="field-input mono"
-              list="dispatch-repos"
-              placeholder="/absolute/path/to/repo"
-              value={repoRoot}
-              onChange={(e) => setRepoRoot(e.target.value)}
-            />
-            <datalist id="dispatch-repos">
-              {repos.map((r) => (
-                <option key={r} value={r} />
-              ))}
-            </datalist>
+            <RepoCombobox repos={repos} value={repoRoot} onChange={setRepoRoot} />
           </label>
 
           <div className="field-row">
@@ -127,7 +116,7 @@ export function DispatchModal({
             <textarea
               ref={intentRef}
               className="field-input field-textarea"
-              placeholder="What should this crewmate do?"
+              placeholder="What should this agent do?"
               rows={5}
               value={intent}
               onChange={(e) => setIntent(e.target.value)}
@@ -158,6 +147,113 @@ export function DispatchModal({
           </button>
         </footer>
       </div>
+    </div>
+  );
+}
+
+/**
+ * A themed combobox for the repo path. Replaces the native <datalist>, whose
+ * dropdown is browser-chrome and can't be styled to match the dark UI. Filters
+ * the known repos as you type, with arrow/enter/click selection and a dropdown
+ * that inherits the app's tokens.
+ */
+function RepoCombobox({
+  repos,
+  value,
+  onChange,
+}: {
+  repos: string[];
+  value: string;
+  onChange: (v: string) => void;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const q = value.trim().toLowerCase();
+  const matches = q ? repos.filter((r) => r.toLowerCase().includes(q)) : repos;
+  // Nothing to offer once the text already equals the only remaining match.
+  const showList = open && matches.length > 0 && !(matches.length === 1 && matches[0] === value);
+
+  // Collapse when focus/click leaves the widget.
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent): void {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  // Keep the highlighted row in range as the match list shrinks.
+  useEffect(() => {
+    setActive((a) => Math.min(a, Math.max(0, matches.length - 1)));
+  }, [matches.length]);
+
+  function choose(r: string): void {
+    onChange(r);
+    setActive(0);
+    setOpen(false);
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!showList) setOpen(true);
+      else setActive((a) => Math.min(a + 1, matches.length - 1));
+    } else if (e.key === "ArrowUp") {
+      if (!showList) return;
+      e.preventDefault();
+      setActive((a) => Math.max(a - 1, 0));
+    } else if (e.key === "Enter") {
+      if (showList && matches[active]) {
+        e.preventDefault();
+        choose(matches[active]);
+      }
+    } else if (e.key === "Escape" && open) {
+      // Close only the dropdown; keep the dispatch modal open.
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div className="combobox" ref={rootRef}>
+      <input
+        className="field-input mono"
+        role="combobox"
+        aria-expanded={showList}
+        aria-autocomplete="list"
+        placeholder="/absolute/path/to/repo"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+      />
+      {showList && (
+        <ul className="combobox-list" role="listbox">
+          {matches.map((r, i) => (
+            <li
+              key={r}
+              role="option"
+              aria-selected={i === active}
+              className={`combobox-option${i === active ? " is-active" : ""}`}
+              onMouseEnter={() => setActive(i)}
+              onMouseDown={(e) => {
+                // Pick before the input's blur fires, so the click registers.
+                e.preventDefault();
+                choose(r);
+              }}
+            >
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

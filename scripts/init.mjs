@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One-time bootstrap that makes the AI Harness fully functional and wires up the
+// One-time bootstrap that makes Fleet Control fully functional and wires up the
 // two companion tools it builds on:
 //
 //   • treehouse   - a pool of pre-warmed git worktrees, so parallel agent
@@ -77,7 +77,7 @@ function run(cmd, args, opts = {}) {
   }
 }
 
-console.log(`\x1b[1mAI Harness · init\x1b[0m${dryRun ? "  (dry-run)" : ""}`);
+console.log(`\x1b[1mFleet Control · init\x1b[0m${dryRun ? "  (dry-run)" : ""}`);
 console.log(`repo: ${repo}`);
 
 // 1. Node dependencies -------------------------------------------------------

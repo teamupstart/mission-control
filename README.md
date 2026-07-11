@@ -1,4 +1,4 @@
-# AI Harness
+# Fleet Control
 
 A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
 across your **wezterm tabs** and **tmux sessions**. See every agent at a glance,
@@ -24,6 +24,10 @@ and get your decision back.
   backlog for later).
 - **Reports** the fleet's bearings: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
+- **Alerts** you when the fleet needs you: a desktop notification + sound the
+  moment a session needs input, a review lands, a no-mistakes gate parks, or a
+  dispatched task fails - with an **AFK mode** that also pings on idle sessions and
+  finished tasks and sends periodic fleet digests.
 
 ## Quick start
 
@@ -97,7 +101,7 @@ npm run install-hooks
 Expected output:
 
 ```
-Wired AI Harness hooks into /Users/you/.claude/settings.json
+Wired Fleet Control hooks into /Users/you/.claude/settings.json
   events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd
   script: /Users/you/workspace/ai-harness/hooks/harness-hook.mjs
 ```
@@ -198,14 +202,14 @@ launches. It exposes four tools:
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
 
-## Dispatch a crewmate
+## Dispatch an agent
 
 The dashboard isn't just a mirror - you can launch new agents from it. Click **＋
-Dispatch**, pick a repo, describe the task, and the daemon:
+Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daemon:
 
 1. provisions an **isolated worktree** for the task (a pooled
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
-   else a plain `git worktree` on a fresh `harness/…` branch - so a crewmate never shares
+   else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
 2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there, and
 3. injects your task as its first prompt once passive discovery binds the session.
@@ -216,7 +220,7 @@ it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a ta
 launching it yet.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
-persisted in SQLite, so the backlog and a running crew's intent survive a daemon restart.
+persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `HARNESS_CLAUDE_BIN` / `HARNESS_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
 ## Fleet report (bearings)
@@ -228,6 +232,24 @@ and **recent outcomes**. Dispatch a queued task or drop it right from the panel,
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
+
+## Alerts & AFK mode
+
+So you don't have to watch the grid, the dashboard can **alert you when the fleet
+needs you**. The daemon already streams every attention event over SSE; the browser
+turns those into a **desktop (Chrome) notification + a short sound** the moment a
+session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
+dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
+watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
+
+Open the **🔔 Alerts** control in the top bar to **Enable desktop alerts** (grants the
+browser Notification permission and unlocks the chime), toggle **Sound**, and flip
+**AFK mode**. AFK also alerts on sessions going idle and tasks finishing, and sends a
+periodic **fleet digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
+the browser; the chime is synthesized with the Web Audio API (no asset, no network).
+Alerts fire on the *transition* into attention (once, not every tick) and de-dupe, so
+a waiting session pings you once. Delivery needs the tab open (foreground or
+background); a closed tab can't receive one.
 
 ## no-mistakes
 
@@ -312,7 +334,7 @@ make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

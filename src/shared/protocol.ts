@@ -80,7 +80,7 @@ export const StatusSchema = z.object({
 export type StatusReport = z.infer<typeof StatusSchema>;
 
 /**
- * Dispatch (or queue) a new crewmate: launch an agent in an isolated worktree of
+ * Dispatch (or queue) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `queue: true` only adds it to the
  * backlog (no worktree/session yet); dispatch it later.
  */

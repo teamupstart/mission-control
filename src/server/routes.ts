@@ -161,7 +161,7 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  // --- dispatch: launch/queue crewmates (localhost only) ---
+  // --- dispatch: launch/queue agents (localhost only) ---
   app.post("/api/tasks", async (c) => {
     const parsed = DispatchSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);

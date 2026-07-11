@@ -15,6 +15,7 @@ import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { transcriptStreamHandler } from "./transcript.ts";
+import { computeSessionDiff } from "./diff.ts";
 import { checkToken } from "./auth.ts";
 import { focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
@@ -67,6 +68,13 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.get("/events", sseHandler(registry));
   // Live transcript for the expanded card (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
+  // Diff of a session's worktree/branch vs its source branch (localhost read).
+  app.get("/api/sessions/:id/diff", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const source = c.req.query("base") || undefined;
+    return c.json(await computeSessionDiff(session.cwd, source));
+  });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
     checkToken(c.req.header("x-harness-token"));

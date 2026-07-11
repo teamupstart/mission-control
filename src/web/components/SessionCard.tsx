@@ -22,6 +22,7 @@ export function SessionCard({
   session,
   gateNeedsYou = false,
   onOpenReviews,
+  onOpenDiff,
   selected = false,
   onSelect,
   expanded = false,
@@ -33,6 +34,7 @@ export function SessionCard({
   /** True when this session's parked no-mistakes gate needs you (computed fleet-wide in App). */
   gateNeedsYou?: boolean;
   onOpenReviews?: () => void;
+  onOpenDiff?: () => void;
   selected?: boolean;
   onSelect?: () => void;
   expanded?: boolean;
@@ -73,6 +75,19 @@ export function SessionCard({
             <span className="badge-dot" />
             {st.label}
           </span>
+        )}
+        {session.cwd && (
+          <button
+            className="diff-btn"
+            aria-label="View changes vs source branch"
+            title="View changes vs source branch"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDiff?.();
+            }}
+          >
+            diff
+          </button>
         )}
         <button
           className={`expand-toggle${expanded ? " open" : ""}`}

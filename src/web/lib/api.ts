@@ -1,6 +1,26 @@
+import type { SessionDiff } from "@shared/types.ts";
+
 export interface ActionResult {
   ok: boolean;
   error?: string;
+}
+
+/** Fetch a session's diff vs its source branch. Never throws - maps failures into the shape. */
+export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
+  const fail = (error: string): SessionDiff => ({
+    ok: false, error, base: null, baseSha: null, headSha: null, branch: null,
+    filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
+  });
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/diff`);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return fail(data.error ?? `HTTP ${res.status}`);
+    }
+    return (await res.json()) as SessionDiff;
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
 }
 
 async function request(method: string, path: string, body?: unknown): Promise<ActionResult> {

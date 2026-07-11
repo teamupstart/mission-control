@@ -14,17 +14,24 @@ const STEP_TONE: Record<string, string> = {
 
 /**
  * Compact surface of a no-mistakes run for a gated repo: the pipeline as status
- * dots, the gate it's parked at, and the findings. When parked at a gate you can
- * approve / fix / skip it - the same decisions `no-mistakes axi respond` takes,
- * driven from here. Approve/skip confirm first since they advance the pipeline
- * toward pushing your branch.
+ * dots, the gate it's parked at, and the findings.
+ *
+ * A parked gate is `awaiting_agent` - the run is waiting on the agent's
+ * `axi respond`, which the `/no-mistakes` skill issues autonomously. So we only
+ * prompt YOU (attention framing + approve / fix / skip buttons) when `needsYou`
+ * says the agent has actually stopped at the gate; while it's still driving the
+ * pipeline we show the same gate as a calm "agent resolving" line. The buttons
+ * take the same decisions `no-mistakes axi respond` does; approve/skip confirm
+ * first since they advance the pipeline toward pushing your branch.
  */
 export function NomistakesStrip({
   sessionId,
   nm,
+  needsYou,
 }: {
   sessionId: string;
   nm: NmRunSummary;
+  needsYou: boolean;
 }): React.JSX.Element {
   const label = nm.outcome ?? nm.status;
   return (
@@ -32,7 +39,9 @@ export function NomistakesStrip({
       <div className="nm-head">
         <span className="nm-brand">◇ no-mistakes</span>
         <span className={`nm-status nm-status-${nm.outcome ? "done" : nm.status}`}>{label}</span>
-        {nm.awaitingAgent && <span className="nm-parked">{nm.awaitingAgent}</span>}
+        {nm.awaitingAgent && (
+          <span className={needsYou ? "nm-parked" : "nm-resolving"}>{nm.awaitingAgent}</span>
+        )}
       </div>
 
       {nm.steps.length > 0 && (
@@ -49,8 +58,9 @@ export function NomistakesStrip({
       )}
 
       {nm.gateStep && (
-        <div className="nm-gateline">
-          ⏸ parked at <strong>{nm.gateStep}</strong>
+        <div className={needsYou ? "nm-gateline" : "nm-gateline nm-gateline-calm"}>
+          {needsYou ? "⏸ parked at " : "◷ agent resolving "}
+          <strong>{nm.gateStep}</strong>
           {nm.gateSummary ? ` · ${nm.gateSummary}` : ""}
           {nm.gateRisk ? ` · ${nm.gateRisk} risk` : ""}
         </div>
@@ -65,7 +75,7 @@ export function NomistakesStrip({
         </ul>
       )}
 
-      {nm.gateStep && <GateActions sessionId={sessionId} findings={nm.findings} />}
+      {nm.gateStep && needsYou && <GateActions sessionId={sessionId} findings={nm.findings} />}
     </div>
   );
 }

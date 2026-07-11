@@ -407,6 +407,13 @@ body {
   font-size: 11px;
   font-weight: 560;
 }
+/* Same slot, but calm: the agent is answering the gate itself, not waiting on you. */
+.nm-resolving {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 560;
+}
 .nm-pipe {
   display: flex;
   gap: 4px;
@@ -439,6 +446,10 @@ body {
 .nm-gateline {
   color: var(--attention);
   font-size: 11.5px;
+}
+/* The agent is resolving the gate itself - inform, don't alarm. */
+.nm-gateline-calm {
+  color: var(--dim);
 }
 .nm-gateline strong {
   color: var(--fg);

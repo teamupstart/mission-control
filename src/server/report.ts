@@ -40,12 +40,12 @@ export function buildReport(
   let exited = 0;
 
   for (const s of snap.sessions) {
-    const bucket = reportBucket(s);
+    const bucket = reportBucket(s, snap.sessions);
     if (bucket === "exited") {
       exited++;
       continue;
     }
-    if (bucket === "needs-you") needsYou.push(toItem(s, needsYouReason(s) ?? "needs you"));
+    if (bucket === "needs-you") needsYou.push(toItem(s, needsYouReason(s, snap.sessions) ?? "needs you"));
     else if (bucket === "idle") idle.push(toItem(s));
     else working.push(toItem(s));
   }

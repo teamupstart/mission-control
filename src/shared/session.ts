@@ -24,21 +24,66 @@ export function finishedTasks(tasks: Task[]): Task[] {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
-/** True when a no-mistakes run is parked waiting on a decision for this session. */
-export function gateParked(s: Session): boolean {
+/**
+ * True while the agent is (or is presumed to be) actively driving its own work,
+ * so it will answer a parked no-mistakes gate itself rather than waiting on you.
+ * A hook-instrumented session is active in `starting`/`working`; an
+ * uninstrumented session only ever reports `working` while alive, so we treat it
+ * as active crew too (same "can't prove it's waiting" stance as reportBucket).
+ */
+export function agentActive(s: Session): boolean {
+  return s.state === "starting" || s.state === "working";
+}
+
+/** True while a no-mistakes run is parked at a gate, awaiting the agent's decision. */
+function gatePending(s: Session): boolean {
   return Boolean(s.nomistakes && (s.nomistakes.awaitingAgent || s.nomistakes.gateStep));
+}
+
+/** Two sessions share the same no-mistakes run: same worktree (cwd) on the same branch. */
+function sameRun(a: Session, b: Session): boolean {
+  return a.cwd !== null && a.cwd === b.cwd && a.gitBranch === b.gitBranch;
+}
+
+/**
+ * True when a no-mistakes run parked on `s` *needs you* - i.e. waiting on a human
+ * decision, not on the agent.
+ *
+ * `axi` is the agent-facing interface: a parked gate reports `awaiting_agent`
+ * because it's waiting for the agent's `axi respond`, which the `/no-mistakes`
+ * skill issues autonomously while the session works. Surfacing every parked gate
+ * as "needs you" nags you for decisions the skill self-resolves.
+ *
+ * The same run is decorated onto *every* session sharing its worktree+branch (a
+ * dispatched crewmate, or sibling terminals in the same checkout), so it's still
+ * being driven as long as ANY of those sessions is active - the agent behind that
+ * one will answer the gate. Only once they've all stopped does it need you. Pass
+ * `fleet` (all live sessions) for that cross-session check; it defaults to `s`
+ * alone, which reduces to "parked and this agent has stopped".
+ *
+ * Tradeoff: a same-worktree session working on something unrelated also suppresses
+ * the prompt. That's rare (one active run per repo) and errs toward not nagging.
+ */
+export function gateParked(s: Session, fleet: Session[] = [s]): boolean {
+  if (!gatePending(s)) return false;
+  if (agentActive(s)) return false; // this agent is driving its own gate
+  for (const o of fleet) {
+    if (o.state !== "exited" && sameRun(o, s) && agentActive(o)) return false; // a sibling is driving it
+  }
+  return true;
 }
 
 /**
  * Which report section a session belongs to. Mirrors the card's badge precedence:
  * a pending review or a parked gate always means "needs you", regardless of the
  * agent's own reported state; an uninstrumented ("running") session counts as
- * active crew rather than idle, since we can't prove it's waiting.
+ * active crew rather than idle, since we can't prove it's waiting. `fleet` lets a
+ * parked gate defer to a same-run session that's still driving it (see gateParked).
  */
-export function reportBucket(s: Session): ReportBucket {
+export function reportBucket(s: Session, fleet: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
   if (s.pendingReviews > 0) return "needs-you";
-  if (gateParked(s)) return "needs-you";
+  if (gateParked(s, fleet)) return "needs-you";
   if (!s.instrumented) return "working";
   switch (s.state) {
     case "awaiting_input":
@@ -52,10 +97,10 @@ export function reportBucket(s: Session): ReportBucket {
 }
 
 /** A one-line reason a session needs you, or null when it doesn't. */
-export function needsYouReason(s: Session): string | null {
+export function needsYouReason(s: Session, fleet: Session[] = [s]): string | null {
   if (s.pendingReviews > 0) return s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review";
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
-  if (gateParked(s)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;
+  if (gateParked(s, fleet)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;
   return null;
 }

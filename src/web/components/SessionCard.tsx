@@ -20,6 +20,7 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
 
 export function SessionCard({
   session,
+  gateNeedsYou = false,
   onOpenReviews,
   selected = false,
   onSelect,
@@ -29,6 +30,8 @@ export function SessionCard({
   registerActions,
 }: {
   session: Session;
+  /** True when this session's parked no-mistakes gate needs you (computed fleet-wide in App). */
+  gateNeedsYou?: boolean;
   onOpenReviews?: () => void;
   selected?: boolean;
   onSelect?: () => void;
@@ -127,7 +130,13 @@ export function SessionCard({
 
       {session.activity && <p className="activity">{session.activity}</p>}
 
-      {session.nomistakes && <NomistakesStrip sessionId={session.id} nm={session.nomistakes} />}
+      {session.nomistakes && (
+        <NomistakesStrip
+          sessionId={session.id}
+          nm={session.nomistakes}
+          needsYou={gateNeedsYou}
+        />
+      )}
 
       <footer className="card-foot">
         <span className="agent-name">{AGENT_LABEL[session.agent]}</span>

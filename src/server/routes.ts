@@ -10,6 +10,7 @@ import {
 import type { Registry } from "./registry.ts";
 import type { ReviewManager } from "./reviews.ts";
 import { sseHandler } from "./sse.ts";
+import { transcriptStreamHandler } from "./transcript.ts";
 import { checkToken } from "./auth.ts";
 import { focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
@@ -24,6 +25,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager): Hono {
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/events", sseHandler(registry));
+  // Live transcript for the expanded card (localhost-only, like the actions).
+  app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
     checkToken(c.req.header("x-harness-token"));

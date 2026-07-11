@@ -1083,3 +1083,117 @@ kbd {
   border-radius: 5px;
   border: 1px solid var(--border-soft);
 }
+
+/* ---- expandable conversation ---- */
+.expand-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.expand-toggle:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
+}
+.expand-toggle.open {
+  transform: rotate(180deg);
+  color: var(--fg);
+}
+
+.transcript {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.transcript-log {
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+.transcript-empty {
+  color: var(--dim);
+  font-size: 13px;
+  padding: 8px 2px;
+}
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.turn-role {
+  font: 600 10px/1 var(--sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.turn-assistant .turn-role {
+  color: color-mix(in oklab, var(--claude) 70%, var(--muted));
+}
+.turn-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 13px/1.5 var(--sans);
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.turn-user .turn-text {
+  background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
+}
+.turn-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.tool-chip {
+  font: 500 11px/1 var(--mono);
+  color: var(--muted);
+  background: color-mix(in oklab, var(--neutral) 12%, transparent);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+.transcript-compose {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.transcript-input {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+  min-height: 38px;
+  font: 13px/1.45 var(--sans);
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.transcript-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.transcript-input:disabled {
+  opacity: 0.55;
+}

@@ -19,6 +19,7 @@ export function App(): React.JSX.Element {
   const { sessions, reviews, connected } = useEventStream();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -33,6 +34,15 @@ export function App(): React.JSX.Element {
   const registerActions = useCallback((id: string, handle: ActionBarHandle | null) => {
     if (handle) actionHandles.current.set(id, handle);
     else actionHandles.current.delete(id);
+  }, []);
+
+  const toggleExpand = useCallback((id: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }, []);
 
   const sorted = useMemo(() => {
@@ -63,6 +73,16 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
   }, [sessions, selectedId]);
+
+  // Forget expand state for sessions that are gone so the set can't grow unbounded.
+  useEffect(() => {
+    setExpandedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(sessions.map((s) => s.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [sessions]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
@@ -115,6 +135,12 @@ export function App(): React.JSX.Element {
         default: {
           if (e.metaKey || e.ctrlKey || e.altKey) return;
           const k = e.key.toLowerCase();
+          if (k === "e") {
+            if (!selectedId) return;
+            e.preventDefault();
+            toggleExpand(selectedId);
+            return;
+          }
           if (k !== "s" && k !== "f" && k !== "k") return;
           const h = handle();
           if (!h) return;
@@ -127,7 +153,7 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sorted, selectedId, modalOpen]);
+  }, [sorted, selectedId, modalOpen, toggleExpand]);
 
   return (
     <div className="app">
@@ -161,6 +187,8 @@ export function App(): React.JSX.Element {
             session={s}
             selected={s.id === selectedId}
             onSelect={() => setSelectedId(s.id)}
+            expanded={expandedIds.has(s.id)}
+            onToggleExpand={() => toggleExpand(s.id)}
             onOpenReviews={() => setReviewSessionId(s.id)}
             registerEl={registerEl}
             registerActions={registerActions}
@@ -189,6 +217,8 @@ export function App(): React.JSX.Element {
       {selected && (
         <CommandBar
           session={selected}
+          expanded={expandedIds.has(selected.id)}
+          onToggleExpand={() => toggleExpand(selected.id)}
           onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
           onDeselect={() => setSelectedId(null)}
         />
@@ -204,10 +234,14 @@ export function App(): React.JSX.Element {
  */
 function CommandBar({
   session,
+  expanded,
+  onToggleExpand,
   onAction,
   onDeselect,
 }: {
   session: Session;
+  expanded: boolean;
+  onToggleExpand: () => void;
   onAction: (action: "startSend" | "focusPane" | "requestKill") => void;
   onDeselect: () => void;
 }): React.JSX.Element {
@@ -232,6 +266,9 @@ function CommandBar({
             </button>
           </>
         )}
+        <button className="keycap-btn" onClick={onToggleExpand}>
+          <kbd>e</kbd> {expanded ? "collapse" : "expand"}
+        </button>
         <span className="cmdbar-hint">
           <kbd>↑↓←→</kbd> move
           <button className="keycap-btn" onClick={onDeselect}>

@@ -21,9 +21,13 @@ export interface ActionBarHandle {
  */
 export function ActionBar({
   session,
+  expanded = false,
   registerActions,
 }: {
   session: Session;
+  /** When the card is expanded, the transcript panel owns the reply box, so we
+   * hide this bar's Send button to avoid two send surfaces. */
+  expanded?: boolean;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
 }): React.JSX.Element {
   const [composing, setComposing] = useState(false);
@@ -123,14 +127,16 @@ export function ActionBar({
         </div>
       ) : (
         <>
-          <button
-            className="btn"
-            disabled={!canSend}
-            title={canSend ? "Type into this session's prompt" : "No pane to send to"}
-            onClick={startSend}
-          >
-            Send
-          </button>
+          {!expanded && (
+            <button
+              className="btn"
+              disabled={!canSend}
+              title={canSend ? "Type into this session's prompt" : "No pane to send to"}
+              onClick={startSend}
+            >
+              Send
+            </button>
+          )}
           <button className="btn" onClick={focusPane}>
             Focus
           </button>

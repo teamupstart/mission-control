@@ -1,8 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
+import { TranscriptPanel } from "./TranscriptPanel.tsx";
 
 function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) {
@@ -22,6 +23,8 @@ export function SessionCard({
   onOpenReviews,
   selected = false,
   onSelect,
+  expanded = false,
+  onToggleExpand,
   registerEl,
   registerActions,
 }: {
@@ -29,11 +32,14 @@ export function SessionCard({
   onOpenReviews?: () => void;
   selected?: boolean;
   onSelect?: () => void;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
+  const canSend = Boolean(session.tmux || session.wezterm);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -65,6 +71,18 @@ export function SessionCard({
             {st.label}
           </span>
         )}
+        <button
+          className={`expand-toggle${expanded ? " open" : ""}`}
+          aria-label={expanded ? "Collapse conversation" : "Expand conversation"}
+          aria-expanded={expanded}
+          title={expanded ? "Hide conversation" : "Show conversation"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand?.();
+          }}
+        >
+          ⌃
+        </button>
       </header>
 
       <dl className="card-meta">
@@ -113,7 +131,11 @@ export function SessionCard({
       </footer>
 
       {session.state !== "exited" && (
-        <ActionBar session={session} registerActions={registerActions} />
+        <ActionBar session={session} expanded={expanded} registerActions={registerActions} />
+      )}
+
+      {expanded && (
+        <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
       )}
     </article>
   );

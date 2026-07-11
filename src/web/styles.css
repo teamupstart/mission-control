@@ -211,6 +211,15 @@ body {
     0 0 0 1px color-mix(in oklab, var(--attention) 30%, transparent),
     0 0 24px color-mix(in oklab, var(--attention) 16%, transparent);
 }
+/* Keyboard-selected card: a distinct blue ring that survives hover + attention. */
+.card.selected,
+.card.selected:hover {
+  border-color: color-mix(in oklab, var(--working) 65%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 2px color-mix(in oklab, var(--working) 60%, transparent),
+    0 0 26px color-mix(in oklab, var(--working) 18%, transparent);
+}
 
 .card-head {
   display: flex;
@@ -954,6 +963,101 @@ body {
   margin: 8px 0;
   padding-left: 12px;
   border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+/* ---- keyboard command bar ---- */
+.cmdbar {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 10px 8px 16px;
+  font-size: 12.5px;
+  background: color-mix(in oklab, var(--panel) 90%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  animation: cmdbar-in 0.16s ease;
+}
+@keyframes cmdbar-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+}
+.cmdbar-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 620;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 34vw;
+}
+.cmdbar-name .agent-dot {
+  flex: none;
+}
+.cmdbar-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.cmdbar-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 11.5px;
+}
+.keycap-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+.keycap-btn:hover {
+  color: var(--fg);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+kbd {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 3px 5px;
+  min-width: 15px;
+  text-align: center;
+}
+.cmdbar-hint kbd {
   color: var(--muted);
 }
 

@@ -1,6 +1,7 @@
+import { useCallback } from "react";
 import type { Session } from "@shared/types.ts";
 import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
-import { ActionBar } from "./ActionBar.tsx";
+import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 
 function subtitle(session: Session): string {
@@ -19,17 +20,33 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
 export function SessionCard({
   session,
   onOpenReviews,
+  selected = false,
+  onSelect,
+  registerEl,
+  registerActions,
 }: {
   session: Session;
   onOpenReviews?: () => void;
+  selected?: boolean;
+  onSelect?: () => void;
+  registerEl?: (id: string, el: HTMLElement | null) => void;
+  registerActions?: (id: string, handle: ActionBarHandle | null) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
 
+  // Stable per-session ref callback so the element map isn't churned each render.
+  const setRef = useCallback(
+    (el: HTMLElement | null) => registerEl?.(session.id, el),
+    [registerEl, session.id],
+  );
+
   return (
     <article
-      className={`card tone-${st.tone}${attention ? " attention" : ""}`}
+      ref={setRef}
+      className={`card tone-${st.tone}${attention ? " attention" : ""}${selected ? " selected" : ""}`}
       data-agent={session.agent}
+      onClick={onSelect}
     >
       <header className="card-head">
         <span className={`agent-dot agent-${session.agent}`} aria-hidden />
@@ -95,7 +112,9 @@ export function SessionCard({
         </span>
       </footer>
 
-      {session.state !== "exited" && <ActionBar session={session} />}
+      {session.state !== "exited" && (
+        <ActionBar session={session} registerActions={registerActions} />
+      )}
     </article>
   );
 }

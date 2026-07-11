@@ -233,3 +233,18 @@ export function loadActiveTasks(): Task[] {
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);
 }
+
+/**
+ * The most recent terminal tasks (done/failed/cancelled), so the fleet report's
+ * "recent outcomes" survives a daemon restart instead of vanishing even though
+ * the row is still stored. Bounded so a long-lived history doesn't bloat memory.
+ */
+export function loadRecentTerminalTasks(limit: number): Task[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT * FROM tasks WHERE status IN ('done','failed','cancelled')
+       ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(limit) as unknown as TaskRow[];
+  return rows.map(rowToTask);
+}

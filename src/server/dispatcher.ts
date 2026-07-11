@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin } from "./config.ts";
-import { sendText } from "./actions.ts";
+import { injectPrompt } from "./actions.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 
@@ -35,17 +35,13 @@ export class Dispatcher {
 
       const slug = slugify(task.title);
       const shortId = task.id.slice(0, 6);
-      const tmuxSession = await uniqueTmuxSessionName(slug, shortId);
 
       const wt = await provisionWorktree(task.repoRoot, task.id, slug, shortId);
-      task = this.patch(task, {
-        worktreePath: wt.path,
-        branch: wt.branch,
-        provider: wt.provider,
-        tmuxSession,
-      });
+      // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
+      task = this.patch(task, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
 
-      await spawnDetachedSession(tmuxSession, wt.path, agentBin);
+      const tmuxSession = await spawnUniquely(slug, shortId, wt.path, agentBin);
+      task = this.patch(task, { tmuxSession });
 
       const session = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
       if (!session) {
@@ -53,7 +49,7 @@ export class Dispatcher {
       }
       await delay(SETTLE_MS);
 
-      const sent = await sendText(session, task.intent, true);
+      const sent = await injectPrompt(session, task.intent);
       if (!sent.ok) throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
 
       this.patch(task, { status: "running", sessionId: session.id });
@@ -198,6 +194,29 @@ async function uniqueTmuxSessionName(slug: string, shortId: string): Promise<str
     r.code === 0 ? r.stdout.split("\n").map((s) => s.trim()).filter(Boolean) : [],
   );
   return taken.has(slug) ? `${slug}-${shortId}` : slug;
+}
+
+/**
+ * Spawn the agent under a session name, closing the check-then-spawn race: if a
+ * concurrent dispatch claimed the bare slug between our listing and our spawn,
+ * retry once under the always-unique `slug-shortId`. Returns the name actually used.
+ */
+async function spawnUniquely(
+  slug: string,
+  shortId: string,
+  cwd: string,
+  agentBin: string,
+): Promise<string> {
+  const name = await uniqueTmuxSessionName(slug, shortId);
+  try {
+    await spawnDetachedSession(name, cwd, agentBin);
+    return name;
+  } catch (err) {
+    const alt = `${slug}-${shortId}`;
+    if (name === alt) throw err;
+    await spawnDetachedSession(alt, cwd, agentBin);
+    return alt;
+  }
 }
 
 async function currentBranch(dir: string): Promise<string | null> {

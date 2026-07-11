@@ -14,9 +14,13 @@ import {
   deleteTask as dbDeleteTask,
   loadActiveTasks,
   loadPendingReviews,
+  loadRecentTerminalTasks,
   logEvent,
   upsertTask as dbUpsertTask,
 } from "./db.ts";
+
+/** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
+const RECENT_TERMINAL_TASKS = 50;
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
@@ -53,6 +57,7 @@ export class Registry extends EventEmitter {
     super();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
+    for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
   }
 
   snapshot(): { sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] } {

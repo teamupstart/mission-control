@@ -11,9 +11,8 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // HARNESS_HOME at module load, so db/registry must be imported dynamically after.
 const home = mkdtempSync(join(tmpdir(), "harness-db-"));
 process.env.HARNESS_HOME = home;
-const { openDb, upsertTask, getTask, listTasks, loadActiveTasks, deleteTask } = await import(
-  "../src/server/db.ts"
-);
+const { openDb, upsertTask, getTask, listTasks, loadActiveTasks, loadRecentTerminalTasks, deleteTask } =
+  await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -81,6 +80,20 @@ test("loadActiveTasks keeps queued/dispatching/running, drops terminal states", 
   assert.ok(active.includes("t3"));
   assert.ok(!active.includes("t2"));
   assert.ok(!active.includes("t4"));
+});
+
+test("loadRecentTerminalTasks returns finished tasks newest-first, bounded", () => {
+  upsertTask(mkTask({ id: "done-old", status: "done", updatedAt: 10 }));
+  upsertTask(mkTask({ id: "done-new", status: "done", updatedAt: 9000 }));
+  const recent = loadRecentTerminalTasks(1);
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0]?.id, "done-new"); // most recent by updated_at
+});
+
+test("a finished task rehydrates into a fresh Registry (recent outcomes survive restart)", () => {
+  upsertTask(mkTask({ id: "tDone", status: "done", outcome: "shipped", updatedAt: 5000 }));
+  const r = new Registry();
+  assert.ok(r.snapshot().tasks.some((t) => t.id === "tDone"));
 });
 
 test("deleteTask removes the row", () => {

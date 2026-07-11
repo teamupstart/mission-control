@@ -16,13 +16,18 @@ function git(cwd: string, args: string[]): ReturnType<typeof run> {
   return run("git", ["-C", cwd, ...args], { timeoutMs: 15000 });
 }
 
-/** The repo's source/default branch: origin's HEAD, else main, else master. */
-async function defaultBranch(cwd: string): Promise<string | null> {
+/**
+ * The ref to diff against: the upstream default branch (origin's HEAD, else a
+ * remote-tracking origin/main|master), falling back to a local main|master. The
+ * remote-tracking ref is preferred so the diff reflects what this branch changed
+ * against the *current* mainline, not a possibly-stale local branch.
+ */
+async function sourceRef(cwd: string): Promise<string | null> {
   const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-  if (head.code === 0 && head.stdout.trim()) return head.stdout.trim().replace(/^origin\//, "");
-  for (const b of ["main", "master"]) {
-    const r = await git(cwd, ["rev-parse", "--verify", "--quiet", b]);
-    if (r.code === 0 && r.stdout.trim()) return b;
+  if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
+  for (const ref of ["origin/main", "origin/master", "main", "master"]) {
+    const r = await git(cwd, ["rev-parse", "--verify", "--quiet", ref]);
+    if (r.code === 0 && r.stdout.trim()) return ref;
   }
   return null;
 }
@@ -54,13 +59,14 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   const headRes = await git(cwd, ["rev-parse", "--short", "HEAD"]);
   const headSha = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
 
-  const base = source || (await defaultBranch(cwd));
+  const ref = source || (await sourceRef(cwd));
+  const base = ref ? ref.replace(/^origin\//, "") : null; // display name (strip remote prefix)
   // Diff from the merge-base so the mainline's own newer commits don't appear -
   // only what this branch/worktree changed since it diverged.
   let diffBase = "HEAD";
   let baseSha: string | null = null;
-  if (base) {
-    const mb = await git(cwd, ["merge-base", "HEAD", base]);
+  if (ref) {
+    const mb = await git(cwd, ["merge-base", "HEAD", ref]);
     if (mb.code === 0 && mb.stdout.trim()) {
       diffBase = mb.stdout.trim();
       baseSha = diffBase.slice(0, 12);

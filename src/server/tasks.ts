@@ -3,7 +3,6 @@ import type { AgentType, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
 import { kill } from "./actions.ts";
-import { run } from "./util/exec.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -90,8 +89,14 @@ export class TaskManager {
     return this.registry.getTask(id) ?? t;
   }
 
-  /** Stop a task's crewmate and mark it cancelled; optionally tear down its worktree. */
-  async cancel(id: string, removeWorktree: boolean): Promise<Ok> {
+  /**
+   * Stop a task's crewmate and reclaim its (ephemeral) worktree, marking it
+   * cancelled. A dispatched crewmate's tree is throwaway - to preserve work you
+   * Focus and commit/PR it before cancelling - so cancel always reclaims, which
+   * keeps the teardown model simple and leak-free (no keep/remove ambiguity that
+   * an in-flight dispatch could race).
+   */
+  async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
 
@@ -99,22 +104,28 @@ export class TaskManager {
       const s = this.registry.getSession(t.sessionId);
       if (s) kill(s);
     }
-    if (removeWorktree) {
-      // teardownWorktree also kills the tmux session and returns/removes the tree.
-      await teardownWorktree(t);
-    } else if (t.tmuxSession) {
-      await run("tmux", ["kill-session", "-t", t.tmuxSession], { timeoutMs: 10000 });
-    }
+    // teardownWorktree also kills the tmux session and returns/removes the tree.
+    await teardownWorktree(t).catch(() => {});
 
     const now = Date.now();
-    const kept = removeWorktree ? { worktreePath: null, branch: null, provider: null, tmuxSession: null } : {};
-    this.registry.upsertTask({ ...t, ...kept, status: "cancelled", completedAt: now, updatedAt: now });
+    this.registry.upsertTask({
+      ...t,
+      status: "cancelled",
+      worktreePath: null,
+      branch: null,
+      provider: null,
+      tmuxSession: null,
+      completedAt: now,
+      updatedAt: now,
+    });
     return { ok: true };
   }
 
-  complete(id: string, outcome: string, outcomeUrl?: string): Task | null {
+  /** Record a task's outcome and reclaim its worktree - the crewmate's job is done. */
+  async complete(id: string, outcome: string, outcomeUrl?: string): Promise<Task | null> {
     const t = this.registry.getTask(id);
     if (!t) return null;
+    await teardownWorktree(t).catch(() => {});
     const now = Date.now();
     const updated: Task = {
       ...t,
@@ -122,6 +133,11 @@ export class TaskManager {
       outcome,
       outcomeUrl: outcomeUrl ?? null,
       error: null,
+      worktreePath: null,
+      branch: null,
+      provider: null,
+      tmuxSession: null,
+      sessionId: null,
       completedAt: now,
       updatedAt: now,
     };
@@ -129,12 +145,15 @@ export class TaskManager {
     return updated;
   }
 
-  remove(id: string): Ok {
+  async remove(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (t.status === "running" || t.status === "dispatching") {
       return { ok: false, error: "cancel the task before removing it" };
     }
+    // A terminal task may still hold a tree (e.g. a failed-but-alive dispatch);
+    // reclaim it so removing the record never leaks a worktree/lease.
+    if (t.worktreePath) await teardownWorktree(t).catch(() => {});
     this.registry.removeTask(id);
     return { ok: true };
   }

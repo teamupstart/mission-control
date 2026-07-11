@@ -156,20 +156,20 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   });
 
   app.post("/api/tasks/:id/cancel", async (c) => {
-    const r = await tasks.cancel(c.req.param("id"), c.req.query("removeWorktree") === "1");
+    const r = await tasks.cancel(c.req.param("id"));
     return c.json(r, r.ok ? 200 : 404);
   });
 
   app.post("/api/tasks/:id/complete", async (c) => {
     const parsed = CompleteTaskSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
-    const t = tasks.complete(c.req.param("id"), parsed.data.outcome, parsed.data.outcomeUrl);
+    const t = await tasks.complete(c.req.param("id"), parsed.data.outcome, parsed.data.outcomeUrl);
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
   });
 
-  app.delete("/api/tasks/:id", (c) => {
-    const r = tasks.remove(c.req.param("id"));
+  app.delete("/api/tasks/:id", async (c) => {
+    const r = await tasks.remove(c.req.param("id"));
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 

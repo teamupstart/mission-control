@@ -69,6 +69,7 @@ export class Dispatcher {
       // down, so do it here rather than orphan a live agent + worktree.
       if (cur.status === "cancelled") {
         await teardownWorktree(cur).catch(() => {});
+        this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
@@ -111,7 +112,12 @@ export class Dispatcher {
   private async abortIfCancelled(taskId: string): Promise<boolean> {
     if (!this.cancelledOrGone(taskId)) return false;
     const cur = this.registry.getTask(taskId);
-    if (cur) await teardownWorktree(cur).catch(() => {});
+    if (cur) {
+      await teardownWorktree(cur).catch(() => {});
+      // Clear fields we re-patched during the continued dispatch, so the cancelled
+      // record doesn't point at a torn-down tree.
+      this.patch(taskId, { worktreePath: null, branch: null, provider: null, tmuxSession: null });
+    }
     return true;
   }
 

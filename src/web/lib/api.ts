@@ -46,8 +46,7 @@ export const api = {
   // --- dispatch (crewmates) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   dispatchQueued: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
-  cancelTask: (id: string, removeWorktree = false) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/cancel${removeWorktree ? "?removeWorktree=1" : ""}`),
+  cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/complete`, { outcome, outcomeUrl }),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),

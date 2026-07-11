@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Session, Task, TaskSummary } from "@shared/types.ts";
 import {
   RECENT_TASKS_CAP,
@@ -31,6 +31,16 @@ export function ReportPanel({
   const [marking, setMarking] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
+
+  // Close on Escape, consistent with the dispatch modal (App.tsx suppresses the
+  // grid's global keys while this panel is open, so it must handle Escape itself).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const { needsYou, working, idle } = useMemo(() => {
     const nY: Session[] = [];
@@ -74,13 +84,13 @@ export function ReportPanel({
     setOutcome("");
   }
 
-  async function cancel(taskId: string, removeWorktree: boolean): Promise<void> {
-    await api.cancelTask(taskId, removeWorktree);
+  async function cancel(taskId: string): Promise<void> {
+    await api.cancelTask(taskId);
     setConfirmCancel(null);
   }
 
-  // Stop a live crewmate. Two-step: the second row lets you keep or reclaim its
-  // isolated worktree (reclaiming returns a treehouse lease / removes the tree).
+  // Stop a live crewmate and reclaim its worktree. Two-click confirm so a stray
+  // click can't take one down.
   function cancelControl(task: TaskSummary): React.JSX.Element | null {
     if (task.status !== "running" && task.status !== "dispatching") return null;
     if (confirmCancel !== task.id) {
@@ -92,12 +102,8 @@ export function ReportPanel({
     }
     return (
       <span className="report-cancel">
-        <span className="report-sub">stop &amp;</span>
-        <button className="btn" onClick={() => void cancel(task.id, false)}>
-          keep tree
-        </button>
-        <button className="btn btn-danger" onClick={() => void cancel(task.id, true)}>
-          remove tree
+        <button className="btn btn-danger" onClick={() => void cancel(task.id)}>
+          Confirm cancel
         </button>
         <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
           ✕
@@ -224,7 +230,7 @@ export function ReportPanel({
                     {confirmCancel === t.id ? (
                       <span className="report-cancel">
                         <span className="report-sub">reclaim?</span>
-                        <button className="btn btn-danger" onClick={() => void cancel(t.id, true)}>
+                        <button className="btn btn-danger" onClick={() => void cancel(t.id)}>
                           Clean up
                         </button>
                         <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>

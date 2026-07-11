@@ -9,6 +9,7 @@ import {
   type AlertSettings,
   type Fleet,
 } from "../src/web/lib/alerts.ts";
+import { chimeGate } from "../src/web/lib/chime.ts";
 import type { NmRunSummary, Session, SessionState, Task } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -147,6 +148,17 @@ test("hasReportable is false for an empty/all-exited fleet, true when there's ac
   assert.equal(hasReportable(fleet([mkSession({ state: "idle" })])), true);
   assert.equal(hasReportable(fleet([], [mkTask({ status: "queued" })])), true);
   assert.equal(hasReportable(fleet([], [mkTask({ status: "done" })])), false);
+});
+
+test("chimeGate rate-limits, but lets an urgent tone cut through a recent info chime", () => {
+  // Outside the window: always play.
+  assert.equal(chimeGate(2000, 0, "info", "info"), true);
+  // Within the window, same/low severity: suppressed.
+  assert.equal(chimeGate(400, 0, "info", "info"), false);
+  assert.equal(chimeGate(400, 0, "info", "attention"), false);
+  assert.equal(chimeGate(400, 0, "attention", "attention"), false);
+  // Within the window, urgent after a trivial chime: cuts through.
+  assert.equal(chimeGate(400, 0, "attention", "info"), true);
 });
 
 test("digestLine counts sessions by bucket and includes queued tasks", () => {

@@ -31,7 +31,12 @@ export function useEventStream(): FleetState {
     esRef.current = es;
 
     es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
+    es.onerror = () => {
+      setConnected(false);
+      // A reconnect re-sends a full snapshot; drop the flag so alerting re-baselines
+      // off it instead of storming for everything that changed during the gap.
+      setHasSnapshot(false);
+    };
 
     es.onmessage = (ev) => {
       let msg: ServerEvent;

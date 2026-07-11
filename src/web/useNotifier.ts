@@ -21,26 +21,23 @@ function notify(title: string, body: string, tag: string): void {
  * events and streams them; this just delivers them - zero extra tokens. AFK mode
  * also sends a periodic fleet digest.
  *
- * `ready` gates the very first alert: `useEventStream` returns empty state on the
- * first render (the SSE `snapshot` arrives a tick later), so we baseline off the
- * fleet AT the moment the snapshot lands - otherwise opening the dashboard would
- * diff the real snapshot against empty and alert for every already-waiting session.
+ * `ready` (the SSE snapshot has landed) gates alerting. `useEventStream` returns
+ * empty state on the first render and drops `ready` on disconnect, re-raising it on
+ * each (re)connect snapshot. We baseline off the fleet at every ready false->true
+ * edge and alert only on later changes - so neither opening the dashboard nor a
+ * reconnect after sleep/wake storms for everything that was already/gap-waiting.
  */
 export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolean): void {
   const prevRef = useRef<Fleet | null>(null);
-  const startedRef = useRef(false);
+  const wasReadyRef = useRef(false);
   const fleetRef = useRef(fleet);
   fleetRef.current = fleet;
 
   useEffect(() => {
-    // Keep re-baselining until the initial snapshot has landed, then seed once more
-    // off that snapshot without alerting; only later changes produce alerts.
-    if (!ready) {
-      prevRef.current = fleet;
-      return;
-    }
-    if (!startedRef.current) {
-      startedRef.current = true;
+    const justConnected = ready && !wasReadyRef.current;
+    wasReadyRef.current = ready;
+    // Not connected, or the (re)connect snapshot just arrived: (re)baseline, no alert.
+    if (!ready || justConnected) {
       prevRef.current = fleet;
       return;
     }

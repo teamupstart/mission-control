@@ -74,6 +74,12 @@ export interface Session {
   nomistakes: NmRunSummary | null;
   /** The dispatched task this session is executing, matched by cwd === worktreePath. */
   task: TaskSummary | null;
+  /**
+   * "What the no-mistakes skill is doing right now" - the in-progress TodoWrite
+   * item read from this session's Claude transcript. Only populated while a
+   * no-mistakes run is present; null otherwise (or when nothing is in progress).
+   */
+  nomistakesNarration: string | null;
 }
 
 // ---- dispatched tasks (crewmates) ----

@@ -92,6 +92,85 @@ export function toMessage(o: unknown): TranscriptMessage | null {
   return { id, role, text, tools, ts: Number.isNaN(ts) ? 0 : ts };
 }
 
+/** Bytes to scan from the tail when extracting the current TodoWrite narration. */
+const TODO_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Pull the todos array from a JSONL record iff it's a main-thread `TodoWrite`
+ * tool call. Returns null for anything else (sidechain records, other tools,
+ * non-messages), so callers can tell "not a TodoWrite" from "an empty one".
+ */
+function todoWriteItems(o: unknown): Array<Record<string, unknown>> | null {
+  if (!o || typeof o !== "object") return null;
+  const rec = o as Record<string, unknown>;
+  if (rec.isSidechain) return null;
+  const m = rec.message as Record<string, unknown> | undefined;
+  const content = m?.content;
+  if (!Array.isArray(content)) return null;
+  for (const b of content) {
+    if (!b || typeof b !== "object") continue;
+    const block = b as Record<string, unknown>;
+    if (block.type !== "tool_use" || block.name !== "TodoWrite") continue;
+    const input = block.input as Record<string, unknown> | undefined;
+    if (Array.isArray(input?.todos)) return input.todos as Array<Record<string, unknown>>;
+  }
+  return null;
+}
+
+/**
+ * The "what's happening now" narration for the no-mistakes strip: the present-
+ * tense `activeForm` (falling back to `content`) of the in-progress item in the
+ * most recent main-thread TodoWrite. The newest TodoWrite is authoritative, so
+ * we stop at the first one found scanning newest-first - if it has nothing in
+ * progress, the answer is null (not a stale earlier item). Pure, for testing.
+ */
+export function latestTodoNarration(lines: string[]): string | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    // Cheap pre-filter: skip lines that can't be a TodoWrite before JSON.parse.
+    if (!line || !line.includes("TodoWrite")) continue;
+    let o: unknown;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const todos = todoWriteItems(o);
+    if (!todos) continue;
+    const active = todos.find(
+      (t) => t && typeof t === "object" && t.status === "in_progress",
+    );
+    const form = active?.activeForm ?? active?.content;
+    return typeof form === "string" && form.trim() ? form.trim() : null;
+  }
+  return null;
+}
+
+/**
+ * Read the tail of a session's transcript and return the current TodoWrite
+ * narration (see `latestTodoNarration`), or null when the file is missing/
+ * unreadable or has no in-progress todo. Bounded tail read - never parses the
+ * whole (potentially multi-MB) transcript.
+ */
+export function readCurrentTodo(path: string): string | null {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return null;
+  }
+  const start = Math.max(0, size - TODO_TAIL_BYTES);
+  const buf = readRange(path, start, size);
+  // Drop a partial first line if we began mid-file, so JSON.parse doesn't choke.
+  let from = 0;
+  if (start > 0) {
+    const nl = buf.indexOf(NL);
+    from = nl >= 0 ? nl + 1 : buf.length;
+  }
+  const text = buf.subarray(from).toString("utf8");
+  return latestTodoNarration(text ? text.split("\n") : []);
+}
+
 /** Parse an array of JSONL lines into renderable messages. */
 export function parseLines(lines: string[], limit?: number): TranscriptMessage[] {
   const out: TranscriptMessage[] = [];

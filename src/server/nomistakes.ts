@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { run } from "./util/exec.ts";
+import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
 import type { Registry } from "./registry.ts";
 import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 
@@ -131,6 +132,12 @@ export function startNomistakesPoller(registry: Registry): () => void {
         for (const cwd of cwds) {
           registry.applyNomistakes(cwd, await fetchStatus(cwd));
         }
+      }
+      // For sessions now showing a run, surface what the skill is doing right
+      // now from its Claude transcript (a bounded tail read, no subprocess).
+      for (const s of registry.nomistakesSessions()) {
+        const path = resolveTranscriptPath(s);
+        registry.applyNomistakesNarration(s.id, path ? readCurrentTodo(path) : null);
       }
     } catch (err) {
       console.error("[nomistakes] poll failed:", err);

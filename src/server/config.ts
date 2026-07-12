@@ -25,6 +25,13 @@ export function resolveAgentBin(agent: "claude" | "codex"): string {
 export const POLL_INTERVAL_MS = Number(envVar("POLL_MS") ?? 1500);
 
 /**
+ * How often the PR poller asks `gh` whether each feature-branch session has an
+ * open PR. PR creation and merge are rare relative to the process sweep, so this
+ * runs far slower to keep `gh` calls negligible.
+ */
+export const PR_POLL_MS = Number(envVar("PR_POLL_MS") ?? 20_000);
+
+/**
  * Resolve the wezterm CLI. It's usually on PATH, but on macOS it ships inside
  * the app bundle and is often not linked, so fall back to the known location.
  */

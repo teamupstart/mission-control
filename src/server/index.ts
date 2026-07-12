@@ -10,6 +10,7 @@ import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
+import { startPrPoller } from "./pr.ts";
 import { buildApp } from "./routes.ts";
 
 openDb();
@@ -19,6 +20,7 @@ const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const stopPoller = startPoller(registry);
 const stopNomistakes = startNomistakesPoller(registry);
+const stopPrPoller = startPrPoller(registry);
 
 const app = buildApp(registry, reviews, tasks);
 
@@ -41,6 +43,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 function shutdown(): void {
   stopPoller();
   stopNomistakes();
+  stopPrPoller();
   server.close();
   process.exit(0);
 }

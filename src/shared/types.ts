@@ -80,6 +80,17 @@ export interface Session {
    * no-mistakes run is present; null otherwise (or when nothing is in progress).
    */
   nomistakesNarration: string | null;
+  /**
+   * The open GitHub PR whose head branch is this session's *current* git branch,
+   * else null. Live decoration, never persisted: set optimistically when the
+   * agent runs `gh pr create` (via the hook) and reconciled by the PR poller,
+   * which shells out to `gh` to keep it honest. Cleared when the PR merges or
+   * closes, or when the session moves to a branch with no open PR - so a reset
+   * and reused session never shows a stale link from its previous branch.
+   */
+  prUrl: string | null;
+  /** The PR number backing `prUrl` (for a compact "#123" chip), else null. */
+  prNumber: number | null;
 }
 
 // ---- dispatched tasks (agents) ----

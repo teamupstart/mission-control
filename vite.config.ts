@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
+import { BASE_URL } from "./src/shared/harness-runtime.mjs";
 
-const HARNESS_PORT = process.env.HARNESS_PORT ?? "7317";
-const backend = `http://127.0.0.1:${HARNESS_PORT}`;
+const backend = BASE_URL;
 
 // The web app lives in src/web and is built into dist/web, which the daemon
 // serves in production. In dev, Vite serves it on 5173 and proxies API + SSE

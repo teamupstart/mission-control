@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { run } from "./util/exec.ts";
 import { envVar } from "./config.ts";
+import { unref } from "./util/timers.ts";
 import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
 import type { Registry } from "./registry.ts";
 import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
@@ -166,8 +167,7 @@ export function startNomistakesPoller(registry: Registry): () => void {
       console.error("[nomistakes] poll failed:", err);
     }
     if (stopped) return;
-    timer = setTimeout(tick, NM_POLL_MS);
-    if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
+    timer = unref(setTimeout(tick, NM_POLL_MS));
   };
 
   void tick();

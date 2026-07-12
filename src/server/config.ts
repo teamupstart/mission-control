@@ -1,37 +1,17 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
 
-/**
- * Read a config env var by its `FLEET_` name, falling back to the legacy
- * `HARNESS_` name so an existing install's environment keeps working after the
- * Fleet Control rename. Prefer setting the `FLEET_` names going forward.
- */
-export function envVar(suffix: string): string | undefined {
-  return process.env[`FLEET_${suffix}`] ?? process.env[`HARNESS_${suffix}`];
-}
+/** Runtime coordinates and the `FLEET_`/legacy env resolution live in the shared
+ * runtime module so the daemon, the MCP bridge, and the hook can never disagree.
+ * Re-exported here so the rest of the server keeps importing them from config. */
+export { HOST, PORT, envVar };
 
-/** Port the daemon binds on (loopback only). */
-export const PORT = Number(envVar("PORT") ?? 7317);
-export const HOST = "127.0.0.1";
-
-/**
- * Where the daemon keeps its state (db, token, logs). Defaults to `~/.fleet-control`,
- * but an existing `~/.ai-harness` (token + db already there) is kept in place so an
- * in-place upgrade never orphans a running install; fresh installs get the new dir.
- */
-function resolveStateDir(): string {
-  const override = envVar("HOME");
-  if (override) return override;
-  const preferred = join(homedir(), ".fleet-control");
-  const legacy = join(homedir(), ".ai-harness");
-  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
-  return preferred;
-}
-export const STATE_DIR = resolveStateDir();
+/** Where the daemon keeps its state (db, token, logs). */
+export const STATE_DIR = stateDir();
 // The db filename stays "harness.db" so an upgraded install keeps its tasks/reviews.
 export const DB_PATH = join(STATE_DIR, "harness.db");
-export const TOKEN_PATH = join(STATE_DIR, "token");
+export const TOKEN_PATH = tokenPath();
 /** Isolated worktrees the daemon creates for dispatched tasks (git-worktree fallback). */
 export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
 

@@ -1,5 +1,6 @@
 import { run, type RunResult } from "../util/exec.ts";
 import { resolveWeztermBin } from "../config.ts";
+import { normTty } from "./tty.ts";
 
 /** One pane as reported by `wezterm cli list --format json`. */
 export interface WeztermPane {
@@ -24,13 +25,6 @@ interface RawPane {
   cwd?: string;
   tty_name?: string;
   is_active?: boolean;
-}
-
-function normTty(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const t = raw.trim();
-  if (!t) return null;
-  return t.replace(/^\/dev\//, "");
 }
 
 /**

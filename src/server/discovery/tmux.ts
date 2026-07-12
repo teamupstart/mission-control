@@ -1,4 +1,5 @@
 import { run } from "../util/exec.ts";
+import { normTty } from "./tty.ts";
 
 /** One pane as reported by `tmux list-panes -a`. */
 export interface TmuxPane {
@@ -23,12 +24,6 @@ const FMT = [
   "#{pane_current_command}",
   "#{pane_current_path}",
 ].join("\x1f"); // unit separator: safe against spaces in names/paths
-
-function normTty(raw: string): string | null {
-  const t = raw.trim();
-  if (!t) return null;
-  return t.replace(/^\/dev\//, "");
-}
 
 /** One attached tmux client as reported by `tmux list-clients`. */
 export interface TmuxClient {

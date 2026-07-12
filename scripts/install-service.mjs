@@ -7,6 +7,7 @@ import { homedir, platform } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { BASE_URL, stateDir } from "../src/shared/harness-runtime.mjs";
 
 if (platform() !== "darwin") {
   console.error("This installer targets macOS (launchd). On Linux, adapt it to a systemd user unit.");
@@ -21,19 +22,8 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const node = process.execPath;
 const tsx = join(repo, "node_modules", "tsx", "dist", "cli.mjs");
 const entry = join(repo, "src", "server", "index.ts");
-
-// Same state-dir resolution as the daemon (config.ts): honor the legacy HARNESS_
-// env + ~/.ai-harness dir so an upgraded install keeps its logs/db in place.
-function resolveStateDir() {
-  const override = process.env.FLEET_HOME ?? process.env.HARNESS_HOME;
-  if (override) return override;
-  const preferred = join(homedir(), ".fleet-control");
-  const legacy = join(homedir(), ".ai-harness");
-  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
-  return preferred;
-}
-const stateDir = resolveStateDir();
-const logFile = join(stateDir, "daemon.log");
+const state = stateDir();
+const logFile = join(state, "daemon.log");
 const plistFor = (label) => join(homedir(), "Library", "LaunchAgents", `${label}.plist`);
 const plistPath = plistFor(LABEL);
 const uninstall = process.argv.includes("--uninstall");
@@ -99,7 +89,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 `;
 
 mkdirSync(dirname(plistPath), { recursive: true });
-mkdirSync(stateDir, { recursive: true });
+mkdirSync(state, { recursive: true });
 writeFileSync(plistPath, plist);
 tryLaunchctl("unload", plistPath);
 execFileSync("launchctl", ["load", plistPath], { stdio: "inherit" });
@@ -107,5 +97,5 @@ execFileSync("launchctl", ["load", plistPath], { stdio: "inherit" });
 console.log(`Installed and started LaunchAgent ${LABEL}`);
 console.log(`  plist: ${plistPath}`);
 console.log(`  logs:  ${logFile}`);
-console.log(`\nThe dashboard is at http://127.0.0.1:${process.env.FLEET_PORT ?? process.env.HARNESS_PORT ?? 7317}`);
+console.log(`\nThe dashboard is at ${BASE_URL}`);
 console.log(`Stop/remove with:  npm run install-service -- --uninstall`);

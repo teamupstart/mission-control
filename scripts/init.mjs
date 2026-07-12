@@ -20,6 +20,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { have } from "./lib.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const argv = new Set(process.argv.slice(2));
@@ -41,14 +42,6 @@ const warn = (m) => {
   problems.push(m);
 };
 
-function have(bin) {
-  try {
-    execFileSync("which", [bin], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
 function cap(cmd, args, opts = {}) {
   try {
     return execFileSync(cmd, args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...opts }).trim();

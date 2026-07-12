@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+/** Terminal env the hook / MCP client captures, used to bind an event to a session. */
+const EnvSchema = z
+  .object({
+    tmuxPane: z.string().optional(),
+    weztermPane: z.string().optional(),
+    termProgram: z.string().optional(),
+  })
+  .default({});
+
 /**
  * Payload a Claude Code hook posts to the daemon. The hook script forwards the
  * raw event JSON plus the terminal env it captured (pane ids), which the daemon
@@ -10,13 +19,7 @@ export const HookIngestSchema = z.object({
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
   ts: z.number().optional(),
-  env: z
-    .object({
-      tmuxPane: z.string().optional(),
-      weztermPane: z.string().optional(),
-      termProgram: z.string().optional(),
-    })
-    .default({}),
+  env: EnvSchema,
   // Selected fields lifted from the raw hook JSON; everything is optional.
   toolName: z.string().optional(),
   prompt: z.string().optional(),
@@ -34,14 +37,6 @@ export const SendTextSchema = z.object({
   submit: z.boolean().optional().default(true),
 });
 export type SendText = z.infer<typeof SendTextSchema>;
-
-const EnvSchema = z
-  .object({
-    tmuxPane: z.string().optional(),
-    weztermPane: z.string().optional(),
-    termProgram: z.string().optional(),
-  })
-  .default({});
 
 /** An MCP-driven agent creating a review item bound to its session's pane. */
 export const CreateReviewSchema = z.object({

@@ -16,6 +16,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { have } from "./lib.mjs";
 
 const dir = process.argv[2] ?? process.cwd();
 // FLEET_ names, with the legacy HARNESS_ names still honored.
@@ -29,15 +30,6 @@ const warn = (m) => console.warn(`  ⚠ ${m}`);
 
 function silent(cmd, args, opts = {}) {
   return execFileSync(cmd, args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], ...opts }).trim();
-}
-
-function have(bin) {
-  try {
-    execFileSync("which", [bin], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 console.log(`🌳 preparing worktree ${dir}`);

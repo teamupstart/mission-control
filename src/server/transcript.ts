@@ -5,6 +5,7 @@ import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { Session, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
+import { sleep } from "./util/timers.ts";
 
 // Reads a Claude Code session transcript (JSONL) and streams it to the expanded
 // card over SSE. Claude writes one JSON record per line to
@@ -255,10 +256,7 @@ export function transcriptStreamHandler(registry: Registry) {
 
       let sinceHeartbeat = 0;
       while (!stream.aborted) {
-        await new Promise<void>((resolve) => {
-          const t = setTimeout(resolve, POLL_MS);
-          if (typeof t === "object" && "unref" in t) t.unref();
-        });
+        await sleep(POLL_MS);
         if (stream.aborted) break;
         try {
           const size = statSync(path).size;

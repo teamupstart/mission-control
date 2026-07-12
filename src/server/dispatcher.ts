@@ -5,6 +5,7 @@ import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
+import { sleep } from "./util/timers.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -55,7 +56,7 @@ export class Dispatcher {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
       if (await this.abortIfSettled(taskId)) return;
-      await delay(SETTLE_MS);
+      await sleep(SETTLE_MS);
 
       const sent = await injectPrompt(session, task.intent);
       if (!sent.ok) throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
@@ -301,9 +302,3 @@ async function hasBin(bin: string): Promise<boolean> {
   return (await resolveBinPath(bin)) !== null;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    if (typeof t === "object" && "unref" in t) t.unref();
-  });
-}

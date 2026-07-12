@@ -7,11 +7,24 @@ import {
   listWeztermPanes,
   spawnWeztermTab,
 } from "./discovery/wezterm.ts";
-import { run } from "./util/exec.ts";
+import { run, type RunResult } from "./util/exec.ts";
 
 export interface ActionResult {
   ok: boolean;
   error?: string;
+}
+
+/** Shared error when a session has no pane handle we can drive. */
+const NO_HANDLE = "session has no tmux or wezterm handle to send to";
+
+/** Reduce a finished command to an ActionResult, using stderr (or a fallback) as the error. */
+function check(r: RunResult, failMsg: string): ActionResult {
+  return r.code !== 0 ? { ok: false, error: r.stderr.trim() || failMsg } : { ok: true };
+}
+
+/** Run a command and reduce it to an ActionResult in one step. */
+async function step(bin: string, args: string[], failMsg: string): Promise<ActionResult> {
+  return check(await run(bin, args), failMsg);
 }
 
 /**
@@ -27,26 +40,28 @@ export async function sendText(
 ): Promise<ActionResult> {
   if (session.tmux) {
     const target = session.tmux.paneId;
-    const r1 = await run("tmux", ["send-keys", "-t", target, "-l", text]);
-    if (r1.code !== 0) return { ok: false, error: r1.stderr.trim() || "tmux send-keys failed" };
+    const typed = await step("tmux", ["send-keys", "-t", target, "-l", text], "tmux send-keys failed");
+    if (!typed.ok) return typed;
     if (submit) {
-      const r2 = await run("tmux", ["send-keys", "-t", target, "Enter"]);
-      if (r2.code !== 0) return { ok: false, error: r2.stderr.trim() || "tmux Enter failed" };
+      const entered = await step("tmux", ["send-keys", "-t", target, "Enter"], "tmux Enter failed");
+      if (!entered.ok) return entered;
     }
     return { ok: true };
   }
   if (session.wezterm) {
     const bin = resolveWeztermBin();
     const id = String(session.wezterm.paneId);
-    const r1 = await run(bin, ["cli", "send-text", "--pane-id", id, "--no-paste", text]);
-    if (r1.code !== 0) return { ok: false, error: r1.stderr.trim() || "wezterm send-text failed" };
+    const args = ["cli", "send-text", "--pane-id", id, "--no-paste", text];
+    const typed = await step(bin, args, "wezterm send-text failed");
+    if (!typed.ok) return typed;
     if (submit) {
-      const r2 = await run(bin, ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"]);
-      if (r2.code !== 0) return { ok: false, error: r2.stderr.trim() || "wezterm Enter failed" };
+      const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
+      const entered = await step(bin, enterArgs, "wezterm Enter failed");
+      if (!entered.ok) return entered;
     }
     return { ok: true };
   }
-  return { ok: false, error: "session has no tmux or wezterm handle to send to" };
+  return { ok: false, error: NO_HANDLE };
 }
 
 /**
@@ -60,34 +75,38 @@ export async function injectPrompt(session: Session, text: string): Promise<Acti
   if (session.tmux) {
     const target = session.tmux.paneId;
     const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
-    const set = await run("tmux", ["set-buffer", "-b", buf, "--", text]);
-    if (set.code !== 0) return { ok: false, error: set.stderr.trim() || "tmux set-buffer failed" };
+    const set = await step("tmux", ["set-buffer", "-b", buf, "--", text], "tmux set-buffer failed");
+    if (!set.ok) return set;
     // -p: bracketed paste (so embedded newlines don't submit); -d: drop the buffer after.
-    const paste = await run("tmux", ["paste-buffer", "-p", "-d", "-b", buf, "-t", target]);
-    if (paste.code !== 0) return { ok: false, error: paste.stderr.trim() || "tmux paste-buffer failed" };
-    const enter = await run("tmux", ["send-keys", "-t", target, "Enter"]);
-    if (enter.code !== 0) return { ok: false, error: enter.stderr.trim() || "tmux Enter failed" };
+    const paste = await step(
+      "tmux",
+      ["paste-buffer", "-p", "-d", "-b", buf, "-t", target],
+      "tmux paste-buffer failed",
+    );
+    if (!paste.ok) return paste;
+    const enter = await step("tmux", ["send-keys", "-t", target, "Enter"], "tmux Enter failed");
+    if (!enter.ok) return enter;
     return { ok: true };
   }
   if (session.wezterm) {
     const bin = resolveWeztermBin();
     const id = String(session.wezterm.paneId);
     // Omitting --no-paste makes wezterm send the text as a bracketed paste.
-    const r1 = await run(bin, ["cli", "send-text", "--pane-id", id, text]);
-    if (r1.code !== 0) return { ok: false, error: r1.stderr.trim() || "wezterm send-text failed" };
-    const r2 = await run(bin, ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"]);
-    if (r2.code !== 0) return { ok: false, error: r2.stderr.trim() || "wezterm Enter failed" };
+    const pasted = await step(bin, ["cli", "send-text", "--pane-id", id, text], "wezterm send-text failed");
+    if (!pasted.ok) return pasted;
+    const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
+    const entered = await step(bin, enterArgs, "wezterm Enter failed");
+    if (!entered.ok) return entered;
     return { ok: true };
   }
-  return { ok: false, error: "session has no tmux or wezterm handle to send to" };
+  return { ok: false, error: NO_HANDLE };
 }
 
 /** Bring the session's pane/tab into focus. */
 export async function focus(session: Session): Promise<ActionResult> {
   if (session.wezterm) {
     const r = await activateWeztermPane(session.wezterm.tabId, session.wezterm.paneId);
-    if (r.code !== 0) return { ok: false, error: r.stderr.trim() || "wezterm activate failed" };
-    return { ok: true };
+    return check(r, "wezterm activate failed");
   }
   if (session.tmux) {
     const sess = session.tmux.session;
@@ -95,8 +114,8 @@ export async function focus(session: Session): Promise<ActionResult> {
     // Point tmux at the agent's own pane/window. This only touches this
     // session's internal state, so whichever terminal shows it lands on the
     // right pane - and it never disturbs any other session.
-    const rp = await run("tmux", ["select-pane", "-t", session.tmux.paneId]);
-    if (rp.code !== 0) return { ok: false, error: rp.stderr.trim() || "tmux select-pane failed" };
+    const selected = await step("tmux", ["select-pane", "-t", session.tmux.paneId], "tmux select-pane failed");
+    if (!selected.ok) return selected;
     await run("tmux", ["select-window", "-t", windowTarget]);
 
     // Surface the session at the terminal-tab level. If a wezterm tab already
@@ -108,8 +127,7 @@ export async function focus(session: Session): Promise<ActionResult> {
     const host = findSessionHostPane(sess, clients, panes);
     if (host) {
       const r = await activateWeztermPane(host.tabId, host.paneId);
-      if (r.code !== 0) return { ok: false, error: r.stderr.trim() || "wezterm activate failed" };
-      return { ok: true };
+      return check(r, "wezterm activate failed");
     }
     // No tab hosts it yet: open it in a fresh tab titled with the session name.
     const paneId = await spawnWeztermTab(["tmux", "attach", "-t", sess], sess);

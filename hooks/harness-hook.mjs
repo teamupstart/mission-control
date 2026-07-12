@@ -12,6 +12,29 @@
 
 import { BASE_URL, captureTerminalEnv, readToken } from "../src/shared/harness-runtime.mjs";
 
+// A GitHub PR URL as printed by `gh pr create` / `gh pr view`. Scoped to a real
+// pull path so a repo or compare link never masquerades as a PR.
+const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
+
+/**
+ * Sniff a PR URL out of a PostToolUse payload. `gh pr create` prints the new
+ * PR's URL on stdout, which Claude hands back in `tool_response`. Scoped to Bash
+ * results so merely reading a PR page (WebFetch/Read of a pull URL) can't flash a
+ * false chip; even if one slips through, the PR poller clears it within a tick
+ * because the link won't match the session's branch. Returns undefined when
+ * there's nothing to report - the common case, kept cheap.
+ */
+function sniffPrUrl(payload) {
+  const event = payload.hook_event_name ?? process.argv[2] ?? "";
+  if (event !== "PostToolUse") return undefined;
+  if (payload.tool_name && payload.tool_name !== "Bash") return undefined;
+  const field = payload.tool_response;
+  if (field == null) return undefined;
+  const text = typeof field === "string" ? field : JSON.stringify(field);
+  const m = PR_URL_RE.exec(text);
+  return m ? m[0] : undefined;
+}
+
 function readStdin() {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve("");
@@ -44,6 +67,7 @@ async function main() {
     message: payload.message,
     source: payload.source,
     reason: payload.reason,
+    prUrl: sniffPrUrl(payload),
   };
 
   const ctrl = new AbortController();

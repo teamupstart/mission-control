@@ -158,6 +158,8 @@ export class Registry extends EventEmitter {
       nomistakes: prev?.nomistakes ?? null,
       task: this.taskSummaryForCwd(d.cwd),
       nomistakesNarration: prev?.nomistakesNarration ?? null,
+      prUrl: prev?.prUrl ?? null,
+      prNumber: prev?.prNumber ?? null,
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -190,8 +192,12 @@ export class Registry extends EventEmitter {
     // Apply immediately to a matching live session for instant feedback.
     const target = this.findSessionForHook(evt, key);
     if (target) {
+      // A PR link sniffed from `gh pr create` decorates the card at once; the PR
+      // poller confirms it (and is the only thing that clears it on merge).
+      const pr = evt.prUrl ? { prUrl: evt.prUrl, prNumber: prNumberFromUrl(evt.prUrl) } : {};
       const next: Session = {
         ...target,
+        ...pr,
         instrumented: true,
         state,
         activity,
@@ -324,6 +330,45 @@ export class Registry extends EventEmitter {
   /** Sessions currently showing a no-mistakes run (for narration polling). */
   nomistakesSessions(): Session[] {
     return [...this.sessions.values()].filter((s) => s.nomistakes !== null);
+  }
+
+  /**
+   * Live sessions the PR poller should consider, with the branch and cwd it needs
+   * to ask `gh` for an open PR. Sessions with no cwd or that have exited are
+   * dropped (nothing to poll, and an exited session's link is about to go away
+   * with it). Everything else is a candidate - the poller decides which actually
+   * warrant a `gh` call, and any candidate left without a match is cleared.
+   */
+  prPollTargets(): { id: string; cwd: string; branch: string | null; prUrl: string | null }[] {
+    const out: { id: string; cwd: string; branch: string | null; prUrl: string | null }[] = [];
+    for (const s of this.sessions.values()) {
+      if (!s.cwd || s.state === "exited") continue;
+      out.push({ id: s.id, cwd: s.cwd, branch: s.gitBranch, prUrl: s.prUrl });
+    }
+    return out;
+  }
+
+  /**
+   * Reconcile each session's PR link against what `gh` reported this tick.
+   * `found` holds the open PR for every session that has one right now; `skip`
+   * holds sessions whose `gh` query failed (missing/unauthenticated `gh`, a
+   * timeout) so their existing link is left untouched rather than wrongly wiped.
+   * Every other session is set to "no PR": that single rule clears a link when
+   * its PR merges or closes (the branch drops out of `found`) and when the
+   * session is reset onto a branch with no open PR - so a reused session never
+   * carries a stale link from its previous branch.
+   */
+  reconcilePrs(found: Map<string, { url: string; number: number | null }>, skip: Set<string>): void {
+    for (const [id, s] of this.sessions) {
+      if (skip.has(id)) continue;
+      const match = found.get(id) ?? null;
+      const url = match?.url ?? null;
+      const number = match?.number ?? null;
+      if (s.prUrl === url && s.prNumber === number) continue;
+      const next: Session = { ...s, prUrl: url, prNumber: number };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
   }
 
   /** MCP `report_status`: update a session's activity line without a hook. */
@@ -577,7 +622,15 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.wezterm?.isActive === b.wezterm?.isActive &&
     a.tmux?.window === b.tmux?.window &&
     a.nomistakesNarration === b.nomistakesNarration &&
+    a.prUrl === b.prUrl &&
+    a.prNumber === b.prNumber &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task)
   );
+}
+
+/** Parse the numeric id out of a GitHub PR URL, or null when absent. */
+export function prNumberFromUrl(url: string): number | null {
+  const m = /\/pull\/(\d+)/.exec(url);
+  return m ? Number(m[1]) : null;
 }

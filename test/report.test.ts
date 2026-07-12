@@ -29,6 +29,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     nomistakes: null,
     nomistakesNarration: null,
     task: null,
+    prUrl: null,
+    prNumber: null,
     ...over,
   };
 }

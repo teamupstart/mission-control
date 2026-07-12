@@ -1392,6 +1392,38 @@ kbd {
   border-left-color: var(--idle);
 }
 
+/* ---- PR chip (open pull request for the session's branch) ---- */
+.pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  text-decoration: none;
+  color: var(--fg);
+  background: color-mix(in oklab, var(--idle) 8%, var(--panel-2));
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  max-width: 100%;
+}
+.pr-chip:hover {
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border-soft));
+}
+.pr-mark {
+  flex: none;
+  font-size: 10px;
+  font-weight: 640;
+  letter-spacing: 0.05em;
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 15%, transparent);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.pr-num {
+  color: var(--muted);
+}
+
 /* ---- dispatch modal ---- */
 .dispatch-modal {
   width: min(560px, 100%);

@@ -143,6 +143,20 @@ export function SessionCard({
         </div>
       )}
 
+      {session.prUrl && (
+        <a
+          className="pr-chip"
+          href={session.prUrl}
+          target="_blank"
+          rel="noreferrer"
+          title="Open pull request"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="pr-mark">PR</span>
+          <span className="pr-num">{session.prNumber ? `#${session.prNumber}` : "open"}</span>
+        </a>
+      )}
+
       {session.activity && <p className="activity">{session.activity}</p>}
 
       {session.nomistakes && (

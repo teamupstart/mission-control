@@ -18,6 +18,7 @@ export const HookIngestSchema = z.object({
   event: z.string(),
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
+  transcriptPath: z.string().nullable().optional().default(null),
   ts: z.number().optional(),
   env: EnvSchema,
   // Selected fields lifted from the raw hook JSON; everything is optional.

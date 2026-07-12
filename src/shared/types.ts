@@ -59,6 +59,12 @@ export interface Session {
   tmux: TmuxInfo | null;
   /** Claude Code session id, present once the session is hook-instrumented. */
   agentSessionId: string | null;
+  /**
+   * Absolute path to the agent's transcript file, as reported by its hook. The
+   * authoritative locator - Claude hands us the exact path, so we never derive it
+   * from the cwd. Null until a hook reports it (or for agents without hooks).
+   */
+  transcriptPath: string | null;
   /** True once we've received at least one hook event from this session. */
   instrumented: boolean;
   /** Free-form one-liner from the last hook/report (e.g. current tool, last prompt). */

@@ -19,6 +19,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     wezterm: null,
     tmux: null,
     agentSessionId: null,
+    transcriptPath: null,
     instrumented: true,
     activity: null,
     startedAt: null,

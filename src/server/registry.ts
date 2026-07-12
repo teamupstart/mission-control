@@ -32,6 +32,7 @@ const OVERLAY_TTL_MS = 30 * 60 * 1000;
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
   agentSessionId: string | null;
+  transcriptPath: string | null;
   state: SessionState;
   activity: string | null;
   lastActivity: number;
@@ -148,6 +149,7 @@ export class Registry extends EventEmitter {
       wezterm: d.wezterm,
       tmux: d.tmux,
       agentSessionId: prev?.agentSessionId ?? null,
+      transcriptPath: prev?.transcriptPath ?? null,
       instrumented: false,
       activity: prev?.activity ?? null,
       startedAt: d.startedAt || prev?.startedAt || null,
@@ -166,6 +168,7 @@ export class Registry extends EventEmitter {
       base.activity = overlay.activity;
       base.lastActivity = overlay.lastActivity;
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
+      base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
     }
     return base;
   }
@@ -180,6 +183,7 @@ export class Registry extends EventEmitter {
 
     const overlay: HookOverlay = {
       agentSessionId: evt.sessionId ?? null,
+      transcriptPath: evt.transcriptPath ?? null,
       state,
       activity,
       lastActivity: ts,
@@ -197,6 +201,7 @@ export class Registry extends EventEmitter {
         activity,
         lastActivity: ts,
         agentSessionId: evt.sessionId ?? target.agentSessionId,
+        transcriptPath: evt.transcriptPath ?? target.transcriptPath,
       };
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
@@ -571,6 +576,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.pid === b.pid &&
     a.nameSource === b.nameSource &&
     a.agentSessionId === b.agentSessionId &&
+    a.transcriptPath === b.transcriptPath &&
     a.instrumented === b.instrumented &&
     a.activity === b.activity &&
     a.pendingReviews === b.pendingReviews &&

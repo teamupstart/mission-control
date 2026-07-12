@@ -1,4 +1,4 @@
-import { openSync, readSync, closeSync, statSync, existsSync } from "node:fs";
+import { openSync, readSync, closeSync, statSync, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
@@ -24,17 +24,45 @@ const POLL_MS = 900;
 /** Idle comment ping so the SSE connection survives proxies. */
 const HEARTBEAT_MS = 15000;
 
+/** Root of Claude's per-project transcript store. */
+const PROJECTS_DIR = join(homedir(), ".claude", "projects");
+
 /**
  * Resolve a session's transcript file. Claude encodes the project dir by
  * replacing every `/` and `.` in the cwd with `-`; the file is named by the
  * agent session id. Returns null for sessions we can't locate (no reported
  * session id, or the file doesn't exist - e.g. Codex, which stores elsewhere).
+ *
+ * `projectsDir` is injectable for tests; production uses the default.
  */
-export function resolveTranscriptPath(session: Session): string | null {
+export function resolveTranscriptPath(
+  session: Session,
+  projectsDir: string = PROJECTS_DIR,
+): string | null {
   if (session.agent !== "claude" || !session.agentSessionId || !session.cwd) return null;
   const dir = session.cwd.replace(/[/.]/g, "-");
-  const path = join(homedir(), ".claude", "projects", dir, `${session.agentSessionId}.jsonl`);
-  return existsSync(path) ? path : null;
+  const direct = join(projectsDir, dir, `${session.agentSessionId}.jsonl`);
+  if (existsSync(direct)) return direct;
+  // The session id is a globally-unique UUID, so when discovery's cwd disagrees
+  // with where Claude actually wrote the file (e.g. a session launched from the
+  // main repo but running in a worktree), find the transcript by id across every
+  // project dir. Any match is unambiguous.
+  return findTranscriptById(projectsDir, session.agentSessionId);
+}
+
+/** Locate `<id>.jsonl` under any project dir, ignoring cwd. Null if none exists. */
+function findTranscriptById(projectsDir: string, id: string): string | null {
+  let dirs: string[];
+  try {
+    dirs = readdirSync(projectsDir);
+  } catch {
+    return null; // projects dir absent (no Claude sessions yet)
+  }
+  for (const d of dirs) {
+    const p = join(projectsDir, d, `${id}.jsonl`);
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 /** Read bytes [start, end) of a file as a Buffer. */

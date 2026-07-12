@@ -50,7 +50,10 @@ body {
 .app {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 0 24px 64px;
+  /* Bottom padding grows to clear the floating command bar (see --cmdbar-clearance,
+     set live in App while a session is selected) so an expanded card's tail and
+     compose box can always scroll out from under it. Falls back to the base gap. */
+  padding: 0 24px max(64px, var(--cmdbar-clearance, 0px));
 }
 
 /* ---- top bar ---- */
@@ -60,7 +63,10 @@ body {
   z-index: 10;
   display: flex;
   align-items: center;
-  gap: 24px;
+  /* Wrap onto extra rows on narrow screens instead of overflowing the viewport
+     horizontally (the row-gap keeps wrapped controls from touching). */
+  flex-wrap: wrap;
+  gap: 12px 24px;
   padding: 18px 4px;
   margin-bottom: 22px;
   background: linear-gradient(var(--bg), rgba(10, 12, 15, 0.72));

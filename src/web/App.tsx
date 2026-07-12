@@ -408,8 +408,31 @@ function CommandBar({
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
+  const barRef = useRef<HTMLDivElement>(null);
+
+  // The bar floats fixed over the bottom of the page, so it hides whatever
+  // scrolls underneath it - the tail of an expanded card, its compose box, etc.
+  // Reserve exactly its footprint (height + its bottom offset + a little air) as
+  // page-bottom padding so every card can always scroll clear of it. Measured
+  // live because the bar wraps taller on narrow screens; cleared on deselect.
+  useEffect(() => {
+    const bar = barRef.current;
+    if (!bar) return;
+    const root = document.documentElement;
+    const apply = (): void => {
+      root.style.setProperty("--cmdbar-clearance", `${bar.offsetHeight + 36}px`);
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--cmdbar-clearance");
+    };
+  }, []);
+
   return (
-    <div className="cmdbar" role="toolbar" aria-label="Selected session actions">
+    <div ref={barRef} className="cmdbar" role="toolbar" aria-label="Selected session actions">
       <span className="cmdbar-name">
         <span className={`agent-dot agent-${session.agent}`} aria-hidden />
         {session.name || "(unnamed)"}

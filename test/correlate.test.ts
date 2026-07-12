@@ -12,6 +12,7 @@ function proc(p: Partial<Proc> & Pick<Proc, "pid" | "tty">): Proc {
     startMs: 1000,
     command: "claude",
     agent: "claude",
+    agentNative: true,
     ...p,
   };
 }
@@ -102,6 +103,39 @@ test("picks the root agent process on a tty (launcher, not re-exec child)", () =
   const results = correlate(input);
   assert.equal(results.length, 1);
   assert.equal(results[0]?.pid, 600); // the launcher, whose parent is the shell
+});
+
+test("prefers the native agent over a make/node launcher and takes its real cwd", () => {
+  // `make claude` (launcher, cwd = main repo) -> `node new-session.mjs` (not an
+  // agent) -> `claude` (real session, cwd = worktree). The tmux pane path tracks
+  // the launcher's dir; the representative must be the real claude and its cwd.
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 65940, ppid: 39533, tty: "ttys21", command: "make claude", agentNative: false, startMs: 1000 }),
+      proc({ pid: 66144, ppid: 65940, tty: "ttys21", command: "node scripts/new-session.mjs -- claude", agent: null, agentNative: false, startMs: 1100 }),
+      proc({ pid: 66512, ppid: 66144, tty: "ttys21", command: "claude", agentNative: true, startMs: 1200 }),
+    ],
+    tmux: [tmuxPane({ session: "AI2", tty: "ttys21", paneId: "%15", currentPath: "/Users/me/workspace/ai-harness" })],
+    wezterm: [],
+  };
+  const procCwds = new Map([[66512, "/Users/me/.treehouse/x/4/ai-harness"]]);
+  const [s] = correlate(input, procCwds);
+  assert.equal(s?.pid, 66512); // the real claude, not the make launcher (65940)
+  assert.equal(s?.cwd, "/Users/me/.treehouse/x/4/ai-harness");
+});
+
+test("falls back to the tmux pane path when the process cwd is unavailable", () => {
+  const input: DiscoveryInput = {
+    procs: [
+      proc({ pid: 65940, ppid: 39533, tty: "ttys21", command: "make claude", agentNative: false, startMs: 1000 }),
+      proc({ pid: 66512, ppid: 65940, tty: "ttys21", command: "claude", agentNative: true, startMs: 1200 }),
+    ],
+    tmux: [tmuxPane({ session: "AI2", tty: "ttys21", paneId: "%15", currentPath: "/Users/me/workspace/ai-harness" })],
+    wezterm: [],
+  };
+  const [s] = correlate(input); // no procCwds -> pane path fallback
+  assert.equal(s?.pid, 66512); // still the native agent, not the launcher
+  assert.equal(s?.cwd, "/Users/me/workspace/ai-harness");
 });
 
 test("two sessions in one tmux session stay distinct (different panes/ttys)", () => {

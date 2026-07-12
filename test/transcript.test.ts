@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { latestTodoNarration, parseLines, toMessage } from "../src/server/transcript.ts";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  latestTodoNarration,
+  parseLines,
+  resolveTranscriptPath,
+  toMessage,
+} from "../src/server/transcript.ts";
+import type { Session } from "@shared/types.ts";
 
 // Records shaped like real Claude Code JSONL transcript lines.
 const asstText = JSON.stringify({
@@ -115,4 +124,45 @@ test("latestTodoNarration ignores sidechain TodoWrites and non-TodoWrite lines",
   const mainTodo = todoWrite("t1", [{ content: "Real task", status: "in_progress", activeForm: "Doing real task" }]);
   assert.equal(latestTodoNarration([mainTodo, sidechainTodo, asstText, "{bad json"]), "Doing real task");
   assert.equal(latestTodoNarration([asstText, asstTool, userPrompt]), null);
+});
+
+// ---- transcript path resolution ----
+
+const UUID = "4aa3d50a-9232-49cf-9ad9-67b8a9e8b51a";
+const encode = (cwd: string): string => cwd.replace(/[/.]/g, "-");
+const session = (p: Partial<Session>): Session =>
+  ({ agent: "claude", agentSessionId: UUID, cwd: "/Users/me/work/app", ...p }) as Session;
+
+test("resolveTranscriptPath finds the file under the cwd-encoded dir", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const cwd = "/Users/me/work/app";
+  const dir = join(root, encode(cwd));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${UUID}.jsonl`);
+  writeFileSync(file, "{}\n");
+  assert.equal(resolveTranscriptPath(session({ cwd }), root), file);
+});
+
+test("resolveTranscriptPath falls back to id search when cwd is wrong (worktree case)", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  // The file actually lives under the worktree-encoded dir...
+  const dir = join(root, encode("/Users/me/.treehouse/x/4/app"));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${UUID}.jsonl`);
+  writeFileSync(file, "{}\n");
+  // ...but discovery reported the launcher's cwd (the main repo). Still resolves.
+  assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/work/app" }), root), file);
+});
+
+test("resolveTranscriptPath returns null when no transcript exists for the id", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  mkdirSync(join(root, encode("/Users/me/work/app")), { recursive: true });
+  assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/work/app" }), root), null);
+});
+
+test("resolveTranscriptPath ignores non-claude or id-less sessions", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  assert.equal(resolveTranscriptPath(session({ agent: "codex" }), root), null);
+  assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);
+  assert.equal(resolveTranscriptPath(session({ cwd: null }), root), null);
 });

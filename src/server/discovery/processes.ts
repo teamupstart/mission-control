@@ -14,6 +14,13 @@ export interface Proc {
   command: string;
   /** Which agent this process is, if any. */
   agent: AgentType | null;
+  /**
+   * True when `agent` was matched by a strong signature (the real `claude`/`codex`
+   * binary), false when matched only as a wrapped token (`make claude`). Discovery
+   * prefers native agents as the session's representative process, because a
+   * launcher's cwd is where it was invoked, not where the agent actually runs.
+   */
+  agentNative: boolean;
 }
 
 /**
@@ -30,13 +37,14 @@ const WRAPPERS = new Set([
 ]);
 
 /**
- * Classify a process command as an agent. Detection must see through disguises:
- * the `claude` launcher re-execs a version-named binary (argv0 like
- * `.../claude/versions/2.1.195`), and `codex` is a node script
- * (`node .../@openai/codex/bin/codex.js`). We match strong path/name signatures
- * first, then a bare token only when argv0 is a known wrapper.
+ * Match a command against the *strong* signatures of a real agent process (the
+ * actual `claude`/`codex` binary), seeing through the disguises: the `claude`
+ * launcher re-execs a version-named binary (argv0 like `.../claude/versions/2.1.195`),
+ * and `codex` is a node script (`node .../@openai/codex/bin/codex.js`). Returns
+ * null for a wrapper invocation like `make claude` - that's a launcher, not the
+ * agent itself (see `classifyAgent`).
  */
-export function classifyAgent(command: string): AgentType | null {
+export function nativeAgent(command: string): AgentType | null {
   const argv0 = command.split(/\s+/, 1)[0] ?? "";
   const base = argv0.replace(/.*\//, "");
 
@@ -60,7 +68,20 @@ export function classifyAgent(command: string): AgentType | null {
   ) {
     return "codex";
   }
+  return null;
+}
+
+/**
+ * Classify a process command as an agent: a strong native signature first, then
+ * a bare token only when argv0 is a known wrapper (`make claude`, `sh -c codex`).
+ * Callers that need to distinguish the two use `nativeAgent` directly.
+ */
+export function classifyAgent(command: string): AgentType | null {
+  const native = nativeAgent(command);
+  if (native) return native;
   // Wrapped invocation: trust a bare token only under a known launcher.
+  const argv0 = command.split(/\s+/, 1)[0] ?? "";
+  const base = argv0.replace(/.*\//, "");
   if (WRAPPERS.has(base)) {
     if (/(^|\s)claude(\s|$)/.test(command)) return "claude";
     if (/(^|\s)codex(\s|$)/.test(command)) return "codex";
@@ -110,7 +131,8 @@ export async function listProcesses(): Promise<Proc[]> {
     if (!m) continue;
     const pid = Number(m[1]);
     const command = commands.get(pid) ?? "";
-    const agent = command && !isBackgroundAgent(command) ? classifyAgent(command) : null;
+    const detectable = command && !isBackgroundAgent(command);
+    const agent = detectable ? classifyAgent(command) : null;
     procs.push({
       pid,
       ppid: Number(m[2]),
@@ -119,6 +141,7 @@ export async function listProcesses(): Promise<Proc[]> {
       startMs: parseStart((m[4] ?? "").trim()),
       command,
       agent,
+      agentNative: detectable ? nativeAgent(command) !== null : false,
     });
   }
   return procs;

@@ -1,5 +1,5 @@
-import { run } from "../util/exec.ts";
 import { gitInfo } from "../util/git.ts";
+import { readProcCwds } from "./proc-cwd.ts";
 import type { Proc } from "./processes.ts";
 import type { DiscoveredSession, NmLaunch } from "./correlate.ts";
 
@@ -57,29 +57,6 @@ function ownerSession(
 }
 
 /**
- * Resolve the cwd of each pid via one batched `lsof`. `-Fpn` prints `p<pid>`
- * then `n<path>` records; we pair them. Never throws (lsof may exit non-zero
- * when some pids vanish mid-call, but still prints the survivors).
- */
-async function lsofCwds(pids: number[]): Promise<Map<number, string>> {
-  const out = new Map<number, string>();
-  if (pids.length === 0) return out;
-  const res = await run("lsof", ["-a", "-d", "cwd", "-p", pids.join(","), "-Fpn"], {
-    timeoutMs: 4000,
-  });
-  let pid: number | null = null;
-  for (const line of res.stdout.split("\n")) {
-    if (line.startsWith("p")) {
-      const n = Number(line.slice(1));
-      pid = Number.isNaN(n) ? null : n;
-    } else if (line.startsWith("n") && pid !== null) {
-      out.set(pid, line.slice(1));
-    }
-  }
-  return out;
-}
-
-/**
  * Annotate sessions in place with the worktrees where each is driving a
  * no-mistakes run. Cheap when nothing is running (no drivers -> no lsof).
  */
@@ -102,7 +79,7 @@ export async function annotateNomistakesLaunches(
   }
   if (drivers.length === 0) return;
 
-  const cwds = await lsofCwds(drivers.map((d) => d.pid));
+  const cwds = await readProcCwds(drivers.map((d) => d.pid));
   for (const { pid, session } of drivers) {
     const cwd = cwds.get(pid);
     if (!cwd) continue;

@@ -74,9 +74,10 @@ body {
   gap: 10px;
 }
 .brand-mark {
-  color: var(--working);
-  font-size: 20px;
-  filter: drop-shadow(0 0 8px rgba(74, 158, 255, 0.5));
+  display: block;
+  width: 20px;
+  height: 20px;
+  filter: drop-shadow(0 0 6px rgba(74, 158, 255, 0.35));
 }
 .brand h1 {
   font-size: 17px;

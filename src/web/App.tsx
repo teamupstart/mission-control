@@ -243,9 +243,7 @@ export function App(): React.JSX.Element {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden>
-            ◆
-          </span>
+          <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
           <h1>Fleet Control</h1>
         </div>
         <div className="filter-box">

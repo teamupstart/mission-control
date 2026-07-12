@@ -1729,8 +1729,8 @@ kbd {
 }
 
 .diff-viewer {
-  width: min(1100px, 100%);
-  max-height: calc(100vh - 96px);
+  width: min(1280px, 100%);
+  height: calc(100vh - 96px);
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -1779,14 +1779,136 @@ kbd {
   color: #ef5f63;
 }
 .diff-body {
-  overflow: auto;
-  padding: 12px 14px 18px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
 }
 .diff-empty {
+  margin: auto;
   color: var(--muted);
   padding: 22px 4px;
   text-align: center;
 }
+
+/* ---- diff viewer: left file list ---- */
+.diff-filelist {
+  flex: none;
+  width: 264px;
+  overflow-y: auto;
+  padding: 8px;
+  border-right: 1px solid var(--border-soft);
+  background: var(--bg-2);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.diff-fileitem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
+}
+.diff-fileitem:hover {
+  background: var(--panel-2);
+}
+.diff-fileitem.active {
+  background: color-mix(in oklab, var(--working) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.diff-file-dot {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--mono);
+  border-radius: 5px;
+  color: var(--muted);
+  background: color-mix(in oklab, var(--muted) 16%, transparent);
+}
+.diff-file-dot.status-added {
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 18%, transparent);
+}
+.diff-file-dot.status-deleted {
+  color: #ef5f63;
+  background: color-mix(in oklab, #ef5f63 18%, transparent);
+}
+.diff-file-dot.status-renamed {
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 18%, transparent);
+}
+.diff-fileitem-path {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+/* Basename first (always readable), directory second (truncates as space runs out). */
+.fp-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 68%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  color: var(--fg);
+}
+.fp-dir {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--dim);
+}
+.diff-fileitem.active .fp-name {
+  font-weight: 600;
+}
+.diff-fileitem-stat {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 6px;
+}
+.diff-trunc {
+  margin: 8px 4px 2px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ---- diff viewer: right detail pane ---- */
+.diff-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 12px 14px 18px;
+}
+.diff-detail .diff-file {
+  margin-bottom: 0;
+}
+.diff-detail .diff-file-head {
+  cursor: default;
+}
+
 .diff-file {
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -1844,16 +1966,6 @@ kbd {
   font-variant-numeric: tabular-nums;
   display: flex;
   gap: 7px;
-}
-.diff-file-caret {
-  flex: none;
-  color: var(--muted);
-  font-size: 11px;
-  transition: transform 0.15s ease;
-  transform: rotate(180deg);
-}
-.diff-file-caret.open {
-  transform: none;
 }
 .diff-binary {
   padding: 12px;

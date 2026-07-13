@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
-import type { Session, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
+import type { Session, ThinkingLevel, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
+import { parseContextWindowSize } from "@shared/model.ts";
 import type { Registry } from "./registry.ts";
 import { sleep } from "./util/timers.ts";
 
@@ -185,6 +186,138 @@ export function readCurrentTodo(path: string): string | null {
   }
   const text = buf.subarray(from).toString("utf8");
   return latestTodoNarration(text ? text.split("\n") : []);
+}
+
+// ---- runtime metadata (model / context% / thinking level) -----------------
+
+/** What a transcript read yields about a session's live runtime, all optional. */
+export interface RuntimeMetaRead {
+  modelId: string | null;
+  /** Tokens occupying the context window (input + cache), excludes output. */
+  contextTokens: number | null;
+  contextWindow: number | null;
+  /** 0-100, rounded; null when tokens/window couldn't be determined. */
+  contextPct: number | null;
+  longContext: boolean;
+  thinkingLevel: ThinkingLevel | null;
+}
+
+/** Bytes to scan from the tail when extracting runtime metadata. */
+const META_TAIL_BYTES = 256 * 1024;
+
+/** Effort levels, longest-first so the alternation never mis-slices "xhigh". */
+const EFFORT = "xhigh|medium|high|max|low";
+/** `/effort <level>` echoes this exact line into the transcript. */
+const EFFORT_SET_RE = new RegExp(`Set effort level to (${EFFORT})\\b`, "i");
+/** `/model … with <level> effort` echoes this variant. Anchored to "Set model to"
+ *  so it can't match unrelated prose like "…done with high effort". */
+const EFFORT_WITH_RE = new RegExp(`Set model to [\\s\\S]*? with (${EFFORT}) effort\\b`, "i");
+
+/**
+ * The session's current reasoning effort, scraped newest-first from the local-
+ * command echoes Claude writes when you run `/effort` or `/model … with … effort`.
+ * Null when the session never set it explicitly (its default isn't recorded), or
+ * when the echo has scrolled out of the tail we scan on a long session - the
+ * statusLine source fills both gaps. A heuristic, like ccstatusline's own scrape.
+ * Pure, for testing.
+ */
+export function latestEffortLevel(lines: string[]): ThinkingLevel | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (!line.includes("effort")) continue; // cheap pre-filter before regex
+    const m = EFFORT_SET_RE.exec(line) ?? EFFORT_WITH_RE.exec(line);
+    if (m) return m[1]!.toLowerCase() as ThinkingLevel;
+  }
+  return null;
+}
+
+/** The `usage` + `model` off the newest main-chain assistant record, or null. */
+function latestAssistantUsage(
+  lines: string[],
+): { modelId: string | null; tokens: number | null } | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line || line.indexOf('"assistant"') < 0) continue;
+    let o: Record<string, unknown>;
+    try {
+      o = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (o.type !== "assistant" || o.isSidechain || o.isApiErrorMessage) continue;
+    const m = o.message as Record<string, unknown> | undefined;
+    if (!m || typeof m !== "object") continue;
+    const modelId = typeof m.model === "string" ? m.model : null;
+    const usage = m.usage as Record<string, unknown> | undefined;
+    const tokens = usage ? contextTokensFromUsage(usage) : null;
+    if (modelId || tokens !== null) return { modelId, tokens };
+  }
+  return null;
+}
+
+/** Context length = input + both cache tiers; output is excluded (matches ccstatusline). */
+function contextTokensFromUsage(usage: Record<string, unknown>): number | null {
+  const n = (k: string): number => (typeof usage[k] === "number" ? (usage[k] as number) : 0);
+  const total = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+  return total > 0 ? total : null;
+}
+
+/**
+ * Derive runtime metadata from a window of transcript lines: the newest main-
+ * chain assistant record's model + token usage, and the current effort level.
+ * Returns null only when nothing useful was found. Pure, for testing.
+ */
+export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
+  const usage = latestAssistantUsage(lines);
+  const thinkingLevel = latestEffortLevel(lines);
+  const modelId = usage?.modelId ?? null;
+  const contextTokens = usage?.tokens ?? null;
+
+  if (!modelId && contextTokens === null && !thinkingLevel) return null;
+
+  const { size, longContext } = parseContextWindowSize(modelId);
+  const contextPct =
+    contextTokens !== null ? Math.round(Math.min(100, (contextTokens / size) * 100)) : null;
+  return {
+    modelId,
+    contextTokens,
+    contextWindow: contextTokens !== null ? size : null,
+    contextPct,
+    longContext,
+    thinkingLevel,
+  };
+}
+
+/**
+ * Read the last `maxBytes` of a file as complete lines, dropping a partial first
+ * line when we began mid-file. Shared bounded-tail read for the JSONL scanners
+ * (runtime metadata here, and the Codex rollout reader) so none parse a whole
+ * multi-MB file. Returns [] when the file is missing/unreadable.
+ */
+export function readTailLines(path: string, maxBytes: number): string[] {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return [];
+  }
+  const start = Math.max(0, size - maxBytes);
+  const buf = readRange(path, start, size);
+  let from = 0;
+  if (start > 0) {
+    const nl = buf.indexOf(NL);
+    from = nl >= 0 ? nl + 1 : buf.length;
+  }
+  const text = buf.subarray(from).toString("utf8");
+  return text ? text.split("\n") : [];
+}
+
+/**
+ * Read the tail of a session's transcript and derive its runtime metadata, or
+ * null when the file is missing/unreadable or yields nothing.
+ */
+export function readRuntimeMeta(path: string): RuntimeMetaRead | null {
+  return computeRuntimeMeta(readTailLines(path, META_TAIL_BYTES));
 }
 
 /** Parse an array of JSONL lines into renderable messages. */

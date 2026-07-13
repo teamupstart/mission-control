@@ -33,6 +33,7 @@
     "worktree-setup": "node scripts/worktree-setup.mjs",
     "setup": "npm run build && npm run install-hooks",
     "install-hooks": "tsx hooks/install.mjs",
+    "install-statusline": "tsx hooks/install.mjs --statusline",
     "install-service": "node scripts/install-service.mjs"
   },
   "dependencies": {

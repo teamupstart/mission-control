@@ -24,6 +24,28 @@ export function uptime(startedAt: number | null): string {
   return `up ${Math.floor(h / 24)}d`;
 }
 
+export type ContextTone = "ok" | "warn" | "high";
+
+/**
+ * Meter tone as the context window fills: calm until 70%, amber approaching the
+ * auto-compact zone, red once nearly full - so a card telegraphs context pressure
+ * before the agent has to compact.
+ */
+export function contextTone(pct: number | null | undefined): ContextTone {
+  if (pct == null) return "ok";
+  if (pct >= 90) return "high";
+  if (pct >= 70) return "warn";
+  return "ok";
+}
+
+/** Compact token count for the context tooltip: 1499 -> "1k", 128000 -> "128k". */
+export function compactTokens(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "?";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (n >= 1000) return Math.round(n / 1000) + "k";
+  return String(n);
+}
+
 export function shortenCwd(cwd: string | null): string {
   if (!cwd) return "-";
   const home = "/Users/";

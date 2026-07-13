@@ -1,6 +1,6 @@
 import { useCallback } from "react";
-import type { PrState, Session } from "@shared/types.ts";
-import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
+import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import { compactTokens, contextTone, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
@@ -135,6 +135,8 @@ export function SessionCard({
         )}
       </dl>
 
+      {session.meta && <RuntimeMetaRow meta={session.meta} />}
+
       {session.task && (
         <div className={`task-chip task-${session.task.status}`} title={`${session.task.kind} task`}>
           <span className="task-kind">{session.task.kind}</span>
@@ -205,6 +207,55 @@ export function SessionCard({
         <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
       )}
     </article>
+  );
+}
+
+/**
+ * The runtime row beneath the meta: model, thinking level, and a context-window
+ * pressure meter - the same facts ccstatusline shows in the terminal. Rendered
+ * only when we have at least one of them; each chip is independently omitted when
+ * unknown (e.g. an un-instrumented Claude session shows model + context but no
+ * thinking level).
+ */
+function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Element | null {
+  const hasCtx = meta.contextPct != null;
+  if (!meta.model && !meta.thinkingLevel && !hasCtx) return null;
+  const tone = contextTone(meta.contextPct);
+  const ctxTitle =
+    meta.contextTokens != null && meta.contextWindow != null
+      ? `${compactTokens(meta.contextTokens)} / ${compactTokens(meta.contextWindow)} tokens in context`
+      : `${meta.contextPct}% of the context window used`;
+  return (
+    <div className="card-runtime">
+      {meta.model && (
+        <span className="rt-pill rt-model" title={meta.modelId ?? undefined}>
+          {meta.model}
+          {meta.longContext && <span className="rt-1m">1M</span>}
+        </span>
+      )}
+      {meta.thinkingLevel && (
+        <span
+          className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}
+          title={`Reasoning effort: ${meta.thinkingLevel}`}
+        >
+          <span className="rt-think-glyph" aria-hidden>
+            ✦
+          </span>
+          {meta.thinkingLevel}
+        </span>
+      )}
+      {hasCtx && (
+        <span className={`rt-ctx rt-ctx-${tone}`} title={ctxTitle}>
+          <span className="rt-meter" aria-hidden>
+            <span
+              className="rt-meter-fill"
+              style={{ width: `${Math.min(100, Math.max(0, meta.contextPct!))}%` }}
+            />
+          </span>
+          <span className="rt-ctx-num">{meta.contextPct}%</span>
+        </span>
+      )}
+    </div>
   );
 }
 

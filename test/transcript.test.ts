@@ -4,6 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  computeRuntimeMeta,
+  latestEffortLevel,
   latestTodoNarration,
   parseLines,
   resolveTranscriptPath,
@@ -124,6 +126,80 @@ test("latestTodoNarration ignores sidechain TodoWrites and non-TodoWrite lines",
   const mainTodo = todoWrite("t1", [{ content: "Real task", status: "in_progress", activeForm: "Doing real task" }]);
   assert.equal(latestTodoNarration([mainTodo, sidechainTodo, asstText, "{bad json"]), "Doing real task");
   assert.equal(latestTodoNarration([asstText, asstTool, userPrompt]), null);
+});
+
+// ---- runtime metadata (model / context% / thinking level) ----
+
+const effortSet = (lvl: string): string =>
+  JSON.stringify({
+    type: "user",
+    message: {
+      role: "user",
+      content: `<local-command-stdout>Set effort level to ${lvl} (saved as your default)</local-command-stdout>`,
+    },
+  });
+const modelWithEffort = (lvl: string): string =>
+  JSON.stringify({
+    type: "user",
+    message: { role: "user", content: `<local-command-stdout>Set model to Opus 4.8 with ${lvl} effort</local-command-stdout>` },
+  });
+const asstUsage = (model: string | null, usage: Record<string, number>, extra: object = {}): string =>
+  JSON.stringify({ type: "assistant", isSidechain: false, message: { role: "assistant", model, usage }, ...extra });
+
+test("latestEffortLevel reads /effort and /model-with-effort echoes, newest wins", () => {
+  assert.equal(latestEffortLevel([effortSet("xhigh")]), "xhigh");
+  assert.equal(latestEffortLevel([modelWithEffort("high")]), "high");
+  assert.equal(latestEffortLevel([effortSet("low"), effortSet("max")]), "max");
+  // "xhigh" must not be mis-sliced to "high".
+  assert.equal(latestEffortLevel([effortSet("xhigh")]), "xhigh");
+  assert.equal(latestEffortLevel([asstText, userPrompt]), null);
+});
+
+test("computeRuntimeMeta derives model + context% from the newest assistant usage", () => {
+  const m = computeRuntimeMeta([
+    asstUsage("claude-opus-4-8", {
+      input_tokens: 10_000,
+      cache_read_input_tokens: 60_000,
+      cache_creation_input_tokens: 30_000,
+      output_tokens: 500,
+    }),
+  ]);
+  assert.deepEqual(m, {
+    modelId: "claude-opus-4-8",
+    contextTokens: 100_000, // output excluded
+    contextWindow: 200_000,
+    contextPct: 50,
+    longContext: false,
+    thinkingLevel: null,
+  });
+});
+
+test("computeRuntimeMeta infers a 1M window from the model id", () => {
+  const m = computeRuntimeMeta([asstUsage("claude-opus-4-8[1m]", { input_tokens: 100_000 })]);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 10);
+  assert.equal(m?.longContext, true);
+});
+
+test("computeRuntimeMeta skips sidechain + api-error records and folds in effort", () => {
+  const main = asstUsage("claude-sonnet-5", { input_tokens: 20_000 });
+  const sidechain = asstUsage("claude-haiku-4-5", { input_tokens: 999_999 }, { isSidechain: true });
+  const apiErr = asstUsage("claude-haiku-4-5", { input_tokens: 999_999 }, { isApiErrorMessage: true });
+  const m = computeRuntimeMeta([effortSet("high"), main, sidechain, apiErr]);
+  assert.equal(m?.modelId, "claude-sonnet-5"); // the main-chain record, not the noise
+  assert.equal(m?.contextTokens, 20_000);
+  assert.equal(m?.thinkingLevel, "high");
+});
+
+test("computeRuntimeMeta returns null when nothing useful is present", () => {
+  assert.equal(computeRuntimeMeta(["", "{}", userToolResult]), null);
+});
+
+test("computeRuntimeMeta keeps the model when usage has only output tokens", () => {
+  const m = computeRuntimeMeta([asstUsage("claude-opus-4-8", { output_tokens: 400 })]);
+  assert.equal(m?.modelId, "claude-opus-4-8");
+  assert.equal(m?.contextPct, null); // no context-length tokens -> no %
+  assert.equal(m?.contextWindow, null);
 });
 
 // ---- transcript path resolution ----

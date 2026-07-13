@@ -35,6 +35,36 @@ export const HookIngestSchema = z.object({
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
 
+/**
+ * Normalized status-line payload the forwarder posts to the daemon. Claude Code
+ * pipes a rich JSON blob to the configured statusLine command on every render;
+ * our forwarder (hooks/harness-statusline.mjs) lifts the fields we care about
+ * into this flat, camelCased shape - model, context window, and reasoning effort -
+ * plus the terminal env used to bind it to a discovered session. Everything but
+ * `env` is optional so an older Claude Code that omits a field still validates.
+ */
+export const StatusLineIngestSchema = z.object({
+  sessionId: z.string().nullable().optional().default(null),
+  cwd: z.string().nullable().optional().default(null),
+  ts: z.number().optional(),
+  env: EnvSchema,
+  model: z
+    .object({ id: z.string().optional(), displayName: z.string().optional() })
+    .optional(),
+  contextWindow: z
+    .object({
+      /** Claude's own used-% (authoritative; matches what the terminal shows). */
+      usedPercentage: z.number().optional(),
+      contextWindowSize: z.number().optional(),
+      /** Absolute tokens in context (input + cache), for the tooltip. */
+      tokens: z.number().optional(),
+    })
+    .optional(),
+  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+  thinkingEnabled: z.boolean().optional(),
+});
+export type StatusLineIngest = z.infer<typeof StatusLineIngestSchema>;
+
 /** A message the user sends into a session from the dashboard. */
 export const SendTextSchema = z.object({
   text: z.string().min(1),

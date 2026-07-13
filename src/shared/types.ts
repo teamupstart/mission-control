@@ -24,6 +24,45 @@ export type SessionState =
 /** Where the session's display name came from. */
 export type NameSource = "tmux" | "wezterm" | "process";
 
+/** Reasoning effort, shared by Claude (`/effort`) and Codex (rollout `effort`). */
+export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Where a session's runtime metadata came from, in descending authority:
+ * `statusline` is Claude's own live accounting (exact), `transcript` is our
+ * passive read of the JSONL (approximate), `codex-rollout` is Codex's session
+ * file. The daemon never lets a lower-authority read clobber a fresh statusLine.
+ */
+export type MetaSource = "statusline" | "transcript" | "codex-rollout";
+
+/**
+ * Live runtime facts about a session's model, thinking level, and context usage -
+ * the same values ccstatusline shows in the terminal. Populated from the source
+ * with the highest authority currently available (see `MetaSource`); null on a
+ * session we haven't been able to read yet.
+ */
+export interface SessionMeta {
+  /** Friendly model name for the chip, e.g. "Opus 4.8". Null when unknown. */
+  model: string | null;
+  /** Raw model id, e.g. "claude-opus-4-8[1m]" / "gpt-5-codex" (tooltip + inference). */
+  modelId: string | null;
+  /** True when the model runs a 1M-token window (drives the "1M" marker). */
+  longContext: boolean;
+  /** Live reasoning effort; null when unknown or the model has no effort parameter. */
+  thinkingLevel: ThinkingLevel | null;
+  /** Whether extended thinking is on (Claude statusLine only; null otherwise). */
+  thinkingEnabled: boolean | null;
+  /** Share of the context window used, 0-100 (rounded to an int), or null. */
+  contextPct: number | null;
+  /** Absolute tokens in context + the window size, for the meter's tooltip. */
+  contextTokens: number | null;
+  contextWindow: number | null;
+  /** Which source produced these values (governs precedence on refresh). */
+  source: MetaSource;
+  /** epoch ms these values were observed (drives precedence + freshness TTL). */
+  updatedAt: number;
+}
+
 export interface WeztermInfo {
   paneId: number;
   tabId: number;
@@ -101,6 +140,12 @@ export interface Session {
   prNumber: number | null;
   /** Whether `prUrl` is still open or already merged - drives the card's status icon. */
   prState: PrState | null;
+  /**
+   * Model / thinking-level / context-usage for the card, from the highest-
+   * authority source available (Claude statusLine, our transcript read, or a
+   * Codex rollout). Null until we've read the session at least once.
+   */
+  meta: SessionMeta | null;
 }
 
 /** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */

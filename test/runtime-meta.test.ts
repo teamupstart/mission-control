@@ -1,0 +1,114 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import type { RuntimeMetaRead } from "../src/server/transcript.ts";
+import type { Session, ServerEvent } from "@shared/types.ts";
+import type { StatusLineIngest } from "@shared/protocol.ts";
+
+// Isolate the daemon's SQLite DB before anything reads config/db.
+process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-meta-"));
+const { Registry } = await import("../src/server/registry.ts");
+
+const PANE = { session: "w", window: "w", windowIndex: 0, paneId: "%3" };
+
+function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
+  return {
+    syntheticId: "s1",
+    agent: "claude",
+    name: "n",
+    nameSource: "tmux",
+    cwd: "/repo/app",
+    gitBranch: "main",
+    nomistakesGated: false,
+    pid: 1,
+    tty: "ttys1",
+    wezterm: null,
+    tmux: PANE,
+    startedAt: 0,
+    ...over,
+  };
+}
+
+function seeded(): InstanceType<typeof Registry> {
+  const r = new Registry();
+  r.applyDiscovery([disco()]);
+  return r;
+}
+
+function metaOf(r: InstanceType<typeof Registry>, id = "s1"): Session["meta"] {
+  return r.snapshot().sessions.find((s) => s.id === id)?.meta ?? null;
+}
+
+const statusIngest = (over: Partial<StatusLineIngest> = {}): StatusLineIngest =>
+  ({
+    env: { tmuxPane: "%3" },
+    sessionId: "abc",
+    model: { id: "claude-opus-4-8", displayName: "Opus" },
+    contextWindow: { usedPercentage: 34, contextWindowSize: 200_000, tokens: 68_000 },
+    effort: "xhigh",
+    thinkingEnabled: true,
+    ...over,
+  }) as StatusLineIngest;
+
+const transcriptRead: RuntimeMetaRead = {
+  modelId: "claude-sonnet-5",
+  contextTokens: 20_000,
+  contextWindow: 200_000,
+  contextPct: 10,
+  longContext: false,
+  thinkingLevel: "high",
+};
+
+test("applyStatusLine populates meta on the bound session (exact %, effort, model)", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest());
+  const m = metaOf(r);
+  assert.equal(m?.model, "Opus 4.8");
+  assert.equal(m?.thinkingLevel, "xhigh");
+  assert.equal(m?.thinkingEnabled, true);
+  assert.equal(m?.contextPct, 34);
+  assert.equal(m?.contextTokens, 68_000);
+  assert.equal(m?.longContext, false);
+  assert.equal(m?.source, "statusline");
+});
+
+test("applyRuntimeMeta populates meta from a passive transcript read", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  const m = metaOf(r);
+  assert.equal(m?.model, "Sonnet 5");
+  assert.equal(m?.contextPct, 10);
+  assert.equal(m?.thinkingLevel, "high");
+  assert.equal(m?.source, "transcript");
+});
+
+test("a fresh statusLine reading outranks a passive transcript read", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest());
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript"); // must NOT clobber
+  const m = metaOf(r);
+  assert.equal(m?.source, "statusline");
+  assert.equal(m?.model, "Opus 4.8");
+  assert.equal(m?.contextPct, 34);
+});
+
+test("a null passive read is a no-op (never clears a good reading)", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.applyRuntimeMeta("s1", null, "transcript");
+  assert.equal(metaOf(r)?.model, "Sonnet 5");
+});
+
+test("meta only emits when a displayed value actually changes", () => {
+  const r = seeded();
+  let upserts = 0;
+  r.subscribe((e: ServerEvent) => {
+    if (e.type === "session_upsert") upserts++;
+  });
+  r.applyStatusLine(statusIngest()); // change -> 1 emit
+  r.applyStatusLine(statusIngest()); // identical -> no emit
+  assert.equal(upserts, 1);
+});

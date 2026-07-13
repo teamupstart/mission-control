@@ -219,7 +219,14 @@ export async function teardownWorktree(task: {
   }
 }
 
-/** Launch `agentBin` in a new detached tmux session rooted at `cwd`. */
+/**
+ * Launch `agentBin` in a new detached tmux session rooted at `cwd`, alongside a
+ * plain shell pane in the same worktree. The agent lives in pane 0 (what discovery
+ * binds to and injects the first prompt into); a second pane split beside it drops
+ * you straight into a terminal at the worktree for ad-hoc git/build/inspection work.
+ * The split is best-effort - a shell pane is a convenience, so if tmux can't add it
+ * we keep the agent session rather than failing the whole dispatch.
+ */
 export async function spawnDetachedSession(
   sessionName: string,
   cwd: string,
@@ -229,6 +236,16 @@ export async function spawnDetachedSession(
     timeoutMs: 10000,
   });
   if (r.code !== 0) throw new Error(`tmux new-session failed: ${r.stderr.trim() || "unknown"}`);
+
+  const agentPane = `${sessionName}:0.0`;
+  // Split a shell pane beside the agent (vertical divider), sized to a third so the
+  // agent TUI keeps most of the width. `split-window` with no command opens the
+  // default shell; `-c` roots it at the worktree.
+  await run("tmux", ["split-window", "-h", "-l", "33%", "-t", agentPane, "-c", cwd], {
+    timeoutMs: 10000,
+  });
+  // Leave the agent pane focused so attaching/Focus lands on it, not the shell.
+  await run("tmux", ["select-pane", "-t", agentPane], { timeoutMs: 10000 });
 }
 
 // ---- pure helpers (unit-tested) ----

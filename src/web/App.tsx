@@ -9,8 +9,11 @@ import { DispatchModal } from "./components/DispatchModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
+import { SettingsModal } from "./components/SettingsModal.tsx";
 import { useNotifier } from "./useNotifier.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
+import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
+import type { ActionId } from "./lib/keybindings.ts";
 import { stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then
@@ -27,14 +30,20 @@ export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
   useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
+  const { bindings } = useKeybindings();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+
+  // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
+  // sets the same state directly. No-op in a plain browser (no preload bridge).
+  useEffect(() => window.fleetDesktop?.onOpenSettings(() => setSettingsOpen(true)), []);
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -147,48 +156,47 @@ export function App(): React.JSX.Element {
     cardEls.current.get(expandedId)?.scrollIntoView({ block: "start", behavior: "smooth" });
   }, [expandedId]);
 
-  // Global keyboard driving: Tab toggles selection, arrows move it (row-aware),
-  // s/f/k act on the selected card, Esc deselects. Typing fields and the review
-  // modal keep their own keys.
+  // Global keyboard driving. Every action's key comes from the editable bindings
+  // (see useKeybindings): a keydown is normalized to a canonical chord and matched
+  // against them. Esc and the arrow keys stay fixed as structural navigation.
+  // Typing fields and the overlays keep their own keys.
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
       const target = e.target as HTMLElement | null;
       const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
+      const chord = chordFromEvent(e);
+      if (!chord) return; // a lone modifier press
 
-      // "r" toggles the fleet report - works whether it's open or closed. Held
-      // back only while a review/dispatch overlay owns the screen or you're typing.
+      // Roundup toggles whether it's open or closed - held back only while a
+      // review/dispatch/settings overlay owns the screen or you're typing.
       if (
         !typing &&
         !modalOpen &&
         !dispatchOpen &&
         !diffSession &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        e.key.toLowerCase() === "r"
+        !settingsOpen &&
+        chord === bindings.roundup
       ) {
         e.preventDefault();
         setReportOpen((v) => !v);
         return;
       }
 
-      // Stand down while any overlay owns the screen, so grid shortcuts (s/f/k/
-      // arrows/Tab/Esc) don't drive a background card behind the panel/modal.
-      if (modalOpen || dispatchOpen || reportOpen || diffSession || typing) return;
+      // Stand down while any overlay owns the screen, so grid shortcuts don't
+      // drive a background card behind the panel/modal.
+      if (modalOpen || dispatchOpen || reportOpen || settingsOpen || diffSession || typing) return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
-      // guard so "+" still opens dispatch when there are no sessions yet.
-      if (!(e.metaKey || e.ctrlKey || e.altKey)) {
-        if (e.key === "+") {
-          e.preventDefault();
-          setDispatchOpen(true);
-          return;
-        }
-        if (e.key === "/") {
-          e.preventDefault();
-          filterRef.current?.focus();
-          return;
-        }
+      // guard so dispatch still opens when there are no sessions yet.
+      if (chord === bindings.dispatch) {
+        e.preventDefault();
+        setDispatchOpen(true);
+        return;
+      }
+      if (chord === bindings.filter) {
+        e.preventDefault();
+        filterRef.current?.focus();
+        return;
       }
 
       const ids = visible.map((s) => s.id);
@@ -197,11 +205,14 @@ export function App(): React.JSX.Element {
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
+      if (chord === bindings.select) {
+        e.preventDefault();
+        setSelectedId((cur) => (cur ? null : ids[0] ?? null));
+        return;
+      }
+
+      // Fixed structural navigation (not rebindable).
       switch (e.key) {
-        case "Tab":
-          e.preventDefault();
-          setSelectedId((cur) => (cur ? null : ids[0] ?? null));
-          return;
         case "Escape":
           // Peel back one layer at a time: collapse an expanded card first, then
           // (on a second press) cancel any pending action and drop the selection.
@@ -231,34 +242,48 @@ export function App(): React.JSX.Element {
           if (nextId) setSelectedId(nextId);
           return;
         }
-        default: {
-          if (e.metaKey || e.ctrlKey || e.altKey) return;
-          const k = e.key.toLowerCase();
-          if (k === "e") {
-            if (!selectedId) return;
-            e.preventDefault();
-            toggleExpand(selectedId);
-            return;
-          }
-          if (k === "d") {
-            if (!selectedId) return;
-            e.preventDefault();
-            setDiffSessionId(selectedId);
-            return;
-          }
-          if (k !== "s" && k !== "f" && k !== "k") return;
-          const h = handle();
-          if (!h) return;
-          e.preventDefault();
-          if (k === "s") h.startSend();
-          else if (k === "f") h.focusPane();
-          else h.requestKill();
-        }
+      }
+
+      // Actions on the selected card.
+      if (chord === bindings.expand) {
+        if (!selectedId) return;
+        e.preventDefault();
+        toggleExpand(selectedId);
+        return;
+      }
+      if (chord === bindings.diff) {
+        if (!selectedId) return;
+        e.preventDefault();
+        setDiffSessionId(selectedId);
+        return;
+      }
+      const h = handle();
+      if (!h) return;
+      if (chord === bindings.send) {
+        e.preventDefault();
+        h.startSend();
+      } else if (chord === bindings.focus) {
+        e.preventDefault();
+        h.focusPane();
+      } else if (chord === bindings.kill) {
+        e.preventDefault();
+        h.requestKill();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, selectedId, expandedId, modalOpen, dispatchOpen, reportOpen, diffSession, toggleExpand]);
+  }, [
+    visible,
+    selectedId,
+    expandedId,
+    modalOpen,
+    dispatchOpen,
+    reportOpen,
+    settingsOpen,
+    diffSession,
+    toggleExpand,
+    bindings,
+  ]);
 
   return (
     <div className="app">
@@ -275,7 +300,7 @@ export function App(): React.JSX.Element {
             ref={filterRef}
             className="filter-input"
             type="text"
-            placeholder="Filter (/)"
+            placeholder={`Filter (${formatChord(bindings.filter)})`}
             aria-label="Filter sessions by title or status"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -311,14 +336,30 @@ export function App(): React.JSX.Element {
           )}
         </div>
         <AlertBar settings={alertSettings} update={updateAlerts} />
-        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Roundup - press r">
+        <button
+          className="ghost-btn settings-btn"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings (⌘,)"
+          aria-label="Settings"
+        >
+          <span aria-hidden>⚙</span>
+        </button>
+        <button
+          className="ghost-btn"
+          onClick={() => setReportOpen(true)}
+          title={`Roundup - press ${formatChord(bindings.roundup)}`}
+        >
           Roundup
           <kbd className="ghost-key" aria-hidden>
-            r
+            {formatChord(bindings.roundup)}
           </kbd>
           {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
         </button>
-        <button className="dispatch-btn" onClick={() => setDispatchOpen(true)} title="Dispatch a new agent (+)">
+        <button
+          className="dispatch-btn"
+          onClick={() => setDispatchOpen(true)}
+          title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
+        >
           <span aria-hidden>＋</span> Dispatch
         </button>
         <div className={`link ${connected ? "up" : "down"}`}>
@@ -371,6 +412,8 @@ export function App(): React.JSX.Element {
         <DiffViewer session={diffSession} onClose={() => setDiffSessionId(null)} />
       )}
 
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+
       {sessions.length === 0 && (
         <div className="empty">
           <p className="empty-title">No agent sessions detected</p>
@@ -397,6 +440,7 @@ export function App(): React.JSX.Element {
       {selected && (
         <CommandBar
           session={selected}
+          bindings={bindings}
           expanded={expandedId === selected.id}
           onToggleExpand={() => toggleExpand(selected.id)}
           onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
@@ -415,6 +459,7 @@ export function App(): React.JSX.Element {
  */
 function CommandBar({
   session,
+  bindings,
   expanded,
   onToggleExpand,
   onAction,
@@ -422,6 +467,7 @@ function CommandBar({
   onDeselect,
 }: {
   session: Session;
+  bindings: Record<ActionId, string>;
   expanded: boolean;
   onToggleExpand: () => void;
   onAction: (action: "startSend" | "focusPane" | "requestKill") => void;
@@ -462,23 +508,23 @@ function CommandBar({
         {live && (
           <>
             <button className="keycap-btn" onClick={() => onAction("startSend")}>
-              <kbd>s</kbd> send
+              <kbd>{formatChord(bindings.send)}</kbd> send
             </button>
             <button className="keycap-btn" onClick={() => onAction("focusPane")}>
-              <kbd>f</kbd> focus
+              <kbd>{formatChord(bindings.focus)}</kbd> focus
             </button>
             <button className="keycap-btn" onClick={() => onAction("requestKill")}>
-              <kbd>k</kbd> kill
+              <kbd>{formatChord(bindings.kill)}</kbd> kill
             </button>
           </>
         )}
         {session.cwd && (
           <button className="keycap-btn" onClick={onDiff}>
-            <kbd>d</kbd> diff
+            <kbd>{formatChord(bindings.diff)}</kbd> diff
           </button>
         )}
         <button className="keycap-btn" onClick={onToggleExpand}>
-          <kbd>e</kbd> {expanded ? "collapse" : "expand"}
+          <kbd>{formatChord(bindings.expand)}</kbd> {expanded ? "collapse" : "expand"}
         </button>
         <span className="cmdbar-hint">
           <kbd>↑↓←→</kbd> move

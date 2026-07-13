@@ -12,6 +12,7 @@ import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
 import { createWindow, getMainWindow, showWindow } from "./window.ts";
+import { installAppMenu } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations } from "./integrations.ts";
 import { isQuitting, setQuitting } from "./lifecycle.ts";
@@ -39,6 +40,13 @@ function showIntegrationResult(title: string, message: string): void {
   const opts = { type: "info" as const, title, message };
   if (win) void dialog.showMessageBox(win, opts);
   else void dialog.showMessageBox(opts);
+}
+
+// Reveal the dashboard and tell the renderer to open the Settings panel. Backs
+// both the native "Settings…" menu item (⌘,) and any future app-level trigger.
+function openSettings(): void {
+  showWindow(paths.preload);
+  getMainWindow()?.webContents.send("fleet:open-settings");
 }
 
 function registerIpc(): void {
@@ -96,6 +104,7 @@ app.whenReady().then(async () => {
   if (!process.env.FLEET_DEV_SERVER_URL) await waitForHealthy(15000);
 
   createWindow(paths.preload);
+  installAppMenu({ onOpenSettings: openSettings });
   createTray(paths.trayIcon, {
     onOpen: () => showWindow(paths.preload),
     onInstallIntegrations: () => {

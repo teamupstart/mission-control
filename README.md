@@ -66,6 +66,38 @@ npm run install-service          # start now + on login
 npm run install-service -- --uninstall
 ```
 
+## Desktop app (macOS)
+
+Prefer a real menu-bar app over a browser tab? Agent Wrangler packages into a native
+macOS app (Apple Silicon) that supervises the daemon, shows the dashboard in a window,
+and - crucially - **delivers alerts even with the window closed** (a browser tab can't).
+
+```sh
+make app            # build + package → release/Agent Wrangler-<version>-arm64.dmg
+make install-app    # …and copy Agent Wrangler.app into /Applications
+```
+
+The app is self-contained: the daemon runs on Electron's bundled Node (with `node:sqlite`),
+so no system `node` is required to run it. On launch it **adopts** an already-running daemon
+(a LaunchAgent or `make up`) instead of starting a second one. Closing the window hides it
+(the app stays in the menu bar so alerts keep firing); quit from the tray menu. Enable
+**Start at login** and **Install Claude integrations…** (wires the status hooks + MCP review
+server at the app's bundled paths) from the tray menu.
+
+Because it's a local, unsigned build, the first launch may need a right-click → **Open**
+(or `xattr -dr com.apple.quarantine "/Applications/Agent Wrangler.app"`).
+
+For desktop development with the same hot-reload loop as the browser:
+
+```sh
+make desktop        # daemon (tsx watch) + Vite (HMR) + Electron shell, all auto-reload
+```
+
+The window loads the Vite dev server, so React Fast Refresh works inside it exactly as in
+the browser; the Electron shell restarts on main-process edits. The plain `make dev`
+browser workflow is unchanged. See [docs/plans/migrate-electron.md](docs/plans/migrate-electron.md)
+for the full design.
+
 ## How it works
 
 Three layers, most-to-least automatic:

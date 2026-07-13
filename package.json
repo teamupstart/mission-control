@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "author": "Agent Wrangler",
   "description": "Local, auto-refreshing control plane for Claude Code / Codex sessions across wezterm tabs and tmux sessions",
   "engines": {
     "node": ">=24"
@@ -10,12 +11,20 @@
   "bin": {
     "fleet-control": "src/server/index.ts"
   },
+  "main": "dist/main/index.cjs",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite",
-    "build": "vite build && npm run build:mcp",
+    "dev:electron": "npm run build:main && concurrently -n esbuild,electron -c yellow,green \"npm run build:main -- --watch\" \"FLEET_DEV_SERVER_URL=http://localhost:5173 electronmon .\"",
+    "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
+    "build": "npm run build:web && npm run build:server && npm run build:main && npm run build:mcp && npm run build:hook",
+    "build:web": "vite build",
+    "build:server": "esbuild src/server/index.ts --bundle --platform=node --format=esm --target=node22 --alias:@shared=./src/shared --outfile=dist/server/index.mjs",
+    "build:main": "esbuild src/main/index.ts src/preload/index.ts --bundle --platform=node --format=cjs --target=node22 --external:electron --main-fields=module,main --alias:@shared=./src/shared --outdir=dist --outbase=src --out-extension:.js=.cjs",
     "build:mcp": "esbuild src/mcp/server.ts --bundle --platform=node --format=esm --target=node22 --alias:@shared=./src/shared --outfile=dist/mcp/server.mjs",
+    "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",
+    "package": "npm run build && electron-builder --mac",
     "start": "tsx src/server/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx 'test/**/*.test.ts'",
@@ -44,6 +53,9 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3",
+    "electronmon": "^2.0.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"

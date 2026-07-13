@@ -12,7 +12,7 @@ LOG  := .harness.log
 MATCH := src/server/index.ts
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev server web up down restart status logs build test check hooks setup
+.PHONY: help init session claude dev desktop server web up down restart status logs build app install-app icons test check hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -33,6 +33,9 @@ claude: ## One shot: bootstrap, ensure the daemon, lease a gated worktree, open 
 
 dev: ## Daemon + web in the foreground, both auto-reload (Ctrl-C to stop)
 	npm run dev
+
+desktop: ## Electron shell + daemon + Vite, all auto-reload (Ctrl-C to stop)
+	npm run dev:desktop
 
 server: ## Just the daemon in the foreground, auto-reload
 	npm run dev:server
@@ -65,8 +68,18 @@ status: ## Show whether the daemon is running
 logs: ## Tail the background daemon log
 	@touch $(LOG); tail -f $(LOG)
 
-build: ## Build the web UI + MCP bundle
+build: ## Build everything (web UI, daemon, Electron main, MCP + hook satellites)
 	npm run build
+
+app: ## Build and package the macOS app (.app + .dmg) into release/
+	npm run package
+
+install-app: app ## Build, package, and copy Agent Wrangler.app into /Applications
+	@rm -rf "/Applications/Agent Wrangler.app"
+	@cp -R "release/mac-arm64/Agent Wrangler.app" /Applications/ && echo "installed to /Applications/Agent Wrangler.app"
+
+icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
+	node scripts/gen-icons.mjs
 
 test: ## Run the unit tests
 	npm test

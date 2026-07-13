@@ -99,3 +99,9 @@ console.log(`  plist: ${plistPath}`);
 console.log(`  logs:  ${logFile}`);
 console.log(`\nThe dashboard is at ${BASE_URL}`);
 console.log(`Stop/remove with:  npm run install-service -- --uninstall`);
+// The desktop app (`make app`) has its own "Start at login" and adopts a running
+// daemon rather than double-binding the port, so the two coexist safely - but pick
+// one to avoid two "start at login" mechanisms. This LaunchAgent is best for a
+// headless daemon (no app window).
+console.log(`\nNote: if you also run the Agent Wrangler desktop app, it will ADOPT this`);
+console.log(`daemon (no double-bind). Use one "start at login" mechanism to avoid confusion.`);

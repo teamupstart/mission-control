@@ -1,7 +1,12 @@
 # Plan: Session Runtime Metadata - Model, Thinking Level, Context %
 
-Status: proposed
+Status: implemented
 Owner: ai-harness
+Notes: Shipped as described, with one improvement (passive transcript effort scrape, see
+"Implemented deviation" below) and one packaging boundary from the Electron move: the
+packaged desktop app auto-wires only the passive path (transcript + Codex rollout, zero
+config); the statusLine wrapper stays **CLI-opt-in** (`npm run install-statusline`) so the
+app never silently rewrites a user's `statusLine` in `~/.claude/settings.json`.
 Related: ccstatusline (the terminal status line we already read these values from);
 [`../fleet-report/plan.md`](../fleet-report/plan.md) (the report can surface the same
 fields once they exist on `Session`).
@@ -150,8 +155,15 @@ Extend `src/server/transcript.ts` (which already resolves + tail-reads the trans
   ccstatusline's inference; the statusLine path doesn't need it because the window size is
   in the payload.)
 
-Note the transcript path yields no thinking level - that stays null until statusLine is
-installed. This is the honest fallback: passive sessions get Model + approximate Context%.
+**Implemented deviation - the transcript *does* yield a thinking level.** The plan
+originally assumed effort was unavailable passively. In practice Claude Code writes a
+`Set effort level to <level>` (from `/effort`) or `Set model to … with <level> effort`
+(from `/model`) echo into the transcript, so `latestEffortLevel` scrapes it newest-first -
+the same heuristic ccstatusline uses. So a passive Claude session shows all three fields
+when it has set effort explicitly. Caveats (why statusLine is still the authoritative
+source): the echo can scroll out of the bounded tail we scan on a long session (then it
+reads null = unknown, never wrong), and it only reflects an *explicit* `/effort`, not the
+account default. Model + Context% are always in the tail, so those stay reliable passively.
 
 ### 3. Codex - rollout reader (net-new)
 

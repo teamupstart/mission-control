@@ -9,6 +9,7 @@ import {
   NomistakesRespondSchema,
   ResolveReviewSchema,
   SendTextSchema,
+  StatusLineIngestSchema,
   StatusSchema,
 } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
@@ -102,6 +103,16 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     const parsed = HookIngestSchema.safeParse({ ...(body as object), event: c.req.param("event") });
     if (!parsed.success) return c.json({ error: parsed.error.message }, 400);
     registry.applyHook(parsed.data);
+    return c.body(null, 204);
+  });
+
+  // --- statusLine ingest (token-guarded): Claude's live model / effort / context
+  // %, forwarded by hooks/harness-statusline.mjs on every terminal render. ---
+  app.post("/statusline", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, StatusLineIngestSchema);
+    if (!parsed.ok) return parsed.res;
+    registry.applyStatusLine(parsed.data);
     return c.body(null, 204);
   });
 

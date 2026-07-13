@@ -11,13 +11,16 @@
 // nothing needs to change, the file isn't rewritten at all. This is opt-in: the
 // user runs `npm run install-hooks`. It never runs itself.
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, modify, applyEdits } from "jsonc-parser";
+import { stateDir } from "../src/shared/harness-runtime.mjs";
 
 const MARKER = "harness-hook.mjs";
+/** Marker identifying our statusLine wrapper command in settings.json. */
+const STATUSLINE_MARKER = "harness-statusline.mjs";
 const EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
@@ -33,12 +36,25 @@ const EVENTS = [
 const MATCHER_EVENTS = new Set(["PreToolUse", "PostToolUse"]);
 
 const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "harness-hook.mjs");
+const statuslineScriptPath = join(dirname(fileURLToPath(import.meta.url)), "harness-statusline.mjs");
 const settingsPath = process.env.CLAUDE_SETTINGS_PATH ?? join(homedir(), ".claude", "settings.json");
 const uninstall = process.argv.includes("--uninstall");
+// Opt-in: also wrap the terminal status line so Claude's live model / thinking /
+// context % reaches the daemon. Off by default - we never touch statusLine unless
+// asked (uninstall still unwraps ours, so an install never leaves a dangling one).
+const doStatusline = process.argv.includes("--statusline");
 
 function command(event) {
   return `"${process.execPath}" "${scriptPath}" ${event}`;
 }
+
+/** Our statusLine wrapper command (delegates to the user's real status line). */
+function statuslineCommand() {
+  return `"${process.execPath}" "${statuslineScriptPath}"`;
+}
+
+/** Sidecar recording the user's pre-wrap status line so the forwarder delegates to it. */
+const statuslineInnerPath = join(stateDir(), "statusline-inner");
 
 /** Our hook group for an event, matcher-first so re-runs are byte-stable. */
 function ourGroup(event) {
@@ -112,6 +128,64 @@ if (!hooksIsObject) {
   }
 }
 
+// --- statusLine wrapper (opt-in) --------------------------------------------
+// Wrap the user's status line so Claude's live model/effort/context reaches the
+// daemon, delegating to their existing command (recorded in a sidecar) so the
+// terminal is unchanged. Uninstall always unwraps ours - restoring the recorded
+// command, or dropping the key - so we never leave a wrapper pointing at a script
+// that's been removed.
+const currentSL = settings && typeof settings === "object" ? settings.statusLine : undefined;
+const slIsOurs = Boolean(
+  currentSL &&
+    typeof currentSL === "object" &&
+    typeof currentSL.command === "string" &&
+    currentSL.command.includes(STATUSLINE_MARKER),
+);
+let statuslineAction = null;
+
+if (uninstall) {
+  if (slIsOurs) {
+    let inner = null;
+    try {
+      inner = readFileSync(statuslineInnerPath, "utf8").trim() || null;
+    } catch {
+      inner = null;
+    }
+    text = inner
+      ? edit(text, ["statusLine"], { type: "command", command: inner })
+      : edit(text, ["statusLine"], undefined);
+    try {
+      rmSync(statuslineInnerPath, { force: true });
+    } catch {
+      // sidecar already gone - fine
+    }
+    statuslineAction = inner ? "restored" : "removed";
+  }
+} else if (doStatusline) {
+  const ourCommand = statuslineCommand();
+  if (!slIsOurs) {
+    // Record the user's existing command (if any) so the forwarder delegates to it.
+    const existing =
+      currentSL && typeof currentSL === "object" && typeof currentSL.command === "string"
+        ? currentSL.command.trim()
+        : "";
+    if (existing) {
+      try {
+        mkdirSync(dirname(statuslineInnerPath), { recursive: true });
+        writeFileSync(statuslineInnerPath, existing + "\n");
+      } catch {
+        // couldn't record - forwarder falls back to ccstatusline
+      }
+    }
+    text = edit(text, ["statusLine"], { type: "command", command: ourCommand });
+    statuslineAction = "wrapped";
+  } else if (currentSL.command !== ourCommand) {
+    // Already ours: keep the recorded inner, just refresh a drifted script path.
+    text = edit(text, ["statusLine"], { type: "command", command: ourCommand });
+    statuslineAction = "updated";
+  }
+}
+
 // New files get a trailing newline; existing files keep their own byte layout.
 if (!existed && !text.endsWith(formattingOptions.eol)) text += formattingOptions.eol;
 
@@ -132,11 +206,20 @@ writeFileSync(settingsPath, text);
 
 if (uninstall) {
   console.log(`Removed Fleet Control hooks from ${settingsPath} (your other settings were left intact)`);
+  if (statuslineAction === "restored") console.log(`  restored your original status line command.`);
+  else if (statuslineAction === "removed") console.log(`  removed the Fleet Control status line wrapper.`);
   console.log(`\nTo remove the review-channel MCP server:\n  claude mcp remove -s user fleet-control`);
 } else {
   console.log(`Wired Fleet Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);
   console.log(`  events: ${EVENTS.join(", ")}`);
   console.log(`  script: ${scriptPath}`);
+  if (statuslineAction === "wrapped" || statuslineAction === "updated") {
+    console.log(`  status line wrapped to report model / thinking level / context %`);
+    console.log(`    (delegates to your existing status line; recorded at ${statuslineInnerPath})`);
+  } else if (!doStatusline) {
+    console.log(`\nOptional: also surface model / thinking level / context % on the cards:`);
+    console.log(`  npm run install-statusline   (wraps your status line; reversible via --uninstall)`);
+  }
   console.log(`\nStart a new Claude Code session; it will report live status to Fleet Control.`);
 
   console.log(`\nTo enable the review channel (agents push diffs/plans for you to review),`);

@@ -1,16 +1,20 @@
 import { EventEmitter } from "node:events";
 import type {
+  MetaSource,
   NmRunSummary,
   PrState,
   ReviewItem,
   ServerEvent,
   Session,
+  SessionMeta,
   SessionState,
   Task,
   TaskSummary,
 } from "@shared/types.ts";
-import type { HookIngest } from "@shared/protocol.ts";
+import type { HookIngest, StatusLineIngest } from "@shared/protocol.ts";
+import { isLongContext, modelLabel, parseContextWindowSize } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
+import type { RuntimeMetaRead } from "./transcript.ts";
 import {
   deleteTask as dbDeleteTask,
   loadActiveTasks,
@@ -32,6 +36,13 @@ const RECENT_TERMINAL_TASKS = 50;
 const EXIT_LINGER_MS = 8000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
+/**
+ * How long a Claude statusLine reading stays authoritative. While fresh, the
+ * passive transcript poller won't overwrite it (statusLine is exact + carries
+ * thinking level). Once a session goes quiet past this, the transcript read is
+ * allowed to take over so an idle card doesn't freeze on a stale exact figure.
+ */
+const STATUSLINE_TTL_MS = 3 * 60 * 1000;
 
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
@@ -167,6 +178,7 @@ export class Registry extends EventEmitter {
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
+      meta: prev?.meta ?? null,
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -398,6 +410,53 @@ export class Registry extends EventEmitter {
     };
     this.sessions.set(next.id, next);
     this.emitSession(next);
+  }
+
+  // ---- runtime metadata (model / thinking level / context %) ----
+
+  /** Non-exited sessions, for the runtime-meta poller to read model/context from. */
+  liveSessions(): Session[] {
+    return [...this.sessions.values()].filter((s) => s.state !== "exited");
+  }
+
+  /**
+   * Apply a Claude statusLine reading (the authoritative live source: exact
+   * context %, thinking level, model). Binds to a session by pane/id/cwd like a
+   * hook. Always records the reading (so its freshness governs precedence) but
+   * only emits when a *displayed* value changed.
+   */
+  applyStatusLine(ingest: StatusLineIngest): void {
+    const s = this.findSessionByEnv(ingest.env, ingest.sessionId, ingest.cwd);
+    if (!s) return;
+    const meta = metaFromStatusLine(ingest, Date.now());
+    const agentSessionId = ingest.sessionId ?? s.agentSessionId;
+    const changed = !metaDisplayEqual(s.meta, meta) || s.agentSessionId !== agentSessionId;
+    const next: Session = { ...s, meta, agentSessionId };
+    this.sessions.set(s.id, next);
+    if (changed) this.emitSession(next);
+  }
+
+  /**
+   * Apply a passive runtime read (transcript for Claude, rollout for Codex). A
+   * null read means "nothing found this tick" and is a no-op, so a briefly
+   * unreadable file never clears a good reading. A fresh statusLine reading wins
+   * over any passive source, so an installed forwarder is never downgraded.
+   */
+  applyRuntimeMeta(sessionId: string, read: RuntimeMetaRead | null, source: MetaSource): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || !read) return;
+    const now = Date.now();
+    if (
+      s.meta?.source === "statusline" &&
+      source !== "statusline" &&
+      now - s.meta.updatedAt < STATUSLINE_TTL_MS
+    )
+      return;
+    const meta = metaFromRead(read, source, now);
+    const changed = !metaDisplayEqual(s.meta, meta);
+    const next: Session = { ...s, meta };
+    this.sessions.set(sessionId, next);
+    if (changed) this.emitSession(next);
   }
 
   private overlayFor(s: Session): HookOverlay | undefined {
@@ -640,9 +699,70 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.prUrl === b.prUrl &&
     a.prNumber === b.prNumber &&
     a.prState === b.prState &&
+    metaDisplayEqual(a.meta, b.meta) &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task)
   );
+}
+
+/**
+ * Compare only the *visible* fields of two SessionMeta - the model, thinking
+ * level, and rounded context% (plus the 1M marker). `updatedAt`, `source`, and
+ * the raw token counts are deliberately excluded so refreshing a still-identical
+ * reading (a statusLine ping, a poll tick) doesn't spam the UI; the meter only
+ * re-renders when a displayed value actually moves.
+ */
+function metaDisplayEqual(a: SessionMeta | null, b: SessionMeta | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.model === b.model &&
+    a.modelId === b.modelId &&
+    a.longContext === b.longContext &&
+    a.thinkingLevel === b.thinkingLevel &&
+    a.thinkingEnabled === b.thinkingEnabled &&
+    a.contextPct === b.contextPct
+  );
+}
+
+/** Build a SessionMeta from a transcript/rollout read (friendly name applied). */
+function metaFromRead(read: RuntimeMetaRead, source: MetaSource, now: number): SessionMeta {
+  return {
+    model: modelLabel(read.modelId),
+    modelId: read.modelId,
+    longContext: read.longContext,
+    thinkingLevel: read.thinkingLevel,
+    thinkingEnabled: null,
+    contextPct: read.contextPct,
+    contextTokens: read.contextTokens,
+    contextWindow: read.contextWindow,
+    source,
+    updatedAt: now,
+  };
+}
+
+/** Build a SessionMeta from a normalized Claude statusLine payload. */
+function metaFromStatusLine(ingest: StatusLineIngest, now: number): SessionMeta {
+  const modelId = ingest.model?.id ?? null;
+  const inferred = parseContextWindowSize(modelId);
+  const window = ingest.contextWindow?.contextWindowSize ?? inferred.size;
+  const usedPct = ingest.contextWindow?.usedPercentage;
+  const tokens = ingest.contextWindow?.tokens ?? null;
+  let contextPct: number | null = null;
+  if (typeof usedPct === "number") contextPct = Math.round(Math.max(0, Math.min(100, usedPct)));
+  else if (tokens !== null && window > 0) contextPct = Math.round(Math.min(100, (tokens / window) * 100));
+  return {
+    model: modelLabel(modelId) ?? ingest.model?.displayName ?? null,
+    modelId,
+    longContext: isLongContext(window) || inferred.longContext,
+    thinkingLevel: ingest.effort ?? null,
+    thinkingEnabled: ingest.thinkingEnabled ?? null,
+    contextPct,
+    contextTokens: contextPct !== null ? tokens : null,
+    contextWindow: contextPct !== null ? window : null,
+    source: "statusline",
+    updatedAt: now,
+  };
 }
 
 /** Parse the numeric id out of a GitHub PR URL, or null when absent. */

@@ -5,13 +5,42 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
 
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const MARKER = "harness-hook.mjs";
+const STATUSLINE_MARKER = "harness-statusline.mjs";
+
+/** Run the installer with an isolated state dir (for the status line sidecar). */
+function runInstallerHome(settingsPath: string, homeDir: string, args: string[] = []): void {
+  execFileSync(process.execPath, [INSTALLER, ...args], {
+    env: { ...process.env, CLAUDE_SETTINGS_PATH: settingsPath, FLEET_HOME: homeDir },
+    stdio: "ignore",
+  });
+}
+
+/** A settings file + an isolated state dir, both torn down afterwards. */
+function withTempSettingsHome(initial: string, fn: (settingsPath: string, homeDir: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "harness-sl-"));
+  const settingsPath = join(dir, "settings.json");
+  const homeDir = join(dir, "home");
+  mkdirSync(homeDir, { recursive: true });
+  writeFileSync(settingsPath, initial);
+  try {
+    fn(settingsPath, homeDir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SETTINGS_WITH_STATUSLINE = `{
+  "model": "opus",
+  "statusLine": { "type": "command", "command": "npx -y ccstatusline@latest" }
+}
+`;
 
 /** Run the installer against a throwaway settings file and return its text. */
 function runInstaller(settingsPath: string, args: string[] = []): void {
@@ -97,5 +126,50 @@ test("refuses to touch a malformed settings file", () => {
     const before = readFileSync(path, "utf8");
     assert.throws(() => runInstaller(path), "installer should exit non-zero on broken JSON");
     assert.equal(readFileSync(path, "utf8"), before, "malformed file left untouched");
+  });
+});
+
+// ---- opt-in status line wrapper ----
+
+test("a default install never touches the status line", () => {
+  withTempSettingsHome(SETTINGS_WITH_STATUSLINE, (path, home) => {
+    runInstallerHome(path, home, []);
+    const s = parse(readFileSync(path, "utf8")) as any;
+    assert.equal(s.statusLine.command, "npx -y ccstatusline@latest", "status line left untouched by default");
+  });
+});
+
+test("--statusline wraps an existing status line and records the original", () => {
+  withTempSettingsHome(SETTINGS_WITH_STATUSLINE, (path, home) => {
+    runInstallerHome(path, home, ["--statusline"]);
+    const s = parse(readFileSync(path, "utf8")) as any;
+    assert.ok(s.statusLine.command.includes(STATUSLINE_MARKER), "status line points at our wrapper");
+    // The original command is recorded so the forwarder delegates to it.
+    assert.equal(readFileSync(join(home, "statusline-inner"), "utf8").trim(), "npx -y ccstatusline@latest");
+    assert.equal(Object.keys(s.hooks).length, 9, "hooks are installed alongside");
+  });
+});
+
+test("--uninstall restores the original status line and drops the wrapper + sidecar", () => {
+  withTempSettingsHome(SETTINGS_WITH_STATUSLINE, (path, home) => {
+    runInstallerHome(path, home, ["--statusline"]);
+    runInstallerHome(path, home, ["--uninstall"]);
+    const text = readFileSync(path, "utf8");
+    const s = parse(text) as any;
+    assert.equal(s.statusLine.command, "npx -y ccstatusline@latest", "original status line restored");
+    assert.ok(!text.includes(STATUSLINE_MARKER), "wrapper gone");
+    assert.ok(!existsSync(join(home, "statusline-inner")), "sidecar removed");
+  });
+});
+
+test("--statusline with no prior status line wraps, and uninstall removes the key", () => {
+  withTempSettingsHome(`{ "model": "opus" }\n`, (path, home) => {
+    runInstallerHome(path, home, ["--statusline"]);
+    let s = parse(readFileSync(path, "utf8")) as any;
+    assert.ok(s.statusLine.command.includes(STATUSLINE_MARKER), "wrapper installed");
+    assert.ok(!existsSync(join(home, "statusline-inner")), "no sidecar when there was nothing to record");
+    runInstallerHome(path, home, ["--uninstall"]);
+    s = parse(readFileSync(path, "utf8")) as any;
+    assert.equal(s.statusLine, undefined, "status line key removed on uninstall");
   });
 });

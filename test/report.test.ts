@@ -33,6 +33,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prUrl: null,
     prNumber: null,
     prState: null,
+    meta: null,
     ...over,
   };
 }

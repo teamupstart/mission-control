@@ -137,6 +137,37 @@ test("a hook event with a wrong token is rejected and leaves state untouched", a
   assert.equal(after.state, before.state); // unchanged - the spoofed event never applied
 });
 
+test("a statusLine reading (correct token) lands model / thinking / context on the card", async () => {
+  seedSession();
+  const res = await app.request("/statusline", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      env: { tmuxPane: "%3" },
+      sessionId: "abc",
+      model: { id: "claude-opus-4-8", displayName: "Opus" },
+      contextWindow: { usedPercentage: 42, contextWindowSize: 200000, tokens: 84000 },
+      effort: "xhigh",
+      thinkingEnabled: true,
+    }),
+  });
+  assert.equal(res.status, 204);
+  const s = (await sessions()).find((x) => x.id === "sess-1")!;
+  assert.equal(s.meta?.model, "Opus 4.8");
+  assert.equal(s.meta?.thinkingLevel, "xhigh");
+  assert.equal(s.meta?.contextPct, 42);
+  assert.equal(s.meta?.source, "statusline");
+});
+
+test("a statusLine reading with a wrong token is rejected", async () => {
+  const res = await app.request("/statusline", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json", "x-harness-token": "nope" },
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, model: { id: "claude-opus-4-8" } }),
+  });
+  assert.equal(res.status, 401);
+});
+
 test("parseBody rejects a malformed write body with 400 (and never mutates)", async () => {
   // /api/tasks runs through the shared parseBody helper before any dispatch.
   const res = await app.request("/api/tasks", {

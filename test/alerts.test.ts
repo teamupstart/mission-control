@@ -39,6 +39,9 @@ function mkSession(over: Partial<Session> = {}): Session {
     pendingReviews: 0,
     nomistakes: null,
     task: null,
+    prUrl: null,
+    prNumber: null,
+    prState: null,
     ...over,
   };
 }

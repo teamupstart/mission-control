@@ -27,6 +27,10 @@ export const HookIngestSchema = z.object({
   message: z.string().optional(),
   source: z.string().optional(),
   reason: z.string().optional(),
+  // A GitHub PR URL the hook sniffed out of a PostToolUse tool result (e.g. the
+  // link `gh pr create` prints). Optimistically decorates the session's card;
+  // the PR poller is the source of truth that later confirms or clears it.
+  prUrl: z.string().url().optional(),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;

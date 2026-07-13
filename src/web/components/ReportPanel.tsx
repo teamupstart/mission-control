@@ -11,7 +11,7 @@ import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 
 /**
- * The fleet report (`/bearings`): who needs you, who's working, what's idle, the
+ * The Roundup panel (`/api/report`): who needs you, who's working, what's idle, the
  * backlog, and recent outcomes - assembled from the same live snapshot the grid
  * uses (so it never flickers or lags), with the SAME bucketing the server uses
  * for its markdown digest.
@@ -122,9 +122,9 @@ export function ReportPanel({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <aside className="report-panel" role="dialog" aria-label="Fleet report" onClick={(e) => e.stopPropagation()}>
+      <aside className="report-panel" role="dialog" aria-label="Roundup" onClick={(e) => e.stopPropagation()}>
         <header className="report-head">
-          <h2>Fleet bearings</h2>
+          <h2>Roundup</h2>
           <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>
             {copied ? "Copied ✓" : "Copy as markdown"}
           </button>

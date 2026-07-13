@@ -1,0 +1,132 @@
+import { PR_POLL_MS } from "./config.ts";
+import type { PrMatch, Registry } from "./registry.ts";
+import type { PrState } from "@shared/types.ts";
+import { unref } from "./util/timers.ts";
+import { run } from "./util/exec.ts";
+
+// Keeps each session's PR chip honest by asking `gh` for the pull request on the
+// session's current branch. It is the source of truth behind the chip: it
+// discovers PRs the hook never saw (Codex sessions, PRs opened in the web UI),
+// surfaces whether that PR is open or merged, and retracts the chip only when the
+// session moves to a branch that no longer matches the PR's head. The hook only
+// ever sets a link optimistically; nothing but this poller can confirm a merge,
+// because a merge happens outside the session where no hook can observe it.
+//
+// A merged PR is deliberately kept (not cleared): once your work lands you can
+// still see the PR that carried it, right up until the session is reset onto a
+// different branch. Only a *closed-unmerged* PR is treated as "no PR".
+//
+// Cheap by construction: only feature-branch sessions are queried (one `gh` call
+// per distinct worktree), and an all-idle or all-on-main fleet spawns nothing.
+
+/** Branches that never carry a PR, so we never spend a `gh` call on them. */
+const DEFAULT_BRANCHES = new Set(["main", "master"]);
+
+type PrLookup = "error" | null | PrMatch;
+
+/**
+ * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
+ * resolves the repo from that checkout's `origin`. Prefers a still-open PR, else
+ * falls back to a merged one (so a landed PR keeps showing). Returns `null` when
+ * the branch has provably no open/merged PR (only closed-unmerged, or none), or
+ * `"error"` when `gh` is missing/unauthenticated/timed out - which the reconciler
+ * treats as "unknown, leave the existing chip alone" rather than a reason to clear.
+ */
+async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
+  const res = await run(
+    "gh",
+    ["pr", "list", "--head", branch, "--state", "all", "--json", "url,number,state", "--limit", "20"],
+    { cwd, timeoutMs: 8000 },
+  );
+  if (res.code !== 0) return "error";
+  try {
+    const arr = JSON.parse(res.stdout || "[]") as unknown;
+    if (!Array.isArray(arr)) return "error"; // malformed output is an anomaly, not "no PR"
+    // `gh` lists newest-first; prefer an open PR, else the most recent merged one.
+    // A closed-unmerged PR is ignored, so the chip drops like there's no PR.
+    const open = arr.find((p) => prStateOf(p) === "open");
+    const match = open ?? arr.find((p) => prStateOf(p) === "merged");
+    if (!match) return null;
+    const { url, number } = match as { url?: unknown; number?: unknown };
+    if (typeof url !== "string") return null;
+    return {
+      url,
+      number: typeof number === "number" ? number : null,
+      state: prStateOf(match) as PrState,
+    };
+  } catch {
+    return "error";
+  }
+}
+
+/** Map `gh`'s uppercase PR state to our surfaced states; closed-unmerged -> null. */
+function prStateOf(p: unknown): PrState | null {
+  const raw = (p as { state?: unknown })?.state;
+  if (raw === "OPEN") return "open";
+  if (raw === "MERGED") return "merged";
+  return null; // CLOSED (unmerged) or anything unexpected
+}
+
+/**
+ * Query every feature-branch session's open PR and reconcile the results onto
+ * the fleet in one pass. Sessions on a default branch (or none) are never
+ * queried; reconciliation still clears any stale link they carry, which is what
+ * retires a chip after the session moves off the branch its PR belonged to.
+ */
+export async function pollAndReconcilePrs(registry: Registry): Promise<void> {
+  const targets = registry.prPollTargets();
+  const found = new Map<string, PrMatch>();
+  const skip = new Set<string>();
+
+  const queryable = targets.filter((t) => t.branch && !DEFAULT_BRANCHES.has(t.branch));
+  if (queryable.length === 0) {
+    registry.reconcilePrs(found, skip); // clears any lingering link, spawns nothing
+    return;
+  }
+
+  // A branch is checked out in exactly one worktree, so one `gh` call per cwd
+  // answers for every session sharing it.
+  const byCwd = new Map<string, string>();
+  for (const t of queryable) byCwd.set(t.cwd, t.branch as string);
+  const results = new Map<string, PrLookup>();
+  await Promise.all(
+    [...byCwd].map(async ([cwd, branch]) => {
+      results.set(cwd, await queryPr(cwd, branch));
+    }),
+  );
+
+  for (const t of queryable) {
+    const r = results.get(t.cwd);
+    if (r === "error") skip.add(t.id);
+    else if (r) found.set(t.id, r);
+    // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
+  }
+  registry.reconcilePrs(found, skip);
+}
+
+/**
+ * Drive PR reconciliation on an interval. Ticks never overlap; a slow sweep just
+ * delays the next. A no-op (no subprocesses) whenever no session sits on a
+ * feature branch.
+ */
+export function startPrPoller(registry: Registry): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    try {
+      await pollAndReconcilePrs(registry);
+    } catch (err) {
+      console.error("[pr] poll failed:", err);
+    }
+    if (stopped) return;
+    timer = unref(setTimeout(tick, PR_POLL_MS));
+  };
+
+  void tick();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
+}

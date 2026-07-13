@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import type { Session } from "@shared/types.ts";
+import type { PrState, Session } from "@shared/types.ts";
 import { relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
@@ -55,7 +55,7 @@ export function SessionCard({
   return (
     <article
       ref={setRef}
-      className={`card tone-${st.tone}${attention ? " attention" : ""}${selected ? " selected" : ""}`}
+      className={`card tone-${st.tone}${attention ? " attention" : ""}${selected ? " selected" : ""}${expanded ? " expanded" : ""}`}
       data-agent={session.agent}
       onClick={onSelect}
     >
@@ -65,6 +65,23 @@ export function SessionCard({
           <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
           <span className="name-source">{subtitle(session)}</span>
         </div>
+        {session.prUrl && (
+          <a
+            className={`pr-chip pr-${session.prState ?? "open"}`}
+            href={session.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={
+              session.prState === "merged"
+                ? "Pull request merged - open on GitHub"
+                : "Open pull request - open on GitHub"
+            }
+            onClick={(e) => e.stopPropagation()}
+          >
+            <PrStateIcon state={session.prState ?? "open"} />
+            <span className="pr-num">{session.prNumber ? `#${session.prNumber}` : "PR"}</span>
+          </a>
+        )}
         {session.pendingReviews > 0 ? (
           <button className={`badge badge-${st.tone} badge-btn`} onClick={onOpenReviews}>
             <span className="badge-dot" />
@@ -188,5 +205,27 @@ export function SessionCard({
         <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
       )}
     </article>
+  );
+}
+
+/**
+ * GitHub-style status glyph for the PR chip: the pull-request icon while the PR
+ * is open, the merge icon once it has landed. Color comes from the chip class.
+ */
+function PrStateIcon({ state }: { state: PrState }): React.JSX.Element {
+  return state === "merged" ? (
+    <svg className="pr-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden focusable="false">
+      <path
+        fill="currentColor"
+        d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM4.25 4a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"
+      />
+    </svg>
+  ) : (
+    <svg className="pr-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden focusable="false">
+      <path
+        fill="currentColor"
+        d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"
+      />
+    </svg>
   );
 }

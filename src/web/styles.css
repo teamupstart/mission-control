@@ -2258,3 +2258,155 @@ kbd {
   line-height: 1.5;
   color: var(--dim);
 }
+
+/* ---- settings (topbar gear + keybindings editor) ---- */
+.settings-btn {
+  padding: 7px 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+.settings-modal {
+  width: min(560px, 100%);
+}
+.settings-body {
+  padding: 18px;
+  max-height: 74vh;
+  overflow: auto;
+}
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.settings-section-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.settings-group {
+  margin-top: 14px;
+}
+.settings-group-label {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+.kb-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+}
+.kb-row + .kb-row {
+  margin-top: 2px;
+}
+.kb-row:hover {
+  background: var(--panel-2);
+}
+.kb-row.has-conflict {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 8%, transparent);
+}
+.kb-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.kb-row-label {
+  font-size: 12.5px;
+  font-weight: 540;
+  color: var(--fg);
+}
+.kb-row-desc {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.kb-row-conflict {
+  font-size: 11px;
+  font-weight: 560;
+  color: var(--attention);
+}
+.kb-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+/* The capture target is a button that shows the current key, and swaps to a live
+   "Press a key…" prompt while recording. Min-width keeps the row from jumping. */
+.kb-capture {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 84px;
+  min-height: 30px;
+  padding: 4px 10px;
+  font: inherit;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.kb-capture:hover {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.kb-capture kbd {
+  font-size: 11px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  min-width: 0;
+}
+.kb-capture.is-recording {
+  border-color: var(--working);
+  background: color-mix(in oklab, var(--working) 14%, var(--bg-2));
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--working) 22%, transparent);
+}
+.kb-recording {
+  font-size: 11.5px;
+  color: var(--working);
+}
+.kb-reset {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+.kb-reset:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--panel-2);
+}
+.kb-reset:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.settings-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--attention);
+}
+.settings-hint {
+  margin: 16px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}

@@ -14,4 +14,11 @@ contextBridge.exposeInMainWorld("fleetDesktop", {
     ipcRenderer.invoke("fleet:install-integrations"),
   removeIntegrations: (): Promise<{ ok: boolean; message: string }> =>
     ipcRenderer.invoke("fleet:remove-integrations"),
+  // Main pushes this when the native "Settings…" item (⌘,) is chosen. Returns an
+  // unsubscribe so the renderer can detach on unmount.
+  onOpenSettings: (cb: () => void): (() => void) => {
+    const listener = (): void => cb();
+    ipcRenderer.on("fleet:open-settings", listener);
+    return () => ipcRenderer.removeListener("fleet:open-settings", listener);
+  },
 });

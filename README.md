@@ -243,8 +243,14 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
    else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
-2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there, and
+2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there -
+   with a second **shell pane split beside it** in the same worktree, so a terminal for
+   ad-hoc git/build/inspection is one attach away, and
 3. injects your task as its first prompt once passive discovery binds the session.
+
+The repo picker is a **searchable index of your workspace** - the daemon scans
+`~/workspace` (override with `FLEET_WORKSPACE_DIRS`) for git checkouts, so you select the
+repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
 
 The new session then shows up on the grid like any other, with an **intent chip** naming
 what it's working on. It's headless until you want it - click **Focus** on the card to open
@@ -375,6 +381,7 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 |-----|---------|---------|
 | `FLEET_PORT` | `7317` | daemon / dashboard port |
 | `FLEET_HOME` | `~/.fleet-control` | state dir (db, token, logs, dispatch worktrees) |
+| `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker |
 | `FLEET_POLL_MS` | `1500` | discovery interval |
 | `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |

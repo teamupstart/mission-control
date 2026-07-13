@@ -1,20 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import type { TaskKind, AgentType } from "@shared/types.ts";
-import { api } from "../lib/api.ts";
+import { api, fetchRepos } from "../lib/api.ts";
 
 /**
  * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
  */
-export function DispatchModal({
-  repos,
-  onClose,
-}: {
-  repos: string[];
-  onClose: () => void;
-}): React.JSX.Element {
-  const [repoRoot, setRepoRoot] = useState(repos[0] ?? "");
+export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+  const [repos, setRepos] = useState<string[]>([]);
+  const [reposLoading, setReposLoading] = useState(true);
+  const [repoRoot, setRepoRoot] = useState("");
   const [intent, setIntent] = useState("");
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState<TaskKind>("ship");
@@ -25,6 +21,20 @@ export function DispatchModal({
 
   useEffect(() => {
     intentRef.current?.focus();
+  }, []);
+
+  // Index the workspace's repos so the base can be searched/picked. Re-fetched on
+  // every open so a freshly-cloned repo shows up without a full app reload.
+  useEffect(() => {
+    let alive = true;
+    void fetchRepos().then((list) => {
+      if (!alive) return;
+      setRepos(list);
+      setReposLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // Close on Escape (unless typing in a field where Esc should just blur nothing).
@@ -70,7 +80,14 @@ export function DispatchModal({
 
         <div className="dispatch-body">
           <label className="field">
-            <span className="field-label">Repo</span>
+            <span className="field-label">
+              Repo{" "}
+              <span className="field-hint">
+                {reposLoading
+                  ? "indexing workspace…"
+                  : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
+              </span>
+            </span>
             <RepoCombobox repos={repos} value={repoRoot} onChange={setRepoRoot} />
           </label>
 
@@ -169,6 +186,7 @@ function RepoCombobox({
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
 
   const q = value.trim().toLowerCase();
   const matches = q ? repos.filter((r) => r.toLowerCase().includes(q)) : repos;
@@ -189,6 +207,13 @@ function RepoCombobox({
   useEffect(() => {
     setActive((a) => Math.min(a, Math.max(0, matches.length - 1)));
   }, [matches.length]);
+
+  // Keep the highlighted row visible while arrowing through a long repo list.
+  useEffect(() => {
+    if (!showList) return;
+    const el = listRef.current?.children[active] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: "nearest" });
+  }, [active, showList]);
 
   function choose(r: string): void {
     onChange(r);
@@ -225,7 +250,7 @@ function RepoCombobox({
         role="combobox"
         aria-expanded={showList}
         aria-autocomplete="list"
-        placeholder="/absolute/path/to/repo"
+        placeholder="search repos or type a path…"
         value={value}
         onChange={(e) => {
           onChange(e.target.value);
@@ -235,7 +260,7 @@ function RepoCombobox({
         onKeyDown={onKeyDown}
       />
       {showList && (
-        <ul className="combobox-list" role="listbox">
+        <ul className="combobox-list" role="listbox" ref={listRef}>
           {matches.map((r, i) => (
             <li
               key={r}

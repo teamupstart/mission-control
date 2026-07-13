@@ -22,6 +22,7 @@ import { checkToken } from "./auth.ts";
 import { focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
+import { listRepos } from "./repos.ts";
 import { run } from "./util/exec.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
@@ -77,6 +78,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));
+  // Git repos under the workspace roots - the pickable bases for a new dispatch.
+  app.get("/api/repos", async (c) => c.json(await listRepos()));
   // Fleet report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
   app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));

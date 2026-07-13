@@ -23,6 +23,18 @@ export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
   }
 }
 
+/** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
+export async function fetchRepos(): Promise<string[]> {
+  try {
+    const res = await fetch("/api/repos");
+    if (!res.ok) return [];
+    const data = (await res.json()) as unknown;
+    return Array.isArray(data) ? (data as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 async function request(method: string, path: string, body?: unknown): Promise<ActionResult> {
   try {
     const res = await fetch(path, {

@@ -93,14 +93,6 @@ export function App(): React.JSX.Element {
   );
   const pendingReviews = reviews.filter((r) => r.status === "pending");
 
-  // Repo suggestions for the dispatch form: distinct cwds of live sessions. The
-  // daemon resolves each to its git top-level, so a pane path is a fine starting point.
-  const repos = useMemo(() => {
-    const set = new Set<string>();
-    for (const s of sessions) if (s.cwd) set.add(s.cwd);
-    return [...set].sort();
-  }, [sessions]);
-
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "queued").length, [tasks]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
@@ -388,7 +380,7 @@ export function App(): React.JSX.Element {
         />
       )}
 
-      {dispatchOpen && <DispatchModal repos={repos} onClose={() => setDispatchOpen(false)} />}
+      {dispatchOpen && <DispatchModal onClose={() => setDispatchOpen(false)} />}
 
       {reportOpen && (
         <ReportPanel

@@ -46,7 +46,10 @@ function showIntegrationResult(title: string, message: string): void {
 // both the native "Settings…" menu item (⌘,) and any future app-level trigger.
 function openSettings(): void {
   showWindow(paths.preload);
-  getMainWindow()?.webContents.send("fleet:open-settings");
+  const wc = getMainWindow()?.webContents;
+  if (!wc) return;
+  if (wc.isLoading()) wc.once("did-finish-load", () => wc.send("fleet:open-settings"));
+  else wc.send("fleet:open-settings");
 }
 
 function registerIpc(): void {

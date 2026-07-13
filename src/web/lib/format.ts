@@ -1,4 +1,4 @@
-import type { Session, SessionState } from "@shared/types.ts";
+import type { PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
   if (!ms) return "";
@@ -85,4 +85,26 @@ export function stateDisplay(session: Session): StateDisplay {
     exited: { label: "exited", tone: "exited" },
   };
   return map[session.state];
+}
+
+/** Card presentation for a Claude permission mode: chip label, tone, tooltip. */
+export interface PermissionModeDisplay {
+  label: string;
+  /** Suffix for the chip's tone class (`.mode-<tone>`). */
+  tone: "default" | "accept" | "plan" | "bypass";
+  title: string;
+}
+
+const MODE_DISPLAY: Record<PermissionMode, PermissionModeDisplay> = {
+  default: { label: "manual", tone: "default", title: "Manual - Claude asks before edits and commands" },
+  acceptEdits: { label: "accept edits", tone: "accept", title: "Accept edits - file edits apply without asking" },
+  plan: { label: "plan", tone: "plan", title: "Plan mode - read-only; Claude plans before acting" },
+  auto: { label: "auto", tone: "accept", title: "Auto - Claude proceeds autonomously" },
+  dontAsk: { label: "don't ask", tone: "accept", title: "Don't ask - runs without prompting" },
+  bypassPermissions: { label: "bypass", tone: "bypass", title: "Bypass permissions - all permission checks skipped" },
+};
+
+/** How to render a session's permission mode, or null when it's unknown. */
+export function permissionModeDisplay(mode: PermissionMode | null): PermissionModeDisplay | null {
+  return mode ? MODE_DISPLAY[mode] : null;
 }

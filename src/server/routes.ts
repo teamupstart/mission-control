@@ -19,7 +19,7 @@ import { sseHandler } from "./sse.ts";
 import { transcriptStreamHandler } from "./transcript.ts";
 import { computeSessionDiff } from "./diff.ts";
 import { checkToken } from "./auth.ts";
-import { focus, kill, sendText } from "./actions.ts";
+import { cyclePermissionMode, focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos } from "./repos.ts";
@@ -176,6 +176,16 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const r = await kill(session);
+    return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Cycle the session's permission mode (Shift+Tab) - Claude only.
+  app.post("/api/sessions/:id/mode/cycle", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (session.agent !== "claude")
+      return c.json({ error: "permission modes are a Claude feature" }, 400);
+    const r = await cyclePermissionMode(session);
     return c.json(r, r.ok ? 200 : 500);
   });
 

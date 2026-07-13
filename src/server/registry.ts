@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type {
   MetaSource,
   NmRunSummary,
+  PermissionMode,
   PrState,
   ReviewItem,
   ServerEvent,
@@ -55,6 +56,8 @@ interface HookOverlay {
   transcriptPath: string | null;
   state: SessionState;
   activity: string | null;
+  /** Last-known Claude permission mode; sticky across events that omit it. */
+  permissionMode: PermissionMode | null;
   lastActivity: number;
   updatedAt: number;
 }
@@ -166,6 +169,7 @@ export class Registry extends EventEmitter {
       nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
+      permissionMode: prev?.permissionMode ?? null,
       wezterm: d.wezterm,
       tmux: d.tmux,
       agentSessionId: prev?.agentSessionId ?? null,
@@ -190,6 +194,7 @@ export class Registry extends EventEmitter {
       base.instrumented = true;
       base.state = overlay.state;
       base.activity = overlay.activity;
+      base.permissionMode = overlay.permissionMode ?? base.permissionMode;
       base.lastActivity = overlay.lastActivity;
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
@@ -205,11 +210,18 @@ export class Registry extends EventEmitter {
     const key = overlayKeyFromEnv(evt.env);
     const { state, activity } = hookToState(evt);
 
+    // Permission mode is sticky: events that omit it keep the last known value
+    // (from this pane's prior overlay) rather than clearing the card's chip.
+    const priorOverlay = key ? this.overlays.get(key) : undefined;
+    const permissionMode =
+      normalizePermissionMode(evt.permissionMode) ?? priorOverlay?.permissionMode ?? null;
+
     const overlay: HookOverlay = {
       agentSessionId: evt.sessionId ?? null,
       transcriptPath: evt.transcriptPath ?? null,
       state,
       activity,
+      permissionMode,
       lastActivity: ts,
       updatedAt: now,
     };
@@ -229,6 +241,7 @@ export class Registry extends EventEmitter {
         instrumented: true,
         state,
         activity,
+        permissionMode,
         lastActivity: ts,
         agentSessionId: evt.sessionId ?? target.agentSessionId,
         transcriptPath: evt.transcriptPath ?? target.transcriptPath,
@@ -652,6 +665,25 @@ export function sessionKey(s: Session): string | null {
   return null;
 }
 
+/** The permission modes Claude reports; anything else is treated as unknown. */
+const PERMISSION_MODES = new Set<PermissionMode>([
+  "default",
+  "plan",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+  "bypassPermissions",
+]);
+
+/**
+ * Narrow a raw `permission_mode` string to a known PermissionMode, or null when
+ * it's absent or a value we don't recognize (a mode a newer Claude adds) - so an
+ * unknown mode never masquerades as a known one on the card.
+ */
+export function normalizePermissionMode(raw: string | undefined | null): PermissionMode | null {
+  return raw && PERMISSION_MODES.has(raw as PermissionMode) ? (raw as PermissionMode) : null;
+}
+
 /** Map a Claude hook event to a session state + one-line activity. */
 export function hookToState(evt: HookIngest): { state: SessionState; activity: string | null } {
   const trim = (s: string | undefined, n = 120): string | null =>
@@ -697,6 +729,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.transcriptPath === b.transcriptPath &&
     a.instrumented === b.instrumented &&
     a.activity === b.activity &&
+    a.permissionMode === b.permissionMode &&
     a.pendingReviews === b.pendingReviews &&
     a.wezterm?.isActive === b.wezterm?.isActive &&
     a.tmux?.window === b.tmux?.window &&

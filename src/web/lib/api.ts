@@ -69,6 +69,7 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
+  cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
   nomistakesRespond: (

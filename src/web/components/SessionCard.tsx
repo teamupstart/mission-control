@@ -1,6 +1,14 @@
 import { useCallback } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
-import { compactTokens, contextTone, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
+import {
+  compactTokens,
+  contextTone,
+  permissionModeDisplay,
+  relativeTime,
+  shortenCwd,
+  stateDisplay,
+  uptime,
+} from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
@@ -45,6 +53,7 @@ export function SessionCard({
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
+  const mode = permissionModeDisplay(session.permissionMode);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -180,14 +189,13 @@ export function SessionCard({
             ◇ gated
           </span>
         )}
+        {mode && (
+          <span className={`mode mode-${mode.tone}`} title={mode.title}>
+            {mode.label}
+          </span>
+        )}
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>
-        {session.tty && (
-          <>
-            <span className="dot-sep">·</span>
-            <span className="mono dim">{session.tty}</span>
-          </>
-        )}
         <span className="spacer" />
         {!session.instrumented && (
           <span className="hint" title="No hooks reporting - status is coarse">

@@ -18,6 +18,7 @@ export type ActionId =
   | "diff"
   | "send"
   | "focus"
+  | "mode"
   | "kill";
 
 export interface ActionDef {
@@ -79,6 +80,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus pane",
     description: "Bring the selected session's terminal pane to the front.",
     defaultBinding: "f",
+    group: "selection",
+  },
+  {
+    id: "mode",
+    label: "Cycle permission mode",
+    description: "Cycle the selected Claude session's permission mode (Shift+Tab).",
+    defaultBinding: "shift+Tab",
     group: "selection",
   },
   {

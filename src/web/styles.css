@@ -804,6 +804,30 @@ body {
   border-radius: 5px;
   background: color-mix(in oklab, var(--idle) 12%, transparent);
 }
+/* Claude permission mode. `manual` stays understated (it's the safe baseline);
+   the modes that let Claude act with less friction read louder, and `bypass`
+   reads as an outright warning. */
+.mode {
+  font-size: 10.5px;
+  font-weight: 560;
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+.mode-default {
+  color: var(--dim);
+}
+.mode-accept {
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+}
+.mode-plan {
+  color: var(--pr-merged);
+  background: color-mix(in oklab, var(--pr-merged) 14%, transparent);
+}
+.mode-bypass {
+  color: #e5675f;
+  background: color-mix(in oklab, #e5534b 16%, transparent);
+}
 .seen {
   font-variant-numeric: tabular-nums;
 }

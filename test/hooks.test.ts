@@ -41,6 +41,7 @@ test("sessionKey matches a session's own pane, tmux preferred", () => {
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
+    permissionMode: null,
     wezterm: { paneId: 7, tabId: 1, windowId: 0, tabTitle: "t", isActive: false },
     tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%3" },
     agentSessionId: null,

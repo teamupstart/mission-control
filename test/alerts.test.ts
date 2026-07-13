@@ -26,6 +26,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     nomistakesNarration: null,
     pid: 1,
     tty: null,
+    permissionMode: null,
     wezterm: null,
     tmux: null,
     agentSessionId: null,

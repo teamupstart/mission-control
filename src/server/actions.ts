@@ -102,6 +102,30 @@ export async function injectPrompt(session: Session, text: string): Promise<Acti
   return { ok: false, error: NO_HANDLE };
 }
 
+/**
+ * Cycle a Claude session's permission mode one step by injecting a Shift+Tab into
+ * its pane - the exact keystroke a human presses in the TUI, so it advances
+ * default -> acceptEdits -> plan (and on to any further modes) exactly as it would
+ * live. There is no API to *set* the mode, so this simulated keypress is the only
+ * mechanism; the card's mode chip refreshes from the next hook the session emits.
+ *
+ * tmux resolves the `BTab` key name to the terminal's back-tab sequence; wezterm
+ * takes the raw sequence, so we send CSI Z (ESC [ Z) - the standard Shift+Tab code.
+ */
+export async function cyclePermissionMode(session: Session): Promise<ActionResult> {
+  if (session.tmux) {
+    // No -l here: we want tmux to interpret `BTab` as a key name, not literal text.
+    return step("tmux", ["send-keys", "-t", session.tmux.paneId, "BTab"], "tmux send-keys BTab failed");
+  }
+  if (session.wezterm) {
+    const bin = resolveWeztermBin();
+    const id = String(session.wezterm.paneId);
+    const args = ["cli", "send-text", "--pane-id", id, "--no-paste", "\x1b[Z"];
+    return step(bin, args, "wezterm send-text (Shift+Tab) failed");
+  }
+  return { ok: false, error: NO_HANDLE };
+}
+
 /** Bring the session's pane/tab into focus. */
 export async function focus(session: Session): Promise<ActionResult> {
   if (session.wezterm) {

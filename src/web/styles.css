@@ -16,8 +16,15 @@
   --exited: #707a88;
   --neutral: #8b94a3;
 
+  /* Keyboard-selection accent - a green (matching the "gated" chip) kept off the
+     blue "working" tone so a selected, working card still reads as selected. */
+  --select: #35c08a;
+
   --claude: #d97757;
   --codex: #10a37f;
+
+  --pr-open: #3fb950;
+  --pr-merged: #a371f7;
 
   --radius: 13px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
@@ -268,14 +275,15 @@ body {
     0 0 0 1px color-mix(in oklab, var(--attention) 30%, transparent),
     0 0 24px color-mix(in oklab, var(--attention) 16%, transparent);
 }
-/* Keyboard-selected card: a distinct blue ring that survives hover + attention. */
+/* Keyboard-selected card: a distinct green ring that survives hover + attention
+   and, crucially, stands apart from the blue "working" tone. */
 .card.selected,
 .card.selected:hover {
-  border-color: color-mix(in oklab, var(--working) 65%, var(--border));
+  border-color: color-mix(in oklab, var(--select) 70%, var(--border));
   box-shadow:
     var(--shadow),
-    0 0 0 2px color-mix(in oklab, var(--working) 60%, transparent),
-    0 0 26px color-mix(in oklab, var(--working) 18%, transparent);
+    0 0 0 2px color-mix(in oklab, var(--select) 65%, transparent),
+    0 0 26px color-mix(in oklab, var(--select) 22%, transparent);
 }
 
 .card-head {
@@ -1218,6 +1226,32 @@ kbd {
   color: var(--fg);
 }
 
+/* ---- focus (full-screen) mode ---- */
+/* Pressing `e` on the selected card lifts it out of the tile grid: it spans the
+   full width and jumps to the top (order), pushing every other session below it,
+   then grows to fill the screen beneath the sticky topbar so its conversation is
+   comfortable to read and reply to. `e` again drops it back into the grid.
+   Height is measured against the live topbar + floating command bar so the reply
+   box lands just above the command bar rather than behind it. */
+.card.expanded {
+  grid-column: 1 / -1;
+  order: -1;
+  height: calc(100dvh - var(--topbar-h, 88px) - var(--cmdbar-clearance, 64px) - 28px);
+  min-height: 440px;
+  scroll-margin-top: calc(var(--topbar-h, 88px) + 16px);
+}
+/* Let the conversation flex to fill the tall card; the log scrolls internally so
+   the reply box stays pinned at the bottom and tail-follow keeps working. */
+.card.expanded .transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.card.expanded .transcript-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
 .transcript {
   margin-top: 12px;
   padding-top: 10px;
@@ -1399,35 +1433,50 @@ kbd {
 }
 
 /* ---- PR chip (open pull request for the session's branch) ---- */
+/* PR chip - lives in the card header, just left of the status badge. Color and
+   glyph encode the PR's state: green pull-request for open, purple merge for
+   merged. A merged chip lingers until the session leaves the PR's branch. */
 .pr-chip {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin: 2px 0 6px;
-  padding: 3px 8px;
-  font-size: 11.5px;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
   text-decoration: none;
-  color: var(--fg);
-  background: color-mix(in oklab, var(--idle) 8%, var(--panel-2));
-  border: 1px solid var(--border-soft);
+  white-space: nowrap;
+  border: 1px solid transparent;
   border-radius: 999px;
-  max-width: 100%;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease;
 }
-.pr-chip:hover {
-  border-color: color-mix(in oklab, var(--idle) 40%, var(--border-soft));
-}
-.pr-mark {
+.pr-icon {
   flex: none;
-  font-size: 10px;
-  font-weight: 640;
-  letter-spacing: 0.05em;
-  color: var(--idle);
-  background: color-mix(in oklab, var(--idle) 15%, transparent);
-  padding: 1px 5px;
-  border-radius: 4px;
+  display: block;
 }
 .pr-num {
-  color: var(--muted);
+  line-height: 1;
+}
+.pr-open {
+  color: color-mix(in oklab, var(--pr-open) 80%, var(--fg));
+  background: color-mix(in oklab, var(--pr-open) 14%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-open) 34%, transparent);
+}
+.pr-open:hover {
+  background: color-mix(in oklab, var(--pr-open) 22%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-open) 58%, transparent);
+}
+.pr-merged {
+  color: color-mix(in oklab, var(--pr-merged) 82%, var(--fg));
+  background: color-mix(in oklab, var(--pr-merged) 16%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-merged) 38%, transparent);
+}
+.pr-merged:hover {
+  background: color-mix(in oklab, var(--pr-merged) 24%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--pr-merged) 62%, transparent);
 }
 
 /* ---- dispatch modal ---- */

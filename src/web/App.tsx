@@ -29,7 +29,8 @@ export function App(): React.JSX.Element {
   useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Only one card expands at a time - opening a new one collapses the previous.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
@@ -40,6 +41,7 @@ export function App(): React.JSX.Element {
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
   const gridRef = useRef<HTMLElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
+  const topbarRef = useRef<HTMLElement>(null);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
     if (el) cardEls.current.set(id, el);
@@ -52,12 +54,7 @@ export function App(): React.JSX.Element {
   }, []);
 
   const toggleExpand = useCallback((id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpandedId((cur) => (cur === id ? null : id));
   }, []);
 
   const sorted = useMemo(() => {
@@ -111,27 +108,44 @@ export function App(): React.JSX.Element {
     if (first) setReviewSessionId(first.sessionId);
   }
 
-  // Drop selection / close the diff if the session disappears (exited + reaped, etc.).
+  // Drop selection / collapse / close the diff if the session disappears
+  // (exited + reaped, etc.).
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
+    if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) setDiffSessionId(null);
-  }, [sessions, selectedId, diffSessionId]);
-
-  // Forget expand state for sessions that are gone so the set can't grow unbounded.
-  useEffect(() => {
-    setExpandedIds((prev) => {
-      if (prev.size === 0) return prev;
-      const live = new Set(sessions.map((s) => s.id));
-      const next = new Set([...prev].filter((id) => live.has(id)));
-      return next.size === prev.size ? prev : next;
-    });
-  }, [sessions]);
+  }, [sessions, selectedId, expandedId, diffSessionId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
     if (!selectedId) return;
     cardEls.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [selectedId]);
+
+  // Publish the live topbar height so a focus-expanded card can size itself to
+  // exactly fill the screen beneath the sticky bar (which wraps taller on narrow
+  // viewports). Measured, not hard-coded, so the fit stays right on any width.
+  useEffect(() => {
+    const bar = topbarRef.current;
+    if (!bar) return;
+    const root = document.documentElement;
+    const apply = (): void => root.style.setProperty("--topbar-h", `${bar.offsetHeight}px`);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(bar);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--topbar-h");
+    };
+  }, []);
+
+  // When a card enters focus mode, lift it to the top of the viewport (just under
+  // the sticky topbar) so its now-full-screen conversation and reply box land
+  // fully in view. Collapsing (expandedId -> null) leaves the scroll position alone.
+  useEffect(() => {
+    if (!expandedId) return;
+    cardEls.current.get(expandedId)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [expandedId]);
 
   // Global keyboard driving: Tab toggles selection, arrows move it (row-aware),
   // s/f/k act on the selected card, Esc deselects. Typing fields and the review
@@ -189,6 +203,13 @@ export function App(): React.JSX.Element {
           setSelectedId((cur) => (cur ? null : ids[0] ?? null));
           return;
         case "Escape":
+          // Peel back one layer at a time: collapse an expanded card first, then
+          // (on a second press) cancel any pending action and drop the selection.
+          if (expandedId) {
+            e.preventDefault();
+            setExpandedId(null);
+            return;
+          }
           if (!selectedId) return;
           e.preventDefault();
           handle()?.cancel();
@@ -237,11 +258,11 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, selectedId, modalOpen, dispatchOpen, reportOpen, diffSession, toggleExpand]);
+  }, [visible, selectedId, expandedId, modalOpen, dispatchOpen, reportOpen, diffSession, toggleExpand]);
 
   return (
     <div className="app">
-      <header className="topbar">
+      <header className="topbar" ref={topbarRef}>
         <div className="brand">
           <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
           <h1>Agent Wrangler</h1>
@@ -314,7 +335,7 @@ export function App(): React.JSX.Element {
             gateNeedsYou={gateAlerts.has(s.id)}
             selected={s.id === selectedId}
             onSelect={() => setSelectedId(s.id)}
-            expanded={expandedIds.has(s.id)}
+            expanded={expandedId === s.id}
             onToggleExpand={() => toggleExpand(s.id)}
             onOpenReviews={() => setReviewSessionId(s.id)}
             onOpenDiff={() => setDiffSessionId(s.id)}
@@ -376,7 +397,7 @@ export function App(): React.JSX.Element {
       {selected && (
         <CommandBar
           session={selected}
-          expanded={expandedIds.has(selected.id)}
+          expanded={expandedId === selected.id}
           onToggleExpand={() => toggleExpand(selected.id)}
           onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
           onDiff={() => setDiffSessionId(selected.id)}
@@ -461,8 +482,8 @@ function CommandBar({
         </button>
         <span className="cmdbar-hint">
           <kbd>↑↓←→</kbd> move
-          <button className="keycap-btn" onClick={onDeselect}>
-            <kbd>esc</kbd> deselect
+          <button className="keycap-btn" onClick={expanded ? onToggleExpand : onDeselect}>
+            <kbd>esc</kbd> {expanded ? "collapse" : "deselect"}
           </button>
         </span>
       </span>

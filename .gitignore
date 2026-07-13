@@ -8,3 +8,5 @@ release/
 .idea/
 .env
 .env.*
+.claude/settings.local.json
+.claude/worktrees

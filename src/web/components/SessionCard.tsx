@@ -109,7 +109,8 @@ export function SessionCard({
             {st.label}
           </span>
         )}
-        {session.note &&
+        {attention &&
+          session.note &&
           (session.note.disposition === "escalated" || session.note.disposition === "pending") && (
             <button
               className={`foreman-flag ff-${session.note.disposition}`}

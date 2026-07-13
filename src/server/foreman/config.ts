@@ -12,8 +12,12 @@ import type { Registry } from "../registry.ts";
 // holds - so the dashboard's status is honest without the worker pushing it.
 
 const CONFIG_KEY = "foreman";
-/** A worker heartbeat older than this means "not running". */
-const HEARTBEAT_TTL_MS = 15_000;
+/**
+ * A worker heartbeat older than this means "not running". It must comfortably
+ * exceed one review-with-retry (2 * REVIEW_TIMEOUT_MS) since the worker beats
+ * once per session and then blocks on a `claude -p` for the whole review.
+ */
+const HEARTBEAT_TTL_MS = 300_000;
 
 let lastHeartbeatAt = 0;
 
@@ -57,9 +61,16 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   };
 }
 
-/** How many live sessions currently sit in the shared `needs-you` bucket. */
+/**
+ * How many claude sessions currently sit in the shared `needs-you` bucket -
+ * Foreman's drainable inbound queue. Non-claude (e.g. codex) sessions are
+ * excluded because the worker's needsYouQueue only processes agent === "claude",
+ * so counting them would leave a queueDepth badge that can never reach zero.
+ */
 function countNeedsYou(sessions: Session[]): number {
   let n = 0;
-  for (const s of sessions) if (reportBucket(s, sessions) === "needs-you") n++;
+  for (const s of sessions) {
+    if (s.agent === "claude" && reportBucket(s, sessions) === "needs-you") n++;
+  }
   return n;
 }

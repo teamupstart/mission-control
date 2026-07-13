@@ -58,6 +58,11 @@ async function main(): Promise<void> {
     }
 
     for (const session of queue) {
+      // Each review spawns a `claude -p` that can run for minutes, far longer than
+      // the heartbeat TTL, so beat again before every session or the dashboard would
+      // read "not running" mid-drain.
+      await client.heartbeat();
+
       // Honour a mid-drain disable/mode change without finishing the whole queue.
       try {
         cfg = await client.getConfig();

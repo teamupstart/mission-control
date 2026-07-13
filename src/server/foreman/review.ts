@@ -47,7 +47,11 @@ export async function reviewSession(input: ReviewInput): Promise<Verdict> {
 /** Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. */
 function runClaude(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(CLAUDE_BIN, ["-p", "--output-format", "json"], {
+    // `--tools ""` disables every built-in tool. The prompt embeds untrusted
+    // child-session transcript text, and the reviewer only ever needs to emit a
+    // JSON verdict - so a crafted/compromised transcript must not be able to steer
+    // it into invoking tools (a prompt-injection surface).
+    const child = spawn(CLAUDE_BIN, ["-p", "--output-format", "json", "--tools", ""], {
       cwd: tmpdir(),
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,

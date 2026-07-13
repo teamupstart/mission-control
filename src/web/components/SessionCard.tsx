@@ -111,7 +111,8 @@ export function SessionCard({
         )}
         {attention &&
           session.note &&
-          (session.note.disposition === "escalated" || session.note.disposition === "pending") && (
+          (session.note.disposition === "escalated" ||
+            (session.note.disposition === "pending" && session.note.recommendation)) && (
             <button
               className={`foreman-flag ff-${session.note.disposition}`}
               title={

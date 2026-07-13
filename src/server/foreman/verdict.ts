@@ -23,7 +23,6 @@ export const VerdictSchema = z
     /** The reply to deliver, when action === "answer". */
     answer: z
       .object({
-        channel: z.enum(["send", "review"]).optional(),
         text: z.string().min(1),
         submit: z.boolean().optional().default(true),
       })
@@ -216,7 +215,9 @@ export async function applyVerdict(
     }
   } catch (err) {
     if (plan.note.purpose) {
-      await actions.putNote(ctx.sessionId, { purpose: plan.note.purpose }).catch(() => {});
+      await actions
+        .putNote(ctx.sessionId, { purpose: plan.note.purpose, disposition: "skipped" })
+        .catch(() => {});
     }
     throw err;
   }

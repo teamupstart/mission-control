@@ -147,7 +147,9 @@ async function processSession(
   // access approval to an escalation mid-review.
   if (plan.send) {
     if (!(await sendStillValid(client, session.id, pending))) {
-      await client.putNote(session.id, { purpose: verdict.purpose }).catch(() => {});
+      await client
+        .putNote(session.id, { purpose: verdict.purpose, disposition: "skipped" })
+        .catch(() => {});
       log(`${session.name}: skipped stale send (session changed during review)`);
       return;
     }

@@ -174,9 +174,10 @@ test("applyVerdict: a failed send records purpose only (no marker) and rethrows"
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await assert.rejects(applyVerdict(actions, ctx(), plan), /pane gone/);
-  // Purpose is preserved, but the answered disposition + handledMarker are NOT
-  // stamped, so the worker's idempotency check lets the next loop retry.
-  assert.deepEqual(notes, [{ purpose: ANSWER.purpose }]);
+  // Purpose is preserved (as a non-draft skip), but the answered disposition +
+  // handledMarker are NOT stamped, so the worker's idempotency check lets the next
+  // loop retry.
+  assert.deepEqual(notes, [{ purpose: ANSWER.purpose, disposition: "skipped" }]);
 });
 
 test("applyVerdict: dry-run draft writes the note and sends nothing", async () => {

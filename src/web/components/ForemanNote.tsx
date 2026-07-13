@@ -7,7 +7,7 @@ import { relativeTime } from "../lib/format.ts";
 
 // The Foreman panel inside an expanded card: the session's Purpose, plus - when
 // Foreman drafted or escalated - the decision brief + its recommended answer, and
-// (in semi-auto) one-click controls to send or dismiss. When Foreman already
+// one-click controls to send or dismiss a pending draft. When Foreman already
 // answered live, a compact audit line. Read-mostly; it stops click propagation so
 // interacting with it doesn't select/collapse the card.
 
@@ -26,7 +26,7 @@ export function ForemanNote({
 }: {
   sessionId: string;
   note: SessionNoteSummary;
-  /** The current Foreman mode, so semi-auto shows the send/dismiss controls. */
+  /** The current Foreman mode, so a dry-run draft can point the user at live mode. */
   mode: string;
   /** A pending `input` review id for this session, so Approve resolves it cleanly. */
   inputReviewId: string | null;
@@ -97,7 +97,7 @@ export function ForemanNote({
 
       {answered && note.lastAction && <p className="fn-audit">✓ {note.lastAction}</p>}
 
-      {pending && !done && note.recommendation && mode === "semi-auto" && (
+      {pending && !done && note.recommendation && (
         <div className="fn-actions">
           <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
             Approve &amp; send
@@ -108,7 +108,7 @@ export function ForemanNote({
         </div>
       )}
 
-      {pending && !done && mode !== "semi-auto" && (
+      {pending && !done && note.recommendation && mode !== "live" && (
         <p className="fn-hint dim">Draft only (dry-run). Switch Foreman to live for it to send.</p>
       )}
 

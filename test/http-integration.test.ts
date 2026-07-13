@@ -183,6 +183,47 @@ test("parseBody rejects a malformed write body with 400 (and never mutates)", as
   assert.deepEqual(await list.json(), []); // nothing was created
 });
 
+test("a hook carrying permission_mode surfaces it on the session", async () => {
+  seedSession();
+  const res = await app.request("/hooks/UserPromptSubmit", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, prompt: "go", permissionMode: "acceptEdits" }),
+  });
+  assert.equal(res.status, 204);
+  const s = (await sessions()).find((x) => x.id === "sess-1")!;
+  assert.equal(s.permissionMode, "acceptEdits");
+});
+
+test("cycling the permission mode is rejected for a non-Claude session", async () => {
+  // Permission modes are a Claude concept; the route refuses Codex before shelling out.
+  registry.applyDiscovery([
+    {
+      syntheticId: "cx-1",
+      agent: "codex",
+      name: "cx",
+      nameSource: "tmux",
+      cwd: "/repo/cx",
+      gitBranch: "main",
+      nomistakesGated: false,
+      pid: 9191,
+      tty: "ttys009",
+      wezterm: null,
+      tmux: { session: "cx", window: "w", windowIndex: 0, paneId: "%9" },
+      startedAt: 0,
+    },
+  ]);
+  const res = await app.request("/api/sessions/cx-1/mode/cycle", { method: "POST", headers: authed });
+  assert.equal(res.status, 400);
+  const body = (await res.json()) as { error: string };
+  assert.match(body.error, /Claude/i);
+});
+
+test("cycling the permission mode of an unknown session is a 404", async () => {
+  const res = await app.request("/api/sessions/nope/mode/cycle", { method: "POST", headers: authed });
+  assert.equal(res.status, 404);
+});
+
 test("/mcp/status validates the shared EnvSchema and updates activity on success", async () => {
   // Happy path: valid EnvSchema body -> 204, activity line updates on the session.
   const ok = await app.request("/mcp/status", {

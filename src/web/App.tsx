@@ -251,6 +251,9 @@ export function App(): React.JSX.Element {
       } else if (chord === bindings.focus) {
         e.preventDefault();
         h.focusPane();
+      } else if (chord === bindings.mode) {
+        e.preventDefault();
+        h.cycleMode();
       } else if (chord === bindings.kill) {
         e.preventDefault();
         h.requestKill();
@@ -456,11 +459,13 @@ function CommandBar({
   bindings: Record<ActionId, string>;
   expanded: boolean;
   onToggleExpand: () => void;
-  onAction: (action: "startSend" | "focusPane" | "requestKill") => void;
+  onAction: (action: "startSend" | "focusPane" | "cycleMode" | "requestKill") => void;
   onDiff: () => void;
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
+  // Permission modes are Claude-only, and cycling one needs a pane to send into.
+  const canCycleMode = live && session.agent === "claude" && Boolean(session.tmux || session.wezterm);
   const barRef = useRef<HTMLDivElement>(null);
 
   // The bar floats fixed over the bottom of the page, so it hides whatever
@@ -499,6 +504,11 @@ function CommandBar({
             <button className="keycap-btn" onClick={() => onAction("focusPane")}>
               <kbd>{formatChord(bindings.focus)}</kbd> focus
             </button>
+            {canCycleMode && (
+              <button className="keycap-btn" onClick={() => onAction("cycleMode")}>
+                <kbd>{formatChord(bindings.mode)}</kbd> mode
+              </button>
+            )}
             <button className="keycap-btn" onClick={() => onAction("requestKill")}>
               <kbd>{formatChord(bindings.kill)}</kbd> kill
             </button>

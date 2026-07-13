@@ -10,6 +10,7 @@ import { api } from "../lib/api.ts";
 export interface ActionBarHandle {
   startSend: () => void;
   focusPane: () => void;
+  cycleMode: () => void;
   requestKill: () => void;
   cancel: () => void;
 }
@@ -74,6 +75,13 @@ export function ActionBar({
     void run("focus", () => api.focus(session.id));
   }
 
+  // Cycle the permission mode (Shift+Tab) - only meaningful for a Claude session
+  // with a pane to inject the keystroke into; a no-op otherwise.
+  function cycleMode() {
+    if (!canSend || session.agent !== "claude") return;
+    void run("mode", () => api.cycleMode(session.id));
+  }
+
   // First press arms the confirm; a second press commits - mirrors the mouse flow.
   function requestKill() {
     if (confirmKill) void doKill();
@@ -90,13 +98,14 @@ export function ActionBar({
 
   // Register a stable handle that always calls the latest closures, so App can
   // drive this bar by keyboard without re-registering on every render.
-  const latest = useRef({ startSend, focusPane, requestKill, cancel });
-  latest.current = { startSend, focusPane, requestKill, cancel };
+  const latest = useRef({ startSend, focusPane, cycleMode, requestKill, cancel });
+  latest.current = { startSend, focusPane, cycleMode, requestKill, cancel };
   useEffect(() => {
     if (!registerActions) return;
     const handle: ActionBarHandle = {
       startSend: () => latest.current.startSend(),
       focusPane: () => latest.current.focusPane(),
+      cycleMode: () => latest.current.cycleMode(),
       requestKill: () => latest.current.requestKill(),
       cancel: () => latest.current.cancel(),
     };

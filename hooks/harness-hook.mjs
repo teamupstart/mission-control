@@ -68,6 +68,10 @@ async function main() {
     message: payload.message,
     source: payload.source,
     reason: payload.reason,
+    // Claude's current permission mode (the Shift+Tab state), present on most
+    // hook events. Undefined on events that omit it - the daemon keeps the last
+    // known mode rather than clearing it.
+    permissionMode: payload.permission_mode,
     prUrl: sniffPrUrl(payload),
   };
 

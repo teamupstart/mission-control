@@ -28,6 +28,19 @@ export type NameSource = "tmux" | "wezterm" | "process";
 export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 /**
+ * Claude's permission mode - the state cycled by Shift+Tab. These are the exact
+ * strings Claude reports on its hook payloads (`permission_mode`). Codex has no
+ * equivalent, so a Codex session's mode is always null.
+ */
+export type PermissionMode =
+  | "default"
+  | "plan"
+  | "acceptEdits"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
+
+/**
  * Where a session's runtime metadata came from, in descending authority:
  * `statusline` is Claude's own live accounting (exact), `transcript` is our
  * passive read of the JSONL (approximate), `codex-rollout` is Codex's session
@@ -94,6 +107,13 @@ export interface Session {
   pid: number;
   /** Controlling tty, normalized without the /dev/ prefix (e.g. "ttys012"). */
   tty: string | null;
+  /**
+   * Claude's live permission mode, from its hooks (`permission_mode`). Null until
+   * a hook reports it, and always null for Codex (no such concept). Hook-sourced
+   * rather than from the statusLine, which doesn't carry it - so it refreshes on
+   * the next hook event after a Shift+Tab, not the instant the mode changes.
+   */
+  permissionMode: PermissionMode | null;
   wezterm: WeztermInfo | null;
   tmux: TmuxInfo | null;
   /** Claude Code session id, present once the session is hook-instrumented. */

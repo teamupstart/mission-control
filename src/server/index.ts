@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT } from "./config.ts";
 import { openDb } from "./db.ts";
@@ -26,11 +27,18 @@ const app = buildApp(registry, reviews, tasks);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.
-const distDir = fileURLToPath(new URL("../../dist/web", import.meta.url));
-const hasDist = existsSync(distDir);
+//
+// Resolve the web root to an ABSOLUTE path so serving never depends on the
+// daemon's working directory (it's unpredictable when spawned by the Electron
+// app). `FLEET_WEB_DIR` lets the desktop shell point at the built UI inside the
+// app bundle's Resources; otherwise fall back to this module's sibling dist/web,
+// which covers both `tsx src/server/index.ts` (dev) and `node dist/server/index.mjs`.
+const webDir =
+  process.env.FLEET_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
+const hasDist = existsSync(webDir);
 if (hasDist) {
-  app.use("/*", serveStatic({ root: "./dist/web" }));
-  app.get("*", serveStatic({ path: "./dist/web/index.html" }));
+  app.use("/*", serveStatic({ root: webDir }));
+  app.get("*", serveStatic({ path: join(webDir, "index.html") }));
 }
 
 const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) => {

@@ -131,9 +131,21 @@ test("latestTodoNarration ignores sidechain TodoWrites and non-TodoWrite lines",
 const UUID = "4aa3d50a-9232-49cf-9ad9-67b8a9e8b51a";
 const encode = (cwd: string): string => cwd.replace(/[/.]/g, "-");
 const session = (p: Partial<Session>): Session =>
-  ({ agent: "claude", agentSessionId: UUID, cwd: "/Users/me/work/app", ...p }) as Session;
+  ({ agent: "claude", agentSessionId: UUID, cwd: "/Users/me/work/app", transcriptPath: null, ...p }) as Session;
 
-test("resolveTranscriptPath finds the file under the cwd-encoded dir", () => {
+test("resolveTranscriptPath uses the hook-reported transcriptPath verbatim", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const dir = join(root, encode("/Users/me/.treehouse/x/4/app"));
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${UUID}.jsonl`);
+  writeFileSync(file, "{}\n");
+  // cwd is deliberately wrong (the launcher's dir); the exact hook path wins and
+  // needs no cwd derivation.
+  const s = session({ cwd: "/Users/me/work/app", transcriptPath: file });
+  assert.equal(resolveTranscriptPath(s, root), file);
+});
+
+test("resolveTranscriptPath falls back to the cwd-derived path when no hook path", () => {
   const root = mkdtempSync(join(tmpdir(), "proj-"));
   const cwd = "/Users/me/work/app";
   const dir = join(root, encode(cwd));
@@ -143,24 +155,14 @@ test("resolveTranscriptPath finds the file under the cwd-encoded dir", () => {
   assert.equal(resolveTranscriptPath(session({ cwd }), root), file);
 });
 
-test("resolveTranscriptPath falls back to id search when cwd is wrong (worktree case)", () => {
+test("resolveTranscriptPath returns null when neither locates a file", () => {
   const root = mkdtempSync(join(tmpdir(), "proj-"));
-  // The file actually lives under the worktree-encoded dir...
-  const dir = join(root, encode("/Users/me/.treehouse/x/4/app"));
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `${UUID}.jsonl`);
-  writeFileSync(file, "{}\n");
-  // ...but discovery reported the launcher's cwd (the main repo). Still resolves.
-  assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/work/app" }), root), file);
+  // A stale hook path that no longer exists, and no cwd-derived file either.
+  const s = session({ cwd: "/Users/me/work/app", transcriptPath: join(root, "gone.jsonl") });
+  assert.equal(resolveTranscriptPath(s, root), null);
 });
 
-test("resolveTranscriptPath returns null when no transcript exists for the id", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
-  mkdirSync(join(root, encode("/Users/me/work/app")), { recursive: true });
-  assert.equal(resolveTranscriptPath(session({ cwd: "/Users/me/work/app" }), root), null);
-});
-
-test("resolveTranscriptPath ignores non-claude or id-less sessions", () => {
+test("resolveTranscriptPath ignores non-claude, id-less, and cwd-less sessions", () => {
   const root = mkdtempSync(join(tmpdir(), "proj-"));
   assert.equal(resolveTranscriptPath(session({ agent: "codex" }), root), null);
   assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);

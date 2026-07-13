@@ -5,7 +5,7 @@ import type { HookIngest } from "../src/shared/protocol.ts";
 import type { Session } from "../src/shared/types.ts";
 
 function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
-  return { sessionId: null, cwd: null, env: {}, ...p };
+  return { sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
 }
 
 test("hookToState maps lifecycle events to session states", () => {
@@ -44,6 +44,7 @@ test("sessionKey matches a session's own pane, tmux preferred", () => {
     wezterm: { paneId: 7, tabId: 1, windowId: 0, tabTitle: "t", isActive: false },
     tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%3" },
     agentSessionId: null,
+    transcriptPath: null,
     instrumented: false,
     activity: null,
     startedAt: null,

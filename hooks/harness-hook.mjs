@@ -60,6 +60,7 @@ async function main() {
     event: event || payload.hook_event_name || "",
     sessionId: payload.session_id ?? null,
     cwd: payload.cwd ?? null,
+    transcriptPath: payload.transcript_path ?? null,
     ts: Date.now(),
     env: captureTerminalEnv(),
     toolName: payload.tool_name,

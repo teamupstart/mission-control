@@ -140,9 +140,11 @@ async function processSession(
   // Before a LIVE send, re-confirm against a fresh fleet that this session still
   // needs *this* exact prompt; if the human already handled it (answered, left
   // needs-you, or a newer prompt arrived), skip the send but still record the
-  // purpose. Then re-read the config and downgrade to a non-sending draft if the
-  // operator disabled Foreman, left live mode, or dropped the repo from the
-  // allowlist mid-review - "disable stops acting" must hold even for an in-flight review.
+  // purpose. Then re-plan from a fresh config so every "toggle stops acting" switch
+  // - disable, leaving live mode, dropping the repo from the allowlist, or turning
+  // off access auto-approval - is honoured even for an in-flight review. Re-planning
+  // (not just re-checking mayActLive) makes autoApproveAccess=false downgrade a live
+  // access approval to an escalation mid-review.
   if (plan.send) {
     if (!(await sendStillValid(client, session.id, pending))) {
       await client.putNote(session.id, { purpose: verdict.purpose }).catch(() => {});
@@ -150,13 +152,13 @@ async function processSession(
       return;
     }
     const freshCfg = await client.getConfig().catch(() => null);
-    if (!freshCfg || !foremanMayActLive(freshCfg, session.cwd)) {
-      plan = planFromVerdict(
-        verdict,
-        ctx,
-        false,
-        (freshCfg ?? cfg).autoApproveAccess,
-      );
+    plan = planFromVerdict(
+      verdict,
+      ctx,
+      !!freshCfg && foremanMayActLive(freshCfg, session.cwd),
+      (freshCfg ?? cfg).autoApproveAccess,
+    );
+    if (!plan.send) {
       log(`${session.name}: config changed during review; drafting instead of sending`);
     }
   }

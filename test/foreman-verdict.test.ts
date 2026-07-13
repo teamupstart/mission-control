@@ -93,6 +93,19 @@ test("non-access answer with autoApproveAccess=false still answers", () => {
   assert.ok(plan.send);
 });
 
+test("mid-review autoApproveAccess flip re-plans an access send into an escalation", () => {
+  // The worker builds the plan from the config captured before the (slow) review,
+  // then re-plans from a fresh config right before sending. If access auto-approval
+  // was switched off mid-review, the re-plan must drop the live send.
+  const initial = planFromVerdict(ACCESS_ANSWER, ctx(), true, true);
+  assert.ok(initial.send, "captured config would have sent the access approval");
+
+  const replanned = planFromVerdict(ACCESS_ANSWER, ctx(), true, false);
+  assert.equal(replanned.send, null, "fresh autoApproveAccess=false drops the send");
+  assert.equal(replanned.note.disposition, "escalated");
+  assert.equal(replanned.note.recommendation, ACCESS_ANSWER.answer!.text);
+});
+
 test("escalate writes brief + recommendation and never sends", () => {
   const v: Verdict = {
     purpose: "p",

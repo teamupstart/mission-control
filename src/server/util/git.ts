@@ -1,10 +1,19 @@
 import { readFileSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface GitInfo {
   branch: string | null;
   /** True when the repo is gated by no-mistakes (has a `no-mistakes` remote). */
   nomistakesGated: boolean;
+  /**
+   * The MAIN worktree root - the primary checkout shared by every linked
+   * worktree of this repo. A path inside a linked worktree resolves to the main
+   * root, not the worktree, so dispatch always branches a fresh tree off the
+   * canonical repo instead of nesting a worktree inside another. Null when the
+   * dir isn't a repo, or for layouts whose common dir isn't a `.git` (bare
+   * repos, submodules), where the caller should fall back to the checkout itself.
+   */
+  repoRoot: string | null;
 }
 
 /**
@@ -18,7 +27,7 @@ export interface GitInfo {
  * without this, agents in a dispatched worktree show no branch and never gate.
  */
 export function gitInfo(cwd: string | null): GitInfo {
-  const none: GitInfo = { branch: null, nomistakesGated: false };
+  const none: GitInfo = { branch: null, nomistakesGated: false, repoRoot: null };
   if (!cwd) return none;
   const gitDir = resolveGitDir(cwd);
   if (!gitDir) return none;
@@ -28,10 +37,23 @@ export function gitInfo(cwd: string | null): GitInfo {
   } catch {
     return none;
   }
+  const common = commonDir(gitDir);
   return {
     branch: branchFromHead(head),
-    nomistakesGated: hasNoMistakesRemote(commonDir(gitDir)),
+    nomistakesGated: hasNoMistakesRemote(common),
+    repoRoot: mainWorktreeRoot(common),
   };
+}
+
+/**
+ * The main worktree root, derived from the shared common git dir: a standard
+ * repo keeps its common dir at `<root>/.git`, so the root is its parent. Returns
+ * null when the common dir isn't a `.git` (a bare repo, or a submodule whose
+ * common dir lives under `.git/modules/<name>`), so the caller can fall back to
+ * the checkout's own top-level rather than dispatch off a wrong path.
+ */
+function mainWorktreeRoot(common: string): string | null {
+  return basename(common) === ".git" ? dirname(common) : null;
 }
 
 /**

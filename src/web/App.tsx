@@ -87,11 +87,17 @@ export function App(): React.JSX.Element {
   );
   const pendingReviews = reviews.filter((r) => r.status === "pending");
 
-  // Repo suggestions for the dispatch form: distinct cwds of live sessions. The
-  // daemon resolves each to its git top-level, so a pane path is a fine starting point.
+  // Repo suggestions for the dispatch form: the distinct MAIN worktree roots of
+  // live sessions (`repoRoot`, already resolved server-side), not raw pane cwds.
+  // A session running inside a worktree collapses to its primary checkout, so the
+  // list is source repos - the correct dispatch target - with no worktree paths
+  // and no duplicate roots. Falls back to `cwd` for a session that isn't in a repo.
   const repos = useMemo(() => {
     const set = new Set<string>();
-    for (const s of sessions) if (s.cwd) set.add(s.cwd);
+    for (const s of sessions) {
+      const root = s.repoRoot ?? s.cwd;
+      if (root) set.add(root);
+    }
     return [...set].sort();
   }, [sessions]);
 

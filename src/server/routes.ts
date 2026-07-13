@@ -22,6 +22,7 @@ import { focus, kill, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { run } from "./util/exec.ts";
+import { gitInfo } from "./util/git.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
@@ -227,9 +228,26 @@ export function hostIsLoopback(host: string | undefined): boolean {
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
 }
 
-/** Validate a dispatch target is a git repo and return its realpath top-level. */
-async function resolveRepoRoot(p: string): Promise<string | null> {
+/**
+ * Validate a dispatch target is a git repo and return the realpath of its MAIN
+ * worktree root. Resolving to the main root (not the submitted path) means
+ * dispatching from inside a linked worktree - the common case, since a live
+ * session's cwd is often a worktree - still branches a fresh tree off the
+ * primary checkout instead of nesting a worktree inside another. Uses the same
+ * pure-fs resolution as the dispatch form's suggestions, so the target matches
+ * what the user picked; falls back to git's own top-level for the rare layouts
+ * `gitInfo` can't map (bare repos, submodules).
+ */
+export async function resolveRepoRoot(p: string): Promise<string | null> {
   if (!existsSync(p)) return null;
+  const root = gitInfo(p).repoRoot;
+  if (root && existsSync(root)) {
+    try {
+      return realpathSync(root);
+    } catch {
+      return root;
+    }
+  }
   const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
   const top = r.stdout.trim();
   if (r.code !== 0 || !top) return null;

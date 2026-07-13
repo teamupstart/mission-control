@@ -142,6 +142,7 @@ export class Registry extends EventEmitter {
       state: "working",
       cwd: d.cwd,
       gitBranch: d.gitBranch,
+      repoRoot: d.repoRoot,
       nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
@@ -613,6 +614,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.state === b.state &&
     a.cwd === b.cwd &&
     a.gitBranch === b.gitBranch &&
+    a.repoRoot === b.repoRoot &&
     a.pid === b.pid &&
     a.nameSource === b.nameSource &&
     a.agentSessionId === b.agentSessionId &&

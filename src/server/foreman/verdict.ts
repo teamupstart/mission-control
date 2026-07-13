@@ -81,9 +81,16 @@ function pickChannel(ctx: ReviewContext): { channel: "send" | "review"; reviewId
  * Map a verdict to the note + reply, given whether Foreman is cleared to act
  * *live* for this session (config live + repo allowlisted). Everything that
  * isn't a live, deliverable answer becomes a non-sending draft or an escalation,
- * so dry-run / semi-auto / off-allowlist never type into a session.
+ * so dry-run / semi-auto / off-allowlist never type into a session. When
+ * `autoApproveAccess` is false, an `access` answer is escalated (with the drafted
+ * reply as the recommendation) instead of being sent, honouring the config switch.
  */
-export function planFromVerdict(v: Verdict, ctx: ReviewContext, mayActLive: boolean): VerdictPlan {
+export function planFromVerdict(
+  v: Verdict,
+  ctx: ReviewContext,
+  mayActLive: boolean,
+  autoApproveAccess = true,
+): VerdictPlan {
   const base: SetNote = { purpose: v.purpose, handledMarker: ctx.promptMarker };
 
   if (v.action === "skip") {
@@ -114,6 +121,22 @@ export function planFromVerdict(v: Verdict, ctx: ReviewContext, mayActLive: bool
 
   // action === "answer"
   const answer = v.answer!; // guaranteed by the schema refine
+
+  if (!autoApproveAccess && v.classification === "access") {
+    // Access auto-approval is switched off: hand the approval to the human with
+    // Foreman's drafted reply as the recommendation instead of sending it.
+    return {
+      note: {
+        ...base,
+        disposition: "escalated",
+        brief: v.brief ?? null,
+        recommendation: answer.text,
+        lastAction: "escalated (access auto-approval disabled)",
+      },
+      send: null,
+    };
+  }
+
   const chan = pickChannel(ctx);
   if (!chan) {
     // Wanted to answer but there's no channel to deliver it - hand it to the human
@@ -168,19 +191,36 @@ export interface ForemanActions {
   resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown>;
 }
 
-/** Execute a plan: always write the note, then deliver the reply if one is set. */
+/**
+ * Execute a plan. For a draft (no send) just write the note. For a send, deliver
+ * the reply FIRST and only stamp the answered note (with its handledMarker) once
+ * the send succeeds - so a failed send never leaves a false "answered" note that
+ * the worker's idempotency check would then refuse to retry. On send failure the
+ * purpose is still recorded (without the marker) and the error is rethrown so the
+ * worker logs it and the session stays queued for a retry.
+ */
 export async function applyVerdict(
   actions: ForemanActions,
   ctx: ReviewContext,
   plan: VerdictPlan,
 ): Promise<void> {
-  await actions.putNote(ctx.sessionId, plan.note);
-  if (!plan.send) return;
-  if (plan.send.channel === "review" && plan.send.reviewId) {
-    await actions.resolveReview(plan.send.reviewId, "answer", plan.send.text);
-  } else {
-    await actions.sendText(ctx.sessionId, plan.send.text, plan.send.submit);
+  if (!plan.send) {
+    await actions.putNote(ctx.sessionId, plan.note);
+    return;
   }
+  try {
+    if (plan.send.channel === "review" && plan.send.reviewId) {
+      await actions.resolveReview(plan.send.reviewId, "answer", plan.send.text);
+    } else {
+      await actions.sendText(ctx.sessionId, plan.send.text, plan.send.submit);
+    }
+  } catch (err) {
+    if (plan.note.purpose) {
+      await actions.putNote(ctx.sessionId, { purpose: plan.note.purpose }).catch(() => {});
+    }
+    throw err;
+  }
+  await actions.putNote(ctx.sessionId, plan.note);
 }
 
 /** Collapse whitespace and cap a string to one short line for the audit field. */
@@ -197,5 +237,14 @@ function oneLine(s: string, max = 80): string {
  */
 export function foremanMayActLive(cfg: ForemanConfig, cwd: string | null): boolean {
   if (!cfg.enabled || cfg.mode !== "live" || !cwd) return false;
-  return cfg.repoAllowlist.some((root) => cwd === root || cwd.startsWith(`${root}/`));
+  const dir = stripTrailingSlash(cwd);
+  return cfg.repoAllowlist.some((root) => {
+    const r = stripTrailingSlash(root);
+    return dir === r || dir.startsWith(`${r}/`);
+  });
+}
+
+/** Drop a single trailing "/" (keeping bare "/") so "/repo/" and "/repo" compare equal. */
+function stripTrailingSlash(p: string): string {
+  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
 }

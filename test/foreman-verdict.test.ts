@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { ForemanConfig } from "../src/shared/protocol.ts";
+import type { ForemanConfig, SetNote } from "../src/shared/protocol.ts";
 import {
   applyVerdict,
   foremanMayActLive,
@@ -34,6 +34,14 @@ const ANSWER: Verdict = {
   confidence: 0.9,
 };
 
+const ACCESS_ANSWER: Verdict = {
+  purpose: "Child wants to run the test suite before pushing.",
+  classification: "access",
+  action: "answer",
+  answer: { text: "Approve - go ahead.", submit: true },
+  confidence: 0.9,
+};
+
 test("live + allowlisted answer -> sends via terminal and marks answered", () => {
   const plan = planFromVerdict(ANSWER, ctx(), true);
   assert.equal(plan.note.disposition, "answered");
@@ -62,6 +70,27 @@ test("answer with no deliverable channel escalates with the drafted text", () =>
   assert.equal(plan.note.disposition, "escalated");
   assert.equal(plan.note.recommendation, ANSWER.answer!.text);
   assert.equal(plan.send, null);
+});
+
+test("access answer with autoApproveAccess=false escalates and sends nothing", () => {
+  const plan = planFromVerdict(ACCESS_ANSWER, ctx(), true, false);
+  assert.equal(plan.note.disposition, "escalated");
+  assert.equal(plan.note.recommendation, ACCESS_ANSWER.answer!.text);
+  assert.match(plan.note.lastAction ?? "", /auto-approval disabled/);
+  assert.equal(plan.send, null);
+});
+
+test("access answer with autoApproveAccess=true answers + sends as before", () => {
+  const plan = planFromVerdict(ACCESS_ANSWER, ctx(), true, true);
+  assert.equal(plan.note.disposition, "answered");
+  assert.ok(plan.send);
+  assert.equal(plan.send?.text, ACCESS_ANSWER.answer!.text);
+});
+
+test("non-access answer with autoApproveAccess=false still answers", () => {
+  const plan = planFromVerdict(ANSWER, ctx(), true, false);
+  assert.equal(plan.note.disposition, "answered");
+  assert.ok(plan.send);
 });
 
 test("escalate writes brief + recommendation and never sends", () => {
@@ -96,9 +125,20 @@ test("foremanMayActLive: only enabled + live + allowlisted (prefix) cwd sends", 
   assert.equal(foremanMayActLive(cfg({ enabled: false }), "/repo"), false);
   assert.equal(foremanMayActLive(cfg(), null), false);
   assert.equal(foremanMayActLive(cfg({ repoAllowlist: ["/repofoo"] }), "/repo"), false, "no partial-token match");
+  assert.equal(
+    foremanMayActLive(cfg({ repoAllowlist: ["/repo/"] }), "/repo"),
+    true,
+    "trailing-slash allowlist entry still matches",
+  );
+  assert.equal(
+    foremanMayActLive(cfg({ repoAllowlist: ["/repo/"] }), "/repo/worktrees/x"),
+    true,
+    "trailing-slash entry still matches a subdir",
+  );
+  assert.equal(foremanMayActLive(cfg(), "/repo/"), true, "trailing-slash cwd still matches");
 });
 
-test("applyVerdict: live answer writes the note then sends once", async () => {
+test("applyVerdict: live answer sends first, then records the answered note", async () => {
   const calls: string[] = [];
   const actions: ForemanActions = {
     putNote: async () => (calls.push("putNote"), {}),
@@ -107,7 +147,23 @@ test("applyVerdict: live answer writes the note then sends once", async () => {
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await applyVerdict(actions, ctx(), plan);
-  assert.deepEqual(calls, ["putNote", "sendText"]);
+  assert.deepEqual(calls, ["sendText", "putNote"]);
+});
+
+test("applyVerdict: a failed send records purpose only (no marker) and rethrows", async () => {
+  const notes: SetNote[] = [];
+  const actions: ForemanActions = {
+    putNote: async (_id: string, patch: SetNote) => (notes.push(patch), {}),
+    sendText: async () => {
+      throw new Error("pane gone");
+    },
+    resolveReview: async () => ({}),
+  };
+  const plan = planFromVerdict(ANSWER, ctx(), true);
+  await assert.rejects(applyVerdict(actions, ctx(), plan), /pane gone/);
+  // Purpose is preserved, but the answered disposition + handledMarker are NOT
+  // stamped, so the worker's idempotency check lets the next loop retry.
+  assert.deepEqual(notes, [{ purpose: ANSWER.purpose }]);
 });
 
 test("applyVerdict: dry-run draft writes the note and sends nothing", async () => {

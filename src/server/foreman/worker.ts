@@ -123,12 +123,54 @@ async function processSession(
     inputReviewId: pending.inputReviewId,
     canSend: pending.canSend,
   };
-  const plan = planFromVerdict(verdict, ctx, foremanMayActLive(cfg, session.cwd));
+  const plan = planFromVerdict(
+    verdict,
+    ctx,
+    foremanMayActLive(cfg, session.cwd),
+    cfg.autoApproveAccess,
+  );
+
+  // The review spawned a fresh `claude -p` that can run for up to two minutes, so
+  // the queue snapshot is stale by the time we're ready to act. Before a LIVE send,
+  // re-confirm against a fresh fleet that this session still needs *this* exact
+  // prompt; if the human already handled it (answered, left needs-you, or a newer
+  // prompt arrived), skip the send but still record the purpose.
+  if (plan.send && !(await sendStillValid(client, session.id, pending))) {
+    await client.putNote(session.id, { purpose: verdict.purpose }).catch(() => {});
+    log(`${session.name}: skipped stale send (session changed during review)`);
+    return;
+  }
+
   await applyVerdict(client, ctx, plan);
   log(
     `${session.name}: ${verdict.action}/${verdict.classification} -> ${plan.note.disposition}` +
       (plan.send ? " (sent)" : ""),
   );
+}
+
+/**
+ * Re-confirm, immediately before a live send, that the session still needs this
+ * exact prompt. A fresh fleet + reviews snapshot guards the send against a queue
+ * that moved while the (slow) review ran. Returns false (skip the send) if the
+ * session left needs-you, a newer prompt arrived, the marker is already handled,
+ * or the re-check itself failed - reads are cheap, so we only guard the send path.
+ */
+async function sendStillValid(
+  client: ForemanClient,
+  sessionId: string,
+  pending: Pending,
+): Promise<boolean> {
+  try {
+    const [sessions, reviews] = await Promise.all([client.sessions(), client.reviews()]);
+    const fresh = sessions.find((s) => s.id === sessionId);
+    if (!fresh || reportBucket(fresh, sessions) !== "needs-you") return false;
+    if (classifyPending(fresh, reviews).marker !== pending.marker) return false;
+    const note = await client.note(sessionId).catch(() => null);
+    if (note?.handledMarker === pending.marker) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface Pending {
@@ -178,7 +220,7 @@ function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       question: s.activity ?? "",
       inputReviewId: null,
       canSend: Boolean(s.tmux || s.wezterm),
-      marker: `await:${s.lastActivity ?? s.lastSeen}`,
+      marker: `await:${s.lastActivity ?? s.firstSeen}`,
     };
   }
   return {
@@ -186,7 +228,7 @@ function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
     question: s.activity ?? "(the session needs you, but no explicit question was found)",
     inputReviewId: null,
     canSend: false,
-    marker: `state:${s.state}:${s.lastActivity ?? s.lastSeen}`,
+    marker: `state:${s.state}:${s.lastActivity ?? s.firstSeen}`,
   };
 }
 

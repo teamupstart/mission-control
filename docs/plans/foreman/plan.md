@@ -124,10 +124,11 @@ toggle is a fast follow. Talks to the daemon over localhost + the harness token 
 
 Loop:
 1. Read `/api/foreman/config`; if disabled, idle-poll until enabled.
-2. Maintain the **queue** from `GET /api/report` `needsYou[]` (the shared `reportBucket`
-   definition — single source of truth), oldest-waiting first. Filter out: sessions off the
-   allowlist, Foreman's own / other dispatched-supervisor sessions, and any whose current
-   pending prompt is already covered by `handled_marker`.
+2. Maintain the **queue** from the shared `reportBucket` `needs-you` set (single source of
+   truth), oldest-waiting first — every needs-you `claude` session, dispatched agents included
+   (helping them is the point). Skip only a prompt already covered by `handled_marker`; the
+   allowlist gates live *sends*, not queue membership (off-allowlist sessions still get a drafted
+   note). Foreman's own worker is a plain Node process, so it never appears in the queue.
 3. Process **one** session at a time. For each:
    1. Gather context via API: the `Session`, `GET /api/sessions/:id/transcript`, its pending
       reviews (`/api/reviews` filtered to the session), and the pending question — the review
@@ -197,8 +198,9 @@ re-answering the same terminal prompt.
 - **E2E (guardrailed, throwaway only):** a scratch git repo + a **throwaway** tmux Claude
   session driven to `awaiting_input`. Dry-run → assert Purpose + proposed answer appear on the
   card and **nothing** was sent. Live → assert the answer lands via `/send` and the session
-  leaves `needs-you`. **Never** target the user's real sessions (honors the project guardrail);
-  the worker itself must exclude non-allowlisted and self/supervisor sessions.
+  leaves `needs-you`. **Never** target the user's real sessions (honors the project guardrail):
+  live *sends* are confined to allowlisted repos, and Foreman's own worker is a plain Node
+  process that never appears in the queue.
 
 ## Key reuse (don't rebuild)
 
@@ -215,8 +217,11 @@ re-answering the same terminal prompt.
 ## Safety / guardrails
 
 - Ships **OFF**, dry-run default; live requires an explicit flip + a repo allowlist.
-- Foreman **never** acts on its own session, other supervisor/dispatched sessions, sessions off
-  the allowlist, or a prompt already covered by `handled_marker`.
+- Foreman **never** *sends* for a session off the allowlist, and never re-acts on a prompt already
+  covered by `handled_marker`. Its own worker is a plain Node process (not a discovered `claude`
+  session), so it never appears in the queue. Dispatched agents are **intentionally in scope** -
+  draining the fleet's needs-you queue is the whole point - with their live sends still gated by
+  the same repo allowlist.
 - Destructive/risky access ⇒ escalate; duplicative implementation ⇒ ask for one abstraction.
 - Full audit trail: every action in `session_events` + `note.last_action` + the card's
   "Foreman answered" attribution, so nothing it does is silent.

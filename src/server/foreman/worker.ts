@@ -123,7 +123,7 @@ async function processSession(
     inputReviewId: pending.inputReviewId,
     canSend: pending.canSend,
   };
-  const plan = planFromVerdict(
+  let plan = planFromVerdict(
     verdict,
     ctx,
     foremanMayActLive(cfg, session.cwd),
@@ -131,14 +131,29 @@ async function processSession(
   );
 
   // The review spawned a fresh `claude -p` that can run for up to two minutes, so
-  // the queue snapshot is stale by the time we're ready to act. Before a LIVE send,
-  // re-confirm against a fresh fleet that this session still needs *this* exact
-  // prompt; if the human already handled it (answered, left needs-you, or a newer
-  // prompt arrived), skip the send but still record the purpose.
-  if (plan.send && !(await sendStillValid(client, session.id, pending))) {
-    await client.putNote(session.id, { purpose: verdict.purpose }).catch(() => {});
-    log(`${session.name}: skipped stale send (session changed during review)`);
-    return;
+  // both the fleet snapshot and the config are stale by the time we're ready to act.
+  // Before a LIVE send, re-confirm against a fresh fleet that this session still
+  // needs *this* exact prompt; if the human already handled it (answered, left
+  // needs-you, or a newer prompt arrived), skip the send but still record the
+  // purpose. Then re-read the config and downgrade to a non-sending draft if the
+  // operator disabled Foreman, left live mode, or dropped the repo from the
+  // allowlist mid-review - "disable stops acting" must hold even for an in-flight review.
+  if (plan.send) {
+    if (!(await sendStillValid(client, session.id, pending))) {
+      await client.putNote(session.id, { purpose: verdict.purpose }).catch(() => {});
+      log(`${session.name}: skipped stale send (session changed during review)`);
+      return;
+    }
+    const freshCfg = await client.getConfig().catch(() => null);
+    if (!freshCfg || !foremanMayActLive(freshCfg, session.cwd)) {
+      plan = planFromVerdict(
+        verdict,
+        ctx,
+        false,
+        (freshCfg ?? cfg).autoApproveAccess,
+      );
+      log(`${session.name}: config changed during review; drafting instead of sending`);
+    }
   }
 
   await applyVerdict(client, ctx, plan);

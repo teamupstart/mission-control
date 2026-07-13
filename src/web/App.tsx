@@ -244,7 +244,7 @@ export function App(): React.JSX.Element {
       <header className="topbar">
         <div className="brand">
           <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
-          <h1>Fleet Control</h1>
+          <h1>Agent Wrangler</h1>
         </div>
         <div className="filter-box">
           <span className="filter-icon" aria-hidden>
@@ -290,8 +290,8 @@ export function App(): React.JSX.Element {
           )}
         </div>
         <AlertBar settings={alertSettings} update={updateAlerts} />
-        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings) - press r">
-          Report
+        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Roundup - press r">
+          Roundup
           <kbd className="ghost-key" aria-hidden>
             r
           </kbd>

@@ -290,8 +290,8 @@ export function App(): React.JSX.Element {
           )}
         </div>
         <AlertBar settings={alertSettings} update={updateAlerts} />
-        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Fleet report (bearings) - press r">
-          Report
+        <button className="ghost-btn" onClick={() => setReportOpen(true)} title="Roundup - press r">
+          Roundup
           <kbd className="ghost-key" aria-hidden>
             r
           </kbd>

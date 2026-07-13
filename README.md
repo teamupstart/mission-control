@@ -22,7 +22,7 @@ and get your decision back.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + detached tmux session (or queues it in a
   backlog for later).
-- **Reports** the fleet's bearings: who needs you, who's working, what's idle,
+- **Rounds up** the whole fleet: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 - **Alerts** you when the fleet needs you: a desktop notification + sound the
   moment a session needs input, a review lands, a no-mistakes gate parks, or a
@@ -223,9 +223,9 @@ Every dispatched task is a durable record (repo, intent, kind, worktree, branch,
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `FLEET_CLAUDE_BIN` / `FLEET_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
-## Fleet report (bearings)
+## Roundup
 
-Click **Report** for a one-look snapshot of the whole fleet, assembled from the same live
+Click **Roundup** for a one-look snapshot of the whole fleet, assembled from the same live
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
 gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a queued task or drop it right from the panel, and **Mark

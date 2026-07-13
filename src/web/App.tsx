@@ -10,7 +10,9 @@ import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal } from "./components/SettingsModal.tsx";
+import { ForemanBar } from "./components/ForemanBar.tsx";
 import { useNotifier } from "./useNotifier.ts";
+import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
@@ -31,6 +33,7 @@ export function App(): React.JSX.Element {
   const [alertSettings, updateAlerts] = useAlertSettings();
   useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
+  const foreman = useForeman();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
@@ -92,6 +95,16 @@ export function App(): React.JSX.Element {
     [sessions],
   );
   const pendingReviews = reviews.filter((r) => r.status === "pending");
+  // First pending `input` review per session, so Foreman's Approve resolves the
+  // right one instead of typing a terminal reply the blocked agent won't see.
+  const inputReviewBySession = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of pendingReviews) {
+      if (r.kind === "input" && !m.has(r.sessionId)) m.set(r.sessionId, r.id);
+    }
+    return m;
+  }, [pendingReviews]);
+  const foremanMode = foreman.config?.mode ?? "dry-run";
 
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "queued").length, [tasks]);
 
@@ -325,6 +338,7 @@ export function App(): React.JSX.Element {
           )}
         </div>
         <AlertBar settings={alertSettings} update={updateAlerts} />
+        <ForemanBar state={foreman} />
         <button
           className="ghost-btn settings-btn"
           onClick={() => setSettingsOpen(true)}
@@ -371,6 +385,8 @@ export function App(): React.JSX.Element {
             onOpenDiff={() => setDiffSessionId(s.id)}
             registerEl={registerEl}
             registerActions={registerActions}
+            foremanMode={foremanMode}
+            inputReviewId={inputReviewBySession.get(s.id) ?? null}
           />
         ))}
       </main>

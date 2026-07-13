@@ -5,7 +5,14 @@
 import type { Session, Task } from "@shared/types.ts";
 import { gateParked, reportBucket } from "@shared/session.ts";
 
-export type AlertKind = "needs-input" | "review" | "gate" | "task-done" | "task-failed" | "idle";
+export type AlertKind =
+  | "needs-input"
+  | "review"
+  | "gate"
+  | "task-done"
+  | "task-failed"
+  | "idle"
+  | "foreman";
 export type AlertSeverity = "attention" | "info";
 
 export interface Alert {
@@ -82,6 +89,20 @@ export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings):
         kind: "gate",
         title: `${label} - gate parked`,
         body: `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`,
+        sessionId: s.id,
+        severity: "attention",
+      });
+    }
+
+    // foreman: the auto-responder handed a decision back to you (a design fork or
+    // a risky ask it declined to answer). Edge-triggered on the note flipping to
+    // escalated, so it fires once when Foreman escalates.
+    if (s.note?.disposition === "escalated" && before?.note?.disposition !== "escalated") {
+      alerts.push({
+        id: `foreman:${s.id}`,
+        kind: "foreman",
+        title: `${label} - Foreman needs your call`,
+        body: s.note.lastAction ?? "a decision was escalated to you",
         sessionId: s.id,
         severity: "attention",
       });

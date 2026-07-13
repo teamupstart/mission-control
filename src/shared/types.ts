@@ -166,6 +166,70 @@ export interface Session {
    * Codex rollout). Null until we've read the session at least once.
    */
   meta: SessionMeta | null;
+  /**
+   * The Foreman auto-responder's note for this session: a one-liner Purpose plus
+   * the decision brief / audit of what Foreman did. Denormalized like `task`,
+   * keyed on the stable agent session id so it survives the synthetic id churning.
+   * Null until Foreman has inspected the session.
+   */
+  note: SessionNoteSummary | null;
+}
+
+// ---- Foreman session notes (auto-responder) ----
+
+/**
+ * What Foreman did (or decided) about a session's pending question.
+ *  - answered: Foreman sent a reply on the human's behalf (live mode).
+ *  - pending: Foreman drafted a reply but has NOT sent it (dry-run / semi-auto) -
+ *    it's waiting for the human to confirm or to flip the repo to live.
+ *  - escalated: a real fork / risky ask - Foreman declined to answer and framed
+ *    the decision for the human.
+ *  - skipped: Foreman couldn't understand the ask and left it for the human.
+ */
+export type NoteDisposition = "answered" | "pending" | "escalated" | "skipped";
+
+/**
+ * The durable Foreman record for one session, keyed on `agentSessionId` when
+ * known (stable across the synthetic-id churn) else the synthetic session id.
+ */
+export interface SessionNote {
+  noteKey: string;
+  /** 1-2 sentence "what is this session for + the latest relevant context". */
+  purpose: string | null;
+  /** Decision brief markdown: the question, the options, and Foreman's take. */
+  brief: string | null;
+  /** Foreman's recommended answer (shown for escalate + dry-run proposals). */
+  recommendation: string | null;
+  disposition: NoteDisposition;
+  /** One-line audit of the last action, e.g. "approved Bash: npm test". */
+  lastAction: string | null;
+  /** The reviewId / transcript turn id Foreman last acted on, for idempotency. */
+  handledMarker: string | null;
+  updatedAt: number;
+}
+
+/** Compact note view denormalized onto a Session card (like TaskSummary). */
+export interface SessionNoteSummary {
+  purpose: string | null;
+  brief: string | null;
+  recommendation: string | null;
+  disposition: NoteDisposition;
+  lastAction: string | null;
+  updatedAt: number;
+}
+
+/** Foreman's live status for the dashboard (config + derived counts). */
+export interface ForemanStatus {
+  enabled: boolean;
+  mode: "dry-run" | "live" | "semi-auto";
+  /** True when the worker process heartbeated recently. */
+  running: boolean;
+  /** How many sessions currently need you (Foreman's inbound queue). */
+  queueDepth: number;
+  /** Note counts by disposition, across all inspected sessions. */
+  counts: { answered: number; escalated: number; pending: number; skipped: number };
+  /** epoch ms of the most recent Foreman note, or null. */
+  lastActionAt: number | null;
 }
 
 /** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */

@@ -8,11 +8,13 @@ import type {
   ServerEvent,
   Session,
   SessionMeta,
+  SessionNote,
+  SessionNoteSummary,
   SessionState,
   Task,
   TaskSummary,
 } from "@shared/types.ts";
-import type { HookIngest, StatusLineIngest } from "@shared/protocol.ts";
+import type { HookIngest, SetNote, StatusLineIngest } from "@shared/protocol.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -23,11 +25,14 @@ import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
 import {
   deleteTask as dbDeleteTask,
+  getSessionNote,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
+  loadSessionNotes,
   logEvent,
+  upsertSessionNote,
   upsertTask as dbUpsertTask,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
@@ -75,6 +80,8 @@ export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   private reviews = new Map<string, ReviewItem>();
   private tasks = new Map<string, Task>();
+  /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
+  private notes = new Map<string, SessionNote>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** overlay keyed by pane token ("tmux:%12" | "wez:12"). */
   private overlays = new Map<string, HookOverlay>();
@@ -90,6 +97,7 @@ export class Registry extends EventEmitter {
   constructor() {
     super();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
+    for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold a worktree (done-awaiting-reclaim
@@ -188,6 +196,7 @@ export class Registry extends EventEmitter {
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
       meta: prev?.meta ?? null,
+      note: null,
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -199,6 +208,9 @@ export class Registry extends EventEmitter {
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
     }
+    // Resolve the note only after the overlay may have supplied agentSessionId,
+    // so the note key (which prefers agentSessionId) is stable.
+    base.note = this.noteSummaryFor(base);
     return base;
   }
 
@@ -246,6 +258,10 @@ export class Registry extends EventEmitter {
         agentSessionId: evt.sessionId ?? target.agentSessionId,
         transcriptPath: evt.transcriptPath ?? target.transcriptPath,
       };
+      // Binding the agent session id can change the note key, so re-resolve the
+      // note now (a rehydrated Purpose attaches the instant the session is
+      // identified, rather than waiting for the next discovery sweep).
+      next.note = this.noteSummaryFor(next);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
       if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
@@ -642,6 +658,74 @@ export class Registry extends EventEmitter {
       this.emitSession(next);
     }
   }
+
+  // ---- Foreman notes (auto-responder) ----
+
+  /** Full note for a session (includes handledMarker), or null. For the worker. */
+  getNote(id: string): SessionNote | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    return this.notes.get(noteKeyFor(s)) ?? null;
+  }
+
+  /** All stored Foreman notes (for the status counts). */
+  listNotes(): SessionNote[] {
+    return [...this.notes.values()];
+  }
+
+  /** The compact note view denormalized onto a session card. */
+  private noteSummaryFor(s: Session): SessionNoteSummary | null {
+    const n = this.notes.get(noteKeyFor(s));
+    if (!n) return null;
+    return {
+      purpose: n.purpose,
+      brief: n.brief,
+      recommendation: n.recommendation,
+      disposition: n.disposition,
+      lastAction: n.lastAction,
+      updatedAt: n.updatedAt,
+    };
+  }
+
+  /**
+   * Patch a session's Foreman note (create on first write), merging over the
+   * existing row so a purpose-only update never wipes a brief. Persists, then
+   * re-denormalizes onto every live session sharing the note key. Returns the
+   * stored note, or null when the session id is unknown.
+   */
+  upsertNote(id: string, patch: SetNote, now = Date.now()): SessionNote | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    const key = noteKeyFor(s);
+    const prev = this.notes.get(key) ?? getSessionNote(key);
+    const next: SessionNote = {
+      noteKey: key,
+      purpose: patch.purpose !== undefined ? patch.purpose : prev?.purpose ?? null,
+      brief: patch.brief !== undefined ? patch.brief : prev?.brief ?? null,
+      recommendation:
+        patch.recommendation !== undefined ? patch.recommendation : prev?.recommendation ?? null,
+      disposition: patch.disposition ?? prev?.disposition ?? "pending",
+      lastAction: patch.lastAction !== undefined ? patch.lastAction : prev?.lastAction ?? null,
+      handledMarker:
+        patch.handledMarker !== undefined ? patch.handledMarker : prev?.handledMarker ?? null,
+      updatedAt: now,
+    };
+    this.notes.set(key, next);
+    upsertSessionNote(next);
+    this.syncSessionsForNote(key);
+    return next;
+  }
+
+  private syncSessionsForNote(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const summary = this.noteSummaryFor(s);
+      if (JSON.stringify(s.note) === JSON.stringify(summary)) continue;
+      const next = { ...s, note: summary };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
 }
 
 // ---- pure helpers ----
@@ -682,6 +766,17 @@ const PERMISSION_MODES = new Set<PermissionMode>([
  */
 export function normalizePermissionMode(raw: string | undefined | null): PermissionMode | null {
   return raw && PERMISSION_MODES.has(raw as PermissionMode) ? (raw as PermissionMode) : null;
+}
+
+/**
+ * Stable key for a session's Foreman note. Prefers the Claude agent session id
+ * (stable across the synthetic discovery id churning as pids/ttys change), and
+ * falls back to the synthetic id for an uninstrumented session. Foreman only
+ * writes a note once it has read the transcript, by which point agentSessionId
+ * is known, so a note is keyed on the agent id in practice.
+ */
+export function noteKeyFor(s: Session): string {
+  return s.agentSessionId ?? s.id;
 }
 
 /** Map a Claude hook event to a session state + one-line activity. */
@@ -739,7 +834,8 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.prState === b.prState &&
     metaDisplayEqual(a.meta, b.meta) &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
-    JSON.stringify(a.task) === JSON.stringify(b.task)
+    JSON.stringify(a.task) === JSON.stringify(b.task) &&
+    JSON.stringify(a.note) === JSON.stringify(b.note)
   );
 }
 

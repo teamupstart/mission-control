@@ -134,3 +134,44 @@ export const CompleteTaskSchema = z.object({
   outcomeUrl: z.string().url().optional(),
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
+
+// ---- Foreman (auto-responder) ----
+
+/**
+ * Upsert a session's Foreman note. Every field is optional so a caller can patch
+ * just the purpose (the common case) or the full brief/disposition; the server
+ * merges over the existing row. At least one field must be present.
+ */
+export const SetNoteSchema = z
+  .object({
+    purpose: z.string().nullable().optional(),
+    brief: z.string().nullable().optional(),
+    recommendation: z.string().nullable().optional(),
+    disposition: z.enum(["answered", "pending", "escalated", "skipped"]).optional(),
+    lastAction: z.string().nullable().optional(),
+    handledMarker: z.string().nullable().optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty note update" });
+export type SetNote = z.infer<typeof SetNoteSchema>;
+
+/**
+ * Foreman's operating config. `dry-run` drafts answers without sending; `live`
+ * sends on the human's behalf (only for repos on the allowlist); `semi-auto`
+ * drafts a one-click-confirmable action. Ships disabled + dry-run.
+ */
+export const ForemanConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
+  /** Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live. */
+  repoAllowlist: z.array(z.string()).default([]),
+  /** Whether Foreman may auto-approve non-destructive access asks (still gated by risk). */
+  autoApproveAccess: z.boolean().default(true),
+});
+export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
+
+/** Partial update of the Foreman config from the dashboard. */
+export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;

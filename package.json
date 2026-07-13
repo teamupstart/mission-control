@@ -26,6 +26,7 @@
     "build:hook": "esbuild hooks/harness-hook.mjs --bundle --platform=node --format=esm --target=node22 --outfile=dist/satellites/hook.mjs",
     "package": "npm run build && electron-builder --mac",
     "start": "tsx src/server/index.ts",
+    "foreman": "tsx src/server/foreman/worker.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx 'test/**/*.test.ts'",
     "init": "node scripts/init.mjs",

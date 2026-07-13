@@ -342,6 +342,77 @@ export function parseLines(lines: string[], limit?: number): TranscriptMessage[]
   return limit && out.length > limit ? out.slice(-limit) : out;
 }
 
+// ---- one-shot transcript window (Foreman review + any non-streaming reader) ----
+
+/** Head bytes to scan for the opening turns (the session's original goal). */
+const WINDOW_HEAD_BYTES = 128 * 1024;
+/** Tail bytes to scan for the recent context (the pending question). */
+const WINDOW_TAIL_BYTES = 384 * 1024;
+
+export interface TranscriptWindow {
+  /** Opening turns then recent turns, de-duped; empty when unreadable. */
+  messages: TranscriptMessage[];
+  /** True when turns between the head and the tail were dropped for size. */
+  truncated: boolean;
+}
+
+/**
+ * Read a bounded window of a transcript for a one-shot reader (no SSE): the
+ * opening `headTurns` (so the goal the user set is always present) plus the most
+ * recent `tailTurns` (the current question + context). A small file is returned
+ * whole; a large one returns head+tail with the middle elided (`truncated`).
+ * Pure over the filesystem, mirroring the bounded tail reads used elsewhere so a
+ * multi-MB transcript is never parsed in full.
+ */
+export function readTranscriptWindow(
+  path: string,
+  headTurns = 12,
+  tailTurns = 48,
+): TranscriptWindow {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { messages: [], truncated: false };
+  }
+  // Small enough to read whole: no head/tail split, no truncation.
+  if (size <= WINDOW_HEAD_BYTES + WINDOW_TAIL_BYTES) {
+    const all = parseLines(readTailLines(path, size));
+    return { messages: all, truncated: false };
+  }
+  // Head begins at byte 0 (first line is whole) but ends mid-file (drop the partial
+  // last line). Tail begins mid-file (drop the partial first line) but ends at EOF
+  // (keep the last line - parseLines drops it only if it isn't valid JSON).
+  const headLines = completeLines(readRange(path, 0, WINDOW_HEAD_BYTES), false, true);
+  const tailLines = completeLines(readRange(path, size - WINDOW_TAIL_BYTES, size), true, false);
+  const head = parseLines(headLines).slice(0, headTurns);
+  const tail = parseLines(tailLines).slice(-tailTurns);
+  // De-dupe by record id in case the windows overlap on a mid-size file.
+  const seen = new Set(head.map((m) => m.id));
+  const merged = [...head, ...tail.filter((m) => !seen.has(m.id))];
+  return { messages: merged, truncated: true };
+}
+
+/**
+ * Split a byte buffer into lines, optionally dropping a partial line at either
+ * end: `dropFirst` for a buffer that began mid-file (a tail read), `dropLast`
+ * for one that ended mid-file (a head read). The kept end is returned intact.
+ */
+function completeLines(buf: Buffer, dropFirst: boolean, dropLast: boolean): string[] {
+  let from = 0;
+  if (dropFirst) {
+    const nl = buf.indexOf(NL);
+    from = nl >= 0 ? nl + 1 : buf.length;
+  }
+  let end = buf.length;
+  if (dropLast) {
+    const lastNl = buf.lastIndexOf(NL);
+    end = lastNl >= 0 ? lastNl + 1 : from;
+  }
+  const text = buf.subarray(from, end).toString("utf8");
+  return text ? text.split("\n") : [];
+}
+
 /** Read the tail of the transcript for the initial view. Returns turns + the byte offset to resume from. */
 function readTail(path: string): { messages: TranscriptMessage[]; pos: number } {
   const size = statSync(path).size;

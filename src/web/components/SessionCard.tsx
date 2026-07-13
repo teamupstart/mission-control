@@ -12,6 +12,7 @@ import {
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
+import { ForemanNote } from "./ForemanNote.tsx";
 
 function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) {
@@ -37,6 +38,8 @@ export function SessionCard({
   onToggleExpand,
   registerEl,
   registerActions,
+  foremanMode = "dry-run",
+  inputReviewId = null,
 }: {
   session: Session;
   /** True when this session's parked no-mistakes gate needs you (computed fleet-wide in App). */
@@ -49,6 +52,10 @@ export function SessionCard({
   onToggleExpand?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
+  /** Current Foreman mode, so an expanded note can show semi-auto controls. */
+  foremanMode?: string;
+  /** A pending `input` review id for this session (for Foreman's Approve). */
+  inputReviewId?: string | null;
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
@@ -102,6 +109,23 @@ export function SessionCard({
             {st.label}
           </span>
         )}
+        {session.note &&
+          (session.note.disposition === "escalated" || session.note.disposition === "pending") && (
+            <button
+              className={`foreman-flag ff-${session.note.disposition}`}
+              title={
+                session.note.disposition === "escalated"
+                  ? "Foreman escalated a decision to you - expand to see it"
+                  : "Foreman drafted a reply - expand to review it"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleExpand?.();
+              }}
+            >
+              {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
+            </button>
+          )}
         {session.cwd && (
           <button
             className="diff-btn"
@@ -212,7 +236,17 @@ export function SessionCard({
       )}
 
       {expanded && (
-        <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
+        <>
+          {session.note && (
+            <ForemanNote
+              sessionId={session.id}
+              note={session.note}
+              mode={foremanMode}
+              inputReviewId={inputReviewId}
+            />
+          )}
+          <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
+        </>
       )}
     </article>
   );

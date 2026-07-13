@@ -5,10 +5,12 @@ import {
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
+  ForemanConfigPatchSchema,
   HookIngestSchema,
   NomistakesRespondSchema,
   ResolveReviewSchema,
   SendTextSchema,
+  SetNoteSchema,
   StatusLineIngestSchema,
   StatusSchema,
 } from "@shared/protocol.ts";
@@ -16,7 +18,13 @@ import type { Registry } from "./registry.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
-import { transcriptStreamHandler } from "./transcript.ts";
+import { readTranscriptWindow, resolveTranscriptPath, transcriptStreamHandler } from "./transcript.ts";
+import {
+  foremanStatus,
+  getForemanConfig,
+  recordForemanHeartbeat,
+  setForemanConfig,
+} from "./foreman/config.ts";
 import { computeSessionDiff } from "./diff.ts";
 import { checkToken } from "./auth.ts";
 import { cyclePermissionMode, focus, kill, sendText } from "./actions.ts";
@@ -87,6 +95,16 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.get("/events", sseHandler(registry));
   // Live transcript for the expanded card (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
+  // One-shot transcript window (head + tail) for the Foreman reviewer.
+  app.get("/api/sessions/:id/transcript", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const path = resolveTranscriptPath(session);
+    if (!path) return c.json({ messages: [], truncated: false, unavailable: true });
+    const turns = Number(c.req.query("turns"));
+    const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
+    return c.json(readTranscriptWindow(path, 12, tail));
+  });
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -198,6 +216,37 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (!parsed.ok) return parsed.res;
     const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, parsed.data);
     return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // --- Foreman session notes (localhost only) ---
+  // Full note incl. handledMarker, for the worker's idempotency check.
+  app.get("/api/sessions/:id/note", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(registry.getNote(session.id));
+  });
+
+  app.put("/api/sessions/:id/note", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, SetNoteSchema);
+    if (!parsed.ok) return parsed.res;
+    const note = registry.upsertNote(session.id, parsed.data);
+    if (!note) return c.json({ error: "no such session" }, 404);
+    return c.json(note);
+  });
+
+  // --- Foreman config + status (localhost only) ---
+  app.get("/api/foreman/config", (c) => c.json(getForemanConfig()));
+  app.put("/api/foreman/config", async (c) => {
+    const parsed = await parseBody(c, ForemanConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setForemanConfig(parsed.data));
+  });
+  app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+  app.post("/api/foreman/heartbeat", (c) => {
+    recordForemanHeartbeat();
+    return c.body(null, 204);
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

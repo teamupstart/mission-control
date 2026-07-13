@@ -3,9 +3,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DB_PATH } from "./config.ts";
 import type {
+  NoteDisposition,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
+  SessionNote,
   Task,
   TaskKind,
   TaskStatus,
@@ -72,6 +74,22 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_worktree ON tasks(worktree_path);
+
+    CREATE TABLE IF NOT EXISTS session_notes (
+      note_key       TEXT PRIMARY KEY,
+      purpose        TEXT,
+      brief          TEXT,
+      recommendation TEXT,
+      disposition    TEXT NOT NULL,
+      last_action    TEXT,
+      handled_marker TEXT,
+      updated_at     INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS app_config (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
   return db;
 }
@@ -263,4 +281,85 @@ export function loadResourceHoldingTerminalTasks(): Task[] {
     )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);
+}
+
+// ---- Foreman session notes ----
+
+interface SessionNoteRow {
+  note_key: string;
+  purpose: string | null;
+  brief: string | null;
+  recommendation: string | null;
+  disposition: string;
+  last_action: string | null;
+  handled_marker: string | null;
+  updated_at: number;
+}
+
+function rowToNote(r: SessionNoteRow): SessionNote {
+  return {
+    noteKey: r.note_key,
+    purpose: r.purpose,
+    brief: r.brief,
+    recommendation: r.recommendation,
+    disposition: r.disposition as NoteDisposition,
+    lastAction: r.last_action,
+    handledMarker: r.handled_marker,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function upsertSessionNote(n: SessionNote): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_notes (
+         note_key, purpose, brief, recommendation, disposition, last_action, handled_marker, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         purpose=excluded.purpose, brief=excluded.brief, recommendation=excluded.recommendation,
+         disposition=excluded.disposition, last_action=excluded.last_action,
+         handled_marker=excluded.handled_marker, updated_at=excluded.updated_at`,
+    )
+    .run(
+      n.noteKey, n.purpose, n.brief, n.recommendation, n.disposition, n.lastAction,
+      n.handledMarker, n.updatedAt,
+    );
+}
+
+export function getSessionNote(noteKey: string): SessionNote | undefined {
+  const r = openDb().prepare(`SELECT * FROM session_notes WHERE note_key = ?`).get(noteKey) as
+    | unknown as SessionNoteRow | undefined;
+  return r ? rowToNote(r) : undefined;
+}
+
+/** All notes, reloaded into the registry on start so Purpose survives a restart. */
+export function loadSessionNotes(): SessionNote[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM session_notes ORDER BY updated_at DESC`)
+    .all() as unknown as SessionNoteRow[];
+  return rows.map(rowToNote);
+}
+
+// ---- generic app config (Foreman config, future singletons) ----
+
+/** Read a JSON-encoded config blob by key, or undefined when unset/corrupt. */
+export function getAppConfig<T>(key: string): T | undefined {
+  const r = openDb().prepare(`SELECT value FROM app_config WHERE key = ?`).get(key) as
+    | { value: string }
+    | undefined;
+  if (!r) return undefined;
+  try {
+    return JSON.parse(r.value) as T;
+  } catch {
+    return undefined;
+  }
+}
+
+export function setAppConfig(key: string, value: unknown): void {
+  openDb()
+    .prepare(
+      `INSERT INTO app_config (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    )
+    .run(key, JSON.stringify(value));
 }

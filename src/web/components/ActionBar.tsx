@@ -142,7 +142,15 @@ export function ActionBar({
           </button>
           <span className="actions-spacer" />
           {confirmKill ? (
-            <button className="btn btn-danger" onClick={() => void doKill()}>
+            <button
+              className="btn btn-danger"
+              onClick={() => void doKill()}
+              title={
+                session.tmux
+                  ? `Terminates the agent and kills its tmux session "${session.tmux.session}" (all its windows and panes)`
+                  : "Terminates the agent process"
+              }
+            >
               Confirm kill
             </button>
           ) : (

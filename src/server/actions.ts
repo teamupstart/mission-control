@@ -141,12 +141,52 @@ export async function focus(session: Session): Promise<ActionResult> {
   return { ok: false, error: "session has no focusable pane" };
 }
 
-/** Terminate the agent process (SIGTERM). The UI confirms before calling this. */
-export function kill(session: Session): ActionResult {
+/** Send SIGTERM to a pid, reduced to an ActionResult. */
+function signalProcess(pid: number): ActionResult {
   try {
-    process.kill(session.pid, "SIGTERM");
+    process.kill(pid, "SIGTERM");
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * Side effects `kill` performs, injectable so tests can drive the branching
+ * without signalling real processes or shelling out to tmux.
+ */
+export interface KillDeps {
+  /** SIGTERM the leaf agent process. */
+  signal: (pid: number) => ActionResult;
+  /** Kill an entire tmux session by name (`tmux kill-session -t <name>`). */
+  killTmuxSession: (session: string) => Promise<RunResult>;
+}
+
+const defaultKillDeps: KillDeps = {
+  signal: signalProcess,
+  killTmuxSession: (session) =>
+    run("tmux", ["kill-session", "-t", session], { timeoutMs: 10000 }),
+};
+
+/**
+ * Terminate the agent and tear down its terminal home. SIGTERMs the leaf agent
+ * process, then - for a tmux-hosted session - kills the whole tmux session so no
+ * orphaned window/pane is left behind. The UI confirms before calling this.
+ *
+ * The two steps race by nature: the agent's own exit can collapse its tmux session
+ * before (or after) we reach kill-session, so we count the action as successful
+ * when EITHER the signal or the kill-session landed, and only surface an error when
+ * both fail. For a non-tmux session the signal result stands on its own.
+ */
+export async function kill(session: Session, deps: KillDeps = defaultKillDeps): Promise<ActionResult> {
+  const signalled = deps.signal(session.pid);
+
+  if (session.tmux) {
+    const killed = await deps.killTmuxSession(session.tmux.session);
+    if (killed.code === 0 || signalled.ok) return { ok: true };
+    // Both failed: the session was already gone AND the process couldn't be signalled.
+    return { ok: false, error: killed.stderr.trim() || signalled.error || "tmux kill-session failed" };
+  }
+
+  return signalled;
 }

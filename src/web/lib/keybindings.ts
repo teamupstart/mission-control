@@ -14,7 +14,6 @@ export type ActionId =
   | "roundup"
   | "dispatch"
   | "filter"
-  | "select"
   | "expand"
   | "diff"
   | "send"
@@ -52,13 +51,6 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus filter",
     description: "Jump to the filter box to narrow the grid.",
     defaultBinding: "/",
-    group: "global",
-  },
-  {
-    id: "select",
-    label: "Toggle selection",
-    description: "Select the first card, or clear the current selection.",
-    defaultBinding: "Tab",
     group: "global",
   },
   {
@@ -280,16 +272,19 @@ export interface KeybindingsApi {
   hasCustom: boolean;
 }
 
+// Stable references for useSyncExternalStore so it doesn't re-subscribe on every
+// render (an inline arrow would delete + re-add the listener each commit).
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+function getSnapshot(): Record<ActionId, string> {
+  return snapshot;
+}
+
 /** Live view of the resolved bindings; re-renders on any rebind/reset. */
 export function useKeybindings(): KeybindingsApi {
-  const bindings = useSyncExternalStore(
-    (cb) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-    () => snapshot,
-    () => snapshot,
-  );
+  const bindings = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const isCustom = useCallback(
     (id: ActionId) => bindings[id] !== ACTION_BY_ID.get(id)?.defaultBinding,
     [bindings],

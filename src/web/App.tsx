@@ -205,12 +205,6 @@ export function App(): React.JSX.Element {
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
-      if (chord === bindings.select) {
-        e.preventDefault();
-        setSelectedId((cur) => (cur ? null : ids[0] ?? null));
-        return;
-      }
-
       // Fixed structural navigation (not rebindable).
       switch (e.key) {
         case "Escape":

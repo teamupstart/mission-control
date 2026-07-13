@@ -75,6 +75,22 @@ test("applyStatusLine populates meta on the bound session (exact %, effort, mode
   assert.equal(m?.source, "statusline");
 });
 
+test("applyStatusLine recovers a 1M window when size is absent but tokens exceed 200k", () => {
+  const r = seeded();
+  // No contextWindowSize and no usedPercentage from Claude - only raw tokens, over
+  // 200k on a marker-less id. The window must floor up to 1M, not the 200k default.
+  r.applyStatusLine(
+    statusIngest({
+      model: { id: "claude-opus-4-8", displayName: "Opus" },
+      contextWindow: { tokens: 490_000 },
+    }),
+  );
+  const m = metaOf(r);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 49);
+  assert.equal(m?.longContext, true);
+});
+
 test("applyRuntimeMeta populates meta from a passive transcript read", () => {
   const r = seeded();
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");

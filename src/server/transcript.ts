@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { Session, ThinkingLevel, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
-import { parseContextWindowSize } from "@shared/model.ts";
+import { effectiveContextWindow, isLongContext, parseContextWindowSize } from "@shared/model.ts";
 import type { Registry } from "./registry.ts";
 import { sleep } from "./util/timers.ts";
 
@@ -275,7 +275,11 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
 
   if (!modelId && contextTokens === null && !thinkingLevel) return null;
 
-  const { size, longContext } = parseContextWindowSize(modelId);
+  // The transcript's model id drops the `[1m]` marker, so infer the window from the
+  // id but let the observed token count correct it upward (489k tokens can't fit a
+  // 200k window - the session must be on 1M). Without this, 1M sessions read ~5x
+  // too high and peg at 100% once usage passes 200k.
+  const size = effectiveContextWindow(parseContextWindowSize(modelId).size, contextTokens);
   const contextPct =
     contextTokens !== null ? Math.round(Math.min(100, (contextTokens / size) * 100)) : null;
   return {
@@ -283,7 +287,7 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
     contextTokens,
     contextWindow: contextTokens !== null ? size : null,
     contextPct,
-    longContext,
+    longContext: isLongContext(size),
     thinkingLevel,
   };
 }

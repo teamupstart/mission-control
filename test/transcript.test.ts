@@ -156,8 +156,9 @@ test("latestEffortLevel reads /effort and /model-with-effort echoes, newest wins
 });
 
 test("computeRuntimeMeta derives model + context% from the newest assistant usage", () => {
+  // A standard-window model (Haiku) exercises the plain 200k arithmetic.
   const m = computeRuntimeMeta([
-    asstUsage("claude-opus-4-8", {
+    asstUsage("claude-haiku-4-5", {
       input_tokens: 10_000,
       cache_read_input_tokens: 60_000,
       cache_creation_input_tokens: 30_000,
@@ -165,7 +166,7 @@ test("computeRuntimeMeta derives model + context% from the newest assistant usag
     }),
   ]);
   assert.deepEqual(m, {
-    modelId: "claude-opus-4-8",
+    modelId: "claude-haiku-4-5",
     contextTokens: 100_000, // output excluded
     contextWindow: 200_000,
     contextPct: 50,
@@ -174,10 +175,48 @@ test("computeRuntimeMeta derives model + context% from the newest assistant usag
   });
 });
 
+test("computeRuntimeMeta defaults a marker-less long-context model (Opus 4.x) to 1M", () => {
+  const m = computeRuntimeMeta([asstUsage("claude-opus-4-8", { input_tokens: 100_000 })]);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 10); // 100k / 1M, not 50% of 200k
+  assert.equal(m?.longContext, true);
+});
+
 test("computeRuntimeMeta infers a 1M window from the model id", () => {
   const m = computeRuntimeMeta([asstUsage("claude-opus-4-8[1m]", { input_tokens: 100_000 })]);
   assert.equal(m?.contextWindow, 1_000_000);
   assert.equal(m?.contextPct, 10);
+  assert.equal(m?.longContext, true);
+});
+
+test("computeRuntimeMeta recovers a 1M window when the id lacks the marker but usage exceeds 200k", () => {
+  // The transcript records the bare `claude-opus-4-8` (no `[1m]`); 490k tokens
+  // can't fit a 200k window, so the real window must be 1M - and % must not peg.
+  const m = computeRuntimeMeta([
+    asstUsage("claude-opus-4-8", {
+      input_tokens: 2,
+      cache_read_input_tokens: 470_000,
+      cache_creation_input_tokens: 20_000,
+    }),
+  ]);
+  assert.equal(m?.contextTokens, 490_002);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 49);
+  assert.equal(m?.longContext, true);
+});
+
+test("computeRuntimeMeta keeps the 200k window for a standard-window model under 200k", () => {
+  const m = computeRuntimeMeta([asstUsage("claude-haiku-4-5", { input_tokens: 120_000 })]);
+  assert.equal(m?.contextWindow, 200_000);
+  assert.equal(m?.contextPct, 60);
+  assert.equal(m?.longContext, false);
+});
+
+test("computeRuntimeMeta still floors a standard model up when usage proves a bigger window", () => {
+  // Even a normally-200k id must not clamp: 260k tokens can't fit 200k.
+  const m = computeRuntimeMeta([asstUsage("claude-haiku-4-5", { input_tokens: 260_000 })]);
+  assert.equal(m?.contextWindow, 1_000_000);
+  assert.equal(m?.contextPct, 26);
   assert.equal(m?.longContext, true);
 });
 

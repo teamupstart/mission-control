@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isLongContext, modelLabel, parseContextWindowSize } from "../src/shared/model.ts";
+import {
+  defaultWindowForModel,
+  effectiveContextWindow,
+  isLongContext,
+  modelLabel,
+  parseContextWindowSize,
+} from "../src/shared/model.ts";
 
 test("modelLabel maps Claude ids to friendly names", () => {
   assert.equal(modelLabel("claude-opus-4-8"), "Opus 4.8");
@@ -24,11 +30,17 @@ test("modelLabel prettifies unknowns and drops empties", () => {
   assert.equal(modelLabel(undefined), null);
 });
 
-test("parseContextWindowSize infers 1M from a delimited marker, else the default", () => {
+test("parseContextWindowSize infers 1M from a delimited marker, else the model default", () => {
   assert.deepEqual(parseContextWindowSize("claude-opus-4-8[1m]"), { size: 1_000_000, longContext: true });
   assert.deepEqual(parseContextWindowSize("model (1M)"), { size: 1_000_000, longContext: true });
+  // An explicit smaller marker wins over the family default.
   assert.deepEqual(parseContextWindowSize("model (200k)"), { size: 200_000, longContext: false });
-  assert.deepEqual(parseContextWindowSize("claude-opus-4-8"), { size: 200_000, longContext: false });
+  // Marker-less long-context families (Opus 4.x, Sonnet 4.x/5) default to 1M.
+  assert.deepEqual(parseContextWindowSize("claude-opus-4-8"), { size: 1_000_000, longContext: true });
+  assert.deepEqual(parseContextWindowSize("claude-sonnet-5"), { size: 1_000_000, longContext: true });
+  // Standard-window families and unknown/absent ids stay at 200k.
+  assert.deepEqual(parseContextWindowSize("claude-haiku-4-5"), { size: 200_000, longContext: false });
+  assert.deepEqual(parseContextWindowSize("claude-opus-3"), { size: 200_000, longContext: false });
   assert.deepEqual(parseContextWindowSize(null), { size: 200_000, longContext: false });
 });
 
@@ -37,4 +49,31 @@ test("isLongContext keys off the 1M threshold", () => {
   assert.equal(isLongContext(258_400), false);
   assert.equal(isLongContext(200_000), false);
   assert.equal(isLongContext(null), false);
+});
+
+test("defaultWindowForModel maps long-context Claude families to 1M, else 200k", () => {
+  assert.equal(defaultWindowForModel("claude-opus-4-8"), 1_000_000);
+  assert.equal(defaultWindowForModel("claude-sonnet-4-5"), 1_000_000);
+  assert.equal(defaultWindowForModel("claude-sonnet-5"), 1_000_000);
+  assert.equal(defaultWindowForModel("claude-opus-4-8-20251101"), 1_000_000); // dated build
+  assert.equal(defaultWindowForModel("claude-haiku-4-5"), 200_000);
+  assert.equal(defaultWindowForModel("claude-opus-3"), 200_000); // pre-4 = 200k
+  assert.equal(defaultWindowForModel("gpt-5-codex"), 200_000);
+  assert.equal(defaultWindowForModel(null), 200_000);
+});
+
+test("effectiveContextWindow floors the window up to the tier the observed tokens prove", () => {
+  // Under the id-inferred size: unchanged.
+  assert.equal(effectiveContextWindow(200_000, 120_000), 200_000);
+  assert.equal(effectiveContextWindow(200_000, 200_000), 200_000);
+  // Over 200k with a marker-less id: must be the 1M tier (the reported bug).
+  assert.equal(effectiveContextWindow(200_000, 200_001), 1_000_000);
+  assert.equal(effectiveContextWindow(200_000, 490_606), 1_000_000);
+  // Already 1M from the id: observed tokens never shrink it.
+  assert.equal(effectiveContextWindow(1_000_000, 300_000), 1_000_000);
+  // No/absent token signal: unchanged.
+  assert.equal(effectiveContextWindow(200_000, null), 200_000);
+  assert.equal(effectiveContextWindow(200_000, undefined), 200_000);
+  // Beyond every known tier: fall back to the raw count so % pegs at 100, not more.
+  assert.equal(effectiveContextWindow(200_000, 1_200_000), 1_200_000);
 });

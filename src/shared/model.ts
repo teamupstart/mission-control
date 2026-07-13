@@ -8,6 +8,12 @@
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
 /** At or above this, a model is a "long context" (1M) variant. */
 export const LONG_CONTEXT_THRESHOLD = 1_000_000;
+/**
+ * The standard context-window tiers a Claude model runs in, ascending. A session
+ * is on exactly one of these; used to recover the real window when the id doesn't
+ * carry a size marker (see `effectiveContextWindow`).
+ */
+export const CONTEXT_WINDOW_TIERS = [DEFAULT_CONTEXT_WINDOW, LONG_CONTEXT_THRESHOLD];
 
 /**
  * Some model ids carry a delimited long-context marker (`[1m]`, `(1M)`) or a
@@ -68,15 +74,30 @@ export function modelLabel(id: string | null | undefined): string | null {
  * Infer a model's context-window size from its id. Prefer an explicit size that
  * a caller already has (e.g. Claude's statusLine payload or Codex's rollout);
  * this is the fallback for the transcript path, where only the raw id is known.
- * Recognizes a delimited `[1m]` / `(200k)` marker; otherwise assumes the
- * standard window. `longContext` is derived from the resolved size.
+ * Recognizes a delimited `[1m]` / `(200k)` marker; otherwise falls back to the
+ * model family's default window. `longContext` is derived from the resolved size.
  */
 export function parseContextWindowSize(id: string | null | undefined): {
   size: number;
   longContext: boolean;
 } {
-  const size = windowFromId(id) ?? DEFAULT_CONTEXT_WINDOW;
+  const size = windowFromId(id) ?? defaultWindowForModel(id);
   return { size, longContext: size >= LONG_CONTEXT_THRESHOLD };
+}
+
+/**
+ * The context window a model runs at when its id carries no explicit size marker.
+ * Claude Code enables the 1M (`[1m]`) window by default for its long-context
+ * models - Opus 4.x and Sonnet 4.x/5 - but the transcript records the bare id with
+ * the marker stripped, so those families would otherwise read as the 200k default
+ * and their context% would be ~5x too high. Map them to 1M here; everything else
+ * (Haiku, Claude 3.x, unknown ids) keeps the standard 200k window.
+ */
+export function defaultWindowForModel(id: string | null | undefined): number {
+  if (!id) return DEFAULT_CONTEXT_WINDOW;
+  const m = /^claude-(opus|sonnet)-(\d+)/i.exec(coreModelId(id).toLowerCase());
+  if (m && Number(m[2]) >= 4) return LONG_CONTEXT_THRESHOLD;
+  return DEFAULT_CONTEXT_WINDOW;
 }
 
 /** The size a delimited marker in the id encodes (1m -> 1e6, 200k -> 2e5), else null. */
@@ -92,4 +113,23 @@ function windowFromId(id: string | null | undefined): number | null {
 /** True when a resolved window size counts as a long-context (1M) model. */
 export function isLongContext(size: number | null | undefined): boolean {
   return typeof size === "number" && size >= LONG_CONTEXT_THRESHOLD;
+}
+
+/**
+ * The real context window for a session, reconciling an id-inferred size with the
+ * tokens actually observed in context. Claude's transcript records the bare model
+ * id (`claude-opus-4-8`) with the `[1m]` long-context marker stripped, so a 1M
+ * session would otherwise read as the 200k default and its context% would be
+ * ~5x too high (and clamped to 100% once usage passes 200k). But you can't fit
+ * more tokens than the window holds: an observed count above a tier is proof the
+ * real window is at least the next tier up. Returns the smallest standard tier
+ * that both covers `observedTokens` and is at least `idSize` - never an
+ * underestimate. Falls back to the raw count if usage somehow exceeds every tier.
+ */
+export function effectiveContextWindow(
+  idSize: number,
+  observedTokens: number | null | undefined,
+): number {
+  if (typeof observedTokens !== "number" || observedTokens <= idSize) return idSize;
+  return CONTEXT_WINDOW_TIERS.find((t) => t >= observedTokens) ?? observedTokens;
 }

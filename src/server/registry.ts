@@ -12,7 +12,12 @@ import type {
   TaskSummary,
 } from "@shared/types.ts";
 import type { HookIngest, StatusLineIngest } from "@shared/protocol.ts";
-import { isLongContext, modelLabel, parseContextWindowSize } from "@shared/model.ts";
+import {
+  effectiveContextWindow,
+  isLongContext,
+  modelLabel,
+  parseContextWindowSize,
+} from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
 import {
@@ -745,16 +750,23 @@ function metaFromRead(read: RuntimeMetaRead, source: MetaSource, now: number): S
 function metaFromStatusLine(ingest: StatusLineIngest, now: number): SessionMeta {
   const modelId = ingest.model?.id ?? null;
   const inferred = parseContextWindowSize(modelId);
-  const window = ingest.contextWindow?.contextWindowSize ?? inferred.size;
+  // Claude's own `contextWindowSize` is authoritative; when it's absent we fall
+  // back to the id-inferred size, floored up by observed tokens so a marker-less
+  // 1M session isn't mistaken for the 200k default (same correction as the
+  // transcript path).
   const usedPct = ingest.contextWindow?.usedPercentage;
   const tokens = ingest.contextWindow?.tokens ?? null;
+  const window =
+    ingest.contextWindow?.contextWindowSize ?? effectiveContextWindow(inferred.size, tokens);
   let contextPct: number | null = null;
   if (typeof usedPct === "number") contextPct = Math.round(Math.max(0, Math.min(100, usedPct)));
   else if (tokens !== null && window > 0) contextPct = Math.round(Math.min(100, (tokens / window) * 100));
   return {
     model: modelLabel(modelId) ?? ingest.model?.displayName ?? null,
     modelId,
-    longContext: isLongContext(window) || inferred.longContext,
+    // `window` is Claude's authoritative size when given, else the floored inference -
+    // so it governs the 1M badge directly (an explicit 200k must not be overridden).
+    longContext: isLongContext(window),
     thinkingLevel: ingest.effort ?? null,
     thinkingEnabled: ingest.thinkingEnabled ?? null,
     contextPct,

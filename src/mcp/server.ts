@@ -54,7 +54,7 @@ server.registerTool(
   {
     title: "Share a plan with the human",
     description:
-      "Display a readable markdown plan in the Fleet Control dashboard for the human to skim. Returns immediately without waiting.",
+      "Display a readable markdown plan in the Agent Wrangler dashboard for the human to skim. Returns immediately without waiting.",
     inputSchema: {
       title: z.string().describe("Short title for the plan"),
       plan: z.string().describe("The plan as GitHub-flavored markdown"),
@@ -63,9 +63,9 @@ server.registerTool(
   async ({ title, plan }) => {
     try {
       await createReview("plan", title, plan);
-      return textResult("Plan shared to the Fleet Control dashboard.");
+      return textResult("Plan shared to the Agent Wrangler dashboard.");
     } catch (err) {
-      return textResult(`Could not reach Fleet Control: ${String(err)}`, true);
+      return textResult(`Could not reach Agent Wrangler: ${String(err)}`, true);
     }
   },
 );
@@ -75,7 +75,7 @@ server.registerTool(
   {
     title: "Request review of a diff",
     description:
-      "Show a unified/git diff in the Fleet Control dashboard and BLOCK until the human approves or requests changes. Returns their decision so you can proceed or revise.",
+      "Show a unified/git diff in the Agent Wrangler dashboard and BLOCK until the human approves or requests changes. Returns their decision so you can proceed or revise.",
     inputSchema: {
       title: z.string().describe("What this change does"),
       diff: z.string().describe("A unified or git diff"),
@@ -89,7 +89,7 @@ server.registerTool(
       const note = review.response ? `\nReviewer note: ${review.response}` : "";
       return textResult(`${verdict}${note}`);
     } catch (err) {
-      return textResult(`Could not reach Fleet Control: ${String(err)}`, true);
+      return textResult(`Could not reach Agent Wrangler: ${String(err)}`, true);
     }
   },
 );
@@ -99,7 +99,7 @@ server.registerTool(
   {
     title: "Ask the human a question",
     description:
-      "Ask the human a question in the Fleet Control dashboard and BLOCK until they answer. Returns their answer.",
+      "Ask the human a question in the Agent Wrangler dashboard and BLOCK until they answer. Returns their answer.",
     inputSchema: { question: z.string().describe("The question to ask") },
   },
   async ({ question }) => {
@@ -108,7 +108,7 @@ server.registerTool(
       const review = await waitForResolution(id);
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {
-      return textResult(`Could not reach Fleet Control: ${String(err)}`, true);
+      return textResult(`Could not reach Agent Wrangler: ${String(err)}`, true);
     }
   },
 );
@@ -117,7 +117,7 @@ server.registerTool(
   "report_status",
   {
     title: "Report a status line",
-    description: "Update this session's one-line activity in the Fleet Control dashboard.",
+    description: "Update this session's one-line activity in the Agent Wrangler dashboard.",
     inputSchema: { activity: z.string().describe("A short status, e.g. 'running the test suite'") },
   },
   async ({ activity }) => {
@@ -125,7 +125,7 @@ server.registerTool(
       await http("/mcp/status", "POST", { env: ENV, sessionId: SESSION_ID, activity });
       return textResult("ok");
     } catch (err) {
-      return textResult(`Could not reach Fleet Control: ${String(err)}`, true);
+      return textResult(`Could not reach Agent Wrangler: ${String(err)}`, true);
     }
   },
 );

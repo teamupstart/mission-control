@@ -43,6 +43,7 @@ function seedSession(): void {
     nameSource: "tmux",
     cwd: "/repo/app",
     gitBranch: "main",
+    repoRoot: "/repo/app",
     nomistakesGated: false,
     pid: 4242,
     tty: "ttys003",

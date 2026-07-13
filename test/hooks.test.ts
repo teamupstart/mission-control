@@ -38,6 +38,7 @@ test("sessionKey matches a session's own pane, tmux preferred", () => {
     state: "working",
     cwd: null,
     gitBranch: null,
+    repoRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",

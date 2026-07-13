@@ -25,6 +25,9 @@ export interface DiscoveredSession {
   nameSource: NameSource;
   cwd: string | null;
   gitBranch: string | null;
+  /** The main worktree root of `cwd`'s repo (a linked worktree maps to its
+   * primary checkout), used as the dispatch target and its repo suggestion. */
+  repoRoot: string | null;
   nomistakesGated: boolean;
   pid: number;
   tty: string | null;
@@ -167,6 +170,7 @@ export function correlate(input: DiscoveryInput): DiscoveredSession[] {
       nameSource,
       cwd,
       gitBranch: git.branch,
+      repoRoot: git.repoRoot,
       nomistakesGated: git.nomistakesGated,
       pid: root.pid,
       tty,

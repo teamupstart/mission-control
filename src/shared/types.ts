@@ -49,6 +49,13 @@ export interface Session {
   state: SessionState;
   cwd: string | null;
   gitBranch: string | null;
+  /**
+   * The main worktree root of `cwd`'s repo. A session running inside a linked
+   * worktree resolves to its primary checkout, so this is the correct dispatch
+   * target (dispatch branches a fresh worktree off it) and what the dispatch
+   * form suggests, rather than the raw pane cwd. Null when `cwd` isn't a repo.
+   */
+  repoRoot: string | null;
   /** True when this session's repo is gated by no-mistakes. */
   nomistakesGated: boolean;
   /** The leaf agent process pid (what we act on / kill). */

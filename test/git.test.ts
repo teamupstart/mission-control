@@ -33,17 +33,20 @@ function makeRepoWithWorktree(): { main: string; worktree: string } {
   return { main, worktree };
 }
 
-test("gitInfo reads a normal checkout's branch and no-mistakes gating", () => {
+test("gitInfo reads a normal checkout's branch, gating, and its own root", () => {
   const { main } = makeRepoWithWorktree();
-  assert.deepEqual(gitInfo(main), { branch: "main", nomistakesGated: true });
+  assert.deepEqual(gitInfo(main), { branch: "main", nomistakesGated: true, repoRoot: main });
 });
 
-test("gitInfo resolves a linked worktree's branch and shared gating", () => {
-  const { worktree } = makeRepoWithWorktree();
-  // Branch comes from the worktree's own HEAD; gating from the shared commondir config.
+test("gitInfo resolves a linked worktree to the MAIN root (not the worktree)", () => {
+  const { main, worktree } = makeRepoWithWorktree();
+  // Branch comes from the worktree's own HEAD; gating and repoRoot from the
+  // shared commondir - so dispatch off this session branches from the primary
+  // checkout, never nesting a worktree inside another.
   assert.deepEqual(gitInfo(worktree), {
     branch: "mancej/dispatch-fleet-report",
     nomistakesGated: true,
+    repoRoot: main,
   });
 });
 
@@ -53,10 +56,10 @@ test("gitInfo returns a short sha for a detached HEAD", () => {
   mkdirSync(gitDir, { recursive: true });
   writeFileSync(join(gitDir, "HEAD"), "06a99e5b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f\n");
   writeFileSync(join(gitDir, "config"), "");
-  assert.deepEqual(gitInfo(root), { branch: "06a99e5b", nomistakesGated: false });
+  assert.deepEqual(gitInfo(root), { branch: "06a99e5b", nomistakesGated: false, repoRoot: root });
 });
 
 test("gitInfo returns nulls for a non-repo dir", () => {
   const root = mkdtempSync(join(tmpdir(), "git-none-"));
-  assert.deepEqual(gitInfo(root), { branch: null, nomistakesGated: false });
+  assert.deepEqual(gitInfo(root), { branch: null, nomistakesGated: false, repoRoot: null });
 });

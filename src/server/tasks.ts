@@ -110,7 +110,7 @@ export class TaskManager {
 
     if (t.sessionId) {
       const s = this.registry.getSession(t.sessionId);
-      if (s) kill(s);
+      if (s) await kill(s);
     }
     // Re-read before tearing down so we don't miss resources a concurrent dispatch
     // created during the kill above. teardownWorktree also kills the tmux session.

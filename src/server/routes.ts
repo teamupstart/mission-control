@@ -169,10 +169,10 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  app.post("/api/sessions/:id/kill", (c) => {
+  app.post("/api/sessions/:id/kill", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const r = kill(session);
+    const r = await kill(session);
     return c.json(r, r.ok ? 200 : 500);
   });
 

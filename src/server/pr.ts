@@ -1,15 +1,20 @@
 import { PR_POLL_MS } from "./config.ts";
-import type { Registry } from "./registry.ts";
+import type { PrMatch, Registry } from "./registry.ts";
+import type { PrState } from "@shared/types.ts";
 import { unref } from "./util/timers.ts";
 import { run } from "./util/exec.ts";
 
-// Keeps each session's PR link honest by asking `gh` whether the session's
-// current branch has an open pull request. It is the source of truth behind the
-// card's PR chip: it discovers PRs the hook never saw (Codex sessions, PRs
-// opened in the web UI) and - crucially - clears the chip the moment a PR merges
-// or closes, or the session is reset onto a branch with no open PR. The hook
-// only ever sets a link optimistically; nothing but this poller can retract one,
+// Keeps each session's PR chip honest by asking `gh` for the pull request on the
+// session's current branch. It is the source of truth behind the chip: it
+// discovers PRs the hook never saw (Codex sessions, PRs opened in the web UI),
+// surfaces whether that PR is open or merged, and retracts the chip only when the
+// session moves to a branch that no longer matches the PR's head. The hook only
+// ever sets a link optimistically; nothing but this poller can confirm a merge,
 // because a merge happens outside the session where no hook can observe it.
+//
+// A merged PR is deliberately kept (not cleared): once your work lands you can
+// still see the PR that carried it, right up until the session is reset onto a
+// different branch. Only a *closed-unmerged* PR is treated as "no PR".
 //
 // Cheap by construction: only feature-branch sessions are queried (one `gh` call
 // per distinct worktree), and an all-idle or all-on-main fleet spawns nothing.
@@ -17,31 +22,49 @@ import { run } from "./util/exec.ts";
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
-type PrLookup = "error" | null | { url: string; number: number | null };
+type PrLookup = "error" | null | PrMatch;
 
 /**
- * Ask `gh` for the single open PR whose head is `branch`, run from `cwd` so `gh`
- * resolves the repo from that checkout's `origin`. Returns the PR when one is
- * open, `null` when there is provably none (an empty list), or `"error"` when
- * `gh` is missing/unauthenticated/timed out - which the reconciler treats as
- * "unknown, leave the existing link alone" rather than a reason to clear it.
+ * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
+ * resolves the repo from that checkout's `origin`. Prefers a still-open PR, else
+ * falls back to a merged one (so a landed PR keeps showing). Returns `null` when
+ * the branch has provably no open/merged PR (only closed-unmerged, or none), or
+ * `"error"` when `gh` is missing/unauthenticated/timed out - which the reconciler
+ * treats as "unknown, leave the existing chip alone" rather than a reason to clear.
  */
-async function queryOpenPr(cwd: string, branch: string): Promise<PrLookup> {
+async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   const res = await run(
     "gh",
-    ["pr", "list", "--head", branch, "--state", "open", "--json", "url,number", "--limit", "1"],
+    ["pr", "list", "--head", branch, "--state", "all", "--json", "url,number,state", "--limit", "20"],
     { cwd, timeoutMs: 8000 },
   );
   if (res.code !== 0) return "error";
   try {
     const arr = JSON.parse(res.stdout || "[]") as unknown;
-    if (!Array.isArray(arr) || arr.length === 0) return null;
-    const { url, number } = arr[0] as { url?: unknown; number?: unknown };
+    if (!Array.isArray(arr)) return "error"; // malformed output is an anomaly, not "no PR"
+    // `gh` lists newest-first; prefer an open PR, else the most recent merged one.
+    // A closed-unmerged PR is ignored, so the chip drops like there's no PR.
+    const open = arr.find((p) => prStateOf(p) === "open");
+    const match = open ?? arr.find((p) => prStateOf(p) === "merged");
+    if (!match) return null;
+    const { url, number } = match as { url?: unknown; number?: unknown };
     if (typeof url !== "string") return null;
-    return { url, number: typeof number === "number" ? number : null };
+    return {
+      url,
+      number: typeof number === "number" ? number : null,
+      state: prStateOf(match) as PrState,
+    };
   } catch {
-    return "error"; // malformed output is an anomaly, not a confirmed "no PR"
+    return "error";
   }
+}
+
+/** Map `gh`'s uppercase PR state to our surfaced states; closed-unmerged -> null. */
+function prStateOf(p: unknown): PrState | null {
+  const raw = (p as { state?: unknown })?.state;
+  if (raw === "OPEN") return "open";
+  if (raw === "MERGED") return "merged";
+  return null; // CLOSED (unmerged) or anything unexpected
 }
 
 /**
@@ -52,7 +75,7 @@ async function queryOpenPr(cwd: string, branch: string): Promise<PrLookup> {
  */
 export async function pollAndReconcilePrs(registry: Registry): Promise<void> {
   const targets = registry.prPollTargets();
-  const found = new Map<string, { url: string; number: number | null }>();
+  const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
 
   const queryable = targets.filter((t) => t.branch && !DEFAULT_BRANCHES.has(t.branch));
@@ -68,7 +91,7 @@ export async function pollAndReconcilePrs(registry: Registry): Promise<void> {
   const results = new Map<string, PrLookup>();
   await Promise.all(
     [...byCwd].map(async ([cwd, branch]) => {
-      results.set(cwd, await queryOpenPr(cwd, branch));
+      results.set(cwd, await queryPr(cwd, branch));
     }),
   );
 
@@ -76,7 +99,7 @@ export async function pollAndReconcilePrs(registry: Registry): Promise<void> {
     const r = results.get(t.cwd);
     if (r === "error") skip.add(t.id);
     else if (r) found.set(t.id, r);
-    // r === null (no open PR) -> omitted from both -> reconcile clears the link
+    // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
   }
   registry.reconcilePrs(found, skip);
 }

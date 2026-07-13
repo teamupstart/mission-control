@@ -61,12 +61,11 @@ export function TranscriptPanel({
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  // Drop the cursor into the reply box when the panel opens (e.g. via `e`), so
-  // you can start typing immediately. A disabled box (no pane) ignores focus.
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
+  // Deliberately don't grab focus when the panel opens. Focus mode is opened with
+  // `e` and closed with `e`, and the grid's global keys (including that toggle)
+  // stand down while a text field is focused - so auto-focusing the reply box
+  // would swallow the collapse press. The reader stays on the grid; one click on
+  // the (prominent, full-width) reply box drops in when it's time to respond.
   function onScroll(): void {
     const el = logRef.current;
     if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;

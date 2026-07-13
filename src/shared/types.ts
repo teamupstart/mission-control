@@ -81,17 +81,24 @@ export interface Session {
    */
   nomistakesNarration: string | null;
   /**
-   * The open GitHub PR whose head branch is this session's *current* git branch,
-   * else null. Live decoration, never persisted: set optimistically when the
-   * agent runs `gh pr create` (via the hook) and reconciled by the PR poller,
-   * which shells out to `gh` to keep it honest. Cleared when the PR merges or
-   * closes, or when the session moves to a branch with no open PR - so a reset
-   * and reused session never shows a stale link from its previous branch.
+   * The GitHub PR whose head branch is this session's *current* git branch, else
+   * null. Live decoration, never persisted: set optimistically when the agent
+   * runs `gh pr create` (via the hook) and reconciled by the PR poller, which
+   * shells out to `gh` to keep it honest. An open PR shows here, and a *merged*
+   * one lingers so you can see the session's work landed - both are retracted
+   * only when the session moves to a branch that no longer matches the PR's head
+   * (so a reset/reused session never shows a stale link). A closed-unmerged PR is
+   * dropped like no PR at all.
    */
   prUrl: string | null;
   /** The PR number backing `prUrl` (for a compact "#123" chip), else null. */
   prNumber: number | null;
+  /** Whether `prUrl` is still open or already merged - drives the card's status icon. */
+  prState: PrState | null;
 }
+
+/** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */
+export type PrState = "open" | "merged";
 
 // ---- dispatched tasks (agents) ----
 

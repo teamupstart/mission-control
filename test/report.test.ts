@@ -31,6 +31,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     task: null,
     prUrl: null,
     prNumber: null,
+    prState: null,
     ...over,
   };
 }

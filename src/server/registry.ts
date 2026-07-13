@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type {
   NmRunSummary,
+  PrState,
   ReviewItem,
   ServerEvent,
   Session,
@@ -20,6 +21,9 @@ import {
   upsertTask as dbUpsertTask,
 } from "./db.ts";
 import { unref } from "./util/timers.ts";
+
+/** An open-or-merged PR the poller matched to a session's current branch. */
+export type PrMatch = { url: string; number: number | null; state: PrState };
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
@@ -160,6 +164,7 @@ export class Registry extends EventEmitter {
       nomistakesNarration: prev?.nomistakesNarration ?? null,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
+      prState: prev?.prState ?? null,
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -192,9 +197,11 @@ export class Registry extends EventEmitter {
     // Apply immediately to a matching live session for instant feedback.
     const target = this.findSessionForHook(evt, key);
     if (target) {
-      // A PR link sniffed from `gh pr create` decorates the card at once; the PR
-      // poller confirms it (and is the only thing that clears it on merge).
-      const pr = evt.prUrl ? { prUrl: evt.prUrl, prNumber: prNumberFromUrl(evt.prUrl) } : {};
+      // A PR link sniffed from `gh pr create` decorates the card at once as an
+      // open PR; the poller confirms it and later flips it to merged.
+      const pr = evt.prUrl
+        ? { prUrl: evt.prUrl, prNumber: prNumberFromUrl(evt.prUrl), prState: "open" as const }
+        : {};
       const next: Session = {
         ...target,
         ...pr,
@@ -349,23 +356,25 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Reconcile each session's PR link against what `gh` reported this tick.
-   * `found` holds the open PR for every session that has one right now; `skip`
-   * holds sessions whose `gh` query failed (missing/unauthenticated `gh`, a
-   * timeout) so their existing link is left untouched rather than wrongly wiped.
-   * Every other session is set to "no PR": that single rule clears a link when
-   * its PR merges or closes (the branch drops out of `found`) and when the
-   * session is reset onto a branch with no open PR - so a reused session never
-   * carries a stale link from its previous branch.
+   * Reconcile each session's PR chip against what `gh` reported this tick.
+   * `found` holds the open-or-merged PR for every session that has one right now;
+   * `skip` holds sessions whose `gh` query failed (missing/unauthenticated `gh`, a
+   * timeout) so their existing chip is left untouched rather than wrongly wiped.
+   * Every other session is set to "no PR": that single rule retracts the chip when
+   * the session is reset onto a branch with no matching PR (the branch drops out
+   * of `found`) - so a reused session never carries a stale chip from its previous
+   * branch. A merged PR stays in `found` (the poller keeps reporting it) and so
+   * lingers until the branch changes; only a closed-unmerged PR falls out.
    */
-  reconcilePrs(found: Map<string, { url: string; number: number | null }>, skip: Set<string>): void {
+  reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
       if (skip.has(id)) continue;
       const match = found.get(id) ?? null;
       const url = match?.url ?? null;
       const number = match?.number ?? null;
-      if (s.prUrl === url && s.prNumber === number) continue;
-      const next: Session = { ...s, prUrl: url, prNumber: number };
+      const state = match?.state ?? null;
+      if (s.prUrl === url && s.prNumber === number && s.prState === state) continue;
+      const next: Session = { ...s, prUrl: url, prNumber: number, prState: state };
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -624,6 +633,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.nomistakesNarration === b.nomistakesNarration &&
     a.prUrl === b.prUrl &&
     a.prNumber === b.prNumber &&
+    a.prState === b.prState &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task)
   );

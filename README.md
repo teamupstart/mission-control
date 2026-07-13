@@ -283,6 +283,32 @@ Alerts fire on the *transition* into attention (once, not every tick) and de-dup
 a waiting session pings you once. Delivery needs the tab open (foreground or
 background); a closed tab can't receive one.
 
+## Keyboard shortcuts
+
+The dashboard is keyboard-driven - select a card with the arrow keys and act on it
+without reaching for the mouse:
+
+| Key | Action | Scope |
+|-----|--------|-------|
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection around the grid | Anywhere |
+| <kbd>Esc</kbd> | Peel back a layer - collapse an expanded card, then deselect | Anywhere |
+| <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
+| <kbd>+</kbd> | Dispatch an agent | Anywhere |
+| <kbd>/</kbd> | Focus the filter box | Anywhere |
+| <kbd>e</kbd> | Expand / collapse the selected card | Selected session |
+| <kbd>d</kbd> | Open the selected session's diff | Selected session |
+| <kbd>s</kbd> | Send a message to the selected session | Selected session |
+| <kbd>f</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>k</kbd> | Kill the selected session | Selected session |
+
+Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
+**Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
+Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
+(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd>). Bindings persist per machine,
+duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
+them) to its default. The arrow keys and <kbd>Esc</kbd> drive grid navigation and can't be
+reassigned.
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)

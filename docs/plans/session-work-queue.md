@@ -1,6 +1,6 @@
 # Plan: session work queues - Foreman drains a batch and validates each item
 
-Status: proposed
+Status: proposed (§0a + §0b landed in #36; the rest awaits review)
 Owner: ai-harness (Agent Wrangler)
 Related: extends `docs/plans/foreman/plan.md` (the auto-responder), which deliberately scoped
 itself to *reacting* to the needs-you queue. This is the proactive half. Distinct from
@@ -51,10 +51,15 @@ and are called out here because each one is a trap the next reader would otherwi
    That predicate would fire an entire queue into a hookless session in three ticks. Readiness is
    `s.instrumented && s.state === 'idle'`, and a session without hooks cannot hold a queue - it has
    no pickup or completion signal at all.
-3. **`computeSessionDiff` fails open** (`diff.ts:66-74`). If `merge-base HEAD <base>` fails - the
-   agent rebased, amended, or the commit was GC'd - `diffBase` stays `"HEAD"` and it returns
-   **`ok: true`** with a working-tree-only diff. The verifier sees near-nothing for completed work
-   and invents gaps. `ok` does not detect this; `baseSha === null` does. Fixed at the source in §0b.
+3. **`computeSessionDiff` fails open** (`diff.ts:66-74`). If `merge-base HEAD <base>` fails,
+   `diffBase` stays `"HEAD"` and it returns **`ok: true`** with a working-tree-only diff. The
+   verifier sees near-nothing for completed work and invents gaps. `ok` does not detect this;
+   `baseSha === null` does. Fixed at the source in §0b.
+   *Correction to an earlier draft of this doc:* this does **not** trigger on a plain rebase or
+   amend while the old object survives - `merge-base` then succeeds and returns the shared
+   ancestor, giving a diff that is too **wide** rather than empty. The fail-open path needs the
+   base to be genuinely unreachable (garbage-collected, or a sha from another checkout). Verified
+   by the regression test in #36.
 4. **Conventions docs make the verifier non-converging.** Asked "does this diff comply?" against a
    long prescriptive doc, it finds a style nit every round; the agent fixes it and introduces
    another; the item rides the round budget to escalation while the intent was satisfied in round
@@ -96,10 +101,15 @@ case "Notification":
     : { state: "awaiting_input", activity: trim(evt.message) ?? "waiting for you" };
 ```
 
-`isIdleNudge(message)` is pure and exported for tests. Accepted tradeoff: a session that asks a
-question in **prose** with no permission prompt is indistinguishable from an idle one in the hook
-stream, so it stops nudging at 60s. Foreman's triage still catches those - it reads transcripts -
-but Foreman is off by default. Touches `test/alerts.test.ts`, `test/report.test.ts`.
+`isIdleNudge(message)` is pure and exported for tests, and matches **narrowly**: anything not
+positively recognized as the nudge stays `awaiting_input`, so an unfamiliar notification errs
+toward asking for you. Accepted tradeoff: a session that asks a question in **prose** with no
+permission prompt is indistinguishable from an idle one in the hook stream, so it stops nudging at
+60s. Foreman's triage still catches those - it reads transcripts - but Foreman is off by default.
+
+> **Landed in #36** as `fix(hooks): don't read Claude's idle nudge as "needs you"`, with a
+> regression test asserting the idle nudge does not map to `awaiting_input` (and that a
+> merely-idle session reports the `idle` bucket, not `needs-you`).
 
 ### 0b. `computeSessionDiff` silently returns the wrong diff for an unreachable base
 
@@ -108,11 +118,20 @@ Fall-back-to-HEAD is correct for an *auto-detected* ref (a brand-new branch with
 but wrong for an explicit one. Fix narrowly:
 
 > when `source` was explicitly passed and `merge-base` fails ->
-> `{ ok: false, error: "base commit <sha> is not reachable (rebased or amended?)" }`
+> `{ ok: false, error: "base commit <sha> is not reachable (rebased, amended, or GC'd?)" }`
 
 Auto-detected behavior unchanged. The queue treats this as a **verify-infrastructure failure that
 escalates immediately** - not a gap, not a transient retry: "the base commit is gone; verify this
 item by hand."
+
+Note the trigger precisely: a plain amend or rebase does **not** hit this path while the old object
+is still in the object database - `merge-base` succeeds against it and returns the shared ancestor,
+which yields a diff that is too wide, not empty. Fail-open needs the base to be genuinely
+unreachable (GC'd, or a sha from another checkout).
+
+> **Landed in #36** as `fix(diff): fail closed when an explicitly requested base is unreachable`,
+> with a regression test asserting `ok: false` on an unreachable base plus a second test guarding
+> that the deliberate auto-detected fallback still works.
 
 ### 0c. Vocabulary cleanup: the task backlog stops calling itself a queue
 
@@ -124,9 +143,14 @@ Mechanical, ~15 sites, its own commit. The UI already says "backlog" (`App.tsx:1
   -> `backlogTasks()`.
 - `tasks.ts:71,94`, `registry.ts:644`, `report.ts:53,65`.
 - `db.ts` - `loadActiveTasks` query **plus a migration** in the `openDb()` block (rows are already
-  persisted as `'queued'`): `UPDATE tasks SET status='backlog' WHERE status='queued';`
+  persisted as `'queued'`): `UPDATE tasks SET status='backlog' WHERE status='queued';` The
+  `tasks.status` column is bare `TEXT` with no CHECK constraint, so the migration is safe.
 - `alerts.ts:171,185,187`, `api.ts:99` (`dispatchQueued` -> `dispatchBacklog`), `ReportPanel.tsx`,
   `App.tsx:115`, README, `test/dispatch.test.ts`.
+- **`src/main/tray.ts:15,27,84`** - the Electron tray keeps its own `ReportCounts` and reads
+  `c.queued ?? 0`, so renaming `report.counts.queued` without it would silently read `undefined`
+  and coerce to `0`. It doesn't crash and isn't in the visible summary today, which is exactly the
+  code/word drift this section exists to kill.
 
 ---
 
@@ -200,8 +224,17 @@ would desync from the thing it mirrors:
 | `in_progress` | `verifying` | `settledIdle(s, now, settleMs)` |
 | `verifying` | `verified` | no **blocking** gaps |
 | `verifying` | `sending` (round+1) | blocking gaps ∧ no gap at `maxFixAttempts` ∧ `round+1 <= maxFixRounds` ∧ `mayActLive` |
+| `verifying` | `proposed` (round+1) | **same, but `!mayActLive`** - draft the fix prompt, await Approve |
 | `verifying` | `escalated` | gap at `maxFixAttempts` ∨ round budget spent ∨ diff base unreachable ∨ `verifyFailures` cap |
-| *any non-terminal* | `escalated` | session `exited` |
+| `proposed` | `sending` | `approved_at != null` ∧ every `queued -> sending` guard |
+| *any non-terminal* | `escalated` | session `exited` (or its queue is swept as orphaned, §1.1) |
+
+**Every `verifying` exit is covered in both modes.** The `proposed (round+1)` row is load-bearing:
+without it a dry-run item with blocking gaps, under all caps, matches no transition and the
+precedence's "in-flight `verifying` -> verify" would re-spawn a `claude -p` every tick forever.
+It mirrors `planFromVerdict`'s dry-run `disposition:"pending"` branch: draft, never send.
+**Each dry-run fix round needs its own Approve** - the drafted prompt changes every round (new
+gaps), so a single blanket approval would be consent to text the human never read.
 
 **The acknowledgement guard** (`awaiting_pickup -> in_progress`) is the critical race. After
 delivery the session is still `idle` from its previous `Stop` until `UserPromptSubmit` flips it to
@@ -222,9 +255,24 @@ positive evidence of non-delivery; the crash path has only an absence of evidenc
 built for - but **not** agent-session churn. `/clear` mints a new Claude session id, as does a
 crash-relaunch. For a feature whose premise is "queue hours of work and walk away", that is likely,
 not exotic. Keep `note_key` as the primary key (right for the in-flight case) but store `cwd` +
-`branch`, and when a queue's session is gone while a live session sits at the same `cwd`, surface a
-**re-attach** affordance. Never auto-rebind - a different agent at that cwd may be doing something
-else entirely. The queue must at minimum be findable rather than silently stranded.
+`branch`. Never auto-rebind - a different agent at that cwd may be doing something else entirely.
+
+An orphaned queue matches **no** live session, so `note_key`-only denormalization would put it on
+**no** card and nothing would drive its tick. Two mechanisms close that, and both are required:
+
+- **Surfacing (a cwd-match fallback).** `noteSummaryFor`-style denormalization gains a second pass:
+  for a queue whose `note_key` has no live session but whose `cwd` matches this session's, set
+  `Session.orphanedQueue = { noteKey, itemCount, branch }`. The card renders "N queued items from a
+  previous session here - re-attach?" That is a *hint on a live card*, not a rebind; re-attach is an
+  explicit click that rewrites `note_key` to the new session's. Queues with no live session at their
+  cwd at all are still reachable via `GET /api/queues?orphaned=1` (a small fleet-level list), so
+  nothing is stranded with no surface whatsoever.
+- **Terminalizing (an orphan sweep).** The `exited -> escalate` row needs a live session with that
+  key to drive it, so once the session is evicted from the snapshot an item stuck in
+  `awaiting_pickup`/`in_progress`/`verifying` would strand forever. The worker therefore sweeps
+  queues with no live session each tick (they are cheap - a single indexed read) and escalates any
+  non-terminal item with `reason: 'session-gone'`. This also releases the partial unique index, so a
+  re-attached queue is not permanently blocked by a phantom in-flight row.
 
 ### 1.2 A worker lease - the single highest-value safety addition
 
@@ -235,6 +283,26 @@ queue it is a **duplicated work instruction**.
 
 Durable lease in `app_config`: `foreman.lease = { workerId, expiresAt }`, acquired at startup,
 renewed on heartbeat, compare-and-swap on expiry, and **checked inside the send guard** (§3.2).
+
+`app_config` is daemon-only and the worker is HTTP-only, so the lease needs its own surface - it is
+on the critical path, not a detail. Replace the bare heartbeat with a leased one:
+
+> `POST /api/foreman/heartbeat` body `{ workerId }` -> `{ leader: boolean, expiresAt }`
+> Acquires when the lease is free or expired (compare-and-swap on `workerId` + `expiresAt`),
+> renews when already ours, and reports `leader: false` otherwise. This subsumes
+> `recordForemanHeartbeat`'s module-global `lastHeartbeatAt` (`config.ts:23`), which cannot even
+> detect a second worker - it just gets beaten twice.
+
+Two points the first draft left unstated:
+
+- **A non-leader idles, it does not exit.** It keeps polling so it takes over cleanly when the
+  leader's lease expires (crash, `Ctrl-C`), which is the whole point of an expiring lease. The
+  dashboard shows "worker running (standby)" rather than claiming two workers.
+- **The lease gates the whole loop, including triage.** Two workers double-*answering* a needs-you
+  prompt is a real harm too - `sendStillValid` narrows that window but does not close it (both can
+  pass the re-check and then both send). Scoping the lease to queue sends only would leave the
+  pre-existing triage race untouched while implying it was handled. `foremanStatus.running` becomes
+  "a leader heartbeated recently".
 
 ### 1.3 Routes (`src/server/routes.ts`, localhost-only, like every other action)
 
@@ -248,7 +316,7 @@ renewed on heartbeat, compare-and-swap on expiry, and **checked inside the send 
 | `POST /api/sessions/:id/queue/:itemId/approve` | clears a `proposed` item for send (dry-run path) |
 | `PUT /api/sessions/:id/queue/:itemId/state` | the worker's durable state write |
 | `POST /api/sessions/:id/inject` | **new**: `injectPrompt` over HTTP (bracketed paste) |
-| `GET /api/sessions/:id/standards` | `AGENTS.md`/`CLAUDE.md` text, bounded |
+| `GET /api/sessions/:id/standards` | repo standards text, bounded - exact file set below |
 | `GET /api/sessions/:id/transcript?since=<ts>` | **extend**: today it takes only a turn count (§3.3) |
 
 `POST .../inject` mirrors `/send`'s contract exactly - `c.json(r, r.ok ? 200 : 500)` so the client
@@ -308,9 +376,15 @@ queueDrained(items): boolean
 5. no head                   -> drained && !wrapupAskedAt ? ask-wrapup : none
 6. !settledIdle              -> none
 7. !hasPane                  -> escalate head
-8. !mayActLive               -> propose head
-9.                           -> send head
+8. !mayActLive && !head.approvedAt -> propose head        // draft; await Approve
+9.                           -> send head                 // queued, or proposed+approved
 ```
+
+`head = nextSendable(items)` = the lowest `seq` among `{queued} union {proposed with approved_at}`.
+Step 8 must consult `approved_at` or an approved item is simply re-proposed forever (the approve
+endpoint would do nothing). An approved send is still a send: it runs the **full**
+`queueSendStillValid` (§3.2), because the human's "yes" arrives minutes after the draft was made
+and the session may have moved on. Approve records consent; it does not bypass the guard.
 
 Payload = `round === 0 ? item.intent : renderFixPrompt(item)`.
 
@@ -346,6 +420,30 @@ margin (`config.ts:21`). The loop is serial; document the latency budget.
 `settleMs` default **10s**. Its jobs: absorb hook reordering (hooks are independent HTTP posts, so a
 `PostToolUse` can land after a `Stop` and briefly un-idle the session), and cover the pause between
 turns of a multi-turn flow. With §0a landed it is no longer racing Claude's 60s idle timer.
+
+**Every knob pinned, and where it lives.** The split: anything the human should reason about is
+`ForemanConfig` (persisted, surfaced in `ForemanBar`); operational timings are module constants with
+an env override, following the `FOREMAN_REVIEW_TIMEOUT_MS` precedent (`review.ts:17`).
+
+| Knob | Default | Home |
+|---|---|---|
+| `maxFixAttempts` (strikes per gap) | 3 | `ForemanConfig` - policy, surfaced in `ForemanBar` |
+| `maxFixRounds` (per item; the real guarantee) | 10 | `ForemanConfig` - policy, surfaced in `ForemanBar` |
+| `settleMs` | 10_000 | constant, `FOREMAN_QUEUE_SETTLE_MS` |
+| `pickupTimeoutMs` | 45_000 | constant, `FOREMAN_QUEUE_PICKUP_MS` |
+| `sendAttemptCap` | 3 | constant |
+| `verifyFailureCap` | 3 | constant (mirrors `REVIEW_FAILURE_CAP`) |
+| `leaseTtlMs` | 90_000 | constant - comfortably > one loop tick, << `HEARTBEAT_TTL_MS` |
+
+`ForemanConfigSchema` (`src/shared/protocol.ts`) therefore gains `maxFixAttempts` and
+`maxFixRounds`, alongside the new queue request schemas - **`protocol.ts` belongs in §1's file-touch
+list** and was missing from the first draft.
+
+**`sentAt` is stamped server-side**, inside the deliver/inject handler at the moment the inject
+resolves - never by the worker. The pickup guard (`lastActivity > sentAt`) compares it against
+`lastActivity`, which the registry stamps from the hook payload, so the two must share a clock. Both
+are the daemon's today, and pinning `sentAt` to the same writer keeps that true by construction
+rather than by coincidence.
 
 Reviewers spawn `detached: true`, so they **survive the worker's death** and burn tokens to nowhere.
 Add a `process.on('exit')` group-kill of tracked children (a SIGKILL still leaks; accept that).
@@ -385,7 +483,21 @@ group, and the timeout cap. Reuse the exported `extractVerdict` candidate ladder
 
 Because the reviewer is tool-less it cannot read the repo, so the worker gathers everything: intent,
 per-item diff (`?base=<baseSha>`), transcript window, standards text, and **prior gaps with ids and
-strike counts**. Verdict schema:
+strike counts**. It fetches the **full** queue for each target (`GET .../queue`) once per tick -
+`Session.queue` carries only the compact summary (§1.4), while `decideQueueTick` needs `gaps`,
+`base_sha`, `transcript_anchor`, `round`, `revision`, and strike counts. That is one extra
+round-trip per target per tick against a loopback API, which is noise next to a `claude -p`.
+
+**Which standards files** (the wrong set produces spurious `standards` gaps): repo-root `AGENTS.md`
++ `CLAUDE.md`, plus any nested `CLAUDE.md` under a directory the item's diff touches. The
+operator's global `~/.claude/CLAUDE.md` is **excluded** - it is personal preference (one machine's
+"no em dash" rule), not a contract the repo asserts, and the ask is explicitly "standards
+established for the repository". The asymmetry is real and accepted: the agent obeys the global
+while the verifier cannot see it, so the verifier may miss something the global mandates. It stays
+harmless because standards findings are `advisory`, and advisory gaps never drive a fix round -
+they surface on the card and stop there.
+
+Verdict schema:
 
 ```ts
 {
@@ -411,8 +523,19 @@ satisfied, ignoring unrelated changes.
 
 **Transcript anchoring is the reliable item-scoping signal** - better than the diff, which is
 cumulative whenever the agent does not commit. `client.transcript(id, turns = 48)` and its route
-take only a turn count, so a 48-turn window can span three items. Extend with `?since=<ts>` and
-store `transcript_anchor` at send time.
+take only a turn count, so a 48-turn window can span three items.
+
+Anchor on a **byte offset**, not a timestamp or uuid. `readTranscriptWindow` reads a bounded head
+(`WINDOW_HEAD_BYTES`, 128KB) plus a tail with the middle elided, so *filtering that window* by `ts`
+would silently drop an item's earliest turns whenever its work exceeds the tail - precisely the
+turns that establish what the agent set out to do. The transcript is append-only and the SSE handler
+already seeks by byte position (`transcript.ts:432`), so store the file size at delivery as
+`transcript_anchor` and have `?since=<offset>` **read forward from it**, bounded by its own cap.
+That is an O(1) seek, a hard bound on window size, and exact item scoping.
+
+Guard the anchor: if the file is now **shorter** than the offset the transcript was reset (a
+`/clear`) and the anchor is meaningless - escalate as a verify-infrastructure failure rather than
+judging the item against a near-empty window and inventing gaps (see E2).
 
 **Gap-id hardening** (the strike counter is best-effort): feed each gap's current strike count back
 in and instruct "reuse the id if this is the same underlying problem, even if your wording differs";
@@ -479,6 +602,29 @@ the two subsystems actively fight.
 - `test/http-integration.test.ts` - queue endpoints, 409 on editing a sent item, revision CAS.
 - Update `test/dispatch.test.ts` and friends for the backlog rename.
 
+## Decided edge cases
+
+Each of these is a sentence of behavior that is otherwise left to whoever writes the code.
+
+- **Adding items after the wrap-up ask re-arms it.** `wrapup_asked_at` fires the ask once, but a
+  queue that drains, gets three more items, and drains again deserves to be asked again - the
+  question ("ship this?") is about the *new* work. So adding an item to a drained queue clears
+  `wrapup_asked_at`. Without that the second drain is silent and the human waits forever.
+- **`/clear` mid-item is caught twice, not guessed at.** It mints a new agent session id, so the
+  queue orphans (§1.1) and the sweep terminalizes the in-flight item. Independently, the byte
+  anchor now exceeds the reset transcript's length, which is detected (§3.3) and escalates rather
+  than verifying against a near-empty window. Both paths lead to "tell the human", never to a
+  phantom gap.
+- **The UI refuses to queue where the queue cannot work.** The add box is disabled for a non-claude
+  session (no transcript endpoint - a codex item would rack up `verifyFailures` and escalate) and
+  for an uninstrumented one (no pickup or completion signal at all), with the reason shown. Letting
+  someone queue work that escalates on arrival is a worse answer than not offering it.
+- **Triage can wait behind a verify in v1, and that is accepted.** The loop is serial, so an in-
+  flight verify (up to 2x120s) delays an urgent needs-you prompt by that much even though targets
+  order needs-you first. This is a change in *frequency*, not in kind - a triage review already
+  blocks the loop for up to the same 4 minutes today. Documented rather than fixed: preempting a
+  verify (or giving the queue its own concurrency) is the first thing to revisit if it bites.
+
 ## Key reuse (don't rebuild)
 
 - `noteKeyFor` (`registry.ts:779`) - the queue key, same stability story as notes.
@@ -527,9 +673,14 @@ the two subsystems actively fight.
 
 ## Rollout / first step
 
-Following the repo convention (plan docs land before code), this doc is the first commit. Then, in
-order, each independently testable: §0a and §0b (standalone bugfixes) -> §0c (the rename) -> §1
-(server + schema) -> §2 (the pure machine, with its test table) -> §3 (worker + verify) -> §4 (UI).
+Following the repo convention (plan docs land before code), this doc is the first commit.
+
+**Done:** §0a and §0b shipped in #36 (merged), each with a regression test verified to fail without
+its fix. They were split out because both are live bugs independent of this feature, so they should
+land regardless of what happens to this plan.
+
+**Next,** in order, each independently testable: §0c (the rename) -> §1 (server + schema, incl. the
+leased heartbeat) -> §2 (the pure machine, with its test table) -> §3 (worker + verify) -> §4 (UI).
 
 ## Out of scope (future)
 

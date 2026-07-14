@@ -15,7 +15,7 @@ import { createWindow, getMainWindow, showWindow } from "./window.ts";
 import { installAppMenu } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations } from "./integrations.ts";
-import { isQuitting, setQuitting } from "./lifecycle.ts";
+import { setQuitting } from "./lifecycle.ts";
 
 app.setName("Agent Wrangler");
 

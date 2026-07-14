@@ -107,7 +107,9 @@ export async function injectPrompt(session: Session, text: string): Promise<Acti
  * its pane - the exact keystroke a human presses in the TUI, so it advances
  * default -> acceptEdits -> plan (and on to any further modes) exactly as it would
  * live. There is no API to *set* the mode, so this simulated keypress is the only
- * mechanism; the card's mode chip refreshes from the next hook the session emits.
+ * mechanism. Injecting it tells us nothing about where the mode landed - the
+ * mode/cycle route advances the card's chip itself once this succeeds (see
+ * `Registry.optimisticCyclePermissionMode`).
  *
  * tmux resolves the `BTab` key name to the terminal's back-tab sequence; wezterm
  * takes the raw sequence, so we send CSI Z (ESC [ Z) - the standard Shift+Tab code.

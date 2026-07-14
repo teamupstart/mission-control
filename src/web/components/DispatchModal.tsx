@@ -1,23 +1,140 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskKind, AgentType } from "@shared/types.ts";
 import { api, fetchRepos } from "../lib/api.ts";
+
+/**
+ * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
+ * an accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
+ * half-written task around; the draft is wiped only once it's actually
+ * dispatched or queued, or when the footer's Clear discards it on purpose
+ * (see EMPTY_DISPATCH_DRAFT).
+ */
+type DispatchDraft = {
+  repoRoot: string;
+  intent: string;
+  title: string;
+  kind: TaskKind;
+  agent: AgentType;
+};
+
+const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
+  repoRoot: "",
+  intent: "",
+  title: "",
+  kind: "ship",
+  agent: "claude",
+};
+
+/** True when a draft holds nothing worth keeping - so "Clear" has nothing to do. */
+function isEmptyDispatchDraft(d: DispatchDraft): boolean {
+  return (
+    !d.repoRoot.trim() &&
+    !d.intent.trim() &&
+    !d.title.trim() &&
+    d.kind === EMPTY_DISPATCH_DRAFT.kind &&
+    d.agent === EMPTY_DISPATCH_DRAFT.agent
+  );
+}
+
+/**
+ * Field-by-field draft equality. A dispatch POST can resolve after the modal
+ * instance that sent it is gone, so its resolve path hands back the draft it sent
+ * and the owner compares: still the same draft means nothing newer to lose (see
+ * onSubmitted).
+ */
+function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
+  return (
+    a.repoRoot === b.repoRoot &&
+    a.intent === b.intent &&
+    a.title === b.title &&
+    a.kind === b.kind &&
+    a.agent === b.agent
+  );
+}
+
+/**
+ * Owns the dispatch draft and mounts the modal over it. Stays mounted whether or
+ * not the modal is open, which is the whole point of the indirection:
+ *  - the draft can't live in the modal, which unmounts on close and would take a
+ *    half-written task with it;
+ *  - it can't live in App either, where every keystroke would re-render the
+ *    session grid - dozens of cards, each with an ActionBar - behind the backdrop
+ *    where none of it can be seen. A child's state update doesn't re-render its
+ *    parent, so parking the draft here keeps typing inside the modal subtree.
+ *
+ * The modal itself still mounts per open, so its fetch-repos and autofocus
+ * effects run each time.
+ */
+export function DispatchLayer({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}): React.JSX.Element | null {
+  const [draft, setDraft] = useState<DispatchDraft>(EMPTY_DISPATCH_DRAFT);
+  // Read by the dispatch-accepted callback below, which can fire after the modal
+  // instance that armed it is gone - a stale closure would compare against
+  // whatever the draft held when that instance last rendered.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // A dispatch is accepted server-side. The reply to an async network POST can
+  // land after the modal has been closed and reopened, so reconcile against what
+  // the draft holds *now*, not against the instance that sent it:
+  //  - unchanged since dispatch -> it's been consumed; clear and close, whether or
+  //    not the modal is still open (a closed modal makes the close a no-op, and
+  //    reopening shows an empty form instead of a ghost that invites a duplicate).
+  //  - edited since dispatch -> that's newer input; keep it and leave the modal be.
+  const onSubmitted = useCallback(
+    (submitted: DispatchDraft) => {
+      if (!draftsEqual(draftRef.current, submitted)) return;
+      setDraft(EMPTY_DISPATCH_DRAFT);
+      onClose();
+    },
+    [onClose],
+  );
+
+  if (!open) return null;
+  return (
+    <DispatchModal
+      draft={draft}
+      onDraftChange={setDraft}
+      onClose={onClose}
+      onSubmitted={onSubmitted}
+    />
+  );
+}
 
 /**
  * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
+ *
+ * The form values live in `draft` on `DispatchLayer` so they survive close/reopen;
+ * only the transient UI state (repo index, busy, error) is local here.
  */
-export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+function DispatchModal({
+  draft,
+  onDraftChange,
+  onClose,
+  onSubmitted,
+}: {
+  draft: DispatchDraft;
+  onDraftChange: (draft: DispatchDraft) => void;
+  onClose: () => void;
+  onSubmitted: (submitted: DispatchDraft) => void;
+}): React.JSX.Element {
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
-  const [repoRoot, setRepoRoot] = useState("");
-  const [intent, setIntent] = useState("");
-  const [title, setTitle] = useState("");
-  const [kind, setKind] = useState<TaskKind>("ship");
-  const [agent, setAgent] = useState<AgentType>("claude");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
+
+  // Merge one field's change into the lifted draft.
+  function update(patch: Partial<DispatchDraft>): void {
+    onDraftChange({ ...draft, ...patch });
+  }
 
   useEffect(() => {
     intentRef.current?.focus();
@@ -46,20 +163,38 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Discard the draft without closing: every close path preserves it, so this is
+  // the one way to start a fresh dispatch.
+  function clearDraft(): void {
+    onDraftChange(EMPTY_DISPATCH_DRAFT);
+    setError(null);
+    intentRef.current?.focus();
+  }
+
   async function submit(queue: boolean): Promise<void> {
-    if (!repoRoot.trim() || !intent.trim() || busy) return;
+    if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
     setBusy(true);
     setError(null);
+    // Dispatching is an async network POST, so this promise can resolve after the
+    // modal has been closed - even a short round-trip leaves room for a quick
+    // Escape, a reopen, and fresh typing. Hand the exact draft we sent back to the
+    // owner, which clears it only if nothing newer has been typed since - see
+    // onSubmitted in DispatchLayer.
+    const submitted = draft;
     const r = await api.dispatch({
-      repoRoot: repoRoot.trim(),
-      intent: intent.trim(),
-      title: title.trim() || undefined,
-      kind,
-      agent,
+      repoRoot: submitted.repoRoot.trim(),
+      intent: submitted.intent.trim(),
+      title: submitted.title.trim() || undefined,
+      kind: submitted.kind,
+      agent: submitted.agent,
       queue,
     });
     setBusy(false);
-    if (r.ok) onClose();
+    // Clear the draft and close only once the task row exists - the worktree and
+    // tmux session are provisioned in the background after this reply, and any
+    // failure there surfaces on the task card rather than here. A rejected submit
+    // keeps the modal open with the fields intact so you can retry.
+    if (r.ok) onSubmitted(submitted);
     else setError(r.error ?? "dispatch failed");
   }
 
@@ -88,7 +223,11 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
                   : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
               </span>
             </span>
-            <RepoCombobox repos={repos} value={repoRoot} onChange={setRepoRoot} />
+            <RepoCombobox
+              repos={repos}
+              value={draft.repoRoot}
+              onChange={(v) => update({ repoRoot: v })}
+            />
           </label>
 
           <div className="field-row">
@@ -96,8 +235,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
               <span className="field-label">Kind</span>
               <select
                 className="field-input"
-                value={kind}
-                onChange={(e) => setKind(e.target.value as TaskKind)}
+                value={draft.kind}
+                onChange={(e) => update({ kind: e.target.value as TaskKind })}
               >
                 <option value="ship">ship - deliver a change</option>
                 <option value="scout">scout - investigate / report</option>
@@ -107,8 +246,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
               <span className="field-label">Agent</span>
               <select
                 className="field-input"
-                value={agent}
-                onChange={(e) => setAgent(e.target.value as AgentType)}
+                value={draft.agent}
+                onChange={(e) => update({ agent: e.target.value as AgentType })}
               >
                 <option value="claude">Claude Code</option>
                 <option value="codex">Codex</option>
@@ -123,8 +262,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
             <input
               className="field-input"
               placeholder="auto from the task if left blank"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              value={draft.title}
+              onChange={(e) => update({ title: e.target.value })}
             />
           </label>
 
@@ -135,8 +274,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
               className="field-input field-textarea"
               placeholder="What should this agent do?"
               rows={5}
-              value={intent}
-              onChange={(e) => setIntent(e.target.value)}
+              value={draft.intent}
+              onChange={(e) => update({ intent: e.target.value })}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(false);
               }}
@@ -150,6 +289,14 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
           <button className="btn btn-ghost" onClick={() => void submit(true)} disabled={busy}>
             Add to backlog
           </button>
+          <button
+            className="btn btn-ghost"
+            onClick={clearDraft}
+            disabled={busy || isEmptyDispatchDraft(draft)}
+            title="Reset the form"
+          >
+            Clear
+          </button>
           <span className="actions-spacer" />
           <button className="btn btn-ghost" onClick={onClose}>
             Cancel
@@ -157,7 +304,7 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
           <button
             className="btn btn-primary"
             onClick={() => void submit(false)}
-            disabled={busy || !repoRoot.trim() || !intent.trim()}
+            disabled={busy || !draft.repoRoot.trim() || !draft.intent.trim()}
             title="⌘/Ctrl+Enter"
           >
             {busy ? "Dispatching…" : "Dispatch now"}

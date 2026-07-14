@@ -222,6 +222,11 @@ you restart a session) every card shows grey **running**. The small colored dot
 next to each title is *not* a status - it's the agent's brand color (terracotta
 for Claude Code, green for Codex).
 
+A Claude card also carries a **permission mode** chip once a hook reports one - `manual`,
+`accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for
+sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
+would in the session's own terminal.
+
 ### Review channel (MCP)
 
 ```sh
@@ -264,6 +269,12 @@ The new session then shows up on the grid like any other, with an **intent chip*
 what it's working on. It's headless until you want it - click **Focus** on the card to open
 it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a task without
 launching it yet.
+
+Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
+what you've typed** - reopen and a half-written task is still there, so you can glance at
+the grid mid-thought without losing it. The draft is cleared only once the task is actually
+dispatched or queued, or when you hit **Clear** to start a fresh one. A submit that fails
+leaves the form open with your fields intact so you can retry.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
@@ -358,6 +369,7 @@ without reaching for the mouse:
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open

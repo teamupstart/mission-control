@@ -8,7 +8,9 @@ import type { HookIngest } from "@shared/protocol.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-mode-"));
-const { Registry, normalizePermissionMode } = await import("../src/server/registry.ts");
+const { Registry, normalizePermissionMode, nextPermissionMode } = await import(
+  "../src/server/registry.ts"
+);
 
 const PANE = { session: "w", window: "w", windowIndex: 0, paneId: "%3" };
 
@@ -97,4 +99,77 @@ test("the mode survives a later discovery sweep (overlay carries it)", () => {
   r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "bypassPermissions" }));
   r.applyDiscovery([disco()]); // same session re-observed
   assert.equal(modeOf(r), "bypassPermissions");
+});
+
+test("nextPermissionMode advances the steps that hold in every config", () => {
+  assert.equal(nextPermissionMode("default"), "acceptEdits");
+  assert.equal(nextPermissionMode("acceptEdits"), "plan");
+});
+
+test("nextPermissionMode declines to guess when it can't", () => {
+  assert.equal(nextPermissionMode(null), null); // mode not yet known
+  assert.equal(nextPermissionMode("dontAsk"), null); // never part of the cycle
+  // After `plan` the landing mode is config-dependent - "default" in the base
+  // cycle, but bypassPermissions/auto when a session enabled them, which the
+  // daemon can't observe. We only advance steps whose outcome is certain.
+  assert.equal(nextPermissionMode("plan"), null);
+  assert.equal(nextPermissionMode("bypassPermissions"), null);
+  assert.equal(nextPermissionMode("auto"), null);
+});
+
+test("optimistic cycle advances the chip immediately, before any hook", () => {
+  const r = seeded();
+  r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "default" }));
+  let emitted = 0;
+  r.subscribe((e) => {
+    if (e.type === "session_upsert" && e.session.id === "s1") emitted++;
+  });
+  r.optimisticCyclePermissionMode("s1");
+  assert.equal(modeOf(r), "acceptEdits");
+  assert.equal(emitted, 1); // the card re-renders right away
+});
+
+test("an optimistic cycle survives a discovery sweep (overlay advanced too)", () => {
+  const r = seeded();
+  r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "default" }));
+  r.optimisticCyclePermissionMode("s1"); // -> acceptEdits
+  r.applyDiscovery([disco()]); // same session re-observed; must not revert to default
+  assert.equal(modeOf(r), "acceptEdits");
+});
+
+test("a real hook, not a guess, resolves the ambiguous step after plan", () => {
+  const r = seeded();
+  r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "plan" }));
+  r.optimisticCyclePermissionMode("s1");
+  // This session has bypassPermissions enabled, so Shift+Tab actually landed
+  // there - a successor we can't derive from `plan`. Rather than fabricate one,
+  // the chip holds its last hook-reported mode until a hook carries the truth.
+  assert.equal(modeOf(r), "plan");
+  r.applyHook(hook({ event: "PreToolUse", permissionMode: "bypassPermissions" }));
+  assert.equal(modeOf(r), "bypassPermissions");
+});
+
+test("an optimistic cycle never revives an overlay that aged past its TTL", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const r = seeded();
+  r.applyHook(hook({ event: "Notification", message: "waiting for you", permissionMode: "default" }));
+  // The session goes quiet for longer than OVERLAY_TTL_MS (30 min). No hook has
+  // arrived from any pane, so nothing pruned the now-dead overlay.
+  t.mock.timers.tick(31 * 60 * 1000);
+  r.optimisticCyclePermissionMode("s1"); // default -> acceptEdits
+  r.applyDiscovery([disco()]);
+
+  const s = r.snapshot().sessions.find((x) => x.id === "s1")!;
+  assert.equal(s.permissionMode, "acceptEdits"); // the optimistic chip still carries (via prev)
+  // ...but the half-hour-old overlay stays dead rather than being stamped fresh
+  // and re-applied wholesale over the card.
+  assert.equal(s.instrumented, false);
+  assert.equal(s.state, "working"); // discovery's value, not the overlay's awaiting_input
+});
+
+test("optimistic cycle is a no-op when the mode is unknown", () => {
+  const r = seeded();
+  assert.equal(modeOf(r), null); // no hook yet
+  r.optimisticCyclePermissionMode("s1");
+  assert.equal(modeOf(r), null); // nothing to advance from - wait for a real hook
 });

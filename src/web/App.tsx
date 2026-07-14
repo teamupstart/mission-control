@@ -5,7 +5,7 @@ import { useEventStream } from "./useEventStream.ts";
 import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
-import { DispatchModal } from "./components/DispatchModal.tsx";
+import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
@@ -39,6 +39,10 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Only whether the dispatch modal is open. The draft it edits belongs to
+  // DispatchLayer, deliberately out of this component: App re-renders the whole
+  // session grid, and the draft has to survive a close without dragging every
+  // keystroke through it.
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -70,6 +74,8 @@ export function App(): React.JSX.Element {
   const toggleExpand = useCallback((id: string) => {
     setExpandedId((cur) => (cur === id ? null : id));
   }, []);
+
+  const closeDispatch = useCallback(() => setDispatchOpen(false), []);
 
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -439,7 +445,7 @@ export function App(): React.JSX.Element {
         />
       )}
 
-      {dispatchOpen && <DispatchModal onClose={() => setDispatchOpen(false)} />}
+      <DispatchLayer open={dispatchOpen} onClose={closeDispatch} />
 
       {reportOpen && (
         <ReportPanel

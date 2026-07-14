@@ -17,7 +17,7 @@ import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { stateDisplay, type Tone } from "./lib/format.ts";
+import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then
 // unconfirmed (uninstrumented "running"), then gone.
@@ -551,8 +551,7 @@ function CommandBar({
   const live = session.state !== "exited";
   // Permission modes are Claude-only, and cycling one needs a pane to send into.
   const canCycleMode = live && session.agent === "claude" && Boolean(session.tmux || session.wezterm);
-  // Renaming drives the tmux session / wezterm tab, so it needs one of those.
-  const canRename = live && Boolean(session.tmux || session.wezterm);
+  const canRename = canRenameSession(session);
   const barRef = useRef<HTMLDivElement>(null);
 
   // The bar floats fixed over the bottom of the page, so it hides whatever
@@ -628,14 +627,6 @@ function CommandBar({
       </span>
     </div>
   );
-}
-
-/**
- * True when a session can be renamed: renaming drives its tmux session / wezterm
- * tab, so it needs one of those handles, and a dead session has nothing to rename.
- */
-function canRenameSession(s: Session): boolean {
-  return s.state !== "exited" && Boolean(s.tmux || s.wezterm);
 }
 
 /** Live column count of the responsive card grid, read from resolved tracks. */

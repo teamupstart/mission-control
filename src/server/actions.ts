@@ -268,6 +268,12 @@ export function validateSessionName(
   if (session.tmux && /[.:]/.test(name)) {
     return { ok: false, error: "a tmux session name can't contain '.' or ':'" };
   }
+  // A leading '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never
+  // falls back to a name lookup, so a session named `$0` would make focus/kill
+  // target whichever session holds ID 0 instead of this one.
+  if (session.tmux && /^\$/.test(name)) {
+    return { ok: false, error: "a tmux session name can't start with '$'" };
+  }
   return { ok: true, name };
 }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
 import {
+  canRenameSession,
   compactTokens,
   contextTone,
   relativeTime,
@@ -76,9 +77,7 @@ export function SessionCard({
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
-  // Renaming drives the underlying tmux session / wezterm tab, so it needs one of
-  // those handles - and a dead session has nothing to rename.
-  const canRename = session.state !== "exited" && canSend;
+  const canRename = canRenameSession(session);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -341,6 +340,19 @@ function RenameEditor({
     el.select();
   }, []);
 
+  // The input is disabled while the request is in flight, which drops focus to
+  // <body>; without taking it back, a rejected name leaves Enter/Escape unheard
+  // here and every grid chord held by App (which stands down while renaming).
+  // Keyed on `busy` too, not just `error`: retrying the same bad name re-reports
+  // an identical string, so `error` alone wouldn't fire.
+  useEffect(() => {
+    if (busy || !error) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [busy, error]);
+
   async function submit(): Promise<void> {
     const name = value.trim();
     if (!name || name === session.name) {
@@ -362,6 +374,9 @@ function RenameEditor({
           className="rename-input"
           value={value}
           disabled={busy}
+          // Mirrors RenameSchema's .max(200): a longer paste would come back as a
+          // raw Zod error dump, which the .rename-error span renders verbatim.
+          maxLength={200}
           aria-label="Rename session"
           spellCheck={false}
           autoComplete="off"

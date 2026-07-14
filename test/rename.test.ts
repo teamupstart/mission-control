@@ -81,6 +81,24 @@ test("validateSessionName rejects '.' and ':' only for a tmux session", () => {
   });
 });
 
+test("validateSessionName rejects a leading '$' only for a tmux session", () => {
+  // '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never falls back
+  // to a name, so a session named `$0` would make focus/kill hit whichever session
+  // owns ID 0. tmux itself allows the rename, so we have to refuse it here.
+  assert.equal(validateSessionName({ tmux, wezterm: null }, "$0").ok, false);
+  assert.equal(validateSessionName({ tmux, wezterm: null }, "$work").ok, false);
+  // Only a leading '$' aliases an id - one inside the name is just a character.
+  assert.deepEqual(validateSessionName({ tmux, wezterm: null }, "cost$$"), {
+    ok: true,
+    name: "cost$$",
+  });
+  // A wezterm tab title is free-form, so a leading '$' is fine there.
+  assert.deepEqual(validateSessionName({ tmux: null, wezterm }, "$0"), {
+    ok: true,
+    name: "$0",
+  });
+});
+
 test("validateSessionName rejects a session with no renameable handle", () => {
   const r = validateSessionName({ tmux: null, wezterm: null }, "whatever");
   assert.equal(r.ok, false);

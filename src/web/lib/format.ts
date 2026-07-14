@@ -140,3 +140,13 @@ export const PICKABLE_MODES: readonly PermissionMode[] = [
   "bypassPermissions",
   "auto",
 ];
+
+/**
+ * True when a session can be renamed: renaming drives its tmux session / wezterm
+ * tab, so it needs one of those handles, and a dead session has nothing to rename.
+ * Shared by the clickable card title, the command bar's keycap, and the hotkey gate
+ * so the rule can't drift between them.
+ */
+export function canRenameSession(s: Pick<Session, "state" | "tmux" | "wezterm">): boolean {
+  return s.state !== "exited" && Boolean(s.tmux || s.wezterm);
+}

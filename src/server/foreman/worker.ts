@@ -3,7 +3,7 @@ import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
 import { reviewSession } from "./review.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { applyVerdict, foremanMayActLive, planFromVerdict } from "./verdict.ts";
+import { applyVerdict, foremanMayActLive, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
 import type { ReviewContext } from "./verdict.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -18,6 +18,9 @@ const IDLE_MS = 4000;
 const BETWEEN_MS = 400;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Consecutive review-failure strikes, so a transient blip retries instead of a permanent skip. */
+const reviewFailures = new ReviewFailureTracker();
 
 async function main(): Promise<void> {
   const client = new ForemanClient();
@@ -120,7 +123,6 @@ async function processSession(
     truncated: window.truncated,
   };
 
-  const verdict = await reviewSession(input);
   const ctx: ReviewContext = {
     sessionId: session.id,
     repoRoot: session.cwd,
@@ -128,6 +130,26 @@ async function processSession(
     inputReviewId: pending.inputReviewId,
     canSend: pending.canSend,
   };
+
+  const result = await reviewSession(input);
+  if (result.kind === "failed") {
+    // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
+    // marker, or the idempotency check above would abandon this prompt forever after
+    // a single blip. Leave it queued to retry; only after several consecutive
+    // failures do we give up with a marker-stamped skip so a persistently-broken
+    // reviewer stops re-spawning `claude -p` every loop.
+    const outcome = reviewFailures.onFailure(ctx, result.reason);
+    if (outcome.retry) {
+      log(`${session.name}: review failed, will retry (${result.reason})`);
+      return;
+    }
+    await client.putNote(session.id, outcome.note).catch(() => {});
+    log(`${session.name}: review failed repeatedly; giving up (skipped)`);
+    return;
+  }
+  reviewFailures.onSuccess(session.id);
+  const verdict = result.verdict;
+
   let plan = planFromVerdict(
     verdict,
     ctx,

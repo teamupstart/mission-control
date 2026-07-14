@@ -183,6 +183,52 @@ export function planFromVerdict(
   };
 }
 
+/** Consecutive transient review failures tolerated before Foreman gives up on a prompt. */
+export const REVIEW_FAILURE_CAP = 3;
+
+/** What the worker should do after a transient review failure. */
+export type FailureOutcome =
+  | { retry: true }
+  | { retry: false; note: SetNote };
+
+/**
+ * Tracks consecutive transient reviewer failures (spawn/timeout/parse-miss) per
+ * session so a one-off blip retries instead of permanently stamping the prompt's
+ * marker (which the worker's idempotency check would then never re-review). Under
+ * the cap it says "retry" (write nothing, leave the item queued); at the cap it
+ * gives up with a marker-stamped skip note so a persistently-broken reviewer stops
+ * re-spawning `claude -p` every loop. The count is keyed per session and reset
+ * whenever the prompt marker changes (a new waiting episode) or a review succeeds,
+ * so it stays bounded and never carries a stale strike into a fresh prompt. Pure.
+ */
+export class ReviewFailureTracker {
+  private bySession = new Map<string, { marker: string; count: number }>();
+
+  /** Record a transient failure for this session's current prompt; decide retry vs give-up. */
+  onFailure(ctx: ReviewContext, reason: string): FailureOutcome {
+    const prev = this.bySession.get(ctx.sessionId);
+    const count = prev && prev.marker === ctx.promptMarker ? prev.count + 1 : 1;
+    this.bySession.set(ctx.sessionId, { marker: ctx.promptMarker, count });
+    if (count < REVIEW_FAILURE_CAP) return { retry: true };
+    return {
+      retry: false,
+      note: {
+        purpose: reason,
+        handledMarker: ctx.promptMarker,
+        disposition: "skipped",
+        brief: null,
+        recommendation: null,
+        lastAction: `skipped (reviewer failed ${count}x)`,
+      },
+    };
+  }
+
+  /** Forget a session's strikes after a review that produced a real verdict. */
+  onSuccess(sessionId: string): void {
+    this.bySession.delete(sessionId);
+  }
+}
+
 /** Minimal daemon surface `applyVerdict` needs, so tests can inject a fake. */
 export interface ForemanActions {
   putNote(sessionId: string, patch: SetNote): Promise<unknown>;

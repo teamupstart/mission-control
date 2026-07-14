@@ -16,19 +16,23 @@ const CLAUDE_BIN = process.env.FOREMAN_CLAUDE_BIN || "claude";
 /** Hard cap on a single review so a hung reviewer can't stall the queue. */
 const REVIEW_TIMEOUT_MS = Number(process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000);
 
-/** A safe fallback verdict: purpose only, no action taken. */
-export function skipVerdict(reason: string): Verdict {
-  return { purpose: reason, classification: "other", action: "skip", confidence: 0 };
-}
+/**
+ * The result of one review: either a model-produced verdict (success - including a
+ * legitimate action:"skip") or a transient failure (a spawn/timeout/exit error, or
+ * a parse miss after the retry). The worker treats these differently: a genuine
+ * verdict is stamped as handled, but a failure must NOT permanently stamp the
+ * prompt's marker, or a single infra blip would abandon the queue item for good.
+ */
+export type ReviewResult =
+  | { kind: "verdict"; verdict: Verdict }
+  | { kind: "failed"; reason: string };
 
 /**
- * Review one session in a fresh process; never throws (returns a skip on failure).
- * Retries once on a parse miss with a stricter reminder, since the model
- * occasionally editorializes in prose instead of emitting the raw object - and a
- * silent skip on a genuinely escalatable ask, while safe (it never sends), loses
- * the framed decision brief we want the human to see.
+ * Review one session in a fresh process; never throws (returns a `failed` result
+ * instead). Retries once on a parse miss with a stricter reminder, since the model
+ * occasionally editorializes in prose instead of emitting the raw object.
  */
-export async function reviewSession(input: ReviewInput): Promise<Verdict> {
+export async function reviewSession(input: ReviewInput): Promise<ReviewResult> {
   const prompt = buildReviewPrompt(input);
   const attempts = [prompt, `${prompt}\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON object.`];
   for (const p of attempts) {
@@ -36,12 +40,12 @@ export async function reviewSession(input: ReviewInput): Promise<Verdict> {
     try {
       raw = await runClaude(p);
     } catch (err) {
-      return skipVerdict(`Foreman review failed: ${String(err)}`);
+      return { kind: "failed", reason: `Foreman review failed: ${String(err)}` };
     }
     const verdict = extractVerdict(raw);
-    if (verdict) return verdict;
+    if (verdict) return { kind: "verdict", verdict };
   }
-  return skipVerdict("Foreman could not parse a verdict from the reviewer.");
+  return { kind: "failed", reason: "Foreman could not parse a verdict from the reviewer." };
 }
 
 /** Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. */

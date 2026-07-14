@@ -5,6 +5,8 @@ import {
   applyVerdict,
   foremanMayActLive,
   planFromVerdict,
+  REVIEW_FAILURE_CAP,
+  ReviewFailureTracker,
   type ForemanActions,
   type ReviewContext,
   type Verdict,
@@ -127,7 +129,40 @@ test("skip writes only a purpose", () => {
   const plan = planFromVerdict(v, ctx(), true);
   assert.equal(plan.note.disposition, "skipped");
   assert.equal(plan.note.purpose, "just a diff review");
+  // A model-produced skip is a real decision, so it stamps the marker immediately
+  // (unlike a transient reviewer failure, which retries - see ReviewFailureTracker).
+  assert.equal(plan.note.handledMarker, "await:100");
   assert.equal(plan.send, null);
+});
+
+test("review failures retry under the cap, then give up with a marker-stamped skip", () => {
+  const tracker = new ReviewFailureTracker();
+  const c = ctx({ promptMarker: "review:r1" });
+  for (let i = 1; i < REVIEW_FAILURE_CAP; i++) {
+    assert.equal(tracker.onFailure(c, "review timed out").retry, true, `failure ${i} under the cap retries`);
+  }
+  const final = tracker.onFailure(c, "review timed out");
+  if (final.retry) return void assert.fail("expected a give-up once the cap is reached");
+  assert.equal(final.note.disposition, "skipped");
+  // The give-up note stamps the marker so the idempotency check stops the loop.
+  assert.equal(final.note.handledMarker, "review:r1");
+  assert.equal(final.note.purpose, "review timed out");
+  assert.match(final.note.lastAction ?? "", /reviewer failed/);
+});
+
+test("a new prompt marker resets the failure counter (no stale strikes)", () => {
+  const tracker = new ReviewFailureTracker();
+  for (let i = 1; i < REVIEW_FAILURE_CAP; i++) tracker.onFailure(ctx({ promptMarker: "review:a" }), "x");
+  // A different marker on the same session is a fresh episode, not the capped strike.
+  assert.equal(tracker.onFailure(ctx({ promptMarker: "review:b" }), "x").retry, true);
+});
+
+test("a successful review clears the failure counter", () => {
+  const tracker = new ReviewFailureTracker();
+  for (let i = 1; i < REVIEW_FAILURE_CAP; i++) tracker.onFailure(ctx(), "x");
+  tracker.onSuccess("s1");
+  // After success the next failure is strike 1 again, not the give-up strike.
+  assert.equal(tracker.onFailure(ctx(), "x").retry, true);
 });
 
 test("foremanMayActLive: only enabled + live + allowlisted (prefix) cwd sends", () => {

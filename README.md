@@ -95,11 +95,15 @@ For desktop development with the same hot-reload loop as the browser:
 
 ```sh
 make desktop        # daemon (tsx watch) + Vite (HMR) + Electron shell, all auto-reload
+make start          # same, plus the Foreman auto-responder worker
+make restart        # stop any running stack and start it fresh
 ```
 
 The window loads the Vite dev server, so React Fast Refresh works inside it exactly as in
-the browser; the Electron shell restarts on main-process edits. The plain `make dev`
-browser workflow is unchanged. See [docs/plans/migrate-electron.md](docs/plans/migrate-electron.md)
+the browser; the Electron shell restarts on main-process edits. `make start` adds the
+[Foreman](#foreman-auto-responder) worker to the group so it comes up with the app (it
+otherwise only runs via `npm run foreman`); `make restart` tears the whole stack down and
+brings it back up. The plain `make dev` browser workflow is unchanged. See [docs/plans/migrate-electron.md](docs/plans/migrate-electron.md)
 for the full design.
 
 ## How it works

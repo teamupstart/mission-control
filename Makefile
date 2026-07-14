@@ -1,18 +1,24 @@
 # AI Harness - shorthand commands.  Run `make` (or `make help`) for the list.
 #
 # Day-to-day:  `make dev` (foreground, auto-reload) is the simplest.
+# Full stack:  `make start` runs everything - daemon, Vite, the Electron shell,
+#              and the Foreman auto-responder - in one foreground group;
+#              `make restart` stops any running stack and starts it fresh.
 # Background:  `make up` runs the daemon detached and auto-reloading, so code
 #              changes reload themselves - no more manual restarts.  Pair it with
 #              a Vite server (`make web`) or just use `make dev` for both.
 
-PORT ?= 7317
+PORT     ?= 7317
+WEB_PORT ?= 5173
 LOG  := .harness.log
 # Every server process (watcher + child) has this in its argv, so pkill/pgrep
 # find the whole tree regardless of how it was started.
 MATCH := src/server/index.ts
+# The Foreman worker's argv marker (unique to the auto-responder worker).
+FOREMAN_MATCH := src/server/foreman/worker.ts
 
 .DEFAULT_GOAL := help
-.PHONY: help init session claude dev desktop server web up down restart status logs build app install-app icons test check hooks setup
+.PHONY: help init session claude dev desktop start server web up down restart stop-all status logs build app install-app icons test check hooks setup
 
 help: ## List the available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -37,6 +43,9 @@ dev: ## Daemon + web in the foreground, both auto-reload (Ctrl-C to stop)
 desktop: ## Electron shell + daemon + Vite, all auto-reload (Ctrl-C to stop)
 	npm run dev:desktop
 
+start: ## Everything: daemon + Vite + Electron shell + Foreman, all auto-reload (Ctrl-C to stop)
+	npm run dev:start
+
 server: ## Just the daemon in the foreground, auto-reload
 	npm run dev:server
 
@@ -57,8 +66,17 @@ down: ## Stop the background daemon
 		pkill -f "$(MATCH)"; echo "daemon stopped"; \
 	else echo "no daemon running"; fi
 
-restart: ## Restart the background daemon (also picks up code changes)
-	@$(MAKE) --no-print-directory up
+restart: ## Stop the whole stack and start it fresh in the foreground (daemon + Vite + Electron + Foreman)
+	@$(MAKE) --no-print-directory stop-all
+	@$(MAKE) --no-print-directory start
+
+stop-all: ## Stop every harness dev process (daemon, Vite, Electron shell, Foreman)
+	@pkill -f "$(FOREMAN_MATCH)" >/dev/null 2>&1 && echo "foreman stopped" || true
+	@pkill -f "electronmon" >/dev/null 2>&1 && echo "electron shell stopped" || true
+	@webpids=$$(lsof -ti tcp:$(WEB_PORT) 2>/dev/null); \
+		if [ -n "$$webpids" ]; then kill $$webpids >/dev/null 2>&1; echo "web (vite) stopped"; fi
+	@if pgrep -f "$(MATCH)" >/dev/null 2>&1; then pkill -f "$(MATCH)"; echo "daemon stopped"; else echo "no daemon running"; fi
+	@sleep 1
 
 status: ## Show whether the daemon is running
 	@pid=$$(lsof -ti tcp:$(PORT) 2>/dev/null | head -1); \

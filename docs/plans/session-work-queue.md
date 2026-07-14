@@ -1,6 +1,6 @@
 # Plan: session work queues - Foreman drains a batch and validates each item
 
-Status: proposed (§0a + §0b landed in #36; the rest awaits review)
+Status: **implemented** (§0a + §0b landed in #36; §0c-§4 landed after)
 Owner: ai-harness (Agent Wrangler)
 Related: extends `docs/plans/foreman/plan.md` (the auto-responder), which deliberately scoped
 itself to *reacting* to the needs-you queue. This is the proactive half. Distinct from
@@ -760,8 +760,49 @@ Following the repo convention (plan docs land before code), this doc is the firs
 its fix. They were split out because both are live bugs independent of this feature, so they should
 land regardless of what happens to this plan.
 
-**Next,** in order, each independently testable: §0c (the rename) -> §1 (server + schema, incl. the
-leased heartbeat) -> §2 (the pure machine, with its test table) -> §3 (worker + verify) -> §4 (UI).
+**Done:** §0c (the rename) -> §1 (server + schema, incl. the leased heartbeat) -> §2 (the pure
+machine) -> §3 (worker + verify) -> §4 (UI), each its own commit.
+
+### What implementation changed
+
+Four things the plan didn't anticipate, called out so the next reader doesn't re-derive them:
+
+1. **`WorkItem` needed a `recoveredAt` field.** The plan's crash-recovery row ("`sending` ->
+   `awaiting_pickup` with `sentAt := row.updatedAt`, and let the pickup detector adjudicate; if the
+   window expires with no advance, escalate") is not implementable from the columns it lists: at
+   pickup-expiry the machine cannot distinguish a crash-adopted item from a normally-sent one, and
+   they must behave differently - a normal send resends (the worker watched the inject resolve, so
+   "never ingested" is positive evidence of non-delivery) while a crash-adopted one must escalate
+   (we never learned whether Enter was pressed, so a second paste could mangle a prompt sitting
+   unsubmitted in the pane). `sentAt === null` doesn't work as the marker either: a fix round
+   inherits round 0's `sentAt`. So the flag is durable, and `markSent` clears it - otherwise a later
+   round of a once-recovered item would refuse to resend for a crash it never suffered.
+2. **The single-flight index needed a legible refusal.** The partial unique index is the right
+   enforcement, but its raw `ERR_SQLITE_ERROR` escaped the route: the daemon logged a stack trace and
+   answered an opaque 500, so a caller couldn't tell "you broke the invariant" from "the daemon fell
+   over". `QueueManager` catches it and the route answers 409. Found by an E2E run against the real
+   daemon, not by the unit tests - which is the argument for that run existing.
+3. **`sentAt`/`recoveredAt` are absent from `SetWorkItemStateSchema`.** The plan says `sentAt` is
+   stamped server-side; the way that's *enforced* is by not offering it on the worker's write at all.
+   Delivery and recovery got their own routes (`.../sent`, `.../recover`) so the clock stays the
+   daemon's by construction.
+4. **The wrap-up needed two routes, not one.** "Foreman asked" and "the human answered" have
+   different writers, and one endpoint doing both would let either clobber the other.
+
+## Verification performed
+
+`npm run typecheck` + `npm test` green (318 tests). Beyond the suites, an E2E run drove the **real**
+daemon against a **real** throwaway scratch git repo and a **real** transcript file (never a live
+session - the plan's guardrail), confirming: CRUD + reorder + the CAS 409; the mode gate (dry-run
+proposes, live sends, and it sends the *first* item); a diff scoped to a real base sha; an
+unreachable base failing closed with a real reason; `?since=<anchor>` returning only one item's turns
+and excluding the previous item's; a cleared transcript reporting `reset`; the repo's `AGENTS.md`
+read while the operator's global `~/.claude/CLAUDE.md` is not; the wrap-up firing once and re-arming
+on new work; and the single-flight index holding through the real HTTP path.
+
+**Not exercised end-to-end:** the actual tmux delivery and a real `claude -p` verify round - both
+need a live agent, which the project guardrail puts off-limits for an automated check. Steps 6-12 of
+the manual list below remain worth a human pass with a scratch tmux session before trusting live mode.
 
 ## Out of scope (future)
 

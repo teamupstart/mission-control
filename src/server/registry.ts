@@ -780,6 +780,30 @@ export function noteKeyFor(s: Session): string {
   return s.agentSessionId ?? s.id;
 }
 
+/**
+ * True when a `Notification` is Claude's idle nudge rather than a real ask.
+ *
+ * Claude Code fires the same hook for two unrelated things: it needs permission to
+ * use a tool ("Claude needs your permission to use Bash"), and the prompt has sat
+ * idle for ~60s ("Claude is waiting for your input"). Only the first needs you.
+ * Treating both as `awaiting_input` made *every* settled session claim it needed
+ * you a minute after it went quiet, which is noise in exactly the bucket that is
+ * supposed to be signal.
+ *
+ * The message is the only discriminator the payload carries, so match it - and
+ * match it narrowly: anything we don't positively recognize as the nudge stays
+ * `awaiting_input`, so an unfamiliar notification errs toward asking for you
+ * rather than being silently swallowed.
+ *
+ * Known tradeoff: a session that ends its turn with a question in *prose* (no
+ * permission prompt) is indistinguishable from an idle one in the hook stream -
+ * both are a `Stop` followed by this nudge - so it now reads `idle` and won't
+ * nag at 60s. Foreman's triage still catches those, because it reads transcripts.
+ */
+export function isIdleNudge(message: string | undefined | null): boolean {
+  return /waiting for your input/i.test(message ?? "");
+}
+
 /** Map a Claude hook event to a session state + one-line activity. */
 export function hookToState(evt: HookIngest): { state: SessionState; activity: string | null } {
   const trim = (s: string | undefined, n = 120): string | null =>
@@ -795,7 +819,11 @@ export function hookToState(evt: HookIngest): { state: SessionState; activity: s
     case "PostToolUse":
       return { state: "working", activity: evt.toolName ? `${evt.toolName} done` : "working" };
     case "Notification":
-      return { state: "awaiting_input", activity: trim(evt.message) ?? "waiting for you" };
+      // The idle nudge means "still parked at the prompt", which is the same thing
+      // Stop reports - so report it identically rather than inventing a state.
+      return isIdleNudge(evt.message)
+        ? { state: "idle", activity: "idle" }
+        : { state: "awaiting_input", activity: trim(evt.message) ?? "waiting for you" };
     case "Stop":
       return { state: "idle", activity: "idle" };
     case "SubagentStop":

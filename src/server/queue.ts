@@ -66,6 +66,7 @@ export class QueueManager {
       escalationReason: null,
       lastVerdict: null,
       approvedAt: null,
+      recoveredAt: null,
       revision: 0,
       createdAt: now,
       updatedAt: now,
@@ -213,6 +214,41 @@ export class QueueManager {
       transcriptAnchor,
       sentAt: now,
       approvedAt: null, // consent is spent; a later round needs a fresh one
+      // This send WAS watched all the way through the inject, so the resend
+      // evidence is positive again. Clearing the flag matters on a later round of
+      // an item that was once crash-recovered: without it that round would refuse
+      // to resend for a crash it never suffered.
+      recoveredAt: null,
+      updatedAt: now,
+    };
+    this.registry.putQueueItem(next);
+    return { ok: true, item: next };
+  }
+
+  /**
+   * Adopt an item a restart left mid-`sending`, and let the pickup detector
+   * adjudicate on evidence.
+   *
+   * `sentAt` is the row's own pre-crash `updatedAt` (when the send was attempted),
+   * NOT now - the pickup guard compares it against `lastActivity`, so stamping now
+   * would make any activity from the crash window look older than the send and
+   * hide a pickup that already happened.
+   *
+   * `recoveredAt` is what stops this item from ever resending: we never learned
+   * whether the Enter was pressed, so the text may be sitting unsubmitted in the
+   * pane and a second paste would mangle it.
+   */
+  recover(itemId: string, now = Date.now()): { ok: true; item: WorkItem } | { ok: false; error: string } {
+    const item = this.registry.getQueueItem(itemId);
+    if (!item) return { ok: false, error: "no such item" };
+    if (item.state !== "sending") {
+      return { ok: false, error: `only a sending item can be recovered (this is ${item.state})` };
+    }
+    const next: WorkItem = {
+      ...item,
+      state: "awaiting_pickup",
+      sentAt: item.sentAt ?? item.updatedAt,
+      recoveredAt: now,
       updatedAt: now,
     };
     this.registry.putQueueItem(next);

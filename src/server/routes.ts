@@ -424,6 +424,28 @@ export function buildApp(
     return c.json({ error: r.error }, 404);
   });
 
+  // Stamp delivery. Separate from /state because `sentAt` is the daemon's clock,
+  // not the worker's: the pickup guard compares it against `lastActivity`, which
+  // the registry stamps from the hook payload, so the two must share a writer.
+  app.post("/api/sessions/:id/queue/:itemId/sent", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as {
+      baseSha?: unknown;
+      transcriptAnchor?: unknown;
+    };
+    const baseSha = typeof body.baseSha === "string" ? body.baseSha : null;
+    const anchor = typeof body.transcriptAnchor === "number" ? body.transcriptAnchor : null;
+    const r = queues.markSent(c.req.param("itemId"), baseSha, anchor);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, 404);
+  });
+
+  // Adopt an item a restart left mid-send (see QueueManager.recover).
+  app.post("/api/sessions/:id/queue/:itemId/recover", (c) => {
+    const r = queues.recover(c.req.param("itemId"));
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
   app.put("/api/sessions/:id/queue/wrapup", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);

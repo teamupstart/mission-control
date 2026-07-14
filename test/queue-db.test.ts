@@ -47,6 +47,7 @@ function mkItem(over: Partial<WorkItem> = {}): WorkItem {
     escalationReason: null,
     lastVerdict: null,
     approvedAt: null,
+    recoveredAt: null,
     revision: 0,
     createdAt: now,
     updatedAt: now,

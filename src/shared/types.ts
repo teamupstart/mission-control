@@ -320,6 +320,18 @@ export interface WorkItem {
   lastVerdict: string | null;
   /** Set when a human approves a `proposed` item (the dry-run path). */
   approvedAt: number | null;
+  /**
+   * Set when Foreman restarted while this item was mid-`sending` and adopted it.
+   *
+   * The distinction is load-bearing at pickup-expiry, and it is NOT derivable from
+   * anything else. On the normal path the worker watched the inject resolve, so
+   * "delivered but never ingested" is positive evidence of non-delivery and a
+   * resend is safe. On the crash path we never learned whether the Enter was
+   * pressed - the text may be sitting unsubmitted in the pane - so a resend would
+   * paste a second copy after the first and mangle the prompt. A recovered item
+   * therefore escalates at expiry instead of resending.
+   */
+  recoveredAt: number | null;
   /** CAS token: bumped on every edit, so a stale UI write 409s. */
   revision: number;
   createdAt: number;

@@ -289,6 +289,12 @@ export type ReorderQueue = z.infer<typeof ReorderQueueSchema>;
 /**
  * The worker's durable state write for one item. Everything the machine decides
  * lands through here, so the daemon stays the only writer of the DB.
+ *
+ * `sentAt` and `recoveredAt` are deliberately ABSENT: both are clocks the server
+ * owns. `sentAt` is compared against `lastActivity` (which the registry stamps
+ * from the hook payload) to detect pickup, so the two must share a clock - the
+ * `/inject`-then-`markSent` and `/recover` routes stamp them, keeping that true by
+ * construction rather than by coincidence.
  */
 export const SetWorkItemStateSchema = z
   .object({

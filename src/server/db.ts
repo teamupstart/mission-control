@@ -119,6 +119,7 @@ export function openDb(): DatabaseSync {
       escalation_reason TEXT,
       last_verdict      TEXT,
       approved_at       INTEGER,           -- set when a human approves a 'proposed' item
+      recovered_at      INTEGER,           -- adopted mid-send after a restart -> never resend
       revision          INTEGER NOT NULL DEFAULT 0,  -- CAS token for edits
       created_at        INTEGER NOT NULL,
       updated_at        INTEGER NOT NULL,
@@ -422,6 +423,7 @@ interface QueueItemRow {
   escalation_reason: string | null;
   last_verdict: string | null;
   approved_at: number | null;
+  recovered_at: number | null;
   revision: number;
   created_at: number;
   updated_at: number;
@@ -445,6 +447,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     escalationReason: r.escalation_reason,
     lastVerdict: r.last_verdict,
     approvedAt: r.approved_at,
+    recoveredAt: r.recovered_at,
     revision: r.revision,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -511,23 +514,24 @@ export function upsertQueueItem(i: WorkItem): void {
       `INSERT INTO foreman_queue_items (
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
-         revision, created_at, updated_at, sent_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         recovered_at, revision, created_at, updated_at, sent_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
          transcript_anchor=excluded.transcript_anchor, gaps=excluded.gaps,
          send_attempts=excluded.send_attempts, verify_failures=excluded.verify_failures,
          escalation_reason=excluded.escalation_reason, last_verdict=excluded.last_verdict,
-         approved_at=excluded.approved_at, revision=excluded.revision,
+         approved_at=excluded.approved_at, recovered_at=excluded.recovered_at,
+         revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
          completed_at=excluded.completed_at`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
-      i.lastVerdict, i.approvedAt, i.revision, i.createdAt, i.updatedAt, i.sentAt,
-      i.completedAt,
+      i.lastVerdict, i.approvedAt, i.recoveredAt, i.revision, i.createdAt, i.updatedAt,
+      i.sentAt, i.completedAt,
     );
 }
 

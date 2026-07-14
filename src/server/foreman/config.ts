@@ -3,6 +3,7 @@ import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type { ForemanConfig, ForemanConfigPatch } from "@shared/protocol.ts";
 import { reportBucket } from "@shared/session.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
+import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 
 // Foreman's operating config + derived live status. The config is the only
@@ -44,9 +45,16 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   const sessions = registry.snapshot().sessions;
   const queueDepth = countNeedsYou(sessions);
 
+  // Scope counts to currently-live sessions: registry.listNotes() rehydrates
+  // every note ever stored (unbounded, never evicted), so counting all of them
+  // would let tallies and the "N drafts" badge accumulate lifetime history for
+  // long-gone sessions while queueDepth stays live. Keying on the same noteKeyFor
+  // the registry uses keeps the counts consistent with the live snapshot.
+  const liveKeys = new Set(sessions.map(noteKeyFor));
   const counts = { answered: 0, escalated: 0, pending: 0, skipped: 0 };
   let lastActionAt: number | null = null;
   for (const n of registry.listNotes()) {
+    if (!liveKeys.has(n.noteKey)) continue;
     counts[n.disposition]++;
     if (lastActionAt === null || n.updatedAt > lastActionAt) lastActionAt = n.updatedAt;
   }

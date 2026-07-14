@@ -47,19 +47,26 @@ export async function reviewSession(input: ReviewInput): Promise<Verdict> {
 /** Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. */
 function runClaude(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    // `--tools ""` disables every built-in tool. The prompt embeds untrusted
-    // child-session transcript text, and the reviewer only ever needs to emit a
-    // JSON verdict - so a crafted/compromised transcript must not be able to steer
-    // it into invoking tools (a prompt-injection surface).
+    // `--tools ""` is a valid Claude Code CLI flag (verified to exit 0 with an
+    // empty value) that sets the available-tool list to empty, disabling every
+    // built-in tool. The prompt embeds untrusted child-session transcript text,
+    // and the reviewer only ever needs to emit a JSON verdict - so a
+    // crafted/compromised transcript must not be able to steer it into invoking
+    // tools (a prompt-injection surface).
+    // `detached: true` makes the child its own session/process-group leader with
+    // no controlling terminal, so the fleet poller (which groups agents by tty
+    // and skips tty-less ones) never discovers this headless reviewer as a
+    // phantom session.
     const child = spawn(CLAUDE_BIN, ["-p", "--output-format", "json", "--tools", ""], {
       cwd: tmpdir(),
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
+      detached: true,
     });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
+      killReviewer(child);
       reject(new Error("review timed out"));
     }, REVIEW_TIMEOUT_MS);
     timer.unref?.();
@@ -77,6 +84,20 @@ function runClaude(prompt: string): Promise<string> {
     child.stdin.write(prompt);
     child.stdin.end();
   });
+}
+
+/**
+ * Terminate a detached reviewer. Because it's spawned `detached`, the child is
+ * its own process-group leader, so signalling the negative pid kills it plus any
+ * grandchildren it spawned; fall back to a direct kill if the group signal fails.
+ */
+function killReviewer(child: ReturnType<typeof spawn>): void {
+  try {
+    if (child.pid) process.kill(-child.pid, "SIGKILL");
+    else child.kill("SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
 }
 
 /**

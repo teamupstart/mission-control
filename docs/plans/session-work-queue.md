@@ -176,7 +176,7 @@ CREATE TABLE IF NOT EXISTS foreman_queue_items (
   state             TEXT NOT NULL,
   round             INTEGER NOT NULL DEFAULT 0,
   base_sha          TEXT,              -- HEAD at delivery -> scopes the diff
-  transcript_anchor TEXT,              -- ts/uuid at delivery -> scopes the window (§3.3)
+  transcript_anchor INTEGER,           -- transcript byte offset at delivery -> scopes it (§3.3)
   gaps              TEXT,              -- JSON TrackedGap[] (id, severity, strikes, ...)
   send_attempts     INTEGER NOT NULL DEFAULT 0,
   verify_failures   INTEGER NOT NULL DEFAULT 0,
@@ -269,10 +269,20 @@ An orphaned queue matches **no** live session, so `note_key`-only denormalizatio
   nothing is stranded with no surface whatsoever.
 - **Terminalizing (an orphan sweep).** The `exited -> escalate` row needs a live session with that
   key to drive it, so once the session is evicted from the snapshot an item stuck in
-  `awaiting_pickup`/`in_progress`/`verifying` would strand forever. The worker therefore sweeps
-  queues with no live session each tick (they are cheap - a single indexed read) and escalates any
-  non-terminal item with `reason: 'session-gone'`. This also releases the partial unique index, so a
-  re-attached queue is not permanently blocked by a phantom in-flight row.
+  `sending`/`awaiting_pickup`/`in_progress`/`verifying` would strand forever. Each tick the worker
+  enumerates queues with no live session (the same `orphaned=1` query that backs the fleet list -
+  by definition they are not in `targets`, which is built from live sessions) and escalates **only
+  the in-flight item** with `reason: 'session-gone'`. Single-flight guarantees there is at most one,
+  and it is the only item whose outcome is genuinely ambiguous: it was mid-work when the session
+  vanished. That also releases the partial unique index, so a re-attached queue is not permanently
+  blocked by a phantom in-flight row.
+
+  **`queued`/`proposed` items are deliberately left intact.** Escalating them would defeat the
+  re-attach affordance above - resuming a queue is the entire point, and there is nothing to resume
+  if the sweep already escalated the work that never started. This matters most on the `/clear` case
+  (below), where the human clears context on a live pane fully intending to keep working; escalating
+  their untouched backlog out from under them would be a bug wearing a safety hat. Untouched items
+  are not stranded either: they are on the same-cwd card and in the orphaned-queues list.
 
 ### 1.2 A worker lease - the single highest-value safety addition
 
@@ -292,6 +302,25 @@ on the critical path, not a detail. Replace the bare heartbeat with a leased one
 > renews when already ours, and reports `leader: false` otherwise. This subsumes
 > `recordForemanHeartbeat`'s module-global `lastHeartbeatAt` (`config.ts:23`), which cannot even
 > detect a second worker - it just gets beaten twice.
+
+**Renewal runs on a background `setInterval`, not from the loop.** This is the difference between a
+lease that works and one that hands the fleet to two workers mid-verify. The existing loop
+heartbeats *per session* and then blocks on a `claude -p` for the whole review - which is exactly
+why `HEARTBEAT_TTL_MS` is 300s and says so in its comment (`config.ts:16-21`): one review-with-retry
+is `2 * REVIEW_TIMEOUT_MS` = **240s**. A lease renewed only by loop progress must therefore outlive
+240s, so an earlier draft's `leaseTtlMs = 90_000` ("comfortably > one loop tick") was wrong on its
+own terms: a tick containing a verify *is* up to 240s. It would expire mid-verify, a standby would
+CAS-acquire, and both workers would run - reintroducing the triage double-answer race the lease
+exists to kill. (The original's post-verify send would still abort via §3.2's guard, so no double
+work-instruction - but the concurrent triage window would be wide open and the 240s verify wasted.)
+
+Bumping the TTL past 240s would paper over it; decoupling fixes it. A timer renews every
+`leaseRenewMs` regardless of what the loop is blocked on - `claude -p` is async I/O, so the event
+loop is free throughout a verify and the timer fires ~8 times during one. That makes the lease mean
+what it should ("this worker process is alive"), not "this worker recently finished a session", and
+it keeps failover **fast** (90s, not 300s) while surviving any future timeout change by
+construction. It also retires §3.1's "heartbeat before each verify" - a workaround for a
+loop-coupled beat that no longer exists.
 
 Two points the first draft left unstated:
 
@@ -317,7 +346,7 @@ Two points the first draft left unstated:
 | `PUT /api/sessions/:id/queue/:itemId/state` | the worker's durable state write |
 | `POST /api/sessions/:id/inject` | **new**: `injectPrompt` over HTTP (bracketed paste) |
 | `GET /api/sessions/:id/standards` | repo standards text, bounded - exact file set below |
-| `GET /api/sessions/:id/transcript?since=<ts>` | **extend**: today it takes only a turn count (§3.3) |
+| `GET /api/sessions/:id/transcript?since=<offset>` | **extend**: reads forward from a byte offset; today it takes only a turn count (§3.3) |
 
 `POST .../inject` mirrors `/send`'s contract exactly - `c.json(r, r.ok ? 200 : 500)` so the client
 genuinely throws on failure, which is what lets us write `awaiting_pickup` **only after** the inject
@@ -380,11 +409,27 @@ queueDrained(items): boolean
 9.                           -> send head                 // queued, or proposed+approved
 ```
 
-`head = nextSendable(items)` = the lowest `seq` among `{queued} union {proposed with approved_at}`.
+`head = nextSendable(items)` = **the lowest-`seq` non-terminal item, yielding null when that item is
+`proposed` without `approved_at`.** It stops at the head; it never skips past it. The queue is
+strictly one-at-a-time and always runs in authored order - which is the whole reason the human can
+reorder it (§4).
+
+An earlier draft defined this as "the lowest `seq` among `{queued} union {proposed with
+approved_at}`", which *filtered out* an unapproved draft instead of stopping at it. Three bugs fell
+out of that, all fixed by stopping: dry-run would draft the entire queue within N ticks (each tick
+skipping the previous unapproved draft) rather than one at a time; approving seq3 while seq1 sat
+unapproved would run seq3 **first**, silently reordering the human's sequence; and a dry-run -> live
+flip would strand the already-proposed items while later `queued` items jumped the line.
+
 Step 8 must consult `approved_at` or an approved item is simply re-proposed forever (the approve
-endpoint would do nothing). An approved send is still a send: it runs the **full**
-`queueSendStillValid` (§3.2), because the human's "yes" arrives minutes after the draft was made
-and the session may have moved on. Approve records consent; it does not bypass the guard.
+endpoint would do nothing). Note what the two guards do together: in **dry-run** an unapproved head
+is proposed once and then blocks the queue until you Approve it; in **live** `mayActLive` short-
+circuits step 8, so a draft left over from dry-run just sends - flipping to live is consent, and
+the item shouldn't need a second one.
+
+An approved send is still a send: it runs the **full** `queueSendStillValid` (§3.2), because the
+human's "yes" arrives minutes after the draft was made and the session may have moved on. Approve
+records consent; it does not bypass the guard.
 
 Payload = `round === 0 ? item.intent : renderFixPrompt(item)`.
 
@@ -413,9 +458,13 @@ Three edits; policy stays in the pure function.
    lives in the pure function, not scattered through the loop.
 3. **The queue path never writes `handledMarker` or `disposition`** - both belong to triage (§1.4).
 
-`await client.heartbeat()` before each **verify** as well as each session (`worker.ts:67`) - a
-verify chains another up-to-2x120s onto the tick, so re-check the `HEARTBEAT_TTL_MS = 300_000`
-margin (`config.ts:21`). The loop is serial; document the latency budget.
+Liveness moves **off** the loop entirely: the background lease renewal (§1.2) replaces both
+`worker.ts:67`'s per-session `await client.heartbeat()` and an earlier draft's "beat before each
+verify" patch. Both were workarounds for a heartbeat that only advanced when the loop did, and a
+verify chains another up-to-2x120s onto a tick that could already run that long. A timer that
+renews independently makes the `HEARTBEAT_TTL_MS = 300_000` margin (`config.ts:21`) a function of
+process liveness rather than of the slowest possible tick - so it stops needing a re-check every
+time a timeout changes. The loop stays serial; the latency budget below is the honest cost.
 
 `settleMs` default **10s**. Its jobs: absorb hook reordering (hooks are independent HTTP posts, so a
 `PostToolUse` can land after a `Stop` and briefly un-idle the session), and cover the pause between
@@ -433,7 +482,8 @@ an env override, following the `FOREMAN_REVIEW_TIMEOUT_MS` precedent (`review.ts
 | `pickupTimeoutMs` | 45_000 | constant, `FOREMAN_QUEUE_PICKUP_MS` |
 | `sendAttemptCap` | 3 | constant |
 | `verifyFailureCap` | 3 | constant (mirrors `REVIEW_FAILURE_CAP`) |
-| `leaseTtlMs` | 90_000 | constant - comfortably > one loop tick, << `HEARTBEAT_TTL_MS` |
+| `leaseRenewMs` | 30_000 | constant - background timer, independent of the loop |
+| `leaseTtlMs` | 90_000 | constant - 3 missed renewals, and **not** tied to tick duration |
 
 `ForemanConfigSchema` (`src/shared/protocol.ts`) therefore gains `maxFixAttempts` and
 `maxFixRounds`, alongside the new queue request schemas - **`protocol.ts` belongs in §1's file-touch

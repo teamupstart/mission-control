@@ -41,9 +41,9 @@ export interface Pending {
 }
 
 /**
- * Stand-in `question` for a needs-you session that has no activity line at all. It is
- * phrased as prose because it goes straight into the reviewer prompt; the Tier 0 gate
- * compares against it to tell a real activity string from this placeholder.
+ * Stand-in `question` `classifyPending` substitutes when a needs-you session carries no
+ * activity line at all. It is phrased as prose because it goes straight into the Tier 2
+ * reviewer prompt as the question.
  */
 export const NO_QUESTION_PLACEHOLDER = "(the session needs you, but no explicit question was found)";
 

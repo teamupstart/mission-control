@@ -35,7 +35,12 @@ export const TIER1_TURNS = 12;
  * carry the goal the user set. See `promptWindow` for why the prompt and the scan differ.
  */
 export const TIER1_HEAD_TURNS = 4;
-/** Below this, a routine-access/skip call is not trusted: it routes up to Opus instead. */
+/**
+ * Below this, a bucketing of ANY kind is not trusted and routes up to Opus - the guard sits
+ * above the bucket dispatch, so it catches a human-only escalate exactly as it catches a
+ * routine-access answer or a quiet skip. Routing up a low-confidence escalate is a deliberate
+ * trade: it could have been disposed for free, but an unsure router writes a poor brief.
+ */
 export const TIER1_MIN_CONFIDENCE = 0.6;
 
 /** How the cheap tier resolved a session: it either disposed it or routed it up. */
@@ -121,6 +126,19 @@ export function isDestructive(text: string): boolean {
  */
 function riskContextFrom(messages: TranscriptMessage[]): string {
   return messages.map((m) => [m.text, ...m.tools].join(" ")).join("\n");
+}
+
+/**
+ * Whether the window holds any of the child's own prose - the only thing the denylist can
+ * actually match a command in. A turn survives `toMessage` on its tool calls alone (it drops
+ * a turn only when it has neither text nor tools), and such a turn flattens to bare tool NAMES
+ * ("Bash"), so a window can be non-empty and still carry nothing scannable. Backstop 3 keys on
+ * this rather than on `messages.length` for that reason: a run of prose-free tool calls is an
+ * ordinary shape for a tool-heavy stretch of work, and counting it as "scanned and clean" would
+ * be exactly the fail-open the backstop exists to prevent.
+ */
+function hasProse(messages: TranscriptMessage[]): boolean {
+  return messages.some((m) => m.text.trim().length > 0);
 }
 
 /**
@@ -241,7 +259,7 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
 /**
  * Tier 1 - the pure mapping from a router's bucketing to a triage outcome, with the hard
  * CODE backstops the router cannot override: a destructive ask, low confidence, and a
- * window too empty to have scanned for the first. Kept free of I/O so the whole safety
+ * window with no prose for the first to have scanned. Kept free of I/O so the whole safety
  * contract is unit-tested: the model buckets (the report); this decides what that is
  * allowed to become. `window` must be trimmed to TIER1_TURNS by the caller.
  */
@@ -251,7 +269,7 @@ export function mapTriage(report: TriageReport, pending: Pending, window: Transc
   // never wave it through. The window matters most on the terminal surface, where
   // `question` is only a generic notification line and never names the command itself.
   // The window is taken whole (rather than a pre-flattened string) so that "scanned and
-  // clean" stays distinguishable from "nothing was scanned" - see backstop 3.
+  // clean" stays distinguishable from "there was nothing to scan" - see backstop 3.
   const risky =
     isDestructive(pending.question) ||
     isDestructive(riskContextFrom(window)) ||
@@ -290,13 +308,14 @@ export function mapTriage(report: TriageReport, pending: Pending, window: Transc
       verdict: escalateVerdict(report.purpose, report.brief, report.answer?.text ?? report.recommendation),
     };
   }
-  // Backstop 3: with no window, backstop 1 scanned NOTHING - so `risky === false` above
-  // means "unknown", not "safe", and on the terminal surface nothing else can see the
-  // command either (the question is a generic notification, the reply is the router's own
-  // "Approve - go ahead."). An auto-answer is the only outcome that ACTS, so it is the only
-  // one gated here: route up and let the full reviewer, which fetches its own window, decide.
-  // Skip and escalate above are the safe directions and stay allowed from an empty window.
-  if (window.length === 0) return { kind: "route-up", reason: "no-transcript-context" };
+  // Backstop 3: with no prose in the window, backstop 1 scanned nothing that could name a
+  // command (see `hasProse`) - so `risky === false` above means "unknown", not "safe", and on
+  // the terminal surface nothing else can see the command either (the question is a generic
+  // notification, the reply is the router's own "Approve - go ahead."). An auto-answer is the
+  // only outcome that ACTS, so it is the only one gated here: route up and let the full
+  // reviewer, which fetches its own window, decide. Skip and escalate above are the safe
+  // directions and stay allowed with nothing scanned.
+  if (!hasProse(window)) return { kind: "route-up", reason: "no-transcript-context" };
 
   if (!report.answer?.text) {
     // Bucketed routine-access but produced no reply to send - don't guess; route up.
@@ -315,7 +334,7 @@ export interface TriageDeps {
   /**
    * The daemon's transcript window. `unavailable` is a 200 that carries no window at all
    * (the session has no resolvable transcript file); it, a read error, and a failed fetch
-   * all arrive here as an EMPTY `messages`, which the no-window backstop treats alike.
+   * all arrive here as an EMPTY `messages`, which the no-context backstop treats alike.
    */
   transcript(
     id: string,
@@ -351,7 +370,7 @@ export async function triageSession(
   }
   // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
   // here. `recent` is the ask's neighbourhood: it is what the denylist scans and what the
-  // no-window backstop keys on. The router's prompt gets `recent` plus the opening turns -
+  // no-context backstop keys on. The router's prompt gets `recent` plus the opening turns -
   // see `promptWindow` for why the two windows differ. Eliding the middle is itself a
   // truncation, so say so rather than letting the router read a gapped window as the whole story.
   const recent = window.messages.slice(-TIER1_TURNS);

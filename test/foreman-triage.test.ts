@@ -207,6 +207,32 @@ test("mapTriage: an EMPTY window can never take the auto-answer (nothing was sca
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
 });
 
+test("mapTriage: a PROSE-FREE window can never take the auto-answer either", () => {
+  // A bare tool call survives `toMessage` (it drops a turn only when it has neither text nor
+  // tools), and flattens to the tool NAME alone - "Bash" names no command, so the denylist
+  // scanned nothing even though the window is 12 turns long. Counting turns would wave this
+  // through; the gate keys on prose for exactly this shape.
+  const out = mapTriage(
+    report(),
+    pend({ question: "Claude needs your permission" }),
+    Array.from({ length: 12 }, () => msg("", ["Bash"])),
+  );
+  assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("mapTriage: one prose turn among tool calls is enough to have scanned", () => {
+  // The gate asks whether there was anything to scan, not how much - a single line of the
+  // child's own prose is a real view of what it is about to run, so Tier 1 may answer.
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), [
+    msg("", ["Bash"]),
+    msg("Running the unit tests now to confirm the refactor holds.", ["Bash"]),
+    msg("", ["Read"]),
+  ]);
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
+});
+
 test("mapTriage: an empty window still allows the safe directions (skip + escalate)", () => {
   const esc = mapTriage(report({ bucket: "human-only", disposition: "escalate", answer: undefined }), pend(), []);
   assert.equal(esc.kind, "dispose");
@@ -371,6 +397,21 @@ test("triageSession: an EMPTY window routes up rather than auto-answering (the d
   // reply is Haiku's own "Approve - go ahead.", so nothing else can catch a risky ask either.
   const out = await triageSession(
     deps({ transcript: async () => ({ messages: [], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession({ activity: "Claude needs your permission" }),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession: a window of pure TOOL CALLS routes up (tool names name no command)", async () => {
+  // A tool-heavy stretch with no interleaved prose is an ordinary shape for agent work, and it
+  // reaches the router as a full-length window carrying nothing the denylist can match.
+  const out = await triageSession(
+    deps({
+      transcript: async () => ({ messages: Array.from({ length: 12 }, () => msg("", ["Bash"])), truncated: false }),
+    }),
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession({ activity: "Claude needs your permission" }),
     cfg(),

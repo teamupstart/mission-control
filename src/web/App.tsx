@@ -5,7 +5,8 @@ import { useEventStream } from "./useEventStream.ts";
 import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
-import { DispatchModal } from "./components/DispatchModal.tsx";
+import { DispatchModal, EMPTY_DISPATCH_DRAFT } from "./components/DispatchModal.tsx";
+import type { DispatchDraft } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
@@ -40,6 +41,10 @@ export function App(): React.JSX.Element {
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  // The dispatch form's draft lives here, not in the modal, so closing the modal
+  // (Esc / Cancel / backdrop) preserves what you've typed. It's cleared only once
+  // the task is actually dispatched or queued.
+  const [dispatchDraft, setDispatchDraft] = useState<DispatchDraft>(EMPTY_DISPATCH_DRAFT);
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
@@ -439,7 +444,17 @@ export function App(): React.JSX.Element {
         />
       )}
 
-      {dispatchOpen && <DispatchModal onClose={() => setDispatchOpen(false)} />}
+      {dispatchOpen && (
+        <DispatchModal
+          draft={dispatchDraft}
+          onDraftChange={setDispatchDraft}
+          onClose={() => setDispatchOpen(false)}
+          onSubmitted={() => {
+            setDispatchDraft(EMPTY_DISPATCH_DRAFT);
+            setDispatchOpen(false);
+          }}
+        />
+      )}
 
       {reportOpen && (
         <ReportPanel

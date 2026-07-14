@@ -3,21 +3,56 @@ import type { TaskKind, AgentType } from "@shared/types.ts";
 import { api, fetchRepos } from "../lib/api.ts";
 
 /**
+ * The form fields a dispatch carries. Held by the parent (not the modal) so an
+ * accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
+ * half-written task around; the draft is wiped only once it's actually
+ * dispatched or queued (see EMPTY_DISPATCH_DRAFT).
+ */
+export type DispatchDraft = {
+  repoRoot: string;
+  intent: string;
+  title: string;
+  kind: TaskKind;
+  agent: AgentType;
+};
+
+export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
+  repoRoot: "",
+  intent: "",
+  title: "",
+  kind: "ship",
+  agent: "claude",
+};
+
+/**
  * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
+ *
+ * The form values live in `draft` on the parent so they survive close/reopen;
+ * only the transient UI state (repo index, busy, error) is local here.
  */
-export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+export function DispatchModal({
+  draft,
+  onDraftChange,
+  onClose,
+  onSubmitted,
+}: {
+  draft: DispatchDraft;
+  onDraftChange: (draft: DispatchDraft) => void;
+  onClose: () => void;
+  onSubmitted: () => void;
+}): React.JSX.Element {
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
-  const [repoRoot, setRepoRoot] = useState("");
-  const [intent, setIntent] = useState("");
-  const [title, setTitle] = useState("");
-  const [kind, setKind] = useState<TaskKind>("ship");
-  const [agent, setAgent] = useState<AgentType>("claude");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
+
+  // Merge one field's change into the lifted draft.
+  function update(patch: Partial<DispatchDraft>): void {
+    onDraftChange({ ...draft, ...patch });
+  }
 
   useEffect(() => {
     intentRef.current?.focus();
@@ -47,19 +82,21 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
   }, [onClose]);
 
   async function submit(queue: boolean): Promise<void> {
-    if (!repoRoot.trim() || !intent.trim() || busy) return;
+    if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
     setBusy(true);
     setError(null);
     const r = await api.dispatch({
-      repoRoot: repoRoot.trim(),
-      intent: intent.trim(),
-      title: title.trim() || undefined,
-      kind,
-      agent,
+      repoRoot: draft.repoRoot.trim(),
+      intent: draft.intent.trim(),
+      title: draft.title.trim() || undefined,
+      kind: draft.kind,
+      agent: draft.agent,
       queue,
     });
     setBusy(false);
-    if (r.ok) onClose();
+    // Clear the draft and close only once it's actually accepted; a failed
+    // submit keeps the modal open with the fields intact so you can retry.
+    if (r.ok) onSubmitted();
     else setError(r.error ?? "dispatch failed");
   }
 
@@ -88,7 +125,11 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
                   : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
               </span>
             </span>
-            <RepoCombobox repos={repos} value={repoRoot} onChange={setRepoRoot} />
+            <RepoCombobox
+              repos={repos}
+              value={draft.repoRoot}
+              onChange={(v) => update({ repoRoot: v })}
+            />
           </label>
 
           <div className="field-row">
@@ -96,8 +137,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
               <span className="field-label">Kind</span>
               <select
                 className="field-input"
-                value={kind}
-                onChange={(e) => setKind(e.target.value as TaskKind)}
+                value={draft.kind}
+                onChange={(e) => update({ kind: e.target.value as TaskKind })}
               >
                 <option value="ship">ship - deliver a change</option>
                 <option value="scout">scout - investigate / report</option>
@@ -107,8 +148,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
               <span className="field-label">Agent</span>
               <select
                 className="field-input"
-                value={agent}
-                onChange={(e) => setAgent(e.target.value as AgentType)}
+                value={draft.agent}
+                onChange={(e) => update({ agent: e.target.value as AgentType })}
               >
                 <option value="claude">Claude Code</option>
                 <option value="codex">Codex</option>
@@ -123,8 +164,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
             <input
               className="field-input"
               placeholder="auto from the task if left blank"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              value={draft.title}
+              onChange={(e) => update({ title: e.target.value })}
             />
           </label>
 
@@ -135,8 +176,8 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
               className="field-input field-textarea"
               placeholder="What should this agent do?"
               rows={5}
-              value={intent}
-              onChange={(e) => setIntent(e.target.value)}
+              value={draft.intent}
+              onChange={(e) => update({ intent: e.target.value })}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(false);
               }}
@@ -157,7 +198,7 @@ export function DispatchModal({ onClose }: { onClose: () => void }): React.JSX.E
           <button
             className="btn btn-primary"
             onClick={() => void submit(false)}
-            disabled={busy || !repoRoot.trim() || !intent.trim()}
+            disabled={busy || !draft.repoRoot.trim() || !draft.intent.trim()}
             title="⌘/Ctrl+Enter"
           >
             {busy ? "Dispatching…" : "Dispatch now"}

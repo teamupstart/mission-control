@@ -40,6 +40,19 @@ function countAdded(patch: string): number {
 }
 
 /**
+ * The git toplevel containing `cwd`, or null when it isn't a repo.
+ *
+ * Resolved here rather than accepted from the caller: this is what the standards
+ * reader treats as the root it may read files under, so it has to come from git, not
+ * from a request.
+ */
+export async function repoRootOf(cwd: string | null): Promise<string | null> {
+  if (!cwd) return null;
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  return top.code === 0 && top.stdout.trim() ? top.stdout.trim() : null;
+}
+
+/**
  * Compute the diff of `cwd`'s worktree/branch against its source branch. Falls
  * back to a working-tree-vs-HEAD diff when there's no *auto-detected* source
  * branch or no shared history (a brand-new branch), so you always see uncommitted
@@ -47,13 +60,17 @@ function countAdded(patch: string): number {
  */
 export async function computeSessionDiff(cwd: string | null, source?: string): Promise<SessionDiff> {
   const base0: SessionDiff = {
-    ok: false, error: null, base: null, baseSha: null, headSha: null, branch: null,
-    filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
+    ok: false, error: null, base: null, baseSha: null, headSha: null, repoRoot: null,
+    branch: null, filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
   };
   if (!cwd) return { ...base0, error: "session has no working directory" };
 
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0) return { ...base0, error: "not a git repository" };
+  // Reported, not discarded: `patch`'s paths are relative to the toplevel, so a
+  // caller resolving them against the session's cwd would be wrong for any session
+  // that isn't sitting at the repo root - the ordinary case in a monorepo.
+  const repoRoot = top.stdout.trim() || null;
 
   const branchRes = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : null;
@@ -83,6 +100,7 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
         ...base0,
         branch,
         headSha,
+        repoRoot,
         error: `base commit ${source} is not reachable (rebased, amended, or garbage-collected?)`,
       };
     }
@@ -121,7 +139,7 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   }
 
   return {
-    ok: true, error: null, base: base ?? null, baseSha, headSha, branch,
+    ok: true, error: null, base: base ?? null, baseSha, headSha, repoRoot, branch,
     filesChanged, insertions, deletions, patch, truncated,
   };
 }

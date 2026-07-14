@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeSessionDiff } from "../src/server/diff.ts";
@@ -169,4 +169,31 @@ test("parsePatch handles new files, deletions, and multiple files", () => {
   assert.equal(files[1]!.path, "gone.txt");
   assert.equal(files[1]!.status, "deleted");
   assert.equal(files[1]!.removed, 1);
+});
+
+test("computeSessionDiff reports the repo TOPLEVEL, even when run from a subdirectory", async () => {
+  // `patch`'s paths are toplevel-relative (git emits them that way wherever it's
+  // invoked from), so anything resolving them needs the toplevel - and the standards
+  // reader is exactly that. It used to be computed here and thrown away, which left
+  // the reader trusting a session's cwd instead.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  mkdirSync(join(repo, "packages", "app"), { recursive: true });
+  writeFileSync(join(repo, "packages", "app", "a.txt"), "hello\n");
+  git("add", "-A");
+  git("commit", "-qm", "nested");
+  writeFileSync(join(repo, "packages", "app", "a.txt"), "hello\nagain\n");
+
+  const d = await computeSessionDiff(join(repo, "packages", "app"));
+
+  assert.equal(d.ok, true);
+  assert.equal(d.repoRoot, repo, "the toplevel, not the cwd it was invoked from");
+  assert.match(d.patch, /\+\+\+ b\/packages\/app\/a\.txt/, "and the patch's paths are relative to it");
+});
+
+test("computeSessionDiff reports no repoRoot outside a git repo", async () => {
+  const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-norepo-")));
+  const d = await computeSessionDiff(notRepo);
+  assert.equal(d.ok, false);
+  assert.equal(d.repoRoot, null);
 });

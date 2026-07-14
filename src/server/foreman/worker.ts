@@ -279,7 +279,7 @@ async function processTarget(
   }
 
   if (action.kind === "verify") {
-    await runVerify(client, cfg, session, action.item, qcfg);
+    await runVerify(client, cfg, session, action.item, queue, qcfg);
     return;
   }
 
@@ -363,6 +363,7 @@ async function runVerify(
   cfg: ForemanConfig,
   session: Session,
   item: WorkItem,
+  queue: SessionQueue,
   qcfg: QueueConfig,
 ): Promise<void> {
   await client
@@ -427,9 +428,9 @@ async function runVerify(
     round: item.round,
     diff: diff.patch,
     diffTruncated: diff.truncated,
-    // The diff is cumulative whenever the agent doesn't commit, so anything before
-    // this item's base may be an earlier item's uncommitted work.
-    diffMayIncludeOtherWork: diffMayIncludeOtherWork(diff.baseSha, item.baseSha),
+    // The diff is cumulative whenever the agent doesn't commit, so an earlier item
+    // delivered at this same base has its uncommitted work in here too.
+    diffMayIncludeOtherWork: diffMayIncludeOtherWork(item, queue.items),
     transcript: window.messages,
     transcriptTruncated: window.truncated,
     standards: standards.docs,
@@ -448,6 +449,10 @@ async function runVerify(
     gaps: plan.gaps,
     escalationReason: plan.escalationReason,
     lastVerdict: plan.lastVerdict,
+    // The draft lands in the SAME write as the state it belongs to, so the item is
+    // never `proposed` with no text under it - the window in which Approve would
+    // consent to a prompt the human never saw.
+    proposedPayload: plan.proposedPayload,
     // A verdict is evidence about the work, so it clears the transient-failure
     // count - the same "onSuccess" shape ReviewFailureTracker uses.
     verifyFailures: 0,

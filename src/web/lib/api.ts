@@ -49,7 +49,7 @@ export async function fetchResetPreview(id: string): Promise<ResetPreview> {
 /** Fetch a session's diff vs its source branch. Never throws - maps failures into the shape. */
 export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
   const fail = (error: string): SessionDiff => ({
-    ok: false, error, base: null, baseSha: null, headSha: null, branch: null,
+    ok: false, error, base: null, baseSha: null, headSha: null, repoRoot: null, branch: null,
     filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
   });
   try {

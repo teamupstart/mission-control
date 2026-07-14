@@ -17,6 +17,7 @@ import type {
   WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
+import { IN_FLIGHT_ITEM_STATES } from "@shared/queue.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
@@ -128,15 +129,25 @@ export function openDb(): DatabaseSync {
       completed_at      INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_fqi_queue ON foreman_queue_items(note_key, seq);
-
-    -- Single-flight per queue, enforced by the DB rather than by hope: at most one
-    -- item per note_key may be mid-cycle. The stakes are a duplicated WORK
-    -- INSTRUCTION typed into a live agent, so this is a constraint, not a comment.
-    CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_per_queue ON foreman_queue_items(note_key)
-      WHERE state IN ('sending','awaiting_pickup','in_progress','verifying');
   `);
+  db.exec(inFlightIndexSql());
   migrate(db);
   return db;
+}
+
+/**
+ * Single-flight per queue, enforced by the DB rather than by hope: at most one item
+ * per note_key may be mid-cycle. The stakes are a duplicated WORK INSTRUCTION typed
+ * into a live agent, so this is a constraint, not a comment.
+ *
+ * The predicate is BUILT from IN_FLIGHT_ITEM_STATES rather than restated here, so
+ * the enforcement and its two TypeScript readers cannot drift apart. `state` is a
+ * closed enum of identifiers, so quoting them into SQL is safe by construction.
+ */
+function inFlightIndexSql(): string {
+  const states = IN_FLIGHT_ITEM_STATES.map((s) => `'${s}'`).join(",");
+  return `CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_per_queue ON foreman_queue_items(note_key)
+      WHERE state IN (${states});`;
 }
 
 /**
@@ -157,6 +168,44 @@ function migrate(d: DatabaseSync): void {
   // rows read as "no draft recorded" - and the machine re-drafts on the next tick
   // rather than showing a card with nothing under it.
   addColumn(d, "foreman_queue_items", "proposed_payload", "TEXT");
+
+  rebuildInFlightIndexIfStale(d);
+}
+
+/**
+ * Rebuild the single-flight index when its stored predicate no longer names the
+ * states IN_FLIGHT_ITEM_STATES does.
+ *
+ * Deriving the SQL only makes the index agree with its readers on a FRESH db:
+ * `CREATE UNIQUE INDEX IF NOT EXISTS` leaves an existing index untouched, so a db
+ * created before a lifecycle state was added would go on enforcing the old
+ * predicate while both TypeScript readers used the new one - exactly the silent
+ * drift the shared constant exists to prevent, just deferred to upgrade time.
+ *
+ * A rebuild can legitimately fail: widening the set can surface rows that already
+ * violate single-flight. That's worth reporting, but not worth bricking every
+ * subsequent start over - the old index still enforces something, so keep it and
+ * say so rather than refusing to open the db.
+ */
+function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
+  const row = d
+    .prepare(`SELECT sql FROM sqlite_master WHERE type='index' AND name='one_inflight_per_queue'`)
+    .get() as { sql: string | null } | undefined;
+  if (!row?.sql) return;
+  // SQLite stores the CREATE text with `IF NOT EXISTS` stripped, so compare the one
+  // thing that carries meaning: which states the WHERE clause names.
+  const stored = new Set([...row.sql.matchAll(/'([a-z_]+)'/g)].map((m) => m[1]));
+  const want = new Set<string>(IN_FLIGHT_ITEM_STATES);
+  if (stored.size === want.size && [...want].every((s) => stored.has(s))) return;
+  try {
+    d.exec("DROP INDEX one_inflight_per_queue;");
+    d.exec(inFlightIndexSql());
+  } catch (err) {
+    console.error(
+      "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
+        `single-flight): ${String(err)}`,
+    );
+  }
 }
 
 /** Add a column unless it's already there. The idempotent half of a migration. */

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
@@ -496,10 +497,25 @@ test("approve clears a proposed item, and is refused for anything else", async (
   });
   assert.equal(early.status, 409);
 
+  // `proposed` with no drafted text is not an approvable item either: Approve means
+  // "type THIS", so with nothing to read there is nothing to consent to. The window
+  // is real - a fix round parks the item at `proposed` and the draft is written in
+  // the same breath, but only a server that enforces this can't be raced by a card.
   await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
     method: "PUT",
     headers: jsonHeaders,
     body: JSON.stringify({ state: "proposed" }),
+  });
+  const draftless = await app.request(`/api/sessions/sess-1/queue/${item.id}/approve`, {
+    method: "POST",
+    headers: LOOPBACK,
+  });
+  assert.equal(draftless.status, 409, "a proposed item with no draft can't be approved");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "proposed", proposedPayload: "needs an OK" }),
   });
   const ok = await app.request(`/api/sessions/sess-1/queue/${item.id}/approve`, {
     method: "POST",
@@ -510,6 +526,160 @@ test("approve clears a proposed item, and is refused for anything else", async (
   const read = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
   const queue = (await read.json()) as { items: Array<{ approvedAt: number | null }> };
   assert.ok(queue.items[0]?.approvedAt, "approve records consent");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
+test("a queue is not orphaned while its session is still inside the exit linger", async () => {
+  // `exited` is PROVISIONAL: applyDiscovery marks any session missing from a single
+  // sweep as exited and only evicts it 8s later, cancelling that timer if it comes
+  // back. Reading the state as "gone" ignores the very guard the linger provides.
+  //
+  // The cost of getting this wrong is unrecoverable: one hiccuping `ps` sweep marks
+  // the whole fleet exited, and the worker's orphan sweep - which runs several times
+  // a second - escalates every in-flight item in the fleet. The next poll un-marks
+  // the sessions, but escalation is terminal and has no undo.
+  //
+  // This drives /api/queues?orphaned=1, which IS what the worker's sweep calls.
+  seedSession();
+  const item = await addItem("add the retry");
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "in_progress" }),
+  });
+
+  const orphaned = async (): Promise<string[]> => {
+    const r = await app.request("/api/queues?orphaned=1", { headers: LOOPBACK });
+    return ((await r.json()) as Array<{ noteKey: string }>).map((q) => q.noteKey);
+  };
+
+  assert.deepEqual(await orphaned(), [], "a live session's queue is never orphaned");
+
+  // One sweep misses the session: it's marked exited, and the 8s eviction is armed.
+  registry.applyDiscovery([]);
+  assert.deepEqual(
+    await orphaned(),
+    [],
+    "a single missed poll must not hand an in-flight item to the orphan sweep",
+  );
+
+  // The session reappears on the next poll, which cancels the eviction - and also
+  // stops that timer from firing into later tests.
+  seedSession();
+  assert.deepEqual(await orphaned(), []);
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "cancelled" }),
+  });
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
+test("a fix round keeps round 0's scope - the agent that COMMITS isn't punished for it", async () => {
+  // The item's evidence is its CUMULATIVE work, because that's what the verifier is
+  // asked: the prompt hands it the original intent and asks whether that intent was
+  // satisfied. Re-anchoring on every send made that question unanswerable, and only
+  // for agents that commit - which is to say, it punished the good citizen.
+  //
+  // Trace the real thing: round 0 is delivered at abc1234; the agent implements the
+  // feature AND commits, so HEAD becomes def5678; verify raises one blocking gap and
+  // round 1 is sent. Re-anchoring round 1 to def5678 would scope the diff to the fix
+  // alone and move the transcript window past the work that satisfied the intent - so
+  // the verifier, asked "was the intent satisfied?", would honestly answer no, mint
+  // fresh gaps for work already done, and ride the round budget to escalation.
+  //
+  // A non-committing agent never moves HEAD, so the bug was invisible to it. This
+  // drives the real route -> QueueManager -> registry -> db, because the re-anchor
+  // lived in the write itself and a fake markSent could never have shown it.
+  seedSession();
+  const item = await addItem("add the retry");
+
+  const send = async (baseSha: string, transcriptAnchor: number) => {
+    await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ state: "sending" }),
+    });
+    const r = await app.request(`/api/sessions/sess-1/queue/${item.id}/sent`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ baseSha, transcriptAnchor }),
+    });
+    assert.equal(r.status, 200);
+    return (await r.json()) as { baseSha: string | null; transcriptAnchor: number | null };
+  };
+
+  // Round 0: delivered at abc1234, with the transcript ending at byte 100.
+  const round0 = await send("abc1234", 100);
+  assert.equal(round0.baseSha, "abc1234");
+  assert.equal(round0.transcriptAnchor, 100);
+
+  // The agent works, COMMITS (HEAD moves to def5678), and the transcript grows.
+  // Verify finds a gap, so round 1 goes out - captured at the NEW head.
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "in_progress" }),
+  });
+  const round1 = await send("def5678", 9_000);
+
+  assert.equal(round0.baseSha, "abc1234");
+  assert.equal(
+    round1.baseSha,
+    "abc1234",
+    "round 1 must still be judged against round 0's base, or the committed work vanishes from the diff",
+  );
+  assert.equal(
+    round1.transcriptAnchor,
+    100,
+    "and against round 0's transcript anchor, or the work vanishes from the window too",
+  );
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "verified" }),
+  });
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
+test("an item write moves the queue's updatedAt, so an open panel learns about a draft", async () => {
+  // The card's summary is a compact projection - counts and the in-flight state -
+  // and the panel refetches off it. `queued -> proposed` moves NONE of those:
+  // `proposed` is neither in-flight nor terminal, so openCount and inFlightState
+  // both sit still and the summary comes out byte-identical. In dry-run - the
+  // DEFAULT mode - that meant a round-0 draft never appeared, and since Approve is
+  // the only thing that advances a dry-run queue, the whole batch wedged until the
+  // human happened to collapse and re-expand the card.
+  //
+  // Timestamping the queue row on any item write is what makes "an item changed"
+  // observable without teaching the summary every state.
+  seedSession();
+  const item = await addItem("add the retry");
+
+  const summary = async () => {
+    const s = (await sessions()).find((x) => x.id === "sess-1");
+    return s?.queue ?? null;
+  };
+
+  const before = await summary();
+  assert.ok(before, "the card carries a queue summary");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "proposed", proposedPayload: "add the retry" }),
+  });
+
+  const after = await summary();
+  assert.equal(after?.openCount, before?.openCount, "the counts genuinely don't move…");
+  assert.equal(after?.inFlightState, before?.inFlightState, "…and neither does the in-flight state");
+  assert.ok(
+    (after?.updatedAt ?? 0) > (before?.updatedAt ?? 0),
+    "so updatedAt must move, or the panel never refetches and the draft is invisible",
+  );
 
   await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
 });
@@ -774,4 +944,110 @@ test("/mcp/status validates the shared EnvSchema and updates activity on success
     body: JSON.stringify({ env: { tmuxPane: 123 }, activity: "x" }),
   });
   assert.equal(bad.status, 400);
+});
+
+test("the standards route reads the repo's contract from the git TOPLEVEL, not the session's cwd", async () => {
+  // The whole seam: route -> repoRootOf (a real `git rev-parse --show-toplevel`) ->
+  // readStandards. The paths come from a diff, and git emits those relative to the
+  // toplevel wherever it was invoked from - so a session sitting in a monorepo
+  // package (the ordinary case) used to look for the root AGENTS.md one level down,
+  // find nothing, and hand the verifier an empty bundle with `truncated: false`.
+  // Nothing said so: it judged against the repo's main contract without it.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "fleet-standards-")));
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  git("init", "-q");
+  mkdirSync(join(repo, "packages", "app", "src"), { recursive: true });
+  writeFileSync(join(repo, "AGENTS.md"), "# the repo's contract");
+  writeFileSync(join(repo, "packages", "app", "CLAUDE.md"), "# the package's own");
+
+  // A session whose cwd is the PACKAGE, not the toplevel.
+  registry.applyDiscovery([
+    {
+      syntheticId: "sess-nested",
+      agent: "claude",
+      name: "nested",
+      nameSource: "tmux",
+      cwd: join(repo, "packages", "app"),
+      gitBranch: "main",
+      nomistakesGated: false,
+      pid: 4343,
+      tty: "ttys009",
+      wezterm: null,
+      tmux: { session: "work", window: "w", windowIndex: 1, paneId: "%9" },
+      startedAt: 0,
+    },
+  ]);
+
+  const r = await app.request(
+    "/api/sessions/sess-nested/standards?path=packages/app/src/a.ts",
+    { headers: LOOPBACK },
+  );
+  assert.equal(r.status, 200);
+  const bundle = (await r.json()) as { docs: Array<{ path: string; text: string }> };
+  const paths = bundle.docs.map((d) => d.path).sort();
+
+  assert.ok(paths.includes("AGENTS.md"), "the repo's main contract must reach the verifier");
+  assert.ok(paths.includes("packages/app/CLAUDE.md"), "and so must the package's own");
+});
+
+test("a /clear orphans the queue, and re-attaching it is offered where it can succeed", async () => {
+  // The whole point of leaving waiting items intact when a session goes: resuming a
+  // batch. `noteKeyFor` is `agentSessionId ?? id`, so a /clear mints a new key and
+  // the old queue belongs to nobody - the card offers a re-attach hint keyed on cwd.
+  //
+  // Terminal items on the TARGET must not block it. They can't collide on the
+  // single-flight index (it only covers in-flight states) and nobody is waiting on
+  // them, so refusing over them would 409 exactly the case that is safe - and the
+  // card would be showing a button that always fails.
+  seedSession();
+  const hook = (sessionId: string) =>
+    app.request("/hooks/Stop", {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId, cwd: "/repo/app" }),
+    });
+
+  // The session identifies itself as agent session "before-clear" and gets a queue.
+  await hook("before-clear");
+  const item = await addItem("resume me");
+  const stranded = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  assert.equal(((await stranded.json()) as { noteKey: string }).noteKey, "before-clear");
+
+  // /clear: same pane, brand-new agent session id. The queue is now orphaned.
+  await hook("after-clear");
+  const s = (await sessions()).find((x) => x.id === "sess-1")!;
+  assert.equal(s.orphanedQueue?.noteKey, "before-clear", "the card must be told it's there");
+  assert.equal(s.orphanedQueue?.itemCount, 1);
+
+  // A finished batch already sitting on the new key must not block the re-attach.
+  const done = await addItem("already finished");
+  await app.request(`/api/sessions/sess-1/queue/${done.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "verified" }),
+  });
+
+  const r = await app.request("/api/sessions/sess-1/queue/reattach", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ noteKey: "before-clear" }),
+  });
+  assert.equal(r.status, 200, "terminal items can't collide, so this has to be allowed");
+
+  const after = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  const q = (await after.json()) as { noteKey: string; items: Array<{ id: string; intent: string }> };
+  assert.equal(q.noteKey, "after-clear");
+  assert.ok(
+    q.items.some((i) => i.intent === "resume me"),
+    "the stranded work resumes on the live session",
+  );
+
+  for (const i of q.items) {
+    await app.request(`/api/sessions/sess-1/queue/${i.id}/state`, {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ state: "cancelled" }),
+    });
+    await app.request(`/api/sessions/sess-1/queue/${i.id}`, { method: "DELETE", headers: LOOPBACK });
+  }
 });

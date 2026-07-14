@@ -670,6 +670,13 @@ export interface SessionDiff {
   /** Short sha of the merge-base actually diffed against, or null (diffed vs HEAD). */
   baseSha: string | null;
   headSha: string | null;
+  /**
+   * The repo's toplevel (`git rev-parse --show-toplevel`), or null when the cwd
+   * isn't a git repo. The paths in `patch` are relative to THIS, not to the
+   * session's cwd - git emits toplevel-relative paths wherever it's invoked from -
+   * so anything resolving a changed path needs it.
+   */
+  repoRoot: string | null;
   branch: string | null;
   filesChanged: number;
   insertions: number;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
 // The repo's own standards docs - what the queue verifier judges an item's diff
@@ -47,6 +47,12 @@ export interface StandardsBundle {
 export function readStandards(repoRoot: string | null, changedPaths: string[]): StandardsBundle {
   if (!repoRoot || !existsSync(repoRoot)) return { docs: [], truncated: false };
   const root = resolve(repoRoot);
+  // Containment is judged real-path against REAL-path. Resolving only the file side
+  // would reject every doc in a repo whose own path runs through a symlink - which is
+  // not exotic: /tmp is one on macOS, and so is many a home directory or checkout.
+  // Paths are still reported relative to `root`, so a gap cites the file the repo
+  // knows it by, not wherever the links happen to land.
+  const realRoot = realpathOr(root);
   const wanted: string[] = [];
 
   for (const name of ROOT_NAMES) wanted.push(join(root, name));
@@ -74,9 +80,7 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
   for (const abs of wanted) {
     if (seen.has(abs)) continue;
     seen.add(abs);
-    // A changed path could escape the repo via `..`; never read outside the root.
-    if (!withinRoot(root, abs)) continue;
-    const doc = readDoc(root, abs);
+    const doc = readDoc(root, realRoot, abs);
     if (!doc) continue;
     if (total + doc.text.length > MAX_TOTAL_BYTES) {
       truncated = true;
@@ -94,17 +98,63 @@ function withinRoot(root: string, abs: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-function readDoc(root: string, abs: string): StandardsDoc | null {
+/**
+ * Read one standards doc, or null when it isn't one we may read.
+ *
+ * The containment check runs on the REAL path, after symlinks are resolved, and that
+ * ordering is the whole point: a path check is string work, while reading follows
+ * links. A repo shipping `AGENTS.md` as a symlink to `~/.ssh/id_rsa` satisfies a
+ * check on the literal path and is then read anyway - and the contents go straight
+ * into the verify prompt, which is sent to the API.
+ *
+ * That matters more here than the same bug would elsewhere. The verifier is spawned
+ * `--tools ""` precisely so that untrusted repo content cannot steer it into reading
+ * arbitrary files; this handed repo content that exact result through the daemon
+ * instead, which runs with the user's full read access. The `..` guard shows the
+ * escape class was already considered - the symlink just walked around it.
+ *
+ * MAX_FILE_BYTES caps the READ, via `stat` and a bounded `readCapped`, rather than
+ * capping a string that was already materialized. An enormous AGENTS.md would
+ * otherwise be allocated in full on every verify, and one past ~512MB would throw
+ * ERR_STRING_TOO_LONG - which the catch below would swallow as "not a standard that
+ * applies", silently dropping the repo's contract instead of truncating it.
+ */
+function readDoc(root: string, realRoot: string, abs: string): StandardsDoc | null {
   try {
-    if (!statSync(abs).isFile()) return null;
-    const raw = readFileSync(abs, "utf8");
-    const capped = raw.length > MAX_FILE_BYTES;
+    // Resolve first: a link's own path tells us nothing about what we'd read.
+    const real = realpathSync(abs);
+    if (!withinRoot(realRoot, real)) return null;
+    const stat = statSync(real);
+    if (!stat.isFile()) return null;
     return {
+      // Cite the path the repo asked for, not the link target: that's the file the
+      // verifier can name in a gap.
       path: relative(root, abs) || abs,
-      text: capped ? raw.slice(0, MAX_FILE_BYTES) : raw,
-      truncated: capped,
+      text: readCapped(real, Math.min(stat.size, MAX_FILE_BYTES)),
+      truncated: stat.size > MAX_FILE_BYTES,
     };
   } catch {
-    return null; // missing or unreadable - simply not a standard that applies
+    return null; // missing, unreadable, or a dangling link - not a standard that applies
+  }
+}
+
+/** The resolved path, or the input when it can't be resolved (a root that's gone). */
+function realpathOr(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** Read at most `n` bytes off the front of a file - never more than we'll use. */
+function readCapped(path: string, n: number): string {
+  const fd = openSync(path, "r");
+  try {
+    const buf = Buffer.alloc(n);
+    const read = readSync(fd, buf, 0, n, 0);
+    return buf.subarray(0, read).toString("utf8");
+  } finally {
+    closeSync(fd);
   }
 }

@@ -21,6 +21,7 @@ import type {
   WorkItemState,
 } from "@shared/types.ts";
 import type { HookIngest, SetNote, StatusLineIngest } from "@shared/protocol.ts";
+import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -328,10 +329,15 @@ export class Registry extends EventEmitter {
         agentSessionId: evt.sessionId ?? target.agentSessionId,
         transcriptPath: evt.transcriptPath ?? target.transcriptPath,
       };
-      // Binding the agent session id can change the note key, so re-resolve the
-      // note now (a rehydrated Purpose attaches the instant the session is
-      // identified, rather than waiting for the next discovery sweep).
+      // Binding the agent session id can change the note key, so re-resolve
+      // everything keyed by it NOW rather than waiting for the next discovery
+      // sweep. A `/clear` mints a new agent session id mid-pane, and until this
+      // re-resolves the card would keep showing the PREVIOUS key's queue while its
+      // real one sits orphaned and unoffered - stale in the exact moment the human
+      // is looking, since a /clear is something they just did.
       next.note = this.noteSummaryFor(next);
+      next.queue = this.queueSummaryFor(next);
+      next.orphanedQueue = this.orphanedQueueFor(next);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
       if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
@@ -995,8 +1001,16 @@ export class Registry extends EventEmitter {
   private orphanedQueueFor(s: Session): OrphanedQueueHint | null {
     if (!s.cwd) return null;
     const key = noteKeyFor(s);
-    const liveKeys = new Set([...this.sessions.values()].map(noteKeyFor));
-    liveKeys.add(key); // this session may not be in the map yet (mid-merge)
+    // Every OTHER session's key, plus this session's CURRENT one. Its stored copy is
+    // deliberately excluded: `s` may not be in the map yet (mid-merge), or may be in
+    // it under a key it just moved off - a `/clear` rebinds agentSessionId, and the
+    // queue it just orphaned is keyed on the old id. Counting that stale entry as
+    // live would mean the queue this session just abandoned looks like it still has
+    // a session, so the hint that offers to resume it never appears.
+    const liveKeys = new Set(
+      [...this.sessions.values()].filter((o) => o.id !== s.id).map(noteKeyFor),
+    );
+    liveKeys.add(key);
     let best: OrphanedQueueHint | null = null;
     for (const q of listQueueRows()) {
       if (q.cwd !== s.cwd || liveKeys.has(q.noteKey)) continue;
@@ -1042,11 +1056,26 @@ export class Registry extends EventEmitter {
     return out;
   }
 
-  /** Note keys with at least one live session - what makes a queue "not orphaned". */
+  /**
+   * Note keys with at least one live session - what makes a queue "not orphaned".
+   *
+   * A session still inside its exit linger counts as LIVE. `exited` is provisional
+   * by design: `applyDiscovery` marks any session missing from a single sweep as
+   * exited and only evicts it EXIT_LINGER_MS later, cancelling that timer if it
+   * reappears. Reading `state === "exited"` as gone ignores the very guard the
+   * linger exists to provide - one hiccuping `ps` sweep would mark the whole fleet
+   * exited, and `sweepOrphanedQueues` (which runs several times a second) would
+   * escalate every in-flight item before the next poll un-marked them. Escalation
+   * is terminal and has no undo, so it must not turn on a single missed poll.
+   *
+   * This also makes the two readers agree: `orphanedQueueFor` builds its live keys
+   * from ALL sessions, so without the linger the worker would call a queue orphaned
+   * while the card still called its session live.
+   */
   liveNoteKeys(): Set<string> {
     const keys = new Set<string>();
-    for (const s of this.sessions.values()) {
-      if (s.state !== "exited") keys.add(noteKeyFor(s));
+    for (const [id, s] of this.sessions) {
+      if (s.state !== "exited" || this.exitTimers.has(id)) keys.add(noteKeyFor(s));
     }
     return keys;
   }
@@ -1088,10 +1117,39 @@ export class Registry extends EventEmitter {
     this.syncSessionsForQueue(key);
   }
 
-  /** Persist an item and re-denormalize onto every live session sharing its key. */
+  /**
+   * Persist an item and re-denormalize onto every live session sharing its key.
+   *
+   * The item write also touches its QUEUE ROW's `updatedAt`, which is what makes the
+   * card's summary move at all. `SessionQueueSummary` is a deliberately compact
+   * projection - counts, the in-flight state - so transitions it doesn't model
+   * produce a byte-identical summary, `syncSessionsForQueue` short-circuits on its
+   * equality check, and no `session_upsert` is emitted. `queued -> proposed` is
+   * exactly that shape: `proposed` isn't in-flight and isn't terminal, so neither
+   * `inFlightState` nor `openCount` moves, and in dry-run - the default mode - the
+   * panel would never learn a draft was waiting on the one action that advances the
+   * queue. Timestamping the row makes "an item changed" observable to the summary
+   * without teaching it every state, and keeps the fix at the write rather than
+   * spreading a special case across the readers.
+   */
   putQueueItem(item: WorkItem): void {
     upsertQueueItem(item);
+    this.touchQueue(item.noteKey, item.updatedAt);
     this.syncSessionsForQueue(item.noteKey);
+  }
+
+  /**
+   * Move a queue row's `updatedAt`, so any item write is visible in the summary.
+   *
+   * STRICTLY increasing, not just `max(now, …)`: this is a change token, not a
+   * displayed time (nothing renders it - the panel only diffs it), and two writes
+   * inside the same millisecond are ordinary. A signal that silently fails to move
+   * when the clock doesn't tick is a signal that works until it doesn't.
+   */
+  private touchQueue(key: string, now: number): void {
+    const row = getQueueRow(key);
+    if (!row) return;
+    upsertQueue({ ...row, updatedAt: Math.max(now, row.updatedAt + 1) });
   }
 
   getQueueItem(id: string): WorkItem | undefined {
@@ -1123,7 +1181,12 @@ export class Registry extends EventEmitter {
     if (toKey === fromKey) return true;
     // A live queue at the target key would collide on the single-flight index and
     // silently merge two batches of work; refuse rather than guess which wins.
-    if (listQueueItems(toKey).length > 0) return false;
+    //
+    // Only OPEN items count. A finished batch left on this key can't collide (the
+    // index only covers in-flight states) and isn't work anyone is waiting on, so
+    // refusing over it would block the re-attach in a case that is actually safe -
+    // and the card would be offering a button that always 409s.
+    if (listQueueItems(toKey).some((i) => !isTerminalItem(i.state))) return false;
     const items = listQueueItems(fromKey);
     upsertQueue({
       noteKey: toKey,
@@ -1166,24 +1229,14 @@ export class Registry extends EventEmitter {
   }
 }
 
-/** True once an item has no further lifecycle - nothing will advance it again. */
-export function isTerminalItem(state: WorkItemState): boolean {
-  return state === "verified" || state === "escalated" || state === "cancelled";
-}
-
-/** The one item mid-cycle for a queue, or null. The DB's partial unique index
- *  guarantees there is at most one; this is the read side of that constraint. */
-export function inFlightOf(items: WorkItem[]): WorkItem | null {
-  return (
-    items.find(
-      (i) =>
-        i.state === "sending" ||
-        i.state === "awaiting_pickup" ||
-        i.state === "in_progress" ||
-        i.state === "verifying",
-    ) ?? null
-  );
-}
+/**
+ * The lifecycle predicates, exported under this module's historical names.
+ *
+ * The definitions live in @shared/queue.ts because the DB's partial unique index is
+ * built from the same constant - one set of states, one place to change it.
+ */
+export const isTerminalItem = isTerminalState;
+export const inFlightOf = inFlightItemOf;
 
 /** Project a queue's items into the compact card summary. Pure, for tests. */
 export function summarizeQueue(

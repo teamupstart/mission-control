@@ -8,6 +8,13 @@ import type {
 } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { ReportBucket } from "@shared/session.ts";
+import { inFlightItem, isTerminalState } from "@shared/queue.ts";
+
+// The lifecycle predicates are defined in @shared/queue.ts, not here: the DB's
+// partial unique index is built from the same constant, so the set of in-flight
+// states has exactly one definition and the enforcement cannot drift from the
+// readers. Re-exported because this module is the machine's public face.
+export { inFlightItem };
 
 // The work queue's decision core: given a session, its queue, and the config,
 // what should Foreman do THIS tick? Zero I/O, `now` always injected - mirroring
@@ -88,9 +95,7 @@ export function hasPane(s: Session): boolean {
 }
 
 /** True once an item has no further lifecycle. */
-export function isTerminal(state: WorkItemState): boolean {
-  return state === "verified" || state === "escalated" || state === "cancelled";
-}
+export const isTerminal = isTerminalState;
 
 /**
  * The head of the queue: the lowest-`seq` NON-TERMINAL item. Full stop.
@@ -120,19 +125,6 @@ export function nextSendable(items: WorkItem[]): WorkItem | null {
     if (!best || i.seq < best.seq) best = i;
   }
   return best;
-}
-
-/** The one item mid-cycle, or null. The DB's partial unique index guarantees ≤1. */
-export function inFlightItem(items: WorkItem[]): WorkItem | null {
-  return (
-    items.find(
-      (i) =>
-        i.state === "sending" ||
-        i.state === "awaiting_pickup" ||
-        i.state === "in_progress" ||
-        i.state === "verifying",
-    ) ?? null
-  );
 }
 
 /** True when every item is terminal (and there was something to drain). */
@@ -177,11 +169,21 @@ export function waitedSince(s: Session): number {
  * True when a session's queue has anything left for the machine to decide: open
  * work to advance, OR a drained queue whose wrap-up ask hasn't fired yet. The
  * second half is not optional - it's the only way `ask-wrapup` is ever reached.
+ *
+ * The drained half is gated on `instrumented` to match step 5, which never fires
+ * the ask for a session Foreman could never drive (step 3 stops those first). Both
+ * halves must agree or a selector without work becomes a selector without END: an
+ * uninstrumented queue drains to all-terminal by escalation, and if it still wanted
+ * a tick after that, nothing could ever satisfy it. `targets` would never be empty,
+ * so the loop would never reach its idle sleep and would instead spin at the
+ * between-sessions delay, several localhost round-trips per turn, until the session
+ * exited. A selector is policy: it must be able to say "nothing here".
  */
 function queueWantsATick(s: Session): boolean {
   const q = s.queue;
   if (!q) return false;
-  return q.openCount > 0 || (q.drained && q.wrapupAskedAt === null);
+  if (q.openCount > 0) return true;
+  return s.instrumented && q.drained && q.wrapupAskedAt === null;
 }
 
 /**
@@ -338,24 +340,32 @@ export function payloadFor(item: WorkItem): string {
 }
 
 /**
- * Whether an item's diff may carry work that isn't this item's - true when the
- * diff was NOT taken from the base we recorded at delivery.
+ * Whether an item's diff may carry work that isn't this item's: true when an
+ * EARLIER item in this queue was delivered at the same base.
  *
- * The two shas arrive at DIFFERENT LENGTHS, so the obvious `diffBase !== itemBase`
- * can never match, even when they name the same commit: an item's base is captured
- * from `rev-parse --short HEAD` (~7 chars), while a computed diff reports a
- * merge-base sliced to 12. Compared raw, this was permanently true, so every
- * verify - including a perfectly scoped one - told the model to "ignore unrelated
- * changes", i.e. to discount the very diff it was asked to judge, and a genuinely
- * cumulative diff became indistinguishable from a clean one.
+ * An item's diff is `base_sha..worktree`, so it shows everything done since that
+ * commit - not everything done for this item. The two come apart exactly when HEAD
+ * doesn't move between items, i.e. when the agent doesn't commit: item A and item B
+ * are then both anchored at the same sha, and B's diff still contains all of A's
+ * uncommitted work. If HEAD DID move, B's base is A's descendant, the bases differ,
+ * and B's diff really is only B's work.
  *
- * Comparing on the shorter length is exactly right rather than a fudge: git's
- * abbreviation rule is that a short sha IS a prefix of the full one.
+ * So the honest signal is a shared base with an earlier item, not a property of any
+ * one sha. Two previous attempts compared `diff.baseSha` against `item.baseSha` and
+ * were each inert in opposite directions - permanently true while the lengths
+ * differed (~7-char `rev-parse --short` vs a 12-char merge-base slice), then
+ * permanently false once normalized, because `merge-base(HEAD, item.baseSha)` just
+ * returns `item.baseSha` whenever it's an ancestor of HEAD, which in a healthy repo
+ * is always. A comparison whose two sides are computed from each other cannot
+ * express "someone else's work is in here".
+ *
+ * Earlier means lower `seq`, and the item itself is excluded rather than merely its
+ * id: scope is anchored ONCE at round 0 (see markSent), so an item's own fix rounds
+ * share its base by construction and would otherwise self-report as cumulative.
  */
-export function diffMayIncludeOtherWork(diffBaseSha: string | null, itemBaseSha: string | null): boolean {
-  if (!diffBaseSha || !itemBaseSha) return true; // no recorded scope: assume the worst
-  const n = Math.min(diffBaseSha.length, itemBaseSha.length);
-  return diffBaseSha.slice(0, n) !== itemBaseSha.slice(0, n);
+export function diffMayIncludeOtherWork(item: WorkItem, items: WorkItem[]): boolean {
+  if (!item.baseSha) return true; // no recorded scope: assume the worst
+  return items.some((o) => o.seq < item.seq && o.baseSha === item.baseSha);
 }
 
 // ---- the verify plan (the planFromVerdict analogue) ----
@@ -389,6 +399,18 @@ export interface QueueVerifyPlan {
   gaps: TrackedGap[];
   escalationReason: string | null;
   lastVerdict: string;
+  /**
+   * The exact text a `proposed` item would type, and null for every other state.
+   *
+   * The plan carries it because `proposed` MEANS "this specific text is what Approve
+   * consents to". Parking an item there and leaving the draft for a later tick to
+   * render opens a window - unbounded, since the worker's loop is serial and one
+   * tick can block on a verify for minutes - in which the card offers an Approve
+   * button with nothing under it, and clicking it consents to a fix prompt the human
+   * never saw. Deciding the state and its draft in the same pure step is what makes
+   * "there is a draft" and "you are being asked to approve one" one fact.
+   */
+  proposedPayload: string | null;
 }
 
 /**
@@ -409,7 +431,15 @@ export function planFromVerify(
 ): QueueVerifyPlan {
   const gaps = reconcileGaps(item.gaps, v, item.round);
   const blocking = blockingGaps(gaps);
-  const base = { gaps, lastVerdict: v.summary, escalationReason: null as string | null };
+  const base = {
+    gaps,
+    lastVerdict: v.summary,
+    escalationReason: null as string | null,
+    // Only the dry-run fix round below drafts anything; every other outcome is
+    // terminal or sends, and a stale draft on either would be a lie about what
+    // Foreman is waiting for.
+    proposedPayload: null as string | null,
+  };
 
   // No blocking gaps: done. Advisory gaps ride along on the card as a record.
   if (blocking.length === 0) {
@@ -458,11 +488,15 @@ export function planFromVerify(
   // "in-flight verifying -> verify" would re-spawn a `claude -p` every tick
   // forever. Each dry-run fix round needs its OWN approval - the drafted prompt
   // changes every round (new gaps), so one blanket approval would be consent to
-  // text the human never read.
+  // text the human never read. Which is why the draft is rendered HERE, from this
+  // round's reconciled gaps, rather than left for a later tick: the item must never
+  // be `proposed` without the text that state promises.
+  const next: WorkItem = { ...item, gaps, round: nextRound };
   return {
     ...base,
     state: mayActLive ? "queued" : "proposed",
     round: nextRound,
+    proposedPayload: mayActLive ? null : payloadFor(next),
   };
 }
 

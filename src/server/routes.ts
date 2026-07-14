@@ -44,7 +44,7 @@ import {
   setForemanConfig,
 } from "./foreman/config.ts";
 import { readStandards } from "./standards.ts";
-import { computeSessionDiff } from "./diff.ts";
+import { computeSessionDiff, repoRootOf } from "./diff.ts";
 import { checkToken } from "./auth.ts";
 import {
   cyclePermissionMode,
@@ -162,11 +162,21 @@ export function buildApp(
   });
 
   // The repo standards the queue verifier judges an item's diff against.
-  app.get("/api/sessions/:id/standards", (c) => {
+  //
+  // Resolved against the git TOPLEVEL, not the session's cwd: `paths` come from the
+  // diff, and git emits those relative to the toplevel wherever it was invoked from.
+  // A session sitting in a subdirectory (a monorepo package - the ordinary case)
+  // would otherwise look for the root AGENTS.md one level down and resolve every
+  // changed path into a directory chain that doesn't exist, quietly loading NO
+  // standards at all. Worse, `truncated` would be false, so the prompt wouldn't even
+  // print its "some standards docs were omitted" line - the verifier would judge
+  // against the repo's main contract without it, and nothing would say so.
+  app.get("/api/sessions/:id/standards", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const paths = c.req.queries("path") ?? [];
-    return c.json(readStandards(session.cwd, paths));
+    const root = await repoRootOf(session.cwd);
+    return c.json(readStandards(root, paths));
   });
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {

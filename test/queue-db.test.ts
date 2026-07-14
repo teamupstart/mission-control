@@ -1,5 +1,6 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -295,4 +296,53 @@ test("deleting an item and a queue row leaves nothing behind", () => {
   deleteQueue("gone");
   assert.equal(getQueueItem("doomed"), undefined);
   assert.equal(getQueueRow("gone"), undefined);
+});
+
+test("the single-flight index is rebuilt when its predicate drifts from the shared constant", () => {
+  // Deriving the index SQL from IN_FLIGHT_ITEM_STATES only makes the enforcement
+  // agree with its readers on a FRESH db - `CREATE UNIQUE INDEX IF NOT EXISTS`
+  // leaves an existing index alone. So a db written by an older build would keep
+  // enforcing the OLD predicate while both TypeScript readers used the new one: the
+  // same silent drift the shared constant exists to prevent, just deferred to
+  // upgrade time. The stakes are two items in flight in one queue, i.e. a duplicated
+  // work instruction typed into a live agent.
+  //
+  // Across two PROCESSES on one db file, because that's the only way the repair can
+  // actually happen: openDb caches its handle, so migrate runs once per start.
+  const drifted = mkdtempSync(join(tmpdir(), "fleet-drift-"));
+  const run = (src: string): string =>
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], {
+      env: { ...process.env, FLEET_HOME: drifted },
+      encoding: "utf8",
+      cwd: process.cwd(),
+    }).trim();
+
+  const READ = `const d = (await import("./src/server/db.ts")).openDb();
+    console.log(d.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='one_inflight_per_queue'").get().sql);`;
+
+  // A fresh db derives the full in-flight set from the constant.
+  assert.match(run(READ), /'verifying'/);
+
+  // Rewrite it the way an older build would have left it, then start again.
+  run(`const d = (await import("./src/server/db.ts")).openDb();
+    d.exec("DROP INDEX one_inflight_per_queue;");
+    d.exec("CREATE UNIQUE INDEX one_inflight_per_queue ON foreman_queue_items(note_key) WHERE state IN ('sending','awaiting_pickup','in_progress');");`);
+
+  assert.match(run(READ), /'verifying'/, "the next start rebuilds it from the constant");
+
+  // And the repaired index really enforces the state it regained: a second
+  // `verifying` item in one queue is rejected by the db, not merely by hope.
+  const guard = run(`const db = await import("./src/server/db.ts");
+    db.openDb();
+    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 0 });
+    const mk = (id, seq) => ({ id, noteKey: "drift", seq, intent: "i", state: "verifying", round: 0,
+      baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
+      escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
+      recoveredAt: null, revision: 0, createdAt: 0, updatedAt: 0, sentAt: null, completedAt: null });
+    db.upsertQueueItem(mk("d1", 0));
+    try { db.upsertQueueItem(mk("d2", 1)); console.log("ACCEPTED"); }
+    catch { console.log("REJECTED"); }`);
+  assert.equal(guard, "REJECTED", "two items must never be in flight in one queue");
+
+  rmSync(drifted, { recursive: true, force: true });
 });

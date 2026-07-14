@@ -70,10 +70,20 @@ export function WorkQueue({
   const blocked = queueBlockedReason(session);
 
   if (!queue && !blocked && (summary?.totalCount ?? 0) === 0) {
-    // Nothing queued and nothing to explain: just the add box.
+    // Nothing queued and nothing to explain: the add box, and the re-attach hint if
+    // a queue here was orphaned.
+    //
+    // The hint MUST render here, because this branch IS the orphaned state: a
+    // `/clear` mints a new agent session id, which is the queue's key, so the new
+    // session has no queue row and no items of its own and lands in exactly this
+    // "nothing queued" case. Dropping the hint here stranded the batch behind a bare
+    // add box - and left the hint visible only where the session HAS its own items,
+    // which is precisely where re-attaching is refused. It was shown only when it
+    // would fail, and hidden whenever it would work.
     return (
       <section className="work-queue" onClick={(e) => e.stopPropagation()}>
         <Header count={0} />
+        {session.orphanedQueue && <ReattachHint session={session} onDone={() => void refresh()} />}
         <AddBox
           value={adding}
           onChange={setAdding}
@@ -220,7 +230,14 @@ export function WorkQueue({
 
                 {editing !== item.id && (
                   <div className="wq-controls">
-                    {item.state === "proposed" && !item.approvedAt && (
+                    {/*
+                      No draft, no Approve. The button is consent to a SPECIFIC
+                      prompt, so offering it before `proposedPayload` exists would ask
+                      for consent to text that isn't on screen - and from round 1 on
+                      that text is the fix prompt, not the intent shown above. The
+                      server refuses this too; the button just shouldn't be there.
+                    */}
+                    {item.state === "proposed" && item.proposedPayload && !item.approvedAt && (
                       <button className="btn btn-primary" disabled={busy} onClick={() => void approve(item)}>
                         Approve
                       </button>

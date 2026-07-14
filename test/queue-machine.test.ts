@@ -278,6 +278,40 @@ test("tickTargets skips a drained queue whose wrap-up was already asked", () => 
   assert.deepEqual(tickTargets([s]), [], "the ask fires once - don't wake for it again");
 });
 
+test("tickTargets drops an UNINSTRUMENTED drained queue - the selector must be able to end", () => {
+  // The selector and step 5 have to agree, or a target appears that no tick can
+  // ever satisfy. Foreman can't drive a hookless session (step 3 escalates its
+  // items instead), and it doesn't ask that session about wrapping up either - so
+  // wrapupAskedAt stays null forever. Selecting on `drained && !asked` alone made
+  // that the GUARANTEED end state of every uninstrumented queue: escalate the head
+  // each tick until all-terminal, then want a tick nothing can answer. `targets`
+  // was never empty, so the loop never reached its idle sleep and instead spun at
+  // the between-sessions delay, several localhost round-trips per turn, forever.
+  const s = mkSession({
+    id: "hookless",
+    instrumented: false,
+    queue: mkSummary({ drained: true, wrapupAskedAt: null }),
+  });
+  assert.deepEqual(tickTargets([s]), [], "nothing can advance it, so stop waking for it");
+
+  // The machine agrees: asked anyway, it has nothing to say - no ask-wrapup.
+  assert.equal(
+    tick({ session: s, items: [mkItem({ state: "escalated" })] }).kind,
+    "none",
+    "step 3 and the selector must not disagree about a hookless drained queue",
+  );
+});
+
+test("tickTargets still selects an uninstrumented queue with OPEN work - it needs escalating", () => {
+  // The gate above is only on the drained half: open items on a hookless session
+  // must still be picked up so step 3 can escalate them rather than stall silently.
+  const s = mkSession({ id: "hookless", instrumented: false, queue: mkSummary({ openCount: 1 }) });
+  assert.deepEqual(
+    tickTargets([s]).map((t) => t.id),
+    ["hookless"],
+  );
+});
+
 test("tickTargets includes open work, and ignores a session with no queue", () => {
   const open = mkSession({ id: "open", queue: mkSummary({ openCount: 2, totalCount: 2 }) });
   const bare = mkSession({ id: "bare", queue: null });
@@ -655,9 +689,20 @@ test("planFromVerify: a mid-verify flip out of live downgrades the next round to
 // that never happened. Both halves were "correct"; the composition was not. So
 // these drive the plan back through the machine, the way the worker does.
 
-/** Apply a verify plan to its item, exactly as the worker's setItemState does. */
+/**
+ * Apply a verify plan to its item, exactly as the worker's setItemState does -
+ * INCLUDING the drafted payload, which lands in the same write as the state it
+ * belongs to. Dropping it here would model a write the worker doesn't make and hide
+ * the window where a card can offer an Approve with nothing under it.
+ */
 function applyPlan(item: WorkItem, plan: QueueVerifyPlan): WorkItem {
-  return { ...item, state: plan.state, round: plan.round, gaps: plan.gaps };
+  return {
+    ...item,
+    state: plan.state,
+    round: plan.round,
+    gaps: plan.gaps,
+    proposedPayload: plan.proposedPayload,
+  };
 }
 
 const BLOCKER = {
@@ -690,8 +735,45 @@ test("seam: the same fix round in dry-run drafts the fix prompt and types nothin
 
   const a = tick({ items: [next], mayActLive: false });
 
-  assert.equal(a.kind, "propose");
-  assert.match(a.kind === "propose" ? a.payload : "", /no test covers the retry/);
+  assert.equal(a.kind, "none", "the plan already drafted it - don't re-draft next tick");
+  assert.match(next.proposedPayload ?? "", /no test covers the retry/);
+});
+
+test("seam: a dry-run fix round is NEVER `proposed` without the text Approve consents to", () => {
+  // The hazard this closes: planFromVerify parked the item at `proposed` and left
+  // the draft for a LATER tick to render. In that window the card showed a drafted
+  // item with a live Approve and no text under it, and clicking it consented to a
+  // fix prompt the human never saw. The window isn't one tick either - the worker's
+  // loop is serial, so a `claude -p` on another session holds it open for minutes.
+  //
+  // So the state and its draft must be decided together, in the same plan.
+  const item = mkItem({ state: "verifying", seq: 0, intent: "add the retry" });
+  const plan = planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG);
+
+  assert.equal(plan.state, "proposed");
+  assert.ok(plan.proposedPayload, "a proposed plan must carry its draft");
+  // It's the FIX prompt for THIS round's gaps - not the original intent the card
+  // shows above it, which is exactly why it has to be readable.
+  assert.match(plan.proposedPayload!, /no test covers the retry/);
+  assert.notEqual(plan.proposedPayload, item.intent);
+});
+
+test("seam: only a drafted plan carries text - a send or a verdict leaves none behind", () => {
+  // A stale draft on a sending/terminal item would advertise a prompt Foreman is no
+  // longer about to type. `proposedPayload` is null on every branch but the draft.
+  const item = mkItem({ state: "verifying", seq: 0 });
+  const live = planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG);
+  assert.equal(live.state, "queued");
+  assert.equal(live.proposedPayload, null, "a live fix round types it - it isn't a draft");
+
+  const done = planFromVerify(item, mkVerdict({ complete: true }), false, CFG);
+  assert.equal(done.state, "verified");
+  assert.equal(done.proposedPayload, null);
+
+  const stuck = mkItem({ state: "verifying", round: CFG.maxFixRounds, gaps: [] });
+  const gone = planFromVerify(stuck, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG);
+  assert.equal(gone.state, "escalated");
+  assert.equal(gone.proposedPayload, null);
 });
 
 test("seam: NO verify outcome may park an item in `sending` - that state means a crash", () => {
@@ -742,29 +824,65 @@ test("seam: a live fix round stays the head - it never lets a later item jump it
 });
 
 // ---- diffMayIncludeOtherWork ----
+//
+// The predicate answers "is someone else's work in this item's diff?", and the two
+// previous attempts both asked a question that couldn't answer it: they compared
+// `diff.baseSha` against `item.baseSha`. Those are computed FROM each other -
+// `merge-base(HEAD, item.baseSha)` returns `item.baseSha` whenever it's an ancestor
+// of HEAD, i.e. always in a healthy repo - so the comparison was inert, permanently
+// true while the lengths differed and permanently false once normalized. Its unit
+// tests passed only because they hand-fed pairs the pipeline cannot produce.
+//
+// So these fixtures use bases the pipeline CAN produce: `rev-parse --short HEAD` at
+// the moment each item was delivered.
 
-test("diffMayIncludeOtherWork: the SAME commit at git's two abbreviation lengths is scoped", () => {
-  // The real shapes, from a real repo: an item's base is `rev-parse --short HEAD`
-  // (7), while a computed diff reports a merge-base sliced to 12. Compared raw
-  // they are never equal, so this was permanently true and every verify - even a
-  // perfectly scoped one - was told to "ignore unrelated changes", discounting the
-  // diff it was asked to judge.
-  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", "c0e1c59"), false);
-  assert.equal(diffMayIncludeOtherWork("c0e1c59", "c0e1c59b6e55"), false, "either way round");
-  assert.equal(diffMayIncludeOtherWork("c0e1c59", "c0e1c59"), false, "equal lengths still work");
+test("diffMayIncludeOtherWork: an earlier item at the same base means the diff is cumulative", () => {
+  // The agent didn't commit, so HEAD never moved and both items anchored at the same
+  // sha. B's diff is worktree-vs-abc1234, which still contains all of A's work.
+  const a = mkItem({ id: "a", seq: 0, baseSha: "abc1234", state: "verified" });
+  const b = mkItem({ id: "b", seq: 1, baseSha: "abc1234", state: "verifying" });
+  assert.equal(diffMayIncludeOtherWork(b, [a, b]), true);
 });
 
-test("diffMayIncludeOtherWork: a genuinely different base still warns", () => {
-  // The signal has to survive the fix - a cumulative diff must stay distinguishable.
-  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", "deadbee"), true);
-  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", "c0e1c5a"), true, "differs at the last char");
+test("diffMayIncludeOtherWork: a committed earlier item leaves this diff scoped", () => {
+  // The agent committed A, so HEAD moved before B was delivered: B's base is A's
+  // descendant, and B's diff really is only B's work.
+  const a = mkItem({ id: "a", seq: 0, baseSha: "abc1234", state: "verified" });
+  const b = mkItem({ id: "b", seq: 1, baseSha: "def5678", state: "verifying" });
+  assert.equal(diffMayIncludeOtherWork(b, [a, b]), false);
+});
+
+test("diffMayIncludeOtherWork: the queue's first item is never cumulative", () => {
+  const a = mkItem({ id: "a", seq: 0, baseSha: "abc1234", state: "verifying" });
+  assert.equal(diffMayIncludeOtherWork(a, [a]), false);
+});
+
+test("diffMayIncludeOtherWork: an item's OWN fix rounds don't count as other work", () => {
+  // Scope is anchored once at round 0 (see markSent), so round 1 shares round 0's
+  // base BY CONSTRUCTION. Excluding only the item's id - rather than every item at
+  // or after its seq - would make every fix round self-report as cumulative.
+  const a = mkItem({ id: "a", seq: 0, baseSha: "abc1234", round: 2, state: "verifying" });
+  assert.equal(diffMayIncludeOtherWork(a, [a]), false);
+});
+
+test("diffMayIncludeOtherWork: a LATER item at the same base doesn't taint this one", () => {
+  // Ordering matters: work queued behind this item hasn't been delivered, so it
+  // cannot be in this item's diff.
+  const a = mkItem({ id: "a", seq: 0, baseSha: "abc1234", state: "verifying" });
+  const b = mkItem({ id: "b", seq: 1, baseSha: "abc1234", state: "queued" });
+  assert.equal(diffMayIncludeOtherWork(a, [a, b]), false);
+});
+
+test("diffMayIncludeOtherWork: an unsent earlier item has no base and doesn't match", () => {
+  const a = mkItem({ id: "a", seq: 0, baseSha: null, state: "queued" });
+  const b = mkItem({ id: "b", seq: 1, baseSha: "abc1234", state: "verifying" });
+  assert.equal(diffMayIncludeOtherWork(b, [a, b]), false);
 });
 
 test("diffMayIncludeOtherWork: an unrecorded scope assumes the worst", () => {
   // No base captured at delivery means nothing scopes the diff, so the note stays.
-  assert.equal(diffMayIncludeOtherWork(null, "c0e1c59"), true);
-  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", null), true);
-  assert.equal(diffMayIncludeOtherWork(null, null), true);
+  const a = mkItem({ id: "a", seq: 0, baseSha: null, state: "verifying" });
+  assert.equal(diffMayIncludeOtherWork(a, [a]), true);
 });
 
 // ---- reconcileGaps ----

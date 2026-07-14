@@ -155,12 +155,22 @@ export class QueueManager {
    * Each dry-run fix round needs its own approval: the drafted prompt changes
    * every round (new gaps), so a blanket approval would be consent to text the
    * human never read.
+   *
+   * An item with no drafted text is REFUSED, and that check is the teeth behind the
+   * whole per-round-approval design rather than defensive noise. Approve means "type
+   * this exact text", so without the text there is nothing to consent to - and the
+   * request can only come from a card rendering a button it shouldn't have. Enforced
+   * here because the UI cannot be the enforcement: this is the boundary the write
+   * actually crosses.
    */
   approve(itemId: string, now = Date.now()): { ok: boolean; error?: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
     if (item.state !== "proposed") {
       return { ok: false, error: `only a proposed item can be approved (this is ${item.state})` };
+    }
+    if (item.proposedPayload === null) {
+      return { ok: false, error: "this item has no drafted text yet - nothing to approve" };
     }
     this.registry.putQueueItem({ ...item, approvedAt: now, updatedAt: now });
     return { ok: true };
@@ -234,7 +244,26 @@ export class QueueManager {
     }
   }
 
-  /** Stamp delivery: the item is out, with the diff + transcript scope it was sent at. */
+  /**
+   * Stamp delivery: the item is out, with the diff + transcript scope it was sent at.
+   *
+   * The scope is anchored ONCE, on the first send, and every later round keeps it -
+   * hence `item.baseSha ?? baseSha` rather than a plain overwrite. An item's evidence
+   * is its CUMULATIVE work, because that is what the verifier is asked about: the
+   * prompt hands it the original intent and asks whether that intent was satisfied.
+   *
+   * Re-anchoring each round quietly made that question unanswerable, and only for
+   * agents that commit. Say round 0 delivers at abc1234, the agent implements the
+   * feature and commits (HEAD is now def5678), and verify raises one blocking gap.
+   * Re-anchoring round 1 to def5678 scopes the diff to the fix alone and moves the
+   * transcript window past the work - so the verifier, still asked "was the intent
+   * satisfied?", correctly answers no, invents fresh gaps for work that was already
+   * done, and rides the round budget to escalation. The good citizen got the worst
+   * outcome; a non-committing agent never moved HEAD, so it never noticed.
+   *
+   * Re-checking the whole item every round is deliberate, not a side effect: a fix
+   * that breaks the original intent has to still be caught.
+   */
   markSent(
     itemId: string,
     baseSha: string | null,
@@ -246,8 +275,10 @@ export class QueueManager {
     const next: WorkItem = {
       ...item,
       state: "awaiting_pickup",
-      baseSha,
-      transcriptAnchor,
+      baseSha: item.baseSha ?? baseSha,
+      // `??` and not `||`: a 0 anchor is a real value (an empty transcript at
+      // delivery), and treating it as absent would re-anchor past round 0's turns.
+      transcriptAnchor: item.transcriptAnchor ?? transcriptAnchor,
       sentAt: now,
       approvedAt: null, // consent is spent; a later round needs a fresh one
       proposedPayload: null, // and so is the draft it consented to - it's typed now

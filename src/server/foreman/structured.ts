@@ -138,6 +138,19 @@ export function runClaudeText(
       if (code === 0) resolve(out);
       else reject(new Error(`claude exited ${code}: ${err.slice(0, 300)}`));
     });
+    // `child.on("error")` above is the ChildProcess's (spawn failures); stdin is a
+    // separate Writable, and an unhandled `error` on it THROWS - taking the worker
+    // down rather than failing this one verify. Nothing catches that: it isn't a
+    // promise rejection, so `main().catch()` never sees it.
+    //
+    // The write is what raises it. A verify prompt carries a diff, a transcript
+    // window and up to 64KB of standards, so it routinely exceeds the OS pipe buffer
+    // and stays pending instead of completing into it; if `claude` exits first (an
+    // auth or rate-limit fast-fail, or a build that rejects `--tools ""`), the pending
+    // write gets EPIPE. Swallowing it is right because it isn't the diagnosis: the
+    // `close` handler already reports the real exit code and stderr, which is what
+    // failVerify should retry-then-escalate on.
+    child.stdin.on("error", () => {});
     child.stdin.write(prompt);
     child.stdin.end();
   });

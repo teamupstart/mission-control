@@ -219,6 +219,10 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
   gap: 16px;
+  /* Cards in a row stretch to a shared height so their bottoms line up (the
+     default). What made this balloon was one card growing unbounded from a
+     verbose no-mistakes finding; that's capped at the source now (see
+     `.nm-findings li`), so a row's height stays sane while staying aligned. */
 }
 
 /* ---- card ---- */
@@ -656,6 +660,14 @@ body {
   font-size: 11.5px;
   color: var(--muted);
   line-height: 1.4;
+  /* Findings can carry ~900-char descriptions. Clamp each row to a few lines on
+     the collapsed card so one parked gate can't balloon to viewport height; the
+     full text is on hover (title) and in the expanded transcript. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .nm-sev {
   font-size: 9.5px;
@@ -688,6 +700,8 @@ body {
   margin-right: 6px;
   color: var(--dim);
   background: color-mix(in oklab, var(--dim) 18%, transparent);
+  /* Keep the tag as one unit - the hyphen in "ask-user" otherwise breaks mid-word. */
+  white-space: nowrap;
 }
 .nm-action-ask-user {
   color: var(--attention);

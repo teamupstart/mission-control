@@ -800,21 +800,32 @@ export function noteKeyFor(s: Session): string {
 /**
  * True when a `Notification` is Claude's idle nudge rather than a real ask.
  *
- * Claude Code fires the same hook for two unrelated things: it needs permission to
- * use a tool ("Claude needs your permission to use Bash"), and the prompt has sat
- * idle for ~60s ("Claude is waiting for your input"). Only the first needs you.
+ * Claude Code fires the same hook for two unrelated things: it needs something from
+ * you, and the prompt has simply sat idle for ~60s. Only the first needs you.
  * Treating both as `awaiting_input` made *every* settled session claim it needed
  * you a minute after it went quiet, which is noise in exactly the bucket that is
- * supposed to be signal.
+ * supposed to be signal - and it never recovered, because nothing moves a session
+ * out of `awaiting_input` on its own.
  *
- * The message is the only discriminator the payload carries, so match it - and
- * match it narrowly: anything we don't positively recognize as the nudge stays
- * `awaiting_input`, so an unfamiliar notification errs toward asking for you
- * rather than being silently swallowed.
+ * The message is the only discriminator the payload carries. These are the only
+ * three we have ever actually observed, across 61 Notification events in this
+ * daemon's own `session_events` log (the counts are real sessions on one machine,
+ * so treat them as "what Claude sends", not "all Claude can send"):
+ *
+ *   41x  "Claude is waiting for your input"              <- the idle nudge
+ *   19x  "Claude needs your permission"                  <- a real ask
+ *    1x  "Claude Code needs your approval for the plan"  <- a real ask
+ *
+ * Hence the match is on the nudge, narrowly, and everything else - including any
+ * wording a future Claude introduces - keeps its `awaiting_input` meaning. The
+ * failure mode is therefore safe by construction: if this string ever changes we
+ * regress to the old over-reporting (an idle session says "needs you"), never to
+ * swallowing a genuine ask. That asymmetry is the reason to match the nudge rather
+ * than to match the asks.
  *
  * Known tradeoff: a session that ends its turn with a question in *prose* (no
  * permission prompt) is indistinguishable from an idle one in the hook stream -
- * both are a `Stop` followed by this nudge - so it now reads `idle` and won't
+ * both are a `Stop` followed by this same nudge - so it now reads `idle` and won't
  * nag at 60s. Foreman's triage still catches those, because it reads transcripts.
  */
 export function isIdleNudge(message: string | undefined | null): boolean {

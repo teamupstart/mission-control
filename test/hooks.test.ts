@@ -56,29 +56,39 @@ test("hookToState maps lifecycle events to session states", () => {
 });
 
 // Regression: Claude Code fires `Notification` for two unrelated things - a real
-// permission ask, and a ~60s idle timer on the prompt. Both used to map to
-// `awaiting_input`, so every session that simply went quiet claimed it needed you a
-// minute later, and (worse) it could never leave that state on its own.
+// ask, and a ~60s idle timer on the prompt. Both used to map to `awaiting_input`,
+// so every session that simply went quiet claimed it needed you a minute later,
+// and (worse) it could never leave that state on its own.
+//
+// The strings below are not invented: they are every distinct Notification message
+// observed across 61 such events in the daemon's own session_events log. Keeping
+// them verbatim is the point of these tests - the fix rides entirely on matching
+// the nudge, so the corpus it was derived from is what's being pinned.
+const OBSERVED_IDLE_NUDGE = "Claude is waiting for your input"; // 41 of 61
+const OBSERVED_PERMISSION = "Claude needs your permission"; // 19 of 61
+const OBSERVED_PLAN_APPROVAL = "Claude Code needs your approval for the plan"; // 1 of 61
+
 test("hookToState maps Claude's idle nudge to idle, never to awaiting_input", () => {
-  const idle = hookToState(evt({ event: "Notification", message: "Claude is waiting for your input" }));
+  const idle = hookToState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE }));
   assert.notEqual(idle.state, "awaiting_input");
   assert.equal(idle.state, "idle");
   assert.equal(idle.activity, "idle"); // reads exactly like Stop - it's the same situation
 
-  // A genuine ask still needs you...
-  assert.equal(
-    hookToState(evt({ event: "Notification", message: "Claude needs your permission to use Bash" })).state,
-    "awaiting_input",
-  );
-  // ...and so does anything we don't positively recognize as the nudge.
+  // Every observed ask still needs you...
+  for (const ask of [OBSERVED_PERMISSION, OBSERVED_PLAN_APPROVAL]) {
+    assert.equal(hookToState(evt({ event: "Notification", message: ask })).state, "awaiting_input", ask);
+  }
+  // ...and so does anything we don't positively recognize as the nudge, so a
+  // wording we've never seen errs toward asking for you rather than vanishing.
   assert.equal(hookToState(evt({ event: "Notification", message: "some future notice" })).state, "awaiting_input");
   assert.equal(hookToState(evt({ event: "Notification" })).state, "awaiting_input");
 });
 
 test("isIdleNudge recognizes only the idle notification", () => {
-  assert.equal(isIdleNudge("Claude is waiting for your input"), true);
-  assert.equal(isIdleNudge("CLAUDE IS WAITING FOR YOUR INPUT"), true);
-  assert.equal(isIdleNudge("Claude needs your permission to use Bash"), false);
+  assert.equal(isIdleNudge(OBSERVED_IDLE_NUDGE), true);
+  assert.equal(isIdleNudge(OBSERVED_IDLE_NUDGE.toUpperCase()), true);
+  assert.equal(isIdleNudge(OBSERVED_PERMISSION), false);
+  assert.equal(isIdleNudge(OBSERVED_PLAN_APPROVAL), false);
   assert.equal(isIdleNudge(undefined), false);
   assert.equal(isIdleNudge(null), false);
 });
@@ -87,13 +97,13 @@ test("isIdleNudge recognizes only the idle notification", () => {
 // into the one bucket that's meant to be pure signal.
 test("a session parked by the idle nudge reports idle, not needs-you", () => {
   const s = sessionFixture({
-    state: hookToState(evt({ event: "Notification", message: "Claude is waiting for your input" })).state,
+    state: hookToState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE })).state,
     instrumented: true,
   });
   assert.equal(reportBucket(s, [s]), "idle");
 
   const asking = sessionFixture({
-    state: hookToState(evt({ event: "Notification", message: "Claude needs your permission to use Bash" })).state,
+    state: hookToState(evt({ event: "Notification", message: OBSERVED_PERMISSION })).state,
     instrumented: true,
   });
   assert.equal(reportBucket(asking, [asking]), "needs-you");

@@ -53,9 +53,14 @@ export async function reviewSession(input: ReviewInput): Promise<ReviewResult> {
  * Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. Exported so the
  * cheap Tier 1 triage reuses the exact same headless, tool-less, injection-isolated
  * subprocess machinery - only with a different (cheaper) model. `opts.model` maps to
- * `--model`; omit it for the default (full-reviewer) model.
+ * `--model`; omit it for the default (full-reviewer) model. `opts.timeoutMs` defaults to
+ * the full review's budget, which is sized for Opus reading 48 turns with the whole POLICY -
+ * a cheaper caller should pass its own (see the worker's Tier 1 router).
  */
-export function runClaudeText(prompt: string, opts: { model?: string } = {}): Promise<string> {
+export function runClaudeText(
+  prompt: string,
+  opts: { model?: string; timeoutMs?: number } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     // `--tools ""` is a valid Claude Code CLI flag (verified to exit 0 with an
     // empty value) that sets the available-tool list to empty, disabling every
@@ -80,7 +85,7 @@ export function runClaudeText(prompt: string, opts: { model?: string } = {}): Pr
     const timer = setTimeout(() => {
       killReviewer(child);
       reject(new Error("review timed out"));
-    }, REVIEW_TIMEOUT_MS);
+    }, opts.timeoutMs ?? REVIEW_TIMEOUT_MS);
     timer.unref?.();
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));

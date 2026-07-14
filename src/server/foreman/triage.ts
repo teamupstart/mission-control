@@ -6,7 +6,6 @@ import type { ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "./review.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
-import { NO_QUESTION_PLACEHOLDER } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 
 // The cheap tier that sits in front of Foreman's full `claude -p` reviewer (see
@@ -23,18 +22,19 @@ import type { Pending } from "./pending.ts";
 /** Tier 1's cheap router model, unless overridden by config or FOREMAN_TRIAGE_MODEL. */
 export const DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5";
 /**
- * A smaller transcript window than the full reviewer's 48 - the router only buckets.
+ * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 48.
  *
  * The endpoint's `turns` query param is a BYTE-bound hint, NOT a turn bound: under its
  * head+tail byte budget `readTranscriptWindow` returns the file WHOLE, and over it returns
  * head(12)+tail(turns). So the real bound has to be applied on this side, after the fetch -
- * see `triageSession`. That bound is load-bearing twice over: it is what actually makes the
- * router's prompt cheaper than Tier 2's, and it is what scopes the denylist's scan to the
- * pending ask's neighbourhood instead of the whole session history (ambient prose from forty
- * turns ago - "the API key in .env" - would otherwise escalate every routine ask for the
- * rest of the session, collapsing Tier 1's only substantive disposal).
+ * see `triageSession`.
  */
 export const TIER1_TURNS = 12;
+/**
+ * The OPENING turns added on top of the recent ones for the router's prompt only - enough to
+ * carry the goal the user set. See `promptWindow` for why the prompt and the scan differ.
+ */
+export const TIER1_HEAD_TURNS = 4;
 /** Below this, a routine-access/skip call is not trusted: it routes up to Opus instead. */
 export const TIER1_MIN_CONFIDENCE = 0.6;
 
@@ -123,6 +123,30 @@ function riskContextFrom(messages: TranscriptMessage[]): string {
   return messages.map((m) => [m.text, ...m.tools].join(" ")).join("\n");
 }
 
+/**
+ * The router's PROMPT window: the opening turns (the goal the user set) plus the recent ones
+ * (the pending ask). De-duped by record id, since the two slices overlap on a short transcript.
+ *
+ * This is deliberately WIDER than the denylist's scan window (the recent turns alone), and the
+ * two must not be re-fused - they have opposite requirements:
+ *
+ *  - The router must SEE the opening turns. `purpose` ("what this session is for") is the one
+ *    field Tier 1 always produces and it lands on the card, so a prompt built from the last 12
+ *    turns alone describes the last ten minutes instead of the task - which is exactly what
+ *    `readTranscriptWindow`'s head slice exists to prevent.
+ *  - The denylist must NOT scan them. Its patterns over-match on purpose, so ambient prose from
+ *    forty turns ago ("I'll read the API key from .env") would escalate every routine ask for
+ *    the rest of the session, collapsing Tier 1's only substantive disposal.
+ *
+ * Handing the router more context than the scan weakens no backstop: `mapTriage` re-derives
+ * `risky` from the scan window it is given, whatever the prompt happened to show.
+ */
+function promptWindow(all: TranscriptMessage[], recent: TranscriptMessage[]): TranscriptMessage[] {
+  const head = all.slice(0, TIER1_HEAD_TURNS);
+  const seen = new Set(head.map((m) => m.id));
+  return [...head, ...recent.filter((m) => !seen.has(m.id))];
+}
+
 /** A skip verdict (leaves it for the human), reusing the full reviewer's Verdict shape. */
 function skipVerdict(purpose: string, brief?: string): Verdict {
   return VerdictSchema.parse({ purpose, classification: "other", action: "skip", brief });
@@ -154,12 +178,6 @@ function accessAnswerVerdict(purpose: string, text: string): Verdict {
   });
 }
 
-/** A short terminal question can be escalated with a self-made brief; a long one routes up. */
-function isShortSelfContained(question: string): boolean {
-  const q = question.trim();
-  return q.length > 0 && q.length <= 400;
-}
-
 /**
  * Tier 0 - the structural gate. Pure, zero model: it disposes the cases whose outcome
  * is fixed by structure alone, and returns `continue` only for a genuinely answerable
@@ -184,38 +202,33 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       };
     }
     case "terminal-no-pane": {
-      // There's a real question but no tmux/wezterm pane to type an answer into, so
-      // Foreman would escalate regardless. Escalate directly when the question is short
-      // and self-contained; otherwise route up so the full reviewer can read the whole
-      // transcript and frame a proper brief.
-      if (isShortSelfContained(pending.question)) {
-        return {
-          kind: "dispose",
-          tier: 0,
-          reason: "terminal-no-pane-short",
-          verdict: escalateVerdict(
-            "The session is waiting on a terminal prompt, but there's no pane for Foreman to answer through.",
-            `The session is blocked on:\n\n> ${collapse(pending.question, 400)}\n\nThere's no tmux/wezterm pane for Foreman to reply through, so it needs you.`,
-          ),
-        };
-      }
-      return { kind: "route-up", reason: "terminal-no-pane-long" };
+      // A real question with no tmux/wezterm pane to type an answer into, so Foreman would
+      // escalate regardless. The plan has Tier 0 escalate directly when the question is short
+      // AND self-contained - but on this surface it never is, so this routes up instead. That
+      // is the faithful reading of the plan's bullet given the real shape of the data:
+      // `awaiting_input` is set in exactly one place (the Notification branch of registry.ts's
+      // `hookToState`), whose activity line is a generic, 120-char-capped notification -
+      // "Claude needs your permission" - that never names what is being approved. An escalation
+      // built from it would tell you neither the session's goal nor the ask, where the full
+      // reviewer reads the transcript and frames both. No-pane sessions are rare, so the Opus
+      // call costs little; a content-free card costs you the read.
+      return { kind: "route-up", reason: "terminal-no-pane" };
     }
     case "no-question": {
       // Needs-you for some other state with no answerable question - leave it for you.
-      // This catches more than idle: per `reportBucket`, a gate-parked no-mistakes run and
-      // an `awaiting_review` session land here too, and for those the activity line is the
-      // only context the card gets - so name it rather than writing a canned string over it.
-      const activity =
-        pending.question === NO_QUESTION_PLACEHOLDER ? "" : collapse(pending.question, 300);
+      //
+      // The activity line is deliberately NOT interpolated into the purpose: on THIS branch it
+      // is a state label, not context. `gateParked` requires the driving agent to have stopped,
+      // so a gate-parked run's state is `idle`, which the Stop hook labels "idle" verbatim -
+      // and "The session needs you: idle" is worse than saying plainly what happened. Tier 0 has
+      // no model, so it cannot do better than an honest canned line here; the transcript-derived
+      // purpose is Tier 2's job.
       return {
         kind: "dispose",
         tier: 0,
         reason: "no-question",
         verdict: skipVerdict(
-          activity
-            ? `The session needs you: ${activity}`
-            : "The session needs you, but no explicit question was found to answer.",
+          "The session needs you, but it posted no answerable question - Foreman left it for you.",
         ),
       };
     }
@@ -337,11 +350,12 @@ export async function triageSession(
     window = { messages: [], truncated: false };
   }
   // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
-  // here. The same trimmed set feeds BOTH the router's prompt and the denylist's scan, so
-  // the two can never disagree about what context the decision was made on. Dropping the
-  // earlier turns is itself a truncation - say so, rather than letting the router read a
-  // mid-session window as if it were the whole story.
-  const messages = window.messages.slice(-TIER1_TURNS);
+  // here. `recent` is the ask's neighbourhood: it is what the denylist scans and what the
+  // no-window backstop keys on. The router's prompt gets `recent` plus the opening turns -
+  // see `promptWindow` for why the two windows differ. Eliding the middle is itself a
+  // truncation, so say so rather than letting the router read a gapped window as the whole story.
+  const recent = window.messages.slice(-TIER1_TURNS);
+  const messages = promptWindow(window.messages, recent);
   const truncated = window.truncated || messages.length < window.messages.length;
 
   const input: ReviewInput = {
@@ -366,7 +380,7 @@ export async function triageSession(
   }
   const report = parseModelJson(raw, TriageReportSchema);
   if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
-  return mapTriage(report, pending, messages);
+  return mapTriage(report, pending, recent);
 }
 
 /**
@@ -386,10 +400,4 @@ export function classifyDivergence(cheap: TriageOutcome, opus: Verdict): Diverge
   if (a === "answer" && b !== "answer") return "cheap-over-eager";
   if (a !== "answer" && b === "answer") return "cheap-too-cautious";
   return "minor";
-}
-
-/** Collapse whitespace and cap a string to one short line. */
-function collapse(s: string, max = 400): string {
-  const t = s.replace(/\s+/g, " ").trim();
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }

@@ -36,6 +36,15 @@ const BETWEEN_MS = 400;
  * spawning a fresh `claude -p` every loop. Overridable for tests/tuning; default 60s.
  */
 const EVAL_DEBOUNCE_MS = Number(process.env.FOREMAN_EVAL_DEBOUNCE_MS || 60_000);
+/**
+ * The Tier 1 router's own wall-clock cap, well under the full reviewer's 120s: this is Haiku
+ * emitting one small object over a trimmed window, not Opus reading 48 turns with the whole
+ * POLICY. The budgets must differ because `on` mode runs the two SERIALLY (the router, then the
+ * full review on route-up), so sharing Tier 2's cap would let a degraded API double the serial
+ * queue's worst case rather than fail fast. A timeout is just a spawn failure to `triageSession`,
+ * which routes up - i.e. degrades to exactly the pre-triage cost.
+ */
+const TRIAGE_TIMEOUT_MS = Number(process.env.FOREMAN_TRIAGE_TIMEOUT_MS || 30_000);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -293,7 +302,7 @@ async function fullReview(
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
-    runModel: (prompt, model) => runClaudeText(prompt, { model }),
+    runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
   };
 }
 

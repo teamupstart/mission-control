@@ -63,14 +63,24 @@ structurally determined:
   this still spends a full review just to write the Purpose; Tier 0 short-circuits the judgment
   and hands only the Purpose down to Tier 1.
 - Answerable surface but no delivery channel (a terminal prompt with no tmux/wezterm pane) ⇒ would
-  escalate regardless ⇒ escalate directly when the question is short and self-contained, else
-  route up.
+  escalate regardless ⇒ route **up**. *(This bullet originally read "escalate directly when the
+  question is short and self-contained, else route up". Implementation found the premise doesn't
+  hold: on this surface the question is never self-contained. `awaiting_input` is set in exactly
+  one place - the Notification branch of `hookToState` - whose activity line is a generic,
+  120-char-capped notification ("Claude needs your permission") that never names the ask. A Tier 0
+  escalation built from it names neither the goal nor the command, so the full reviewer frames it
+  instead; no-pane sessions are rare, so the Opus cost is negligible.)*
 
 ### Tier 1 — cheap model triage (Haiku, trimmed transcript)
 For sessions that reach here there IS an answerable surface (an `input` review or a terminal
 prompt with a pane). Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
-but with `--model claude-haiku-4-5` and a smaller window (fetch `turns=12` instead of 48). A
-narrow routing prompt asks Haiku to *bucket* the ask, not solve it:
+but with `--model claude-haiku-4-5` and a smaller window (fetch `turns=12` instead of 48). The
+endpoint's `turns` turned out to be a *byte*-bound hint rather than a turn bound - under its byte
+budget `readTranscriptWindow` returns the file whole - so the real bound is applied client-side in
+`triageSession`, which also keeps the opening turns so the Purpose still describes what the session
+is *for* rather than its last ten minutes. The denylist scan stays narrower than that (the recent
+turns only), since its patterns over-match by design. A narrow routing prompt asks Haiku to *bucket*
+the ask, not solve it:
 
 - `human-only` (design fork, unclear intent, product preference) ⇒ `escalate` or `skip`; Haiku
   writes the Purpose. No Opus call.

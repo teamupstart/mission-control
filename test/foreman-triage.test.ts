@@ -6,6 +6,7 @@ import {
   mapTriage,
   tier0,
   triageSession,
+  TIER1_HEAD_TURNS,
   TIER1_TURNS,
   type TriageDeps,
   type TriageReport,
@@ -40,9 +41,13 @@ function report(over: Partial<TriageReport> = {}): TriageReport {
   };
 }
 
-/** A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. */
+/**
+ * A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. Each gets
+ * a distinct id, like the record uuids the real reader emits - the prompt window de-dupes on it.
+ */
+let msgSeq = 0;
 function msg(text: string, tools: string[] = []): TranscriptMessage {
-  return { id: "m1", role: "assistant", text, tools, ts: 1 };
+  return { id: `m${++msgSeq}`, role: "assistant", text, tools, ts: 1 };
 }
 
 /** A clean (non-destructive) Tier 1 window - enough context for the denylist to have scanned. */
@@ -61,18 +66,14 @@ test("tier0: a non-input review is disposed as skip with a review-named purpose"
   assert.match(out.verdict.purpose, /plan review "Refactor auth"/);
 });
 
-test("tier0: a short terminal-no-pane question escalates directly (no channel to answer)", () => {
-  const out = tier0(pend({ situation: "terminal-no-pane", canSend: false, question: "Approve the migration?" }));
-  assert.equal(out.kind, "dispose");
-  if (out.kind !== "dispose") return;
-  assert.equal(out.tier, 0);
-  assert.equal(out.verdict.action, "escalate");
-  assert.ok(out.verdict.brief, "carries a self-made brief");
-});
-
-test("tier0: a long terminal-no-pane question routes up for a proper brief", () => {
-  const out = tier0(pend({ situation: "terminal-no-pane", canSend: false, question: "x".repeat(500) }));
+test("tier0: terminal-no-pane routes up - its question is never self-contained enough to escalate on", () => {
+  // The real shape of this surface: `awaiting_input` is only ever set by the Notification hook,
+  // whose activity line is a generic, 120-char-capped string that never names the ask. A Tier 0
+  // escalation built from it would name neither the goal nor the command, so the full reviewer
+  // reads the transcript instead.
+  const out = tier0(pend({ situation: "terminal-no-pane", canSend: false, question: "Claude needs your permission" }));
   assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "terminal-no-pane");
 });
 
 test("tier0: a stateful no-question needs-you is skipped", () => {
@@ -82,21 +83,20 @@ test("tier0: a stateful no-question needs-you is skipped", () => {
   assert.equal(out.verdict.action, "skip");
 });
 
-test("tier0: a no-question purpose names the activity line (a gate-parked run keeps its context)", () => {
-  const out = tier0(
-    pend({ situation: "no-question", canSend: false, question: "Parked at the review gate for\n  no-mistakes run 42" }),
-  );
-  assert.equal(out.kind, "dispose");
-  if (out.kind !== "dispose") return;
-  assert.equal(out.verdict.action, "skip");
-  assert.match(out.verdict.purpose, /Parked at the review gate for no-mistakes run 42/, "collapsed, not discarded");
-});
-
-test("tier0: a no-question purpose falls back to the canned line when there is genuinely no text", () => {
-  const out = tier0(pend({ situation: "no-question", canSend: false, question: NO_QUESTION_PLACEHOLDER }));
-  assert.equal(out.kind, "dispose");
-  if (out.kind !== "dispose") return;
-  assert.equal(out.verdict.purpose, "The session needs you, but no explicit question was found to answer.");
+test("tier0: a no-question purpose never interpolates the activity, which here is a STATE LABEL", () => {
+  // `gateParked` requires the driving agent to have stopped, so a gate-parked run's state is
+  // `idle` and the Stop hook writes the activity "idle" verbatim - naming it would yield the
+  // purpose "The session needs you: idle", worse than saying plainly what happened.
+  for (const question of ["idle", "running Bash", NO_QUESTION_PLACEHOLDER]) {
+    const out = tier0(pend({ situation: "no-question", canSend: false, question }));
+    assert.equal(out.kind, "dispose");
+    if (out.kind !== "dispose") return;
+    assert.equal(out.verdict.action, "skip");
+    assert.equal(
+      out.verdict.purpose,
+      "The session needs you, but it posted no answerable question - Foreman left it for you.",
+    );
+  }
 });
 
 test("tier0: answerable surfaces continue to Tier 1", () => {
@@ -450,21 +450,63 @@ test("triageSession: a destructive command in a RECENT turn still forces escalat
   assert.equal(out.reason, "access-risky-escalated");
 });
 
-test("triageSession: only the last TIER1_TURNS turns reach the router prompt", async () => {
+test("triageSession: the router prompt keeps the GOAL turns plus the recent ones, and elides the middle", async () => {
+  // The prompt window is deliberately wider than the denylist's scan window: `purpose` is the
+  // one field Tier 1 always produces and it lands on the card, so a prompt of only the last 12
+  // turns would describe the last ten minutes rather than what the session is for.
   let prompt = "";
-  const old = Array.from({ length: 20 }, (_, i) => msg(`OLD-TURN-${i} nothing to see here.`));
+  const goal = Array.from({ length: TIER1_HEAD_TURNS }, (_, i) => msg(`GOAL-${i} port the auth module to OAuth.`));
+  const middle = Array.from({ length: 20 }, (_, i) => msg(`MIDDLE-${i} nothing to see here.`));
   const recent = Array.from({ length: TIER1_TURNS }, (_, i) => msg(`RECENT-${i} working on the refactor.`));
   await triageSession(
     deps({
-      transcript: async () => ({ messages: [...old, ...recent], truncated: false }),
+      transcript: async () => ({ messages: [...goal, ...middle, ...recent], truncated: false }),
       runModel: async (p) => (prompt = p, JSON.stringify(report())),
     }),
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
   );
-  assert.ok(!prompt.includes("OLD-TURN-"), "Tier 1's prompt must be genuinely smaller than Tier 2's");
+  assert.ok(prompt.includes("GOAL-0"), "the opening turns carry what the session is for");
   assert.ok(prompt.includes("RECENT-0"), "the recent neighbourhood of the ask is kept");
+  assert.ok(!prompt.includes("MIDDLE-"), "Tier 1's prompt stays genuinely smaller than Tier 2's");
+  assert.match(prompt, /the middle was elided/, "a gapped window is declared, not passed off as the whole story");
+});
+
+test("triageSession: a short transcript reaches the router whole, with no duplicated turns", async () => {
+  // The head and tail slices overlap on a short window - they must de-dupe by record id rather
+  // than feed the router the same turn twice.
+  let prompt = "";
+  const all = Array.from({ length: 3 }, (_, i) => msg(`ONLY-${i} porting the auth module.`));
+  await triageSession(
+    deps({
+      transcript: async () => ({ messages: all, truncated: false }),
+      runModel: async (p) => (prompt = p, JSON.stringify(report())),
+    }),
+    pend({ situation: "terminal-pane" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(prompt.match(/ONLY-0/g)?.length, 1, "the overlapping turn appears exactly once");
+  assert.ok(prompt.includes("ONLY-2"));
+  assert.ok(!prompt.includes("the middle was elided"), "nothing was actually dropped");
+});
+
+test("triageSession: the denylist scan does NOT reach back into the goal turns", async () => {
+  // The scan window stays narrower than the prompt window on purpose: the patterns over-match,
+  // so a goal stated as "wire up the API key from .env" would otherwise escalate every routine
+  // ask for the rest of the session - collapsing Tier 1's only substantive disposal.
+  const goal = Array.from({ length: TIER1_HEAD_TURNS }, () => msg("Goal: read the API key from .env to wire auth."));
+  const recent = Array.from({ length: TIER1_TURNS }, () => msg("Running the unit tests for the refactor."));
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [...goal, ...recent], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "answer", "ambient prose in the goal turns must not poison the scan");
 });
 
 test("triageSession: a router reply with no confidence routes up as unparseable, not low-confidence", async () => {
@@ -477,6 +519,20 @@ test("triageSession: a router reply with no confidence routes up as unparseable,
   );
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.equal(out.reason, "tier1-unparseable", "an honest diagnosis of a broken router");
+});
+
+test("triageSession: a router TIMEOUT routes up (the shorter Tier 1 budget degrades to the full review)", async () => {
+  // The router runs on its own, shorter cap than the full reviewer (see the worker's
+  // TRIAGE_TIMEOUT_MS): in `on` mode the two are serial, so a hung router must fail fast into
+  // this route-up - i.e. the pre-triage cost - instead of doubling the queue's worst case.
+  const out = await triageSession(
+    deps({ runModel: async () => { throw new Error("review timed out"); } }),
+    pend({ situation: "terminal-pane" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.match(out.reason, /tier1-failed.*timed out/);
 });
 
 test("triageSession: a router spawn failure routes up (fail-safe to the full review)", async () => {

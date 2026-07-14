@@ -405,27 +405,42 @@ queueDrained(items): boolean
 5. no head                   -> drained && !wrapupAskedAt ? ask-wrapup : none
 6. !settledIdle              -> none
 7. !hasPane                  -> escalate head
-8. !mayActLive && !head.approvedAt -> propose head        // draft; await Approve
-9.                           -> send head                 // queued, or proposed+approved
+8. !mayActLive && !head.approvedAt -> head.state === 'proposed' ? none : propose head
+9.                           -> send head    // live (any head), or approved in any mode
 ```
 
-`head = nextSendable(items)` = **the lowest-`seq` non-terminal item, yielding null when that item is
-`proposed` without `approved_at`.** It stops at the head; it never skips past it. The queue is
-strictly one-at-a-time and always runs in authored order - which is the whole reason the human can
-reorder it (§4).
+`head = nextSendable(items)` = **the lowest-`seq` non-terminal item.** Full stop - it never skips,
+and it never yields null for a non-terminal queue. The queue is strictly one-at-a-time in authored
+order, which is the whole reason the human can reorder it (§4), and **the mode gating lives only in
+steps 8/9** - never in `nextSendable`.
 
-An earlier draft defined this as "the lowest `seq` among `{queued} union {proposed with
-approved_at}`", which *filtered out* an unapproved draft instead of stopping at it. Three bugs fell
-out of that, all fixed by stopping: dry-run would draft the entire queue within N ticks (each tick
-skipping the previous unapproved draft) rather than one at a time; approving seq3 while seq1 sat
-unapproved would run seq3 **first**, silently reordering the human's sequence; and a dry-run -> live
-flip would strand the already-proposed items while later `queued` items jumped the line.
+That single-gate rule is the point, and two earlier drafts each broke it in a different direction:
 
-Step 8 must consult `approved_at` or an approved item is simply re-proposed forever (the approve
-endpoint would do nothing). Note what the two guards do together: in **dry-run** an unapproved head
-is proposed once and then blocks the queue until you Approve it; in **live** `mayActLive` short-
-circuits step 8, so a draft left over from dry-run just sends - flipping to live is consent, and
-the item shouldn't need a second one.
+- Draft 1 defined `head` as "lowest `seq` among `{queued} union {proposed with approved_at}`", which
+  *filtered out* an unapproved draft instead of stopping at it: dry-run drafted the whole queue N
+  ticks deep, approving seq3 ahead of an unapproved seq1 ran **seq3 first** (silently reordering the
+  human's sequence), and a dry-run -> live flip stranded proposed items while later `queued` ones
+  jumped the line.
+- Draft 2 over-corrected: `nextSendable` yielded **null** on a `proposed`-unapproved head. That put
+  the gate in two places at once, and they disagreed. Null `head` hits **step 5** (`no head ->
+  drained ? ask-wrapup : none`) and returns `none`, so steps 6-9 never run - meaning step 8's
+  `mayActLive` short-circuit was unreachable (it dereferences `head.approvedAt`, so it needs
+  `head != null`). A leftover dry-run draft therefore **deadlocked the entire queue in live mode**:
+  not just the draft waiting on an Approve live mode shouldn't need, but every item behind it too.
+  Same strand as draft 1's third bug, wearing a different hat.
+
+Keeping the gate in 8/9 gives all four behaviors from one predicate:
+
+| mode | head | step | outcome |
+|---|---|---|---|
+| dry-run | `queued` | 8 -> propose | drafted once |
+| dry-run | `proposed`, unapproved | 8 -> **none** | blocks here, idempotent - no row rewrite per tick |
+| dry-run | approved | 8 skipped -> 9 | sends |
+| live | anything | 8 short-circuits -> 9 | sends - flipping to live *is* the consent |
+
+Step 8 must consult `approved_at`, or an approved item is re-proposed forever and the approve
+endpoint does nothing. It must also no-op on an already-`proposed` head rather than re-propose it,
+so a blocked queue costs one row write, not one per tick.
 
 An approved send is still a send: it runs the **full** `queueSendStillValid` (§3.2), because the
 human's "yes" arrives minutes after the draft was made and the session may have moved on. Approve
@@ -643,6 +658,13 @@ the two subsystems actively fight.
   product. `reconcileGaps`: new -> 0, survives -> +1, resolved -> dropped, reminted -> fresh (the
   known weakness, asserted honestly), advisory never strikes, escalate exactly at
   `maxFixAttempts`, backstop exactly at `maxFixRounds`, transient failures never strike.
+  **The `proposed`-head matrix gets its own block**, because two drafts of this plan got it wrong in
+  opposite directions and both bugs were invisible until someone traced the precedence by hand: a
+  dry-run `proposed`-unapproved head returns `none` and re-ticking it writes **no** row; the same
+  head under `mayActLive` **sends** (the live-flip deadlock - assert the whole queue advances, not
+  just that item); an approved head sends in either mode; and approving seq3 while seq1 sits
+  unapproved must **not** run seq3 (authored order holds). A table over
+  {queued, proposed-unapproved, proposed-approved} x {dry-run, live} is six rows and pins every one.
 - `test/queue-db.test.ts` - round-trip, ordering, reorder renumber, per-key isolation, and the
   single-flight unique index actually rejecting a second in-flight item.
 - `test/queue-apply.test.ts` - against a fake actions object, mirroring `foreman-verdict.test.ts`'s

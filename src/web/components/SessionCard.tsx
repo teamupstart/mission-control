@@ -16,6 +16,7 @@ import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
+import { WorkQueue } from "./WorkQueue.tsx";
 
 function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) {
@@ -29,6 +30,23 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
   claude: "Claude Code",
   codex: "Codex",
 };
+
+/**
+ * Whether Foreman may send live in this session's cwd. Mirrors the server's
+ * `foremanMayActLive` prefix match deliberately - the panel's whole job here is to
+ * explain a "why is nothing sending?" that the server would otherwise decide
+ * silently (a dispatched-task worktree isn't under the repo root, so it never
+ * matches, and every item would sit drafted while reading as a bug).
+ */
+function allowlisted(cwd: string | null, allowlist: string[] | undefined): boolean {
+  if (!cwd || !allowlist) return false;
+  const strip = (p: string): string => (p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p);
+  const dir = strip(cwd);
+  return allowlist.some((root) => {
+    const r = strip(root);
+    return dir === r || dir.startsWith(`${r}/`);
+  });
+}
 
 export function SessionCard({
   session,
@@ -46,6 +64,7 @@ export function SessionCard({
   onRenameStart,
   onRenameClose,
   foremanMode = "dry-run",
+  foremanAllowlist,
   inputReviewId = null,
   pendingReviewIds,
 }: {
@@ -69,6 +88,9 @@ export function SessionCard({
   onRenameClose?: () => void;
   /** Current Foreman mode, so an expanded note can show semi-auto controls. */
   foremanMode?: string;
+  /** Repo roots Foreman may send live in, so the queue can be honest about why
+   *  it's only drafting (the allowlist is a prefix match on the repo root). */
+  foremanAllowlist?: string[];
   /** A pending `input` review id for this session (for Foreman's Approve). */
   inputReviewId?: string | null;
   /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
@@ -253,6 +275,27 @@ export function SessionCard({
         </div>
       )}
 
+      {session.queue && session.queue.openCount > 0 && (
+        <button
+          className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
+          title={
+            session.queue.inFlightIntent
+              ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
+              : "Work queued for this session - expand to see it"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand?.();
+          }}
+        >
+          <span className="qc-count">{session.queue.openCount} queued</span>
+          {session.queue.inFlightIntent && (
+            <span className="qc-intent">{session.queue.inFlightIntent}</span>
+          )}
+          {session.queue.round > 0 && <span className="qc-round">fix {session.queue.round}</span>}
+        </button>
+      )}
+
       {session.activity && <p className="activity">{session.activity}</p>}
 
       {session.nomistakes && (
@@ -305,6 +348,11 @@ export function SessionCard({
               pendingReviewIds={pendingReviewIds}
             />
           )}
+          <WorkQueue
+            session={session}
+            foremanMode={foremanMode}
+            allowlisted={allowlisted(session.cwd, foremanAllowlist)}
+          />
           <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
         </>
       )}

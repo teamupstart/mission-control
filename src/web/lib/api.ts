@@ -1,9 +1,17 @@
-import type { ForemanStatus, PermissionMode, ResetPreview, SessionDiff } from "@shared/types.ts";
+import type {
+  ForemanStatus,
+  PermissionMode,
+  ResetPreview,
+  SessionDiff,
+  SessionQueue,
+} from "@shared/types.ts";
 import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
 
 export interface ActionResult {
   ok: boolean;
   error?: string;
+  /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
+  status?: number;
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -76,10 +84,10 @@ async function request(method: string, path: string, body?: unknown): Promise<Ac
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = (await res.json().catch(() => ({}))) as ActionResult;
-    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     // Task endpoints return the Task object (no `ok` field); a 2xx is success.
     // Errors always arrive as a non-2xx (handled above), so this can't mask one.
-    return { ...data, ok: true };
+    return { ...data, ok: true, status: res.status };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -87,7 +95,12 @@ async function request(method: string, path: string, body?: unknown): Promise<Ac
 
 const post = (path: string, body?: unknown) => request("POST", path, body);
 const put = (path: string, body?: unknown) => request("PUT", path, body);
+const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
+
+/** Fetch a session's work queue. Null when it has none (or on any failure). */
+export const fetchQueue = (id: string) =>
+  fetchJson<SessionQueue | null>(`/api/sessions/${encodeURIComponent(id)}/queue`);
 
 export interface DispatchInput {
   repoRoot: string;
@@ -133,6 +146,29 @@ export const api = {
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
 
   // --- Foreman (auto-responder) ---
-  setForemanConfig: (patch: ForemanConfigPatch) => put(`/api/foreman/config`, patch),
-  setNote: (id: string, patch: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, patch),
+  setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),
+  setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
+
+  // --- Foreman session work queues ---
+  addWorkItem: (id: string, intent: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/queue`, { intent }),
+  /** Edit a waiting item. CAS on `revision` - a 409 means Foreman got there first. */
+  editWorkItem: (id: string, itemId: string, intent: string, revision: number) =>
+    patch(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}`, {
+      intent,
+      revision,
+    }),
+  removeWorkItem: (id: string, itemId: string) =>
+    del(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}`),
+  reorderQueue: (id: string, ids: string[]) =>
+    put(`/api/sessions/${encodeURIComponent(id)}/queue/order`, { ids }),
+  approveWorkItem: (id: string, itemId: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
+  setWrapupAnswer: (id: string, answer: string | null) =>
+    put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
+  reattachQueue: (id: string, noteKey: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),
+  /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
+  injectPrompt: (id: string, text: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text }),
 };

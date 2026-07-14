@@ -104,6 +104,35 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
             ))}
           </fieldset>
 
+          {/*
+            The queue's two policy knobs. Timings (settle, pickup, lease) are
+            deliberately module constants with env overrides - these are the only
+            two a human should actually reason about.
+          */}
+          <fieldset className="foreman-knobs" disabled={!enabled}>
+            <legend>Work queues</legend>
+            <label className="alert-row">
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={config.maxFixAttempts}
+                onChange={(e) => void update({ maxFixAttempts: Number(e.target.value) })}
+              />
+              Fix attempts per issue before escalating
+            </label>
+            <label className="alert-row">
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={config.maxFixRounds}
+                onChange={(e) => void update({ maxFixRounds: Number(e.target.value) })}
+              />
+              Max fix rounds per item
+            </label>
+          </fieldset>
+
           {mode === "live" && (
             <label className="foreman-allowlist">
               Live only in these repos (one path per line):

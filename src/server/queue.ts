@@ -194,8 +194,29 @@ export class QueueManager {
       updatedAt: now,
       completedAt: isTerminalItem(state) ? item.completedAt ?? now : null,
     };
-    this.registry.putQueueItem(next);
-    return { ok: true, item: next };
+    return this.write(next);
+  }
+
+  /**
+   * Persist an item, turning the single-flight index's constraint violation into a
+   * clean refusal.
+   *
+   * The index is the enforcement and must stay that way - but a raw
+   * `ERR_SQLITE_ERROR` escaping the route means the daemon logs a stack trace and
+   * answers an opaque 500, so the caller can't tell "you broke the invariant" from
+   * "the daemon fell over". Catching it here keeps the guarantee and makes it
+   * legible.
+   */
+  private write(item: WorkItem): { ok: true; item: WorkItem } | { ok: false; error: string } {
+    try {
+      this.registry.putQueueItem(item);
+      return { ok: true, item };
+    } catch (err) {
+      if (isSingleFlightViolation(err)) {
+        return { ok: false, error: "another item in this queue is already in flight" };
+      }
+      throw err;
+    }
   }
 
   /** Stamp delivery: the item is out, with the diff + transcript scope it was sent at. */
@@ -221,8 +242,7 @@ export class QueueManager {
       recoveredAt: null,
       updatedAt: now,
     };
-    this.registry.putQueueItem(next);
-    return { ok: true, item: next };
+    return this.write(next);
   }
 
   /**
@@ -251,8 +271,7 @@ export class QueueManager {
       recoveredAt: now,
       updatedAt: now,
     };
-    this.registry.putQueueItem(next);
-    return { ok: true, item: next };
+    return this.write(next);
   }
 
   /** Record that the drain-time wrap-up was asked (it fires exactly once). */
@@ -269,4 +288,10 @@ export class QueueManager {
     const done = this.registry.reattachQueue(fromKey, sessionId, now);
     return done ? { ok: true } : { ok: false, error: "could not re-attach that queue" };
   }
+}
+
+/** True when an error is the one_inflight_per_queue index rejecting a write. */
+function isSingleFlightViolation(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /UNIQUE constraint failed: foreman_queue_items\.note_key/i.test(msg);
 }

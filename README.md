@@ -359,6 +359,11 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
+Only one worker drives the fleet at a time. `npm run foreman` twice is safe: the second
+process acquires no **lease** and idles as a standby, taking over automatically if the
+leader dies. That matters because two workers would double-answer a prompt - or, with work
+queues below, type the same work instruction into a live agent twice.
+
 ### The cheap tier
 
 Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
@@ -387,6 +392,44 @@ The worker log is the audit surface for the rollout: every acted session logs th
 decided it (`[tier 2] answer/access -> answered (sent)`), and shadow mode adds a divergence line
 per session (`shadow cheap-over-eager (cheap=… opus=…)`). `cheap-over-eager` - the cheap tier
 would have answered where Opus would not - is the one to watch before flipping to **on**.
+
+## Work queues (load a session up and walk away)
+
+Foreman above is *reactive* - it answers what a blocked session is asking. A **work queue**
+is the proactive half: queue a batch of work for one specific session, and Foreman feeds it
+in one item at a time, in the order you authored, checking each one before releasing the
+next.
+
+Open a card and use the **Work queue** panel: type an intent, **Add**, repeat. Items are
+drag-reorderable, editable, and removable while they wait. Then walk away. For each item
+Foreman:
+
+1. waits for the session to actually go **idle and settle** (not just look idle);
+2. **delivers** the intent as a single bracketed paste (so a multi-line prompt doesn't
+   submit halfway through);
+3. waits for the agent to finish, then **verifies** the work in a fresh tool-less
+   `claude -p` - reading the item's own diff and transcript against the repo's `AGENTS.md`
+   / `CLAUDE.md`;
+4. if something's genuinely missing, hands the **specific gaps** back to the agent to fix
+   and re-checks - escalating to you only once an issue looks beyond it;
+5. releases the next item.
+
+When the queue drains it asks whether to open a PR and run no-mistakes. It always **asks**;
+it never launches those itself.
+
+**Verification is evidence-only by design.** It reads the diff and the transcript - it does
+not run tests. `/no-mistakes` remains the gate that actually executes things; Foreman's job
+here is the narrower question no pipeline answers: *was the thing you asked for actually
+done?* Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
+lands as advisory, shows on the card, and never costs a round. Two knobs in the Foreman
+popover bound it: **fix attempts per issue** (default 3) and **max fix rounds per item**
+(default 10, the hard stop).
+
+Sends obey the same gate as everything else: dry-run **drafts** each item and waits for your
+**Approve**, and live sends only happen in allowlisted repos. Verification is read-only, so
+it runs in any mode - you see Foreman's judgment before it ever types. A queue needs a
+hook-instrumented Claude session (there's no completion signal otherwise), and the panel
+says so rather than letting you queue work that can't run.
 
 ## Keyboard shortcuts
 

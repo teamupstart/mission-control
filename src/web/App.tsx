@@ -122,6 +122,7 @@ export function App(): React.JSX.Element {
     [pendingReviews],
   );
   const foremanMode = foreman.config?.mode ?? "dry-run";
+  const foremanAllowlist = foreman.config?.repoAllowlist;
 
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
 
@@ -452,6 +453,7 @@ export function App(): React.JSX.Element {
             onRenameStart={() => setRenamingId(s.id)}
             onRenameClose={() => setRenamingId(null)}
             foremanMode={foremanMode}
+            foremanAllowlist={foremanAllowlist}
             inputReviewId={inputReviewBySession.get(s.id) ?? null}
             pendingReviewIds={pendingReviewIds}
           />

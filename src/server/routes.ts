@@ -432,7 +432,9 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const r = queues.setState(c.req.param("itemId"), parsed.data);
     if (r.ok) return c.json(r.item);
-    return c.json({ error: r.error }, 404);
+    // 409, not 500: a single-flight refusal means the caller broke the invariant,
+    // and it must be able to tell that from the daemon falling over.
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
   });
 
   // Stamp delivery. Separate from /state because `sentAt` is the daemon's clock,
@@ -447,7 +449,7 @@ export function buildApp(
     const anchor = typeof body.transcriptAnchor === "number" ? body.transcriptAnchor : null;
     const r = queues.markSent(c.req.param("itemId"), baseSha, anchor);
     if (r.ok) return c.json(r.item);
-    return c.json({ error: r.error }, 404);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
   });
 
   // Adopt an item a restart left mid-send (see QueueManager.recover).

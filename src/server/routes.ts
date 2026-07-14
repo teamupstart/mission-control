@@ -205,6 +205,9 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (session.agent !== "claude")
       return c.json({ error: "permission modes are a Claude feature" }, 400);
     const r = await cyclePermissionMode(session);
+    // Claude switches mode instantly but tells us nothing until its next hook, so
+    // reflect the new mode on the card now; a later hook reconciles the guess.
+    if (r.ok) registry.optimisticCyclePermissionMode(session.id);
     return c.json(r, r.ok ? 200 : 500);
   });
 

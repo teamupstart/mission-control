@@ -8,7 +8,9 @@ import type { HookIngest } from "@shared/protocol.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-mode-"));
-const { Registry, normalizePermissionMode } = await import("../src/server/registry.ts");
+const { Registry, normalizePermissionMode, nextPermissionMode } = await import(
+  "../src/server/registry.ts"
+);
 
 const PANE = { session: "w", window: "w", windowIndex: 0, paneId: "%3" };
 
@@ -97,4 +99,56 @@ test("the mode survives a later discovery sweep (overlay carries it)", () => {
   r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "bypassPermissions" }));
   r.applyDiscovery([disco()]); // same session re-observed
   assert.equal(modeOf(r), "bypassPermissions");
+});
+
+test("nextPermissionMode follows Claude's base Shift+Tab cycle", () => {
+  assert.equal(nextPermissionMode("default"), "acceptEdits");
+  assert.equal(nextPermissionMode("acceptEdits"), "plan");
+  assert.equal(nextPermissionMode("plan"), "default"); // base cycle wraps
+  // Optional modes we can't confirm are enabled fall back to the base wrap.
+  assert.equal(nextPermissionMode("bypassPermissions"), "default");
+  assert.equal(nextPermissionMode("auto"), "default");
+});
+
+test("nextPermissionMode declines to guess when it can't", () => {
+  assert.equal(nextPermissionMode(null), null); // mode not yet known
+  assert.equal(nextPermissionMode("dontAsk"), null); // never part of the cycle
+});
+
+test("optimistic cycle advances the chip immediately, before any hook", () => {
+  const r = seeded();
+  r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "default" }));
+  let emitted = 0;
+  r.subscribe((e) => {
+    if (e.type === "session_upsert" && e.session.id === "s1") emitted++;
+  });
+  r.optimisticCyclePermissionMode("s1");
+  assert.equal(modeOf(r), "acceptEdits");
+  assert.equal(emitted, 1); // the card re-renders right away
+});
+
+test("an optimistic cycle survives a discovery sweep (overlay advanced too)", () => {
+  const r = seeded();
+  r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "default" }));
+  r.optimisticCyclePermissionMode("s1"); // -> acceptEdits
+  r.applyDiscovery([disco()]); // same session re-observed; must not revert to default
+  assert.equal(modeOf(r), "acceptEdits");
+});
+
+test("a real hook reconciles an optimistic guess", () => {
+  const r = seeded();
+  r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "plan" }));
+  r.optimisticCyclePermissionMode("s1"); // guesses default (base wrap)
+  assert.equal(modeOf(r), "default");
+  // But this session actually had bypassPermissions enabled after plan; the next
+  // hook carrying the true mode wins over the guess.
+  r.applyHook(hook({ event: "PreToolUse", permissionMode: "bypassPermissions" }));
+  assert.equal(modeOf(r), "bypassPermissions");
+});
+
+test("optimistic cycle is a no-op when the mode is unknown", () => {
+  const r = seeded();
+  assert.equal(modeOf(r), null); // no hook yet
+  r.optimisticCyclePermissionMode("s1");
+  assert.equal(modeOf(r), null); // nothing to advance from - wait for a real hook
 });

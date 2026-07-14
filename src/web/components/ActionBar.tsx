@@ -24,12 +24,15 @@ export function ActionBar({
   session,
   expanded = false,
   registerActions,
+  onReset,
 }: {
   session: Session;
   /** When the card is expanded, the transcript panel owns the reply box, so we
    * hide this bar's Send button to avoid two send surfaces. */
   expanded?: boolean;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
+  /** Open the reset-to-origin confirm (app-level modal). Absent = no reset control. */
+  onReset?: () => void;
 }): React.JSX.Element {
   const [composing, setComposing] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
@@ -149,6 +152,15 @@ export function ActionBar({
           <button className="btn" onClick={focusPane}>
             Focus
           </button>
+          {session.cwd && onReset && (
+            <button
+              className="btn btn-reset"
+              title="Reset checkout to origin's default branch and clear context (Ctrl+R)"
+              onClick={onReset}
+            >
+              Reset
+            </button>
+          )}
           <span className="actions-spacer" />
           {confirmKill ? (
             <button

@@ -128,6 +128,16 @@ export const DispatchSchema = z.object({
 });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
+/**
+ * Reset a session's worktree to origin's default branch. The body is optional;
+ * `clear` controls whether the agent's context is also reset via `/clear`.
+ */
+export const ResetSchema = z.object({
+  /** Also send `/clear` to the agent after the git reset lands. Default true. */
+  clear: z.boolean().optional().default(true),
+});
+export type ResetInput = z.infer<typeof ResetSchema>;
+
 /** Close a task with a human-recorded outcome (the `/stow` intent -> result loop). */
 export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),

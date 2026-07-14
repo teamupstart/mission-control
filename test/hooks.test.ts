@@ -59,6 +59,7 @@ test("sessionKey matches a session's own pane, tmux preferred", () => {
     prUrl: null,
     prNumber: null,
     prState: null,
+    prChecks: null,
     meta: null,
     note: null,
   };

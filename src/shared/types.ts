@@ -173,6 +173,13 @@ export interface Session {
    * Null until Foreman has inspected the session.
    */
   note: SessionNoteSummary | null;
+  /**
+   * Rolled-up state of the PR's CI checks (GitHub status-check rollup): `failing`
+   * if any check failed, else `pending` while any is still running, else
+   * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
+   * `failing` is surfaced on the card - as an alert next to the PR chip.
+   */
+  prChecks: PrChecks | null;
 }
 
 // ---- Foreman session notes (auto-responder) ----
@@ -241,6 +248,9 @@ export interface ForemanStatus {
 
 /** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */
 export type PrState = "open" | "merged";
+
+/** Rolled-up CI status for a session's PR. A single failing check dominates. */
+export type PrChecks = "passing" | "failing" | "pending";
 
 // ---- dispatched tasks (agents) ----
 
@@ -454,4 +464,41 @@ export interface SessionDiff {
   patch: string;
   /** True when `patch` was truncated for size (stats above are still complete). */
   truncated: boolean;
+}
+
+// ---- session reset (start a checkout over from origin's default branch) ----
+
+/**
+ * Preview of what a "reset to origin/main" would permanently discard, computed
+ * after fetching origin so it reflects the *current* remote: `GET
+ * /api/sessions/:id/reset/preview`. Powers the confirm dialog's warning so the
+ * user sees exactly what work is at stake before committing to the reset.
+ */
+export interface ResetPreview {
+  ok: boolean;
+  error: string | null;
+  /** The ref the reset would land on (e.g. "origin/main"), null when none was found. */
+  target: string | null;
+  /** The branch being reset (from the session), for display. */
+  branch: string | null;
+  /** Tracked files with uncommitted (staged or unstaged) changes - discarded. */
+  dirtyFiles: number;
+  /** Untracked files that `git clean` would remove. */
+  untrackedFiles: number;
+  /** Commits on the branch not on `target` - discarded by the hard reset. */
+  aheadCommits: number;
+  /** Subject lines of up to 10 of those commits, most recent first. */
+  aheadSubjects: string[];
+  /** True when the worktree is already clean and at `target` (nothing to lose). */
+  clean: boolean;
+  /** Whether the agent's context can be cleared (session has a pane to send `/clear`). */
+  canClear: boolean;
+}
+
+/** Result of executing a reset: `POST /api/sessions/:id/reset`. */
+export interface ResetResult {
+  ok: boolean;
+  error: string | null;
+  /** True when `/clear` was sent to the agent after the git reset landed. */
+  cleared: boolean;
 }

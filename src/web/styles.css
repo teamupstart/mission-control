@@ -13,6 +13,7 @@
   --working: #4a9eff;
   --idle: #35c08a;
   --attention: #f6a733;
+  --danger: #f85149;
   --exited: #707a88;
   --neutral: #8b94a3;
 
@@ -907,6 +908,17 @@ body {
 .btn-danger:hover {
   background: #d94840 !important;
 }
+/* Reset is destructive-but-recoverable-adjacent: a cautionary amber ghost that
+   reads as "careful" without competing with the red Kill next to it. */
+.btn-reset {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+}
+.btn-reset:hover:not(:disabled) {
+  color: var(--attention) !important;
+  border-color: color-mix(in oklab, var(--attention) 60%, var(--border)) !important;
+  background: color-mix(in oklab, var(--attention) 12%, var(--panel-2)) !important;
+}
 .compose {
   display: flex;
   gap: 7px;
@@ -1613,6 +1625,27 @@ kbd {
   border-color: color-mix(in oklab, var(--pr-merged) 62%, transparent);
 }
 
+/* "A CI check failed" alert - sits right after the PR chip and links to the same
+   PR. Same pill recipe as the chip, in the danger tone so it reads as an alarm. */
+.pr-checks-alert {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border-radius: 999px;
+  color: color-mix(in oklab, var(--danger) 84%, var(--fg));
+  background: color-mix(in oklab, var(--danger) 15%, var(--panel-2));
+  border: 1px solid color-mix(in oklab, var(--danger) 36%, transparent);
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease;
+}
+.pr-checks-alert:hover {
+  background: color-mix(in oklab, var(--danger) 24%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--danger) 60%, transparent);
+}
+
 /* ---- dispatch modal ---- */
 .dispatch-modal {
   width: min(560px, 100%);
@@ -1734,6 +1767,95 @@ kbd {
   padding: 14px 18px;
   border-top: 1px solid var(--border-soft);
   background: var(--panel-2);
+}
+
+/* ---- reset-to-origin confirm ---- */
+.reset-modal {
+  width: min(520px, 100%);
+}
+.reset-body {
+  padding: 16px 18px 18px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.reset-lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.reset-lead .agent-dot {
+  flex: none;
+}
+.reset-name {
+  font-weight: 620;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reset-checking {
+  margin: 0;
+  color: var(--muted);
+}
+.reset-error {
+  margin: 0;
+  color: #e5877f;
+}
+.reset-clean {
+  margin: 0;
+  color: var(--idle);
+}
+.reset-warn-title {
+  margin: 0 0 8px;
+  color: var(--attention);
+}
+.reset-loss {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.reset-loss strong {
+  color: var(--fg);
+}
+.reset-commits {
+  margin: 6px 0 2px;
+  padding-left: 16px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 2px solid var(--border);
+}
+.reset-commits li {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reset-commits .reset-more {
+  font-family: var(--sans);
+  color: var(--dim);
+  font-style: italic;
+}
+.reset-then {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+}
+.reset-body code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 5px;
 }
 .btn-primary {
   color: #fff;
@@ -2651,4 +2773,69 @@ kbd {
   margin: 0;
   font-size: 11px;
   color: var(--dim);
+}
+
+/* ---- tooltip (reusable, see components/Tooltip.tsx) ---- */
+/* Rendered in a body-level portal with fixed positioning, so it floats above
+   everything and never clips against card edges. `left`/`top` are set inline to
+   the trigger's center; the transform below centers the bubble and offsets it
+   above (or below, when flipped) with room for the little caret. */
+.tooltip {
+  position: fixed;
+  z-index: 100;
+  max-width: 260px;
+  padding: 5px 9px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  animation: tooltip-in 0.1s ease both;
+}
+.tt-above {
+  transform: translate(-50%, calc(-100% - 8px));
+}
+.tt-below {
+  transform: translate(-50%, 8px);
+}
+/* Caret: a small rotated square borrowing the bubble's surface + border, with
+   the two edges facing the trigger left visible. */
+.tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  transform: translateX(-50%) rotate(45deg);
+}
+.tt-above::after {
+  bottom: -4px;
+  border-top: none;
+  border-left: none;
+}
+.tt-below::after {
+  top: -4px;
+  border-bottom: none;
+  border-right: none;
+}
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tooltip {
+    animation: none;
+  }
 }

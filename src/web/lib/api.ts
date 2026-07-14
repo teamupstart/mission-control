@@ -1,4 +1,4 @@
-import type { ForemanStatus, SessionDiff } from "@shared/types.ts";
+import type { ForemanStatus, ResetPreview, SessionDiff } from "@shared/types.ts";
 import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
 
 export interface ActionResult {
@@ -19,6 +19,24 @@ async function fetchJson<T>(path: string): Promise<T | null> {
 
 export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/config");
 export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
+
+/** Fetch what a reset-to-origin would discard. Never throws - maps failures into the shape. */
+export async function fetchResetPreview(id: string): Promise<ResetPreview> {
+  const fail = (error: string): ResetPreview => ({
+    ok: false, error, target: null, branch: null, dirtyFiles: 0, untrackedFiles: 0,
+    aheadCommits: 0, aheadSubjects: [], clean: false, canClear: false,
+  });
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/reset/preview`);
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return fail(data.error ?? `HTTP ${res.status}`);
+    }
+    return (await res.json()) as ResetPreview;
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+}
 
 /** Fetch a session's diff vs its source branch. Never throws - maps failures into the shape. */
 export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
@@ -86,6 +104,8 @@ export const api = {
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
+  reset: (id: string, clear = true) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
   nomistakesRespond: (

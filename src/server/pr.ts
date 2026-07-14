@@ -1,6 +1,6 @@
 import { PR_POLL_MS } from "./config.ts";
 import type { PrMatch, Registry } from "./registry.ts";
-import type { PrState } from "@shared/types.ts";
+import type { PrChecks, PrState } from "@shared/types.ts";
 import { unref } from "./util/timers.ts";
 import { run } from "./util/exec.ts";
 
@@ -35,7 +35,18 @@ type PrLookup = "error" | null | PrMatch;
 async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
   const res = await run(
     "gh",
-    ["pr", "list", "--head", branch, "--state", "all", "--json", "url,number,state", "--limit", "20"],
+    [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "all",
+      "--json",
+      "url,number,state,statusCheckRollup",
+      "--limit",
+      "20",
+    ],
     { cwd, timeoutMs: 8000 },
   );
   if (res.code !== 0) return "error";
@@ -53,6 +64,7 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
       url,
       number: typeof number === "number" ? number : null,
       state: prStateOf(match) as PrState,
+      checks: checksOf(match),
     };
   } catch {
     return "error";
@@ -65,6 +77,65 @@ function prStateOf(p: unknown): PrState | null {
   if (raw === "OPEN") return "open";
   if (raw === "MERGED") return "merged";
   return null; // CLOSED (unmerged) or anything unexpected
+}
+
+// CheckRun conclusions and StatusContext states that we count as a failed check.
+// SUCCESS / NEUTRAL / SKIPPED are treated as passing; anything unrecognized as
+// passing too, so an unknown value never raises a false alarm.
+const FAIL_CONCLUSIONS = new Set([
+  "FAILURE",
+  "TIMED_OUT",
+  "CANCELLED",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+  "STALE",
+]);
+const FAIL_STATES = new Set(["FAILURE", "ERROR"]);
+const PENDING_STATES = new Set(["PENDING", "EXPECTED"]);
+
+type CheckState = "fail" | "pending" | "pass";
+
+/**
+ * Classify one `statusCheckRollup` entry. Entries are either a GraphQL `CheckRun`
+ * (has a `status` like QUEUED/IN_PROGRESS/COMPLETED plus, once done, a
+ * `conclusion`) or a legacy `StatusContext` (has a `state` like SUCCESS/PENDING/
+ * FAILURE). Returns null for a shape we don't recognize.
+ */
+function checkEntryState(e: unknown): CheckState | null {
+  const o = e as { status?: unknown; conclusion?: unknown; state?: unknown };
+  if (typeof o.status === "string") {
+    if (o.status.toUpperCase() !== "COMPLETED") return "pending";
+    const c = typeof o.conclusion === "string" ? o.conclusion.toUpperCase() : "";
+    return FAIL_CONCLUSIONS.has(c) ? "fail" : "pass";
+  }
+  if (typeof o.state === "string") {
+    const s = o.state.toUpperCase();
+    if (FAIL_STATES.has(s)) return "fail";
+    if (PENDING_STATES.has(s)) return "pending";
+    return "pass";
+  }
+  return null;
+}
+
+/**
+ * Roll a PR's `statusCheckRollup` up to a single chip state: any failing check
+ * dominates (that's what the card's alert keys off), else pending while any is
+ * still running, else passing. Null when the PR carries no checks at all.
+ */
+function checksOf(p: unknown): PrChecks | null {
+  const rollup = (p as { statusCheckRollup?: unknown })?.statusCheckRollup;
+  if (!Array.isArray(rollup) || rollup.length === 0) return null;
+  let sawPending = false;
+  let sawPass = false;
+  for (const e of rollup) {
+    const s = checkEntryState(e);
+    if (s === "fail") return "failing";
+    if (s === "pending") sawPending = true;
+    else if (s === "pass") sawPass = true;
+  }
+  if (sawPending) return "pending";
+  if (sawPass) return "passing";
+  return null;
 }
 
 /**

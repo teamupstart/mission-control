@@ -8,6 +8,7 @@ import {
   ForemanConfigPatchSchema,
   HookIngestSchema,
   NomistakesRespondSchema,
+  ResetSchema,
   ResolveReviewSchema,
   SendTextSchema,
   SetNoteSchema,
@@ -27,7 +28,7 @@ import {
 } from "./foreman/config.ts";
 import { computeSessionDiff } from "./diff.ts";
 import { checkToken } from "./auth.ts";
-import { cyclePermissionMode, focus, kill, sendText } from "./actions.ts";
+import { cyclePermissionMode, focus, kill, resetPreview, resetToOrigin, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos } from "./repos.ts";
@@ -204,6 +205,24 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (session.agent !== "claude")
       return c.json({ error: "permission modes are a Claude feature" }, 400);
     const r = await cyclePermissionMode(session);
+    return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Preview what a reset-to-origin would discard (fetches origin; localhost read).
+  app.get("/api/sessions/:id/reset/preview", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(await resetPreview(session));
+  });
+
+  // Pull latest and hard-reset the checkout to origin's default branch, then
+  // clear the agent's context. The UI confirms (with the loss preview) first.
+  app.post("/api/sessions/:id/reset", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ResetSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await resetToOrigin(session, parsed.data.clear);
     return c.json(r, r.ok ? 200 : 500);
   });
 

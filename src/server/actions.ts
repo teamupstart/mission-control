@@ -1,4 +1,4 @@
-import type { Session } from "@shared/types.ts";
+import type { ResetPreview, ResetResult, Session } from "@shared/types.ts";
 import { resolveWeztermBin } from "./config.ts";
 import { listTmuxClients } from "./discovery/tmux.ts";
 import {
@@ -213,4 +213,113 @@ export async function kill(session: Session, deps: KillDeps = defaultKillDeps): 
   }
 
   return signalled;
+}
+
+/** Run a git command in a session's worktree. Network ops pass a longer timeout. */
+function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult> {
+  return run("git", ["-C", cwd, ...args], { timeoutMs });
+}
+
+/**
+ * The remote's default-branch ref to reset onto - "origin/main" for most repos.
+ * Prefers origin's own HEAD symbolic-ref (survives a repo whose default is
+ * `master` or otherwise renamed), falling back to the common names. Deliberately
+ * remote-only: a reset pulls from origin, so a stale *local* main is never a
+ * valid target (unlike the diff's source ref, which may fall back to local).
+ */
+async function remoteDefaultRef(cwd: string): Promise<string | null> {
+  const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
+  for (const ref of ["origin/main", "origin/master"]) {
+    const r = await git(cwd, ["rev-parse", "--verify", "--quiet", ref]);
+    if (r.code === 0 && r.stdout.trim()) return ref;
+  }
+  return null;
+}
+
+/**
+ * Fetch origin, then report what a hard reset onto its default branch would
+ * permanently discard: uncommitted tracked edits, untracked files (which the
+ * follow-up `git clean` removes), and local commits ahead of the target. The
+ * fetch is what makes "commits ahead" honest against the *current* remote; a
+ * fetch failure is a hard error so the confirm dialog never understates the loss.
+ */
+export async function resetPreview(session: Session): Promise<ResetPreview> {
+  const base: ResetPreview = {
+    ok: false, error: null, target: null, branch: session.gitBranch,
+    dirtyFiles: 0, untrackedFiles: 0, aheadCommits: 0, aheadSubjects: [],
+    clean: false, canClear: Boolean(session.tmux || session.wezterm),
+  };
+  if (!session.cwd) return { ...base, error: "session has no working directory" };
+  // Anchor every git op at the worktree top, not the pane's (possibly nested)
+  // cwd - `clean` is relative to its cwd, so from a subdir it would miss
+  // untracked files elsewhere in the repo that the reset would otherwise strip.
+  const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) return { ...base, error: "not a git repository" };
+  const root = top.stdout.trim();
+
+  const fetched = await git(root, ["fetch", "origin"], 30000);
+  if (fetched.code !== 0) {
+    return { ...base, error: `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}` };
+  }
+  const target = await remoteDefaultRef(root);
+  if (!target) return { ...base, error: "no origin/main (or origin/master) to reset to" };
+
+  // Split the porcelain status into untracked ("??") vs dirty tracked lines.
+  let dirtyFiles = 0;
+  let untrackedFiles = 0;
+  for (const line of (await git(root, ["status", "--porcelain"])).stdout.split("\n")) {
+    if (!line.trim()) continue;
+    if (line.startsWith("??")) untrackedFiles++;
+    else dirtyFiles++;
+  }
+
+  // Commits on this branch but not on the target - discarded by the hard reset.
+  const aheadCommits = Number((await git(root, ["rev-list", "--count", `${target}..HEAD`])).stdout.trim()) || 0;
+  const aheadSubjects = aheadCommits
+    ? (await git(root, ["log", "--format=%s", "-n", "10", `${target}..HEAD`])).stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
+
+  const clean = dirtyFiles === 0 && untrackedFiles === 0 && aheadCommits === 0;
+  return { ...base, ok: true, target, dirtyFiles, untrackedFiles, aheadCommits, aheadSubjects, clean };
+}
+
+/**
+ * Pull latest and hard-reset the session's checkout to origin's default branch,
+ * then (optionally) clear the agent's context with `/clear`. Order matters: fetch
+ * first so we reset onto the *current* remote; `reset --hard` moves the branch
+ * and tracked files; `git clean -fd` drops untracked files/dirs so the worktree
+ * matches origin exactly (ignored files - node_modules, .env - are kept). The
+ * `/clear` is best-effort: the git reset has already landed, so a session with no
+ * pane just reports `cleared: false` rather than failing the whole operation.
+ */
+export async function resetToOrigin(session: Session, clear: boolean): Promise<ResetResult> {
+  if (!session.cwd) return { ok: false, error: "session has no working directory", cleared: false };
+  // Run at the worktree top so `reset` and `clean` cover the same (whole) tree -
+  // `clean` is relative to its cwd, so a nested pane cwd would leave stray
+  // untracked files behind, defeating "make the worktree match origin".
+  const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) {
+    return { ok: false, error: "not a git repository", cleared: false };
+  }
+  const root = top.stdout.trim();
+
+  const fetched = await git(root, ["fetch", "origin"], 30000);
+  if (fetched.code !== 0) {
+    return { ok: false, error: `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}`, cleared: false };
+  }
+  const target = await remoteDefaultRef(root);
+  if (!target) return { ok: false, error: "no origin/main (or origin/master) to reset to", cleared: false };
+
+  const reset = await git(root, ["reset", "--hard", target]);
+  if (reset.code !== 0) return { ok: false, error: reset.stderr.trim() || "git reset failed", cleared: false };
+  const cleaned = await git(root, ["clean", "-fd"]);
+  if (cleaned.code !== 0) return { ok: false, error: cleaned.stderr.trim() || "git clean failed", cleared: false };
+
+  if (!clear) return { ok: true, error: null, cleared: false };
+  const sent = await sendText(session, "/clear", true);
+  return { ok: true, error: null, cleared: sent.ok };
 }

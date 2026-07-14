@@ -2,6 +2,7 @@ import type { ReviewItem, Session } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
 import { reviewSession } from "./review.ts";
+import { EvaluationDebounce } from "./debounce.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { applyVerdict, foremanMayActLive, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
 import type { ReviewContext } from "./verdict.ts";
@@ -16,11 +17,20 @@ import type { ReviewContext } from "./verdict.ts";
 const IDLE_MS = 4000;
 /** Small breather between processing two sessions. */
 const BETWEEN_MS = 400;
+/**
+ * Minimum wall-clock gap between two full reviews of the *same* session. The marker
+ * idempotency check already skips an unchanged episode for free; this floor stops a
+ * session whose marker flaps (e.g. a terminal keyed on a moving `lastActivity`) from
+ * spawning a fresh `claude -p` every loop. Overridable for tests/tuning; default 60s.
+ */
+const EVAL_DEBOUNCE_MS = Number(process.env.FOREMAN_EVAL_DEBOUNCE_MS || 60_000);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Consecutive review-failure strikes, so a transient blip retries instead of a permanent skip. */
 const reviewFailures = new ReviewFailureTracker();
+/** Per-session cooldown so a flapping marker can't trigger back-to-back reviews. */
+const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
 async function main(): Promise<void> {
   const client = new ForemanClient();
@@ -107,6 +117,13 @@ async function processSession(
   // Idempotency: don't re-handle a prompt whose marker we've already stamped.
   const existing = await client.note(session.id).catch(() => null);
   if (existing?.handledMarker === pending.marker) return;
+
+  // Debounce: the check above skips an UNCHANGED episode for free, but a *changed*
+  // marker (a new review, or a terminal whose `lastActivity` moved) would otherwise
+  // spawn a full review immediately. Hold each session to at most one evaluation per
+  // window so a flapping marker can't burn a `claude -p` on every loop; a session seen
+  // for the first time is due at once, so genuinely new work is never delayed.
+  if (!evaluations.claim(session.id)) return;
 
   const window = await client.transcript(session.id).catch(() => ({ messages: [], truncated: false }));
   const input: ReviewInput = {

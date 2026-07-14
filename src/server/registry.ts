@@ -3,6 +3,7 @@ import type {
   MetaSource,
   NmRunSummary,
   PermissionMode,
+  PrChecks,
   PrState,
   ReviewItem,
   ServerEvent,
@@ -38,7 +39,13 @@ import {
 import { unref } from "./util/timers.ts";
 
 /** An open-or-merged PR the poller matched to a session's current branch. */
-export type PrMatch = { url: string; number: number | null; state: PrState };
+export type PrMatch = {
+  url: string;
+  number: number | null;
+  state: PrState;
+  /** Rolled-up CI status for the PR, or null when it carries no checks. */
+  checks: PrChecks | null;
+};
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
@@ -195,6 +202,7 @@ export class Registry extends EventEmitter {
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
+      prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
       note: null,
     };
@@ -245,7 +253,14 @@ export class Registry extends EventEmitter {
       // A PR link sniffed from `gh pr create` decorates the card at once as an
       // open PR; the poller confirms it and later flips it to merged.
       const pr = evt.prUrl
-        ? { prUrl: evt.prUrl, prNumber: prNumberFromUrl(evt.prUrl), prState: "open" as const }
+        ? {
+            prUrl: evt.prUrl,
+            prNumber: prNumberFromUrl(evt.prUrl),
+            prState: "open" as const,
+            // Checks are unknown at creation; the poller fills them in. Reset so a
+            // reused session can't carry the previous PR's status onto a new one.
+            prChecks: null,
+          }
         : {};
       const next: Session = {
         ...target,
@@ -424,8 +439,10 @@ export class Registry extends EventEmitter {
       const url = match?.url ?? null;
       const number = match?.number ?? null;
       const state = match?.state ?? null;
-      if (s.prUrl === url && s.prNumber === number && s.prState === state) continue;
-      const next: Session = { ...s, prUrl: url, prNumber: number, prState: state };
+      const checks = match?.checks ?? null;
+      if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
+        continue;
+      const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -861,6 +878,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.prUrl === b.prUrl &&
     a.prNumber === b.prNumber &&
     a.prState === b.prState &&
+    a.prChecks === b.prChecks &&
     metaDisplayEqual(a.meta, b.meta) &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&

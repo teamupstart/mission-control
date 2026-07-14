@@ -6,6 +6,7 @@ import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchModal } from "./components/DispatchModal.tsx";
+import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
@@ -42,6 +43,7 @@ export function App(): React.JSX.Element {
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
+  const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
@@ -122,6 +124,7 @@ export function App(): React.JSX.Element {
 
   const selected = selectedId ? visible.find((s) => s.id === selectedId) ?? null : null;
   const diffSession = diffSessionId ? sessions.find((s) => s.id === diffSessionId) ?? null : null;
+  const resetSession = resetSessionId ? sessions.find((s) => s.id === resetSessionId) ?? null : null;
 
   function openReviews(): void {
     const first = pendingReviews[0];
@@ -134,7 +137,8 @@ export function App(): React.JSX.Element {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) setDiffSessionId(null);
-  }, [sessions, selectedId, expandedId, diffSessionId]);
+    if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
+  }, [sessions, selectedId, expandedId, diffSessionId, resetSessionId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
@@ -178,6 +182,31 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
+      // Ctrl+R hard-resets the selected session's checkout to origin's default
+      // branch and clears its context - a "start this checkout over" chord. Only
+      // fires with a card that has a working dir selected; otherwise we leave
+      // Ctrl+R to the browser (a harmless reload). Held back behind any overlay.
+      if (
+        !typing &&
+        !modalOpen &&
+        !dispatchOpen &&
+        !reportOpen &&
+        !settingsOpen &&
+        !diffSession &&
+        !resetSession &&
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "r"
+      ) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (sel?.cwd) {
+          e.preventDefault();
+          setResetSessionId(sel.id);
+          return;
+        }
+      }
+
       // Roundup toggles whether it's open or closed - held back only while a
       // review/dispatch/settings overlay owns the screen or you're typing.
       if (
@@ -186,6 +215,7 @@ export function App(): React.JSX.Element {
         !dispatchOpen &&
         !diffSession &&
         !settingsOpen &&
+        !resetSession &&
         chord === bindings.roundup
       ) {
         e.preventDefault();
@@ -195,7 +225,8 @@ export function App(): React.JSX.Element {
 
       // Stand down while any overlay owns the screen, so grid shortcuts don't
       // drive a background card behind the panel/modal.
-      if (modalOpen || dispatchOpen || reportOpen || settingsOpen || diffSession || typing) return;
+      if (modalOpen || dispatchOpen || reportOpen || settingsOpen || diffSession || resetSession || typing)
+        return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
       // guard so dispatch still opens when there are no sessions yet.
@@ -289,6 +320,7 @@ export function App(): React.JSX.Element {
     reportOpen,
     settingsOpen,
     diffSession,
+    resetSession,
     toggleExpand,
     bindings,
   ]);
@@ -389,6 +421,7 @@ export function App(): React.JSX.Element {
             onToggleExpand={() => toggleExpand(s.id)}
             onOpenReviews={() => setReviewSessionId(s.id)}
             onOpenDiff={() => setDiffSessionId(s.id)}
+            onReset={() => setResetSessionId(s.id)}
             registerEl={registerEl}
             registerActions={registerActions}
             foremanMode={foremanMode}
@@ -426,6 +459,10 @@ export function App(): React.JSX.Element {
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
+      {resetSession && (
+        <ResetModal session={resetSession} onClose={() => setResetSessionId(null)} />
+      )}
+
       {sessions.length === 0 && (
         <div className="empty">
           <p className="empty-title">No agent sessions detected</p>
@@ -457,6 +494,7 @@ export function App(): React.JSX.Element {
           onToggleExpand={() => toggleExpand(selected.id)}
           onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
           onDiff={() => setDiffSessionId(selected.id)}
+          onReset={() => setResetSessionId(selected.id)}
           onDeselect={() => setSelectedId(null)}
         />
       )}
@@ -476,6 +514,7 @@ function CommandBar({
   onToggleExpand,
   onAction,
   onDiff,
+  onReset,
   onDeselect,
 }: {
   session: Session;
@@ -484,6 +523,7 @@ function CommandBar({
   onToggleExpand: () => void;
   onAction: (action: "startSend" | "focusPane" | "cycleMode" | "requestKill") => void;
   onDiff: () => void;
+  onReset: () => void;
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
@@ -540,6 +580,11 @@ function CommandBar({
         {session.cwd && (
           <button className="keycap-btn" onClick={onDiff}>
             <kbd>{formatChord(bindings.diff)}</kbd> diff
+          </button>
+        )}
+        {live && session.cwd && (
+          <button className="keycap-btn" onClick={onReset} title="Reset to origin & clear context">
+            <kbd>⌃R</kbd> reset
           </button>
         )}
         <button className="keycap-btn" onClick={onToggleExpand}>

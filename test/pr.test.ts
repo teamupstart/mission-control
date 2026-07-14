@@ -33,32 +33,49 @@ test("reconcilePrs sets the open PR on the matching session", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
 
-  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open" }]]), new Set());
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open", checks: null }]]), new Set());
 
   assert.equal(reg.getSession("feat")!.prUrl, PR);
   assert.equal(reg.getSession("feat")!.prNumber, 42);
   assert.equal(reg.getSession("feat")!.prState, "open");
+  assert.equal(reg.getSession("feat")!.prChecks, null);
+});
+
+test("reconcilePrs tracks the PR's CI check status as it changes", () => {
+  const reg = new Registry();
+  reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
+
+  // Checks start pending, then one fails: the card keys its alert off "failing".
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open", checks: "pending" }]]), new Set());
+  assert.equal(reg.getSession("feat")!.prChecks, "pending");
+
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open", checks: "failing" }]]), new Set());
+  assert.equal(reg.getSession("feat")!.prChecks, "failing");
+
+  // A re-run turns them green again -> the alert clears.
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open", checks: "passing" }]]), new Set());
+  assert.equal(reg.getSession("feat")!.prChecks, "passing");
 });
 
 test("a merged PR flips the chip to merged and lingers while on the branch", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
-  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open" }]]), new Set());
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open", checks: null }]]), new Set());
 
   // The PR merges: the poller still finds it (state=all) and reports it merged.
-  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "merged" }]]), new Set());
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "merged", checks: null }]]), new Set());
   assert.equal(reg.getSession("feat")!.prUrl, PR);
   assert.equal(reg.getSession("feat")!.prState, "merged");
 
   // A later sweep still reporting it merged keeps the chip (no branch change yet).
-  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "merged" }]]), new Set());
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "merged", checks: null }]]), new Set());
   assert.equal(reg.getSession("feat")!.prState, "merged");
 });
 
 test("reconcilePrs clears the chip once the branch has no matching PR", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
-  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open" }]]), new Set());
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "open", checks: null }]]), new Set());
   assert.equal(reg.getSession("feat")!.prUrl, PR);
 
   // Next sweep: gh finds no open/merged PR for the branch (branch moved, or the
@@ -73,7 +90,7 @@ test("reconcilePrs clears the chip once the branch has no matching PR", () => {
 test("reconcilePrs leaves the chip untouched when gh errored (session in skip)", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "feat", gitBranch: "feat/x" })]);
-  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "merged" }]]), new Set());
+  reg.reconcilePrs(new Map([["feat", { url: PR, number: 42, state: "merged", checks: null }]]), new Set());
 
   // gh missing/unauthenticated this tick -> skip -> a transient failure must not
   // wipe a real chip (even a merged one).
@@ -86,7 +103,7 @@ test("reconcilePrs leaves the chip untouched when gh errored (session in skip)",
 test("a reset-and-reused session drops the old chip, then shows the new PR", () => {
   const reg = new Registry();
   reg.applyDiscovery([disco({ syntheticId: "s1", gitBranch: "feat/x" })]);
-  reg.reconcilePrs(new Map([["s1", { url: PR, number: 42, state: "merged" }]]), new Set());
+  reg.reconcilePrs(new Map([["s1", { url: PR, number: 42, state: "merged", checks: null }]]), new Set());
   assert.equal(reg.getSession("s1")!.prUrl, PR);
 
   // The session is reset onto a fresh branch: discovery updates the branch, and
@@ -98,7 +115,7 @@ test("a reset-and-reused session drops the old chip, then shows the new PR", () 
 
   // A PR is opened on the new branch -> the chip repopulates.
   const pr2 = "https://github.com/o/r/pull/43";
-  reg.reconcilePrs(new Map([["s1", { url: pr2, number: 43, state: "open" }]]), new Set());
+  reg.reconcilePrs(new Map([["s1", { url: pr2, number: 43, state: "open", checks: null }]]), new Set());
   assert.equal(reg.getSession("s1")!.prUrl, pr2);
   assert.equal(reg.getSession("s1")!.prNumber, 43);
   assert.equal(reg.getSession("s1")!.prState, "open");

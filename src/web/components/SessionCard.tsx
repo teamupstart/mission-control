@@ -11,6 +11,7 @@ import {
 } from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
+import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
 
@@ -32,6 +33,7 @@ export function SessionCard({
   gateNeedsYou = false,
   onOpenReviews,
   onOpenDiff,
+  onReset,
   selected = false,
   onSelect,
   expanded = false,
@@ -47,6 +49,7 @@ export function SessionCard({
   gateNeedsYou?: boolean;
   onOpenReviews?: () => void;
   onOpenDiff?: () => void;
+  onReset?: () => void;
   selected?: boolean;
   onSelect?: () => void;
   expanded?: boolean;
@@ -85,21 +88,38 @@ export function SessionCard({
           <span className="name-source">{subtitle(session)}</span>
         </div>
         {session.prUrl && (
-          <a
-            className={`pr-chip pr-${session.prState ?? "open"}`}
-            href={session.prUrl}
-            target="_blank"
-            rel="noreferrer"
-            title={
+          <Tooltip
+            label={
               session.prState === "merged"
                 ? "Pull request merged - open on GitHub"
                 : "Open pull request - open on GitHub"
             }
-            onClick={(e) => e.stopPropagation()}
           >
-            <PrStateIcon state={session.prState ?? "open"} />
-            <span className="pr-num">{session.prNumber ? `#${session.prNumber}` : "PR"}</span>
-          </a>
+            <a
+              className={`pr-chip pr-${session.prState ?? "open"}`}
+              href={session.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <PrStateIcon state={session.prState ?? "open"} />
+              <span className="pr-num">{session.prNumber ? `#${session.prNumber}` : "PR"}</span>
+            </a>
+          </Tooltip>
+        )}
+        {session.prUrl && session.prChecks === "failing" && (
+          <Tooltip label="A CI check failed on this PR - open on GitHub">
+            <a
+              className="pr-checks-alert"
+              href={session.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="A CI check failed on this pull request - open on GitHub"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <ChecksFailedIcon />
+            </a>
+          </Tooltip>
         )}
         {session.pendingReviews > 0 ? (
           <button className={`badge badge-${st.tone} badge-btn`} onClick={onOpenReviews}>
@@ -144,18 +164,19 @@ export function SessionCard({
             diff
           </button>
         )}
-        <button
-          className={`expand-toggle${expanded ? " open" : ""}`}
-          aria-label={expanded ? "Collapse conversation" : "Expand conversation"}
-          aria-expanded={expanded}
-          title={expanded ? "Hide conversation" : "Show conversation"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleExpand?.();
-          }}
-        >
-          ⌃
-        </button>
+        <Tooltip label={expanded ? "Hide conversation" : "Show conversation"}>
+          <button
+            className={`expand-toggle${expanded ? " open" : ""}`}
+            aria-label={expanded ? "Collapse conversation" : "Expand conversation"}
+            aria-expanded={expanded}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpand?.();
+            }}
+          >
+            ⌃
+          </button>
+        </Tooltip>
       </header>
 
       <dl className="card-meta">
@@ -214,9 +235,9 @@ export function SessionCard({
       <footer className="card-foot">
         <span className="agent-name">{AGENT_LABEL[session.agent]}</span>
         {session.nomistakesGated && (
-          <span className="gated" title="This repo is gated by no-mistakes">
-            ◇ gated
-          </span>
+          <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
+            <span className="gated">◇ gated</span>
+          </Tooltip>
         )}
         {mode && (
           <span className={`mode mode-${mode.tone}`} title={mode.title}>
@@ -237,7 +258,12 @@ export function SessionCard({
       </footer>
 
       {session.state !== "exited" && (
-        <ActionBar session={session} expanded={expanded} registerActions={registerActions} />
+        <ActionBar
+          session={session}
+          expanded={expanded}
+          registerActions={registerActions}
+          onReset={onReset}
+        />
       )}
 
       {expanded && (
@@ -324,6 +350,22 @@ function PrStateIcon({ state }: { state: PrState }): React.JSX.Element {
       <path
         fill="currentColor"
         d="M1.5 3.25a2.25 2.25 0 1 1 3 2.122v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.25 2.25 0 0 1 1.5 3.25Zm5.677-.177L9.573.677A.25.25 0 0 1 10 .854V2.5h1A2.5 2.5 0 0 1 13.5 5v5.628a2.251 2.251 0 1 1-1.5 0V5a1 1 0 0 0-1-1h-1v1.646a.25.25 0 0 1-.427.177L7.177 3.427a.25.25 0 0 1 0-.354ZM3.75 2.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm0 9.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm8.25.75a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Z"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Warning glyph for the "a CI check failed" alert next to the PR chip: an
+ * outlined triangle with an exclamation. Color comes from the `.pr-checks-alert`
+ * class (the danger tone).
+ */
+function ChecksFailedIcon(): React.JSX.Element {
+  return (
+    <svg className="pr-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden focusable="false">
+      <path
+        fill="currentColor"
+        d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"
       />
     </svg>
   );

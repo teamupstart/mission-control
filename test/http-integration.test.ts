@@ -224,6 +224,36 @@ test("cycling the permission mode of an unknown session is a 404", async () => {
   assert.equal(res.status, 404);
 });
 
+test("reset endpoints are wired: 404 for unknown session, real errors otherwise", async () => {
+  // Unknown session id -> 404 on both the preview and the execute route.
+  const missPreview = await app.request("/api/sessions/nope/reset/preview", { headers: LOOPBACK });
+  assert.equal(missPreview.status, 404);
+  const missReset = await app.request("/api/sessions/nope/reset", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(missReset.status, 404);
+
+  // A real session whose cwd ("/repo/app") isn't a git repo: preview resolves
+  // (200) with ok:false, and the execute route surfaces the failure as a 500.
+  const preview = await app.request("/api/sessions/sess-1/reset/preview", { headers: LOOPBACK });
+  assert.equal(preview.status, 200);
+  const pbody = (await preview.json()) as { ok: boolean; error: string | null };
+  assert.equal(pbody.ok, false);
+  assert.equal(pbody.error, "not a git repository");
+
+  const reset = await app.request("/api/sessions/sess-1/reset", {
+    method: "POST",
+    headers: { ...LOOPBACK, "content-type": "application/json" },
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(reset.status, 500);
+  const rbody = (await reset.json()) as { ok: boolean; error: string | null };
+  assert.equal(rbody.ok, false);
+  assert.equal(rbody.error, "not a git repository");
+});
+
 test("/mcp/status validates the shared EnvSchema and updates activity on success", async () => {
   // Happy path: valid EnvSchema body -> 204, activity line updates on the session.
   const ok = await app.request("/mcp/status", {

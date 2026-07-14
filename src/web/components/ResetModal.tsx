@@ -1,0 +1,162 @@
+import { useEffect, useState } from "react";
+import type { ResetPreview, Session } from "@shared/types.ts";
+import { api, fetchResetPreview } from "../lib/api.ts";
+
+/**
+ * Confirm-and-execute a hard reset of a session's checkout to origin's default
+ * branch (then `/clear` its context). On open it fetches a loss preview so the
+ * dialog can name exactly what work the reset would throw away - uncommitted
+ * edits, untracked files, and local commits - before the user commits. The
+ * preview fetch hits the network (it fetches origin), so the body shows a
+ * checking state first and disables the confirm button until it resolves.
+ */
+export function ResetModal({
+  session,
+  onClose,
+}: {
+  session: Session;
+  onClose: () => void;
+}): React.JSX.Element {
+  const [preview, setPreview] = useState<ResetPreview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch the loss preview when the target session changes. `alive` guards a
+  // late response from writing state after the modal closed / retargeted.
+  useEffect(() => {
+    let alive = true;
+    setPreview(null);
+    setError(null);
+    void fetchResetPreview(session.id).then((p) => {
+      if (alive) setPreview(p);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [session.id]);
+
+  // Escape closes the modal (unless we're mid-reset - don't abandon a running op).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === "Escape" && !busy) {
+        e.preventDefault();
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
+  const target = preview?.target ?? "origin/main";
+  const canReset = Boolean(preview?.ok) && !busy;
+
+  async function confirm(): Promise<void> {
+    if (!canReset) return;
+    setBusy(true);
+    setError(null);
+    const r = await api.reset(session.id, true);
+    setBusy(false);
+    if (r.ok) onClose();
+    else setError(r.error ?? "reset failed");
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
+      <div
+        className="modal reset-modal"
+        role="dialog"
+        aria-label="Reset session to origin"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="modal-head">
+          <h2>Reset to {target}</h2>
+          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+            ✕
+          </button>
+        </header>
+
+        <div className="reset-body">
+          <p className="reset-lead">
+            <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+            <span className="reset-name">{session.name || "(unnamed)"}</span>
+          </p>
+
+          {!preview && !error && <p className="reset-checking">Checking working tree against origin…</p>}
+          {preview && !preview.ok && <p className="reset-error">{preview.error}</p>}
+          {preview?.ok && <ResetPreviewBody preview={preview} />}
+          {error && <p className="reset-error">{error}</p>}
+        </div>
+
+        <footer className="modal-foot">
+          <span className="actions-spacer" />
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
+            {busy ? "Resetting…" : "Reset & clear"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/** The warning body once the preview is in: what's lost, then what will happen. */
+function ResetPreviewBody({ preview }: { preview: ResetPreview }): React.JSX.Element {
+  const { dirtyFiles, untrackedFiles, aheadCommits, aheadSubjects, clean, target, branch, canClear } = preview;
+  const branchLabel = branch ?? "this branch";
+  return (
+    <>
+      {clean ? (
+        <p className="reset-clean">
+          ✓ Working tree is clean and already at <code>{target}</code>. Nothing will be lost.
+        </p>
+      ) : (
+        <>
+          <p className="reset-warn-title">
+            This permanently discards - it <strong>cannot be undone</strong>:
+          </p>
+          <ul className="reset-loss">
+            {aheadCommits > 0 && (
+              <li>
+                <strong>{aheadCommits}</strong> local commit{aheadCommits === 1 ? "" : "s"} on{" "}
+                <code>{branchLabel}</code> not on <code>{target}</code>
+                {aheadSubjects.length > 0 && (
+                  <ul className="reset-commits">
+                    {aheadSubjects.map((s, i) => (
+                      <li key={i}>{s}</li>
+                    ))}
+                    {aheadCommits > aheadSubjects.length && (
+                      <li className="reset-more">…and {aheadCommits - aheadSubjects.length} more</li>
+                    )}
+                  </ul>
+                )}
+              </li>
+            )}
+            {dirtyFiles > 0 && (
+              <li>
+                <strong>{dirtyFiles}</strong> uncommitted file change{dirtyFiles === 1 ? "" : "s"}
+              </li>
+            )}
+            {untrackedFiles > 0 && (
+              <li>
+                <strong>{untrackedFiles}</strong> untracked file{untrackedFiles === 1 ? "" : "s"}
+              </li>
+            )}
+          </ul>
+        </>
+      )}
+      <p className="reset-then">
+        Then hard-reset <code>{branchLabel}</code> to the latest <code>{target}</code>
+        {canClear ? (
+          <>
+            {" "}
+            and clear the agent's context (<code>/clear</code>).
+          </>
+        ) : (
+          <>. The agent's context can't be cleared automatically (no pane).</>
+        )}
+      </p>
+    </>
+  );
+}

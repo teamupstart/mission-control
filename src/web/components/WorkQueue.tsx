@@ -214,6 +214,7 @@ export function WorkQueue({
                   <div className="wq-body">
                     <p className="wq-intent">{item.intent}</p>
                     <ItemStatus item={item} />
+                    <ProposedPayload item={item} />
                   </div>
                 )}
 
@@ -346,6 +347,26 @@ function ItemStatus({ item }: { item: WorkItem }): React.JSX.Element | null {
       )}
       {item.completedAt && <span className="dim">{relativeTime(item.completedAt)}</span>}
     </div>
+  );
+}
+
+/**
+ * The exact text Foreman would type into the pane, on a drafted item.
+ *
+ * Approve is consent to a SPECIFIC prompt, so the human has to be able to read it.
+ * From round 1 on the payload is the rendered fix prompt rather than `item.intent`
+ * above it, so without this the card would show the original request while Approve
+ * sent something else entirely. Round 0's payload IS the intent, so showing it
+ * again would just be the same paragraph twice - skip it there.
+ */
+function ProposedPayload({ item }: { item: WorkItem }): React.JSX.Element | null {
+  if (item.state !== "proposed" || !item.proposedPayload) return null;
+  if (item.proposedPayload.trim() === item.intent.trim()) return null;
+  return (
+    <details className="wq-payload">
+      <summary>Foreman would send:</summary>
+      <pre className="wq-payload-text">{item.proposedPayload}</pre>
+    </details>
   );
 }
 

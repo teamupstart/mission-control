@@ -1,7 +1,7 @@
 import type { ForemanConfig } from "@shared/protocol.ts";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
-import { hasPane, inFlightItem, settledIdle } from "./queue-machine.ts";
+import { SEND_ATTEMPT_CAP, hasPane, inFlightItem, settledIdle } from "./queue-machine.ts";
 import type { QueueAction, QueueConfig } from "./queue-machine.ts";
 import { foremanMayActLive } from "./verdict.ts";
 
@@ -186,7 +186,18 @@ export async function applyQueueAction(
       return { kind: "done", what: "adopted an item left mid-send by a restart" };
 
     case "picked-up":
-      await actions.setItemState(session.id, action.item.id, { state: "in_progress" });
+      // A pickup is positive evidence that the send LANDED, so it clears the
+      // attempt count - the same "onSuccess" shape a verdict uses on
+      // verifyFailures. SEND_ATTEMPT_CAP counts CONSECUTIVE failures; without the
+      // reset the count is cumulative across an item's whole life, and a fix round
+      // (which sends again) inherits it. An item on round 3 would then arrive at
+      // the cap on its FIRST delivery of that round, lose its resend, and escalate
+      // claiming "the agent never picked this up" about an agent that picked it up
+      // twice.
+      await actions.setItemState(session.id, action.item.id, {
+        state: "in_progress",
+        sendAttempts: 0,
+      });
       return { kind: "done", what: "the agent picked the item up" };
 
     case "escalate":
@@ -203,10 +214,14 @@ export async function applyQueueAction(
     case "propose":
       // Dry-run drafts, and NEVER types. The payload is stored as the item's
       // intent-of-record for this round so the card can show exactly what would be
-      // sent, and the human approves that specific text.
+      // sent, and the human approves that specific text. From round 1 on that text
+      // is the rendered fix prompt, not the original intent - so without storing it
+      // Approve would be consent to text the human never saw, which is the exact
+      // hazard per-round approval exists to prevent.
       await actions.setItemState(session.id, action.item.id, {
         state: "proposed",
         round: action.round,
+        proposedPayload: action.payload,
       });
       return { kind: "proposed", item: action.item };
 
@@ -239,7 +254,7 @@ export async function applyQueueAction(
         await actions.inject(target.id, action.payload);
       } catch (err) {
         const attempts = action.item.sendAttempts + 1;
-        if (attempts >= 3) {
+        if (attempts >= SEND_ATTEMPT_CAP) {
           await actions.setItemState(target.id, action.item.id, {
             state: "escalated",
             escalationReason: `could not deliver this item: ${String(err)}`,

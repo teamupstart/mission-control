@@ -321,6 +321,18 @@ export interface WorkItem {
   /** Set when a human approves a `proposed` item (the dry-run path). */
   approvedAt: number | null;
   /**
+   * The exact text Foreman would type, while this item is `proposed`. Null in
+   * every other state.
+   *
+   * It is what Approve consents TO, which is why it's stored rather than
+   * recomputed for display: from round 1 on the payload is the rendered fix
+   * prompt, not `intent`, so a card showing `intent` would be asking the human to
+   * approve text they never read. `decideQueueTick` re-drafts whenever this stops
+   * matching the payload it would render now, so "proposed" always means "THIS
+   * text".
+   */
+  proposedPayload: string | null;
+  /**
    * Set when Foreman restarted while this item was mid-`sending` and adopted it.
    *
    * The distinction is load-bearing at pickup-expiry, and it is NOT derivable from

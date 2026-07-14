@@ -514,6 +514,84 @@ test("approve clears a proposed item, and is refused for anything else", async (
   await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
 });
 
+test("a drafted item stores the exact text Approve consents to, and drops it on send", async () => {
+  // From round 1 the drafted payload is the rendered FIX PROMPT, not the item's
+  // intent - so if it isn't stored and shown, Approve is consent to text the human
+  // never read. It has to survive the round trip, and it has to disappear the
+  // moment the item stops being a draft, or the card advertises a prompt Foreman
+  // is no longer about to type.
+  seedSession();
+  const item = await addItem("add the retry");
+  const draft = "Foreman reviewed the work you just finished and found it incomplete. …";
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "proposed", round: 1, proposedPayload: draft }),
+  });
+
+  const read = async () => {
+    const r = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+    const q = (await r.json()) as { items: Array<{ id: string; proposedPayload: string | null }> };
+    return q.items.find((i) => i.id === item.id);
+  };
+
+  assert.equal((await read())?.proposedPayload, draft, "the draft survives the round trip");
+
+  // Leaving `proposed` clears it - here, the send the human approved.
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "sending" }),
+  });
+  assert.equal((await read())?.proposedPayload, null, "a draft belongs to `proposed` and nothing else");
+
+  // Terminalize before removing: an in-flight item is deliberately un-removable
+  // (it's already typed into a pane), so a bare DELETE here would be refused and
+  // silently leave it holding the single-flight index for every later test.
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "cancelled" }),
+  });
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
+test("editing a drafted item drops the draft it invalidated, along with the approval", async () => {
+  // The human approved the OLD text; the edit makes both the consent and the
+  // drafted prompt stale, and a card still showing the old draft would be lying
+  // about what Approve would send.
+  seedSession();
+  const item = await addItem("add the retry");
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "proposed", proposedPayload: "add the retry" }),
+  });
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/approve`, { method: "POST", headers: LOOPBACK });
+
+  const r = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  const before = ((await r.json()) as { items: Array<{ id: string; revision: number }> }).items.find(
+    (i) => i.id === item.id,
+  )!;
+
+  const edited = await app.request(`/api/sessions/sess-1/queue/${item.id}`, {
+    method: "PATCH",
+    headers: jsonHeaders,
+    body: JSON.stringify({ intent: "add the retry AND a test", revision: before.revision }),
+  });
+  assert.equal(edited.status, 200);
+
+  const after = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  const item2 = ((await after.json()) as {
+    items: Array<{ id: string; approvedAt: number | null; proposedPayload: string | null }>;
+  }).items.find((i) => i.id === item.id);
+  assert.equal(item2?.approvedAt, null, "the edit spends the approval");
+  assert.equal(item2?.proposedPayload, null, "and the draft it consented to");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
 test("adding to a drained queue re-arms the wrap-up ask", async () => {
   // Without this the SECOND drain is silent and the human waits forever for a
   // question that already fired once.

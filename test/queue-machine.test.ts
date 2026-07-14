@@ -4,6 +4,7 @@ import {
   SEND_ATTEMPT_CAP,
   blockingGaps,
   decideQueueTick,
+  diffMayIncludeOtherWork,
   inFlightItem,
   nextSendable,
   payloadFor,
@@ -13,10 +14,22 @@ import {
   renderFixPrompt,
   sanitizeGapText,
   settledIdle,
+  tickTargets,
 } from "../src/server/foreman/queue-machine.ts";
-import type { QueueConfig, QueueVerdict } from "../src/server/foreman/queue-machine.ts";
+import type {
+  QueueConfig,
+  QueueVerdict,
+  QueueVerifyPlan,
+} from "../src/server/foreman/queue-machine.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
-import type { Session, SessionQueue, TrackedGap, WorkItem, WorkItemState } from "../src/shared/types.ts";
+import type {
+  Session,
+  SessionQueue,
+  SessionQueueSummary,
+  TrackedGap,
+  WorkItem,
+  WorkItemState,
+} from "../src/shared/types.ts";
 
 // The queue's decision core. It's pure with `now` always injected, so the whole
 // state machine is a table - which is the point: two earlier designs of the
@@ -87,6 +100,7 @@ function mkItem(over: Partial<WorkItem> = {}): WorkItem {
     escalationReason: null,
     lastVerdict: null,
     approvedAt: null,
+    proposedPayload: null,
     recoveredAt: null,
     revision: 0,
     createdAt: 0,
@@ -95,6 +109,18 @@ function mkItem(over: Partial<WorkItem> = {}): WorkItem {
     completedAt: null,
     ...over,
   };
+}
+
+/**
+ * A DRAFTED item: `proposed`, carrying the exact text Foreman would type.
+ *
+ * That payload isn't optional decoration - it's what the state means and what
+ * Approve consents to, so a `proposed` fixture without it isn't a drafted item at
+ * all, it's one the machine still owes a draft.
+ */
+function mkProposed(over: Partial<WorkItem> = {}): WorkItem {
+  const item = mkItem({ state: "proposed", ...over });
+  return { ...item, proposedPayload: over.proposedPayload ?? payloadFor(item) };
 }
 
 function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQueue {
@@ -211,19 +237,110 @@ test("queueDrained is true only when every item is terminal, and never for an em
   assert.equal(queueDrained([mkItem({ state: "verified" }), mkItem({ state: "queued" })]), false);
 });
 
+// ---- tickTargets: which sessions the machine is even ASKED about ----
+//
+// A selector is policy: a session missing from here is a branch of the machine
+// that can never run, however correct the branch is. `ask-wrapup` was exactly
+// that - unreachable in production while its own unit test passed, because the
+// test called decideQueueTick directly and the selector was never in the picture.
+
+function mkSummary(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary {
+  return {
+    openCount: 0,
+    totalCount: 1,
+    inFlightState: null,
+    inFlightIntent: null,
+    round: 0,
+    blockingGaps: 0,
+    escalatedCount: 0,
+    drained: false,
+    wrapupAskedAt: null,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+test("tickTargets includes a DRAINED, unasked queue - or ask-wrapup can never fire", () => {
+  // `openCount > 0` and `drained` are mutually exclusive by construction: drained
+  // IS openCount === 0. Selecting on open work alone therefore guaranteed that the
+  // one queue shape which produces ask-wrapup was never handed to the machine.
+  const s = mkSession({ id: "drained", queue: mkSummary({ drained: true, wrapupAskedAt: null }) });
+  assert.deepEqual(
+    tickTargets([s]).map((t) => t.id),
+    ["drained"],
+  );
+  // And the machine, once asked about it, does ask about wrapping up.
+  assert.equal(tick({ items: [mkItem({ state: "verified" })] }).kind, "ask-wrapup");
+});
+
+test("tickTargets skips a drained queue whose wrap-up was already asked", () => {
+  const s = mkSession({ queue: mkSummary({ drained: true, wrapupAskedAt: NOW - 5 }) });
+  assert.deepEqual(tickTargets([s]), [], "the ask fires once - don't wake for it again");
+});
+
+test("tickTargets includes open work, and ignores a session with no queue", () => {
+  const open = mkSession({ id: "open", queue: mkSummary({ openCount: 2, totalCount: 2 }) });
+  const bare = mkSession({ id: "bare", queue: null });
+  assert.deepEqual(
+    tickTargets([open, bare]).map((t) => t.id),
+    ["open"],
+  );
+});
+
+test("tickTargets takes needs-you first (oldest-waiting first), and never lists one twice", () => {
+  const recent = mkSession({ id: "recent", pendingReviews: 1, lastActivity: NOW - 1_000 });
+  const oldest = mkSession({ id: "oldest", pendingReviews: 1, lastActivity: NOW - 90_000 });
+  // Needs you AND has a queue: it must appear once, on the needs-you side.
+  const both = mkSession({
+    id: "both",
+    pendingReviews: 1,
+    lastActivity: NOW - 50_000,
+    queue: mkSummary({ openCount: 1 }),
+  });
+  const queued = mkSession({ id: "queued", queue: mkSummary({ openCount: 1 }) });
+
+  assert.deepEqual(
+    tickTargets([recent, queued, oldest, both]).map((t) => t.id),
+    ["oldest", "both", "recent", "queued"],
+  );
+});
+
+test("tickTargets ignores exited sessions and non-claude agents", () => {
+  const gone = mkSession({ id: "gone", state: "exited", queue: mkSummary({ openCount: 1 }) });
+  const codex = mkSession({ id: "codex", agent: "codex", queue: mkSummary({ openCount: 1 }) });
+  assert.deepEqual(tickTargets([gone, codex]), []);
+});
+
 // ---- decideQueueTick: the precedence, in order ----
 
-test("1. an exited session escalates its live item", () => {
-  const a = decideQueueTick({
+function exitedTick(items: WorkItem[]) {
+  return decideQueueTick({
     session: mkSession({ state: "exited" }),
     bucket: "exited",
-    queue: mkQueue([mkItem({ state: "in_progress" })]),
+    queue: mkQueue(items),
     cfg: CFG,
     mayActLive: true,
     now: NOW,
   });
+}
+
+test("1. an exited session escalates its in-flight item", () => {
+  const a = exitedTick([mkItem({ state: "in_progress" })]);
   assert.equal(a.kind, "escalate");
   assert.match(a.kind === "escalate" ? a.reason : "", /exited/);
+});
+
+test("1. an exited session leaves WAITING items alone - the re-attach affordance", () => {
+  // §1.1 over the plan's transition table: a `/clear` mints a new note key on a
+  // pane someone is still working in, and escalating their untouched backlog out
+  // from under them would be a bug wearing a safety hat. Only what was mid-flight
+  // is unsalvageable; the rest is exactly what re-attach exists to resume.
+  assert.equal(exitedTick([mkItem({ state: "queued" })]).kind, "none");
+  assert.equal(exitedTick([mkItem({ state: "proposed" })]).kind, "none");
+
+  // ...and with both, only the in-flight one is touched.
+  const a = exitedTick([mkItem({ id: "wait", seq: 0 }), mkItem({ id: "flight", seq: 1, state: "in_progress" })]);
+  assert.equal(a.kind === "escalate" ? a.item.id : "", "flight");
 });
 
 test("2. needs-you hands the tick to triage, even with an item in progress", () => {
@@ -286,8 +403,29 @@ test("matrix: dry-run + queued head -> propose (drafted once)", () => {
 test("matrix: dry-run + proposed-unapproved head -> none (blocks here, idempotently)", () => {
   // It must NO-OP, not re-propose: a blocked queue costs one row write, not one
   // per tick.
-  const a = tick({ mayActLive: false, items: [mkItem({ state: "proposed" })] });
+  const a = tick({ mayActLive: false, items: [mkProposed()] });
   assert.equal(a.kind, "none");
+});
+
+test("dry-run: a head still OWED its draft is proposed, not silently left blank", () => {
+  // planFromVerify parks a dry-run fix round at `proposed` without a payload -
+  // only the propose action renders and stores one. So "already proposed" cannot
+  // mean "nothing to do" on its own: taken that way, the drafted text is never
+  // written, the card has nothing to show, and Approve becomes consent to a fix
+  // prompt the human never read - the exact hazard per-round approval exists for.
+  const owed = mkItem({ state: "proposed", round: 1, gaps: [mkGap()], proposedPayload: null });
+  const a = tick({ mayActLive: false, items: [owed] });
+  assert.equal(a.kind, "propose");
+  assert.match(a.kind === "propose" ? a.payload : "", /no test covers the retry/);
+});
+
+test("dry-run: a draft whose text went stale is re-drafted, not left advertising it", () => {
+  // The human edited the intent underneath the draft. `proposed` promises "THIS
+  // text is what Approve sends", so it has to keep being true.
+  const stale = mkProposed({ intent: "add the retry", proposedPayload: "do something else entirely" });
+  const a = tick({ mayActLive: false, items: [stale] });
+  assert.equal(a.kind, "propose");
+  assert.equal(a.kind === "propose" ? a.payload : "", "add the retry");
 });
 
 test("matrix: dry-run + approved head -> send", () => {
@@ -323,8 +461,8 @@ test("approving seq3 while seq1 sits unapproved must NOT run seq3", () => {
   // Authored order holds. Filtering the head to "approved or queued" would run
   // seq3 here, silently reordering the human's sequence.
   const items = [
-    mkItem({ id: "first", seq: 1, state: "proposed" }),
-    mkItem({ id: "third", seq: 3, state: "proposed", approvedAt: NOW - 1 }),
+    mkProposed({ id: "first", seq: 1 }),
+    mkProposed({ id: "third", seq: 3, approvedAt: NOW - 1 }),
   ];
   const a = tick({ mayActLive: false, items });
   assert.equal(a.kind, "none", "it blocks at the unapproved seq1");
@@ -429,7 +567,6 @@ test("round 0 delivers the intent verbatim; a later round delivers the fix promp
 test("planFromVerify: no gaps -> verified", () => {
   const p = planFromVerify(mkItem(), mkVerdict(), true, CFG);
   assert.equal(p.state, "verified");
-  assert.equal(p.send, false);
 });
 
 test("planFromVerify: advisory-only gaps -> verified, and they do NOT consume a round", () => {
@@ -445,15 +582,17 @@ test("planFromVerify: advisory-only gaps -> verified, and they do NOT consume a 
   assert.equal(p.gaps.length, 1, "but it is still recorded on the card");
 });
 
-test("planFromVerify: blocking gaps under the caps -> another round, sent when live", () => {
+test("planFromVerify: blocking gaps under the caps -> another round, re-queued when live", () => {
   const v = mkVerdict({
     complete: false,
     gaps: [{ id: "g1", severity: "blocking", kind: "untested", path: "a.ts", detail: "d", fix: "f" }],
   });
   const p = planFromVerify(mkItem({ round: 0 }), v, true, CFG);
-  assert.equal(p.state, "sending");
+  // `queued`, NOT `sending`: `sending` means "crashed mid-delivery" and nothing
+  // else, so parking a fix round there gets it adopted as a phantom crash and
+  // escalated ~45s later having typed nothing. Step 9 does the send next tick.
+  assert.equal(p.state, "queued");
   assert.equal(p.round, 1);
-  assert.equal(p.send, true);
 });
 
 test("planFromVerify: the SAME case in dry-run drafts instead of sending", () => {
@@ -467,7 +606,6 @@ test("planFromVerify: the SAME case in dry-run drafts instead of sending", () =>
   const p = planFromVerify(mkItem({ round: 0 }), v, false, CFG);
   assert.equal(p.state, "proposed");
   assert.equal(p.round, 1);
-  assert.equal(p.send, false);
 });
 
 test("planFromVerify: escalates EXACTLY at maxFixAttempts on the same gap", () => {
@@ -481,7 +619,7 @@ test("planFromVerify: escalates EXACTLY at maxFixAttempts on the same gap", () =
 
   // One strike carried in -> two -> under the cap -> another round.
   const under = planFromVerify(mkItem({ gaps: [mkGap({ strikes: 1 })] }), v, true, CFG);
-  assert.equal(under.state, "sending");
+  assert.equal(under.state, "queued");
 });
 
 test("planFromVerify: escalates exactly at maxFixRounds - the real termination guarantee", () => {
@@ -496,7 +634,7 @@ test("planFromVerify: escalates exactly at maxFixRounds - the real termination g
   assert.match(spent.escalationReason ?? "", /round budget/);
 
   const last = planFromVerify(mkItem({ round: CFG.maxFixRounds - 1 }), v, true, CFG);
-  assert.equal(last.state, "sending", "the final round is still allowed");
+  assert.equal(last.state, "queued", "the final round is still allowed");
   assert.equal(last.round, CFG.maxFixRounds);
 });
 
@@ -506,6 +644,127 @@ test("planFromVerify: a mid-verify flip out of live downgrades the next round to
     gaps: [{ id: "g1", severity: "blocking", kind: "untested", path: "a.ts", detail: "d", fix: "f" }],
   });
   assert.equal(planFromVerify(mkItem(), v, false, CFG).state, "proposed");
+});
+
+// ---- the seam: a verify's plan, then the NEXT tick that reads it ----
+//
+// Every test above this line checks ONE half of the loop, and they all passed
+// while the loop itself was dead in live mode: planFromVerify parked a fix round
+// in `sending`, and decideInFlight reads `sending` as "we crashed mid-delivery".
+// The item was adopted, typed nothing, and escalated ~45s later blaming a restart
+// that never happened. Both halves were "correct"; the composition was not. So
+// these drive the plan back through the machine, the way the worker does.
+
+/** Apply a verify plan to its item, exactly as the worker's setItemState does. */
+function applyPlan(item: WorkItem, plan: QueueVerifyPlan): WorkItem {
+  return { ...item, state: plan.state, round: plan.round, gaps: plan.gaps };
+}
+
+const BLOCKER = {
+  id: "g1",
+  severity: "blocking" as const,
+  kind: "untested" as const,
+  path: "a.ts",
+  detail: "no test covers the retry",
+  fix: "add one",
+};
+
+test("seam: a LIVE fix round SENDS the fix prompt next tick, not recover-send", () => {
+  const item = mkItem({ state: "verifying", seq: 0 });
+  const next = applyPlan(item, planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG));
+
+  const a = tick({ items: [next], mayActLive: true });
+
+  assert.equal(a.kind, "send", "a live fix round must actually type something");
+  assert.equal(a.kind === "send" ? a.round : -1, 1);
+  // And it carries the FIX prompt, not a re-ask of the original intent.
+  const payload = a.kind === "send" ? a.payload : "";
+  assert.match(payload, /found it incomplete/);
+  assert.match(payload, /no test covers the retry/);
+  assert.notEqual(payload, item.intent);
+});
+
+test("seam: the same fix round in dry-run drafts the fix prompt and types nothing", () => {
+  const item = mkItem({ state: "verifying", seq: 0 });
+  const next = applyPlan(item, planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG));
+
+  const a = tick({ items: [next], mayActLive: false });
+
+  assert.equal(a.kind, "propose");
+  assert.match(a.kind === "propose" ? a.payload : "", /no test covers the retry/);
+});
+
+test("seam: NO verify outcome may park an item in `sending` - that state means a crash", () => {
+  // decideInFlight adopts `sending` unconditionally, on the premise that only a
+  // crash can produce it. This pins the other end of that premise: whatever the
+  // verdict, whatever the mode, whatever the item's history, planFromVerify must
+  // never mint the state that gets read as "we crashed".
+  const advisory = {
+    id: "s1",
+    severity: "advisory" as const,
+    kind: "standards" as const,
+    path: "a.ts",
+    detail: "nit",
+    fix: "x",
+  };
+  const verdicts = [
+    mkVerdict(),
+    mkVerdict({ complete: false, gaps: [BLOCKER] }),
+    mkVerdict({ complete: false, gaps: [advisory] }),
+    mkVerdict({ complete: false, gaps: [BLOCKER, advisory] }),
+  ];
+  const items = [
+    mkItem(),
+    mkItem({ round: CFG.maxFixRounds }),
+    mkItem({ round: CFG.maxFixRounds - 1 }),
+    mkItem({ gaps: [mkGap({ strikes: 2 })] }),
+  ];
+  for (const v of verdicts) {
+    for (const live of [true, false]) {
+      for (const item of items) {
+        assert.notEqual(
+          planFromVerify(item, v, live, CFG).state,
+          "sending",
+          "`sending` is reachable ONLY via a real crash - see decideInFlight",
+        );
+      }
+    }
+  }
+});
+
+test("seam: a live fix round stays the head - it never lets a later item jump it", () => {
+  const head = mkItem({ id: "head", seq: 0, state: "verifying" });
+  const behind = mkItem({ id: "behind", seq: 1 });
+  const next = applyPlan(head, planFromVerify(head, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG));
+
+  const a = tick({ items: [behind, next], mayActLive: true });
+  assert.equal(a.kind === "send" ? a.item.id : "", "head");
+});
+
+// ---- diffMayIncludeOtherWork ----
+
+test("diffMayIncludeOtherWork: the SAME commit at git's two abbreviation lengths is scoped", () => {
+  // The real shapes, from a real repo: an item's base is `rev-parse --short HEAD`
+  // (7), while a computed diff reports a merge-base sliced to 12. Compared raw
+  // they are never equal, so this was permanently true and every verify - even a
+  // perfectly scoped one - was told to "ignore unrelated changes", discounting the
+  // diff it was asked to judge.
+  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", "c0e1c59"), false);
+  assert.equal(diffMayIncludeOtherWork("c0e1c59", "c0e1c59b6e55"), false, "either way round");
+  assert.equal(diffMayIncludeOtherWork("c0e1c59", "c0e1c59"), false, "equal lengths still work");
+});
+
+test("diffMayIncludeOtherWork: a genuinely different base still warns", () => {
+  // The signal has to survive the fix - a cumulative diff must stay distinguishable.
+  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", "deadbee"), true);
+  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", "c0e1c5a"), true, "differs at the last char");
+});
+
+test("diffMayIncludeOtherWork: an unrecorded scope assumes the worst", () => {
+  // No base captured at delivery means nothing scopes the diff, so the note stays.
+  assert.equal(diffMayIncludeOtherWork(null, "c0e1c59"), true);
+  assert.equal(diffMayIncludeOtherWork("c0e1c59b6e55", null), true);
+  assert.equal(diffMayIncludeOtherWork(null, null), true);
 });
 
 // ---- reconcileGaps ----

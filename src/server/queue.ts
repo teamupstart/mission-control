@@ -66,6 +66,7 @@ export class QueueManager {
       escalationReason: null,
       lastVerdict: null,
       approvedAt: null,
+      proposedPayload: null,
       recoveredAt: null,
       revision: 0,
       createdAt: now,
@@ -99,11 +100,15 @@ export class QueueManager {
       return { ok: false, error: "this item changed since you loaded it" };
     }
     // Editing a proposed item invalidates the human's earlier approval: they
-    // approved the OLD text. Clearing approvedAt sends it back for a fresh one.
+    // approved the OLD text. Clearing approvedAt sends it back for a fresh one,
+    // and dropping the drafted payload with it means the card never advertises
+    // text Foreman would no longer send - the machine re-drafts from the new
+    // intent on the next tick.
     const next: WorkItem = {
       ...item,
       intent,
       approvedAt: null,
+      proposedPayload: null,
       revision: item.revision + 1,
       updatedAt: now,
     };
@@ -191,6 +196,16 @@ export class QueueManager {
       escalationReason:
         patch.escalationReason !== undefined ? patch.escalationReason : item.escalationReason,
       lastVerdict: patch.lastVerdict !== undefined ? patch.lastVerdict : item.lastVerdict,
+      // The draft belongs to `proposed` and to nothing else, so ANY transition out
+      // of it clears the text. Doing that here - the one place every transition
+      // lands - is what keeps "there is a drafted payload" and "the card is asking
+      // you to approve one" the same fact, instead of two that drift.
+      proposedPayload:
+        patch.proposedPayload !== undefined
+          ? patch.proposedPayload
+          : state === "proposed"
+            ? item.proposedPayload
+            : null,
       updatedAt: now,
       completedAt: isTerminalItem(state) ? item.completedAt ?? now : null,
     };
@@ -235,6 +250,7 @@ export class QueueManager {
       transcriptAnchor,
       sentAt: now,
       approvedAt: null, // consent is spent; a later round needs a fresh one
+      proposedPayload: null, // and so is the draft it consented to - it's typed now
       // This send WAS watched all the way through the inject, so the resend
       // evidence is positive again. Clearing the flag matters on a later round of
       // an item that was once crash-recovered: without it that round would refuse

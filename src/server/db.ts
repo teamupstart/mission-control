@@ -119,6 +119,7 @@ export function openDb(): DatabaseSync {
       escalation_reason TEXT,
       last_verdict      TEXT,
       approved_at       INTEGER,           -- set when a human approves a 'proposed' item
+      proposed_payload  TEXT,              -- the exact text a 'proposed' item would send
       recovered_at      INTEGER,           -- adopted mid-send after a restart -> never resend
       revision          INTEGER NOT NULL DEFAULT 0,  -- CAS token for edits
       created_at        INTEGER NOT NULL,
@@ -149,6 +150,20 @@ function migrate(d: DatabaseSync): void {
   // the backlog on the next start. `tasks.status` is bare TEXT with no CHECK
   // constraint, so rewriting the value in place is safe.
   d.exec(`UPDATE tasks SET status='backlog' WHERE status='queued';`);
+
+  // `proposed_payload`: what a drafted item would actually type. CREATE TABLE IF
+  // NOT EXISTS won't add a column to a table that already exists, so an ALTER is
+  // the only way an upgraded DB gets it. Nullable with no default, so existing
+  // rows read as "no draft recorded" - and the machine re-drafts on the next tick
+  // rather than showing a card with nothing under it.
+  addColumn(d, "foreman_queue_items", "proposed_payload", "TEXT");
+}
+
+/** Add a column unless it's already there. The idempotent half of a migration. */
+function addColumn(d: DatabaseSync, table: string, column: string, decl: string): void {
+  const cols = d.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+  if (cols.some((c) => c.name === column)) return;
+  d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl};`);
 }
 
 interface ReviewRow {
@@ -423,6 +438,7 @@ interface QueueItemRow {
   escalation_reason: string | null;
   last_verdict: string | null;
   approved_at: number | null;
+  proposed_payload: string | null;
   recovered_at: number | null;
   revision: number;
   created_at: number;
@@ -447,6 +463,7 @@ function rowToItem(r: QueueItemRow): WorkItem {
     escalationReason: r.escalation_reason,
     lastVerdict: r.last_verdict,
     approvedAt: r.approved_at,
+    proposedPayload: r.proposed_payload,
     recoveredAt: r.recovered_at,
     revision: r.revision,
     createdAt: r.created_at,
@@ -514,24 +531,25 @@ export function upsertQueueItem(i: WorkItem): void {
       `INSERT INTO foreman_queue_items (
          id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
          send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
-         recovered_at, revision, created_at, updated_at, sent_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         proposed_payload, recovered_at, revision, created_at, updated_at, sent_at,
+         completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
          state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
          transcript_anchor=excluded.transcript_anchor, gaps=excluded.gaps,
          send_attempts=excluded.send_attempts, verify_failures=excluded.verify_failures,
          escalation_reason=excluded.escalation_reason, last_verdict=excluded.last_verdict,
-         approved_at=excluded.approved_at, recovered_at=excluded.recovered_at,
-         revision=excluded.revision,
+         approved_at=excluded.approved_at, proposed_payload=excluded.proposed_payload,
+         recovered_at=excluded.recovered_at, revision=excluded.revision,
          updated_at=excluded.updated_at, sent_at=excluded.sent_at,
          completed_at=excluded.completed_at`,
     )
     .run(
       i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
       JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
-      i.lastVerdict, i.approvedAt, i.recoveredAt, i.revision, i.createdAt, i.updatedAt,
-      i.sentAt, i.completedAt,
+      i.lastVerdict, i.approvedAt, i.proposedPayload, i.recoveredAt, i.revision,
+      i.createdAt, i.updatedAt, i.sentAt, i.completedAt,
     );
 }
 
@@ -577,6 +595,28 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
   const d = openDb();
   d.exec("BEGIN");
   try {
+    // Rows the client didn't list - a concurrent add that raced the drop, or a
+    // caller that legitimately sent a subset (the route only validates that each
+    // id it WAS given is known). They're selected explicitly rather than inferred
+    // from a seq range: they never moved, so nothing distinguishes them by seq, and
+    // an earlier attempt to catch them by `seq >= scratch` matched nothing at all.
+    // Left where they were, an unlisted row collides at seq 0 with the reordered
+    // head, and `nextSendable`'s strict `<` then breaks the tie by arbitrary row
+    // order - i.e. which work instruction gets typed becomes luck.
+    const placeholders = ids.map(() => "?").join(", ");
+    const unlisted = (
+      d
+        .prepare(
+          `SELECT id FROM foreman_queue_items
+           WHERE note_key = ?${ids.length ? ` AND id NOT IN (${placeholders})` : ""}
+           ORDER BY seq ASC`,
+        )
+        .all(noteKey, ...ids) as unknown as Array<{ id: string }>
+    ).map((r) => r.id);
+
+    // Their authored order is preserved, and they land after the reordered block.
+    const order = [...ids, ...unlisted];
+
     const upd = d.prepare(
       `UPDATE foreman_queue_items SET seq = ?, updated_at = ? WHERE id = ? AND note_key = ?`,
     );
@@ -585,14 +625,8 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
     // two rows share a seq. Ordering by the scratch pass keeps the intermediate
     // rows unambiguous if anything reads mid-transaction.
     const scratch = 1_000_000;
-    ids.forEach((id, i) => upd.run(scratch + i, now, id, noteKey));
-    ids.forEach((id, i) => upd.run(i, now, id, noteKey));
-    // Anything the client didn't list (added concurrently) keeps a stable order
-    // after the reordered block rather than colliding at seq 0.
-    d.prepare(
-      `UPDATE foreman_queue_items SET seq = seq + ?, updated_at = ?
-       WHERE note_key = ? AND seq >= ?`,
-    ).run(ids.length, now, noteKey, scratch);
+    order.forEach((id, i) => upd.run(scratch + i, now, id, noteKey));
+    order.forEach((id, i) => upd.run(i, now, id, noteKey));
     d.exec("COMMIT");
   } catch (err) {
     d.exec("ROLLBACK");

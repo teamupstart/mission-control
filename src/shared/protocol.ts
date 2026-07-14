@@ -332,6 +332,7 @@ export const SetWorkItemStateSchema = z
     verifyFailures: z.number().int().min(0).optional(),
     escalationReason: z.string().nullable().optional(),
     lastVerdict: z.string().nullable().optional(),
+    proposedPayload: z.string().nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty item update" });
 export type SetWorkItemState = z.infer<typeof SetWorkItemStateSchema>;

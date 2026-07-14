@@ -3325,6 +3325,44 @@ kbd {
   color: var(--idle);
   line-height: 1.45;
 }
+/* The exact prompt a drafted item would type - what Approve consents to. Collapsed
+   by default: a fix prompt is long, and it must not bury the queue it sits in. */
+.wq-payload {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 11.5px;
+}
+.wq-payload > summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+.wq-payload > summary:hover {
+  color: var(--fg);
+}
+/* Spell the marker out: the platform default renders flush against the label, and
+   its glyph differs per OS. */
+.wq-payload > summary::marker {
+  content: "▸  ";
+}
+.wq-payload[open] > summary::marker {
+  content: "▾  ";
+}
+.wq-payload-text {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .wq-add {
   display: flex;
   align-items: flex-start;

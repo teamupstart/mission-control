@@ -6,6 +6,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
+import { reportBucket } from "@shared/session.ts";
 import type { ReportBucket } from "@shared/session.ts";
 
 // The work queue's decision core: given a session, its queue, and the config,
@@ -145,6 +146,45 @@ export function blockingGaps(gaps: TrackedGap[]): TrackedGap[] {
 }
 
 /**
+ * The sessions a tick should look at: everyone who needs you (oldest-waiting
+ * first), then everyone whose queue has something for the machine to decide.
+ *
+ * This is a SELECTOR, and a selector is policy: it decides which sessions
+ * `decideQueueTick` is even asked about, so a session missing from here is a
+ * branch of the machine that can never run. It lives beside the machine (not in
+ * the worker) for exactly that reason - `openCount > 0` alone silently made the
+ * whole `ask-wrapup` branch unreachable, because a drained queue is by definition
+ * `openCount === 0`, and no test could see it while this was buried in a script
+ * that starts a daemon loop on import.
+ */
+export function tickTargets(sessions: Session[]): Session[] {
+  const needsYou = sessions
+    .filter((s) => s.agent === "claude" && reportBucket(s, sessions) === "needs-you")
+    .sort((a, b) => waitedSince(a) - waitedSince(b));
+  const seen = new Set(needsYou.map((s) => s.id));
+  const withQueues = sessions.filter(
+    (s) => s.agent === "claude" && s.state !== "exited" && !seen.has(s.id) && queueWantsATick(s),
+  );
+  return [...needsYou, ...withQueues];
+}
+
+/** How long a session has been waiting - the needs-you ordering. */
+export function waitedSince(s: Session): number {
+  return s.lastActivity ?? s.firstSeen;
+}
+
+/**
+ * True when a session's queue has anything left for the machine to decide: open
+ * work to advance, OR a drained queue whose wrap-up ask hasn't fired yet. The
+ * second half is not optional - it's the only way `ask-wrapup` is ever reached.
+ */
+function queueWantsATick(s: Session): boolean {
+  const q = s.queue;
+  if (!q) return false;
+  return q.openCount > 0 || (q.drained && q.wrapupAskedAt === null);
+}
+
+/**
  * The per-tick decision. Every branch is an early return, and the order IS the
  * policy - see the individual comments for why each one sits where it does.
  */
@@ -152,11 +192,19 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   const { session, bucket, queue, cfg, mayActLive, now } = input;
   const items = queue.items;
 
-  // 1. The session is gone. Escalate whatever was mid-flight; nothing else can
-  //    happen to it. (Waiting items are deliberately left alone - see the sweep.)
+  // 1. The session is gone. Escalate ONLY what was mid-flight; nothing else can
+  //    happen to it. Waiting items are deliberately left INTACT - escalating them
+  //    would defeat the re-attach affordance, and resuming a queue is the point.
+  //
+  //    The plan contradicts itself here: its transition table says "any
+  //    non-terminal -> escalated on exit", while §1.1 argues waiting items must
+  //    survive so a `/clear` doesn't escalate an untouched backlog out from under
+  //    someone still working. §1.1 wins - it's the case the plan actually reasons
+  //    about, and it's what `sweepOrphanedQueues` already does. Don't "fix" this
+  //    back to the table without reading §1.1 first.
   if (session.state === "exited") {
-    const live = inFlightItem(items) ?? nextSendable(items);
-    if (live) return { kind: "escalate", item: live, reason: "the session exited" };
+    const flight = inFlightItem(items);
+    if (flight) return { kind: "escalate", item: flight, reason: "the session exited" };
     return { kind: "none" };
   }
 
@@ -197,9 +245,16 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   //    approve endpoint mean anything - without it an approved item would be
   //    re-proposed forever. And an already-`proposed` head must NO-OP rather than
   //    be re-proposed, so a blocked queue costs one row write, not one per tick.
+  //
+  //    The no-op is conditioned on the DRAFTED TEXT still matching, not merely on
+  //    the state: `proposed` means "this exact text is what Approve consents to",
+  //    so a draft that has gone stale (the human edited the intent underneath it)
+  //    must be re-drafted rather than left showing text Foreman would no longer
+  //    send.
   if (!mayActLive && !head.approvedAt) {
-    if (head.state === "proposed") return { kind: "none" };
-    return { kind: "propose", item: head, payload: payloadFor(head), round: head.round };
+    const payload = payloadFor(head);
+    if (head.state === "proposed" && head.proposedPayload === payload) return { kind: "none" };
+    return { kind: "propose", item: head, payload, round: head.round };
   }
 
   // 9. Send: live (any head), or approved in any mode. Flipping to live IS the
@@ -216,12 +271,17 @@ function decideInFlight(
 ): QueueAction {
   switch (item.state) {
     case "sending":
-      // Only reachable after a crash: the row is written BEFORE the tmux write, so
-      // on restart we cannot distinguish "landed" from "didn't". Adopt it (sentAt
-      // := updatedAt, recoveredAt stamped) and let the pickup detector adjudicate
-      // on evidence - if the agent ingested it, lastActivity moved and we verify
-      // normally. It deliberately never auto-RESENDS: see the recoveredAt branch
-      // below.
+      // Only reachable after a crash, and that invariant is LOAD-BEARING: the row
+      // is written BEFORE the tmux write, so on restart we cannot distinguish
+      // "landed" from "didn't", and this branch adopts unconditionally. Nothing
+      // else may ever park an item in `sending` - a fix round that did (rather than
+      // going back through `queued`) would be adopted here as a phantom crash and
+      // escalate ~45s later having typed nothing. See planFromVerify.
+      //
+      // Adopt it (sentAt := updatedAt, recoveredAt stamped) and let the pickup
+      // detector adjudicate on evidence - if the agent ingested it, lastActivity
+      // moved and we verify normally. It deliberately never auto-RESENDS: see the
+      // recoveredAt branch below.
       return { kind: "recover-send", item };
 
     case "awaiting_pickup": {
@@ -277,6 +337,27 @@ export function payloadFor(item: WorkItem): string {
   return item.round === 0 ? item.intent : renderFixPrompt(item);
 }
 
+/**
+ * Whether an item's diff may carry work that isn't this item's - true when the
+ * diff was NOT taken from the base we recorded at delivery.
+ *
+ * The two shas arrive at DIFFERENT LENGTHS, so the obvious `diffBase !== itemBase`
+ * can never match, even when they name the same commit: an item's base is captured
+ * from `rev-parse --short HEAD` (~7 chars), while a computed diff reports a
+ * merge-base sliced to 12. Compared raw, this was permanently true, so every
+ * verify - including a perfectly scoped one - told the model to "ignore unrelated
+ * changes", i.e. to discount the very diff it was asked to judge, and a genuinely
+ * cumulative diff became indistinguishable from a clean one.
+ *
+ * Comparing on the shorter length is exactly right rather than a fudge: git's
+ * abbreviation rule is that a short sha IS a prefix of the full one.
+ */
+export function diffMayIncludeOtherWork(diffBaseSha: string | null, itemBaseSha: string | null): boolean {
+  if (!diffBaseSha || !itemBaseSha) return true; // no recorded scope: assume the worst
+  const n = Math.min(diffBaseSha.length, itemBaseSha.length);
+  return diffBaseSha.slice(0, n) !== itemBaseSha.slice(0, n);
+}
+
 // ---- the verify plan (the planFromVerdict analogue) ----
 
 /** The verifier's structured judgment, as the machine consumes it. */
@@ -295,14 +376,18 @@ export interface QueueVerdict {
   confidence: number;
 }
 
-/** What a verify outcome means for the item: the note to write + the next state. */
+/**
+ * What a verify outcome means for the item: the note to write + the next state.
+ *
+ * There is deliberately no `send` flag: `state` already says it (live -> `queued`,
+ * dry-run -> `proposed`), and a second source of truth for the same decision is
+ * how the two halves drift apart.
+ */
 export interface QueueVerifyPlan {
   state: WorkItemState;
   round: number;
   gaps: TrackedGap[];
   escalationReason: string | null;
-  /** True when the plan wants the fix prompt typed (live), vs drafted (dry-run). */
-  send: boolean;
   lastVerdict: string;
 }
 
@@ -328,7 +413,7 @@ export function planFromVerify(
 
   // No blocking gaps: done. Advisory gaps ride along on the card as a record.
   if (blocking.length === 0) {
-    return { ...base, state: "verified", round: item.round, send: false };
+    return { ...base, state: "verified", round: item.round };
   }
 
   // A gap that has survived `maxFixAttempts` rounds isn't going to be fixed by
@@ -339,7 +424,6 @@ export function planFromVerify(
       ...base,
       state: "escalated",
       round: item.round,
-      send: false,
       escalationReason: `Foreman asked ${stuck.strikes}x and this is unresolved: ${stuck.detail}`,
     };
   }
@@ -352,13 +436,22 @@ export function planFromVerify(
       ...base,
       state: "escalated",
       round: item.round,
-      send: false,
       escalationReason: `this item spent its ${cfg.maxFixRounds}-round budget without converging`,
     };
   }
 
-  // Another fix round. In live mode it goes straight back out; in dry-run it is
-  // DRAFTED and waits for an Approve.
+  // Another fix round. In live mode the item goes back to `queued` and the NEXT
+  // TICK sends it; in dry-run it is DRAFTED and waits for an Approve.
+  //
+  // Live parks at `queued`, NOT `sending`, and that is not an arbitrary choice:
+  //  - `sending` means "a crash happened mid-delivery" and nothing else (see
+  //    decideInFlight). An item parked there by a fix round is adopted as a
+  //    phantom crash and escalates ~45s later without a keystroke ever typed.
+  //  - Going back through `queued` means the send leaves via step 9, so it runs
+  //    `queueSendStillValid` like every other send. The plan requires that guard
+  //    on EVERY send; routing through the one path that has it beats duplicating
+  //    it here. `payloadFor` renders the fix prompt for round >= 1, and the item
+  //    keeps its seq, so it is still the head next tick.
   //
   // The `proposed` branch is load-bearing: without it a dry-run item with blocking
   // gaps, under all caps, would match no transition, and the precedence's
@@ -368,9 +461,8 @@ export function planFromVerify(
   // text the human never read.
   return {
     ...base,
-    state: mayActLive ? "sending" : "proposed",
+    state: mayActLive ? "queued" : "proposed",
     round: nextRound,
-    send: mayActLive,
   };
 }
 

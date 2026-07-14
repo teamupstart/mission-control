@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyQueueAction, queueSendStillValid, observe } from "../src/server/foreman/queue-apply.ts";
 import type { QueueActions } from "../src/server/foreman/queue-apply.ts";
+import { SEND_ATTEMPT_CAP } from "../src/server/foreman/queue-machine.ts";
 import type { QueueConfig } from "../src/server/foreman/queue-machine.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { Session, SessionQueue, WorkItem } from "../src/shared/types.ts";
@@ -67,6 +68,7 @@ function mkItem(over: Partial<WorkItem> = {}): WorkItem {
     escalationReason: null,
     lastVerdict: null,
     approvedAt: null,
+    proposedPayload: null,
     recoveredAt: null,
     revision: 0,
     createdAt: 0,
@@ -191,12 +193,21 @@ test("a failed inject leaves the item retryable and never marks it sent", async 
 
 test("a repeatedly-failing inject escalates instead of retrying forever", async () => {
   const session = mkSession();
-  const item = mkItem({ sendAttempts: 2 }); // this attempt makes 3
+  // Derived from the constant, not hardcoded to 3: this path and the machine's own
+  // escalation branch must escalate at the SAME count, and a literal here would let
+  // them agree only by coincidence - so tuning the cap would silently move one.
+  const item = mkItem({ sendAttempts: SEND_ATTEMPT_CAP - 1 }); // this attempt hits the cap
   const fake = mkFake({ session, items: [item], injectThrows: true });
   const out = await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
 
   assert.equal(out.kind, "aborted");
   assert.equal(fake.states.at(-1)?.patch.state, "escalated");
+
+  // One attempt below the cap it is still retryable, not escalated.
+  const under = mkItem({ sendAttempts: SEND_ATTEMPT_CAP - 2 });
+  const fake2 = mkFake({ session, items: [under], injectThrows: true });
+  await applyQueueAction(fake2, session, { kind: "send", item: under, payload: "do it", round: 0 }, CFG, NOW);
+  assert.equal(fake2.states.at(-1)?.patch.state, "queued");
 });
 
 // ---- the stale-send guard ----
@@ -355,6 +366,19 @@ test("picked-up moves the item to in_progress", async () => {
   const fake = mkFake({ session, items: [item] });
   await applyQueueAction(fake, session, { kind: "picked-up", item }, CFG, NOW);
   assert.equal(fake.states[0]?.patch.state, "in_progress");
+});
+
+test("picked-up CLEARS the send-attempt count - the cap counts consecutive failures", async () => {
+  // A pickup proves the send landed, so the count starts over. Without this it is
+  // cumulative across the item's whole life and a fix round inherits it: an item
+  // that took two tries in round 0 and is now on round 2 sits AT the cap, so its
+  // first pickup timeout escalates - no resend - claiming "the agent never picked
+  // this up after 3 attempts" about an agent that has picked it up twice.
+  const session = mkSession();
+  const item = mkItem({ state: "awaiting_pickup", sendAttempts: 2, round: 1 });
+  const fake = mkFake({ session, items: [item] });
+  await applyQueueAction(fake, session, { kind: "picked-up", item }, CFG, NOW);
+  assert.equal(fake.states[0]?.patch.sendAttempts, 0);
 });
 
 test("ask-wrapup stamps the ask and types nothing", async () => {

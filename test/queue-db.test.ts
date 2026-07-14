@@ -47,6 +47,7 @@ function mkItem(over: Partial<WorkItem> = {}): WorkItem {
     escalationReason: null,
     lastVerdict: null,
     approvedAt: null,
+    proposedPayload: null,
     recoveredAt: null,
     revision: 0,
     createdAt: now,
@@ -173,6 +174,52 @@ test("reorder leaves an item the client didn't list AFTER the reordered block", 
     ["x2", "x1", "late"],
   );
   assert.equal(items.at(-1)?.seq, 2, "the unlisted item lands right after the block");
+});
+
+test("reorder of a PARTIAL list still leaves every unlisted item after the block", () => {
+  // The case the "unlisted items are handled" claim actually rests on, and the one
+  // the test above passes vacuously: an unlisted row that would COLLIDE. The route
+  // only validates that each id it was given is known - it never requires the whole
+  // list - so a subset reorder is legal, and here `x1` sits at the very seq the
+  // reordered head is about to take. Two rows at seq 0 hands `nextSendable`'s
+  // strict `<` to arbitrary row order, i.e. which work instruction gets typed
+  // becomes luck. Every seq below is distinct on purpose.
+  const key = "reorder-partial";
+  upsertQueueItem(mkItem({ id: "p1", noteKey: key, seq: 0 }));
+  upsertQueueItem(mkItem({ id: "p2", noteKey: key, seq: 1 }));
+  upsertQueueItem(mkItem({ id: "p3", noteKey: key, seq: 2 }));
+
+  reorderQueueItems(key, ["p2"], 6500);
+
+  const items = listQueueItems(key);
+  assert.deepEqual(
+    items.map((i) => i.id),
+    ["p2", "p1", "p3"],
+    "the listed item leads; the unlisted ones follow in their authored order",
+  );
+  assert.deepEqual(
+    items.map((i) => i.seq),
+    [0, 1, 2],
+    "contiguous and collision-free - the head must never be decided by a tie",
+  );
+});
+
+test("reorder with an empty id list is a no-op, not a renumber to nothing", () => {
+  const key = "reorder-empty";
+  upsertQueueItem(mkItem({ id: "e1", noteKey: key, seq: 0 }));
+  upsertQueueItem(mkItem({ id: "e2", noteKey: key, seq: 1 }));
+
+  reorderQueueItems(key, [], 6600);
+
+  const items = listQueueItems(key);
+  assert.deepEqual(
+    items.map((i) => i.id),
+    ["e1", "e2"],
+  );
+  assert.deepEqual(
+    items.map((i) => i.seq),
+    [0, 1],
+  );
 });
 
 // The single-flight index is the one constraint the whole design rests on: the

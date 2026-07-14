@@ -15,8 +15,10 @@ import type { TriageDeps, TriageOutcome } from "./triage.ts";
 import {
   VERIFY_FAILURE_CAP,
   decideQueueTick,
+  diffMayIncludeOtherWork,
   inFlightItem,
   planFromVerify,
+  tickTargets,
 } from "./queue-machine.ts";
 import type { QueueConfig } from "./queue-machine.ts";
 import { applyQueueAction, noteKeyOf } from "./queue-apply.ts";
@@ -201,32 +203,6 @@ async function main(): Promise<void> {
 }
 
 /**
- * The sessions this tick should look at: everyone who needs you (oldest-waiting
- * first, unchanged), then everyone with a work queue.
- *
- * The old loop bailed out entirely when nobody needed you - which is exactly when
- * a work queue should be running.
- */
-function tickTargets(sessions: Session[]): Session[] {
-  const needsYou = sessions
-    .filter((s) => s.agent === "claude" && reportBucket(s, sessions) === "needs-you")
-    .sort((a, b) => waitedSince(a) - waitedSince(b));
-  const seen = new Set(needsYou.map((s) => s.id));
-  const withQueues = sessions.filter(
-    (s) =>
-      s.agent === "claude" &&
-      s.state !== "exited" &&
-      !seen.has(s.id) &&
-      (s.queue?.openCount ?? 0) > 0,
-  );
-  return [...needsYou, ...withQueues];
-}
-
-function waitedSince(s: Session): number {
-  return s.lastActivity ?? s.firstSeen;
-}
-
-/**
  * Terminalize the in-flight item of any queue whose session is gone.
  *
  * The machine's "exited -> escalate" row needs a LIVE session with that key to
@@ -398,18 +374,25 @@ async function runVerify(
   const diff = await client.diff(session.id, item.baseSha).catch(() => null);
   if (!diff) return void (await failVerify(client, session, item, qcfg, "could not read the diff"));
 
-  // The base commit is genuinely unreachable (GC'd, or from another checkout).
-  // This is verify-INFRASTRUCTURE broken, not a gap and not a transient: without
-  // the fix in computeSessionDiff this returned ok:true with a working-tree-only
-  // diff, so the verifier would see near-nothing for completed work and invent
-  // gaps. Escalate immediately - never burn rounds on phantom gaps.
-  if (!diff.ok && item.baseSha) {
-    await client.setItemState(session.id, item.id, {
-      state: "escalated",
-      escalationReason: `${diff.error ?? "the base commit is gone"} - verify this item by hand`,
-    });
-    log(`${session.name}: base commit unreachable; escalated for a manual check`);
-    return;
+  // ANY failed diff is verify-INFRASTRUCTURE broken, and must never reach the
+  // verifier. `SessionDiff.patch` is a non-optional string that defaults to "" on
+  // failure, so falling through renders "(no changes were made)" and the verifier
+  // dutifully invents gaps for work that may well be done - the fail-open behavior
+  // the whole evidence-first design exists to eliminate. Gating this on
+  // `item.baseSha` left that door open for an item whose scope capture found no
+  // HEAD (no cwd, or not a git repo): failed diff, null base, straight through.
+  //
+  // Retry-then-escalate rather than escalate-on-sight: a diff can fail transiently
+  // (a concurrent index.lock, a busy worktree), and failVerify is exactly the
+  // "retry a few times, then hand it to the human" shape that fits. A genuinely
+  // unreachable base is not transient, so it just spends the three attempts and
+  // escalates - with its own wording, since "the base commit is gone" is the one
+  // cause a human can act on.
+  if (!diff.ok) {
+    const why = item.baseSha
+      ? `${diff.error ?? "the base commit is gone"} - verify this item by hand`
+      : diff.error ?? "could not read the diff";
+    return void (await failVerify(client, session, item, qcfg, why));
   }
 
   const anchor = item.transcriptAnchor;
@@ -446,7 +429,7 @@ async function runVerify(
     diffTruncated: diff.truncated,
     // The diff is cumulative whenever the agent doesn't commit, so anything before
     // this item's base may be an earlier item's uncommitted work.
-    diffMayIncludeOtherWork: item.baseSha === null || diff.baseSha !== item.baseSha,
+    diffMayIncludeOtherWork: diffMayIncludeOtherWork(diff.baseSha, item.baseSha),
     transcript: window.messages,
     transcriptTruncated: window.truncated,
     standards: standards.docs,
@@ -471,7 +454,7 @@ async function runVerify(
   });
   log(
     `${session.name}: verified "${oneLine(item.intent)}" -> ${plan.state}` +
-      (plan.state === "sending" || plan.state === "proposed" ? ` (round ${plan.round})` : ""),
+      (plan.state === "queued" || plan.state === "proposed" ? ` (round ${plan.round})` : ""),
   );
 }
 

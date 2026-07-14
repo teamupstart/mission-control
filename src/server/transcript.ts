@@ -403,6 +403,51 @@ export function readTranscriptWindow(
   return { messages: merged, truncated: true, headCount: head.length };
 }
 
+/** Cap on a `since` window, so one long-running item can't return a whole file. */
+const SINCE_MAX_BYTES = 512 * 1024;
+
+/**
+ * A transcript window read FORWARD from a byte offset - how the work queue scopes
+ * a window to a single item.
+ *
+ * The transcript is append-only, so the file size recorded when an item was
+ * delivered is an exact item boundary, and seeking to it is O(1). That beats every
+ * alternative: the diff is cumulative whenever the agent doesn't commit, a turn
+ * count can span three items, and filtering a head+tail window by timestamp would
+ * silently drop the item's earliest turns (the ones establishing what the agent
+ * set out to do) whenever its work exceeds the tail.
+ *
+ * `reset: true` means the file is now SHORTER than the offset - the transcript was
+ * cleared (a `/clear`), so the anchor is meaningless. Callers must treat that as a
+ * verify-infrastructure failure and escalate, NOT judge the item against a
+ * near-empty window and invent gaps.
+ */
+export function readTranscriptSince(
+  path: string,
+  offset: number,
+  maxBytes = SINCE_MAX_BYTES,
+): TranscriptWindow & { reset?: boolean } {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { messages: [], truncated: false };
+  }
+  if (size < offset) return { messages: [], truncated: false, reset: true };
+  // Bound the window from the TAIL when an item wrote more than the cap: the
+  // recent turns are what show whether the work landed.
+  const truncated = size - offset > maxBytes;
+  const start = truncated ? size - maxBytes : offset;
+  const buf = readRange(path, start, size);
+  // Drop the partial first line ONLY when we truncated into the middle of a line.
+  // `offset` itself is a line boundary (it was EOF when the item was delivered),
+  // so dropping there would discard a real turn - the item's opening one. If the
+  // file happened to end mid-line at delivery, parseLines skips the unparseable
+  // fragment anyway, so not dropping is safe in both cases.
+  const lines = completeLines(buf, truncated, false);
+  return { messages: parseLines(lines), truncated };
+}
+
 /**
  * Split a byte buffer into lines, optionally dropping a partial line at either
  * end: `dropFirst` for a buffer that began mid-file (a tail read), `dropLast`

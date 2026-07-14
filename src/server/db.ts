@@ -8,9 +8,13 @@ import type {
   ReviewKind,
   ReviewStatus,
   SessionNote,
+  SessionQueue,
   Task,
   TaskKind,
   TaskStatus,
+  TrackedGap,
+  WorkItem,
+  WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
 
@@ -90,6 +94,44 @@ export function openDb(): DatabaseSync {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS foreman_queues (
+      note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
+      cwd             TEXT,               -- + branch: the re-attach hint when the key dies
+      branch          TEXT,
+      wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
+      wrapup_answer   TEXT,
+      updated_at      INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS foreman_queue_items (
+      id                TEXT PRIMARY KEY,
+      note_key          TEXT NOT NULL,
+      seq               INTEGER NOT NULL,  -- whole-list renumber on reorder, in a txn
+      intent            TEXT NOT NULL,
+      state             TEXT NOT NULL,
+      round             INTEGER NOT NULL DEFAULT 0,
+      base_sha          TEXT,              -- HEAD at delivery -> scopes the diff
+      transcript_anchor INTEGER,           -- transcript byte offset at delivery -> scopes it
+      gaps              TEXT,              -- JSON TrackedGap[]
+      send_attempts     INTEGER NOT NULL DEFAULT 0,
+      verify_failures   INTEGER NOT NULL DEFAULT 0,
+      escalation_reason TEXT,
+      last_verdict      TEXT,
+      approved_at       INTEGER,           -- set when a human approves a 'proposed' item
+      revision          INTEGER NOT NULL DEFAULT 0,  -- CAS token for edits
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL,
+      sent_at           INTEGER,
+      completed_at      INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_fqi_queue ON foreman_queue_items(note_key, seq);
+
+    -- Single-flight per queue, enforced by the DB rather than by hope: at most one
+    -- item per note_key may be mid-cycle. The stakes are a duplicated WORK
+    -- INSTRUCTION typed into a live agent, so this is a constraint, not a comment.
+    CREATE UNIQUE INDEX IF NOT EXISTS one_inflight_per_queue ON foreman_queue_items(note_key)
+      WHERE state IN ('sending','awaiting_pickup','in_progress','verifying');
   `);
   migrate(db);
   return db;
@@ -352,6 +394,206 @@ export function loadSessionNotes(): SessionNote[] {
     .prepare(`SELECT * FROM session_notes ORDER BY updated_at DESC`)
     .all() as unknown as SessionNoteRow[];
   return rows.map(rowToNote);
+}
+
+// ---- Foreman session work queues ----
+
+interface QueueRow {
+  note_key: string;
+  cwd: string | null;
+  branch: string | null;
+  wrapup_asked_at: number | null;
+  wrapup_answer: string | null;
+  updated_at: number;
+}
+
+interface QueueItemRow {
+  id: string;
+  note_key: string;
+  seq: number;
+  intent: string;
+  state: string;
+  round: number;
+  base_sha: string | null;
+  transcript_anchor: number | null;
+  gaps: string | null;
+  send_attempts: number;
+  verify_failures: number;
+  escalation_reason: string | null;
+  last_verdict: string | null;
+  approved_at: number | null;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+  sent_at: number | null;
+  completed_at: number | null;
+}
+
+function rowToItem(r: QueueItemRow): WorkItem {
+  return {
+    id: r.id,
+    noteKey: r.note_key,
+    seq: r.seq,
+    intent: r.intent,
+    state: r.state as WorkItemState,
+    round: r.round,
+    baseSha: r.base_sha,
+    transcriptAnchor: r.transcript_anchor,
+    gaps: parseGaps(r.gaps),
+    sendAttempts: r.send_attempts,
+    verifyFailures: r.verify_failures,
+    escalationReason: r.escalation_reason,
+    lastVerdict: r.last_verdict,
+    approvedAt: r.approved_at,
+    revision: r.revision,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    sentAt: r.sent_at,
+    completedAt: r.completed_at,
+  };
+}
+
+/** Corrupt/absent gap JSON reads as "no gaps" - never throws out of a row read. */
+function parseGaps(raw: string | null): TrackedGap[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw) as unknown;
+    return Array.isArray(v) ? (v as TrackedGap[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function upsertQueue(q: Omit<SessionQueue, "items">): void {
+  openDb()
+    .prepare(
+      `INSERT INTO foreman_queues (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
+         wrapup_answer=excluded.wrapup_answer, updated_at=excluded.updated_at`,
+    )
+    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.updatedAt);
+}
+
+export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | undefined {
+  const r = openDb().prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`).get(noteKey) as
+    | unknown as QueueRow | undefined;
+  if (!r) return undefined;
+  return {
+    noteKey: r.note_key,
+    cwd: r.cwd,
+    branch: r.branch,
+    wrapupAskedAt: r.wrapup_asked_at,
+    wrapupAnswer: r.wrapup_answer,
+    updatedAt: r.updated_at,
+  };
+}
+
+/** Every stored queue (without items) - for the orphan sweep + the fleet list. */
+export function listQueueRows(): Omit<SessionQueue, "items">[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM foreman_queues ORDER BY updated_at DESC`)
+    .all() as unknown as QueueRow[];
+  return rows.map((r) => ({
+    noteKey: r.note_key,
+    cwd: r.cwd,
+    branch: r.branch,
+    wrapupAskedAt: r.wrapup_asked_at,
+    wrapupAnswer: r.wrapup_answer,
+    updatedAt: r.updated_at,
+  }));
+}
+
+export function upsertQueueItem(i: WorkItem): void {
+  openDb()
+    .prepare(
+      `INSERT INTO foreman_queue_items (
+         id, note_key, seq, intent, state, round, base_sha, transcript_anchor, gaps,
+         send_attempts, verify_failures, escalation_reason, last_verdict, approved_at,
+         revision, created_at, updated_at, sent_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         note_key=excluded.note_key, seq=excluded.seq, intent=excluded.intent,
+         state=excluded.state, round=excluded.round, base_sha=excluded.base_sha,
+         transcript_anchor=excluded.transcript_anchor, gaps=excluded.gaps,
+         send_attempts=excluded.send_attempts, verify_failures=excluded.verify_failures,
+         escalation_reason=excluded.escalation_reason, last_verdict=excluded.last_verdict,
+         approved_at=excluded.approved_at, revision=excluded.revision,
+         updated_at=excluded.updated_at, sent_at=excluded.sent_at,
+         completed_at=excluded.completed_at`,
+    )
+    .run(
+      i.id, i.noteKey, i.seq, i.intent, i.state, i.round, i.baseSha, i.transcriptAnchor,
+      JSON.stringify(i.gaps), i.sendAttempts, i.verifyFailures, i.escalationReason,
+      i.lastVerdict, i.approvedAt, i.revision, i.createdAt, i.updatedAt, i.sentAt,
+      i.completedAt,
+    );
+}
+
+export function getQueueItem(id: string): WorkItem | undefined {
+  const r = openDb().prepare(`SELECT * FROM foreman_queue_items WHERE id = ?`).get(id) as
+    | unknown as QueueItemRow | undefined;
+  return r ? rowToItem(r) : undefined;
+}
+
+/** A queue's items in authored order. */
+export function listQueueItems(noteKey: string): WorkItem[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM foreman_queue_items WHERE note_key = ? ORDER BY seq ASC`)
+    .all(noteKey) as unknown as QueueItemRow[];
+  return rows.map(rowToItem);
+}
+
+export function deleteQueueItem(id: string): void {
+  openDb().prepare(`DELETE FROM foreman_queue_items WHERE id = ?`).run(id);
+}
+
+/** Drop a queue row (its items are re-keyed or deleted by the caller first). */
+export function deleteQueue(noteKey: string): void {
+  openDb().prepare(`DELETE FROM foreman_queues WHERE note_key = ?`).run(noteKey);
+}
+
+/** The next authored position for a queue (max(seq) + 1, or 0 when empty). */
+export function nextQueueSeq(noteKey: string): number {
+  const r = openDb()
+    .prepare(`SELECT COALESCE(MAX(seq), -1) AS m FROM foreman_queue_items WHERE note_key = ?`)
+    .get(noteKey) as { m: number } | undefined;
+  return (r?.m ?? -1) + 1;
+}
+
+/**
+ * Renumber a whole queue to the given id order, in ONE transaction. Whole-list
+ * (not a swap) because a partial renumber can transiently collide on seq, and the
+ * authored order is the queue's entire contract - it must never be observable
+ * half-applied. Ids not in `ids` keep their rows and are pushed after, so a stale
+ * client list can't silently drop an item.
+ */
+export function reorderQueueItems(noteKey: string, ids: string[], now: number): void {
+  const d = openDb();
+  d.exec("BEGIN");
+  try {
+    const upd = d.prepare(
+      `UPDATE foreman_queue_items SET seq = ?, updated_at = ? WHERE id = ? AND note_key = ?`,
+    );
+    // Two passes over a scratch offset: seq has no UNIQUE constraint, but writing
+    // the final numbers directly still means the list passes through states where
+    // two rows share a seq. Ordering by the scratch pass keeps the intermediate
+    // rows unambiguous if anything reads mid-transaction.
+    const scratch = 1_000_000;
+    ids.forEach((id, i) => upd.run(scratch + i, now, id, noteKey));
+    ids.forEach((id, i) => upd.run(i, now, id, noteKey));
+    // Anything the client didn't list (added concurrently) keeps a stable order
+    // after the reordered block rather than colliding at seq 0.
+    d.prepare(
+      `UPDATE foreman_queue_items SET seq = seq + ?, updated_at = ?
+       WHERE note_key = ? AND seq >= ?`,
+    ).run(ids.length, now, noteKey, scratch);
+    d.exec("COMMIT");
+  } catch (err) {
+    d.exec("ROLLBACK");
+    throw err;
+  }
 }
 
 // ---- generic app config (Foreman config, future singletons) ----

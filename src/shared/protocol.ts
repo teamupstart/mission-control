@@ -190,6 +190,10 @@ export type SetNote = z.infer<typeof SetNoteSchema>;
  * Foreman's operating config. `dry-run` drafts answers without sending; `live`
  * sends on the human's behalf (only for repos on the allowlist); `semi-auto`
  * drafts a one-click-confirmable action. Ships disabled + dry-run.
+ *
+ * Only knobs a human should reason about live here (they're surfaced in
+ * ForemanBar); operational timings are module constants with an env override,
+ * following the FOREMAN_REVIEW_TIMEOUT_MS precedent.
  */
 export const ForemanConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -213,6 +217,17 @@ export const ForemanConfigSchema = z.object({
    * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default, in the worker.
    */
   triageModel: z.string().optional(),
+  /**
+   * How many rounds the SAME gap may survive before the item escalates. Counted
+   * per gap, not per attempt, so an agent working through several distinct gaps
+   * isn't punished for finding more work.
+   */
+  maxFixAttempts: z.number().int().min(1).max(10).default(3),
+  /**
+   * Hard per-item round budget - the real termination guarantee. Per-gap strikes
+   * are a heuristic (a reminted gap id resets them); this is not.
+   */
+  maxFixRounds: z.number().int().min(1).max(50).default(10),
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 
@@ -222,3 +237,112 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
   { message: "empty config update" },
 );
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
+
+// ---- Foreman session work queues ----
+
+/**
+ * A worker's leased heartbeat. `workerId` identifies the process so the daemon
+ * can tell "the leader renewed" from "a second worker is trying to take over" -
+ * which the old bare heartbeat (one module-global timestamp) could not do at all:
+ * it just got beaten twice, and two workers would both drain the fleet.
+ */
+export const ForemanHeartbeatSchema = z.object({
+  workerId: z.string().min(1),
+});
+export type ForemanHeartbeat = z.infer<typeof ForemanHeartbeatSchema>;
+
+/** The daemon's answer to a leased heartbeat: are you the leader, and until when. */
+export interface ForemanLeaseResult {
+  leader: boolean;
+  expiresAt: number;
+  /** The worker that currently holds the lease (yours or someone else's). */
+  holder: string;
+}
+
+/** Cap on an item's intent: it gets typed into a pane, so it can't be unbounded. */
+const INTENT_MAX = 8000;
+
+/** Add one work item to a session's queue. */
+export const AddWorkItemSchema = z.object({
+  intent: z.string().min(1).max(INTENT_MAX),
+});
+export type AddWorkItem = z.infer<typeof AddWorkItemSchema>;
+
+/**
+ * Edit a waiting item. `revision` is a compare-and-swap token, not decoration:
+ * without it the UI would happily let someone edit an item Foreman has already
+ * typed into a pane. The route 409s when it doesn't match (or the item has left
+ * `queued`/`proposed`).
+ */
+export const EditWorkItemSchema = z.object({
+  intent: z.string().min(1).max(INTENT_MAX),
+  revision: z.number().int().min(0),
+});
+export type EditWorkItem = z.infer<typeof EditWorkItemSchema>;
+
+/** Reorder a queue: the full id list in the new authored order, renumbered in a txn. */
+export const ReorderQueueSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1),
+});
+export type ReorderQueue = z.infer<typeof ReorderQueueSchema>;
+
+/**
+ * The worker's durable state write for one item. Everything the machine decides
+ * lands through here, so the daemon stays the only writer of the DB.
+ */
+export const SetWorkItemStateSchema = z
+  .object({
+    state: z
+      .enum([
+        "queued",
+        "proposed",
+        "sending",
+        "awaiting_pickup",
+        "in_progress",
+        "verifying",
+        "verified",
+        "escalated",
+        "cancelled",
+      ])
+      .optional(),
+    round: z.number().int().min(0).optional(),
+    baseSha: z.string().nullable().optional(),
+    transcriptAnchor: z.number().int().min(0).nullable().optional(),
+    gaps: z
+      .array(
+        z.object({
+          id: z.string().min(1),
+          severity: z.enum(["blocking", "advisory"]),
+          kind: z.enum(["incomplete", "untested", "standards", "regression"]),
+          path: z.string(),
+          detail: z.string(),
+          fix: z.string(),
+          strikes: z.number().int().min(0),
+          firstSeenRound: z.number().int().min(0),
+        }),
+      )
+      .optional(),
+    sendAttempts: z.number().int().min(0).optional(),
+    verifyFailures: z.number().int().min(0).optional(),
+    escalationReason: z.string().nullable().optional(),
+    lastVerdict: z.string().nullable().optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty item update" });
+export type SetWorkItemState = z.infer<typeof SetWorkItemStateSchema>;
+
+/** Record the human's answer to the drain-time wrap-up ask. */
+export const WrapupSchema = z.object({
+  answer: z.string().nullable(),
+});
+export type Wrapup = z.infer<typeof WrapupSchema>;
+
+/**
+ * Deliver a whole (possibly multi-line) prompt into a session's input as ONE
+ * submission, via bracketed paste. Distinct from SendTextSchema because `/send`
+ * is literal `send-keys -l`, where every embedded newline submits - so it cannot
+ * deliver a multi-line intent or a bulleted gap list at all.
+ */
+export const InjectPromptSchema = z.object({
+  text: z.string().min(1).max(INTENT_MAX),
+});
+export type InjectPrompt = z.infer<typeof InjectPromptSchema>;

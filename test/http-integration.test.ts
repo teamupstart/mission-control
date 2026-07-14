@@ -17,6 +17,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { normTty } = await import("../src/server/discovery/tty.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -28,7 +29,8 @@ const TOKEN = ensureToken();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
-const app = buildApp(registry, reviews, tasks);
+const queues = new QueueManager(registry);
+const app = buildApp(registry, reviews, tasks, queues);
 
 // Loopback host + the shared token are what the real dashboard and hook present.
 const LOOPBACK = { host: "127.0.0.1:7317" };

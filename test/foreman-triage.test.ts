@@ -379,7 +379,16 @@ function mkSession(over: Partial<Session> = {}): Session {
 }
 
 function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
-  return { enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true, triage: "on", ...over };
+  return {
+    enabled: true,
+    mode: "live",
+    repoAllowlist: ["/repo"],
+    autoApproveAccess: true,
+    triage: "on",
+    maxFixAttempts: 3,
+    maxFixRounds: 10,
+    ...over,
+  };
 }
 
 function deps(over: Partial<TriageDeps> = {}): TriageDeps {

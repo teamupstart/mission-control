@@ -43,6 +43,8 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    queue: null,
+    orphanedQueue: null,
     ...p,
   };
 }

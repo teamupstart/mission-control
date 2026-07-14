@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type {
   MetaSource,
   NmRunSummary,
+  OrphanedQueueHint,
   PermissionMode,
   PrChecks,
   PrState,
@@ -11,9 +12,13 @@ import type {
   SessionMeta,
   SessionNote,
   SessionNoteSummary,
+  SessionQueue,
+  SessionQueueSummary,
   SessionState,
   Task,
   TaskSummary,
+  WorkItem,
+  WorkItemState,
 } from "@shared/types.ts";
 import type { HookIngest, SetNote, StatusLineIngest } from "@shared/protocol.ts";
 import {
@@ -25,14 +30,23 @@ import {
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
 import {
+  deleteQueue,
+  deleteQueueItem,
   deleteTask as dbDeleteTask,
+  getQueueItem,
+  getQueueRow,
   getSessionNote,
+  listQueueItems,
+  listQueueRows,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionNotes,
   logEvent,
+  reorderQueueItems,
+  upsertQueue,
+  upsertQueueItem,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
 } from "./db.ts";
@@ -241,6 +255,8 @@ export class Registry extends EventEmitter {
       prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
       note: null,
+      queue: null,
+      orphanedQueue: null,
     };
     const overlay = this.overlayFor(base);
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
@@ -253,9 +269,11 @@ export class Registry extends EventEmitter {
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
     }
-    // Resolve the note only after the overlay may have supplied agentSessionId,
-    // so the note key (which prefers agentSessionId) is stable.
+    // Resolve the note + queue only after the overlay may have supplied
+    // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
+    base.queue = this.queueSummaryFor(base);
+    base.orphanedQueue = this.orphanedQueueFor(base);
     return base;
   }
 
@@ -952,6 +970,241 @@ export class Registry extends EventEmitter {
       this.emitSession(next);
     }
   }
+
+  // ---- Foreman work queues ----
+
+  /** The compact queue view denormalized onto a session card. */
+  private queueSummaryFor(s: Session): SessionQueueSummary | null {
+    const key = noteKeyFor(s);
+    const row = getQueueRow(key);
+    const items = listQueueItems(key);
+    if (!row && items.length === 0) return null;
+    return summarizeQueue(items, row?.wrapupAskedAt ?? null, row?.updatedAt ?? 0);
+  }
+
+  /**
+   * A queue whose own session is gone but whose cwd matches this live one - the
+   * re-attach hint.
+   *
+   * Without this a queue orphaned by a `/clear` (which mints a new agent session
+   * id) would match NO live session, so it would appear on NO card and nothing
+   * would drive its tick. It is deliberately only a hint: a different agent at
+   * that cwd may be doing something else entirely, so rebinding is always an
+   * explicit click, never automatic.
+   */
+  private orphanedQueueFor(s: Session): OrphanedQueueHint | null {
+    if (!s.cwd) return null;
+    const key = noteKeyFor(s);
+    const liveKeys = new Set([...this.sessions.values()].map(noteKeyFor));
+    liveKeys.add(key); // this session may not be in the map yet (mid-merge)
+    let best: OrphanedQueueHint | null = null;
+    for (const q of listQueueRows()) {
+      if (q.cwd !== s.cwd || liveKeys.has(q.noteKey)) continue;
+      const items = listQueueItems(q.noteKey);
+      const open = items.filter((i) => !isTerminalItem(i.state));
+      if (open.length === 0) continue; // nothing left to resume - not worth a hint
+      if (!best || open.length > best.itemCount) {
+        best = { noteKey: q.noteKey, itemCount: open.length, branch: q.branch };
+      }
+    }
+    return best;
+  }
+
+  /** Full queue for a session (items + wrap-up state), or null when it has none. */
+  getQueue(id: string): SessionQueue | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    return this.getQueueByKey(noteKeyFor(s));
+  }
+
+  /** Full queue by note key - the orphan path, where no live session resolves it. */
+  getQueueByKey(key: string): SessionQueue | null {
+    const row = getQueueRow(key);
+    const items = listQueueItems(key);
+    if (!row && items.length === 0) return null;
+    return {
+      noteKey: key,
+      cwd: row?.cwd ?? null,
+      branch: row?.branch ?? null,
+      wrapupAskedAt: row?.wrapupAskedAt ?? null,
+      wrapupAnswer: row?.wrapupAnswer ?? null,
+      updatedAt: row?.updatedAt ?? 0,
+      items,
+    };
+  }
+
+  /** Every stored queue (items included) - the orphan sweep + the fleet-level list. */
+  listQueues(): SessionQueue[] {
+    const out: SessionQueue[] = [];
+    for (const row of listQueueRows()) {
+      out.push({ ...row, items: listQueueItems(row.noteKey) });
+    }
+    return out;
+  }
+
+  /** Note keys with at least one live session - what makes a queue "not orphaned". */
+  liveNoteKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const s of this.sessions.values()) {
+      if (s.state !== "exited") keys.add(noteKeyFor(s));
+    }
+    return keys;
+  }
+
+  /**
+   * Ensure a queue row exists for a session, refreshing its cwd/branch (the
+   * re-attach hint must track where the session actually is). Returns the key.
+   */
+  ensureQueue(id: string, now = Date.now()): string | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    const key = noteKeyFor(s);
+    const prev = getQueueRow(key);
+    upsertQueue({
+      noteKey: key,
+      cwd: s.cwd,
+      branch: s.gitBranch,
+      wrapupAskedAt: prev?.wrapupAskedAt ?? null,
+      wrapupAnswer: prev?.wrapupAnswer ?? null,
+      updatedAt: now,
+    });
+    return key;
+  }
+
+  /** Patch a queue's wrap-up state, then re-denormalize. */
+  setQueueWrapup(
+    key: string,
+    patch: { wrapupAskedAt?: number | null; wrapupAnswer?: string | null },
+    now = Date.now(),
+  ): void {
+    const prev = getQueueRow(key);
+    if (!prev) return;
+    upsertQueue({
+      ...prev,
+      wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
+      wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
+      updatedAt: now,
+    });
+    this.syncSessionsForQueue(key);
+  }
+
+  /** Persist an item and re-denormalize onto every live session sharing its key. */
+  putQueueItem(item: WorkItem): void {
+    upsertQueueItem(item);
+    this.syncSessionsForQueue(item.noteKey);
+  }
+
+  getQueueItem(id: string): WorkItem | undefined {
+    return getQueueItem(id);
+  }
+
+  removeQueueItem(id: string): void {
+    const item = getQueueItem(id);
+    if (!item) return;
+    deleteQueueItem(id);
+    this.syncSessionsForQueue(item.noteKey);
+  }
+
+  reorderQueue(key: string, ids: string[], now = Date.now()): void {
+    reorderQueueItems(key, ids, now);
+    this.syncSessionsForQueue(key);
+  }
+
+  /**
+   * Re-key a queue onto a live session (the explicit re-attach). Rewrites the
+   * queue row and every item to the new note key, so the queue resumes on the
+   * session the human pointed at.
+   */
+  reattachQueue(fromKey: string, toSessionId: string, now = Date.now()): boolean {
+    const s = this.sessions.get(toSessionId);
+    const row = getQueueRow(fromKey);
+    if (!s || !row) return false;
+    const toKey = noteKeyFor(s);
+    if (toKey === fromKey) return true;
+    // A live queue at the target key would collide on the single-flight index and
+    // silently merge two batches of work; refuse rather than guess which wins.
+    if (listQueueItems(toKey).length > 0) return false;
+    const items = listQueueItems(fromKey);
+    upsertQueue({
+      noteKey: toKey,
+      cwd: s.cwd,
+      branch: s.gitBranch,
+      wrapupAskedAt: row.wrapupAskedAt,
+      wrapupAnswer: row.wrapupAnswer,
+      updatedAt: now,
+    });
+    for (const i of items) {
+      deleteQueueItem(i.id);
+      upsertQueueItem({ ...i, noteKey: toKey, updatedAt: now });
+    }
+    deleteQueue(fromKey);
+    this.syncSessionsForQueue(toKey);
+    this.syncAllOrphanHints();
+    return true;
+  }
+
+  private syncSessionsForQueue(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const summary = this.queueSummaryFor(s);
+      if (JSON.stringify(s.queue) === JSON.stringify(summary)) continue;
+      const next = { ...s, queue: summary };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
+  /** Re-resolve every card's orphan hint (after a re-attach changes who's orphaned). */
+  private syncAllOrphanHints(): void {
+    for (const [id, s] of this.sessions) {
+      const hint = this.orphanedQueueFor(s);
+      if (JSON.stringify(s.orphanedQueue) === JSON.stringify(hint)) continue;
+      const next = { ...s, orphanedQueue: hint };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+}
+
+/** True once an item has no further lifecycle - nothing will advance it again. */
+export function isTerminalItem(state: WorkItemState): boolean {
+  return state === "verified" || state === "escalated" || state === "cancelled";
+}
+
+/** The one item mid-cycle for a queue, or null. The DB's partial unique index
+ *  guarantees there is at most one; this is the read side of that constraint. */
+export function inFlightOf(items: WorkItem[]): WorkItem | null {
+  return (
+    items.find(
+      (i) =>
+        i.state === "sending" ||
+        i.state === "awaiting_pickup" ||
+        i.state === "in_progress" ||
+        i.state === "verifying",
+    ) ?? null
+  );
+}
+
+/** Project a queue's items into the compact card summary. Pure, for tests. */
+export function summarizeQueue(
+  items: WorkItem[],
+  wrapupAskedAt: number | null,
+  updatedAt: number,
+): SessionQueueSummary {
+  const open = items.filter((i) => !isTerminalItem(i.state));
+  const inFlight = inFlightOf(items);
+  return {
+    openCount: open.length,
+    totalCount: items.length,
+    inFlightState: inFlight?.state ?? null,
+    inFlightIntent: inFlight?.intent ?? null,
+    round: inFlight?.round ?? 0,
+    blockingGaps: inFlight ? inFlight.gaps.filter((g) => g.severity === "blocking").length : 0,
+    escalatedCount: items.filter((i) => i.state === "escalated").length,
+    drained: items.length > 0 && open.length === 0,
+    wrapupAskedAt,
+    updatedAt,
+  };
 }
 
 // ---- pure helpers ----

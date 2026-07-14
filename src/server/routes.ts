@@ -2,37 +2,52 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
+  AddWorkItemSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
+  EditWorkItemSchema,
   ForemanConfigPatchSchema,
+  ForemanHeartbeatSchema,
   HookIngestSchema,
+  InjectPromptSchema,
   NomistakesRespondSchema,
   RenameSchema,
+  ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
   SendTextSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
+  SetWorkItemStateSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  WrapupSchema,
 } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
+import type { QueueManager } from "./queue.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
-import { readTranscriptWindow, resolveTranscriptPath, transcriptStreamHandler } from "./transcript.ts";
 import {
+  readTranscriptSince,
+  readTranscriptWindow,
+  resolveTranscriptPath,
+  transcriptStreamHandler,
+} from "./transcript.ts";
+import {
+  claimForemanLease,
   foremanStatus,
   getForemanConfig,
-  recordForemanHeartbeat,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { readStandards } from "./standards.ts";
 import { computeSessionDiff } from "./diff.ts";
 import { checkToken } from "./auth.ts";
 import {
   cyclePermissionMode,
   focus,
+  injectPrompt,
   kill,
   rename,
   resetPreview,
@@ -78,7 +93,12 @@ function readVersion(): string {
   }
 }
 
-export function buildApp(registry: Registry, reviews: ReviewManager, tasks: TaskManager): Hono {
+export function buildApp(
+  registry: Registry,
+  reviews: ReviewManager,
+  tasks: TaskManager,
+  queues: QueueManager,
+): Hono {
   const app = new Hono();
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
@@ -109,15 +129,33 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.get("/events", sseHandler(registry));
   // Live transcript for the expanded card (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
-  // One-shot transcript window (head + tail) for the Foreman reviewer.
+  // One-shot transcript window for a non-streaming reader (Foreman's triage
+  // reviewer, and the queue verifier).
+  //
+  // `?since=<byteOffset>` reads FORWARD from an offset - how the queue scopes a
+  // window to one work item. A turn count can't do that: a 48-turn window can span
+  // three items, and the head+tail window elides the middle of a big file, so
+  // filtering it by timestamp would silently drop an item's earliest turns (the
+  // ones that establish what the agent set out to do). The transcript is
+  // append-only, so a stored file size is an exact, O(1) item boundary.
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const path = resolveTranscriptPath(session);
     if (!path) return c.json({ messages: [], truncated: false, unavailable: true });
+    const since = Number(c.req.query("since"));
+    if (Number.isFinite(since) && since >= 0) return c.json(readTranscriptSince(path, since));
     const turns = Number(c.req.query("turns"));
     const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
     return c.json(readTranscriptWindow(path, 12, tail));
+  });
+
+  // The repo standards the queue verifier judges an item's diff against.
+  app.get("/api/sessions/:id/standards", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const paths = c.req.queries("path") ?? [];
+    return c.json(readStandards(session.cwd, paths));
   });
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
@@ -212,6 +250,23 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (!free.ok) return c.json({ ok: false, error: free.error }, 400);
     const r = await rename(session, valid.name);
     if (r.ok) registry.renameSession(session.id, valid.name);
+    return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Deliver a whole prompt as ONE submission (bracketed paste), unlike /send's
+  // literal send-keys where every embedded newline submits. This is the only way
+  // to deliver a multi-line intent or a bulleted gap list at all.
+  //
+  // Mirrors /send's contract exactly - `c.json(r, r.ok ? 200 : 500)` - so the
+  // client genuinely throws on failure. That's what lets the worker write
+  // `awaiting_pickup` only AFTER the inject resolves (the send-first-then-stamp
+  // discipline applyVerdict already encodes).
+  app.post("/api/sessions/:id/inject", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, InjectPromptSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await injectPrompt(session, parsed.data.text);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -315,6 +370,89 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(note);
   });
 
+  // --- Foreman session work queues (localhost only) ---
+  app.get("/api/sessions/:id/queue", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(queues.get(session.id));
+  });
+
+  app.post("/api/sessions/:id/queue", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, AddWorkItemSchema);
+    if (!parsed.ok) return parsed.res;
+    const item = queues.add(session.id, parsed.data.intent);
+    if (!item) return c.json({ error: "no such session" }, 404);
+    return c.json(item);
+  });
+
+  // Edit: 409 on a CAS miss or an item that has left queued/proposed - Foreman may
+  // already have typed it into a pane, and "edited" would then be a lie.
+  app.patch("/api/sessions/:id/queue/:itemId", async (c) => {
+    const parsed = await parseBody(c, EditWorkItemSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.edit(c.req.param("itemId"), parsed.data.intent, parsed.data.revision);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
+  app.delete("/api/sessions/:id/queue/:itemId", (c) => {
+    const r = queues.remove(c.req.param("itemId"));
+    return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
+  });
+
+  app.put("/api/sessions/:id/queue/order", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ReorderQueueSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.reorder(session.id, parsed.data.ids);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  app.post("/api/sessions/:id/queue/:itemId/approve", (c) => {
+    const r = queues.approve(c.req.param("itemId"));
+    return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
+  });
+
+  app.put("/api/sessions/:id/queue/:itemId/state", async (c) => {
+    const parsed = await parseBody(c, SetWorkItemStateSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.setState(c.req.param("itemId"), parsed.data);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, 404);
+  });
+
+  app.put("/api/sessions/:id/queue/wrapup", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const queue = queues.get(session.id);
+    if (!queue) return c.json({ error: "no queue for this session" }, 404);
+    const parsed = await parseBody(c, WrapupSchema);
+    if (!parsed.ok) return parsed.res;
+    queues.setWrapupAnswer(queue.noteKey, parsed.data.answer);
+    return c.json(queues.get(session.id));
+  });
+
+  // Re-attach an orphaned queue onto this live session. Always an explicit click:
+  // a different agent at the same cwd may be doing something else entirely.
+  app.post("/api/sessions/:id/queue/reattach", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { noteKey?: unknown };
+    if (typeof body.noteKey !== "string") return c.json({ error: "noteKey is required" }, 400);
+    const r = queues.reattach(body.noteKey, session.id);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Fleet-level: queues with no live session at all, so nothing is stranded with
+  // no surface whatsoever (the cwd-match hint only covers a queue whose cwd still
+  // has a live session on it).
+  app.get("/api/queues", (c) =>
+    c.json(c.req.query("orphaned") === "1" ? queues.orphaned() : queues.list()),
+  );
+
   // --- Foreman config + status (localhost only) ---
   app.get("/api/foreman/config", (c) => c.json(getForemanConfig()));
   app.put("/api/foreman/config", async (c) => {
@@ -323,9 +461,15 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
-  app.post("/api/foreman/heartbeat", (c) => {
-    recordForemanHeartbeat();
-    return c.body(null, 204);
+
+  // A LEASED heartbeat: acquires when free/expired, renews when already ours, and
+  // reports leader:false otherwise. The old bare heartbeat was one module-global
+  // timestamp that couldn't detect a second worker at all - it just got beaten
+  // twice, and both workers would drain the fleet.
+  app.post("/api/foreman/heartbeat", async (c) => {
+    const parsed = await parseBody(c, ForemanHeartbeatSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(claimForemanLease(parsed.data.workerId));
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

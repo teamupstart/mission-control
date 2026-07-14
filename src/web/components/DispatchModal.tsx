@@ -60,6 +60,7 @@ export function DispatchModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
+  const aliveRef = useRef(true);
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -68,6 +69,18 @@ export function DispatchModal({
 
   useEffect(() => {
     intentRef.current?.focus();
+  }, []);
+
+  // A dispatch provisions a worktree and a tmux session, so it can outlive the
+  // modal instance that started it: close mid-flight, reopen, and the first
+  // submit's resolve path would still clear the draft the reopened instance is
+  // now holding. Re-armed on mount, not just at init, so a StrictMode remount
+  // doesn't leave a live instance marked dead.
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+    };
   }, []);
 
   // Index the workspace's repos so the base can be searched/picked. Re-fetched on
@@ -113,6 +126,9 @@ export function DispatchModal({
       agent: draft.agent,
       queue,
     });
+    // The dispatch itself already landed server-side; we only skip the modal-side
+    // cleanup, which belongs to an instance that's gone.
+    if (!aliveRef.current) return;
     setBusy(false);
     // Clear the draft and close only once it's actually accepted; a failed
     // submit keeps the modal open with the fields intact so you can retry.

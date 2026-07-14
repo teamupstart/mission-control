@@ -109,9 +109,9 @@ test("nextPermissionMode advances the steps that hold in every config", () => {
 test("nextPermissionMode declines to guess when it can't", () => {
   assert.equal(nextPermissionMode(null), null); // mode not yet known
   assert.equal(nextPermissionMode("dontAsk"), null); // never part of the cycle
-  // After `plan` the landing mode depends on whether this session enabled the
-  // optional modes, which we can't see. Guessing "default" would paint a session
-  // that's skipping every permission check with the safe "manual" chip.
+  // After `plan` the landing mode is config-dependent - "default" in the base
+  // cycle, but bypassPermissions/auto when a session enabled them, which the
+  // daemon can't observe. We only advance steps whose outcome is certain.
   assert.equal(nextPermissionMode("plan"), null);
   assert.equal(nextPermissionMode("bypassPermissions"), null);
   assert.equal(nextPermissionMode("auto"), null);
@@ -142,8 +142,8 @@ test("a real hook, not a guess, resolves the ambiguous step after plan", () => {
   r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "plan" }));
   r.optimisticCyclePermissionMode("s1");
   // This session has bypassPermissions enabled, so Shift+Tab actually landed
-  // there - which we can't know. Rather than claim the safe "manual" chip, the
-  // chip holds until a hook carries the truth.
+  // there - a successor we can't derive from `plan`. Rather than fabricate one,
+  // the chip holds its last hook-reported mode until a hook carries the truth.
   assert.equal(modeOf(r), "plan");
   r.applyHook(hook({ event: "PreToolUse", permissionMode: "bypassPermissions" }));
   assert.equal(modeOf(r), "bypassPermissions");

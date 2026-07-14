@@ -294,6 +294,13 @@ export class Registry extends EventEmitter {
    * `MODE_CYCLE`); from a step whose landing mode depends on config we leave the
    * chip for a real hook to set rather than invent a value.
    *
+   * The result is a best-effort hint, not an authoritative reading. The caller
+   * fires this on a successful injection, which only proves the keystroke bytes
+   * reached the pane - if the session wasn't at its normal prompt (a permission or
+   * plan-approval dialog, a slash-command menu, a REPL that isn't foreground) Claude
+   * swallows it without cycling, and the chip advances regardless. It stays diverged
+   * until a hook carrying `permission_mode` reconciles it.
+   *
    * The pane overlay's mode is updated whenever one exists, regardless of its
    * age. Both readers handle that correctly: `mergeDiscovered` gates the overlay
    * behind its own OVERLAY_TTL_MS freshness check, so a stale one won't resurface

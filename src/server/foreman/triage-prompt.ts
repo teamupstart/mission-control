@@ -40,7 +40,9 @@ BUCKETS:
 RULES:
 - When unsure, choose "needs-judgment" (it routes up). Never guess an answer.
 - If in doubt about risk, choose "human-only" + "escalate". Escalating is always safe.
-- "purpose" is REQUIRED in every reply.`;
+- "purpose" is REQUIRED in every reply.
+- "confidence" is REQUIRED in every reply: a number from 0 to 1. Omitting it is a malformed
+  reply and discards your whole bucketing.`;
 
 /** Assemble the Tier 1 router prompt for one session (a trimmed window). */
 export function buildTriagePrompt(input: ReviewInput): string {

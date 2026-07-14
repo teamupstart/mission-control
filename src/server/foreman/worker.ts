@@ -297,9 +297,16 @@ function triageDeps(client: ForemanClient): TriageDeps {
   };
 }
 
-/** One-line description of a cheap-tier outcome, for the shadow-divergence log. */
+/**
+ * One-line description of a cheap-tier outcome, for the shadow-divergence log. The reason
+ * is the point: shadow mode exists to measure the cheap tier before `on` is flipped, and
+ * without it every route-up reads alike - a router that never spawns (`tier1-failed`) is
+ * indistinguishable from one deferring on genuine judgment (`needs-judgment`).
+ */
 function describeCheap(cheap: TriageOutcome): string {
-  return cheap.kind === "route-up" ? "route-up" : `tier${cheap.tier}:${cheap.verdict.action}`;
+  return cheap.kind === "route-up"
+    ? `route-up(${cheap.reason})`
+    : `tier${cheap.tier}:${cheap.verdict.action}(${cheap.reason})`;
 }
 
 /**

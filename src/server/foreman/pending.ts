@@ -41,6 +41,13 @@ export interface Pending {
 }
 
 /**
+ * Stand-in `question` for a needs-you session that has no activity line at all. It is
+ * phrased as prose because it goes straight into the reviewer prompt; the Tier 0 gate
+ * compares against it to tell a real activity string from this placeholder.
+ */
+export const NO_QUESTION_PLACEHOLDER = "(the session needs you, but no explicit question was found)";
+
+/**
  * Work out what a needs-you session is blocked on, and how (if at all) Foreman may
  * reply. An `input` review is directly answerable (resolve it); a plan/diff review
  * is not (Foreman can only frame it); a terminal `awaiting_input` is answerable by
@@ -88,7 +95,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   return {
     situation: "no-question",
     surface: "terminal",
-    question: s.activity ?? "(the session needs you, but no explicit question was found)",
+    question: s.activity ?? NO_QUESTION_PLACEHOLDER,
     inputReviewId: null,
     canSend: false,
     marker: `state:${s.state}:${s.lastActivity ?? s.firstSeen}`,

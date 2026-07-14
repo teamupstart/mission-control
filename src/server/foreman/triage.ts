@@ -6,6 +6,7 @@ import type { ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "./review.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
+import { NO_QUESTION_PLACEHOLDER } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 
 // The cheap tier that sits in front of Foreman's full `claude -p` reviewer (see
@@ -44,7 +45,12 @@ export const TriageReportSchema = z.object({
   brief: z.string().optional(),
   /** Optional suggested answer for a human-only escalation. */
   recommendation: z.string().optional(),
-  confidence: z.number().min(0).max(1).optional(),
+  /**
+   * Required: an omitted confidence must fail validation and route up as
+   * `tier1-unparseable` (an honest diagnosis of a broken router), rather than defaulting
+   * to 0 and masquerading as a considered low-confidence deferral on every single session.
+   */
+  confidence: z.number().min(0).max(1),
 });
 export type TriageReport = z.infer<typeof TriageReportSchema>;
 
@@ -82,6 +88,26 @@ const DESTRUCTIVE: RegExp[] = [
 /** True when the text mentions a destructive/irreversible operation. Pure, over-matches safely. */
 export function isDestructive(text: string): boolean {
   return DESTRUCTIVE.some((re) => re.test(text));
+}
+
+/**
+ * Flatten the Tier 1 window (each turn's prose + its tool names) into one blob for the
+ * denylist to scan. This is what gives the backstop something real to match on the
+ * terminal surface: there, `Pending.question` is only the generic notification line
+ * ("Claude needs your permission" - see the Notification branch of registry.ts's
+ * `hookToState`), which never names the command being approved, so scanning the child's
+ * own recent prose is the only code-level view of what it is about to run.
+ *
+ * KNOWN LIMITATION - a `TranscriptMessage` carries tool NAMES only, never tool INPUTS
+ * (`toMessage` in src/server/transcript.ts pushes `block.name` and drops the arguments).
+ * So a command that appears ONLY as a tool input, and is never spoken about in prose, is
+ * invisible here and CANNOT be caught by this backstop; the router's own bucketing is the
+ * only thing standing in front of that case. Closing the gap properly means carrying tool
+ * inputs through `TranscriptMessage`. Turns are joined with newlines because several
+ * patterns are `[^\n]`-bounded and must not match across two unrelated turns.
+ */
+function riskContextFrom(messages: TranscriptMessage[]): string {
+  return messages.map((m) => [m.text, ...m.tools].join(" ")).join("\n");
 }
 
 /** A skip verdict (leaves it for the human), reusing the full reviewer's Verdict shape. */
@@ -162,14 +188,24 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       }
       return { kind: "route-up", reason: "terminal-no-pane-long" };
     }
-    case "no-question":
+    case "no-question": {
       // Needs-you for some other state with no answerable question - leave it for you.
+      // This catches more than idle: per `reportBucket`, a gate-parked no-mistakes run and
+      // an `awaiting_review` session land here too, and for those the activity line is the
+      // only context the card gets - so name it rather than writing a canned string over it.
+      const activity =
+        pending.question === NO_QUESTION_PLACEHOLDER ? "" : collapse(pending.question, 300);
       return {
         kind: "dispose",
         tier: 0,
         reason: "no-question",
-        verdict: skipVerdict("The session needs you, but no explicit question was found to answer."),
+        verdict: skipVerdict(
+          activity
+            ? `The session needs you: ${activity}`
+            : "The session needs you, but no explicit question was found to answer.",
+        ),
       };
+    }
     case "input-review":
     case "terminal-pane":
       return { kind: "continue" };
@@ -182,18 +218,22 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
  * contract is unit-tested: the model buckets (the report); this decides what that is
  * allowed to become.
  */
-export function mapTriage(report: TriageReport, pending: Pending): TriageOutcome {
-  // Backstop 1: a destructive/irreversible ask (or reply) forces an escalation no matter
-  // what the router said - it can only route DOWN to "ask the human", never wave it through.
+export function mapTriage(report: TriageReport, pending: Pending, riskContext = ""): TriageOutcome {
+  // Backstop 1: a destructive/irreversible ask (or reply, or recent context) forces an
+  // escalation no matter what the router said - it can only route DOWN to "ask the human",
+  // never wave it through. `riskContext` matters most on the terminal surface, where
+  // `question` is only a generic notification line and never names the command itself.
   const risky =
-    isDestructive(pending.question) || (report.answer ? isDestructive(report.answer.text) : false);
+    isDestructive(pending.question) ||
+    isDestructive(riskContext) ||
+    (report.answer ? isDestructive(report.answer.text) : false);
 
   // needs-judgment always routes up: Tier 1 never invents a substantive answer.
   if (report.bucket === "needs-judgment") return { kind: "route-up", reason: "needs-judgment" };
 
   // Backstop 2: low confidence defaults to routing up (never a cheap skip of an
   // answerable surface), so an unsure router defers to Opus instead of guessing.
-  if ((report.confidence ?? 0) < TIER1_MIN_CONFIDENCE) {
+  if (report.confidence < TIER1_MIN_CONFIDENCE) {
     return { kind: "route-up", reason: "low-confidence" };
   }
 
@@ -286,7 +326,7 @@ export async function triageSession(
   }
   const report = parseModelJson(raw, TriageReportSchema);
   if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
-  return mapTriage(report, pending);
+  return mapTriage(report, pending, riskContextFrom(window.messages));
 }
 
 /**

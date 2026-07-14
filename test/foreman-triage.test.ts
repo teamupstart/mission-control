@@ -9,7 +9,9 @@ import {
   type TriageDeps,
   type TriageReport,
 } from "../src/server/foreman/triage.ts";
+import { NO_QUESTION_PLACEHOLDER } from "../src/server/foreman/pending.ts";
 import type { Pending } from "../src/server/foreman/pending.ts";
+import type { TranscriptMessage } from "../src/shared/types.ts";
 import { planFromVerdict } from "../src/server/foreman/verdict.ts";
 import type { ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
@@ -67,6 +69,23 @@ test("tier0: a stateful no-question needs-you is skipped", () => {
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "skip");
+});
+
+test("tier0: a no-question purpose names the activity line (a gate-parked run keeps its context)", () => {
+  const out = tier0(
+    pend({ situation: "no-question", canSend: false, question: "Parked at the review gate for\n  no-mistakes run 42" }),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "skip");
+  assert.match(out.verdict.purpose, /Parked at the review gate for no-mistakes run 42/, "collapsed, not discarded");
+});
+
+test("tier0: a no-question purpose falls back to the canned line when there is genuinely no text", () => {
+  const out = tier0(pend({ situation: "no-question", canSend: false, question: NO_QUESTION_PLACEHOLDER }));
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.purpose, "The session needs you, but no explicit question was found to answer.");
 });
 
 test("tier0: answerable surfaces continue to Tier 1", () => {
@@ -143,6 +162,31 @@ test("mapTriage: a destructive proposed REPLY forces escalate", () => {
   assert.equal(out.verdict.action, "escalate");
 });
 
+test("mapTriage: a destructive RISK CONTEXT forces escalate when the ask itself looks innocuous", () => {
+  // The terminal surface's real shape: a generic notification for a question, an innocuous
+  // approval for a reply - the recent prose is the only place the command is ever named.
+  const out = mapTriage(
+    report(),
+    pend({ question: "Claude needs your permission" }),
+    "I'll clear the stale build output with rm -rf build/ and rebuild.",
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.reason, "access-risky-escalated");
+});
+
+test("mapTriage: a clean risk context still allows the routine-access answer", () => {
+  const out = mapTriage(
+    report(),
+    pend({ question: "Claude needs your permission" }),
+    "I'll run the unit tests now to confirm the refactor holds.",
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "answer");
+});
+
 test("mapTriage: routine-access with no answer text routes up rather than guessing", () => {
   const out = mapTriage(report({ answer: undefined }), pend());
   assert.equal(out.kind, "route-up");
@@ -213,6 +257,11 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
   return { enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true, triage: "on", ...over };
 }
 
+/** A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. */
+function msg(text: string, tools: string[] = []): TranscriptMessage {
+  return { id: "m1", role: "assistant", text, tools, ts: 1 };
+}
+
 function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   return {
     transcript: async () => ({ messages: [], truncated: false }),
@@ -240,6 +289,48 @@ test("triageSession: an answerable surface runs Tier 1 and disposes on a routine
     assert.equal(out.tier, 1);
     assert.equal(out.verdict.classification, "access");
   }
+});
+
+test("triageSession: a destructive command in the transcript prose escalates a terminal-pane approval", async () => {
+  // The exact live shape the denylist has to survive: `question` is the generic notification
+  // string the Notification hook produces (it never carries the command), and the router's
+  // reply is its own innocuous "Approve - go ahead." - so the Tier 1 window is the only
+  // place `rm -rf` is visible to code.
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [msg("Next I'll run rm -rf build/ to clear the stale output.")], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession({ activity: "Claude needs your permission" }),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate", "must NOT be typed into the pane");
+  assert.equal(out.reason, "access-risky-escalated");
+});
+
+test("triageSession: a clean transcript still lets the routine-access answer through", async () => {
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [msg("Ready to run the unit tests for the refactor.", ["Read"])], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession({ activity: "Claude needs your permission" }),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "answer");
+  assert.equal(out.verdict.classification, "access");
+});
+
+test("triageSession: a router reply with no confidence routes up as unparseable, not low-confidence", async () => {
+  const { confidence: _omitted, ...noConfidence } = report();
+  const out = await triageSession(
+    deps({ runModel: async () => JSON.stringify(noConfidence) }),
+    pend({ situation: "terminal-pane" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "tier1-unparseable", "an honest diagnosis of a broken router");
 });
 
 test("triageSession: a router spawn failure routes up (fail-safe to the full review)", async () => {

@@ -268,6 +268,8 @@ export interface ScanWindow {
   /** Trimmed to the recent turns by the caller - see `recentTurns`. */
   messages: TranscriptMessage[];
   unavailable?: boolean;
+  /** The caller could not place these turns in the session at all - see `recentTurns`. */
+  boundaryUnknown?: boolean;
 }
 
 /**
@@ -322,16 +324,27 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
       verdict: escalateVerdict(report.purpose, report.brief, report.answer?.text ?? report.recommendation),
     };
   }
-  // Backstop 3: with no prose in the window, backstop 1 scanned nothing that could name a
-  // command (see `hasProse`) - so `risky === false` above means "unknown", not "safe", and on
-  // the terminal surface nothing else can see the command either (the question is a generic
-  // notification, the reply is the router's own "Approve - go ahead."). An auto-answer is the
-  // only outcome that ACTS, so it is the only one gated here: route up and let the full
-  // reviewer, which fetches its own window, decide. Skip and escalate above are the safe
-  // directions and stay allowed with nothing scanned.
-  if (!hasProse(scan.messages)) {
+  // Backstop 3: the auto-answer is the only outcome that ACTS, so it is the only one gated on
+  // whether backstop 1 actually had a real view of the ask. Route up and let the full reviewer,
+  // which fetches its own window, decide. Skip and escalate above are the safe directions and
+  // stay allowed however little was scanned.
+  //
+  // (a) Nothing scannable in the window - but only where the question can't carry the command
+  // itself. The two answerable surfaces genuinely differ here, and this must not be re-broadened
+  // to cover both: on `terminal-pane` the question is the Notification hook's generic line
+  // ("Claude needs your permission") and the reply is the router's own "Approve - go ahead.", so
+  // the window's prose is the ONLY text backstop 1 could match a command in - with none,
+  // `risky === false` means "unknown" rather than "safe". On `input-review` the question IS the
+  // child's own review body, scanned in full above: the window corroborates it, it is not the
+  // only witness, so its absence proves nothing and gating on it would route up asks that were
+  // perfectly scannable.
+  if (pending.situation === "terminal-pane" && !hasProse(scan.messages)) {
     return { kind: "route-up", reason: scan.unavailable ? "no-transcript-file" : "no-transcript-context" };
   }
+  // (b) The window's shape could not be established (see `recentTurns`), so these turns can't be
+  // placed in the session - a clean scan over them is not evidence about the PENDING ask on
+  // either surface, however much prose they hold. Not scoped by situation for that reason.
+  if (scan.boundaryUnknown) return { kind: "route-up", reason: "no-window-boundary" };
 
   if (!report.answer?.text) {
     // Bucketed routine-access but produced no reply to send - don't guess; route up.
@@ -372,11 +385,23 @@ export interface TriageDeps {
  * OPENING. That would re-open both gaps this window exists to close: ambient goal prose
  * ("read the API key from .env") escalating every routine ask for the rest of the session, and
  * - worse - opening prose satisfying `hasProse` while the actually-recent turns held nothing
- * scannable. So slice FORWARD from the boundary instead. Re-ordering by `ts` would not help:
+ * scannable. So slice FORWARD from `headCount` instead. Re-ordering by `ts` would not help:
  * the array is already in chronological order, it is the adjacency that lies.
+ *
+ * `headCount` therefore carries the safety property, and it arrives over the wire on a response
+ * this client casts rather than parses - so an absent one must NOT quietly become 0, which is
+ * precisely the permissive answer (slice from the start = slice back into the opening). A
+ * truncated window that won't say where its middle was elided is one whose turns cannot be
+ * placed in the session at all: report that as unknown and let `mapTriage` withhold the only
+ * outcome that acts. An untruncated window needs no boundary - every turn is contiguous.
  */
-function recentTurns(window: TriageWindow): TranscriptMessage[] {
-  return window.messages.slice(window.headCount ?? 0).slice(-TIER1_TURNS);
+function recentTurns(window: TriageWindow): { messages: TranscriptMessage[]; boundaryUnknown: boolean } {
+  if (window.truncated && window.headCount === undefined) {
+    // Scanned whole rather than trimmed: the denylist over-matches on purpose, and with the
+    // shape unknown, over-matching is the only reading that can't wave a risky ask through.
+    return { messages: window.messages, boundaryUnknown: true };
+  }
+  return { messages: window.messages.slice(window.headCount ?? 0).slice(-TIER1_TURNS), boundaryUnknown: false };
 }
 
 /** Which posture the tier ladder runs one session in - see the `triage` config. */
@@ -439,7 +464,7 @@ export async function triageSession(
   // `promptWindow` for why the two windows differ. Eliding the middle is itself a truncation,
   // so say so rather than letting the router read a gapped window as the whole story.
   const recent = recentTurns(window);
-  const messages = promptWindow(window.messages, recent);
+  const messages = promptWindow(window.messages, recent.messages);
   const truncated = window.truncated || messages.length < window.messages.length;
 
   const input: ReviewInput = {
@@ -464,7 +489,11 @@ export async function triageSession(
   }
   const report = parseModelJson(raw, TriageReportSchema);
   if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
-  return mapTriage(report, pending, { messages: recent, unavailable: window.unavailable });
+  return mapTriage(report, pending, {
+    messages: recent.messages,
+    unavailable: window.unavailable,
+    boundaryUnknown: recent.boundaryUnknown,
+  });
 }
 
 /**

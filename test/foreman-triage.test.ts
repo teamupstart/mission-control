@@ -233,6 +233,35 @@ test("mapTriage: a window with a prose turn from the USER side counts as scanned
   if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
 });
 
+test("mapTriage: an INPUT REVIEW still answers on an empty window - its question IS the ask", () => {
+  // The prose gate is terminal-only on purpose. Here `question` is the child's own review body,
+  // which backstop 1 scanned in full, so the window corroborates rather than witnesses - gating
+  // this surface on prose would route up an ask that was perfectly scannable.
+  const out = mapTriage(
+    report(),
+    pend({ situation: "input-review", surface: "input-review", question: "Can I install the lodash dependency?", inputReviewId: "r1", canSend: false }),
+    { messages: [], unavailable: true },
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "answer");
+  assert.equal(out.verdict.classification, "access", "still gated downstream like any access answer");
+});
+
+test("mapTriage: an input review's own question is still denylist-scanned on an empty window", () => {
+  // The flip side: dropping the prose gate here costs nothing precisely BECAUSE backstop 1 reads
+  // this surface's question directly.
+  const out = mapTriage(
+    report(),
+    pend({ situation: "input-review", surface: "input-review", question: "Can I force-push the rebase to main?", inputReviewId: "r1", canSend: false }),
+    { messages: [] },
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.reason, "access-risky-escalated");
+});
+
 test("mapTriage: an `unavailable` window routes up as no-transcript-file, not no-transcript-context", () => {
   const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
     messages: [],
@@ -457,6 +486,23 @@ test("triageSession: an `unavailable` window routes up with its OWN reason, not 
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-file");
 });
 
+test("triageSession: an INPUT REVIEW with no transcript at all still answers", async () => {
+  // The efficacy case the terminal-only prose gate buys back: the reviewer would fetch the same
+  // empty window and read the same question, so deferring here costs an Opus call for no extra
+  // information. The ask itself was fully scanned by the denylist.
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [], truncated: false, unavailable: true }) }),
+    pend({ situation: "input-review", surface: "input-review", question: "Can I install the lodash dependency?", inputReviewId: "r1", canSend: false }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.tier, 1);
+  assert.equal(out.verdict.action, "answer");
+  assert.equal(out.reason, "routine-access");
+});
+
 test("triageSession: a transcript FETCH FAILURE routes up rather than auto-answering", async () => {
   const out = await triageSession(
     deps({ transcript: async () => { throw new Error("500"); } }),
@@ -634,6 +680,59 @@ test("triageSession (truncated): HEAD prose cannot satisfy the no-context gate f
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession (truncated): a window with NO headCount can never take the auto-answer", async () => {
+  // `headCount` carries the safety property but arrives on a response the client casts rather
+  // than parses. Absent, it must not quietly become 0 - that IS the permissive answer (slice
+  // from the start = slice back into the opening). A truncated window that won't say where its
+  // middle was elided is one whose turns can't be placed in the session, so a clean scan over
+  // them is not evidence about the pending ask. Not scoped by situation: unlike the prose gate,
+  // an unplaceable window is worthless as corroboration on either surface.
+  for (const situation of ["terminal-pane", "input-review"] as const) {
+    const out = await triageSession(
+      deps({ transcript: async () => ({ messages: [msg("Running the unit tests for the refactor.")], truncated: true }) }),
+      pend({ situation, question: "Claude needs your permission" }),
+      mkSession(),
+      cfg(),
+    );
+    assert.equal(out.kind, "route-up", `${situation}: must not act on turns it cannot place`);
+    if (out.kind === "route-up") assert.equal(out.reason, "no-window-boundary");
+  }
+});
+
+test("triageSession (truncated): no headCount still escalates a destructive ask (routing DOWN stays allowed)", async () => {
+  // With the shape unknown the window is scanned WHOLE rather than trimmed: the denylist
+  // over-matches on purpose, and over-matching is the only reading that can't wave a risky ask
+  // through. Only the acting path is withheld.
+  const out = await triageSession(
+    deps({
+      transcript: async () => ({
+        messages: [msg("I'll clear the stale build output with rm -rf build/ and rebuild.")],
+        truncated: true,
+      }),
+    }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.reason, "access-risky-escalated");
+});
+
+test("triageSession: an untruncated window needs no headCount - every turn is contiguous", async () => {
+  // The daemon omits the boundary as 0 on the whole-file path, and there is nothing to locate:
+  // the guard must not fire here or it would swallow the common case.
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [msg("Ready to run the unit tests for the refactor.")], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
 });
 
 test("triageSession (truncated): the router still gets the opening goal turns", async () => {

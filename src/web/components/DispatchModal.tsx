@@ -179,7 +179,7 @@ function DispatchModal({
     // modal has been closed - even a short round-trip leaves room for a quick
     // Escape, a reopen, and fresh typing. Hand the exact draft we sent back to the
     // owner, which clears it only if nothing newer has been typed since - see
-    // onSubmitted in App.
+    // onSubmitted in DispatchLayer.
     const submitted = draft;
     const r = await api.dispatch({
       repoRoot: submitted.repoRoot.trim(),

@@ -856,7 +856,7 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Most-recently-updated task whose worktree matches this cwd. A queued task has
+   * Most-recently-updated task whose worktree matches this cwd. A backlog task has
    * no worktree; a cancelled or cleanly-failed task cleared its worktree fields, so
    * it can't match a cwd here. A failed-but-alive task keeps its worktree, so it
    * still decorates its live session's card - the agent stays actionable there.
@@ -866,7 +866,7 @@ export class Registry extends EventEmitter {
     let best: Task | undefined;
     for (const t of this.tasks.values()) {
       if (t.worktreePath !== cwd) continue;
-      if (t.status === "queued" || t.status === "cancelled") continue;
+      if (t.status === "backlog" || t.status === "cancelled") continue;
       if (!best || t.updatedAt > best.updatedAt) best = t;
     }
     return best;

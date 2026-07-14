@@ -266,12 +266,17 @@ export type TaskKind = "ship" | "scout";
 /**
  * Coarse lifecycle of a dispatched task. Deliberately does NOT mirror the live
  * session's runtime state (working/idle/needs-input) - that stays a property of
- * the Session so runtime status is never duplicated. A task is queued in the
- * backlog, provisioned (`dispatching`), bound to a live session (`running`), and
- * then reaches a terminal state.
+ * the Session so runtime status is never duplicated. A task waits in the
+ * `backlog`, is provisioned (`dispatching`), bound to a live session (`running`),
+ * and then reaches a terminal state.
+ *
+ * `backlog` (not "queued"): a session work queue (`SessionQueue`) is a different
+ * thing entirely - it feeds items to an EXISTING agent, where this provisions a
+ * new worktree + agent per task. The UI has always said "backlog"; the word here
+ * matches it so "queue" only ever means the session work queue.
  */
 export type TaskStatus =
-  | "queued"
+  | "backlog"
   | "dispatching"
   | "running"
   | "done"
@@ -291,7 +296,7 @@ export interface Task {
   agent: AgentType;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
-  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while queued. */
+  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
@@ -415,7 +420,7 @@ export interface FleetReport {
     idle: number;
     needsYou: number;
     exited: number;
-    queued: number;
+    backlog: number;
   };
   needsYou: ReportItem[];
   working: ReportItem[];

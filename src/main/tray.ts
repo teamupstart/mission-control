@@ -12,7 +12,7 @@ interface ReportCounts {
   needsYou: number;
   working: number;
   idle: number;
-  queued: number;
+  backlog: number;
 }
 
 export interface TrayHandlers {
@@ -24,7 +24,7 @@ export interface TrayHandlers {
 
 let tray: Tray | null = null;
 let poll: ReturnType<typeof setInterval> | null = null;
-let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, queued: 0 };
+let last: ReportCounts = { needsYou: 0, working: 0, idle: 0, backlog: 0 };
 
 function trayImage(iconPath: string): Electron.NativeImage {
   if (iconPath && existsSync(iconPath)) {
@@ -81,7 +81,7 @@ async function refresh(handlers: TrayHandlers): Promise<void> {
       needsYou: c.needsYou ?? 0,
       working: c.working ?? 0,
       idle: c.idle ?? 0,
-      queued: c.queued ?? 0,
+      backlog: c.backlog ?? 0,
     };
     render(handlers);
   } catch {

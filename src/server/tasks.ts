@@ -11,7 +11,7 @@ export interface CreateTaskInput {
   kind: TaskKind;
   agent: AgentType;
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
-  queue: boolean;
+  backlog: boolean;
 }
 
 export interface Ok {
@@ -68,7 +68,7 @@ export class TaskManager {
       provider: null,
       tmuxSession: null,
       sessionId: null,
-      status: input.queue ? "queued" : "dispatching",
+      status: input.backlog ? "backlog" : "dispatching",
       outcome: null,
       outcomeUrl: null,
       error: null,
@@ -78,12 +78,12 @@ export class TaskManager {
       completedAt: null,
     };
     this.registry.upsertTask(task);
-    if (!input.queue) void this.dispatcher.dispatch(task.id);
+    if (!input.backlog) void this.dispatcher.dispatch(task.id);
     return task;
   }
 
   /**
-   * Dispatch a queued task, or retry a failed one - but only when the failure was
+   * Dispatch a backlog task, or retry a failed one - but only when the failure was
    * cleanly torn down (no lingering worktree). A failed task that still holds a
    * worktree means its agent may still be running; the user should Cancel it first
    * (which reclaims the tree) rather than dispatch a second agent onto it.
@@ -91,7 +91,7 @@ export class TaskManager {
   dispatch(id: string): Task | null {
     const t = this.registry.getTask(id);
     if (!t) return null;
-    if (t.status === "queued" || (t.status === "failed" && !t.worktreePath)) {
+    if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
       void this.dispatcher.dispatch(id);
     }
     return this.registry.getTask(id) ?? t;

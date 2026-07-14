@@ -26,7 +26,7 @@ and get your decision back.
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
-  agent in its own isolated worktree + detached tmux session (or queues it in a
+  agent in its own isolated worktree + detached tmux session (or shelves it in a
   backlog for later).
 - **Rounds up** the whole fleet: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
@@ -273,7 +273,7 @@ repo to base the task on rather than typing a path. Type to filter; arrow/enter 
 
 The new session then shows up on the grid like any other, with an **intent chip** naming
 what it's working on. It's headless until you want it - click **Focus** on the card to open
-it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a task without
+it in a tab. Choose **Add to backlog** instead of **Dispatch now** to shelve a task without
 launching it yet.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
@@ -291,7 +291,7 @@ Set `FLEET_CLAUDE_BIN` / `FLEET_CODEX_BIN` if the agent CLI isn't on the daemon'
 Click **Roundup** for a one-look snapshot of the whole fleet, assembled from the same live
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
 gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
-and **recent outcomes**. Dispatch a queued task or drop it right from the panel, and **Mark
+and **recent outcomes**. Dispatch a backlog task or drop it right from the panel, and **Mark
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).

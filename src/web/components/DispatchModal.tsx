@@ -6,7 +6,7 @@ import { api, fetchRepos } from "../lib/api.ts";
  * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
  * an accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
  * half-written task around; the draft is wiped only once it's actually
- * dispatched or queued, or when the footer's Clear discards it on purpose
+ * dispatched or shelved, or when the footer's Clear discards it on purpose
  * (see EMPTY_DISPATCH_DRAFT).
  */
 type DispatchDraft = {
@@ -107,7 +107,7 @@ export function DispatchLayer({
 }
 
 /**
- * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
+ * Launch (or shelve) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
  *
@@ -171,7 +171,7 @@ function DispatchModal({
     intentRef.current?.focus();
   }
 
-  async function submit(queue: boolean): Promise<void> {
+  async function submit(backlog: boolean): Promise<void> {
     if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
     setBusy(true);
     setError(null);
@@ -187,7 +187,7 @@ function DispatchModal({
       title: submitted.title.trim() || undefined,
       kind: submitted.kind,
       agent: submitted.agent,
-      queue,
+      backlog,
     });
     setBusy(false);
     // Clear the draft and close only once the task row exists - the worktree and

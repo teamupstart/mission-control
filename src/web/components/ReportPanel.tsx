@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { Session, Task, TaskSummary } from "@shared/types.ts";
 import {
   RECENT_TASKS_CAP,
+  backlogTasks,
   finishedTasks,
   needsYouReason,
-  queuedTasks,
   reportBucket,
 } from "@shared/session.ts";
 import { api } from "../lib/api.ts";
@@ -55,7 +55,7 @@ export function ReportPanel({
     return { needsYou: nY, working: wk, idle: id };
   }, [sessions]);
 
-  const backlog = useMemo(() => queuedTasks(tasks), [tasks]);
+  const backlog = useMemo(() => backlogTasks(tasks), [tasks]);
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
@@ -208,7 +208,7 @@ export function ReportPanel({
                   <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
                 </div>
                 <div className="report-row-actions">
-                  <button className="btn btn-send" onClick={() => void api.dispatchQueued(t.id)}>
+                  <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
                     Dispatch
                   </button>
                   <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(t.id)}>
@@ -239,7 +239,7 @@ export function ReportPanel({
                     place - it re-provisions from scratch. */}
                 {t.status === "failed" && !t.worktreePath && (
                   <div className="report-row-actions">
-                    <button className="btn btn-send" onClick={() => void api.dispatchQueued(t.id)}>
+                    <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
                       Retry
                     </button>
                   </div>

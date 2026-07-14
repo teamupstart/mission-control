@@ -123,7 +123,7 @@ export function App(): React.JSX.Element {
   );
   const foremanMode = foreman.config?.mode ?? "dry-run";
 
-  const backlogCount = useMemo(() => tasks.filter((t) => t.status === "queued").length, [tasks]);
+  const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession

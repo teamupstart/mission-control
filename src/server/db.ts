@@ -91,7 +91,21 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
   `);
+  migrate(db);
   return db;
+}
+
+/**
+ * Schema migrations, run once per open after the CREATE TABLEs. Each must be
+ * idempotent - this block runs on every start, not just on an upgrade.
+ */
+function migrate(d: DatabaseSync): void {
+  // `queued` -> `backlog`: the task backlog stopped calling itself a queue, so
+  // "queue" now only ever means a session's work queue. Rows persisted before the
+  // rename still say 'queued', and `loadActiveTasks` would silently drop them from
+  // the backlog on the next start. `tasks.status` is bare TEXT with no CHECK
+  // constraint, so rewriting the value in place is safe.
+  d.exec(`UPDATE tasks SET status='backlog' WHERE status='queued';`);
 }
 
 interface ReviewRow {
@@ -243,11 +257,11 @@ export function listTasks(): Task[] {
   return rows.map(rowToTask);
 }
 
-/** Tasks still in flight (queued/dispatching/running) - reloaded into the registry on start. */
+/** Tasks still in flight (backlog/dispatching/running) - reloaded into the registry on start. */
 export function loadActiveTasks(): Task[] {
   const rows = openDb()
     .prepare(
-      `SELECT * FROM tasks WHERE status IN ('queued','dispatching','running') ORDER BY created_at ASC`,
+      `SELECT * FROM tasks WHERE status IN ('backlog','dispatching','running') ORDER BY created_at ASC`,
     )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);

@@ -222,7 +222,7 @@ test("hasReportable is false for an empty/all-exited fleet, true when there's ac
   assert.equal(hasReportable(fleet([])), false);
   assert.equal(hasReportable(fleet([mkSession({ state: "exited" })])), false);
   assert.equal(hasReportable(fleet([mkSession({ state: "idle" })])), true);
-  assert.equal(hasReportable(fleet([], [mkTask({ status: "queued" })])), true);
+  assert.equal(hasReportable(fleet([], [mkTask({ status: "backlog" })])), true);
   assert.equal(hasReportable(fleet([], [mkTask({ status: "done" })])), false);
 });
 
@@ -237,7 +237,7 @@ test("chimeGate rate-limits, but lets an urgent tone cut through a recent info c
   assert.equal(chimeGate(400, 0, "attention", "info"), true);
 });
 
-test("digestLine counts sessions by bucket and includes queued tasks", () => {
+test("digestLine counts sessions by bucket and includes backlog tasks", () => {
   const line = digestLine(
     fleet(
       [
@@ -246,8 +246,8 @@ test("digestLine counts sessions by bucket and includes queued tasks", () => {
         mkSession({ id: "3", state: "working" }),
         mkSession({ id: "4", state: "idle" }),
       ],
-      [mkTask({ id: "q", status: "queued" })],
+      [mkTask({ id: "q", status: "backlog" })],
     ),
   );
-  assert.equal(line, "1 need you · 2 working · 1 idle · 1 queued");
+  assert.equal(line, "1 need you · 2 working · 1 idle · 1 in backlog");
 });

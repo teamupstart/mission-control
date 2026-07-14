@@ -1,9 +1,9 @@
 import type { FleetReport, ReportItem, Session, Task } from "@shared/types.ts";
 import {
   RECENT_TASKS_CAP,
+  backlogTasks,
   finishedTasks,
   needsYouReason,
-  queuedTasks,
   reportBucket,
 } from "@shared/session.ts";
 
@@ -50,7 +50,7 @@ export function buildReport(
     else working.push(toItem(s));
   }
 
-  const backlog = queuedTasks(snap.tasks);
+  const backlog = backlogTasks(snap.tasks);
   const finished = finishedTasks(snap.tasks);
   const recent = finished.slice(0, RECENT_TASKS_CAP);
 
@@ -62,7 +62,7 @@ export function buildReport(
       idle: idle.length,
       needsYou: needsYou.length,
       exited,
-      queued: backlog.length,
+      backlog: backlog.length,
     },
     needsYou,
     working,

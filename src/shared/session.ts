@@ -12,9 +12,9 @@ export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 /** How many finished tasks the report surfaces. */
 export const RECENT_TASKS_CAP = 20;
 
-/** Backlog: queued tasks, oldest first. */
-export function queuedTasks(tasks: Task[]): Task[] {
-  return tasks.filter((t) => t.status === "queued").sort((a, b) => a.createdAt - b.createdAt);
+/** Backlog: tasks not yet dispatched, oldest first. */
+export function backlogTasks(tasks: Task[]): Task[] {
+  return tasks.filter((t) => t.status === "backlog").sort((a, b) => a.createdAt - b.createdAt);
 }
 
 /** Finished tasks (done/failed/cancelled), newest first. Caller slices to RECENT_TASKS_CAP. */

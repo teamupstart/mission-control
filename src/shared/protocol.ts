@@ -126,9 +126,9 @@ export const StatusSchema = z.object({
 export type StatusReport = z.infer<typeof StatusSchema>;
 
 /**
- * Dispatch (or queue) a new agent: launch an agent in an isolated worktree of
- * `repoRoot` with `intent` as its first prompt. `queue: true` only adds it to the
- * backlog (no worktree/session yet); dispatch it later.
+ * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
+ * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
+ * the backlog (no worktree/session yet); dispatch it later.
  */
 export const DispatchSchema = z.object({
   repoRoot: z.string().min(1),
@@ -136,7 +136,7 @@ export const DispatchSchema = z.object({
   title: z.string().optional(),
   kind: z.enum(["ship", "scout"]).default("ship"),
   agent: z.enum(["claude", "codex"]).default("claude"),
-  queue: z.boolean().optional().default(false),
+  backlog: z.boolean().optional().default(false),
 });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 

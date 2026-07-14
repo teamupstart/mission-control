@@ -355,6 +355,7 @@ function assignGateScalar(gate: NonNullable<NmRun["gate"]>, line: string): void 
 function summarize(run: NmRun | null): NmRunSummary | null {
   if (!run) return null;
   return {
+    id: run.id,
     status: run.status,
     branch: run.branch,
     awaitingAgent: run.awaitingAgent,

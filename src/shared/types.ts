@@ -335,6 +335,12 @@ export interface NmFinding {
 
 /** Compact view of a no-mistakes run, as surfaced on a session card. */
 export interface NmRunSummary {
+  /**
+   * The run's own id (a ULID from `axi status`). Identifies a run independently
+   * of its branch, which successive runs share - so retiring one run from a card
+   * never gags the next one on the same branch.
+   */
+  id: string;
   status: string; // running | completed | failed
   branch: string;
   /** e.g. "parked 1m30s" while awaiting an agent decision, else null. */

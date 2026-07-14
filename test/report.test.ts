@@ -157,6 +157,7 @@ test("reportBucket: working is confirmed-running, idle is everything else that's
 
 function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
   return {
+    id: "01RUN_PARKED",
     status: "running",
     branch: "feature/x",
     awaitingAgent: "parked 0s",

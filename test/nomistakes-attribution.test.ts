@@ -30,6 +30,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
 
 function runOn(branch: string): NmRunSummary {
   return {
+    id: `01RUN_${branch}`,
     status: "running",
     branch,
     awaitingAgent: null,

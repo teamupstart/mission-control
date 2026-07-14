@@ -100,6 +100,17 @@ export class Registry extends EventEmitter {
    * driver process is momentarily gone), and dropped by TTL or on session exit.
    */
   private nmBindings = new Map<string, Map<string, { branch: string | null; updatedAt: number }>>();
+  /**
+   * Runs retired from a session's card: sessionId -> run ids. A reset moves the
+   * branch pointer but not the branch *name*, and `axi status` goes on reporting
+   * a finished run for that branch indefinitely - so clearing the decoration
+   * alone doesn't hold, the next poll just re-attaches it. Remembering the run is
+   * what makes the clear stick. Keyed on run id, not branch, so a *new* run on
+   * the same branch still decorates the card; kept per session so a sibling on
+   * the same run is unaffected. Dropped with the session (see `remove`); at most
+   * a handful of ids each.
+   */
+  private nmDismissed = new Map<string, Set<string>>();
 
   constructor() {
     super();
@@ -416,8 +427,18 @@ export class Registry extends EventEmitter {
     }
   }
 
-  /** The active run this session owns, by exact branch or a launcher binding. */
+  /**
+   * The active run this session owns, by exact branch or a launcher binding.
+   * A run the session has retired is not owned - it stays off the card for good,
+   * however long `axi status` goes on reporting it.
+   */
   private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
+    const run = this.matchRun(id, s, byBranch);
+    return run && this.nmDismissed.get(id)?.has(run.id) ? null : run;
+  }
+
+  /** The run attributable to this session, before dismissals are applied. */
+  private matchRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
     if (s.gitBranch && byBranch.has(s.gitBranch)) return byBranch.get(s.gitBranch)!;
     const map = this.nmBindings.get(id);
     if (map) {
@@ -426,6 +447,25 @@ export class Registry extends EventEmitter {
       }
     }
     return null;
+  }
+
+  /**
+   * Retire the session's current no-mistakes run from its card, for good. Called
+   * when the session is reset to origin: that throws away the very work the run
+   * validated, so the run - finished or not - no longer describes this checkout,
+   * and the strip would otherwise sit there forever (see `nmDismissed`).
+   *
+   * A no-op when no run is showing, so it never gags a run that arrives later.
+   */
+  dismissNomistakes(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s?.nomistakes) return;
+    let dismissed = this.nmDismissed.get(sessionId);
+    if (!dismissed) this.nmDismissed.set(sessionId, (dismissed = new Set()));
+    dismissed.add(s.nomistakes.id);
+    const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
   }
 
   /**
@@ -569,6 +609,7 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
+    this.nmDismissed.delete(id);
     if (this.sessions.delete(id)) this.emitEvent({ type: "session_remove", id });
   }
 

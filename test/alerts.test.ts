@@ -101,6 +101,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   assert.equal(r[0]?.body, "2 to review");
 
   const gate: NmRunSummary = {
+    id: "01RUN_GATE",
     status: "running",
     branch: "x",
     awaitingAgent: "parked 1m",

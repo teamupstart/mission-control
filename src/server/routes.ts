@@ -226,6 +226,10 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     const parsed = await parseBody(c, ResetSchema);
     if (!parsed.ok) return parsed.res;
     const r = await resetToOrigin(session, parsed.data.clear);
+    // The reset discarded the work the run validated, so retire its strip along
+    // with the rest of the card's state. Only on success: a failed reset left the
+    // work - and the run that describes it - in place.
+    if (r.ok) registry.dismissNomistakes(session.id);
     return c.json(r, r.ok ? 200 : 500);
   });
 

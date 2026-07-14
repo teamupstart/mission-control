@@ -109,7 +109,7 @@ export function ForemanNote({
       )}
 
       {pending && !done && note.recommendation && mode !== "live" && (
-        <p className="fn-hint dim">Draft only (dry-run). Switch Foreman to live for it to send.</p>
+        <p className="fn-hint dim">Draft only - Foreman won&apos;t send this automatically. Use Approve to send it.</p>
       )}
 
       {done && <p className="fn-hint dim">Done.</p>}

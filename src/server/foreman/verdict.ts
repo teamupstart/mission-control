@@ -232,9 +232,12 @@ function oneLine(s: string, max = 80): string {
 
 /**
  * True when Foreman is cleared to *send* for a session running in `cwd`: config
- * enabled + live, and `cwd` is at or under an allowlisted repo root (so a repo's
- * worktrees are covered by listing the repo). Dry-run / semi-auto / off-allowlist
- * all return false, so they draft instead of typing into a session. Pure.
+ * enabled + live, and `cwd` is at or under an allowlisted repo root. The prefix
+ * match only covers worktrees physically nested under an allowlisted root;
+ * worktrees kept elsewhere (e.g. dispatched-task worktrees under the harness
+ * worktrees dir) need their own allowlist entry to receive live sends.
+ * Dry-run / semi-auto / off-allowlist all return false, so they draft instead
+ * of typing into a session. Pure.
  */
 export function foremanMayActLive(cfg: ForemanConfig, cwd: string | null): boolean {
   if (!cfg.enabled || cfg.mode !== "live" || !cwd) return false;

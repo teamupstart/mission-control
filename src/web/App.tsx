@@ -104,6 +104,12 @@ export function App(): React.JSX.Element {
     }
     return m;
   }, [pendingReviews]);
+  // Every pending review id, so Foreman's Approve can tell whether the review a
+  // draft targets (its `handledMarker`) is still live or has since been resolved.
+  const pendingReviewIds = useMemo(
+    () => new Set(pendingReviews.map((r) => r.id)),
+    [pendingReviews],
+  );
   const foremanMode = foreman.config?.mode ?? "dry-run";
 
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "queued").length, [tasks]);
@@ -387,6 +393,7 @@ export function App(): React.JSX.Element {
             registerActions={registerActions}
             foremanMode={foremanMode}
             inputReviewId={inputReviewBySession.get(s.id) ?? null}
+            pendingReviewIds={pendingReviewIds}
           />
         ))}
       </main>

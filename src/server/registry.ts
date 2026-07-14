@@ -683,6 +683,7 @@ export class Registry extends EventEmitter {
       recommendation: n.recommendation,
       disposition: n.disposition,
       lastAction: n.lastAction,
+      handledMarker: n.handledMarker,
       updatedAt: n.updatedAt,
     };
   }

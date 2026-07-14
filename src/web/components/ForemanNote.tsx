@@ -23,13 +23,16 @@ export function ForemanNote({
   note,
   mode,
   inputReviewId,
+  pendingReviewIds,
 }: {
   sessionId: string;
   note: SessionNoteSummary;
   /** The current Foreman mode, so a dry-run draft can point the user at live mode. */
   mode: string;
-  /** A pending `input` review id for this session, so Approve resolves it cleanly. */
+  /** A pending `input` review id for this session, used only when the draft has no marker. */
   inputReviewId: string | null;
+  /** Live pending review ids, so a draft for a since-resolved review reads as stale. */
+  pendingReviewIds?: ReadonlySet<string>;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -39,12 +42,40 @@ export function ForemanNote({
   const answered = note.disposition === "answered";
   const showProposal = (escalated || pending) && !done;
 
+  /**
+   * Deliver to the channel the draft was actually made for, read from the note's
+   * `handledMarker`, not from the live review map (which can drift while a draft
+   * sits pending). A `review:<id>` draft resolves *that* review; if it's no longer
+   * pending the draft is stale and must be dismissed, never redirected elsewhere.
+   * A terminal marker types into the session; a marker-less draft falls back to
+   * the live input review, else the terminal.
+   */
+  function deliveryTarget():
+    | { kind: "review"; reviewId: string }
+    | { kind: "send" }
+    | { kind: "stale" } {
+    const marker = note.handledMarker;
+    if (marker?.startsWith("review:")) {
+      const reviewId = marker.slice("review:".length);
+      if (pendingReviewIds?.has(reviewId) ?? false) return { kind: "review", reviewId };
+      return { kind: "stale" };
+    }
+    if (marker) return { kind: "send" };
+    return inputReviewId ? { kind: "review", reviewId: inputReviewId } : { kind: "send" };
+  }
+
   async function approve(): Promise<void> {
     if (!note.recommendation) return;
+    const target = deliveryTarget();
+    if (target.kind === "stale") {
+      await dismiss();
+      return;
+    }
     setBusy(true);
-    const res = inputReviewId
-      ? await api.resolveReview(inputReviewId, "answer", note.recommendation)
-      : await api.sendText(sessionId, note.recommendation);
+    const res =
+      target.kind === "review"
+        ? await api.resolveReview(target.reviewId, "answer", note.recommendation)
+        : await api.sendText(sessionId, note.recommendation);
     if (res.ok) {
       await api.setNote(sessionId, {
         disposition: "answered",

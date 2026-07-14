@@ -79,11 +79,17 @@ test("a note is denormalized onto its session (matched by note key)", () => {
   r.applyDiscovery([mkDiscovered({ syntheticId: "s3", cwd: "/wt/c" })]);
   const s = r.snapshot().sessions.find((x) => x.id === "s3")!;
   assert.equal(s.note, null);
-  r.upsertNote(s.id, { purpose: "denorm me", disposition: "answered", lastAction: "answered: x" });
+  r.upsertNote(s.id, {
+    purpose: "denorm me",
+    disposition: "answered",
+    lastAction: "answered: x",
+    handledMarker: "review:r-1",
+  });
   const after = r.snapshot().sessions.find((x) => x.id === "s3")!;
   assert.equal(after.note?.purpose, "denorm me");
   assert.equal(after.note?.disposition, "answered");
   assert.equal(after.note?.lastAction, "answered: x");
+  assert.equal(after.note?.handledMarker, "review:r-1", "the drafted channel travels onto the card");
 });
 
 test("notes rehydrate into a fresh Registry and attach by agent session id", () => {

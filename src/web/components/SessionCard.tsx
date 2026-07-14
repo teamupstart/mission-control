@@ -40,6 +40,7 @@ export function SessionCard({
   registerActions,
   foremanMode = "dry-run",
   inputReviewId = null,
+  pendingReviewIds,
 }: {
   session: Session;
   /** True when this session's parked no-mistakes gate needs you (computed fleet-wide in App). */
@@ -56,6 +57,8 @@ export function SessionCard({
   foremanMode?: string;
   /** A pending `input` review id for this session (for Foreman's Approve). */
   inputReviewId?: string | null;
+  /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
+  pendingReviewIds?: ReadonlySet<string>;
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
@@ -245,6 +248,7 @@ export function SessionCard({
               note={session.note}
               mode={foremanMode}
               inputReviewId={inputReviewId}
+              pendingReviewIds={pendingReviewIds}
             />
           )}
           <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />

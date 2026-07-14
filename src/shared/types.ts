@@ -215,6 +215,13 @@ export interface SessionNoteSummary {
   recommendation: string | null;
   disposition: NoteDisposition;
   lastAction: string | null;
+  /**
+   * The channel this draft targets, so Approve delivers to the surface Foreman
+   * actually drafted for (`review:<id>` resolves that review; `await:`/`state:`
+   * type into the terminal) rather than inferring it from the live review map,
+   * which can drift while a draft sits pending.
+   */
+  handledMarker: string | null;
   updatedAt: number;
 }
 

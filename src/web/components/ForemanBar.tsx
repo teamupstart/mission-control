@@ -86,6 +86,23 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
             Auto-approve non-destructive access
           </label>
 
+          <fieldset className="foreman-modes" disabled={!enabled}>
+            <legend>Cheap tier</legend>
+            {(["off", "shadow", "on"] as const).map((t) => (
+              <label className="alert-row" key={t}>
+                <input
+                  type="radio"
+                  name="foreman-triage"
+                  checked={(config.triage ?? "shadow") === t}
+                  onChange={() => void update({ triage: t })}
+                />
+                {t === "off" && "Off - full review for every prompt"}
+                {t === "shadow" && "Shadow - run the cheap tier alongside, measure it"}
+                {t === "on" && "On - cheap tier answers the easy ones"}
+              </label>
+            ))}
+          </fieldset>
+
           {mode === "live" && (
             <label className="foreman-allowlist">
               Live only in these repos (one path per line):

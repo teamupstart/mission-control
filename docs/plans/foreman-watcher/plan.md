@@ -1,6 +1,8 @@
 # Plan: Foreman watcher — a cheap tier that spends the model only when it must
 
-Status: proposed (Step 0 shipped — see "Step 0" below)
+Status: Tiers 0 + 1 shipped (Step 0 previously shipped - see "Step 0" below). Ships in `shadow`
+mode by default: the cheap tier runs alongside the full review and every divergence is logged, so
+its accuracy is measured before `triage: 'on'` is ever flipped.
 Owner: ai-harness (Agent Wrangler)
 Related: `docs/plans/foreman/plan.md` (the shipped auto-responder), `todo/foreman-upgrades.md`
 (item #1). Inspiration: [`firstmate`](https://github.com/kunchenguid/firstmate)'s

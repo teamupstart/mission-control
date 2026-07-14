@@ -22,7 +22,18 @@ import type { Pending } from "./pending.ts";
 
 /** Tier 1's cheap router model, unless overridden by config or FOREMAN_TRIAGE_MODEL. */
 export const DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5";
-/** A smaller transcript window than the full reviewer's 48 - the router only buckets. */
+/**
+ * A smaller transcript window than the full reviewer's 48 - the router only buckets.
+ *
+ * The endpoint's `turns` query param is a BYTE-bound hint, NOT a turn bound: under its
+ * head+tail byte budget `readTranscriptWindow` returns the file WHOLE, and over it returns
+ * head(12)+tail(turns). So the real bound has to be applied on this side, after the fetch -
+ * see `triageSession`. That bound is load-bearing twice over: it is what actually makes the
+ * router's prompt cheaper than Tier 2's, and it is what scopes the denylist's scan to the
+ * pending ask's neighbourhood instead of the whole session history (ambient prose from forty
+ * turns ago - "the API key in .env" - would otherwise escalate every routine ask for the
+ * rest of the session, collapsing Tier 1's only substantive disposal).
+ */
 export const TIER1_TURNS = 12;
 /** Below this, a routine-access/skip call is not trusted: it routes up to Opus instead. */
 export const TIER1_MIN_CONFIDENCE = 0.6;
@@ -96,7 +107,9 @@ export function isDestructive(text: string): boolean {
  * terminal surface: there, `Pending.question` is only the generic notification line
  * ("Claude needs your permission" - see the Notification branch of registry.ts's
  * `hookToState`), which never names the command being approved, so scanning the child's
- * own recent prose is the only code-level view of what it is about to run.
+ * own recent prose is the only code-level view of what it is about to run. Callers must
+ * pass an already-trimmed window (see TIER1_TURNS): scanning a whole session's history
+ * matches ambient prose unrelated to the pending ask.
  *
  * KNOWN LIMITATION - a `TranscriptMessage` carries tool NAMES only, never tool INPUTS
  * (`toMessage` in src/server/transcript.ts pushes `block.name` and drops the arguments).
@@ -213,19 +226,22 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
 }
 
 /**
- * Tier 1 - the pure mapping from a router's bucketing to a triage outcome, with the two
- * hard CODE backstops the router cannot override. Kept free of I/O so the whole safety
+ * Tier 1 - the pure mapping from a router's bucketing to a triage outcome, with the hard
+ * CODE backstops the router cannot override: a destructive ask, low confidence, and a
+ * window too empty to have scanned for the first. Kept free of I/O so the whole safety
  * contract is unit-tested: the model buckets (the report); this decides what that is
- * allowed to become.
+ * allowed to become. `window` must be trimmed to TIER1_TURNS by the caller.
  */
-export function mapTriage(report: TriageReport, pending: Pending, riskContext = ""): TriageOutcome {
-  // Backstop 1: a destructive/irreversible ask (or reply, or recent context) forces an
+export function mapTriage(report: TriageReport, pending: Pending, window: TranscriptMessage[]): TriageOutcome {
+  // Backstop 1: a destructive/irreversible ask (or reply, or recent prose) forces an
   // escalation no matter what the router said - it can only route DOWN to "ask the human",
-  // never wave it through. `riskContext` matters most on the terminal surface, where
+  // never wave it through. The window matters most on the terminal surface, where
   // `question` is only a generic notification line and never names the command itself.
+  // The window is taken whole (rather than a pre-flattened string) so that "scanned and
+  // clean" stays distinguishable from "nothing was scanned" - see backstop 3.
   const risky =
     isDestructive(pending.question) ||
-    isDestructive(riskContext) ||
+    isDestructive(riskContextFrom(window)) ||
     (report.answer ? isDestructive(report.answer.text) : false);
 
   // needs-judgment always routes up: Tier 1 never invents a substantive answer.
@@ -261,6 +277,14 @@ export function mapTriage(report: TriageReport, pending: Pending, riskContext = 
       verdict: escalateVerdict(report.purpose, report.brief, report.answer?.text ?? report.recommendation),
     };
   }
+  // Backstop 3: with no window, backstop 1 scanned NOTHING - so `risky === false` above
+  // means "unknown", not "safe", and on the terminal surface nothing else can see the
+  // command either (the question is a generic notification, the reply is the router's own
+  // "Approve - go ahead."). An auto-answer is the only outcome that ACTS, so it is the only
+  // one gated here: route up and let the full reviewer, which fetches its own window, decide.
+  // Skip and escalate above are the safe directions and stay allowed from an empty window.
+  if (window.length === 0) return { kind: "route-up", reason: "no-transcript-context" };
+
   if (!report.answer?.text) {
     // Bucketed routine-access but produced no reply to send - don't guess; route up.
     return { kind: "route-up", reason: "access-without-answer" };
@@ -275,7 +299,15 @@ export function mapTriage(report: TriageReport, pending: Pending, riskContext = 
 
 /** The daemon reads the cheap tier needs: a trimmed transcript + the router subprocess. */
 export interface TriageDeps {
-  transcript(id: string, turns: number): Promise<{ messages: TranscriptMessage[]; truncated: boolean }>;
+  /**
+   * The daemon's transcript window. `unavailable` is a 200 that carries no window at all
+   * (the session has no resolvable transcript file); it, a read error, and a failed fetch
+   * all arrive here as an EMPTY `messages`, which the no-window backstop treats alike.
+   */
+  transcript(
+    id: string,
+    turns: number,
+  ): Promise<{ messages: TranscriptMessage[]; truncated: boolean; unavailable?: boolean }>;
   runModel(prompt: string, model: string): Promise<string>;
 }
 
@@ -304,6 +336,14 @@ export async function triageSession(
   } catch {
     window = { messages: [], truncated: false };
   }
+  // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
+  // here. The same trimmed set feeds BOTH the router's prompt and the denylist's scan, so
+  // the two can never disagree about what context the decision was made on. Dropping the
+  // earlier turns is itself a truncation - say so, rather than letting the router read a
+  // mid-session window as if it were the whole story.
+  const messages = window.messages.slice(-TIER1_TURNS);
+  const truncated = window.truncated || messages.length < window.messages.length;
+
   const input: ReviewInput = {
     session: {
       name: session.name,
@@ -314,8 +354,8 @@ export async function triageSession(
     },
     surface: pending.surface,
     question: pending.question,
-    transcript: window.messages,
-    truncated: window.truncated,
+    transcript: messages,
+    truncated,
   };
 
   let raw: string;
@@ -326,7 +366,7 @@ export async function triageSession(
   }
   const report = parseModelJson(raw, TriageReportSchema);
   if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
-  return mapTriage(report, pending, riskContextFrom(window.messages));
+  return mapTriage(report, pending, messages);
 }
 
 /**

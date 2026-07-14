@@ -6,6 +6,7 @@ import {
   mapTriage,
   tier0,
   triageSession,
+  TIER1_TURNS,
   type TriageDeps,
   type TriageReport,
 } from "../src/server/foreman/triage.ts";
@@ -37,6 +38,16 @@ function report(over: Partial<TriageReport> = {}): TriageReport {
     confidence: 0.9,
     ...over,
   };
+}
+
+/** A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. */
+function msg(text: string, tools: string[] = []): TranscriptMessage {
+  return { id: "m1", role: "assistant", text, tools, ts: 1 };
+}
+
+/** A clean (non-destructive) Tier 1 window - enough context for the denylist to have scanned. */
+function cleanWindow(): TranscriptMessage[] {
+  return [msg("Ready to run the unit tests for the refactor.", ["Read"])];
 }
 
 // ---- Tier 0 (pure structural gate) ----
@@ -128,17 +139,17 @@ test("isDestructive leaves ordinary, non-destructive asks alone", () => {
 // ---- Tier 1 mapping + backstops (pure) ----
 
 test("mapTriage: needs-judgment always routes up (never a cheap answer)", () => {
-  assert.equal(mapTriage(report({ bucket: "needs-judgment" }), pend()).kind, "route-up");
+  assert.equal(mapTriage(report({ bucket: "needs-judgment" }), pend(), cleanWindow()).kind, "route-up");
 });
 
 test("mapTriage: low confidence routes up rather than trusting the cheap call", () => {
-  const out = mapTriage(report({ confidence: 0.4 }), pend());
+  const out = mapTriage(report({ confidence: 0.4 }), pend(), cleanWindow());
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.equal(out.reason, "low-confidence");
 });
 
 test("mapTriage: a confident routine-access answer becomes an access verdict (gated downstream)", () => {
-  const out = mapTriage(report(), pend());
+  const out = mapTriage(report(), pend(), cleanWindow());
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.tier, 1);
@@ -148,7 +159,7 @@ test("mapTriage: a confident routine-access answer becomes an access verdict (ga
 });
 
 test("mapTriage: a destructive ASK forces escalate even when Haiku bucketed routine-access", () => {
-  const out = mapTriage(report(), pend({ question: "can I force-push to main?" }));
+  const out = mapTriage(report(), pend({ question: "can I force-push to main?" }), cleanWindow());
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
@@ -156,46 +167,74 @@ test("mapTriage: a destructive ASK forces escalate even when Haiku bucketed rout
 });
 
 test("mapTriage: a destructive proposed REPLY forces escalate", () => {
-  const out = mapTriage(report({ answer: { text: "Sure, run rm -rf node_modules && reinstall" } }), pend({ question: "clean deps?" }));
+  const out = mapTriage(
+    report({ answer: { text: "Sure, run rm -rf node_modules && reinstall" } }),
+    pend({ question: "clean deps?" }),
+    cleanWindow(),
+  );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
 });
 
-test("mapTriage: a destructive RISK CONTEXT forces escalate when the ask itself looks innocuous", () => {
+test("mapTriage: a destructive WINDOW forces escalate when the ask itself looks innocuous", () => {
   // The terminal surface's real shape: a generic notification for a question, an innocuous
   // approval for a reply - the recent prose is the only place the command is ever named.
-  const out = mapTriage(
-    report(),
-    pend({ question: "Claude needs your permission" }),
-    "I'll clear the stale build output with rm -rf build/ and rebuild.",
-  );
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), [
+    msg("I'll clear the stale build output with rm -rf build/ and rebuild."),
+  ]);
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
   assert.equal(out.reason, "access-risky-escalated");
 });
 
-test("mapTriage: a clean risk context still allows the routine-access answer", () => {
-  const out = mapTriage(
-    report(),
-    pend({ question: "Claude needs your permission" }),
-    "I'll run the unit tests now to confirm the refactor holds.",
-  );
+test("mapTriage: a clean window still allows the routine-access answer", () => {
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), [
+    msg("I'll run the unit tests now to confirm the refactor holds."),
+  ]);
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer");
 });
 
-test("mapTriage: routine-access with no answer text routes up rather than guessing", () => {
-  const out = mapTriage(report({ answer: undefined }), pend());
+test("mapTriage: an EMPTY window can never take the auto-answer (nothing was scanned)", () => {
+  // `risky === false` over an empty window means "unknown", not "safe" - the one outcome
+  // that ACTS must not be taken on it. This is the whole reason the window is a parameter
+  // rather than a pre-flattened string: an empty string cannot say WHY it is empty.
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), []);
   assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("mapTriage: an empty window still allows the safe directions (skip + escalate)", () => {
+  const esc = mapTriage(report({ bucket: "human-only", disposition: "escalate", answer: undefined }), pend(), []);
+  assert.equal(esc.kind, "dispose");
+  if (esc.kind === "dispose") assert.equal(esc.verdict.action, "escalate");
+
+  const skip = mapTriage(report({ bucket: "human-only", disposition: "skip", answer: undefined }), pend(), []);
+  assert.equal(skip.kind, "dispose");
+  if (skip.kind === "dispose") assert.equal(skip.verdict.action, "skip");
+});
+
+test("mapTriage: a destructive ask on an empty window escalates (more useful than routing up)", () => {
+  const out = mapTriage(report(), pend({ question: "can I force-push to main?" }), []);
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+});
+
+test("mapTriage: routine-access with no answer text routes up rather than guessing", () => {
+  const out = mapTriage(report({ answer: undefined }), pend(), cleanWindow());
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "access-without-answer");
 });
 
 test("mapTriage: human-only escalate carries the brief + recommendation", () => {
   const out = mapTriage(
     report({ bucket: "human-only", disposition: "escalate", brief: "## Fork\nA vs B", recommendation: "Lean A", answer: undefined }),
     pend(),
+    cleanWindow(),
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -205,12 +244,20 @@ test("mapTriage: human-only escalate carries the brief + recommendation", () => 
 });
 
 test("mapTriage: human-only skip is allowed only for a non-risky ask", () => {
-  const skip = mapTriage(report({ bucket: "human-only", disposition: "skip", answer: undefined }), pend({ question: "just a diff review" }));
+  const skip = mapTriage(
+    report({ bucket: "human-only", disposition: "skip", answer: undefined }),
+    pend({ question: "just a diff review" }),
+    cleanWindow(),
+  );
   assert.equal(skip.kind, "dispose");
   if (skip.kind === "dispose") assert.equal(skip.verdict.action, "skip");
 
   // A risky ask can never be quietly skipped - it is surfaced (escalated).
-  const risky = mapTriage(report({ bucket: "human-only", disposition: "skip", answer: undefined }), pend({ question: "drop the users table?" }));
+  const risky = mapTriage(
+    report({ bucket: "human-only", disposition: "skip", answer: undefined }),
+    pend({ question: "drop the users table?" }),
+    cleanWindow(),
+  );
   assert.equal(risky.kind, "dispose");
   if (risky.kind === "dispose") assert.equal(risky.verdict.action, "escalate");
 });
@@ -228,7 +275,7 @@ test("classifyDivergence: a route-up is a deferral (nothing to compare)", () => 
 });
 
 test("classifyDivergence: agree, over-eager, too-cautious, minor", () => {
-  const answer = mapTriage(report(), pend()); // cheap answer
+  const answer = mapTriage(report(), pend(), cleanWindow()); // cheap answer
   assert.equal(classifyDivergence(answer, opus("answer")), "agree");
   assert.equal(classifyDivergence(answer, opus("escalate")), "cheap-over-eager");
 
@@ -257,14 +304,11 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
   return { enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true, triage: "on", ...over };
 }
 
-/** A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. */
-function msg(text: string, tools: string[] = []): TranscriptMessage {
-  return { id: "m1", role: "assistant", text, tools, ts: 1 };
-}
-
 function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   return {
-    transcript: async () => ({ messages: [], truncated: false }),
+    // A real (clean) window by default: an empty one is a gated case in its own right, so
+    // defaulting to it would quietly turn every case below into a no-transcript route-up.
+    transcript: async () => ({ messages: cleanWindow(), truncated: false }),
     runModel: async () => JSON.stringify(report()),
     ...over,
   };
@@ -321,6 +365,108 @@ test("triageSession: a clean transcript still lets the routine-access answer thr
   assert.equal(out.verdict.classification, "access");
 });
 
+test("triageSession: an EMPTY window routes up rather than auto-answering (the denylist scanned nothing)", async () => {
+  // With no prose, backstop 1 has no text to match, so `risky === false` means "unknown",
+  // not "safe" - and on the terminal surface the question is a generic notification and the
+  // reply is Haiku's own "Approve - go ahead.", so nothing else can catch a risky ask either.
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession({ activity: "Claude needs your permission" }),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession: an `unavailable` window (200 with no transcript file) routes up too", async () => {
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [], truncated: false, unavailable: true }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession: a transcript FETCH FAILURE routes up rather than auto-answering", async () => {
+  const out = await triageSession(
+    deps({ transcript: async () => { throw new Error("500"); } }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession: an empty window still allows the SAFE directions (escalate)", async () => {
+  // Routing down is always allowed - only the auto-answer path acts, so only it is gated.
+  const out = await triageSession(
+    deps({
+      transcript: async () => ({ messages: [], truncated: false, unavailable: true }),
+      runModel: async () => JSON.stringify(report({ bucket: "human-only", disposition: "escalate", answer: undefined })),
+    }),
+    pend({ situation: "terminal-pane" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+});
+
+test("triageSession: the window is bounded to TIER1_TURNS, so old history can't force an escalation", async () => {
+  // The endpoint's `turns` is only a byte-bound hint - under its byte budget it returns the
+  // file WHOLE - so a session that once mentioned `.env` forty turns ago would otherwise
+  // escalate every routine ask for the rest of its life, collapsing Tier 1's only disposal.
+  const old = Array.from({ length: 30 }, (_, i) => msg(`Turn ${i}: I'll read the API key from .env to wire auth.`));
+  const recent = Array.from({ length: TIER1_TURNS }, () => msg("Running the unit tests for the refactor."));
+  const out = await triageSession(
+    deps({ transcript: async () => ({ messages: [...old, ...recent], truncated: false }) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "answer", "stale history beyond the window must not poison the scan");
+});
+
+test("triageSession: a destructive command in a RECENT turn still forces escalate", async () => {
+  const old = Array.from({ length: 30 }, () => msg("Reading the source files."));
+  const out = await triageSession(
+    deps({
+      transcript: async () => ({ messages: [...old, msg("Next I'll run rm -rf build/ to clear the stale output.")], truncated: false }),
+    }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.reason, "access-risky-escalated");
+});
+
+test("triageSession: only the last TIER1_TURNS turns reach the router prompt", async () => {
+  let prompt = "";
+  const old = Array.from({ length: 20 }, (_, i) => msg(`OLD-TURN-${i} nothing to see here.`));
+  const recent = Array.from({ length: TIER1_TURNS }, (_, i) => msg(`RECENT-${i} working on the refactor.`));
+  await triageSession(
+    deps({
+      transcript: async () => ({ messages: [...old, ...recent], truncated: false }),
+      runModel: async (p) => (prompt = p, JSON.stringify(report())),
+    }),
+    pend({ situation: "terminal-pane" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.ok(!prompt.includes("OLD-TURN-"), "Tier 1's prompt must be genuinely smaller than Tier 2's");
+  assert.ok(prompt.includes("RECENT-0"), "the recent neighbourhood of the ask is kept");
+});
+
 test("triageSession: a router reply with no confidence routes up as unparseable, not low-confidence", async () => {
   const { confidence: _omitted, ...noConfidence } = report();
   const out = await triageSession(
@@ -373,7 +519,7 @@ function ctx(over: Partial<ReviewContext> = {}): ReviewContext {
 }
 
 test("Tier 1 routine-access verdict SENDS only under the full path's config gate", () => {
-  const out = mapTriage(report(), pend());
+  const out = mapTriage(report(), pend(), cleanWindow());
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   const v = out.verdict;

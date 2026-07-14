@@ -37,9 +37,10 @@ export function isEmptyDispatchDraft(d: DispatchDraft): boolean {
 }
 
 /**
- * Field-by-field draft equality. A dispatch can outlive the modal instance that
- * started it, so its resolve path hands back the draft it sent and the owner
- * compares: still the same draft means nothing newer to lose (see onSubmitted).
+ * Field-by-field draft equality. A dispatch POST can resolve after the modal
+ * instance that sent it is gone, so its resolve path hands back the draft it sent
+ * and the owner compares: still the same draft means nothing newer to lose (see
+ * onSubmitted).
  */
 export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
   return (
@@ -120,10 +121,11 @@ export function DispatchModal({
     if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
     setBusy(true);
     setError(null);
-    // A dispatch provisions a worktree and a tmux session, so it can outlive the
-    // modal instance that started it (close mid-flight, reopen, keep typing).
-    // Hand the exact draft we sent back to the owner, which clears it only if
-    // nothing newer has been typed since - see onSubmitted in App.
+    // Dispatching is an async network POST, so this promise can resolve after the
+    // modal has been closed - even a short round-trip leaves room for a quick
+    // Escape, a reopen, and fresh typing. Hand the exact draft we sent back to the
+    // owner, which clears it only if nothing newer has been typed since - see
+    // onSubmitted in App.
     const submitted = draft;
     const r = await api.dispatch({
       repoRoot: submitted.repoRoot.trim(),
@@ -134,8 +136,10 @@ export function DispatchModal({
       queue,
     });
     setBusy(false);
-    // Clear the draft and close only once it's actually accepted; a failed
-    // submit keeps the modal open with the fields intact so you can retry.
+    // Clear the draft and close only once the task row exists - the worktree and
+    // tmux session are provisioned in the background after this reply, and any
+    // failure there surfaces on the task card rather than here. A rejected submit
+    // keeps the modal open with the fields intact so you can retry.
     if (r.ok) onSubmitted(submitted);
     else setError(r.error ?? "dispatch failed");
   }

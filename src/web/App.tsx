@@ -82,9 +82,9 @@ export function App(): React.JSX.Element {
   }, []);
 
   // A dispatch is accepted server-side. The draft belongs here rather than to the
-  // modal, and a slow dispatch (it provisions a worktree and a tmux session) can
-  // land after that modal is closed and reopened - so reconcile against what the
-  // draft holds *now*, not against the instance that sent it:
+  // modal, and the reply to an async network POST can land after that modal is
+  // closed and reopened - so reconcile against what the draft holds *now*, not
+  // against the instance that sent it:
   //  - unchanged since dispatch -> it's been consumed; clear and close, whether or
   //    not the modal is still open (a closed modal makes the close a no-op, and
   //    reopening shows an empty form instead of a ghost that invites a duplicate).

@@ -290,18 +290,21 @@ export class Registry extends EventEmitter {
    * the mode instantly but emits no signal carrying the new value on an idle
    * session (its hooks omit it and the statusLine payload never has it), so
    * without this the chip would stay on the old mode and the toggle would look
-   * like a no-op. Only the unambiguous steps advance (see `MODE_CYCLE`); from a
-   * step whose landing mode depends on config we leave the chip alone for a real
-   * hook to set, rather than risk showing a session as safer than it is.
+   * like a no-op. Only the steps whose landing mode is certain advance (see
+   * `MODE_CYCLE`); from a step whose landing mode depends on config we leave the
+   * chip for a real hook to set rather than invent a value.
    *
-   * A still-fresh pane overlay is advanced in lockstep so the next discovery
-   * sweep (which re-applies the overlay's mode over passive state) doesn't revert
-   * the chip. Its `updatedAt` is deliberately left alone: that stamp is the
-   * overlay's freshness clock, and bumping it on an injected keystroke would
-   * revive an overlay already past OVERLAY_TTL_MS, re-applying all of its stale
-   * fields (instrumented, state, activity) over the card. A stale overlay is
-   * correctly ignored by that gate, and the new mode still carries into the next
-   * sweep via the updated session (`mergeDiscovered` seeds from `prev`).
+   * The pane overlay's mode is updated whenever one exists, regardless of its
+   * age. Both readers handle that correctly: `mergeDiscovered` gates the overlay
+   * behind its own OVERLAY_TTL_MS freshness check, so a stale one won't resurface
+   * passive state (and the new mode still reaches the next sweep via the updated
+   * session, which `mergeDiscovered` seeds from `prev`); `applyHook` reads the
+   * overlay's mode with no TTL check as its sticky fallback, so keeping it current
+   * means a later hook that omits permission_mode reconciles to the advanced mode
+   * instead of the pre-cycle one. `updatedAt` is deliberately left alone: that
+   * stamp is the overlay's freshness clock, and bumping it on an injected
+   * keystroke would revive an overlay already past OVERLAY_TTL_MS, re-applying all
+   * of its stale fields (instrumented, state, activity) over the card.
    */
   optimisticCyclePermissionMode(sessionId: string): void {
     const s = this.sessions.get(sessionId);
@@ -825,15 +828,19 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * without this the chip would sit on the old value until the next unrelated hook,
  * making Shift+Tab look like a no-op.
  *
- * Only the steps that hold in *every* config are mapped: default -> acceptEdits
- * and acceptEdits -> plan. The optional `bypassPermissions`/`auto` modes slot in
- * after `plan` when a session enables them (a flag / account setting we can't see
- * here), so from `plan` the next mode is ambiguous - `default` in the base cycle,
- * but `bypassPermissions`/`auto` when those are on. Guessing `default` there would
- * paint a `--dangerously-skip-permissions` session with the safe "manual" chip
- * while it skips every permission check, and a session must never be shown as
- * safer than it is. So `plan`/`bypassPermissions`/`auto` decline to guess and wait
- * for a real hook to carry the mode, as `dontAsk` (never in the cycle) already did.
+ * We only advance a step when its outcome is *certain*. default -> acceptEdits and
+ * acceptEdits -> plan are the only transitions that land on the same mode in every
+ * config: the optional `bypassPermissions`/`auto` modes slot into the cycle only
+ * after `plan`, gated behind flags / account settings the daemon can't observe. So
+ * from `plan` the next mode is config-dependent - `default` in the base cycle, but
+ * `bypassPermissions`/`auto` when those are enabled - and `plan`/`bypassPermissions`/
+ * `auto` therefore map to null rather than fabricate a mode we can't derive, as
+ * `dontAsk` (never in the cycle) already did. Their chips keep the last mode a hook
+ * reported until the next one updates them.
+ *
+ * That last-known chip can lag reality, as any hook-sourced value can - a
+ * pre-existing property of the overlay this neither introduces nor fixes. The point
+ * here is narrower: don't add a *new* wrong value on top of it.
  */
 const MODE_CYCLE: Record<PermissionMode, PermissionMode | null> = {
   default: "acceptEdits",

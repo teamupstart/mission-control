@@ -37,6 +37,21 @@ export function isEmptyDispatchDraft(d: DispatchDraft): boolean {
 }
 
 /**
+ * Field-by-field draft equality. A dispatch can outlive the modal instance that
+ * started it, so its resolve path hands back the draft it sent and the owner
+ * compares: still the same draft means nothing newer to lose (see onSubmitted).
+ */
+export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
+  return (
+    a.repoRoot === b.repoRoot &&
+    a.intent === b.intent &&
+    a.title === b.title &&
+    a.kind === b.kind &&
+    a.agent === b.agent
+  );
+}
+
+/**
  * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
@@ -53,14 +68,13 @@ export function DispatchModal({
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
   onClose: () => void;
-  onSubmitted: () => void;
+  onSubmitted: (submitted: DispatchDraft) => void;
 }): React.JSX.Element {
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
-  const aliveRef = useRef(true);
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -69,18 +83,6 @@ export function DispatchModal({
 
   useEffect(() => {
     intentRef.current?.focus();
-  }, []);
-
-  // A dispatch provisions a worktree and a tmux session, so it can outlive the
-  // modal instance that started it: close mid-flight, reopen, and the first
-  // submit's resolve path would still clear the draft the reopened instance is
-  // now holding. Re-armed on mount, not just at init, so a StrictMode remount
-  // doesn't leave a live instance marked dead.
-  useEffect(() => {
-    aliveRef.current = true;
-    return () => {
-      aliveRef.current = false;
-    };
   }, []);
 
   // Index the workspace's repos so the base can be searched/picked. Re-fetched on
@@ -118,21 +120,23 @@ export function DispatchModal({
     if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
     setBusy(true);
     setError(null);
+    // A dispatch provisions a worktree and a tmux session, so it can outlive the
+    // modal instance that started it (close mid-flight, reopen, keep typing).
+    // Hand the exact draft we sent back to the owner, which clears it only if
+    // nothing newer has been typed since - see onSubmitted in App.
+    const submitted = draft;
     const r = await api.dispatch({
-      repoRoot: draft.repoRoot.trim(),
-      intent: draft.intent.trim(),
-      title: draft.title.trim() || undefined,
-      kind: draft.kind,
-      agent: draft.agent,
+      repoRoot: submitted.repoRoot.trim(),
+      intent: submitted.intent.trim(),
+      title: submitted.title.trim() || undefined,
+      kind: submitted.kind,
+      agent: submitted.agent,
       queue,
     });
-    // The dispatch itself already landed server-side; we only skip the modal-side
-    // cleanup, which belongs to an instance that's gone.
-    if (!aliveRef.current) return;
     setBusy(false);
     // Clear the draft and close only once it's actually accepted; a failed
     // submit keeps the modal open with the fields intact so you can retry.
-    if (r.ok) onSubmitted();
+    if (r.ok) onSubmitted(submitted);
     else setError(r.error ?? "dispatch failed");
   }
 

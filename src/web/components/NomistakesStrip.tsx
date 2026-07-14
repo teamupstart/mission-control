@@ -115,7 +115,7 @@ export function NomistakesStrip({
 
 function FindingRow({ f }: { f: NmFinding }): React.JSX.Element {
   return (
-    <li>
+    <li title={f.description}>
       <span className={`nm-sev nm-sev-${f.severity}`}>{f.severity}</span>
       <span className="mono nm-file">{f.file}</span>
       <span className={`nm-actiontag nm-action-${f.action}`}>{f.action}</span>

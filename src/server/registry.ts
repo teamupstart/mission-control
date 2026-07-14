@@ -830,10 +830,7 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
 /**
  * Claude's Shift+Tab cycle order, used to *optimistically* advance the card's
  * mode chip the instant we inject a cycle keystroke (see
- * `optimisticCyclePermissionMode`). Claude fires no hook when the mode changes on
- * an otherwise-idle session - and its statusLine payload omits the mode - so
- * without this the chip would sit on the old value until the next unrelated hook,
- * making Shift+Tab look like a no-op.
+ * `optimisticCyclePermissionMode` for why the chip has to guess at all).
  *
  * We only advance a step when its outcome is *certain*. default -> acceptEdits and
  * acceptEdits -> plan are the only transitions that land on the same mode in every

@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskKind, AgentType } from "@shared/types.ts";
 import { api, fetchRepos } from "../lib/api.ts";
 
 /**
- * The form fields a dispatch carries. Held by the parent (not the modal) so an
- * accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
+ * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
+ * an accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
  * half-written task around; the draft is wiped only once it's actually
  * dispatched or queued, or when the footer's Clear discards it on purpose
  * (see EMPTY_DISPATCH_DRAFT).
  */
-export type DispatchDraft = {
+type DispatchDraft = {
   repoRoot: string;
   intent: string;
   title: string;
@@ -17,7 +17,7 @@ export type DispatchDraft = {
   agent: AgentType;
 };
 
-export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
+const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   repoRoot: "",
   intent: "",
   title: "",
@@ -26,7 +26,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
 };
 
 /** True when a draft holds nothing worth keeping - so "Clear" has nothing to do. */
-export function isEmptyDispatchDraft(d: DispatchDraft): boolean {
+function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   return (
     !d.repoRoot.trim() &&
     !d.intent.trim() &&
@@ -42,7 +42,7 @@ export function isEmptyDispatchDraft(d: DispatchDraft): boolean {
  * and the owner compares: still the same draft means nothing newer to lose (see
  * onSubmitted).
  */
-export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
+function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
   return (
     a.repoRoot === b.repoRoot &&
     a.intent === b.intent &&
@@ -53,14 +53,68 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
 }
 
 /**
+ * Owns the dispatch draft and mounts the modal over it. Stays mounted whether or
+ * not the modal is open, which is the whole point of the indirection:
+ *  - the draft can't live in the modal, which unmounts on close and would take a
+ *    half-written task with it;
+ *  - it can't live in App either, where every keystroke would re-render the
+ *    session grid - dozens of cards, each with an ActionBar - behind the backdrop
+ *    where none of it can be seen. A child's state update doesn't re-render its
+ *    parent, so parking the draft here keeps typing inside the modal subtree.
+ *
+ * The modal itself still mounts per open, so its fetch-repos and autofocus
+ * effects run each time.
+ */
+export function DispatchLayer({
+  open,
+  onClose,
+}: {
+  open: boolean;
+  onClose: () => void;
+}): React.JSX.Element | null {
+  const [draft, setDraft] = useState<DispatchDraft>(EMPTY_DISPATCH_DRAFT);
+  // Read by the dispatch-accepted callback below, which can fire after the modal
+  // instance that armed it is gone - a stale closure would compare against
+  // whatever the draft held when that instance last rendered.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  // A dispatch is accepted server-side. The reply to an async network POST can
+  // land after the modal has been closed and reopened, so reconcile against what
+  // the draft holds *now*, not against the instance that sent it:
+  //  - unchanged since dispatch -> it's been consumed; clear and close, whether or
+  //    not the modal is still open (a closed modal makes the close a no-op, and
+  //    reopening shows an empty form instead of a ghost that invites a duplicate).
+  //  - edited since dispatch -> that's newer input; keep it and leave the modal be.
+  const onSubmitted = useCallback(
+    (submitted: DispatchDraft) => {
+      if (!draftsEqual(draftRef.current, submitted)) return;
+      setDraft(EMPTY_DISPATCH_DRAFT);
+      onClose();
+    },
+    [onClose],
+  );
+
+  if (!open) return null;
+  return (
+    <DispatchModal
+      draft={draft}
+      onDraftChange={setDraft}
+      onClose={onClose}
+      onSubmitted={onSubmitted}
+    />
+  );
+}
+
+/**
  * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
  * The daemon provisions an isolated worktree, opens a detached tmux session, and
  * injects the intent - the new session then appears on the grid on the next poll.
  *
- * The form values live in `draft` on the parent so they survive close/reopen;
+ * The form values live in `draft` on `DispatchLayer` so they survive close/reopen;
  * only the transient UI state (repo index, busy, error) is local here.
  */
-export function DispatchModal({
+function DispatchModal({
   draft,
   onDraftChange,
   onClose,

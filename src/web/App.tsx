@@ -5,8 +5,7 @@ import { useEventStream } from "./useEventStream.ts";
 import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
-import { DispatchModal, EMPTY_DISPATCH_DRAFT, draftsEqual } from "./components/DispatchModal.tsx";
-import type { DispatchDraft } from "./components/DispatchModal.tsx";
+import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
@@ -40,16 +39,11 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Only whether the dispatch modal is open. The draft it edits belongs to
+  // DispatchLayer, deliberately out of this component: App re-renders the whole
+  // session grid, and the draft has to survive a close without dragging every
+  // keystroke through it.
   const [dispatchOpen, setDispatchOpen] = useState(false);
-  // The dispatch form's draft lives here, not in the modal, so closing the modal
-  // (Esc / Cancel / backdrop) preserves what you've typed. It's cleared only once
-  // the task is actually dispatched or queued.
-  const [dispatchDraft, setDispatchDraft] = useState<DispatchDraft>(EMPTY_DISPATCH_DRAFT);
-  // Read by the dispatch-accepted callback below, which can fire long after the
-  // modal instance that armed it is gone - a stale closure would compare against
-  // whatever the draft was when that instance last rendered.
-  const dispatchDraftRef = useRef(dispatchDraft);
-  dispatchDraftRef.current = dispatchDraft;
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
@@ -81,19 +75,7 @@ export function App(): React.JSX.Element {
     setExpandedId((cur) => (cur === id ? null : id));
   }, []);
 
-  // A dispatch is accepted server-side. The draft belongs here rather than to the
-  // modal, and the reply to an async network POST can land after that modal is
-  // closed and reopened - so reconcile against what the draft holds *now*, not
-  // against the instance that sent it:
-  //  - unchanged since dispatch -> it's been consumed; clear and close, whether or
-  //    not the modal is still open (a closed modal makes the close a no-op, and
-  //    reopening shows an empty form instead of a ghost that invites a duplicate).
-  //  - edited since dispatch -> that's newer input; keep it and leave the modal be.
-  const onDispatchSubmitted = useCallback((submitted: DispatchDraft) => {
-    if (!draftsEqual(dispatchDraftRef.current, submitted)) return;
-    setDispatchDraft(EMPTY_DISPATCH_DRAFT);
-    setDispatchOpen(false);
-  }, []);
+  const closeDispatch = useCallback(() => setDispatchOpen(false), []);
 
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -463,14 +445,7 @@ export function App(): React.JSX.Element {
         />
       )}
 
-      {dispatchOpen && (
-        <DispatchModal
-          draft={dispatchDraft}
-          onDraftChange={setDispatchDraft}
-          onClose={() => setDispatchOpen(false)}
-          onSubmitted={onDispatchSubmitted}
-        />
-      )}
+      <DispatchLayer open={dispatchOpen} onClose={closeDispatch} />
 
       {reportOpen && (
         <ReportPanel

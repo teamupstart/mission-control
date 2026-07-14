@@ -205,13 +205,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (session.agent !== "claude")
       return c.json({ error: "permission modes are a Claude feature" }, 400);
     const r = await cyclePermissionMode(session);
-    // Claude switches mode instantly but tells us nothing until its next hook, so
-    // reflect the new mode on the card now. `r.ok` only means the Shift+Tab bytes
-    // reached the pane - not that Claude consumed them as a mode cycle. A session
-    // sitting on a permission or plan-approval dialog, in a slash-command menu, or
-    // whose REPL isn't foreground swallows the keystroke while tmux still exits 0,
-    // and the chip advances anyway. It's a best-effort hint, not an authoritative
-    // reading; the next hook carrying permission_mode reconciles any divergence.
+    // Advance the chip optimistically - see `optimisticCyclePermissionMode` for why
+    // `r.ok` isn't confirmation that Claude actually cycled.
     if (r.ok) registry.optimisticCyclePermissionMode(session.id);
     return c.json(r, r.ok ? 200 : 500);
   });

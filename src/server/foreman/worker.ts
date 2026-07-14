@@ -1,4 +1,5 @@
 import type { ReviewItem, Session } from "@shared/types.ts";
+import type { ForemanConfig } from "@shared/protocol.ts";
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
 import { reviewSession, runClaudeText } from "./review.ts";
@@ -8,7 +9,7 @@ import type { Pending } from "./pending.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { applyVerdict, foremanMayActLive, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
-import { classifyDivergence, triageSession } from "./triage.ts";
+import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -129,7 +130,7 @@ function waitedSince(s: Session): number {
 /** Review + act on one session, unless we've already handled its current prompt. */
 async function processSession(
   client: ForemanClient,
-  cfg: Awaited<ReturnType<ForemanClient["getConfig"]>>,
+  cfg: ForemanConfig,
   session: Session,
   reviews: ReviewItem[],
 ): Promise<void> {
@@ -207,48 +208,86 @@ async function processSession(
 }
 
 /**
- * Resolve a verdict for one session through the tier ladder, honouring the `triage`
- * config. Returns the verdict + which tier produced it, or null when the outcome was
- * already fully handled (a transient failure retry, or a give-up note).
+ * The verdict for one session + which tier produced it, or null when the outcome was already
+ * fully handled (a transient failure that will retry, or a give-up note that was written).
+ */
+type Decision = { verdict: Verdict; tier: 0 | 1 | 2 } | null;
+
+/**
+ * Resolve a verdict for one session through the tier ladder, honouring the `triage` config.
+ *
+ * The posture is resolved by `triagePosture`, never by falling through: `on` is the only
+ * posture where Tier 1's verdicts are APPLIED rather than merely logged, so it must be
+ * reachable only by an exact match, and a missing or unrecognised value must land on a safe
+ * posture. Switching exhaustively over the three known postures keeps it that way - it also
+ * means adding a fourth is a compile error here rather than a silent new path into `on`.
  */
 async function decide(
   client: ForemanClient,
-  cfg: Awaited<ReturnType<ForemanClient["getConfig"]>>,
+  cfg: ForemanConfig,
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-): Promise<{ verdict: Verdict; tier: 0 | 1 | 2 } | null> {
-  if (cfg.triage === "off") {
-    const r = await fullReview(client, session, pending, ctx);
-    return r && { verdict: r.verdict, tier: 2 };
+): Promise<Decision> {
+  switch (triagePosture(cfg.triage)) {
+    case "off":
+      return fullReviewOnly(client, session, pending, ctx);
+    case "shadow":
+      return shadowBoth(client, cfg, session, pending, ctx);
+    case "on":
+      return cheapTierDecides(client, cfg, session, pending, ctx);
   }
+}
 
-  const deps = triageDeps(client);
+/** `off`: the pre-triage behaviour - every new marker gets a full review. */
+async function fullReviewOnly(
+  client: ForemanClient,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  const r = await fullReview(client, session, pending, ctx);
+  return r && { verdict: r.verdict, tier: 2 };
+}
 
-  if (cfg.triage === "shadow") {
-    // Run the cheap tier AND the full review, act on the full review, and log the
-    // divergence. Concurrent, so the cheap call adds no serial latency to the queue.
-    const [cheap, r] = await Promise.all([
-      triageSession(deps, pending, session, cfg),
-      fullReview(client, session, pending, ctx),
-    ]);
-    if (!r) return null; // full review failed + handled; don't act on the cheap tier
-    log(
-      `${session.name}: shadow ${classifyDivergence(cheap, r.verdict)} ` +
-        `(cheap=${describeCheap(cheap)} opus=${r.verdict.action}/${r.verdict.classification})`,
-    );
-    return { verdict: r.verdict, tier: 2 };
-  }
+/**
+ * `shadow`: run the cheap tier AND the full review, act on the full review, and log the
+ * divergence. Concurrent, so the cheap call adds no serial latency to the queue.
+ */
+async function shadowBoth(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  const [cheap, r] = await Promise.all([
+    triageSession(triageDeps(client), pending, session, cfg),
+    fullReview(client, session, pending, ctx),
+  ]);
+  if (!r) return null; // full review failed + handled; don't act on the cheap tier
+  log(
+    `${session.name}: shadow ${classifyDivergence(cheap, r.verdict)} ` +
+      `(cheap=${describeCheap(cheap)} opus=${r.verdict.action}/${r.verdict.classification})`,
+  );
+  return { verdict: r.verdict, tier: 2 };
+}
 
-  // cfg.triage === "on": the cheap tier decides; the full review fires only on route-up.
-  const cheap = await triageSession(deps, pending, session, cfg);
+/** `on`: the cheap tier decides; the full review fires only on route-up. */
+async function cheapTierDecides(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  const cheap = await triageSession(triageDeps(client), pending, session, cfg);
   if (cheap.kind === "dispose") {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
     return { verdict: cheap.verdict, tier: cheap.tier };
   }
   log(`${session.name}: routed up to full review (${cheap.reason})`);
-  const r = await fullReview(client, session, pending, ctx);
-  return r && { verdict: r.verdict, tier: 2 };
+  return fullReviewOnly(client, session, pending, ctx);
 }
 
 /**

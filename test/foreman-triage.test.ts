@@ -5,6 +5,7 @@ import {
   isDestructive,
   mapTriage,
   tier0,
+  triagePosture,
   triageSession,
   TIER1_HEAD_TURNS,
   TIER1_TURNS,
@@ -710,6 +711,37 @@ test("triageSession: config triageModel overrides the router model", async () =>
     cfg({ triageModel: "claude-custom-router" }),
   );
   assert.equal(usedModel, "claude-custom-router");
+});
+
+// ---- the tier posture: `on` is opt-in only, everything else fails safe ----
+
+test("triagePosture: each known posture maps to itself", () => {
+  assert.equal(triagePosture("off"), "off");
+  assert.equal(triagePosture("shadow"), "shadow");
+  assert.equal(triagePosture("on"), "on");
+});
+
+test("triagePosture: `on` is reachable ONLY by an exact match", () => {
+  // `on` is the one posture where Tier 1's verdicts are applied instead of merely logged, so
+  // nothing but the literal string may reach it. Everything else lands on `shadow`, which runs
+  // the cheap tier but acts on the FULL review - so Tier 1 can't act under a config nobody set.
+  for (const junk of ["ON", "On", "on ", "enabled", "true", "", "yes"]) {
+    assert.equal(triagePosture(junk), "shadow", `${JSON.stringify(junk)} must not mean "on"`);
+  }
+});
+
+test("triagePosture: a missing `triage` key falls back to shadow, not to on", () => {
+  // The real reachability: the worker is started separately from the daemon (`npm run foreman`),
+  // so a new worker polling an older daemon build gets a config with no `triage` key at all.
+  // That must degrade to the documented default, never to the acting posture.
+  assert.equal(triagePosture(undefined), "shadow");
+  assert.equal(triagePosture(({} as ForemanConfig).triage), "shadow");
+});
+
+test("triagePosture: a non-string value falls back to shadow", () => {
+  for (const junk of [null, 1, 0, true, false, {}, [], { triage: "on" }]) {
+    assert.equal(triagePosture(junk), "shadow", `${JSON.stringify(junk)} must not mean "on"`);
+  }
 });
 
 // ---- the safety invariant: a Tier 1 access verdict is gated exactly like a Tier 2 one ----

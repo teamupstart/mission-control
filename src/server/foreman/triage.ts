@@ -379,6 +379,34 @@ function recentTurns(window: TriageWindow): TranscriptMessage[] {
   return window.messages.slice(window.headCount ?? 0).slice(-TIER1_TURNS);
 }
 
+/** Which posture the tier ladder runs one session in - see the `triage` config. */
+export type TriagePosture = "off" | "shadow" | "on";
+
+/**
+ * Resolve the `triage` config to a posture. `on` - the ONE posture where Tier 1's verdicts are
+ * APPLIED rather than merely logged - is reachable only by an exact match, and everything else,
+ * including an absent or unrecognised value, lands on `shadow`, which still acts on the full
+ * review. Unknown config must fail safe, never fail open: the whole feature rests on the cheap
+ * tier only ever routing DOWN, so the permissive posture must never be the one reached by the
+ * least specific condition. This mirrors `foremanMayActLive`, which reads an absent `mode` as
+ * "not live" rather than as permission to send.
+ *
+ * The parameter is `unknown` on purpose. `ForemanClient.getConfig` parses the daemon's response
+ * through `ForemanConfigSchema`, so a validated `cfg.triage` is the normal case and this returns
+ * it unchanged - but this function exists for the case where that guarantee does not hold, and
+ * typing it as the enum would be claiming the very thing it is here to stop depending on.
+ */
+export function triagePosture(triage: unknown): TriagePosture {
+  switch (triage) {
+    case "off":
+    case "shadow":
+    case "on":
+      return triage;
+    default:
+      return "shadow";
+  }
+}
+
 /** The triage model from config, then env, then the Haiku default. */
 export function triageModel(cfg: ForemanConfig): string {
   return cfg.triageModel || process.env.FOREMAN_TRIAGE_MODEL || DEFAULT_TRIAGE_MODEL;

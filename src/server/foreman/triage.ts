@@ -129,8 +129,10 @@ function riskContextFrom(messages: TranscriptMessage[]): string {
 }
 
 /**
- * Whether the window holds any of the child's own prose - the only thing the denylist can
- * actually match a command in. A turn survives `toMessage` on its tool calls alone (it drops
+ * Whether the window carried any prose at all - from EITHER role, exactly mirroring what
+ * `riskContextFrom` scans. There is no role filter and none is implied: the gate asks only
+ * whether the denylist had text to read, and proves nothing about who spoke or whether they
+ * spoke about the pending ask. A turn survives `toMessage` on its tool calls alone (it drops
  * a turn only when it has neither text nor tools), and such a turn flattens to bare tool NAMES
  * ("Bash"), so a window can be non-empty and still carry nothing scannable. Backstop 3 keys on
  * this rather than on `messages.length` for that reason: a run of prose-free tool calls is an
@@ -257,13 +259,25 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
 }
 
 /**
+ * The recent turns the denylist scans, plus why there might be none of them. `unavailable` is
+ * the daemon reporting that the session has no resolvable transcript file AT ALL, which is a
+ * different diagnosis from a window that simply came back empty - both route up, but the
+ * worker log is this feature's only audit surface, so the two must not read alike there.
+ */
+export interface ScanWindow {
+  /** Trimmed to the recent turns by the caller - see `recentTurns`. */
+  messages: TranscriptMessage[];
+  unavailable?: boolean;
+}
+
+/**
  * Tier 1 - the pure mapping from a router's bucketing to a triage outcome, with the hard
  * CODE backstops the router cannot override: a destructive ask, low confidence, and a
  * window with no prose for the first to have scanned. Kept free of I/O so the whole safety
- * contract is unit-tested: the model buckets (the report); this decides what that is
- * allowed to become. `window` must be trimmed to TIER1_TURNS by the caller.
+ * contract - including its diagnoses - is unit-tested in one place: the model buckets (the
+ * report); this decides what that is allowed to become.
  */
-export function mapTriage(report: TriageReport, pending: Pending, window: TranscriptMessage[]): TriageOutcome {
+export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWindow): TriageOutcome {
   // Backstop 1: a destructive/irreversible ask (or reply, or recent prose) forces an
   // escalation no matter what the router said - it can only route DOWN to "ask the human",
   // never wave it through. The window matters most on the terminal surface, where
@@ -272,7 +286,7 @@ export function mapTriage(report: TriageReport, pending: Pending, window: Transc
   // clean" stays distinguishable from "there was nothing to scan" - see backstop 3.
   const risky =
     isDestructive(pending.question) ||
-    isDestructive(riskContextFrom(window)) ||
+    isDestructive(riskContextFrom(scan.messages)) ||
     (report.answer ? isDestructive(report.answer.text) : false);
 
   // needs-judgment always routes up: Tier 1 never invents a substantive answer.
@@ -315,7 +329,9 @@ export function mapTriage(report: TriageReport, pending: Pending, window: Transc
   // only outcome that ACTS, so it is the only one gated here: route up and let the full
   // reviewer, which fetches its own window, decide. Skip and escalate above are the safe
   // directions and stay allowed with nothing scanned.
-  if (!hasProse(window)) return { kind: "route-up", reason: "no-transcript-context" };
+  if (!hasProse(scan.messages)) {
+    return { kind: "route-up", reason: scan.unavailable ? "no-transcript-file" : "no-transcript-context" };
+  }
 
   if (!report.answer?.text) {
     // Bucketed routine-access but produced no reply to send - don't guess; route up.
@@ -329,18 +345,38 @@ export function mapTriage(report: TriageReport, pending: Pending, window: Transc
   };
 }
 
+/** The daemon window as the cheap tier consumes it: the turns, plus where they came from. */
+interface TriageWindow {
+  messages: TranscriptMessage[];
+  truncated: boolean;
+  /** Boundary of the elided middle - see `TranscriptWindow` and `recentTurns`. */
+  headCount?: number;
+  /** A 200 carrying no window at all: the session has no resolvable transcript file. */
+  unavailable?: boolean;
+}
+
 /** The daemon reads the cheap tier needs: a trimmed transcript + the router subprocess. */
 export interface TriageDeps {
-  /**
-   * The daemon's transcript window. `unavailable` is a 200 that carries no window at all
-   * (the session has no resolvable transcript file); it, a read error, and a failed fetch
-   * all arrive here as an EMPTY `messages`, which the no-context backstop treats alike.
-   */
-  transcript(
-    id: string,
-    turns: number,
-  ): Promise<{ messages: TranscriptMessage[]; truncated: boolean; unavailable?: boolean }>;
+  transcript(id: string, turns: number): Promise<TriageWindow>;
   runModel(prompt: string, model: string): Promise<string>;
+}
+
+/**
+ * The genuinely recent turns - the ask's neighbourhood, which is what the denylist scans and
+ * what the no-context backstop keys on.
+ *
+ * `messages.slice(-TIER1_TURNS)` alone is NOT that. On the daemon's truncated path the response
+ * is the opening turns followed by the closing ones with the middle ELIDED, so the two halves
+ * are adjacent in the array but far apart in the session; the tail's turn count is byte-bounded,
+ * so when it yields fewer turns than the head, slicing back from the end lands inside the
+ * OPENING. That would re-open both gaps this window exists to close: ambient goal prose
+ * ("read the API key from .env") escalating every routine ask for the rest of the session, and
+ * - worse - opening prose satisfying `hasProse` while the actually-recent turns held nothing
+ * scannable. So slice FORWARD from the boundary instead. Re-ordering by `ts` would not help:
+ * the array is already in chronological order, it is the adjacency that lies.
+ */
+function recentTurns(window: TriageWindow): TranscriptMessage[] {
+  return window.messages.slice(window.headCount ?? 0).slice(-TIER1_TURNS);
 }
 
 /** The triage model from config, then env, then the Haiku default. */
@@ -362,18 +398,19 @@ export async function triageSession(
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 
-  let window: { messages: TranscriptMessage[]; truncated: boolean };
+  let window: TriageWindow;
   try {
+    // A failed fetch is an absent window, not an absent transcript file - the two stay
+    // distinguishable in the log, so `unavailable` is deliberately left false here.
     window = await deps.transcript(session.id, TIER1_TURNS);
   } catch {
     window = { messages: [], truncated: false };
   }
   // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
-  // here. `recent` is the ask's neighbourhood: it is what the denylist scans and what the
-  // no-context backstop keys on. The router's prompt gets `recent` plus the opening turns -
-  // see `promptWindow` for why the two windows differ. Eliding the middle is itself a
-  // truncation, so say so rather than letting the router read a gapped window as the whole story.
-  const recent = window.messages.slice(-TIER1_TURNS);
+  // here - see `recentTurns`. The router's prompt gets `recent` plus the opening turns; see
+  // `promptWindow` for why the two windows differ. Eliding the middle is itself a truncation,
+  // so say so rather than letting the router read a gapped window as the whole story.
+  const recent = recentTurns(window);
   const messages = promptWindow(window.messages, recent);
   const truncated = window.truncated || messages.length < window.messages.length;
 
@@ -399,7 +436,7 @@ export async function triageSession(
   }
   const report = parseModelJson(raw, TriageReportSchema);
   if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
-  return mapTriage(report, pending, recent);
+  return mapTriage(report, pending, { messages: recent, unavailable: window.unavailable });
 }
 
 /**

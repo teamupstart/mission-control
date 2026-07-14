@@ -27,6 +27,8 @@ const enc = encodeURIComponent;
 export interface TranscriptWindowResponse {
   messages: TranscriptMessage[];
   truncated: boolean;
+  /** Boundary of the elided middle - see `TranscriptWindow`. Absent when there is no window. */
+  headCount?: number;
   unavailable?: boolean;
 }
 

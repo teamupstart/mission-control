@@ -8,6 +8,7 @@ import {
   triageSession,
   TIER1_HEAD_TURNS,
   TIER1_TURNS,
+  type ScanWindow,
   type TriageDeps,
   type TriageReport,
 } from "../src/server/foreman/triage.ts";
@@ -50,9 +51,9 @@ function msg(text: string, tools: string[] = []): TranscriptMessage {
   return { id: `m${++msgSeq}`, role: "assistant", text, tools, ts: 1 };
 }
 
-/** A clean (non-destructive) Tier 1 window - enough context for the denylist to have scanned. */
-function cleanWindow(): TranscriptMessage[] {
-  return [msg("Ready to run the unit tests for the refactor.", ["Read"])];
+/** A clean (non-destructive) Tier 1 scan window - enough context for the denylist to have scanned. */
+function cleanWindow(): ScanWindow {
+  return { messages: [msg("Ready to run the unit tests for the refactor.", ["Read"])] };
 }
 
 // ---- Tier 0 (pure structural gate) ----
@@ -180,9 +181,9 @@ test("mapTriage: a destructive proposed REPLY forces escalate", () => {
 test("mapTriage: a destructive WINDOW forces escalate when the ask itself looks innocuous", () => {
   // The terminal surface's real shape: a generic notification for a question, an innocuous
   // approval for a reply - the recent prose is the only place the command is ever named.
-  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), [
-    msg("I'll clear the stale build output with rm -rf build/ and rebuild."),
-  ]);
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [msg("I'll clear the stale build output with rm -rf build/ and rebuild.")],
+  });
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
@@ -190,9 +191,9 @@ test("mapTriage: a destructive WINDOW forces escalate when the ask itself looks 
 });
 
 test("mapTriage: a clean window still allows the routine-access answer", () => {
-  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), [
-    msg("I'll run the unit tests now to confirm the refactor holds."),
-  ]);
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [msg("I'll run the unit tests now to confirm the refactor holds.")],
+  });
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer");
@@ -202,7 +203,7 @@ test("mapTriage: an EMPTY window can never take the auto-answer (nothing was sca
   // `risky === false` over an empty window means "unknown", not "safe" - the one outcome
   // that ACTS must not be taken on it. This is the whole reason the window is a parameter
   // rather than a pre-flattened string: an empty string cannot say WHY it is empty.
-  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), []);
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), { messages: [] });
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
 });
@@ -215,36 +216,57 @@ test("mapTriage: a PROSE-FREE window can never take the auto-answer either", () 
   const out = mapTriage(
     report(),
     pend({ question: "Claude needs your permission" }),
-    Array.from({ length: 12 }, () => msg("", ["Bash"])),
+    { messages: Array.from({ length: 12 }, () => msg("", ["Bash"])) },
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
 });
 
+test("mapTriage: a window with a prose turn from the USER side counts as scanned", () => {
+  // The gate has no role filter and claims none: it mirrors `riskContextFrom`, which scans both
+  // roles because the human's prose names the command about as often as the child's does.
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [{ ...msg("Go ahead and run the unit tests."), role: "user" }],
+  });
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
+});
+
+test("mapTriage: an `unavailable` window routes up as no-transcript-file, not no-transcript-context", () => {
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [],
+    unavailable: true,
+  });
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-file");
+});
+
 test("mapTriage: one prose turn among tool calls is enough to have scanned", () => {
   // The gate asks whether there was anything to scan, not how much - a single line of the
   // child's own prose is a real view of what it is about to run, so Tier 1 may answer.
-  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), [
-    msg("", ["Bash"]),
-    msg("Running the unit tests now to confirm the refactor holds.", ["Bash"]),
-    msg("", ["Read"]),
-  ]);
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [
+      msg("", ["Bash"]),
+      msg("Running the unit tests now to confirm the refactor holds.", ["Bash"]),
+      msg("", ["Read"]),
+    ],
+  });
   assert.equal(out.kind, "dispose");
   if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
 });
 
 test("mapTriage: an empty window still allows the safe directions (skip + escalate)", () => {
-  const esc = mapTriage(report({ bucket: "human-only", disposition: "escalate", answer: undefined }), pend(), []);
+  const esc = mapTriage(report({ bucket: "human-only", disposition: "escalate", answer: undefined }), pend(), { messages: [] });
   assert.equal(esc.kind, "dispose");
   if (esc.kind === "dispose") assert.equal(esc.verdict.action, "escalate");
 
-  const skip = mapTriage(report({ bucket: "human-only", disposition: "skip", answer: undefined }), pend(), []);
+  const skip = mapTriage(report({ bucket: "human-only", disposition: "skip", answer: undefined }), pend(), { messages: [] });
   assert.equal(skip.kind, "dispose");
   if (skip.kind === "dispose") assert.equal(skip.verdict.action, "skip");
 });
 
 test("mapTriage: a destructive ask on an empty window escalates (more useful than routing up)", () => {
-  const out = mapTriage(report(), pend({ question: "can I force-push to main?" }), []);
+  const out = mapTriage(report(), pend({ question: "can I force-push to main?" }), { messages: [] });
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
@@ -334,7 +356,7 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   return {
     // A real (clean) window by default: an empty one is a gated case in its own right, so
     // defaulting to it would quietly turn every case below into a no-transcript route-up.
-    transcript: async () => ({ messages: cleanWindow(), truncated: false }),
+    transcript: async () => ({ messages: cleanWindow().messages, truncated: false }),
     runModel: async () => JSON.stringify(report()),
     ...over,
   };
@@ -420,7 +442,10 @@ test("triageSession: a window of pure TOOL CALLS routes up (tool names name no c
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
 });
 
-test("triageSession: an `unavailable` window (200 with no transcript file) routes up too", async () => {
+test("triageSession: an `unavailable` window routes up with its OWN reason, not the generic one", async () => {
+  // "no transcript file at all" and "the window came back empty" are different diagnoses, and
+  // the worker log is the only place this feature's accuracy gets measured - so they must not
+  // read alike there.
   const out = await triageSession(
     deps({ transcript: async () => ({ messages: [], truncated: false, unavailable: true }) }),
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
@@ -428,7 +453,7 @@ test("triageSession: an `unavailable` window (200 with no transcript file) route
     cfg(),
   );
   assert.equal(out.kind, "route-up");
-  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-file");
 });
 
 test("triageSession: a transcript FETCH FAILURE routes up rather than auto-answering", async () => {
@@ -439,6 +464,7 @@ test("triageSession: a transcript FETCH FAILURE routes up rather than auto-answe
     cfg(),
   );
   assert.equal(out.kind, "route-up");
+  // A daemon that failed to answer is not a session without a transcript - keep them apart.
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
 });
 
@@ -548,6 +574,83 @@ test("triageSession: the denylist scan does NOT reach back into the goal turns",
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer", "ambient prose in the goal turns must not poison the scan");
+});
+
+// ---- the daemon's TRUNCATED (head+tail) response shape ----
+//
+// Over its byte budget the endpoint returns the opening turns followed by the closing ones with
+// the middle elided, and the tail's turn count is byte-bounded - so it can yield FEWER turns
+// than the head. Slicing back from the end of that array lands inside the opening, which is why
+// the recent turns are taken forward from `headCount` instead. These cover the shape directly.
+
+/** The daemon's truncated response: `head` opening turns, then a short byte-bounded tail. */
+function splitWindow(head: TranscriptMessage[], tail: TranscriptMessage[]) {
+  return { messages: [...head, ...tail], truncated: true, headCount: head.length };
+}
+
+test("triageSession (truncated): a destructive string in a HEAD turn does NOT force an escalation", async () => {
+  // 12 opening turns, a tail of only 4: `slice(-12)` would drag 8 goal turns into the scan and
+  // escalate every routine ask for the rest of the session.
+  const head = Array.from({ length: 12 }, () => msg("Goal: wipe the staging database and reseed it."));
+  const tail = Array.from({ length: 4 }, () => msg("Running the unit tests for the refactor."));
+  const out = await triageSession(
+    deps({ transcript: async () => splitWindow(head, tail) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "answer", "old history is not the pending ask");
+});
+
+test("triageSession (truncated): a destructive string in a genuine RECENT turn still escalates", async () => {
+  const head = Array.from({ length: 12 }, () => msg("Goal: port the auth module."));
+  const tail = [msg("I'll clear the stale build output with rm -rf build/ and rebuild.")];
+  const out = await triageSession(
+    deps({ transcript: async () => splitWindow(head, tail) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.reason, "access-risky-escalated");
+});
+
+test("triageSession (truncated): HEAD prose cannot satisfy the no-context gate for the tail", async () => {
+  // The fail-open this closes: the recent turns are all prose-free tool calls (nothing the
+  // denylist can read a command in), but opening prose would make `hasProse` report
+  // "scanned and clean" - and Tier 1 would type an approval into the pane.
+  const head = Array.from({ length: 12 }, () => msg("Goal: port the auth module."));
+  const tail = Array.from({ length: 4 }, () => msg("", ["Bash"]));
+  const out = await triageSession(
+    deps({ transcript: async () => splitWindow(head, tail) }),
+    pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession (truncated): the router still gets the opening goal turns", async () => {
+  // The prompt window stays wider than the scan window - `purpose` lands on the card.
+  let prompt = "";
+  const head = Array.from({ length: 12 }, (_, i) => msg(`GOAL-${i} port the auth module.`));
+  const tail = [msg("RECENT running the unit tests.")];
+  await triageSession(
+    deps({
+      transcript: async () => splitWindow(head, tail),
+      runModel: async (p) => (prompt = p, JSON.stringify(report())),
+    }),
+    pend({ situation: "terminal-pane" }),
+    mkSession(),
+    cfg(),
+  );
+  assert.ok(prompt.includes("GOAL-0"), "the goal the user set must reach the router");
+  assert.ok(prompt.includes("RECENT"), "so must the pending ask");
 });
 
 test("triageSession: a router reply with no confidence routes up as unparseable, not low-confidence", async () => {

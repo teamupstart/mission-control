@@ -293,8 +293,14 @@ export class Registry extends EventEmitter {
    * like a no-op. The next real hook that does carry `permission_mode` reconciles
    * this guess.
    *
-   * The pane overlay is advanced in lockstep so the next discovery sweep (which
-   * re-applies the overlay's mode over passive state) doesn't revert the chip.
+   * A still-fresh pane overlay is advanced in lockstep so the next discovery
+   * sweep (which re-applies the overlay's mode over passive state) doesn't revert
+   * the chip. Its `updatedAt` is deliberately left alone: that stamp is the
+   * overlay's freshness clock, and bumping it on an injected keystroke would
+   * revive an overlay already past OVERLAY_TTL_MS, re-applying all of its stale
+   * fields (instrumented, state, activity) over the card. A stale overlay is
+   * correctly ignored by that gate, and the new mode still carries into the next
+   * sweep via the updated session (`mergeDiscovered` seeds from `prev`).
    */
   optimisticCyclePermissionMode(sessionId: string): void {
     const s = this.sessions.get(sessionId);
@@ -302,10 +308,7 @@ export class Registry extends EventEmitter {
     const next = nextPermissionMode(s.permissionMode);
     if (!next || next === s.permissionMode) return;
     const overlay = this.overlayFor(s);
-    if (overlay) {
-      overlay.permissionMode = next;
-      overlay.updatedAt = Date.now();
-    }
+    if (overlay) overlay.permissionMode = next;
     const updated: Session = { ...s, permissionMode: next };
     this.sessions.set(sessionId, updated);
     this.emitSession(updated);

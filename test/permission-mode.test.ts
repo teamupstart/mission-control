@@ -146,6 +146,24 @@ test("a real hook reconciles an optimistic guess", () => {
   assert.equal(modeOf(r), "bypassPermissions");
 });
 
+test("an optimistic cycle never revives an overlay that aged past its TTL", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const r = seeded();
+  r.applyHook(hook({ event: "Notification", message: "waiting for you", permissionMode: "default" }));
+  // The session goes quiet for longer than OVERLAY_TTL_MS (30 min). No hook has
+  // arrived from any pane, so nothing pruned the now-dead overlay.
+  t.mock.timers.tick(31 * 60 * 1000);
+  r.optimisticCyclePermissionMode("s1"); // default -> acceptEdits
+  r.applyDiscovery([disco()]);
+
+  const s = r.snapshot().sessions.find((x) => x.id === "s1")!;
+  assert.equal(s.permissionMode, "acceptEdits"); // the optimistic chip still carries (via prev)
+  // ...but the half-hour-old overlay stays dead rather than being stamped fresh
+  // and re-applied wholesale over the card.
+  assert.equal(s.instrumented, false);
+  assert.equal(s.state, "working"); // discovery's value, not the overlay's awaiting_input
+});
+
 test("optimistic cycle is a no-op when the mode is unknown", () => {
   const r = seeded();
   assert.equal(modeOf(r), null); // no hook yet

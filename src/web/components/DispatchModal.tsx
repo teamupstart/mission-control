@@ -6,7 +6,8 @@ import { api, fetchRepos } from "../lib/api.ts";
  * The form fields a dispatch carries. Held by the parent (not the modal) so an
  * accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
  * half-written task around; the draft is wiped only once it's actually
- * dispatched or queued (see EMPTY_DISPATCH_DRAFT).
+ * dispatched or queued, or when the footer's Clear discards it on purpose
+ * (see EMPTY_DISPATCH_DRAFT).
  */
 export type DispatchDraft = {
   repoRoot: string;
@@ -23,6 +24,17 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   kind: "ship",
   agent: "claude",
 };
+
+/** True when a draft holds nothing worth keeping - so "Clear" has nothing to do. */
+export function isEmptyDispatchDraft(d: DispatchDraft): boolean {
+  return (
+    !d.repoRoot.trim() &&
+    !d.intent.trim() &&
+    !d.title.trim() &&
+    d.kind === EMPTY_DISPATCH_DRAFT.kind &&
+    d.agent === EMPTY_DISPATCH_DRAFT.agent
+  );
+}
 
 /**
  * Launch (or queue) a new agent: pick a repo, describe the task, and dispatch.
@@ -80,6 +92,14 @@ export function DispatchModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Discard the draft without closing: every close path preserves it, so this is
+  // the one way to start a fresh dispatch.
+  function clearDraft(): void {
+    onDraftChange(EMPTY_DISPATCH_DRAFT);
+    setError(null);
+    intentRef.current?.focus();
+  }
 
   async function submit(queue: boolean): Promise<void> {
     if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
@@ -190,6 +210,14 @@ export function DispatchModal({
         <footer className="modal-foot">
           <button className="btn btn-ghost" onClick={() => void submit(true)} disabled={busy}>
             Add to backlog
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={clearDraft}
+            disabled={busy || isEmptyDispatchDraft(draft)}
+            title="Reset the form"
+          >
+            Clear
           </button>
           <span className="actions-spacer" />
           <button className="btn btn-ghost" onClick={onClose}>

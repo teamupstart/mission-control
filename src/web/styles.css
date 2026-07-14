@@ -2448,3 +2448,207 @@ kbd {
   line-height: 1.5;
   color: var(--dim);
 }
+
+/* ---- Foreman (auto-responder) ---- */
+.foremanbar {
+  position: relative;
+}
+.foreman-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.foreman-btn.on {
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+  color: var(--fg);
+}
+.foreman-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--neutral);
+  flex: none;
+}
+.foreman-dot.live {
+  background: var(--idle);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent);
+}
+.foreman-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+}
+.foreman-btn.on .foreman-chip {
+  color: color-mix(in oklab, var(--idle) 70%, var(--fg));
+  border-color: color-mix(in oklab, var(--idle) 40%, var(--border));
+}
+.foreman-pop {
+  width: 288px;
+}
+.foreman-modes {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.foreman-modes:disabled {
+  opacity: 0.5;
+}
+.foreman-modes legend {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.foreman-modes .alert-row input[type="radio"] {
+  accent-color: var(--idle);
+}
+.foreman-allowlist {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.foreman-allowlist textarea {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+/* Card-header flag: Foreman drafted/escalated something worth opening. */
+.foreman-flag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  white-space: nowrap;
+}
+.foreman-flag.ff-escalated {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 12%, var(--panel));
+}
+.foreman-flag.ff-pending {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel));
+}
+
+/* Foreman panel inside an expanded card. */
+.foreman-note {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 10px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.foreman-note.fn-escalated {
+  border-left-color: var(--attention);
+}
+.foreman-note.fn-pending {
+  border-left-color: var(--working);
+}
+.foreman-note.fn-answered {
+  border-left-color: var(--idle);
+}
+.fn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fn-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--bg);
+  background: color-mix(in oklab, var(--idle) 78%, var(--fg));
+}
+.fn-disp {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.fn-time {
+  margin-left: auto;
+  font-size: 11px;
+}
+.fn-purpose {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.fn-brief {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+.fn-brief :first-child {
+  margin-top: 0;
+}
+.fn-brief :last-child {
+  margin-bottom: 0;
+}
+.fn-rec {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+}
+.fn-rec-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.fn-rec-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+}
+.fn-audit {
+  margin: 0;
+  font-size: 12px;
+  color: color-mix(in oklab, var(--idle) 70%, var(--fg));
+}
+.fn-actions {
+  display: flex;
+  gap: 8px;
+}
+.fn-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--dim);
+}

@@ -28,6 +28,10 @@ and get your decision back.
   moment a session needs input, a review lands, a no-mistakes gate parks, or a
   dispatched task fails - with an **AFK mode** that also pings on idle sessions and
   finished tasks and sends periodic fleet digests.
+- **Triages** the needs-you queue for you: **Foreman** is an optional auto-responder
+  that reads each blocked session's transcript, auto-answers the routine calls,
+  escalates the genuine forks as a decision brief, and writes a one-line Purpose on
+  every card - shipping OFF and drafting its answers before it ever sends.
 
 ## Quick start
 
@@ -289,6 +293,51 @@ Alerts fire on the *transition* into attention (once, not every tick) and de-dup
 a waiting session pings you once. Delivery needs the tab open (foreground or
 background); a closed tab can't receive one.
 
+## Foreman (auto-responder)
+
+The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
+you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
+Claude session, reads the transcript to understand the goal, then:
+
+- **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
+  correct, secure, non-duplicative option) and non-destructive access requests;
+- **escalates** the genuine forks - a call that hinges on your intent, or anything
+  destructive/risky - as a framed **decision brief** with its recommendation, and pings you;
+- writes a 1-2 sentence **Purpose** on every session it inspects, shown in the expanded
+  card so you can re-orient at a glance.
+
+Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
+between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it
+only *drafts* answers onto the card until you trust it. Start the worker - a plain agent in
+a terminal that talks to the daemon over localhost - with:
+
+```sh
+npm run foreman
+```
+
+Control it from the **Foreman** control in the top bar (beside Alerts): enable it, then
+pick a mode.
+
+| Mode | What it does |
+|------|--------------|
+| **dry-run** (default) | drafts a reply onto the card; never sends |
+| **semi-auto** | drafts a reply with a one-click **Approve & send** on the card |
+| **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
+
+Live sending is gated by an explicit **repo allowlist** (paths, one per line in the
+popover); with an empty allowlist Foreman never types into any live session. A separate
+**Auto-approve non-destructive access** switch (on by default) governs whether it may
+approve access/permission asks - turn it off and those escalate to you instead.
+Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
+safety check) are **always** escalated, never auto-approved.
+
+Everything Foreman does surfaces on the card: a needs-you session it acted on shows a
+**◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
+brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
+session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
+**alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
+depth.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - select a card with the arrow keys and act on it
@@ -390,6 +439,8 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 | `FLEET_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
+| `FOREMAN_CLAUDE_BIN` | `claude` | Foreman reviewer: Claude CLI path override |
+| `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned |
 
 > **Upgrading from `HARNESS_*`?** The old `HARNESS_*` env names are still honored as
 > a fallback, and an existing `~/.ai-harness` state dir is kept in place (the new
@@ -403,8 +454,9 @@ make init              # one-time bootstrap (deps, build, hooks, treehouse + no-
 make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
+npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

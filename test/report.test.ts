@@ -35,6 +35,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prNumber: null,
     prState: null,
     meta: null,
+    note: null,
     ...over,
   };
 }

@@ -1,9 +1,24 @@
-import type { SessionDiff } from "@shared/types.ts";
+import type { ForemanStatus, SessionDiff } from "@shared/types.ts";
+import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
 
 export interface ActionResult {
   ok: boolean;
   error?: string;
 }
+
+/** GET a JSON endpoint, returning null on any failure (for optional UI data). */
+async function fetchJson<T>(path: string): Promise<T | null> {
+  try {
+    const res = await fetch(path);
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/config");
+export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
 
 /** Fetch a session's diff vs its source branch. Never throws - maps failures into the shape. */
 export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
@@ -53,6 +68,7 @@ async function request(method: string, path: string, body?: unknown): Promise<Ac
 }
 
 const post = (path: string, body?: unknown) => request("POST", path, body);
+const put = (path: string, body?: unknown) => request("PUT", path, body);
 const del = (path: string) => request("DELETE", path);
 
 export interface DispatchInput {
@@ -86,4 +102,8 @@ export const api = {
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/complete`, { outcome, outcomeUrl }),
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
+
+  // --- Foreman (auto-responder) ---
+  setForemanConfig: (patch: ForemanConfigPatch) => put(`/api/foreman/config`, patch),
+  setNote: (id: string, patch: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, patch),
 };

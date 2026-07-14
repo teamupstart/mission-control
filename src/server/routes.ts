@@ -8,6 +8,7 @@ import {
   ForemanConfigPatchSchema,
   HookIngestSchema,
   NomistakesRespondSchema,
+  RenameSchema,
   ResetSchema,
   ResolveReviewSchema,
   SendTextSchema,
@@ -33,10 +34,12 @@ import {
   cyclePermissionMode,
   focus,
   kill,
+  rename,
   resetPreview,
   resetToOrigin,
   sendText,
   setPermissionMode,
+  validateSessionName,
 } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
@@ -190,6 +193,21 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     const parsed = await parseBody(c, SendTextSchema);
     if (!parsed.ok) return parsed.res;
     const r = await sendText(session, parsed.data.text, parsed.data.submit);
+    return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Rename the session's tmux session / wezterm tab; discovery reads the new name
+  // back onto the card, and the registry echoes it immediately so it doesn't lag a
+  // poll. A name the backing handle can't accept is a 400; a shelled-out failure a 500.
+  app.post("/api/sessions/:id/rename", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, RenameSchema);
+    if (!parsed.ok) return parsed.res;
+    const valid = validateSessionName(session, parsed.data.name);
+    if (!valid.ok) return c.json({ ok: false, error: valid.error }, 400);
+    const r = await rename(session, valid.name);
+    if (r.ok) registry.renameSession(session.id, valid.name);
     return c.json(r, r.ok ? 200 : 500);
   });
 

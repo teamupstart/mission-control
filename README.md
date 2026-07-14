@@ -12,11 +12,14 @@ and get your decision back.
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
 - **Names** each session by its **tmux session name**, else its **wezterm tab
-  title**, else the repo folder.
+  title**, else the repo folder. Click a card's title (or press <kbd>O</kbd>) to
+  rename it - it renames the underlying tmux session / wezterm tab, which the next
+  sweep reads straight back onto the card.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
-- **Acts** on a session: send it a message, focus its tab, kill it, or reset its
-  checkout back to origin (with a preview of exactly what that would discard).
+- **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
+  reset its checkout back to origin (with a preview of exactly what that would
+  discard).
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
@@ -400,6 +403,7 @@ without reaching for the mouse:
 | <kbd>s</kbd> | Send a message to the selected session | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
+| <kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
 | <kbd>⌃</kbd><kbd>r</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 

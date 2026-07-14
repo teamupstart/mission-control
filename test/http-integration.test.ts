@@ -256,6 +256,70 @@ test("reset endpoints are wired: 404 for unknown session, real errors otherwise"
   assert.equal(rbody.error, "not a git repository");
 });
 
+test("rename: 404 unknown session, 400 invalid name, and it's wired to the action", async () => {
+  // Unknown session id -> 404 (never reaches validation or a shell).
+  const miss = await app.request("/api/sessions/nope/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "x" }),
+  });
+  assert.equal(miss.status, 404);
+
+  // Seed a session backed by a tmux name no real tmux server has, so the wiring
+  // test below can shell out to `tmux rename-session` without any risk of hitting
+  // a session the user actually has open.
+  registry.applyDiscovery([
+    {
+      syntheticId: "ren-1",
+      agent: "claude",
+      name: "harness-rename-src-xyzzy",
+      nameSource: "tmux",
+      cwd: "/repo/app",
+      gitBranch: "main",
+      gitRoot: null,
+      nomistakesGated: false,
+      pid: 5252,
+      tty: "ttys055",
+      wezterm: null,
+      tmux: { session: "harness-rename-src-xyzzy", window: "w", windowIndex: 0, paneId: "%55" },
+      startedAt: 0,
+    },
+  ]);
+
+  // An empty body fails the zod schema (name min length) -> 400.
+  const empty = await app.request("/api/sessions/ren-1/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "   " }),
+  });
+  // A blank name trims to empty: caught by validateSessionName as a 400.
+  assert.equal(empty.status, 400);
+
+  // A tmux-illegal name ('.') is refused before any shell runs -> 400, unchanged.
+  const dotted = await app.request("/api/sessions/ren-1/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "a.b" }),
+  });
+  assert.equal(dotted.status, 400);
+  const dbody = (await dotted.json()) as { ok: boolean; error: string };
+  assert.match(dbody.error, /tmux session name/i);
+  assert.equal((await sessions()).find((s) => s.id === "ren-1")!.name, "harness-rename-src-xyzzy");
+
+  // A valid name reaches the action, which shells `tmux rename-session -t
+  // harness-rename-src-xyzzy ...`. No such session exists, so tmux errors and the
+  // route surfaces it as a 500 - proving the route -> validate -> action path is
+  // wired (the success path + optimistic echo are covered in rename.test.ts).
+  const ok = await app.request("/api/sessions/ren-1/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "harness-rename-dst-xyzzy" }),
+  });
+  assert.equal(ok.status, 500);
+  const okBody = (await ok.json()) as { ok: boolean; error: string };
+  assert.equal(okBody.ok, false);
+});
+
 test("/mcp/status validates the shared EnvSchema and updates activity on success", async () => {
   // Happy path: valid EnvSchema body -> 204, activity line updates on the session.
   const ok = await app.request("/mcp/status", {

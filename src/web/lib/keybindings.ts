@@ -19,6 +19,7 @@ export type ActionId =
   | "send"
   | "focus"
   | "mode"
+  | "rename"
   | "kill"
   | "reset";
 
@@ -88,6 +89,15 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Cycle permission mode",
     description: "Cycle the selected Claude session's permission mode (Shift+Tab).",
     defaultBinding: "shift+Tab",
+    group: "selection",
+  },
+  {
+    id: "rename",
+    label: "Rename session",
+    description: "Rename the selected session (its tmux session or wezterm tab).",
+    // Shift+O: the grid canonicalizes a Shift+letter to the bare letter, so this
+    // fires on O (with or without Shift). See chordFromEvent.
+    defaultBinding: "o",
     group: "selection",
   },
   {

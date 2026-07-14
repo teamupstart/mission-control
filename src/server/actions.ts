@@ -6,6 +6,7 @@ import {
   activateWeztermPane,
   findSessionHostPane,
   listWeztermPanes,
+  setWeztermTabTitle,
   spawnWeztermTab,
 } from "./discovery/wezterm.ts";
 import { run, type RunResult } from "./util/exec.ts";
@@ -239,6 +240,79 @@ function notInCycle(target: PermissionMode): string {
     dontAsk: "don't-ask can't be reached by Shift+Tab - it's only settable at startup",
   };
   return why[target] ?? `${target} isn't in this session's Shift+Tab cycle`;
+}
+
+/**
+ * Validate a proposed session name against the handle that backs it, returning the
+ * trimmed name or a human-readable reason it's rejected. Kept pure (no exec) so the
+ * route can answer a bad name with a 400 and it can be unit-tested directly. tmux
+ * is the handle we rename when present (as in `sendText`/`rename`), so its stricter
+ * naming rules apply whenever the session has a tmux pane.
+ */
+export function validateSessionName(
+  session: Pick<Session, "tmux" | "wezterm">,
+  rawName: string,
+): { ok: true; name: string } | { ok: false; error: string } {
+  const name = rawName.trim();
+  if (!name) return { ok: false, error: "name can't be empty" };
+  // A newline would submit/split in a tmux name or a terminal title; other control
+  // chars are meaningless in a display name. Reject them for either handle.
+  if (/[\u0000-\u001f\u007f]/.test(name)) {
+    return { ok: false, error: "name can't contain control characters" };
+  }
+  if (!session.tmux && !session.wezterm) {
+    return { ok: false, error: "this session has no tmux or wezterm pane to rename" };
+  }
+  // tmux session names may not contain a period or colon - both are separators in
+  // tmux target specs (`session:window.pane`), so `rename-session` refuses them.
+  if (session.tmux && /[.:]/.test(name)) {
+    return { ok: false, error: "a tmux session name can't contain '.' or ':'" };
+  }
+  return { ok: true, name };
+}
+
+/**
+ * Side effects `rename` performs, injectable so tests can assert the branching
+ * (tmux vs wezterm) without renaming a real tmux session or shelling out.
+ */
+export interface RenameDeps {
+  /** `tmux rename-session -t <from> <to>`. */
+  renameTmuxSession: (from: string, to: string) => Promise<RunResult>;
+  /** `wezterm cli set-tab-title --pane-id <id> <title>`. */
+  setWeztermTabTitle: (paneId: number, title: string) => Promise<RunResult>;
+}
+
+const defaultRenameDeps: RenameDeps = {
+  renameTmuxSession: (from, to) => run("tmux", ["rename-session", "-t", from, to]),
+  setWeztermTabTitle,
+};
+
+/**
+ * Rename a session's terminal home so the next discovery sweep reads the new name
+ * back onto its card. A tmux-hosted session renames the tmux session itself (its
+ * name IS the card name); a wezterm-hosted one gets an explicit tab title. tmux
+ * wins when both exist, mirroring `sendText` (the agent's real pane is the tmux
+ * pane). Assumes `name` was already validated - the route calls `validateSessionName`
+ * first so a bad name is a 400, not a shelled-out failure.
+ */
+export async function rename(
+  session: Session,
+  name: string,
+  deps: RenameDeps = defaultRenameDeps,
+): Promise<ActionResult> {
+  if (session.tmux) {
+    return check(
+      await deps.renameTmuxSession(session.tmux.session, name),
+      "tmux rename-session failed",
+    );
+  }
+  if (session.wezterm) {
+    return check(
+      await deps.setWeztermTabTitle(session.wezterm.paneId, name),
+      "wezterm set-tab-title failed",
+    );
+  }
+  return { ok: false, error: NO_HANDLE };
 }
 
 /** Bring the session's pane/tab into focus. */

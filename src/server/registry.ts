@@ -354,6 +354,32 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
+  /**
+   * Optimistically apply a rename to the live card the instant the tmux/wezterm
+   * rename lands, rather than waiting up to a poll interval for discovery to read
+   * the new name back. For a tmux session the display name IS the tmux session
+   * name, so the tmux handle's `session` field moves with it - otherwise Focus and
+   * Kill (which target `tmux.session` by name) would address the now-renamed
+   * session by its old name until the next sweep. The wezterm handle's `tabTitle`
+   * is kept in step for the same consistency, though no action keys off it.
+   *
+   * Discovery converges on this exact value on its next tick (the terminal really
+   * was renamed), so there's nothing to reconcile - a stale in-flight sweep that
+   * started before the rename can briefly show the old name, then self-heals.
+   */
+  renameSession(sessionId: string, name: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.name === name) return;
+    const next: Session = {
+      ...s,
+      name,
+      tmux: s.tmux ? { ...s.tmux, session: name } : s.tmux,
+      wezterm: s.wezterm ? { ...s.wezterm, tabTitle: name } : s.wezterm,
+    };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
   private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {
     return this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key);
   }

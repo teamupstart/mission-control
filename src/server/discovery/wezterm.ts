@@ -102,6 +102,16 @@ export async function spawnWeztermTab(argv: string[], title: string): Promise<nu
 }
 
 /**
+ * Rename the tab a pane lives in by setting its explicit tab title, the value
+ * `wezterm cli list` reports back as `tab_title` and discovery reads as the card
+ * name. This is the same override `spawnWeztermTab` applies to a fresh tab.
+ */
+export async function setWeztermTabTitle(paneId: number, title: string): Promise<RunResult> {
+  const bin = resolveWeztermBin();
+  return weztermCli(bin, ["set-tab-title", "--pane-id", String(paneId), title]);
+}
+
+/**
  * Find the wezterm pane that already hosts a tmux client for `session`, so Focus
  * can raise that tab instead of opening a new one. A wezterm pane running
  * `tmux attach` shares its tty with the tmux client, so we match on that shared

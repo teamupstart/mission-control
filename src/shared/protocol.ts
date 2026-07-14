@@ -77,6 +77,18 @@ export const SendTextSchema = z.object({
 });
 export type SendText = z.infer<typeof SendTextSchema>;
 
+/**
+ * Rename a session from the dashboard - renames the underlying tmux session or
+ * wezterm tab, which the next discovery sweep reads back as the card's name. The
+ * length cap keeps a stray paste from becoming an unwieldy tmux session name; the
+ * handle-specific character rules (tmux forbids `.`/`:`) live in the action, which
+ * knows which pane backs the session.
+ */
+export const RenameSchema = z.object({
+  name: z.string().min(1).max(200),
+});
+export type Rename = z.infer<typeof RenameSchema>;
+
 /** An MCP-driven agent creating a review item bound to its session's pane. */
 export const CreateReviewSchema = z.object({
   env: EnvSchema,

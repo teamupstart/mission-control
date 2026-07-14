@@ -407,6 +407,20 @@ export function readTranscriptWindow(
 const SINCE_MAX_BYTES = 512 * 1024;
 
 /**
+ * The transcript's current byte size - the anchor a work item records at delivery
+ * so its verify window can start exactly at its first turn. An O(1) stat; null
+ * when the file is missing. See `readTranscriptSince` for why bytes and not a
+ * timestamp or a turn count.
+ */
+export function transcriptSize(path: string): number | null {
+  try {
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A transcript window read FORWARD from a byte offset - how the work queue scopes
  * a window to a single item.
  *
@@ -431,9 +445,9 @@ export function readTranscriptSince(
   try {
     size = statSync(path).size;
   } catch {
-    return { messages: [], truncated: false };
+    return { messages: [], truncated: false, headCount: 0 };
   }
-  if (size < offset) return { messages: [], truncated: false, reset: true };
+  if (size < offset) return { messages: [], truncated: false, reset: true, headCount: 0 };
   // Bound the window from the TAIL when an item wrote more than the cap: the
   // recent turns are what show whether the work landed.
   const truncated = size - offset > maxBytes;
@@ -445,7 +459,10 @@ export function readTranscriptSince(
   // file happened to end mid-line at delivery, parseLines skips the unparseable
   // fragment anyway, so not dropping is safe in both cases.
   const lines = completeLines(buf, truncated, false);
-  return { messages: parseLines(lines), truncated };
+  // headCount is 0 even when truncated: this window drops a PREFIX rather than a
+  // middle, so the turns it returns are always contiguous and a reader slicing
+  // forward from 0 can never run back into an elided boundary.
+  return { messages: parseLines(lines), truncated, headCount: 0 };
 }
 
 /**

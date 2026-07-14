@@ -4,9 +4,9 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// `review.ts` reads the claude binary and the full-review budget from the env at module load,
-// so both are pinned BEFORE importing it. The fake bin never exits, which exercises the real
-// spawn + timeout + process-group-kill path rather than a stubbed promise.
+// `structured.ts` reads the claude binary and the full-review budget from the env at module
+// load, so both are pinned BEFORE importing it. The fake bin never exits, which exercises the
+// real spawn + timeout + process-group-kill path rather than a stubbed promise.
 const dir = mkdtempSync(join(tmpdir(), "foreman-review-"));
 const fakeBin = join(dir, "fake-claude.sh");
 writeFileSync(fakeBin, "#!/bin/sh\nsleep 30\n");
@@ -26,7 +26,7 @@ const CALLER_BUDGET_MS = 200;
 const BOUNDARY_MS = 2000;
 process.env.FOREMAN_REVIEW_TIMEOUT_MS = String(DEFAULT_BUDGET_MS);
 
-const { runClaudeText } = await import("../src/server/foreman/review.ts");
+const { runClaudeText } = await import("../src/server/foreman/structured.ts");
 
 test("runClaudeText honours a caller's own timeoutMs", async () => {
   // The Tier 1 router passes a budget sized for Haiku emitting one small object; it must not

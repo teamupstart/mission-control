@@ -33,12 +33,14 @@ import {
   readTranscriptSince,
   readTranscriptWindow,
   resolveTranscriptPath,
+  transcriptSize,
   transcriptStreamHandler,
 } from "./transcript.ts";
 import {
   claimForemanLease,
   foremanStatus,
   getForemanConfig,
+  releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
 import { readStandards } from "./standards.ts";
@@ -148,6 +150,15 @@ export function buildApp(
     const turns = Number(c.req.query("turns"));
     const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
     return c.json(readTranscriptWindow(path, 12, tail));
+  });
+
+  // The transcript's current byte size - the anchor a work item records when it's
+  // delivered, so its verify window starts exactly at its first turn.
+  app.get("/api/sessions/:id/transcript/size", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const path = resolveTranscriptPath(session);
+    return c.json({ size: path ? transcriptSize(path) : null });
   });
 
   // The repo standards the queue verifier judges an item's diff against.
@@ -446,6 +457,7 @@ export function buildApp(
     return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
   });
 
+  // The human's answer to the drain-time ask.
   app.put("/api/sessions/:id/queue/wrapup", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -454,6 +466,18 @@ export function buildApp(
     const parsed = await parseBody(c, WrapupSchema);
     if (!parsed.ok) return parsed.res;
     queues.setWrapupAnswer(queue.noteKey, parsed.data.answer);
+    return c.json(queues.get(session.id));
+  });
+
+  // The worker's "I've raised the ask" stamp - what makes it fire exactly once.
+  // Separate from the answer above because they have different writers: this is
+  // Foreman recording that it asked, that is the human recording what they said.
+  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const queue = queues.get(session.id);
+    if (!queue) return c.json({ error: "no queue for this session" }, 404);
+    queues.markWrapupAsked(queue.noteKey);
     return c.json(queues.get(session.id));
   });
 
@@ -492,6 +516,16 @@ export function buildApp(
     const parsed = await parseBody(c, ForemanHeartbeatSchema);
     if (!parsed.ok) return parsed.res;
     return c.json(claimForemanLease(parsed.data.workerId));
+  });
+
+  // A leader handing the lease back on a clean shutdown, so a standby takes over
+  // at once rather than waiting out the TTL. Best-effort by nature: a crash just
+  // lets the lease expire, which is exactly what the TTL is for.
+  app.post("/api/foreman/heartbeat/release", async (c) => {
+    const parsed = await parseBody(c, ForemanHeartbeatSchema);
+    if (!parsed.ok) return parsed.res;
+    releaseForemanLease(parsed.data.workerId);
+    return c.body(null, 204);
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

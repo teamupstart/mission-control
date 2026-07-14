@@ -101,18 +101,20 @@ test("the mode survives a later discovery sweep (overlay carries it)", () => {
   assert.equal(modeOf(r), "bypassPermissions");
 });
 
-test("nextPermissionMode follows Claude's base Shift+Tab cycle", () => {
+test("nextPermissionMode advances the steps that hold in every config", () => {
   assert.equal(nextPermissionMode("default"), "acceptEdits");
   assert.equal(nextPermissionMode("acceptEdits"), "plan");
-  assert.equal(nextPermissionMode("plan"), "default"); // base cycle wraps
-  // Optional modes we can't confirm are enabled fall back to the base wrap.
-  assert.equal(nextPermissionMode("bypassPermissions"), "default");
-  assert.equal(nextPermissionMode("auto"), "default");
 });
 
 test("nextPermissionMode declines to guess when it can't", () => {
   assert.equal(nextPermissionMode(null), null); // mode not yet known
   assert.equal(nextPermissionMode("dontAsk"), null); // never part of the cycle
+  // After `plan` the landing mode depends on whether this session enabled the
+  // optional modes, which we can't see. Guessing "default" would paint a session
+  // that's skipping every permission check with the safe "manual" chip.
+  assert.equal(nextPermissionMode("plan"), null);
+  assert.equal(nextPermissionMode("bypassPermissions"), null);
+  assert.equal(nextPermissionMode("auto"), null);
 });
 
 test("optimistic cycle advances the chip immediately, before any hook", () => {
@@ -135,13 +137,14 @@ test("an optimistic cycle survives a discovery sweep (overlay advanced too)", ()
   assert.equal(modeOf(r), "acceptEdits");
 });
 
-test("a real hook reconciles an optimistic guess", () => {
+test("a real hook, not a guess, resolves the ambiguous step after plan", () => {
   const r = seeded();
   r.applyHook(hook({ event: "UserPromptSubmit", permissionMode: "plan" }));
-  r.optimisticCyclePermissionMode("s1"); // guesses default (base wrap)
-  assert.equal(modeOf(r), "default");
-  // But this session actually had bypassPermissions enabled after plan; the next
-  // hook carrying the true mode wins over the guess.
+  r.optimisticCyclePermissionMode("s1");
+  // This session has bypassPermissions enabled, so Shift+Tab actually landed
+  // there - which we can't know. Rather than claim the safe "manual" chip, the
+  // chip holds until a hook carries the truth.
+  assert.equal(modeOf(r), "plan");
   r.applyHook(hook({ event: "PreToolUse", permissionMode: "bypassPermissions" }));
   assert.equal(modeOf(r), "bypassPermissions");
 });

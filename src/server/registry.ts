@@ -290,8 +290,9 @@ export class Registry extends EventEmitter {
    * the mode instantly but emits no signal carrying the new value on an idle
    * session (its hooks omit it and the statusLine payload never has it), so
    * without this the chip would stay on the old mode and the toggle would look
-   * like a no-op. The next real hook that does carry `permission_mode` reconciles
-   * this guess.
+   * like a no-op. Only the unambiguous steps advance (see `MODE_CYCLE`); from a
+   * step whose landing mode depends on config we leave the chip alone for a real
+   * hook to set, rather than risk showing a session as safer than it is.
    *
    * A still-fresh pane overlay is advanced in lockstep so the next discovery
    * sweep (which re-applies the overlay's mode over passive state) doesn't revert
@@ -306,7 +307,7 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s) return;
     const next = nextPermissionMode(s.permissionMode);
-    if (!next || next === s.permissionMode) return;
+    if (!next) return;
     const overlay = this.overlayFor(s);
     if (overlay) overlay.permissionMode = next;
     const updated: Session = { ...s, permissionMode: next };
@@ -824,31 +825,32 @@ export function normalizePermissionMode(raw: string | undefined | null): Permiss
  * without this the chip would sit on the old value until the next unrelated hook,
  * making Shift+Tab look like a no-op.
  *
- * This is the documented base cycle: default -> acceptEdits -> plan -> default.
- * The optional `bypassPermissions`/`auto` modes only slot in after `plan` when a
- * session explicitly enables them (a flag / account setting we can't see here),
- * so from any of them we guess the base wrap back to `default`; the next real
- * hook carrying `permission_mode` reconciles if that guess was off. `dontAsk` is
- * never part of the cycle, so we leave it alone.
+ * Only the steps that hold in *every* config are mapped: default -> acceptEdits
+ * and acceptEdits -> plan. The optional `bypassPermissions`/`auto` modes slot in
+ * after `plan` when a session enables them (a flag / account setting we can't see
+ * here), so from `plan` the next mode is ambiguous - `default` in the base cycle,
+ * but `bypassPermissions`/`auto` when those are on. Guessing `default` there would
+ * paint a `--dangerously-skip-permissions` session with the safe "manual" chip
+ * while it skips every permission check, and a session must never be shown as
+ * safer than it is. So `plan`/`bypassPermissions`/`auto` decline to guess and wait
+ * for a real hook to carry the mode, as `dontAsk` (never in the cycle) already did.
  */
-const MODE_CYCLE: Record<PermissionMode, PermissionMode> = {
+const MODE_CYCLE: Record<PermissionMode, PermissionMode | null> = {
   default: "acceptEdits",
   acceptEdits: "plan",
-  plan: "default",
-  bypassPermissions: "default",
-  auto: "default",
-  dontAsk: "dontAsk",
+  plan: null,
+  bypassPermissions: null,
+  auto: null,
+  dontAsk: null,
 };
 
 /**
- * The next mode a Shift+Tab lands on from `current`, or null when we can't tell
- * (unknown current mode, or one that isn't part of the cycle) - in which case the
- * chip is left for a real hook to update rather than guessed.
+ * The next mode a Shift+Tab lands on from `current`, or null when we can't tell -
+ * in which case the chip is left for a real hook to update rather than guessed.
  */
 export function nextPermissionMode(current: PermissionMode | null): PermissionMode | null {
   if (!current) return null;
-  const next = MODE_CYCLE[current];
-  return next === current ? null : next;
+  return MODE_CYCLE[current];
 }
 
 /**

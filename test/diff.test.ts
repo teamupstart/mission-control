@@ -64,6 +64,47 @@ test("computeSessionDiff degrades gracefully outside a repo / with no cwd", asyn
   assert.match(b.error ?? "", /no working directory/);
 });
 
+// Regression: an explicitly requested base that git can't resolve used to fall
+// back to a working-tree-vs-HEAD diff and report ok:true - hiding the very
+// committed work the caller asked about, so the answer read as "nothing was done"
+// rather than "the base is gone".
+test("computeSessionDiff fails closed when an explicitly requested base is unreachable", async () => {
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  git("checkout", "-qb", "feature/work");
+  writeFileSync(join(repo, "feature.txt"), "the work we asked about\n");
+  git("add", "-A");
+  git("commit", "-qm", "the work");
+  writeFileSync(join(repo, "dirty.txt"), "an in-flight edit\n"); // what the old fallback would show
+
+  const gone = "0".repeat(40); // well-formed, but no such object here
+  const r = await computeSessionDiff(repo, gone);
+
+  assert.equal(r.ok, false);
+  assert.equal(r.baseSha, null);
+  assert.match(r.error ?? "", /not reachable/);
+  assert.match(r.error ?? "", new RegExp(gone));
+  // It must not answer with the HEAD fallback's diff.
+  assert.equal(r.filesChanged, 0);
+  assert.equal(r.patch, "");
+});
+
+test("computeSessionDiff still falls back to HEAD for an auto-detected ref with no shared history", async () => {
+  // The fallback is deliberate for a ref we picked ourselves: an orphan branch has
+  // no merge-base with main, and you should still see your uncommitted work. Only an
+  // explicitly *requested* base fails closed.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  git("checkout", "-q", "--orphan", "orphan/work");
+  git("rm", "-rqf", ".");
+  writeFileSync(join(repo, "fresh.txt"), "no shared history\n");
+
+  const r = await computeSessionDiff(repo); // no explicit source
+  assert.equal(r.ok, true);
+  assert.equal(r.baseSha, null); // no merge-base was resolvable
+  assert.ok(r.patch.includes("fresh.txt"), "uncommitted work is still visible");
+});
+
 test("parsePatch numbers lines and classifies adds/dels/context per file", () => {
   const patch = [
     "diff --git a/keep.txt b/keep.txt",

@@ -41,8 +41,9 @@ function countAdded(patch: string): number {
 
 /**
  * Compute the diff of `cwd`'s worktree/branch against its source branch. Falls
- * back to a working-tree-vs-HEAD diff when there's no source branch or no shared
- * history (a brand-new branch), so you always see uncommitted work.
+ * back to a working-tree-vs-HEAD diff when there's no *auto-detected* source
+ * branch or no shared history (a brand-new branch), so you always see uncommitted
+ * work. An explicitly requested `source` gets no such fallback: see below.
  */
 export async function computeSessionDiff(cwd: string | null, source?: string): Promise<SessionDiff> {
   const base0: SessionDiff = {
@@ -70,6 +71,20 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
     if (mb.code === 0 && mb.stdout.trim()) {
       diffBase = mb.stdout.trim();
       baseSha = diffBase.slice(0, 12);
+    } else if (source) {
+      // Falling back to HEAD is right for an *auto-detected* ref (a brand-new
+      // branch with no shared history) but wrong for one the caller explicitly
+      // asked for: a caller naming a base wants the diff since THAT commit, and
+      // silently answering with a working-tree-vs-HEAD diff instead hides the
+      // committed work it asked about. That reads as "nothing was done" rather
+      // than "the base is gone" - so fail closed and say which sha we couldn't
+      // resolve. Reachability, not `ok`, is the signal callers need here.
+      return {
+        ...base0,
+        branch,
+        headSha,
+        error: `base commit ${source} is not reachable (rebased, amended, or garbage-collected?)`,
+      };
     }
   }
 

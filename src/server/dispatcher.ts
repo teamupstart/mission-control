@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { Task, WorktreeProvider } from "@shared/types.ts";
+import type { Session, Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
@@ -10,8 +10,20 @@ import { sleep } from "./util/timers.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
-/** Settle time after discovery so the agent's input is ready for the first prompt. */
+/**
+ * Fallback settle time for an agent that never reports a hook. Only reached when
+ * `DISPATCH_HOOK_READY_MS` elapses with no signal - see `awaitReady`. This is a guess
+ * about boot time, which is exactly why it is no longer the primary path.
+ */
 const SETTLE_MS = Number(envVar("DISPATCH_SETTLE_MS") ?? 2000);
+/**
+ * How long to wait for the agent's first hook - the real "I can read input" signal.
+ * Generous: overshooting costs a few seconds on an uninstrumented agent, undershooting
+ * costs the whole prompt.
+ */
+const HOOK_READY_MS = Number(envVar("DISPATCH_HOOK_READY_MS") ?? 20000);
+/** How long to wait for the injected prompt to show up as `working` before retrying it. */
+const ACCEPT_MS = Number(envVar("DISPATCH_ACCEPT_MS") ?? 15000);
 
 /**
  * Turns a task into a live agent: provision an isolated worktree, launch the
@@ -54,15 +66,18 @@ export class Dispatcher {
       this.patch(taskId, { tmuxSession });
       if (await this.abortIfSettled(taskId)) return;
 
-      const session = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
-      if (!session) {
+      const discovered = await this.registry.waitForSessionAtCwd(wt.path, READY_TIMEOUT_MS);
+      if (!discovered) {
         throw new Error("agent session never appeared (the launch may have exited immediately)");
       }
       if (await this.abortIfSettled(taskId)) return;
-      await sleep(SETTLE_MS);
 
-      const sent = await injectPrompt(session, task.intent);
-      if (!sent.ok) throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
+      // Discovery only proves the process exists. Wait for the agent to prove it can
+      // READ before typing at it - see `awaitReady`.
+      const { session, instrumented } = await this.awaitReady(wt.path, discovered);
+      if (await this.abortIfSettled(taskId)) return;
+
+      await this.deliverIntent(session, task.intent, wt.path, instrumented);
 
       if (await this.abortIfSettled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: session.id });
@@ -102,6 +117,87 @@ export class Dispatcher {
           tmuxSession: null,
           sessionId: null,
         });
+      }
+    }
+  }
+
+  /**
+   * Wait for the agent to be able to READ the prompt we're about to type.
+   *
+   * Discovery is a `ps` sweep: it fires when the binary is exec'd, seconds before any
+   * TUI exists. The only honest "I'm listening" signal an agent gives is its first
+   * hook, so wait for that. Returns whether we got it, because that decides whether a
+   * later silence is evidence of anything.
+   *
+   * The fallback is deliberate. An agent with no hooks installed will never satisfy
+   * this, and refusing to dispatch to it would be a regression, so a timeout degrades
+   * to the old fixed sleep - the pre-existing best-effort behaviour, now confined to
+   * the only case that has no better option instead of applying to everything.
+   */
+  private async awaitReady(
+    cwd: string,
+    discovered: Session,
+  ): Promise<{ session: Session; instrumented: boolean }> {
+    const ready = await this.registry.waitForReadySessionAtCwd(cwd, HOOK_READY_MS);
+    if (ready) return { session: ready, instrumented: true };
+    await sleep(SETTLE_MS);
+    // Re-read: `discovered` is a snapshot from before the wait, and its pane may have
+    // been filled in since. Typing needs the freshest pane we have.
+    return {
+      session: this.registry.getSession(discovered.id) ?? discovered,
+      instrumented: false,
+    };
+  }
+
+  /**
+   * Type the intent and - when we can - confirm the agent actually took it.
+   *
+   * `injectPrompt` succeeding means tmux accepted the write, NOT that the agent read
+   * it: a pty swallows keystrokes just as happily when nothing is listening. Trusting
+   * it is what let a task sit `running` for 13 minutes against a session whose first
+   * prompt was pasted 647ms before its TUI existed. So on an instrumented session we
+   * wait for the `working` transition only `UserPromptSubmit` can produce.
+   *
+   * The retry is gated on positive evidence (it typed, and the agent is STILL idle 15s
+   * later), never on silence alone. It is not free: if the paste reached the input box
+   * but the Enter did not, a second paste concatenates onto the first and the agent
+   * reads its intent twice over. That is the accepted cost - a garbled-but-visible
+   * prompt a human can fix beats a session that sits empty and calls itself `running`,
+   * and if neither attempt takes, the task now FAILS loudly instead of lying.
+   *
+   * None of this transfers to the wrap-up, whose instruction pushes: there a second
+   * delivery is a second PR, so it never retries. See queue-apply's `auto-wrapup`.
+   *
+   * Uninstrumented sessions get one best-effort send: with no hook there is no signal,
+   * and absence of evidence is not evidence.
+   */
+  private async deliverIntent(
+    session: Session,
+    intent: string,
+    cwd: string,
+    instrumented: boolean,
+  ): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      // Listen BEFORE typing - the hook can land before the next line runs.
+      const accepted = instrumented
+        ? this.registry.waitForPromptAcceptedAtCwd(cwd, ACCEPT_MS)
+        : null;
+
+      const sent = await injectPrompt(session, intent);
+      if (!sent.ok) {
+        throw new Error(`could not send the initial prompt: ${sent.error ?? "unknown"}`);
+      }
+      if (!accepted) return;
+      if (await accepted) return;
+
+      // Still idle after typing at it. Positive evidence the paste went nowhere - but
+      // only if it's STILL idle now; a `working` we merely raced past means it landed.
+      const now = this.registry.getSession(session.id);
+      if (now && now.state !== "idle") return;
+      if (attempt >= 2) {
+        throw new Error(
+          "the agent never acknowledged the initial prompt (it was typed but not ingested)",
+        );
       }
     }
   }

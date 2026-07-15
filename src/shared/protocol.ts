@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { WRAPUP_MODES } from "./queue.ts";
 
 /** Terminal env the hook / MCP client captures, used to bind an event to a session. */
 const EnvSchema = z
@@ -249,6 +250,23 @@ export const ForemanConfigSchema = z.object({
    * are a heuristic (a reminted gap id resets them); this is not.
    */
   maxFixRounds: z.number().int().min(1).max(50).default(10),
+  /**
+   * What happens when a queue drains (or the agent finishes and reports idle with
+   * nothing left to send).
+   *
+   * `ask` is the shipped behaviour and the default: Foreman marks the drain and the
+   * human picks from the Wrapup card. `no-mistakes` and `pr` let Foreman type that
+   * instruction itself, unattended - the difference between the two is only which
+   * text gets sent (see `autoWrapupPayload`).
+   *
+   * Automating this is strictly more dangerous than the per-item send it resembles,
+   * because the instruction PUSHES: `/no-mistakes` opens a PR at the end of its
+   * pipeline. So the auto path carries every gate the manual one does and one more -
+   * it is refused outright unless `mode` is live AND the repo is on the allowlist
+   * (`mayActLive`), exactly like a queue send. Setting this to `no-mistakes` while
+   * in dry-run does NOT type; it degrades to `ask`. Dry-run means dry-run.
+   */
+  wrapup: z.enum(WRAPUP_MODES).default("ask"),
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 

@@ -354,6 +354,7 @@ function queueConfig(cfg: ForemanConfig): QueueConfig {
     maxFixRounds: cfg.maxFixRounds,
     settleMs: SETTLE_MS,
     pickupTimeoutMs: PICKUP_TIMEOUT_MS,
+    wrapup: cfg.wrapup,
   };
 }
 
@@ -378,6 +379,7 @@ function queueActions(client: ForemanClient, _cfg: ForemanConfig): QueueActions 
     markSent: (sid, iid, sha, anchor) => client.markSent(sid, iid, sha, anchor),
     recoverItem: (sid, iid) => client.recoverItem(sid, iid),
     markWrapupAsked: (id) => client.markWrapupAsked(id),
+    setWrapupAnswer: (id, answer) => client.setWrapupAnswer(id, answer),
     captureScope: (s) => captureScope(client, s),
     holdsLease: () => isLeader,
   };

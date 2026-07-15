@@ -44,3 +44,52 @@ export function isTerminalState(state: WorkItemState): boolean {
 export function inFlightItem(items: WorkItem[]): WorkItem | null {
   return items.find((i) => isInFlightState(i.state)) ?? null;
 }
+
+// ---- the drain-time wrap-up ----
+
+/**
+ * What Foreman does when a queue drains.
+ *
+ * `ask` is the original behaviour and the default: mark the drain and let the human
+ * pick from the Wrapup card. The other two type the instruction themselves, and are
+ * the whole reason this text lives in `@shared` rather than in the card - the worker
+ * and the card MUST send the same bytes. A copy that drifts is a copy that ships a
+ * different thing depending on who pressed the button.
+ */
+export type WrapupMode = "ask" | "no-mistakes" | "pr";
+
+/** The enum's values, for the config schema. Spelled once so zod can't drift from the type. */
+export const WRAPUP_MODES = ["ask", "no-mistakes", "pr"] as const satisfies readonly WrapupMode[];
+
+/**
+ * The two instructions a wrap-up can send.
+ *
+ * `/no-mistakes` is a slash command and MUST stay a single line: `sendText` submits on
+ * every embedded newline, and even on the bracketed-paste path a stray newline here
+ * would split the command. It also pushes and opens the PR itself, which is why the
+ * card's "both ticked" case prefills it alone rather than asking for both.
+ */
+export const WRAPUP_NO_MISTAKES = "/no-mistakes";
+export const WRAPUP_PR = "Please commit this work, push the branch, and open a PR.";
+
+/**
+ * The composed wrap-up instruction for the card's two checkboxes. A guess, which is
+ * exactly why the card's textarea is editable.
+ */
+export function composeWrapup(pr: boolean, nm: boolean): string {
+  if (nm) return WRAPUP_NO_MISTAKES;
+  if (pr) return WRAPUP_PR;
+  return "";
+}
+
+/**
+ * The instruction Foreman types itself on drain, or null when it must ask instead.
+ *
+ * Null is not "do nothing" - it's "fall back to the human", so the caller must still
+ * mark the drain. See `decideQueueTick` step 5.
+ */
+export function autoWrapupPayload(mode: WrapupMode): string | null {
+  if (mode === "no-mistakes") return WRAPUP_NO_MISTAKES;
+  if (mode === "pr") return WRAPUP_PR;
+  return null;
+}

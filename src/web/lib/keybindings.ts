@@ -19,7 +19,8 @@ export type ActionId =
   | "send"
   | "focus"
   | "mode"
-  | "kill";
+  | "kill"
+  | "reset";
 
 export interface ActionDef {
   id: ActionId;
@@ -94,6 +95,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Kill session",
     description: "Request termination of the selected session.",
     defaultBinding: "k",
+    group: "selection",
+  },
+  {
+    id: "reset",
+    label: "Reset checkout",
+    description: "Reset the selected session's checkout to origin and clear its context.",
+    defaultBinding: "ctrl+r",
     group: "selection",
   },
 ];

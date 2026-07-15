@@ -372,6 +372,7 @@ without reaching for the mouse:
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
+| <kbd>⌃</kbd><kbd>r</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
 **Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
@@ -402,16 +403,16 @@ those map to `no-mistakes axi respond --action …` (fix lets you pick findings 
 add guidance). Approve and skip confirm first since they advance the pipeline
 toward pushing your branch.
 
-Resetting a checkout (the card's **⌃R reset**) also **retires the run the card was
-showing**, clearing the strip and its narration for good. The reset throws away the
-very work that run validated, but `axi status` keeps reporting it for the branch
-long after - a reset moves the branch *pointer*, not the branch *name* - so simply
-clearing the strip wouldn't hold: the next poll would put it straight back. The
-dismissal is remembered per run, so a **new** run on the same branch decorates the
-card again, and it's scoped to the checkout that was wiped (worktree root + branch):
-a session sharing that worktree clears too, while a session on the same branch in a
-*different* worktree keeps its strip, its work still being on disk. A reset that
-fails leaves the strip alone.
+Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>r</kbd>) also
+**retires the run the card was showing**, clearing the strip and its narration for
+good. The reset throws away the very work that run validated, but `axi status` keeps
+reporting it for the branch long after - a reset moves the branch *pointer*, not the
+branch *name* - so simply clearing the strip wouldn't hold: the next poll would put
+it straight back. The dismissal is remembered per run, so a **new** run on the same
+branch decorates the card again, and it's scoped to the checkout that was wiped
+(worktree root + branch): a session sharing that worktree clears too, while a session
+on the same branch in a *different* worktree keeps its strip, its work still being on
+disk. A reset that fails leaves the strip alone.
 
 Set `NOMISTAKES_BIN` if the binary isn't on the daemon's PATH.
 

@@ -188,31 +188,6 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
-      // Ctrl+R hard-resets the selected session's checkout to origin's default
-      // branch and clears its context - a "start this checkout over" chord. Only
-      // fires with a card that has a working dir selected; otherwise we leave
-      // Ctrl+R to the browser (a harmless reload). Held back behind any overlay.
-      if (
-        !typing &&
-        !modalOpen &&
-        !dispatchOpen &&
-        !reportOpen &&
-        !settingsOpen &&
-        !diffSession &&
-        !resetSession &&
-        e.ctrlKey &&
-        !e.metaKey &&
-        !e.altKey &&
-        e.key.toLowerCase() === "r"
-      ) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
-        if (sel?.cwd) {
-          e.preventDefault();
-          setResetSessionId(sel.id);
-          return;
-        }
-      }
-
       // Roundup toggles whether it's open or closed - held back only while a
       // review/dispatch/settings overlay owns the screen or you're typing.
       if (
@@ -297,6 +272,17 @@ export function App(): React.JSX.Element {
         if (!selectedId) return;
         e.preventDefault();
         setDiffSessionId(selectedId);
+        return;
+      }
+      // Hard-resets the selected session's checkout to origin's default branch and
+      // clears its context - a "start this checkout over" chord, confirmed first by
+      // ResetModal. Needs a card with a working dir; without one we leave the chord
+      // alone, so the default Ctrl+R still falls through to a harmless browser reload.
+      if (chord === bindings.reset) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel?.cwd) return;
+        e.preventDefault();
+        setResetSessionId(sel.id);
         return;
       }
       const h = handle();
@@ -590,7 +576,7 @@ function CommandBar({
         )}
         {live && session.cwd && (
           <button className="keycap-btn" onClick={onReset} title="Reset to origin & clear context">
-            <kbd>⌃R</kbd> reset
+            <kbd>{formatChord(bindings.reset)}</kbd> reset
           </button>
         )}
         <button className="keycap-btn" onClick={onToggleExpand}>

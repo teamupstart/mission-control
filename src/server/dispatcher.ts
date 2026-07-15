@@ -181,7 +181,7 @@ export async function provisionWorktree(
     // the pool has nothing left to give. Collect those and ask once more - the
     // alternative (below) is silently abandoning the pool for this dispatch.
     if (!path) {
-      const { reaped } = await reapPool(repoRoot, pins());
+      const { reaped } = await reapPool(repoRoot, pins);
       if (reaped.length > 0) {
         console.log(
           `[fleet-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped

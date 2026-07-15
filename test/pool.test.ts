@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   parsePoolStatus,
   planReap,
+  poolRepos,
   reapIntervalMs,
   reapPool,
   startPoolReaper,
@@ -216,7 +217,7 @@ test("reapPool returns only the reclaimable leases and leaves live/dirty ones he
     ].join("\n"),
   );
 
-  const r = await reapPool(clone, pins({ sessionCwds: [live] }), deps);
+  const r = await reapPool(clone, () => pins({ sessionCwds: [live] }), deps);
 
   assert.deepEqual(returned, [idle], "only the idle, clean, merged tree goes back to the pool");
   assert.deepEqual(r.reaped.map((t) => t.name), ["1"]);
@@ -242,7 +243,7 @@ test("reapPool still reports every tree when none is even plausibly idle", async
       "                   claude (999)",
     ].join("\n"),
   );
-  const r = await reapPool(clone, pins(), deps);
+  const r = await reapPool(clone, () => pins(), deps);
   assert.deepEqual(returned, []);
   assert.deepEqual(
     r.skipped.map((c) => [c.tree.name, c.skip]),
@@ -261,7 +262,7 @@ test("reapPool leaves a task's worktree leased rather than handing it to the nex
   const held = mkLinkedWorktree(clone, "held", join(clone, "..", "k-held"));
   const { deps, returned } = fakeDeps(`1     leased       ${held}  (held by fleet-control)`);
 
-  const r = await reapPool(clone, pins({ taskWorktrees: [held] }), deps);
+  const r = await reapPool(clone, () => pins({ taskWorktrees: [held] }), deps);
 
   assert.deepEqual(returned, [], "no process, no session, clean and merged - and still not ours to take");
   assert.deepEqual(r.reaped, []);
@@ -271,7 +272,7 @@ test("reapPool leaves a task's worktree leased rather than handing it to the nex
 test("reapPool does nothing in a repo that never opted into treehouse", async () => {
   const { clone } = mkOriginAndClone("harness-pool-nontree-");
   const { deps, returned } = fakeDeps(`1     leased       ${clone}  (held by x)`);
-  const r = await reapPool(clone, pins(), deps);
+  const r = await reapPool(clone, () => pins(), deps);
   assert.deepEqual(returned, []);
   assert.deepEqual(r, { reaped: [], skipped: [] });
 });
@@ -284,9 +285,137 @@ test("reapPool reports a failed return as a skip instead of claiming the slot is
     status: async () => ({ stdout: `1     leased       ${idle}  (held by x)`, stderr: "", code: 0 }),
     returnTree: async () => ({ stdout: "", stderr: "lease is held elsewhere", code: 1 }),
   };
-  const r = await reapPool(clone, pins(), deps);
+  const r = await reapPool(clone, () => pins(), deps);
   assert.deepEqual(r.reaped, []);
   assert.deepEqual(r.skipped.map((c) => c.skip), ["treehouse return failed: lease is held elsewhere"]);
+});
+
+// --- the fetch window -------------------------------------------------------
+
+/**
+ * Fake treehouse whose `status` answers differently per call, so a test can move
+ * the world underneath a reap the way the fetch really does. The last entry
+ * repeats, so a one-status script pins "nothing changed".
+ */
+function scriptedDeps(...statuses: string[]): { deps: PoolDeps; returned: string[] } {
+  const returned: string[] = [];
+  let call = 0;
+  return {
+    returned,
+    deps: {
+      status: async () => ({
+        stdout: statuses[Math.min(call++, statuses.length - 1)]!,
+        stderr: "",
+        code: 0,
+      }),
+      returnTree: async (_root, path) => {
+        returned.push(path);
+        return { stdout: "", stderr: "", code: 0 };
+      },
+    },
+  };
+}
+
+test("reapPool spares a tree that came alive while it was fetching", async () => {
+  // The gate ran against a reading the fetch has since left up to 30s stale. A
+  // tree `make session` leased a moment before we looked has no processes yet, so
+  // it read as a leak - and 30s is plenty for its agent to start. Only evidence
+  // re-read at the moment of the return sees that.
+  const clone = mkPoolRepo("harness-pool-race-busy-");
+  const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-busy"));
+  const leased = `1     leased       ${idle}  (held by fleet-control)`;
+  const { deps, returned } = scriptedDeps(leased, [leased, "                   claude (999)"].join("\n"));
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, [], "clean and merged, and now running an agent - not ours to take");
+  assert.deepEqual(r.reaped, []);
+  assert.deepEqual(r.skipped.map((c) => c.skip), ["processes are still running in it"]);
+});
+
+test("reapPool spares a tree a session appeared in while it was fetching", async () => {
+  // The other half of the same window: discovery only polls every ~1.5s, so a
+  // freshly leased tree has no session to speak for it at the instant we judge -
+  // which is why the pins are a callback and not a snapshot.
+  const clone = mkPoolRepo("harness-pool-race-pin-");
+  const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-pin"));
+  const { deps, returned } = scriptedDeps(`1     leased       ${idle}  (held by fleet-control)`);
+
+  let reads = 0;
+  const r = await reapPool(clone, () => (reads++ === 0 ? pins() : pins({ sessionCwds: [idle] })), deps);
+
+  assert.deepEqual(returned, [], "the pins that count are the ones at the moment of the return");
+  assert.deepEqual(r.skipped.map((c) => c.skip), ["a live session is standing in it"]);
+});
+
+test("reapPool spares a tree that was re-leased to a different holder mid-sweep", async () => {
+  // Returned and handed to someone else while we fetched: every rung still passes,
+  // because a just-leased tree looks exactly like the leak we came for. Only the
+  // lease's identity says this isn't the tree we judged.
+  const clone = mkPoolRepo("harness-pool-race-holder-");
+  const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-holder"));
+  const { deps, returned } = scriptedDeps(
+    `1     leased       ${idle}  (held by fleet-control)`,
+    `1     leased       ${idle}  (held by someone-else)`,
+  );
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, []);
+  assert.deepEqual(r.skipped.map((c) => c.skip), ["its lease changed while we looked"]);
+});
+
+test("reapPool reaps nothing when it cannot re-read the pool before acting", async () => {
+  // Fail closed: a re-check we couldn't take is not a re-check that passed, so the
+  // stale snapshot must never stand in as confirmation.
+  const clone = mkPoolRepo("harness-pool-race-unreadable-");
+  const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-unreadable"));
+  const returned: string[] = [];
+  let call = 0;
+  const deps: PoolDeps = {
+    status: async () =>
+      call++ === 0
+        ? { stdout: `1     leased       ${idle}  (held by fleet-control)`, stderr: "", code: 0 }
+        : { stdout: "", stderr: "treehouse: could not read pool state", code: 1 },
+    returnTree: async (_root, path) => {
+      returned.push(path);
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, []);
+  assert.deepEqual(r.reaped, []);
+  assert.deepEqual(
+    r.skipped.map((c) => c.skip),
+    ["its pool state could not be re-read before returning it"],
+  );
+});
+
+// --- which pools get swept --------------------------------------------------
+
+test("poolRepos sweeps a treehouse repo the workspace scan alone can name", async () => {
+  // The repo that most needs the sweep is the one that cannot advertise itself: a
+  // fully leaked pool has no live session left, and `make session` never files a
+  // task - so both live-state sources are blind to exactly the leak we exist for.
+  // (`listRepos` caches its scan, so this is the file's only poolRepos test.)
+  const ws = mkdtempSync(join(tmpdir(), "harness-pool-ws-"));
+  const pooled = join(ws, "pooled");
+  mkdirSync(join(pooled, ".git"), { recursive: true });
+  writeFileSync(join(pooled, "treehouse.toml"), "max_trees = 16\n");
+  // A repo that never opted into the pool has nothing for treehouse to sweep.
+  mkdirSync(join(ws, "plain", ".git"), { recursive: true });
+
+  const registry = { liveSessions: () => [], listTasks: () => [] } as unknown as Registry;
+  const prev = process.env.FLEET_WORKSPACE_DIRS;
+  process.env.FLEET_WORKSPACE_DIRS = ws;
+  try {
+    assert.deepEqual(await poolRepos(registry), [realpathSync(pooled)]);
+  } finally {
+    if (prev === undefined) delete process.env.FLEET_WORKSPACE_DIRS;
+    else process.env.FLEET_WORKSPACE_DIRS = prev;
+  }
 });
 
 // --- the sweep's interval ---------------------------------------------------

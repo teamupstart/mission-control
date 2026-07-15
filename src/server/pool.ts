@@ -4,6 +4,7 @@ import { join, sep } from "node:path";
 import { remoteDefaultRef } from "./actions.ts";
 import { envVar } from "./config.ts";
 import type { Registry } from "./registry.ts";
+import { listRepos } from "./repos.ts";
 import { run, type RunResult } from "./util/exec.ts";
 import { mainRepoRoot } from "./util/git.ts";
 import { unref } from "./util/timers.ts";
@@ -145,22 +146,33 @@ export function poolPins(registry: Registry): PoolPins {
 }
 
 /**
- * The pools worth sweeping: the main repos behind every live session and every
- * task the harness tracks, keeping only those that opted into treehouse.
+ * The pools worth sweeping, from three sources that each name what the others
+ * miss, keeping only the repos that opted into treehouse:
  *
- * Sessions are the important half. A leaked lease is usually left by `make
- * session` / `make claude`, which never go through a task at all - and a session
- * standing in a POOLED tree reports that tree as its cwd, not the repo that owns
- * the pool, so we walk each one back to its main root before asking treehouse
- * about it.
+ *  - live sessions - where agents actually are. A session standing in a POOLED
+ *    tree reports that tree as its cwd, not the repo that owns the pool, so we
+ *    walk each one back to its main root before asking treehouse about it.
+ *  - tracked tasks - repos the harness has dispatched into. These outlive their
+ *    sessions, since the task list is rehydrated across a restart.
+ *  - the workspace scan - the only source that can name a FULLY leaked pool.
+ *    The first two describe currently-live state, and a fully leaked pool is
+ *    defined by its sessions being dead: the repo that most needs the sweep is
+ *    exactly the one that drops off both lists. Nor can the user advertise it by
+ *    starting a session there, because `treehouse get` is what fails when the
+ *    pool is dry. This is also where the leak actually comes from - `make
+ *    session` / `make claude` lease directly and never go through a task at all.
+ *
+ * The scan walks the disk, so it is best-effort: a failure degrades to "sweep
+ * the repos we already knew about" rather than costing the whole tick.
  */
-export function poolRepos(registry: Registry): string[] {
+export async function poolRepos(registry: Registry): Promise<string[]> {
   const roots = new Set<string>();
   for (const cwd of occupiedCwds(registry)) {
     const root = mainRepoRoot(cwd);
     if (root) roots.add(root);
   }
   for (const task of registry.listTasks()) roots.add(task.repoRoot);
+  for (const repo of await listRepos().catch(() => [])) roots.add(repo);
   return [...roots].filter(isTreehouseRepo);
 }
 
@@ -188,8 +200,8 @@ export function startPoolReaper(registry: Registry): () => void {
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      for (const repoRoot of poolRepos(registry)) {
-        const { reaped } = await reapPool(repoRoot, poolPins(registry));
+      for (const repoRoot of await poolRepos(registry)) {
+        const { reaped } = await reapPool(repoRoot, () => poolPins(registry));
         if (reaped.length > 0) {
           console.log(
             `[fleet-control] returned ${reaped.length} leaked lease(s) to the pool in ` +
@@ -382,11 +394,13 @@ async function verdict(tree: PoolTree, pins: CanonicalPins): Promise<string | nu
  *
  * `pins` is everything the harness is already holding - live sessions' cwds and
  * task-held worktrees - so a tree it knows is in use is spared even when treehouse
- * can see no processes under it.
+ * can see no processes under it. It is read as a CALLBACK, not a snapshot: this
+ * function blocks on a fetch, and only a reading taken at the reap can see a tree
+ * that was claimed while we waited.
  */
 export async function reapPool(
   repoRoot: string,
-  pins: PoolPins,
+  pins: () => PoolPins,
   deps: PoolDeps = defaultPoolDeps,
 ): Promise<ReapResult> {
   const empty: ReapResult = { reaped: [], skipped: [] };
@@ -397,7 +411,7 @@ export async function reapPool(
   const trees = parsePoolStatus(status.stdout);
   if (trees.length === 0) return empty;
 
-  const canon = canonicalPins(pins);
+  const canon = canonicalPins(pins());
   // Nothing even plausibly idle (the healthy case: every tree busy or available)?
   // Then don't reach for the network at all - a sweep costs one `treehouse status`.
   const cheap = trees.map((tree) => ({ tree, skip: cheapVerdict(tree, canon) }));
@@ -412,7 +426,41 @@ export async function reapPool(
 
   const plan = await planReapWith(trees, canon);
   const result: ReapResult = { reaped: [], skipped: plan.filter((c) => c.skip !== null) };
-  for (const { tree } of plan.filter((c) => c.skip === null)) {
+  const candidates = plan.filter((c) => c.skip === null).map((c) => c.tree);
+  if (candidates.length === 0) return result;
+
+  // Everything above was judged against evidence the fetch has now left up to
+  // 30s stale, and `return --force` kills whatever it finds. That gap is enough
+  // to lose a tree leased while we waited - by `make session`, or by a dispatch
+  // that hasn't recorded its worktree yet - which at the instant we looked had no
+  // processes, no session (discovery only polls every ~1.5s), and no task record,
+  // and so read as a leak. Re-derive the liveness rungs against a reading taken
+  // NOW, immediately before acting. The git rungs stand: work only ever appears,
+  // so an older dirty/unmerged answer is the conservative one.
+  const fresh = await deps.status(repoRoot);
+  // Fail closed: a re-check we couldn't take is not a re-check that passed.
+  if (fresh.code !== 0) {
+    return {
+      reaped: [],
+      skipped: plan.map((c) => ({
+        tree: c.tree,
+        skip: c.skip ?? "its pool state could not be re-read before returning it",
+      })),
+    };
+  }
+  const now = parsePoolStatus(fresh.stdout);
+  const nowPins = canonicalPins(pins());
+
+  for (const tree of candidates) {
+    // Same tree, same holder, or it is not the lease we judged: one returned and
+    // re-leased in the window is someone else's now, and no rung below would
+    // notice, because a just-leased tree looks exactly like a leaked one.
+    const still = now.find((t) => t.path === tree.path && t.holder === tree.holder);
+    const changed = still ? cheapVerdict(still, nowPins) : "its lease changed while we looked";
+    if (changed) {
+      result.skipped.push({ tree, skip: changed });
+      continue;
+    }
     const r = await deps.returnTree(repoRoot, tree.path);
     if (r.code === 0) result.reaped.push(tree);
     else result.skipped.push({ tree, skip: `treehouse return failed: ${r.stderr.trim() || "unknown"}` });

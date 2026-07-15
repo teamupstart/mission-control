@@ -554,17 +554,25 @@ throwaway `git worktree` and the pool stops being reused at all. (`treehouse
 prune` can't help: it skips any tree with an owner reservation, and a leaked
 lease is one.)
 
-So the daemon sweeps the pools it knows about (every `FLEET_POOL_REAP_MS`, and
-again whenever a dispatch finds the pool dry) and hands back only the leases it
-can prove are dead. A tree is returned **only** when treehouse reports no
-processes under it, no live session's cwd is inside it, no task the harness
-tracks still records it, it has no uncommitted changes, and origin's default
-branch already contains its HEAD. Anything else - including any uncertainty -
-leaves the lease alone: a leaked lease costs a slot, a wrong reap costs your
-work. Note that a *live* agent's tree is often clean and merged (right after a
-push), so it's the liveness checks, not the git ones, that keep it yours - and a
-task's tree stays its own even after the agent exits, which is what lets **Mark
-done** keep your work.
+So the daemon sweeps every treehouse repo it can name - the ones behind your live
+sessions and tracked tasks, plus every checkout under `FLEET_WORKSPACE_DIRS` -
+each `FLEET_POOL_REAP_MS`, and again whenever a dispatch finds the pool dry. The
+workspace scan is what reaches a *fully* leaked repo: once its agents are gone
+there is no live session left to advertise it, and you can't start one to fix
+that, because `treehouse get` is precisely what fails when the pool is dry.
+
+It hands back only the leases it can prove are dead. A tree is returned **only**
+when treehouse reports no processes under it, no live session's cwd is inside it,
+no task the harness tracks still records it, it has no uncommitted changes, and
+origin's default branch already contains its HEAD. Anything else - including any
+uncertainty - leaves the lease alone: a leaked lease costs a slot, a wrong reap
+costs your work. Note that a *live* agent's tree is often clean and merged (right
+after a push), so it's the liveness checks, not the git ones, that keep it yours -
+and a task's tree stays its own even after the agent exits, which is what lets
+**Mark done** keep your work. Because those liveness checks are the load-bearing
+ones, they're re-taken immediately before a tree is handed back, so a tree leased
+while the sweep was fetching is never returned on the strength of a reading from
+before it existed.
 
 Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool
@@ -581,7 +589,7 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 |-----|---------|---------|
 | `FLEET_PORT` | `7317` | daemon / dashboard port |
 | `FLEET_HOME` | `~/.fleet-control` | state dir (db, token, logs, dispatch worktrees) |
-| `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker |
+| `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
 | `FLEET_POLL_MS` | `1500` | discovery interval |
 | `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default, and anything under `30000` is clamped to it |

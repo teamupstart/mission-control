@@ -106,9 +106,10 @@ export class Registry extends EventEmitter {
    * a finished run for that branch indefinitely - so clearing the decoration
    * alone doesn't hold, the next poll just re-attaches it. Remembering the run is
    * what makes the clear stick. Keyed on run id, not branch, so a *new* run on
-   * the same branch still decorates the card; kept per session so a sibling on
-   * the same run is unaffected. Dropped with the session (see `remove`); at most
-   * a handful of ids each.
+   * the same branch still decorates the card; kept per session so a sibling
+   * driving the same run from an untouched worktree is unaffected (see
+   * `dismissNomistakes` for which sessions a reset retires it for). Dropped with
+   * the session (see `remove`); at most a handful of ids each.
    */
   private nmDismissed = new Map<string, Set<string>>();
 
@@ -192,6 +193,7 @@ export class Registry extends EventEmitter {
       state: "working",
       cwd: d.cwd,
       gitBranch: d.gitBranch,
+      gitRoot: d.gitRoot,
       nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
@@ -450,22 +452,36 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Retire the session's current no-mistakes run from its card, for good. Called
-   * when the session is reset to origin: that throws away the very work the run
-   * validated, so the run - finished or not - no longer describes this checkout,
-   * and the strip would otherwise sit there forever (see `nmDismissed`).
+   * Retire `run` from the cards of every session the reset of `root` actually
+   * wiped, for good. A reset throws away the very work the run validated, so the
+   * run - finished or not - no longer describes that checkout, and the strip
+   * would otherwise sit there forever (see `nmDismissed`).
    *
-   * A no-op when no run is showing, so it never gags a run that arrives later.
+   * Scoped to the checkout that was reset, on the run's own branch: `reset --hard`
+   * only touches one worktree, so a run is retired exactly for sessions standing
+   * in that worktree on the branch whose work just went away. That covers a
+   * sibling sharing the checkout (its strip describes the same dead work), while
+   * a run driven from a worktree the reset never touched keeps its strip - and
+   * with it the approve/fix/skip buttons that are the only way to answer a gate.
+   *
+   * The caller passes the run it saw before the reset, rather than us re-reading
+   * it after: a fetch can take ~30s, and the poller may have swapped or cleared
+   * the run in that window. We retire the run the user was actually looking at.
    */
-  dismissNomistakes(sessionId: string): void {
-    const s = this.sessions.get(sessionId);
-    if (!s?.nomistakes) return;
-    let dismissed = this.nmDismissed.get(sessionId);
-    if (!dismissed) this.nmDismissed.set(sessionId, (dismissed = new Set()));
-    dismissed.add(s.nomistakes.id);
-    const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
-    this.sessions.set(sessionId, next);
-    this.emitSession(next);
+  dismissNomistakes(run: NmRunSummary, root: string | null): void {
+    // No id means we can't name the run, and dismissing "" would gag every
+    // id-less run on the card for good. Leave the strip rather than over-suppress.
+    if (!run.id || !root) return;
+    for (const [id, s] of this.sessions) {
+      if (s.gitRoot !== root || s.gitBranch !== run.branch) continue;
+      let dismissed = this.nmDismissed.get(id);
+      if (!dismissed) this.nmDismissed.set(id, (dismissed = new Set()));
+      dismissed.add(run.id);
+      if (s.nomistakes?.id !== run.id) continue;
+      const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
   }
 
   /**
@@ -994,6 +1010,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.state === b.state &&
     a.cwd === b.cwd &&
     a.gitBranch === b.gitBranch &&
+    a.gitRoot === b.gitRoot &&
     a.pid === b.pid &&
     a.nameSource === b.nameSource &&
     a.agentSessionId === b.agentSessionId &&

@@ -18,6 +18,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     nameSource: "process",
     cwd: "/repo",
     gitBranch: "main",
+    gitRoot: null,
     nomistakesGated: true,
     pid: 1,
     tty: null,

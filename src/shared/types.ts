@@ -101,6 +101,12 @@ export interface Session {
   state: SessionState;
   cwd: string | null;
   gitBranch: string | null;
+  /**
+   * The root of the checkout `cwd` sits in, resolved through symlinks. Null when
+   * the session isn't in a repo. Distinguishes sessions sharing one worktree from
+   * sessions that merely share a branch name across different worktrees.
+   */
+  gitRoot: string | null;
   /** True when this session's repo is gated by no-mistakes. */
   nomistakesGated: boolean;
   /** The leaf agent process pid (what we act on / kill). */
@@ -505,6 +511,12 @@ export interface ResetPreview {
 export interface ResetResult {
   ok: boolean;
   error: string | null;
+  /**
+   * The worktree root the reset actually ran in (git's own `--show-toplevel`),
+   * or null when we never got that far. Identifies which checkout was wiped, so
+   * callers can act on the sessions sharing it without re-resolving it.
+   */
+  root: string | null;
   /** True when `/clear` was sent to the agent after the git reset landed. */
   cleared: boolean;
 }

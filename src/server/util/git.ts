@@ -1,8 +1,15 @@
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface GitInfo {
   branch: string | null;
+  /**
+   * The worktree root (the dir holding `.git`), resolved through symlinks so it
+   * compares equal to git's own `rev-parse --show-toplevel`. Null when the dir
+   * isn't in a repo. Lets callers tell "same checkout" from "same branch, other
+   * worktree" without shelling out per session.
+   */
+  root: string | null;
   /** True when the repo is gated by no-mistakes (has a `no-mistakes` remote). */
   nomistakesGated: boolean;
 }
@@ -18,28 +25,31 @@ export interface GitInfo {
  * without this, agents in a dispatched worktree show no branch and never gate.
  */
 export function gitInfo(cwd: string | null): GitInfo {
-  const none: GitInfo = { branch: null, nomistakesGated: false };
+  const none: GitInfo = { branch: null, root: null, nomistakesGated: false };
   if (!cwd) return none;
-  const gitDir = resolveGitDir(cwd);
-  if (!gitDir) return none;
+  const found = resolveGitDir(cwd);
+  if (!found) return none;
   let head: string;
   try {
-    head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
+    head = readFileSync(join(found.gitDir, "HEAD"), "utf8").trim();
   } catch {
     return none;
   }
   return {
     branch: branchFromHead(head),
-    nomistakesGated: hasNoMistakesRemote(commonDir(gitDir)),
+    root: realPath(found.root),
+    nomistakesGated: hasNoMistakesRemote(commonDir(found.gitDir)),
   };
 }
 
 /**
- * Resolve the git directory (where HEAD lives) for a working dir by walking up
- * to the repo root. A normal checkout has a `.git` DIRECTORY; a linked worktree
- * or submodule has a `.git` FILE whose `gitdir:` line points at the real dir.
+ * Resolve the git directory (where HEAD lives) and the worktree root that holds
+ * it, by walking up from a working dir. A normal checkout has a `.git`
+ * DIRECTORY; a linked worktree or submodule has a `.git` FILE whose `gitdir:`
+ * line points at the real dir - in both cases the dir we found `.git` in is the
+ * worktree root.
  */
-function resolveGitDir(cwd: string): string | null {
+function resolveGitDir(cwd: string): { gitDir: string; root: string } | null {
   let dir = cwd;
   for (let i = 0; i < 40; i++) {
     const dotGit = join(dir, ".git");
@@ -52,12 +62,12 @@ function resolveGitDir(cwd: string): string | null {
       dir = parent;
       continue;
     }
-    if (isDir) return dotGit;
+    if (isDir) return { gitDir: dotGit, root: dir };
     try {
       const m = readFileSync(dotGit, "utf8").match(/^gitdir:\s*(.+)$/m);
       if (m) {
         const p = m[1]!.trim();
-        return isAbsolute(p) ? p : resolve(dir, p);
+        return { gitDir: isAbsolute(p) ? p : resolve(dir, p), root: dir };
       }
     } catch {
       /* unreadable .git file - fall through */
@@ -65,6 +75,15 @@ function resolveGitDir(cwd: string): string | null {
     return null;
   }
   return null;
+}
+
+/** Physical path, so a root compares equal to git's `rev-parse --show-toplevel`. */
+function realPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
 }
 
 /**

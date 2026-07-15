@@ -225,11 +225,14 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, ResetSchema);
     if (!parsed.ok) return parsed.res;
+    // Sample the run the user is looking at BEFORE the reset: the fetch inside can
+    // take ~30s, and the poller may swap or clear the run in that window.
+    const showing = session.nomistakes;
     const r = await resetToOrigin(session, parsed.data.clear);
     // The reset discarded the work the run validated, so retire its strip along
     // with the rest of the card's state. Only on success: a failed reset left the
     // work - and the run that describes it - in place.
-    if (r.ok) registry.dismissNomistakes(session.id);
+    if (r.ok && showing) registry.dismissNomistakes(showing, r.root);
     return c.json(r, r.ok ? 200 : 500);
   });
 

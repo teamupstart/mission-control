@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitIn, mkCloneOnBranch, mkLinkedWorktree } from "./helpers/git-fixture.ts";
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
 process.env.FLEET_HOME = mkdtempSync(join(tmpdir(), "fleet-reset-nm-"));
@@ -25,56 +25,41 @@ const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-tok
 const registry = new Registry();
 const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
 
-/** Run git in `dir`, returning trimmed stdout. */
-function gitIn(dir: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();
-}
+/** A clone on `branch` with the local work a finished run would have validated. */
+const mkClone = (branch: string): string => mkCloneOnBranch("harness-reset-nm-", branch);
 
 /**
- * A real origin + a clone of it sitting on a feature branch with local work -
- * the shape a session is in when its no-mistakes run has just finished. Real git
- * so the reset route runs a genuine fetch/reset/clean, which is what proves the
- * branch name survives the reset (the whole reason the strip came back).
+ * A session on `branch` in the checkout at `cwd`. `gitRoot` is what discovery
+ * resolves from `cwd`; it defaults to `cwd` (the session sits at the worktree
+ * top) and is passed explicitly when a session drives a run in another worktree.
  */
-function mkClone(branch: string): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "harness-reset-nm-")));
-  const origin = join(root, "origin");
-  execFileSync("git", ["init", "-q", origin]);
-  const og = (...a: string[]): string => gitIn(origin, ...a);
-  og("branch", "-M", "main");
-  og("config", "user.email", "t@test");
-  og("config", "user.name", "t");
-  writeFileSync(join(origin, "keep.txt"), "base\n");
-  og("add", "-A");
-  og("commit", "-qm", "base");
-
-  const clone = join(root, "clone");
-  execFileSync("git", ["clone", "-q", origin, clone]);
-  gitIn(clone, "config", "user.email", "t@test");
-  gitIn(clone, "config", "user.name", "t");
-  gitIn(clone, "checkout", "-qb", branch);
-  writeFileSync(join(clone, "keep.txt"), "base\nthe work the run validated\n");
-  gitIn(clone, "commit", "-qam", "work");
-  return clone;
-}
-
-/** Seed a discovered session on `branch`, checked out at `cwd`. */
-function seedSession(id: string, cwd: string, branch: string): void {
-  const d: DiscoveredSession = {
+function mkDisco(
+  id: string,
+  cwd: string,
+  branch: string,
+  extra: Partial<DiscoveredSession> = {},
+): DiscoveredSession {
+  return {
     syntheticId: id,
     agent: "claude",
     name: "work",
     nameSource: "tmux",
     cwd,
     gitBranch: branch,
+    gitRoot: cwd,
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",
     wezterm: null,
     tmux: null, // no pane -> the reset's best-effort `/clear` is a no-op
     startedAt: 0,
+    ...extra,
   };
-  registry.applyDiscovery([d]);
+}
+
+/** Seed a single discovered session on `branch`, checked out at `cwd`. */
+function seedSession(id: string, cwd: string, branch: string): void {
+  registry.applyDiscovery([mkDisco(id, cwd, branch)]);
 }
 
 /** A finished run on `branch` - what `axi status` keeps reporting after a merge. */
@@ -151,6 +136,113 @@ test("a dismissal is scoped to the run it retired, not to the branch", async () 
   // or resetting once would gag the card forever.
   registry.reconcileNomistakes([finishedRun(branch, "01RUN_NEW")]);
   assert.equal((await card("s2")).nomistakes?.id, "01RUN_NEW");
+});
+
+test("a sibling sharing the reset checkout loses its strip too", async () => {
+  const branch = "mancej/shared";
+  const clone = mkClone(branch);
+  // Two agents cd'd into the SAME checkout on the same branch: both cards show the
+  // run by exact-branch match, and one reset wipes the work behind both of them.
+  registry.applyDiscovery([mkDisco("sh1", clone, branch), mkDisco("sh2", clone, branch, { pid: 4343 })]);
+  registry.reconcileNomistakes([finishedRun(branch)]);
+  assert.equal((await card("sh2")).nomistakes?.outcome, "passed");
+
+  const res = await app.request("/api/sessions/sh1/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+
+  // The sibling's strip described the very work the reset threw away, so it goes
+  // too - and the next poll must not bring either of them back.
+  assert.equal((await card("sh1")).nomistakes, null, "the resetting session's strip is gone");
+  assert.equal((await card("sh2")).nomistakes, null, "the sibling in the same checkout clears too");
+  registry.reconcileNomistakes([finishedRun(branch)]);
+  assert.equal((await card("sh1")).nomistakes, null, "the poller must not resurrect it");
+  assert.equal((await card("sh2")).nomistakes, null, "nor the sibling's");
+});
+
+test("a run driven in another worktree survives a reset that never touched it", async () => {
+  const mainBranch = "main";
+  const runBranch = "mancej/auto-pilot";
+  const clone = mkClone("mancej/lonely"); // the session's own checkout
+  gitIn(clone, "checkout", "-q", mainBranch);
+  const wt = mkLinkedWorktree(clone, runBranch, join(clone, "..", "wt-autopilot"));
+
+  // The session sits in `clone` on main and drives a live, parked run over in
+  // `wt-autopilot` - its card shows that run through the launcher binding.
+  registry.applyDiscovery([
+    mkDisco("drv", clone, mainBranch, { nomistakesRuns: [{ cwd: wt, branch: runBranch }] }),
+  ]);
+  const parked: NmRunSummary = {
+    ...finishedRun(runBranch, "01RUN_LIVE"),
+    status: "running",
+    awaitingAgent: "parked 1m30s",
+    gateStep: "review",
+    outcome: null,
+  };
+  registry.reconcileNomistakes([parked]);
+  assert.equal((await card("drv")).nomistakes?.id, "01RUN_LIVE");
+
+  const res = await app.request("/api/sessions/drv/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+
+  // The reset only wiped `clone`; the run's worktree and its work are untouched,
+  // so retiring it would strand a parked gate with no approve/fix/skip buttons.
+  assert.equal(gitIn(wt, "rev-parse", "--abbrev-ref", "HEAD"), runBranch);
+  assert.equal((await card("drv")).nomistakes?.id, "01RUN_LIVE", "the live run keeps its strip");
+  registry.reconcileNomistakes([parked]);
+  assert.equal((await card("drv")).nomistakes?.awaitingAgent, "parked 1m30s");
+});
+
+test("a same-branch session in a different worktree keeps its strip", async () => {
+  const branch = "mancej/twin";
+  const a = mkClone(branch);
+  const b = mkClone(branch); // an independent checkout that happens to share the branch name
+  registry.applyDiscovery([mkDisco("twinA", a, branch), mkDisco("twinB", b, branch)]);
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_TWIN")]);
+
+  const res = await app.request("/api/sessions/twinA/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+
+  // Same branch name, but `reset --hard` only ever touches one worktree - twinB's
+  // work is still on disk, so its strip still describes something real.
+  assert.equal((await card("twinA")).nomistakes, null, "the reset checkout's strip is gone");
+  assert.equal((await card("twinB")).nomistakes?.id, "01RUN_TWIN", "the untouched checkout keeps its strip");
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_TWIN")]);
+  assert.equal((await card("twinA")).nomistakes, null, "the poller must not resurrect it");
+  assert.equal((await card("twinB")).nomistakes?.id, "01RUN_TWIN");
+});
+
+test("a run we cannot name is left alone rather than gagging every id-less run", async () => {
+  const branch = "mancej/idless";
+  const clone = mkClone(branch);
+  seedSession("idless", clone, branch);
+  // A no-mistakes that renames or drops `id:` parses to an empty id. Retiring ""
+  // would match every later id-less run and gag the card for good - the exact
+  // failure keying on the run id was meant to avoid, and it fails silently.
+  registry.reconcileNomistakes([finishedRun(branch, "")]);
+  assert.equal((await card("idless")).nomistakes?.outcome, "passed");
+
+  const res = await app.request("/api/sessions/idless/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+
+  // So we degrade to the old behavior - the strip lingers - instead of over-suppressing.
+  registry.reconcileNomistakes([finishedRun(branch, "")]);
+  assert.equal((await card("idless")).nomistakes?.outcome, "passed", "an id-less run is never gagged");
 });
 
 test("a failed reset leaves the strip alone", async () => {

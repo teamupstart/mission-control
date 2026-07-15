@@ -397,8 +397,12 @@ function RenameEditor({
               onClose();
             }
           }}
+          // Clicking away cancels, but switching apps must not: the browser fires
+          // blur at the focused element before the window itself loses focus, so
+          // without the hasFocus guard a Cmd+Tab to the session's terminal - the
+          // core loop here - would discard a half-typed name.
           onBlur={() => {
-            if (!busy) onClose();
+            if (!busy && document.hasFocus()) onClose();
           }}
         />
         <button

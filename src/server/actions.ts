@@ -1,4 +1,4 @@
-import type { PermissionMode, ResetPreview, ResetResult, Session } from "@shared/types.ts";
+import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
 import { resolveWeztermBin } from "./config.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { listTmuxClients } from "./discovery/tmux.ts";
@@ -275,6 +275,42 @@ export function validateSessionName(
     return { ok: false, error: "a tmux session name can't start with '$'" };
   }
   return { ok: true, name };
+}
+
+/**
+ * Refuse a rename that would move this tmux session ONTO a name a task still
+ * records. Pairs with `validateSessionName` on the route's 400 path: the name rules
+ * there are pure characters, this one needs task state, so the two stay separate and
+ * the route (which holds the task list) runs both.
+ *
+ * `Task.tmuxSession` is a second copy of the name, and it aims destructive teardown:
+ * `teardownWorktree` runs `tmux kill-session -t tmuxSession`, and `reconcileOnStartup`
+ * probes it to decide whether to reclaim the worktree. That copy outlives its session
+ * - a `done` task keeps it until an explicit reclaim, while tmux frees a dead
+ * session's name for immediate reuse - so a name no LIVE session holds can still be
+ * spoken for. Taking it would re-aim that task's Reclaim at this live agent, or
+ * convince the reconciler the dead task's agent survived and leak its tree.
+ *
+ * Scoped to tasks still holding a worktree, since those are the ones teardown can
+ * still fire for; reclaim/cancel clear the worktree and the name together, so a
+ * retired task frees its name here too. A task holding THIS session's worktree is
+ * its own binding rather than a collision - it follows the rename in
+ * `Registry.renameSession`.
+ */
+export function validateSessionNameAgainstTasks(
+  session: Pick<Session, "tmux" | "cwd">,
+  name: string,
+  tasks: readonly Pick<Task, "tmuxSession" | "worktreePath">[],
+): { ok: true } | { ok: false; error: string } {
+  // Only a tmux rename moves a name teardown targets - a wezterm tab title is
+  // free-form and no task binds to it.
+  if (!session.tmux) return { ok: true };
+  const collides = tasks.some(
+    (t) => t.worktreePath !== null && t.tmuxSession === name && t.worktreePath !== session.cwd,
+  );
+  return collides
+    ? { ok: false, error: `another task still holds the tmux session name '${name}'` }
+    : { ok: true };
 }
 
 /**

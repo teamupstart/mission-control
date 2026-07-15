@@ -20,7 +20,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { normTty } = await import("../src/server/discovery/tty.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { Session } from "../src/shared/types.ts";
+import type { Session, Task } from "../src/shared/types.ts";
 
 openDb();
 const TOKEN = ensureToken();
@@ -304,6 +304,41 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
   assert.equal(dotted.status, 400);
   const dbody = (await dotted.json()) as { ok: boolean; error: string };
   assert.match(dbody.error, /tmux session name/i);
+  assert.equal((await sessions()).find((s) => s.id === "ren-1")!.name, "harness-rename-src-xyzzy");
+
+  // A name a worktree-holding task still records is refused before any shell runs.
+  // That task's Reclaim kills by name (`tmux kill-session -t tmuxSession`), so
+  // taking the name would aim it at this live agent. The rule needs task state, so
+  // only the route can enforce it - hence the wiring check here.
+  registry.upsertTask({
+    id: "stale-xyzzy",
+    title: "T",
+    intent: "done, awaiting reclaim",
+    kind: "ship",
+    agent: "claude",
+    repoRoot: "/repo",
+    worktreePath: "/wt/stale-xyzzy",
+    branch: null,
+    provider: null,
+    tmuxSession: "harness-rename-taken-xyzzy",
+    sessionId: null,
+    status: "done",
+    outcome: null,
+    outcomeUrl: null,
+    error: null,
+    createdAt: 0,
+    updatedAt: 0,
+    dispatchedAt: null,
+    completedAt: null,
+  } satisfies Task);
+  const taken = await app.request("/api/sessions/ren-1/rename", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ name: "harness-rename-taken-xyzzy" }),
+  });
+  assert.equal(taken.status, 400);
+  const tbody = (await taken.json()) as { ok: boolean; error: string };
+  assert.match(tbody.error, /another task still holds/i);
   assert.equal((await sessions()).find((s) => s.id === "ren-1")!.name, "harness-rename-src-xyzzy");
 
   // A valid name reaches the action, which shells `tmux rename-session -t

@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { rename, validateSessionName, type RenameDeps } from "../src/server/actions.ts";
+import {
+  rename,
+  validateSessionName,
+  validateSessionNameAgainstTasks,
+  type RenameDeps,
+} from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
@@ -102,6 +107,53 @@ test("validateSessionName rejects a leading '$' only for a tmux session", () => 
 test("validateSessionName rejects a session with no renameable handle", () => {
   const r = validateSessionName({ tmux: null, wezterm: null }, "whatever");
   assert.equal(r.ok, false);
+});
+
+// ---- validateSessionNameAgainstTasks (pure) ----
+
+// A `done` task keeps its worktree and tmux name until an explicit reclaim, and tmux
+// frees a dead session's name at once - so this name is free in tmux while still
+// aiming the task's teardown (`tmux kill-session -t tmuxSession`) at whoever takes it.
+const staleTask = { tmuxSession: "fix-login", worktreePath: "/wt/old" };
+
+test("validateSessionNameAgainstTasks refuses a name a worktree-holding task still records", () => {
+  assert.deepEqual(validateSessionNameAgainstTasks({ tmux, cwd: "/wt/live" }, "fix-login", [staleTask]), {
+    ok: false,
+    error: "another task still holds the tmux session name 'fix-login'",
+  });
+});
+
+test("validateSessionNameAgainstTasks allows a name whose task was reclaimed", () => {
+  // Reclaim clears worktreePath and tmuxSession together: the task can no longer
+  // tear anything down, so it no longer speaks for the name.
+  const evicted = { tmuxSession: null, worktreePath: null };
+  assert.deepEqual(validateSessionNameAgainstTasks({ tmux, cwd: "/wt/live" }, "fix-login", [evicted]), {
+    ok: true,
+  });
+});
+
+test("validateSessionNameAgainstTasks allows a session onto its own task's recorded name", () => {
+  // The task holding this session's worktree is its own binding, not a collision -
+  // it follows the rename in renameSession rather than being left aimed elsewhere.
+  assert.deepEqual(
+    validateSessionNameAgainstTasks({ tmux, cwd: "/wt/old" }, "fix-login", [staleTask]),
+    { ok: true },
+  );
+});
+
+test("validateSessionNameAgainstTasks allows a name no task records", () => {
+  assert.deepEqual(validateSessionNameAgainstTasks({ tmux, cwd: "/wt/live" }, "auth", [staleTask]), {
+    ok: true,
+  });
+});
+
+test("validateSessionNameAgainstTasks ignores task bindings for a wezterm-only session", () => {
+  // Renaming a wezterm tab sets a free-form title and moves no tmux name, so no
+  // task's teardown can be re-aimed by it.
+  assert.deepEqual(
+    validateSessionNameAgainstTasks({ tmux: null, cwd: "/wt/live" }, "fix-login", [staleTask]),
+    { ok: true },
+  );
 });
 
 // ---- rename (dep-injected branching) ----

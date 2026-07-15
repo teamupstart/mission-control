@@ -40,6 +40,7 @@ import {
   sendText,
   setPermissionMode,
   validateSessionName,
+  validateSessionNameAgainstTasks,
 } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
@@ -198,7 +199,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
 
   // Rename the session's tmux session / wezterm tab; discovery reads the new name
   // back onto the card, and the registry echoes it immediately so it doesn't lag a
-  // poll. A name the backing handle can't accept is a 400; a shelled-out failure a 500.
+  // poll. A name the backing handle can't accept, or one a task's teardown still
+  // aims at, is a 400 the editor can show; a shelled-out failure a 500.
   app.post("/api/sessions/:id/rename", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -206,6 +208,8 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (!parsed.ok) return parsed.res;
     const valid = validateSessionName(session, parsed.data.name);
     if (!valid.ok) return c.json({ ok: false, error: valid.error }, 400);
+    const free = validateSessionNameAgainstTasks(session, valid.name, registry.listTasks());
+    if (!free.ok) return c.json({ ok: false, error: free.error }, 400);
     const r = await rename(session, valid.name);
     if (r.ok) registry.renameSession(session.id, valid.name);
     return c.json(r, r.ok ? 200 : 500);

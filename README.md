@@ -561,18 +561,29 @@ workspace scan is what reaches a *fully* leaked repo: once its agents are gone
 there is no live session left to advertise it, and you can't start one to fix
 that, because `treehouse get` is precisely what fails when the pool is dry.
 
-It hands back only the leases it can prove are dead. A tree is returned **only**
-when treehouse reports no processes under it, no live session's cwd is inside it,
-no task the harness tracks still records it, it has no uncommitted changes, and
-origin's default branch already contains its HEAD. Anything else - including any
-uncertainty - leaves the lease alone: a leaked lease costs a slot, a wrong reap
-costs your work. Note that a *live* agent's tree is often clean and merged (right
-after a push), so it's the liveness checks, not the git ones, that keep it yours -
-and a task's tree stays its own even after the agent exits, which is what lets
-**Mark done** keep your work. Because those liveness checks are the load-bearing
-ones, they're re-taken immediately before a tree is handed back, so a tree leased
-while the sweep was fetching is never returned on the strength of a reading from
-before it existed.
+It hands back only the leases it can prove are dead, and only its **own**. A tree
+is returned **only** when it is leased to `fleet-control` (the holder both `make
+session` and dispatch record), treehouse reports no processes under it, no live
+session's cwd is inside it, no task the harness tracks still records it, it has no
+uncommitted changes, and origin's default branch already contains its HEAD.
+Anything else - including any uncertainty - leaves the lease alone: a leaked lease
+costs a slot, a wrong reap costs your work.
+
+The holder check is the harness's own rule, not something treehouse enforces
+(`treehouse return` takes a path and checks no holder). It matters because a lease
+survives *"even with no process running inside it, until you release it"* - so a
+tree you reserved with `treehouse get --lease --lease-holder my-label` is idle **on
+purpose**, and the sweep leaves it exactly where you put it, in this repo or any
+other one it walks. Reclaiming a `fleet-control` lease is only fair game because
+this harness took it and can tell its holder is gone.
+
+Note that a *live* agent's tree is often clean and merged (right after a push), so
+it's the liveness checks, not the git ones, that keep it yours - and a task's tree
+stays its own even after the agent exits, which is what lets **Mark done** keep
+your work. Because those liveness checks are the load-bearing ones, they're
+re-taken immediately before a tree is handed back, so a tree leased while the
+sweep was fetching is never returned on the strength of a reading from before it
+existed.
 
 Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool

@@ -22,14 +22,35 @@ import { unref } from "./util/timers.ts";
  * point (pre-warmed, reused trees) is lost while the leak stays invisible.
  *
  * treehouse's own `prune` can't fix this: it skips any tree with an owner
- * reservation, and a leaked lease IS a reservation. Only the lease holder can
- * hand one back, so the harness reaps its own.
+ * reservation, and a leaked lease IS a reservation. So the harness collects its
+ * own leases - and ONLY its own, which is a rule we impose on ourselves rather
+ * than one treehouse enforces: `return` takes a path and no holder, and
+ * `--lease-holder` is a label treehouse records and never checks. The rule exists
+ * because a lease means something. treehouse's contract is that one survives "even
+ * with no process running inside it, until you release it", so an idle lease is a
+ * deliberate reservation, not litter, and someone may be relying on finding their
+ * tree tomorrow. Reaping a `fleet-control` lease is defensible only because this
+ * harness is what took it and can tell when its holder is gone; it can say nothing
+ * about anyone else's - which is what makes the rung load-bearing now that the
+ * sweep reaches every pool under the workspace, not just the ones we dispatch into.
  *
  * `treehouse return` is destructive - it terminates processes in the tree, then
  * cleans and resets it - so a wrong reap kills a live agent AND discards its
  * work. Every check in `planReap` exists to make that impossible; see the gate
  * there for what each one is actually protecting against.
  */
+
+/**
+ * The holder this harness records on every lease it takes, and the only one it
+ * will ever hand back. One constant rather than two literals because the code that
+ * TAKES a lease and the code that decides it may RETURN one have to agree: drift
+ * between them doesn't fail loudly, it just silently retires the reaper (nothing
+ * matches, nothing is ever collected) or - worse, if the gate's label were the one
+ * to move - points it at leases we never took. `scripts/new-session.mjs` defaults
+ * its `--holder` to this same string; it can't import from here, so that one is
+ * kept in step by hand.
+ */
+export const LEASE_HOLDER = "fleet-control";
 
 /** A worktree in the pool, as `treehouse status` reports it. */
 export interface PoolTree {
@@ -160,15 +181,21 @@ export function poolPins(registry: Registry): PoolPins {
  *    pool is dry. This is also where the leak actually comes from - `make
  *    session` / `make claude` lease directly and never go through a task at all.
  *
- * Both path-shaped sources get walked back to their main root, because treehouse
- * keys a pool off the OWNING repo: a session standing in a POOLED tree reports
- * that TREE as its cwd, and the scan collects linked worktrees as readily as
- * clones - it matches a `.git` ENTRY, dir or file alike, and `treehouse.toml` is
- * committed, so a plain `git worktree add` under the workspace is indistinguishable
- * from a pool owner. The walk-back is also what makes the dedupe real: without it
- * one pool is swept once per checkout of it, each pass paying its own `treehouse
- * status` and its own 30s-capable fetch. A path we can't walk back names no pool
- * we could sweep, so it is dropped rather than guessed at.
+ * All three are path-shaped, and every one gets walked back to its main root,
+ * because treehouse keys a pool off the OWNING repo while all three routinely name
+ * something else: a session standing in a POOLED tree reports that TREE as its cwd;
+ * the scan collects linked worktrees as readily as clones (it matches a `.git`
+ * ENTRY, dir or file alike, and `treehouse.toml` is committed, so a plain `git
+ * worktree add` under the workspace is indistinguishable from a pool owner); and a
+ * task's `repoRoot` is `git rev-parse --show-toplevel`, which inside a linked
+ * worktree is that worktree. The walk-back is what turns any of them into a pool we
+ * can actually sweep, and it is what makes the dedupe real.
+ *
+ * The cost of skipping it is small but not nothing: treehouse resolves its pool the
+ * same `--show-toplevel` way, so an unwalked checkout names a DIFFERENT, empty pool
+ * that `reapPool` early-returns on before it fetches - one wasted `treehouse status`
+ * per checkout per tick, against an owner already in the set. A path we can't walk
+ * back names no pool at all, so it is dropped rather than guessed at.
  *
  * The scan walks the disk, so it is best-effort: a failure degrades to "sweep
  * the repos we already knew about" rather than costing the whole tick.
@@ -179,7 +206,10 @@ export async function poolRepos(registry: Registry): Promise<string[]> {
     const root = mainRepoRoot(cwd);
     if (root) roots.add(root);
   }
-  for (const task of registry.listTasks()) roots.add(task.repoRoot);
+  for (const task of registry.listTasks()) {
+    const root = mainRepoRoot(task.repoRoot);
+    if (root) roots.add(root);
+  }
   for (const repo of await listRepos().catch(() => [])) {
     const root = mainRepoRoot(repo);
     if (root) roots.add(root);
@@ -323,6 +353,11 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  * The gate is ordered cheapest-first and every rung is load-bearing:
  *
  *  - not `leased`      - `available` needs nothing; `in-use` is live by definition.
+ *  - held by someone else - the standing rung, and the only one about ownership
+ *    rather than liveness: an idle lease is a deliberate reservation, so being idle
+ *    is what a reservation LOOKS like, not proof of a leak. We can only claim to
+ *    know a holder is gone for the leases we took ourselves. Self-imposed - see the
+ *    module docstring; treehouse's own `return` verifies no holder at all.
  *  - treehouse says busy - processes are running under it. This is the check that
  *    saves a live agent, and it is NOT redundant with the git checks below: an
  *    agent that has just pushed sits in a tree that is clean AND merged, so the
@@ -369,6 +404,21 @@ async function planReapWith(
  */
 function cheapVerdict(tree: PoolTree, pins: CanonicalPins): string | null {
   if (tree.state !== "leased") return `it is ${tree.state}`;
+  // Standing, asked before liveness: is this lease ours to touch at all? An idle
+  // lease is a reservation someone made on purpose (treehouse keeps one "even with
+  // no process running inside it, until you release it"), so "nothing is running in
+  // it" is not evidence of a leak - it is what a reservation looks like. What makes
+  // OUR idle leases collectable is that we took them and can see their holders are
+  // gone; that argument doesn't extend to a stranger's, and the sweep now walks
+  // every pool under the workspace, most of which we have no relationship with.
+  // Both harness lease paths record this label, so the leak we exist for is still
+  // fully covered. An unrecorded holder is not proof of ownership, so it skips like
+  // every other uncertainty here.
+  if (tree.holder !== LEASE_HOLDER) {
+    return tree.holder
+      ? `it is leased to ${tree.holder}, not this harness`
+      : "its lease records no holder";
+  }
   if (tree.busy) return "processes are still running in it";
   const root = canonical(tree.path);
   if (pins.taskWorktrees.some((wt) => within(wt, root))) return "a task still holds it";

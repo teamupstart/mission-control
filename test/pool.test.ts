@@ -148,6 +148,25 @@ test("planReap spares a tree a task still holds, though it is idle, clean, and m
   assert.equal(c!.skip, "a task still holds it");
 });
 
+test("planReap spares another holder's lease, idle and clean and merged though it is", async () => {
+  // Someone else's reservation, and it looks exactly like our leak: treehouse keeps
+  // a lease "even with no process running inside it, until you release it", so idle
+  // is what a reservation IS, not evidence it was abandoned. We can only claim to
+  // know a holder is gone for leases we took, and the sweep now walks every pool in
+  // the workspace - including repos this harness has never dispatched into.
+  const { wt } = mkIdleTree("other-holder");
+  const [c] = await planReap([tree(wt, { holder: "release-prep" })], pins());
+  assert.equal(c!.skip, "it is leased to release-prep, not this harness");
+});
+
+test("planReap spares a lease with no recorded holder rather than assuming it is ours", async () => {
+  // Fail closed, like every other uncertainty in the gate: an absent holder is not
+  // proof of ownership, and ownership is what licenses the return.
+  const { wt } = mkIdleTree("no-holder");
+  const [c] = await planReap([tree(wt, { holder: null })], pins());
+  assert.equal(c!.skip, "its lease records no holder");
+});
+
 test("planReap spares a tree with uncommitted changes", async () => {
   const { wt } = mkIdleTree();
   writeFileSync(join(wt, "keep.txt"), "base\nwork in progress\n");
@@ -269,6 +288,38 @@ test("reapPool leaves a task's worktree leased rather than handing it to the nex
   assert.deepEqual(r.skipped.map((c) => c.skip), ["a task still holds it"]);
 });
 
+test("reapPool collects its own leases and leaves every other holder's reservation standing", async () => {
+  // The blast radius the workspace scan opened up: the sweep now walks pools this
+  // harness has no relationship with, where `treehouse get --lease --lease-holder
+  // release-prep` is someone deliberately holding a tree for tomorrow. Nothing in
+  // treehouse defends it - `return` takes a path and checks no holder - so this rung
+  // is the only thing standing between that reservation and a forced return.
+  const clone = mkPoolRepo("harness-pool-holder-");
+  const ours = mkLinkedWorktree(clone, "ours", join(clone, "..", "h-ours"));
+  const theirs = mkLinkedWorktree(clone, "theirs", join(clone, "..", "h-theirs"));
+  const anon = mkLinkedWorktree(clone, "anon", join(clone, "..", "h-anon"));
+
+  const { deps, returned } = fakeDeps(
+    [
+      `1     leased       ${ours}  (held by fleet-control)`,
+      `2     leased       ${theirs}  (held by release-prep)`,
+      `3     leased       ${anon}`,
+    ].join("\n"),
+  );
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, [ours], "idle, clean and merged all three - only one is ours");
+  assert.deepEqual(r.reaped.map((t) => t.name), ["1"]);
+  assert.deepEqual(
+    r.skipped.map((c) => [c.tree.name, c.skip]),
+    [
+      ["2", "it is leased to release-prep, not this harness"],
+      ["3", "its lease records no holder"],
+    ],
+  );
+});
+
 test("reapPool does nothing in a repo that never opted into treehouse", async () => {
   const { clone } = mkOriginAndClone("harness-pool-nontree-");
   const { deps, returned } = fakeDeps(`1     leased       ${clone}  (held by x)`);
@@ -282,7 +333,11 @@ test("reapPool reports a failed return as a skip instead of claiming the slot is
   const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "f-idle"));
 
   const deps: PoolDeps = {
-    status: async () => ({ stdout: `1     leased       ${idle}  (held by x)`, stderr: "", code: 0 }),
+    status: async () => ({
+      stdout: `1     leased       ${idle}  (held by fleet-control)`,
+      stderr: "",
+      code: 0,
+    }),
     returnTree: async () => ({ stdout: "", stderr: "lease is held elsewhere", code: 1 }),
   };
   const r = await reapPool(clone, () => pins(), deps);
@@ -412,13 +467,18 @@ test("poolRepos sweeps a treehouse repo the workspace scan alone can name", asyn
   // A linked worktree of that same repo, which the scan cannot tell apart from a
   // pool owner: its `.git` is a FILE, but the scan matches the ENTRY, and
   // `treehouse.toml` rides along because it is committed. Only walking back to the
-  // owning repo collapses the two - otherwise one pool is swept once per checkout,
-  // each pass paying its own `treehouse status` and fetch.
-  mkLinkedWorktree(pooled, "feature", join(ws, "feature"));
+  // owning repo collapses the two - otherwise it names a second, empty pool and
+  // every tick pays a wasted `treehouse status` on it.
+  const linked = mkLinkedWorktree(pooled, "feature", join(ws, "feature"));
   // A repo that never opted into the pool has nothing for treehouse to sweep.
   mkdirSync(join(ws, "plain", ".git"), { recursive: true });
 
-  const registry = { liveSessions: () => [], listTasks: () => [] } as unknown as Registry;
+  // A task's repoRoot arrives by the same trap: it is `rev-parse --show-toplevel`,
+  // which inside a linked worktree names the worktree, not the pool's owner.
+  const registry = {
+    liveSessions: () => [],
+    listTasks: () => [{ repoRoot: linked }],
+  } as unknown as Registry;
   const prev = process.env.FLEET_WORKSPACE_DIRS;
   process.env.FLEET_WORKSPACE_DIRS = ws;
   try {

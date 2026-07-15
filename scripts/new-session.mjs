@@ -24,6 +24,10 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // --- args -------------------------------------------------------------------
 const args = process.argv.slice(2);
+// Kept in step by hand with LEASE_HOLDER in src/server/pool.ts: that is the only
+// holder the daemon's leak sweep will reclaim, so a lease recorded under any other
+// label is yours until you `treehouse return` it - which is exactly what --holder
+// is for, and why changing this default would strand every lease this script takes.
 let holder = "fleet-control";
 let command = [];
 for (let i = 0; i < args.length; i++) {

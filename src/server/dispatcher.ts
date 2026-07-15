@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
-import { isTreehouseRepo, poolPins, reapPool, type PoolPins } from "./pool.ts";
+import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -166,8 +166,14 @@ export async function provisionWorktree(
    * attempt below can block for minutes: a concurrent dispatch that leases the last
    * tree in that window records its worktree on its task, and only a reading taken
    * AT the reap can see it.
+   *
+   * Required, with no empty default: this function can reach a forced return, and
+   * an empty spared set silently disarms the two rungs that carry that gate - a
+   * just-pushed agent's tree is clean, merged, and momentarily processless, so
+   * treehouse's process list alone would not save it. Better a caller that won't
+   * compile than one that reaps by omission.
    */
-  pins: () => PoolPins = () => ({ sessionCwds: [], taskWorktrees: [] }),
+  pins: () => PoolPins,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
   if (check.code !== 0 || check.stdout.trim() !== "true") {
@@ -218,9 +224,12 @@ export async function provisionWorktree(
  * Ask the pool for a tree. Returns its path, or null when the pool has nothing to
  * give (which `provisionWorktree` treats as "maybe leaked", not "no pool").
  * `get --lease` prints the path on stdout; its banners go to stderr.
+ *
+ * The holder label is what later marks this lease as ours to reclaim, so it comes
+ * from the reaper's own constant rather than a literal here.
  */
 async function leaseFromPool(repoRoot: string): Promise<string | null> {
-  const r = await run("treehouse", ["get", "--lease", "--lease-holder", "fleet-control"], {
+  const r = await run("treehouse", ["get", "--lease", "--lease-holder", LEASE_HOLDER], {
     cwd: repoRoot,
     timeoutMs: 180000,
   });

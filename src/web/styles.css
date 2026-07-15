@@ -525,6 +525,10 @@ body {
   content: "⌥ ";
   color: var(--dim);
 }
+/* A commit sha, styled like .branch but without the ⌥ - it isn't a branch. */
+.diff-sha {
+  color: var(--fg);
+}
 
 /* ---- runtime meta row (model · thinking level · context meter) ---- */
 .card-runtime {
@@ -890,6 +894,378 @@ body {
 }
 .nm-instr:focus {
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+
+/* ---- no-mistakes fix log ----
+   What the pipeline changed on this branch, and why. Deliberately quieter than
+   the strip above it: the strip is live and may need you, this is a record. */
+.nm-log {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-2);
+  font-size: 12px;
+  overflow: hidden;
+}
+.nm-rollup {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 9px 11px;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+.nm-rollup:hover {
+  background: color-mix(in oklab, var(--idle) 4%, transparent);
+}
+/* Never the element that gives: at the grid's 330px floor the row has to shrink
+   somewhere, and "fixed by no-mistakes" breaking across two lines grows the row
+   instead. The split next to it is the one built to truncate. */
+.nm-log-brand {
+  color: var(--muted);
+  font-weight: 620;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex: none;
+}
+.nm-log-split {
+  color: var(--dim);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nm-log-count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 12%, transparent);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.nm-log-caret {
+  color: var(--dim);
+  font-size: 9px;
+  flex: none;
+  transition: transform 0.16s ease;
+}
+.nm-log-open .nm-log-caret {
+  transform: rotate(180deg);
+}
+
+/* The bounded scroll region. This is what keeps the card's height a constant:
+   three fixes and forty cost the same, and an opened fix expands in here rather
+   than pushing the footer down. */
+.nm-scrollwrap {
+  position: relative;
+}
+.nm-scroll {
+  max-height: 208px;
+  overflow-y: auto;
+  /* Don't chain to the fleet grid when the list bottoms out - on a page that's
+     nothing but cards, scroll chaining reads as the page lurching. */
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--border-soft);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.nm-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.nm-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.nm-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+  border: 2px solid var(--bg-2);
+}
+.nm-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--dim);
+}
+.nm-scrollwrap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 8px;
+  bottom: 0;
+  height: 22px;
+  pointer-events: none;
+  background: linear-gradient(transparent, var(--bg-2));
+  transition: opacity 0.16s ease;
+}
+/* Retract at the end, so the fade never implies content that isn't there. */
+.nm-at-end::after {
+  opacity: 0;
+}
+.nm-fixrows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.nm-fixrow {
+  border-bottom: 1px solid var(--border-soft);
+}
+.nm-fixrow:last-child {
+  border-bottom: 0;
+}
+.nm-fixbtn {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 11px;
+  background: var(--bg-2);
+  border: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: left;
+}
+.nm-fixbtn:hover {
+  background: color-mix(in oklab, var(--working) 7%, transparent);
+}
+/* Sticky so the fix you opened stays named while you scroll its reasoning. */
+.nm-fixrow-open .nm-fixbtn {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: color-mix(in oklab, var(--working) 11%, var(--bg-2));
+  border-bottom: 1px solid var(--border-soft);
+}
+.nm-fixrow-open .nm-fixsum {
+  color: var(--fg);
+  white-space: normal;
+}
+.nm-steptag {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 0 5px;
+  border-radius: 4px;
+  color: var(--idle);
+  background: color-mix(in oklab, var(--idle) 14%, transparent);
+  flex: none;
+}
+.nm-step-document {
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 14%, transparent);
+}
+.nm-step-lint,
+.nm-step-test {
+  color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 14%, transparent);
+}
+.nm-fixsum {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nm-fixwhen {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.nm-fixdetail {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 8px;
+  background: color-mix(in oklab, var(--working) 4%, transparent);
+}
+.nm-ctx {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 11px 4px;
+}
+.nm-ctx-empty {
+  margin: 0;
+  padding: 8px 11px;
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.nm-ctx-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.nm-ctx-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.nm-ctx-meta {
+  color: var(--dim);
+}
+.nm-who-you {
+  color: var(--attention);
+}
+.nm-who-auto {
+  color: var(--idle);
+}
+.nm-find {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+.nm-find-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.nm-find-loc {
+  font-size: 9.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Same clamp, same reason, as .nm-findings: these run ~900 chars. Full on hover. */
+.nm-find-why {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* States a cap rather than letting a short list read as the whole set. */
+.nm-capped {
+  margin: 0;
+  font-size: 9.5px;
+  color: var(--dim);
+  font-style: italic;
+}
+.nm-more {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--working);
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  cursor: pointer;
+  text-align: left;
+  align-self: flex-start;
+}
+.nm-more:hover {
+  text-decoration: underline;
+}
+/* The reply that authorized the fix, quoted. */
+.nm-reply {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--fg);
+  line-height: 1.5;
+  border-left: 2px solid color-mix(in oklab, var(--attention) 55%, transparent);
+  padding: 2px 0 2px 8px;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.nm-reply-full {
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  display: block;
+}
+.nm-reply-auto {
+  border-left-color: color-mix(in oklab, var(--idle) 45%, transparent);
+  color: var(--muted);
+  font-style: italic;
+}
+.nm-stat {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 9.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.nm-stat-sha {
+  color: var(--muted);
+}
+.nm-add {
+  color: var(--idle);
+}
+.nm-del {
+  color: var(--danger);
+}
+.nm-fixfiles {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nm-fixfiles li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 9.5px;
+  color: var(--muted);
+}
+.nm-fname {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nm-fstat {
+  margin-left: auto;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.nm-viewdiff {
+  align-self: flex-start;
+  margin-top: 5px;
+  font-size: 10.5px;
+  padding: 3px 9px;
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  border-color: color-mix(in oklab, var(--working) 35%, transparent);
+}
+.nm-viewdiff:hover {
+  background: color-mix(in oklab, var(--working) 20%, transparent);
+}
+.nm-log-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--dim);
+  border-top: 1px solid var(--border-soft);
+  padding: 6px 11px;
 }
 
 /* ---- footer ---- */

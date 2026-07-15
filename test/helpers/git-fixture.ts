@@ -9,6 +9,8 @@ export function gitIn(dir: string, ...args: string[]): string {
 }
 
 export interface OriginAndClone {
+  /** The temp dir holding both, so a suite can remove what it made. */
+  root: string;
   origin: string;
   clone: string;
 }
@@ -37,7 +39,7 @@ export function mkOriginAndClone(prefix: string): OriginAndClone {
   execFileSync("git", ["clone", "-q", origin, clone]);
   gitIn(clone, "config", "user.email", "t@test");
   gitIn(clone, "config", "user.name", "t");
-  return { origin, clone };
+  return { root, origin, clone };
 }
 
 /**

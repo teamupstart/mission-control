@@ -49,7 +49,8 @@ import {
   setForemanConfig,
 } from "./foreman/config.ts";
 import { readStandards } from "./standards.ts";
-import { computeSessionDiff, repoRootOf } from "./diff.ts";
+import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
+import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
 import {
   cyclePermissionMode,
@@ -230,8 +231,25 @@ export function buildApp(
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    // `commit` isolates ONE commit (`<sha>^..<sha>`) - what a single no-mistakes
+    // fix changed. Distinct from `base`, which diffs from the merge-base and so
+    // would answer with everything *since* that sha.
+    const commit = c.req.query("commit");
+    if (commit) return c.json(await computeCommitDiff(session.cwd, commit));
     const source = c.req.query("base") || undefined;
     return c.json(await computeSessionDiff(session.cwd, source));
+  });
+
+  // The context behind one no-mistakes fix: the findings that justified it and
+  // the reply that authorized it. Fetched per fix rather than denormalized onto
+  // the card - a 22-finding fix carries ~20KB of description text.
+  app.get("/api/sessions/:id/nomistakes/fixes/:sha", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
+    const detail = await fixDetail(session.cwd, c.req.param("sha"));
+    if (!detail) return c.json({ error: "no such fix on this branch" }, 404);
+    return c.json(detail);
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
@@ -417,6 +435,13 @@ export function buildApp(
     // checkout it wiped (root + the branch standing in it), not this session, so
     // it holds for a sibling sharing the checkout and across a restart.
     if (r.ok && showing) registry.dismissNomistakes(showing, r.root, session.gitBranch);
+    // The fix log needs no dismissal - the reset destroyed the commits it's read
+    // from, so it's empty by construction. But drop the cached read: it's keyed on
+    // HEAD, and the reset moved HEAD, so a stale entry could still be served.
+    if (r.ok && session.cwd) {
+      forgetFixLog(session.cwd);
+      registry.clearNomistakesFixes(session.id);
+    }
     return c.json(r, r.ok ? 200 : 500);
   });
 

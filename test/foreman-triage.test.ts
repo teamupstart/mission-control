@@ -560,6 +560,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     wezterm: null, tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" }, agentSessionId: null,
     transcriptPath: null, instrumented: true, hooksSeen: true, activity: "Approve?",
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
+    nomistakesFixes: [],
     nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, meta: null, note: null,
     queue: null, orphanedQueue: null,
     ...over,

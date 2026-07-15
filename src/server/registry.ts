@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type {
   MetaSource,
+  NmFixSummary,
   NmRunSummary,
   OrphanedQueueHint,
   PermissionMode,
@@ -330,6 +331,7 @@ export class Registry extends EventEmitter {
       lastActivity: prev?.lastActivity ?? null,
       pendingReviews: this.countPending(d.syntheticId),
       nomistakes: prev?.nomistakes ?? null,
+      nomistakesFixes: prev?.nomistakesFixes ?? [],
       task: this.taskSummaryForCwd(d.cwd),
       nomistakesNarration: prev?.nomistakesNarration ?? null,
       prUrl: prev?.prUrl ?? null,
@@ -607,6 +609,44 @@ export class Registry extends EventEmitter {
     }
     for (const map of this.nmBindings.values()) for (const cwd of map.keys()) set.add(cwd);
     return [...set];
+  }
+
+  /**
+   * Gated sessions that can carry a fix log, with their checkout. Unlike
+   * `nomistakesPollCwds` this is per-session, not a deduped cwd set: the log is
+   * denormalized onto each card, and two sessions sharing a checkout each get it.
+   * Not conditional on an active run - the log outliving the run is the point.
+   */
+  nomistakesFixTargets(): Array<{ id: string; cwd: string }> {
+    const out: Array<{ id: string; cwd: string }> = [];
+    for (const [id, s] of this.sessions) {
+      if (s.nomistakesGated && s.cwd && s.state !== "exited") out.push({ id, cwd: s.cwd });
+    }
+    return out;
+  }
+
+  /** Set a session's fix log. No-op when unchanged, so it doesn't churn the stream. */
+  applyNomistakesFixes(sessionId: string, fixes: NmFixSummary[]): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    if (JSON.stringify(s.nomistakesFixes) === JSON.stringify(fixes)) return;
+    const next: Session = { ...s, nomistakesFixes: fixes };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  /**
+   * Drop the session's fix log. Called on reset, which discards the very commits
+   * the log is derived from - so unlike `dismissNomistakes` there's no dismissal
+   * to remember: the next poll re-reads git and agrees the log is empty. This
+   * just makes the card clean the moment the reset returns instead of a poll later.
+   */
+  clearNomistakesFixes(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.nomistakesFixes.length === 0) return;
+    const next: Session = { ...s, nomistakesFixes: [] };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
   }
 
   /**
@@ -1666,6 +1706,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.prChecks === b.prChecks &&
     metaDisplayEqual(a.meta, b.meta) &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
+    JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&
     JSON.stringify(a.note) === JSON.stringify(b.note) &&
     // The other two denormalized fields `mergeDiscovered` resolves next to `note`.

@@ -9,12 +9,17 @@ import { parsePatch, type DiffFile } from "../lib/diff.ts";
  * it out master-detail: a list of changed files on the left, and the diff of the
  * one you pick on the right - so a big change reads file-by-file instead of as
  * one long scroll. Files move by click or ↑/↓ (j/k); the diff shows one file only.
+ *
+ * Given a `commit`, it shows what that ONE commit changed instead - how a
+ * no-mistakes fix opens from the card's fix log.
  */
 export function DiffViewer({
   session,
+  commit,
   onClose,
 }: {
   session: Session;
+  commit?: string | null;
   onClose: () => void;
 }): React.JSX.Element {
   const [diff, setDiff] = useState<SessionDiff | null>(null);
@@ -26,7 +31,7 @@ export function DiffViewer({
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    void fetchSessionDiff(session.id).then((d) => {
+    void fetchSessionDiff(session.id, commit ?? undefined).then((d) => {
       if (alive) {
         setDiff(d);
         setLoading(false);
@@ -35,7 +40,7 @@ export function DiffViewer({
     return () => {
       alive = false;
     };
-  }, [session.id]);
+  }, [session.id, commit]);
 
   // Re-parse only when the patch changes, not on every render (selection change).
   const files = useMemo(() => (diff?.ok ? parsePatch(diff.patch) : []), [diff]);
@@ -81,7 +86,15 @@ export function DiffViewer({
         <header className="diff-head">
           <div className="diff-title">
             <h2 title={session.name}>{session.name}</h2>
-            {diff?.branch && diff.base && diff.branch !== diff.base ? (
+            {/* A commit diff is ONE commit, so it must not borrow the range
+                wording below: "<branch> vs <base>" would read as everything since
+                that parent, which is the larger diff and the wrong one. */}
+            {commit ? (
+              // Not `.branch`: that prepends a ⌥ branch glyph, and this is a commit.
+              <span className="diff-sub mono">
+                fix <span className="diff-sha">{diff?.headSha ?? commit}</span>
+              </span>
+            ) : diff?.branch && diff.base && diff.branch !== diff.base ? (
               <span className="diff-sub mono">
                 <span className="branch">{diff.branch}</span> vs{" "}
                 <span className="branch">{diff.base}</span>
@@ -111,8 +124,14 @@ export function DiffViewer({
           {!loading && diff && !diff.ok && (
             <p className="diff-empty">Couldn't load a diff: {diff.error ?? "unknown error"}.</p>
           )}
+          {/* An empty fix commit is a real thing to open, and "against <branch>"
+              is the wrong frame for one commit - it has no base branch, only a parent. */}
           {!loading && diff?.ok && files.length === 0 && (
-            <p className="diff-empty">No changes against {diff.base ?? "the source branch"}.</p>
+            <p className="diff-empty">
+              {commit
+                ? "No changes in this commit."
+                : `No changes against ${diff.base ?? "the source branch"}.`}
+            </p>
           )}
           {!loading && diff?.ok && files.length > 0 && (
             <>

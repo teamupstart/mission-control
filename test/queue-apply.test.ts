@@ -46,6 +46,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastActivity: NOW - 60_000,
     pendingReviews: 0,
     nomistakes: null,
+    nomistakesFixes: [],
     task: null,
     nomistakesNarration: null,
     prUrl: null,

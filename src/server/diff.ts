@@ -11,9 +11,92 @@ import type { SessionDiff } from "@shared/types.ts";
 const MAX_PATCH_BYTES = 1_200_000;
 /** Don't generate new-file diffs for an unbounded pile of untracked files. */
 const MAX_UNTRACKED = 100;
+/** git's empty tree, so a root commit (no parent) still diffs as "all added". */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 function git(cwd: string, args: string[]): ReturnType<typeof run> {
   return run("git", ["-C", cwd, ...args], { timeoutMs: 15000 });
+}
+
+/**
+ * The diff of ONE commit - what that commit alone changed, `<sha>^..<sha>`.
+ *
+ * Deliberately not a mode of `computeSessionDiff`: that one diffs from
+ * `merge-base(HEAD, ref)`, so handing it a sha answers with everything *since*
+ * that commit, which for a fix log would silently show the wrong (much larger)
+ * diff under the right label. A root commit has no `^`, so it diffs against the
+ * empty tree and reads as all-added rather than erroring.
+ */
+export async function computeCommitDiff(cwd: string | null, sha: string): Promise<SessionDiff> {
+  const base0: SessionDiff = {
+    ok: false, error: null, base: null, baseSha: null, headSha: null, repoRoot: null, branch: null,
+    filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
+  };
+  if (!cwd) return { ...base0, error: "session has no working directory" };
+
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) return { ...base0, error: "not a git repository" };
+  // Paths in the patch are toplevel-relative, so the viewer needs the root they
+  // hang off - same contract computeSessionDiff makes.
+  const repoRoot = top.stdout.trim() || null;
+
+  // Resolve and type-check in one step: `^{commit}` fails for a tag/tree/missing
+  // object, so a caller can't get a confusing empty diff out of a valid-looking ref.
+  const resolved = await git(cwd, ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`]);
+  if (resolved.code !== 0 || !resolved.stdout.trim()) {
+    return { ...base0, error: `commit ${sha} is not reachable (rebased, amended, or garbage-collected?)` };
+  }
+  const full = resolved.stdout.trim();
+  const headSha = full.slice(0, 12);
+
+  const branchRes = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : null;
+
+  const parentRes = await git(cwd, ["rev-parse", "--verify", "--quiet", `${full}^`]);
+  const parent = parentRes.code === 0 && parentRes.stdout.trim() ? parentRes.stdout.trim() : EMPTY_TREE;
+
+  const baseSha = parent === EMPTY_TREE ? null : parent.slice(0, 12);
+  const failed = (error: string): SessionDiff => ({
+    ...base0, branch, headSha, repoRoot, baseSha, error,
+  });
+
+  // Both exit codes are checked, for the reason computeSessionDiff spells out at
+  // length below: `run` reports a timeout or a crash as a plain non-zero exit with
+  // whatever stdout was flushed, so an unchecked failure returns `ok: true` with
+  // no files and an empty patch. That is exactly what an empty fix commit looks
+  // like - a real, tested state the viewer renders as "No changes in this commit."
+  // So a diff we couldn't read would claim the fix changed nothing.
+  let filesChanged = 0;
+  let insertions = 0;
+  let deletions = 0;
+  const numstat = await git(cwd, ["diff", "--numstat", parent, full]);
+  if (numstat.code !== 0) return failed("could not read the diff stats");
+  for (const line of numstat.stdout.split("\n")) {
+    const m = line.match(/^(\d+|-)\t(\d+|-)\t/);
+    if (!m) continue;
+    filesChanged++;
+    if (m[1] !== "-") insertions += Number(m[1]);
+    if (m[2] !== "-") deletions += Number(m[2]);
+  }
+
+  const patchRes = await git(cwd, ["diff", parent, full]);
+  if (patchRes.code !== 0) return failed("could not read the diff");
+  let patch = patchRes.stdout;
+  let truncated = false;
+  if (patch.length > MAX_PATCH_BYTES) {
+    patch = patch.slice(0, MAX_PATCH_BYTES);
+    truncated = true;
+  }
+
+  return {
+    ok: true, error: null,
+    // `base` is a branch name ("main"), and a commit isn't diffed against one -
+    // it's diffed against its parent, which is what `baseSha` is for. Putting the
+    // parent's sha in `base` reads as a branch to every consumer of the field.
+    base: null,
+    baseSha,
+    headSha, branch, repoRoot, filesChanged, insertions, deletions, patch, truncated,
+  };
 }
 
 /**
@@ -22,7 +105,7 @@ function git(cwd: string, args: string[]): ReturnType<typeof run> {
  * remote-tracking ref is preferred so the diff reflects what this branch changed
  * against the *current* mainline, not a possibly-stale local branch.
  */
-async function sourceRef(cwd: string): Promise<string | null> {
+export async function sourceRef(cwd: string): Promise<string | null> {
   const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
   for (const ref of ["origin/main", "origin/master", "main", "master"]) {

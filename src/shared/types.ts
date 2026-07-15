@@ -160,6 +160,12 @@ export interface Session {
   pendingReviews: number;
   /** Live no-mistakes run status for this repo, when gated and a run exists. */
   nomistakes: NmRunSummary | null;
+  /**
+   * Fixes no-mistakes committed on this session's branch. Derived from git, not
+   * from a run, so it outlives the run that produced it - and empties by itself
+   * when a reset discards the commits. Empty when there are none.
+   */
+  nomistakesFixes: NmFixSummary[];
   /** The dispatched task this session is executing, matched by cwd === worktreePath. */
   task: TaskSummary | null;
   /**
@@ -579,6 +585,84 @@ export interface NmRunSummary {
   steps: NmStep[];
   findings: NmFinding[];
   outcome: string | null; // "passed" once complete
+}
+
+// ---- no-mistakes fix log ----
+//
+// What the pipeline actually changed on a branch, and why. Sourced from git (the
+// fix commits themselves) joined to no-mistakes' own round records (the findings
+// that justified each fix, and the reply that authorized it). Two tiers: the card
+// carries `NmFixSummary`, and the bulky context is fetched per fix on demand - a
+// 22-finding fix runs ~20KB of description text, which has no business riding on
+// every session snapshot.
+
+/**
+ * Who caused a fix to happen. `auto` - the pipeline fixed it under its own
+ * round limit, nobody was asked. `replied` - it was fixed because someone
+ * answered the gate; the reply text is on `NmFixDetail`.
+ */
+export type NmFixDecision = "auto" | "replied";
+
+/** One no-mistakes fix commit on a session's branch. Card-weight. */
+export interface NmFixSummary {
+  /** Short sha. Also the key for fetching this fix's detail. */
+  sha: string;
+  step: string; // review | document | lint | test | ...
+  /** The commit subject with the `no-mistakes(<step>): ` prefix stripped. */
+  summary: string;
+  committedAt: number; // epoch ms
+  filesChanged: number;
+  added: number;
+  removed: number;
+  /** From the round that produced it; null when no round matched the commit. */
+  decision: NmFixDecision | null;
+  /** How many findings justified it. The TRUE count, even if the detail caps its list. */
+  findingCount: number;
+}
+
+/** One finding no-mistakes reported as justification for a fix. */
+export interface NmFixFinding {
+  id: string;
+  severity: string; // error | warning | info
+  file: string;
+  line: number | null;
+  /** The justification, verbatim from the pipeline. Runs long (500-900 chars). */
+  description: string;
+}
+
+export interface NmFixFile {
+  path: string;
+  added: number;
+  removed: number;
+}
+
+/** Everything behind one fix: why it happened, who authorized it, what it changed. */
+export interface NmFixDetail {
+  sha: string;
+  step: string;
+  summary: string;
+  committedAt: number;
+  decision: NmFixDecision | null;
+  /**
+   * The reply that authorized the fix. no-mistakes stores this per-finding (it
+   * copies the `--instructions` text onto every selected finding), but it is one
+   * reply, so it belongs to the fix. Null when auto-fixed or unmatched.
+   */
+  reply: string | null;
+  /** Capped: compare against `findingCount` to know if this is the whole set. */
+  findings: NmFixFinding[];
+  /** The true number of findings, which can exceed `findings.length`. */
+  findingCount: number;
+  /** Capped: compare against `filesChanged` to know if this is every file. */
+  files: NmFixFile[];
+  /**
+   * The true number of files the commit touched. Distinct from `files.length`,
+   * which is capped - a card that showed the capped length would disagree with
+   * the row above it about the same commit.
+   */
+  filesChanged: number;
+  added: number;
+  removed: number;
 }
 
 export type ReviewKind = "plan" | "diff" | "input";

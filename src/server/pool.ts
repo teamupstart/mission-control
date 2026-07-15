@@ -56,7 +56,19 @@ export const LEASE_HOLDER = "fleet-control";
 export interface PoolTree {
   /** The pool slot's name ("1", "2", …), for logs. */
   name: string;
-  state: "leased" | "in-use" | "available";
+  /**
+   * Every state treehouse's listing can print, read off the binary rather than off
+   * the states a pool happened to be in: `internal/pool.List.func1` renders exactly
+   * these five. Worth keeping exhaustive - a state missing from here doesn't fail
+   * loudly, it just stops parsing, and the slot vanishes from the reap plan
+   * entirely (neither reaped nor `skipped`, so nothing reports it).
+   *
+   * `you're here` is the odd one: it isn't a property of the tree at all, but of
+   * whoever ran `status` - treehouse stamps it on the tree the CALLER is standing
+   * in, masking that tree's real state. Unreachable for the sweep in practice,
+   * which always asks from a main repo root, never from inside a pooled tree.
+   */
+  state: "leased" | "in-use" | "available" | "dirty" | "you're here";
   /** Absolute path (treehouse abbreviates $HOME to `~`; we expand it). */
   path: string;
   /** Who holds the lease, when leased. */
@@ -265,38 +277,57 @@ export function startPoolReaper(registry: Registry): () => void {
 
 /**
  * Parse `treehouse status`. Its output is one line per tree, optionally followed
- * by INDENTED lines listing the processes running under the previous tree:
+ * by INDENTED lines listing the processes running under the tree above them:
  *
  *   1     leased       ~/.treehouse/repo-abc/1/repo  (held by fleet-control)
  *   8     leased       ~/.treehouse/repo-abc/8/repo  (held by fleet-control)
  *                      claude (74975), node (75244)
- *   13    in-use       ~/.treehouse/repo-abc/13/repo
+ *   13    dirty        ~/.treehouse/repo-abc/13/repo
+ *   15    in-use       ~/.treehouse/repo-abc/15/repo
  *
  * The process list is what makes `busy` trustworthy: `leased` alone says nothing
  * about liveness (a dead agent's tree stays `leased` forever - that's the leak),
  * so we take treehouse's own view of what's running rather than re-deriving it.
- * Unrecognized lines (banners like "Shell cwd was reset to …") are ignored.
+ *
+ * A line we can't read (a banner like "Shell cwd was reset to …", or a state
+ * treehouse grows later) is skipped AND closes the tree above it, so an indented
+ * list can only ever mark the tree it actually belongs to. Letting it bind to the
+ * last tree we happened to parse would pin `busy` on an unrelated slot several
+ * lines up and report it as "processes are still running in it" - a false reason
+ * on a real decision. Dropping those processes instead costs nothing: they belong
+ * to a tree we failed to parse, and a tree we can't parse is never a candidate.
  */
 export function parsePoolStatus(stdout: string): PoolTree[] {
   const trees: PoolTree[] = [];
-  const line = /^(\S+)[ \t]+(leased|in-use|available)[ \t]+(\S+)(?:[ \t]+\(held by (.+?)\))?[ \t]*$/;
+  const line =
+    /^(\S+)[ \t]+(leased|in-use|available|dirty|you're here)[ \t]+(\S+)(?:[ \t]+\(held by (.+?)\))?[ \t]*$/;
+  // The tree an indented process list would belong to, or null when the last line
+  // left us somewhere we don't understand.
+  let current: PoolTree | null = null;
   for (const raw of stdout.split("\n")) {
+    // Blank lines are layout, not content: they say nothing about whose processes
+    // follow, so they leave `current` alone. Forgetting the tree here would be the
+    // one unsafe direction - a dropped process list reads as "not busy", which is
+    // the reading a reap acts on.
     if (!raw.trim()) continue;
     // Indented => a process list belonging to the tree above it.
     if (/^\s/.test(raw)) {
-      const last = trees[trees.length - 1];
-      if (last) last.busy = true;
+      if (current) current.busy = true;
       continue;
     }
     const m = line.exec(raw);
-    if (!m) continue;
-    trees.push({
+    if (!m) {
+      current = null;
+      continue;
+    }
+    current = {
       name: m[1]!,
       state: m[2] as PoolTree["state"],
       path: expandHome(m[3]!),
       holder: m[4] ?? null,
       busy: false,
-    });
+    };
+    trees.push(current);
   }
   return trees;
 }
@@ -352,12 +383,17 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  *
  * The gate is ordered cheapest-first and every rung is load-bearing:
  *
- *  - not `leased`      - `available` needs nothing; `in-use` is live by definition.
- *  - held by someone else - the standing rung, and the only one about ownership
- *    rather than liveness: an idle lease is a deliberate reservation, so being idle
- *    is what a reservation LOOKS like, not proof of a leak. We can only claim to
- *    know a holder is gone for the leases we took ourselves. Self-imposed - see the
- *    module docstring; treehouse's own `return` verifies no holder at all.
+ *  - not `leased`      - `available` needs nothing; `in-use` is live by definition;
+ *    `dirty` treehouse already counts as unavailable; `you're here` describes the
+ *    caller, not the tree.
+ *  - not recorded under OUR label - the standing rung, and the only one about
+ *    ownership rather than liveness: an idle lease is a deliberate reservation, so
+ *    being idle is what a reservation LOOKS like, not proof of a leak. We can only
+ *    claim to know a holder is gone for the leases we took ourselves. Note "not
+ *    ours" is narrower than "someone else's": a lease this repo took under its
+ *    pre-rename name reads foreign here too, and is left for a manual return.
+ *    Self-imposed either way - see the module docstring; treehouse's own `return`
+ *    verifies no holder at all.
  *  - treehouse says busy - processes are running under it. This is the check that
  *    saves a live agent, and it is NOT redundant with the git checks below: an
  *    agent that has just pushed sits in a tree that is clean AND merged, so the
@@ -397,13 +433,30 @@ async function planReapWith(
 }
 
 /**
+ * Why a tree in each non-`leased` state is not ours to hand back. Spelled out per
+ * state rather than interpolated, because `skipped` is the only account this module
+ * gives of what it decided, and "it is you're here" explains nothing to the person
+ * reading it. Exhaustive by type: a state added to `PoolTree` doesn't compile until
+ * it says why it is being declined.
+ */
+const NOT_LEASED: Record<Exclude<PoolTree["state"], "leased">, string> = {
+  available: "it is available",
+  "in-use": "it is in-use",
+  // Nothing to collect: treehouse already counts a dirty tree as unavailable, and
+  // the git rung would refuse it anyway. Named here so it lands in the plan rather
+  // than disappearing from it.
+  dirty: "it is dirty",
+  "you're here": "treehouse reports the status caller standing in it",
+};
+
+/**
  * The rungs that need no subprocess: lease state, liveness, existence. Split out
  * so `reapPool` can tell "nothing here could possibly be reclaimed" without
  * paying for a fetch - the common case, since a healthy pool is all busy trees.
  * Returns the skip reason, or null when the tree is still a candidate.
  */
 function cheapVerdict(tree: PoolTree, pins: CanonicalPins): string | null {
-  if (tree.state !== "leased") return `it is ${tree.state}`;
+  if (tree.state !== "leased") return NOT_LEASED[tree.state];
   // Standing, asked before liveness: is this lease ours to touch at all? An idle
   // lease is a reservation someone made on purpose (treehouse keeps one "even with
   // no process running inside it, until you release it"), so "nothing is running in
@@ -414,9 +467,15 @@ function cheapVerdict(tree: PoolTree, pins: CanonicalPins): string | null {
   // Both harness lease paths record this label, so the leak we exist for is still
   // fully covered. An unrecorded holder is not proof of ownership, so it skips like
   // every other uncertainty here.
+  //
+  // The reason names the holder and stops there, rather than calling it someone
+  // else's: this repo renamed itself, and leases taken by `make session` before
+  // that still read `ai-harness`, so "not this harness" would be a lie about the
+  // one label that once WAS us. Those predate the rename and are left for a manual
+  // `treehouse return` - a one-time migration, deliberately not encoded here.
   if (tree.holder !== LEASE_HOLDER) {
     return tree.holder
-      ? `it is leased to ${tree.holder}, not this harness`
+      ? `it is leased to ${tree.holder}; we only return ${LEASE_HOLDER} leases`
       : "its lease records no holder";
   }
   if (tree.busy) return "processes are still running in it";

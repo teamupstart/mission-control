@@ -75,6 +75,55 @@ test("parsePoolStatus ignores trailing banners rather than reading them as trees
   assert.deepEqual(trees.map((t) => t.name), ["1"]);
 });
 
+test("parsePoolStatus reads every state the treehouse binary can print", () => {
+  // Verbatim `treehouse status`, so the parser is pinned against real output rather
+  // than against what we imagine it prints. `dirty` and `you're here` are states
+  // `internal/pool.List.func1` renders that a healthy pool simply doesn't show:
+  // before they were listed, each slot fell through the regex and vanished from the
+  // plan entirely - neither reaped nor skipped, which `ReapResult` promises not to do.
+  const trees = parsePoolStatus(
+    [
+      "1     leased       ~/.treehouse/ai-harness-c7356c/1/ai-harness  (held by fleet-control)",
+      "                   2.1.210 (25528), zsh (25545), node (25834)",
+      "2     you're here  ~/.treehouse/ai-harness-c7356c/2/ai-harness",
+      "3     available    ~/.treehouse/ai-harness-c7356c/3/ai-harness",
+      "5     leased       ~/.treehouse/ai-harness-c7356c/5/ai-harness  (held by ai-harness)",
+      "13    dirty        ~/.treehouse/ai-harness-c7356c/13/ai-harness",
+      "15    in-use       ~/.treehouse/ai-harness-c7356c/15/ai-harness",
+      "                   claude (88322), node (88493)",
+    ].join("\n"),
+  );
+  assert.deepEqual(
+    trees.map((t) => [t.name, t.state, t.holder, t.busy]),
+    [
+      ["1", "leased", "fleet-control", true],
+      // The state column, not a suffix: treehouse stamps it on whichever tree the
+      // caller stands in, masking that tree's real state. Note the space in it.
+      ["2", "you're here", null, false],
+      ["3", "available", null, false],
+      ["5", "leased", "ai-harness", false],
+      ["13", "dirty", null, false],
+      ["15", "in-use", null, true],
+    ],
+  );
+});
+
+test("parsePoolStatus never hangs an unreadable tree's process list on the tree above it", () => {
+  // A state treehouse grows later parses as nothing - fine, an unparsed tree is
+  // never a candidate. What must NOT happen is its process list drifting up onto the
+  // previous slot: that would report tree 12 as "processes are still running in it"
+  // on the strength of processes running in 13, a false reason on a real decision.
+  const trees = parsePoolStatus(
+    [
+      "12    leased       ~/t/12/repo  (held by fleet-control)",
+      "13    quarantined  ~/t/13/repo",
+      "                   claude (99001), node (99002)",
+    ].join("\n"),
+  );
+  assert.deepEqual(trees.map((t) => t.name), ["12"], "the unknown state is not invented into a tree");
+  assert.equal(trees[0]!.busy, false, "13's processes are 13's, and 13 was never parsed");
+});
+
 // --- the safety gate --------------------------------------------------------
 
 /** A pool tree record over a real worktree path. */
@@ -156,7 +205,20 @@ test("planReap spares another holder's lease, idle and clean and merged though i
   // the workspace - including repos this harness has never dispatched into.
   const { wt } = mkIdleTree("other-holder");
   const [c] = await planReap([tree(wt, { holder: "release-prep" })], pins());
-  assert.equal(c!.skip, "it is leased to release-prep, not this harness");
+  assert.equal(c!.skip, "it is leased to release-prep; we only return fleet-control leases");
+});
+
+test("planReap's foreign-holder reason states the policy rather than disowning the label", async () => {
+  // `ai-harness` is what `make session` recorded before this repo renamed itself, so
+  // a lease under it was taken by this very harness. Skipping it is right (we can't
+  // tell a pre-rename lease from a human's reservation under the same label, and
+  // those are a manual `treehouse return`, not code) - but the REASON has to survive
+  // being read by someone who knows that history, so it names the label and the rule
+  // and claims nothing about whose it was.
+  const { wt } = mkIdleTree("legacy-holder");
+  const [c] = await planReap([tree(wt, { holder: "ai-harness" })], pins());
+  assert.equal(c!.skip, "it is leased to ai-harness; we only return fleet-control leases");
+  assert.doesNotMatch(c!.skip!, /not this harness/);
 });
 
 test("planReap spares a lease with no recorded holder rather than assuming it is ours", async () => {
@@ -314,10 +376,30 @@ test("reapPool collects its own leases and leaves every other holder's reservati
   assert.deepEqual(
     r.skipped.map((c) => [c.tree.name, c.skip]),
     [
-      ["2", "it is leased to release-prep, not this harness"],
+      ["2", "it is leased to release-prep; we only return fleet-control leases"],
       ["3", "its lease records no holder"],
     ],
   );
+});
+
+test("reapPool accounts for a dirty slot instead of dropping it out of the plan", async () => {
+  // `skipped` is documented as every tree we considered and declined, and it is the
+  // module's only observability. A dirty slot used to fall through the parser, so it
+  // appeared in neither list: the pool looked one tree smaller than it is.
+  const clone = mkPoolRepo("harness-pool-dirty-");
+  const ours = mkLinkedWorktree(clone, "ours", join(clone, "..", "d-ours"));
+  const grubby = mkLinkedWorktree(clone, "grubby", join(clone, "..", "d-grubby"));
+
+  const { deps, returned } = fakeDeps(
+    [`1     leased       ${ours}  (held by fleet-control)`, `2     dirty        ${grubby}`].join(
+      "\n",
+    ),
+  );
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, [ours], "a dirty tree is treehouse's to clean, not ours to reclaim");
+  assert.deepEqual(r.skipped.map((c) => [c.tree.name, c.skip]), [["2", "it is dirty"]]);
 });
 
 test("reapPool does nothing in a repo that never opted into treehouse", async () => {

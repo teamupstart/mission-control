@@ -577,6 +577,12 @@ purpose**, and the sweep leaves it exactly where you put it, in this repo or any
 other one it walks. Reclaiming a `fleet-control` lease is only fair game because
 this harness took it and can tell its holder is gone.
 
+The flip side is that the sweep only knows the label it records *today*. A lease
+`make session` took under this project's old `ai-harness` name is skipped like any
+other holder's, since nothing tells it apart from a reservation someone made under
+that label on purpose. If `treehouse status` shows an old idle lease the sweep
+never collects, hand it back yourself: `treehouse return <path>`.
+
 Note that a *live* agent's tree is often clean and merged (right after a push), so
 it's the liveness checks, not the git ones, that keep it yours - and a task's tree
 stays its own even after the agent exits, which is what lets **Mark done** keep

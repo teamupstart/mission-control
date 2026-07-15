@@ -34,6 +34,8 @@ function runOn(branch: string): NmRunSummary {
     id: `01RUN_${branch}`,
     status: "running",
     branch,
+    startedAt: null,
+    endedAt: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

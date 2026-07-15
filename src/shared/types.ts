@@ -349,6 +349,17 @@ export interface NmRunSummary {
   id: string;
   status: string; // running | completed | failed
   branch: string;
+  /**
+   * When the run started (epoch ms), decoded from the ULID id above - `axi status`
+   * carries no timestamps of its own. Null when the id isn't a ULID.
+   */
+  startedAt: number | null;
+  /**
+   * When the run stopped (epoch ms), or null while it's still going. Also null for
+   * a run that had already finished the first time the daemon saw it: nothing in
+   * `axi status` dates the end, so it can only be timed by watching (see timeRun).
+   */
+  endedAt: number | null;
   /** e.g. "parked 1m30s" while awaiting an agent decision, else null. */
   awaitingAgent: string | null;
   /** e.g. "1 awaiting" / "1 auto-fix". */

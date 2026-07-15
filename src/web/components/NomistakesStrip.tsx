@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { NmFinding, NmRunSummary } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
+import { duration } from "../lib/format.ts";
 
 const STEP_TONE: Record<string, string> = {
   completed: "nm-done",
@@ -54,6 +55,8 @@ export function NomistakesStrip({
           nm.findingsSummary && <span className="nm-summary">{nm.findingsSummary}</span>
         )}
       </div>
+
+      <NmDuration nm={nm} />
 
       {running && (
         <div className="nm-stage">
@@ -109,6 +112,58 @@ export function NomistakesStrip({
       )}
 
       {nm.gateStep && needsYou && <GateActions sessionId={sessionId} findings={nm.findings} />}
+    </div>
+  );
+}
+
+/**
+ * `Date.now()`, re-read every second while `live`. A stopped clock keeps no timer,
+ * so a finished run's strip costs nothing - and this is its own component (rather
+ * than state on the card) so a second's tick re-renders the one line that moved,
+ * not the whole session card.
+ */
+function useNow(live: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now()); // catch up on whatever passed while it wasn't ticking
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [live]);
+  return now;
+}
+
+/**
+ * How long the run has been going, ticking each second - the wall-clock answer to
+ * "is this gate taking too long?". Deliberately wall-clock: it counts the time a
+ * run spends parked at a gate or waiting on the agent, because that time is just
+ * as gone as the time spent running steps.
+ *
+ * A finished run freezes at what it took. It shows nothing at all when the run
+ * can't be dated - an id that isn't a ULID, or a run already over when the daemon
+ * first saw it (see timeRun) - since a wrong duration reads as truth.
+ */
+function NmDuration({ nm }: { nm: NmRunSummary }): React.JSX.Element | null {
+  const live = nm.status === "running" && nm.startedAt != null;
+  const now = useNow(live);
+  if (nm.startedAt == null) return null;
+  const end = live ? now : nm.endedAt;
+  if (end == null) return null;
+  const text = duration(end - nm.startedAt);
+  return (
+    <div
+      className={`nm-elapsed${live ? " nm-elapsed-live" : ""}`}
+      title={
+        live
+          ? `This no-mistakes run has been going ${text} (started ${new Date(nm.startedAt).toLocaleTimeString()})`
+          : `This no-mistakes run took ${text}`
+      }
+    >
+      <span className="nm-elapsed-glyph" aria-hidden>
+        ◷
+      </span>
+      <span className="nm-elapsed-label">{live ? "running for" : "took"}</span>
+      <span className="nm-elapsed-time mono">{text}</span>
     </div>
   );
 }

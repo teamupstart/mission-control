@@ -25,6 +25,21 @@ export function uptime(startedAt: number | null): string {
   return `up ${Math.floor(h / 24)}d`;
 }
 
+/**
+ * A span of time for a ticking clock: "42s", "3m 07s", "2h 09m". Always carries
+ * two units once past a minute, and zero-pads the smaller one, so the text neither
+ * changes width nor stalls between ticks the way a rounded "3m" would.
+ */
+export function duration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  return `${Math.floor(h / 24)}d ${String(h % 24).padStart(2, "0")}h`;
+}
+
 export type ContextTone = "ok" | "warn" | "high";
 
 /**

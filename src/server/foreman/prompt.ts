@@ -139,12 +139,22 @@ function queueItemSection(item: NonNullable<ReviewInput["queueItem"]>): string[]
   return lines;
 }
 
-/** Render a transcript window as `[role] (tools: …) text`, per-message capped. Shared with triage. */
+/**
+ * Render a transcript window as `[role] (tools: …) text`, per-message capped. Shared with triage.
+ *
+ * A tool renders as `Name(input)` - the input already capped at parse time (TOOL_INPUT_CAP).
+ * Carrying it is what makes the terminal surface legible at all: the pending question there
+ * is the generic "Claude needs your permission", so an `AskUserQuestion(...)` rendering its
+ * question and options is the ONLY place the reviewer can read what it is being asked to
+ * decide. A name-only chip left it judging blind, and the policy correctly escalated rather
+ * than guess - which read as Foreman being unhelpful when it was being honest.
+ */
 export function formatTranscript(messages: TranscriptMessage[]): string {
   if (messages.length === 0) return "(transcript unavailable)";
   return messages
     .map((m) => {
-      const tools = m.tools.length ? ` (tools: ${m.tools.join(", ")})` : "";
+      const calls = m.tools.map((t) => (t.input ? `${t.name}(${t.input})` : t.name));
+      const tools = calls.length ? ` (tools: ${calls.join(", ")})` : "";
       const text = m.text.length > MSG_CAP ? `${m.text.slice(0, MSG_CAP)}…` : m.text;
       return `[${m.role}]${tools} ${text}`.trim();
     })

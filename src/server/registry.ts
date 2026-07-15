@@ -1591,7 +1591,14 @@ export function noteKeyFor(s: Session): string {
  * Known tradeoff: a session that ends its turn with a question in *prose* (no
  * permission prompt) is indistinguishable from an idle one in the hook stream -
  * both are a `Stop` followed by this same nudge - so it now reads `idle` and won't
- * nag at 60s. Foreman's triage still catches those, because it reads transcripts.
+ * nag at 60s.
+ *
+ * Foreman recovers the case it can identify structurally: a parked no-mistakes gate
+ * classifies as `gate-parked` (see foreman/pending.ts) off the run summary, and its
+ * reviewer reads the relayed finding out of the transcript. A bare prose question with
+ * no gate behind it stays invisible - nothing in the hook stream distinguishes it from
+ * an idle prompt, and `no-question` disposes it without a model call. Recovering that
+ * one needs a signal this stream doesn't carry, not a smarter reader.
  */
 export function isIdleNudge(message: string | undefined | null): boolean {
   return /waiting for your input/i.test(message ?? "");

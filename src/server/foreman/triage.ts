@@ -107,37 +107,47 @@ export function isDestructive(text: string): boolean {
 }
 
 /**
- * Flatten the Tier 1 window (each turn's prose + its tool names) into one blob for the
- * denylist to scan. This is what gives the backstop something real to match on the
- * terminal surface: there, `Pending.question` is only the generic notification line
- * ("Claude needs your permission" - see the Notification branch of registry.ts's
- * `hookToState`), which never names the command being approved, so scanning the child's
- * own recent prose is the only code-level view of what it is about to run. Callers must
- * pass an already-trimmed window (see TIER1_TURNS): scanning a whole session's history
- * matches ambient prose unrelated to the pending ask.
+ * Flatten the Tier 1 window (each turn's prose + its tool calls, names AND inputs) into
+ * one blob for the denylist to scan. This is what gives the backstop something real to
+ * match on the terminal surface: there, `Pending.question` is only the generic
+ * notification line ("Claude needs your permission" - see the Notification branch of
+ * registry.ts's `hookToState`), which never names the command being approved, so the
+ * child's own recent window is the only code-level view of what it is about to run.
+ * Callers must pass an already-trimmed window (see TIER1_TURNS): scanning a whole
+ * session's history matches ambient prose unrelated to the pending ask.
  *
- * KNOWN LIMITATION - a `TranscriptMessage` carries tool NAMES only, never tool INPUTS
- * (`toMessage` in src/server/transcript.ts pushes `block.name` and drops the arguments).
- * So a command that appears ONLY as a tool input, and is never spoken about in prose, is
- * invisible here and CANNOT be caught by this backstop; the router's own bucketing is the
- * only thing standing in front of that case. Closing the gap properly means carrying tool
- * inputs through `TranscriptMessage`. Turns are joined with newlines because several
- * patterns are `[^\n]`-bounded and must not match across two unrelated turns.
+ * Tool INPUTS are scanned, not just names, so `Bash(rm -rf …)` is caught as the command
+ * it is. Before they were carried, a `TranscriptMessage` held names only and a command
+ * that never appeared in prose was invisible here - the router's own bucketing was the
+ * sole thing in front of it. Prose remains in scope precisely because it is a weaker,
+ * different signal: an agent narrating "then I'll force-push" trips this before it ever
+ * reaches for the tool.
+ *
+ * Turns are joined with newlines because several patterns are `[^\n]`-bounded and must
+ * not match across two unrelated turns; a call's name and input are joined with a space
+ * for the same reason - `Bash` and its command are one utterance, not two.
  */
 function riskContextFrom(messages: TranscriptMessage[]): string {
-  return messages.map((m) => [m.text, ...m.tools].join(" ")).join("\n");
+  return messages
+    .map((m) => [m.text, ...m.tools.map((t) => (t.input ? `${t.name} ${t.input}` : t.name))].join(" "))
+    .join("\n");
 }
 
 /**
- * Whether the window carried any prose at all - from EITHER role, exactly mirroring what
- * `riskContextFrom` scans. There is no role filter and none is implied: the gate asks only
- * whether the denylist had text to read, and proves nothing about who spoke or whether they
- * spoke about the pending ask. A turn survives `toMessage` on its tool calls alone (it drops
- * a turn only when it has neither text nor tools), and such a turn flattens to bare tool NAMES
- * ("Bash"), so a window can be non-empty and still carry nothing scannable. Backstop 3 keys on
- * this rather than on `messages.length` for that reason: a run of prose-free tool calls is an
- * ordinary shape for a tool-heavy stretch of work, and counting it as "scanned and clean" would
- * be exactly the fail-open the backstop exists to prevent.
+ * Whether the window carried any prose at all - from EITHER role. There is no role filter and
+ * none is implied: the gate proves nothing about who spoke or whether they spoke about the
+ * pending ask. Backstop 3 keys on this rather than on `messages.length` because a turn survives
+ * `toMessage` on its tool calls alone, so a window can be non-empty and still carry nothing
+ * worth scanning; counting that as "scanned and clean" would be exactly the fail-open the
+ * backstop exists to prevent.
+ *
+ * DELIBERATELY NARROWER than `riskContextFrom`, which also scans tool inputs. The two used to
+ * mirror each other exactly and no longer do, because the asymmetry only errs one way: prose is
+ * a STRICTER precondition than "something was scannable", so a window of prose-free tool calls
+ * routes UP to the full reviewer that would have been Tier 1's to answer. That costs an Opus
+ * call and can never wave anything through. Widening this to count tool inputs would be a real
+ * saving now that they are carried - but it LOOSENS a safety gate, so it belongs in its own
+ * change with its own reasoning, not smuggled in alongside the one that made it possible.
  */
 function hasProse(messages: TranscriptMessage[]): boolean {
   return messages.some((m) => m.text.trim().length > 0);
@@ -206,7 +216,7 @@ function accessAnswerVerdict(purpose: string, text: string): Verdict {
 export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
   switch (pending.situation) {
     case "non-input-review": {
-      // A plan/diff/gate review is structurally human-only: Foreman can't auto-approve a
+      // A plan/diff review is structurally human-only: Foreman can't auto-approve a
       // review. Today this still spends a full review just to write a purpose - Tier 0
       // short-circuits it with a purpose named straight from the review, no model call.
       const what = pending.reviewTitle
@@ -238,11 +248,14 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       // Needs-you for some other state with no answerable question - leave it for you.
       //
       // The activity line is deliberately NOT interpolated into the purpose: on THIS branch it
-      // is a state label, not context. `gateParked` requires the driving agent to have stopped,
-      // so a gate-parked run's state is `idle`, which the Stop hook labels "idle" verbatim -
-      // and "The session needs you: idle" is worse than saying plainly what happened. Tier 0 has
-      // no model, so it cannot do better than an honest canned line here; the transcript-derived
-      // purpose is Tier 2's job.
+      // is a state label, not context. A session reaching here is `idle`, which the Stop hook
+      // labels "idle" verbatim - and "The session needs you: idle" is worse than saying plainly
+      // what happened. Tier 0 has no model, so it cannot do better than an honest canned line.
+      //
+      // A parked no-mistakes gate used to land here and be disposed exactly like this, which
+      // was the bug: its question was sitting in the transcript and nothing ever read it. Those
+      // now classify as `gate-parked` and route to the reviewer. What remains here genuinely has
+      // no question - an idle session that is needs-you for some other reason.
       return {
         kind: "dispose",
         tier: 0,
@@ -254,6 +267,11 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
     }
     case "input-review":
     case "terminal-pane":
+    // A parked gate is answerable prose-to-prose: the child relayed the finding and stopped, so
+    // the reviewer reads the ask from the transcript and Foreman types the decision back. It
+    // gets no Tier 0 shortcut precisely because the call needs a model - which was the whole
+    // complaint about disposing it here.
+    case "gate-parked":
       return { kind: "continue" };
   }
 }

@@ -204,9 +204,18 @@ action.
 - ~~Should Tier 0's "human-only" Purpose be written by Haiku (a summary) or skipped entirely?~~
   **Resolved:** neither - Tier 0 writes a structural Purpose in pure code, naming the review's kind
   and title, for zero tokens. See the Tier 0 bullet above.
-- The denylist can only read what a `TranscriptMessage` carries, and that is tool *names* without
+- ~~The denylist can only read what a `TranscriptMessage` carries, and that is tool *names* without
   tool *inputs* (`toMessage` in `src/server/transcript.ts` drops the arguments). A command that
   appears only as a tool input and is never spoken about in prose is therefore invisible to
   backstop 1, leaving the router's own bucketing as the only thing in front of it. Closing this
   properly means carrying tool inputs through `TranscriptMessage` - worth doing before `on` is
-  trusted on the terminal surface.
+  trusted on the terminal surface.~~
+  **Resolved:** `TranscriptMessage.tools` now carries each call's input, capped at
+  `TOOL_INPUT_CAP`, so backstop 1 scans real command strings. It also fixed a bigger problem than
+  the one it was filed under: on the terminal surface the *reviewer* was blind too, since the
+  pending question there is the generic "Claude needs your permission" and an `AskUserQuestion`
+  rendered as a bare name. Tier 2 could not produce a usable verdict at all on that input.
+- `hasProse` (backstop 3) is now deliberately narrower than what the denylist scans - it still
+  requires *prose*, though a tool input is scannable too. That only ever routes up, so it is safe,
+  but it means a prose-free window still buys an Opus call Tier 1 could now have answered.
+  Widening it loosens a safety gate, so it wants its own change and its own measurement.

@@ -15,7 +15,7 @@ import {
 } from "../src/server/foreman/triage.ts";
 import { NO_QUESTION_PLACEHOLDER } from "../src/server/foreman/pending.ts";
 import type { Pending } from "../src/server/foreman/pending.ts";
-import type { TranscriptMessage } from "../src/shared/types.ts";
+import type { ToolCall, TranscriptMessage } from "../src/shared/types.ts";
 import { planFromVerdict } from "../src/server/foreman/verdict.ts";
 import type { ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
@@ -33,6 +33,14 @@ function pend(over: Partial<Pending> = {}): Pending {
   };
 }
 
+test("tier0 hands a gate-parked session to the reviewer instead of disposing it", () => {
+  // The regression this closes: a gate-parked run has its question sitting in the
+  // transcript, but it reached tier0 as `no-question` and was disposed with a canned
+  // line and zero model calls - so nothing ever read it.
+  const out = tier0(pend({ situation: "gate-parked", canSend: true }));
+  assert.equal(out.kind, "continue");
+});
+
 function report(over: Partial<TriageReport> = {}): TriageReport {
   return {
     purpose: "Child wants to run the tests before pushing.",
@@ -44,12 +52,15 @@ function report(over: Partial<TriageReport> = {}): TriageReport {
 }
 
 /**
- * A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. Each gets
- * a distinct id, like the record uuids the real reader emits - the prompt window de-dupes on it.
+ * A transcript turn as `toMessage` builds one: prose plus its tool calls. Each gets a distinct
+ * id, like the record uuids the real reader emits - the prompt window de-dupes on it. A bare
+ * string is shorthand for a call whose input carries nothing worth scanning; pass a ToolCall to
+ * give it real arguments.
  */
 let msgSeq = 0;
-function msg(text: string, tools: string[] = []): TranscriptMessage {
-  return { id: `m${++msgSeq}`, role: "assistant", text, tools, ts: 1 };
+function msg(text: string, tools: (string | ToolCall)[] = []): TranscriptMessage {
+  const calls = tools.map((t) => (typeof t === "string" ? { name: t } : t));
+  return { id: `m${++msgSeq}`, role: "assistant", text, tools: calls, ts: 1 };
 }
 
 /** A clean (non-destructive) Tier 1 scan window - enough context for the denylist to have scanned. */
@@ -279,6 +290,35 @@ test("mapTriage: one prose turn among tool calls is enough to have scanned", () 
       msg("", ["Bash"]),
       msg("Running the unit tests now to confirm the refactor holds.", ["Bash"]),
       msg("", ["Read"]),
+    ],
+  });
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
+});
+
+test("mapTriage: the denylist catches a command that exists ONLY as a tool input", () => {
+  // The hole this closes. On the terminal surface the pending question is the generic
+  // "Claude needs your permission", and a turn used to flatten to the bare name "Bash" - so a
+  // command never spoken about in prose was invisible to the denylist, and the router's own
+  // bucketing was the only thing in front of it. Here the router says routine-access (the
+  // failure being defended against) and the backstop must overrule it anyway.
+  const out = mapTriage(report({ bucket: "routine-access" }), pend({ question: "Claude needs your permission" }), {
+    messages: [
+      msg("Cleaning up the build directory before the next run.", []),
+      msg("", [{ name: "Bash", input: JSON.stringify({ command: "rm -rf /tmp/build" }) }]),
+    ],
+  });
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") {
+    assert.equal(out.verdict.action, "escalate", "a destructive tool input must never be auto-answered");
+  }
+});
+
+test("mapTriage: a benign tool input is not made risky by carrying it", () => {
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [
+      msg("Running the suite before I push.", []),
+      msg("", [{ name: "Bash", input: JSON.stringify({ command: "npm test -- --run" }) }]),
     ],
   });
   assert.equal(out.kind, "dispose");

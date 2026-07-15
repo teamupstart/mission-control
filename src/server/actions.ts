@@ -5,9 +5,11 @@ import { listTmuxClients } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
   findSessionHostPane,
+  findSessionHostPanes,
   listWeztermPanes,
   setWeztermTabTitle,
   spawnWeztermTab,
+  type WeztermPane,
 } from "./discovery/wezterm.ts";
 import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -322,6 +324,8 @@ export interface RenameDeps {
   renameTmuxSession: (from: string, to: string) => Promise<RunResult>;
   /** `wezterm cli set-tab-title --pane-id <id> -- <title>`. */
   setWeztermTabTitle: (paneId: number, title: string) => Promise<RunResult>;
+  /** The wezterm panes whose tabs host a tmux client attached to `session`. */
+  findTmuxHostPanes: (session: string) => Promise<WeztermPane[]>;
 }
 
 const defaultRenameDeps: RenameDeps = {
@@ -329,14 +333,33 @@ const defaultRenameDeps: RenameDeps = {
   // than as a flag bundle (which would surface an arg-parser dump behind a 500).
   renameTmuxSession: (from, to) => run("tmux", ["rename-session", "-t", from, "--", to]),
   setWeztermTabTitle,
+  findTmuxHostPanes: async (session) => {
+    const [clients, panes] = await Promise.all([listTmuxClients(), listWeztermPanes()]);
+    return findSessionHostPanes(session, clients, panes);
+  },
 };
 
 /**
  * Rename a session's terminal home so the next discovery sweep reads the new name
- * back onto its card. A tmux-hosted session renames the tmux session itself (its
- * name IS the card name); a wezterm-hosted one gets an explicit tab title. tmux
- * wins when both exist, mirroring `sendText` (the agent's real pane is the tmux
- * pane). Assumes `name` was already validated - the route calls `validateSessionName`
+ * back onto its card, and so the terminal tab the user is looking at agrees.
+ *
+ * A wezterm-hosted session is one call: its tab title IS its card name. A
+ * tmux-hosted one takes two, because its name lives in two places the harness
+ * has to keep in step:
+ *
+ *   - the tmux session name, which is the card name (`nameSource: "tmux"`), and
+ *     what Focus/Kill target; and
+ *   - the title of the wezterm tab running `tmux attach`, which `spawnWeztermTab`
+ *     stamped once at spawn and nothing has updated since.
+ *
+ * The tab is NOT reachable via `session.wezterm` - that handle is keyed on the
+ * agent's tty, and an agent inside tmux sits on a tmux pane tty while its tab
+ * sits on the client tty, so a tmux-hosted session's `wezterm` is always null.
+ * We find the tab the way Focus does, by joining tmux clients to wezterm panes
+ * on that shared client tty. Skipping this was the whole bug: renames landed in
+ * tmux while every tab kept its spawn-time title forever.
+ *
+ * Assumes `name` was already validated - the route calls `validateSessionName`
  * first so a bad name is a 400, not a shelled-out failure.
  */
 export async function rename(
@@ -345,10 +368,17 @@ export async function rename(
   deps: RenameDeps = defaultRenameDeps,
 ): Promise<ActionResult> {
   if (session.tmux) {
-    return check(
-      await deps.renameTmuxSession(session.tmux.session, name),
-      "tmux rename-session failed",
-    );
+    const from = session.tmux.session;
+    // Resolve the tabs BEFORE the rename, while they still answer to `from` -
+    // after it, this lookup would have to guess which name tmux now reports.
+    const hosts = await deps.findTmuxHostPanes(from);
+    const renamed = check(await deps.renameTmuxSession(from, name), "tmux rename-session failed");
+    if (!renamed.ok) return renamed;
+    // Best-effort: the tmux name is the card's source of truth and it already
+    // moved, so a tmux-only user (or a wezterm GUI that just went away) gets the
+    // rename they asked for rather than a failure over a cosmetic tab title.
+    for (const h of hosts) await deps.setWeztermTabTitle(h.paneId, name);
+    return renamed;
   }
   if (session.wezterm) {
     return check(

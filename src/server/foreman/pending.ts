@@ -26,6 +26,23 @@ export type PendingSituation =
   | "gate-parked"
   | "no-question";
 
+/**
+ * Which no-mistakes gate round a `gate-parked` session sits on - enough to file a
+ * reply against it later, and nothing more.
+ *
+ * The same three facts the marker above is built from, carried in structured form
+ * rather than re-derived: the marker is a hash meant for an equality check and
+ * can't be read back. Note what is NOT here: `findingsDigest`. The ids are the
+ * discriminator (see `logGateReply`), because they survive `axi status`'
+ * description truncation and a digest of that text does not.
+ */
+export interface GateRef {
+  runId: string;
+  step: string;
+  /** Every finding up at the gate, ask-user and auto-fix alike. */
+  findingIds: string[];
+}
+
 export interface Pending {
   /** The rich block kind the Tier 0 gate branches on. */
   situation: PendingSituation;
@@ -42,6 +59,8 @@ export interface Pending {
   reviewKind?: string;
   /** For a non-input review: its title, if any. */
   reviewTitle?: string;
+  /** Set only for `gate-parked`: which gate round, so a send can be filed against it. */
+  gate?: GateRef;
 }
 
 /**
@@ -179,6 +198,17 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       // ("parked 1m30s"), whose elapsed time ticks and would churn the marker into re-handling
       // the same gate every loop.
       marker: `gate:${s.nomistakes.id}:${s.nomistakes.gateStep ?? "parked"}:${findingsDigest(s.nomistakes.findings)}`,
+      // The same run/step/findings the marker hashes, kept readable so a send can be
+      // filed against this exact round (see `GateRef`). Only when the step is known:
+      // it is half the join key, and a reply filed under "parked" would attach to
+      // whatever step the fix log later asked about.
+      gate: s.nomistakes.gateStep
+        ? {
+            runId: s.nomistakes.id,
+            step: s.nomistakes.gateStep,
+            findingIds: s.nomistakes.findings.map((f) => f.id).filter(Boolean),
+          }
+        : undefined,
     };
   }
   return {

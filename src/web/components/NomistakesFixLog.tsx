@@ -99,6 +99,36 @@ export function NomistakesFixLog({
   );
 }
 
+/**
+ * How the reply lane is coloured: the foreman gets Claude's own tone, a human
+ * (named or not) keeps the amber the lane has always used.
+ *
+ * The point of the colour is the distinction the whole feature exists for - a bot
+ * changed your branch while you were away vs. you decided this - so it turns on
+ * the foreman and nothing else.
+ */
+function whoClass(detail: NmFixDetail): string {
+  return detail.attribution?.source === "foreman" ? "nm-who-foreman" : "nm-who-you";
+}
+
+/**
+ * The lane's byline, or "" when we can't name an author.
+ *
+ * Silence is the honest common case, not a gap to fill: most gates are answered by
+ * the agent driving itself, which no-mistakes records identically to a human reply
+ * and which we never saw. "by someone" would be noise, and any guess would be the
+ * exact overclaim this feature was built to remove.
+ */
+function byline(detail: NmFixDetail): string {
+  const source = detail.attribution?.source;
+  if (source === "you") return "by you, in the dashboard";
+  // Not "by the foreman": it didn't write the reply above, the agent did, after
+  // being nudged. The wording has to survive the case where the agent ignored the
+  // nudge and answered something else entirely - which the data cannot rule out.
+  if (source === "foreman") return "after a nudge from the foreman";
+  return "";
+}
+
 /** "review 5 · document 3", in the order the steps actually ran. */
 function byStep(fixes: NmFixSummary[]): string {
   const counts = new Map<string, number>();
@@ -142,6 +172,16 @@ function FixRow({
       <button className="nm-fixbtn" type="button" aria-expanded={open} onClick={onToggle}>
         <span className={`nm-steptag nm-step-${fix.step}`}>{fix.step}</span>
         <span className="nm-fixsum">{fix.summary}</span>
+        {/* Only the foreman gets a chip on the collapsed row. Not a shortage of
+            colours - a byline on every row is a byline nobody reads, and "you"
+            is the row you already expect. The whole reason to scan this list is
+            to catch the fix an autonomous actor caused while you were away, so
+            that is the only one worth a mark from here. */}
+        {fix.repliedBy === "foreman" && (
+          <span className="nm-byline nm-byline-foreman" title="the foreman nudged this gate">
+            foreman
+          </span>
+        )}
         <span className="nm-fixwhen">{relativeTime(fix.committedAt)}</span>
       </button>
 
@@ -160,8 +200,12 @@ function FixRow({
  * The narrative behind one fix: what no-mistakes found, what authorized the fix,
  * and what changed. Sections that have no data are dropped rather than shown
  * empty - a fix whose round records are gone still deserves to list.
+ *
+ * Exported for tests. The attribution lane below is a claim about who changed
+ * your branch, so what it does and doesn't say is worth pinning directly - and
+ * from outside it sits behind FixRow's fetch, reachable only by faking the API.
  */
-function FixContext({
+export function FixContext({
   detail,
   onOpenDiff,
 }: {
@@ -224,17 +268,24 @@ function FixContext({
           sends its instructions as `trim() || undefined`), which yields
           replied-with-no-text. Reading that off `reply` put the auto lane's copy
           under a "replied" label, claiming the opposite of what happened. There
-          is nothing to quote there, so nothing is quoted. */}
+          is nothing to quote there, so nothing is quoted.
+
+          The byline is a SECOND axis over the same lane, off `attribution`, and
+          only ever adds: an unattributed reply reads exactly as it did before
+          (the agent drove its own gate, and nothing witnessed it). */}
       {detail.decision && (
         <section className="nm-ctx">
           <h4 className="nm-ctx-label">
-            <span className={detail.decision === "replied" ? "nm-who-you" : "nm-who-auto"}>
+            <span className={detail.decision === "replied" ? whoClass(detail) : "nm-who-auto"}>
               {detail.decision === "replied" ? "replied" : "auto-fixed"}
             </span>
             {detail.decision === "auto" ? (
               <span className="nm-ctx-meta">· nobody was asked</span>
-            ) : detail.reply ? null : (
-              <span className="nm-ctx-meta">· no guidance given</span>
+            ) : (
+              <>
+                {byline(detail) && <span className="nm-ctx-meta">· {byline(detail)}</span>}
+                {!detail.reply && <span className="nm-ctx-meta">· no guidance given</span>}
+              </>
             )}
           </h4>
           {detail.reply ? (
@@ -251,6 +302,27 @@ function FixContext({
               The pipeline fixed this under its own round limit.
             </p>
           ) : null}
+
+          {/* The foreman's own words, as their own block below the reply.
+              Deliberately NOT merged with it: they are two sentences by two
+              authors, and the foreman's is not the reply. It never calls `axi
+              respond` - it types into the session's pane, and the AGENT decides
+              what to answer, and is free to ignore the nudge entirely. So the
+              heading claims only what the data supports: this was said about this
+              gate, before this fix. Only for the foreman; the "you" lane's text
+              IS the reply already quoted above, so repeating it would say the
+              same sentence twice under two labels. */}
+          {detail.attribution?.source === "foreman" && detail.attribution.text && (
+            <div className="nm-foreman-said">
+              <span className="nm-foreman-tag">the foreman said this about this gate</span>
+              {/* Clamped in CSS and full on hover, like the findings above rather
+                  than like the reply, which earns its own expander by being the
+                  thing you came to read. This is context for it. */}
+              <p className="nm-reply nm-reply-foreman" title={detail.attribution.text}>
+                {detail.attribution.text}
+              </p>
+            </div>
+          )}
         </section>
       )}
 

@@ -9,6 +9,7 @@ import {
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
   ForemanHeartbeatSchema,
+  GateReplySchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -52,6 +53,7 @@ import { readStandards } from "./standards.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
+import { logGateReply } from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -453,7 +455,63 @@ export function buildApp(
     const parsed = await parseBody(c, NomistakesRespondSchema);
     if (!parsed.ok) return parsed.res;
     const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, parsed.data);
+    // The "you typed this" byline. Recorded HERE rather than inside `respond()`
+    // because this route is what the claim actually means: `respond()` is a helper
+    // keyed by cwd that anything could call, while a POST to this route is by
+    // definition the dashboard's Fix box. It's also the only side holding a session
+    // and its live run.
+    //
+    // Only for `fix`, and only once the respond was accepted. `approve`/`skip`
+    // commit nothing, so they have no fix to put a byline on; a rejected respond
+    // (one already in flight) sent nothing at all.
+    const gate = session.nomistakes;
+    const step = parsed.data.step || gate?.gateStep;
+    if (r.ok && parsed.data.action === "fix" && gate && step) {
+      try {
+        logGateReply({
+          sessionId: session.id,
+          ts: Date.now(),
+          source: "you",
+          runId: gate.id,
+          step,
+          // What the human actually picked. Falling back to every finding at the
+          // gate matches the Fix box's own contract - it sends an empty list to
+          // mean "all shown findings" - so the recorded set is what was decided
+          // either way, which is what the join reads.
+          findingIds:
+            parsed.data.findings.length > 0
+              ? parsed.data.findings
+              : gate.findings.map((f) => f.id).filter(Boolean),
+          // The Fix box sends `trim() || undefined`, so selecting findings and
+          // typing nothing is ordinary and lands as null: an author with no words,
+          // not an absent author.
+          text: parsed.data.instructions ?? null,
+        });
+      } catch (err) {
+        // The decision is already away; losing the byline must not fail the request.
+        console.error("[nomistakes] could not record the gate reply:", err);
+      }
+    }
     return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Record a Foreman gate nudge, for the fix log's byline. Loopback-gated like
+  // every /api route: the worker is a separate process with no DB access of its own.
+  app.post("/api/sessions/:id/gate-reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, GateReplySchema);
+    if (!parsed.ok) return parsed.res;
+    logGateReply({
+      sessionId: session.id,
+      ts: Date.now(),
+      source: "foreman",
+      runId: parsed.data.runId,
+      step: parsed.data.step,
+      findingIds: parsed.data.findingIds,
+      text: parsed.data.text || null,
+    });
+    return c.json({ ok: true });
   });
 
   // --- Foreman session notes (localhost only) ---

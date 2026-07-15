@@ -613,6 +613,10 @@ async function processSession(
     promptMarker: pending.marker,
     inputReviewId: pending.inputReviewId,
     canSend: pending.canSend,
+    // Read off the pending classification, not re-derived from the session: the two
+    // would be answering the same question from the same object, and the one that
+    // drifted would file replies against the wrong gate.
+    gate: pending.gate ?? null,
   };
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means

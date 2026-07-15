@@ -1,6 +1,6 @@
 # Plan: no-mistakes Fix Log
 
-Status: phases 1-2 implemented; phase 3 (foreman) deferred
+Status: implemented (phases 1-3; see "Foreman attribution" below for what shipped)
 Owner: ai-harness
 Related: the no-mistakes strip (`src/web/components/NomistakesStrip.tsx`), which shows a
 run *while it runs*. This shows what its fixes *did*, after it stops.
@@ -218,35 +218,45 @@ The fix log is **not** gated on an active run - that is the entire point.
 2. **Detail route + context UI + commit-scoped diff.** The narrative and View diff.
 3. **Foreman attribution** (deferred, see below).
 
-## Deferred: foreman attribution
+## Foreman attribution (shipped)
 
-**Blocked on the foreman/no-mistakes integration landing first** (in flight on
-`mancej/foreman-sees-nomistakes-gates`). Building attribution against it now means building
-against a moving target, and the integration is what makes attribution tractable at all.
+The byline: `selection_source` records THAT someone answered (`user` vs `auto_fix`), never
+who. So this was a label on text you could already read, not a missing capability - the
+foreman types into the session, the agent relays it via `axi respond --instructions`, and
+that has always landed in `user_instructions`.
 
-The reply text a foreman nudge produces is **already on the card today** - the foreman types
-into the session, the agent relays it via `axi respond --instructions`, and that lands in
-`user_instructions`. What's missing is only the *byline*: `selection_source` records that
-someone answered (`user` vs `auto_fix`), never who. So this is a label on text you can
-already read, not a missing capability.
+What ships: a `gate_replies` record of the replies we witness ourselves (the dashboard's Fix
+box, and a foreman nudge), joined to a fix by `(run_id, step)` and disambiguated by finding
+IDS. `NmFixDetail.attribution` names the author and carries their own words; the card shows
+a foreman's text as its own block, labelled as being *about* the gate rather than as the
+reply - the foreman never calls `axi respond`, so the agent is always free to ignore it.
+Most replies stay unattributed and that is correct: the usual author is the agent driving its
+own gate, which we never witnessed.
 
-Two things make it cheap once the integration lands, and both are worth knowing before
-anyone re-scopes this:
+Three things the design (`todo/foreman-attribution.md`) got wrong, all found on contact:
 
-- **The plumbing exists.** `session_events (session_id, ts, kind, payload)` is durable and
-  indexed, with a `logEvent()` writer and exactly one caller (`registry.ts`). Recording an
-  outbound foreman send is a call, not a subsystem. The `SessionNote` can't serve here - it
-  is one upserted row, so its text is overwritten by the next verdict.
-- **There is a real key, not a time window.** The in-flight branch marks a gate verdict
-  `gate:${nm.id}:${gateStep}` - keyed on the RUN id (deliberately: successive runs share a
-  branch). This log already resolves a commit to a round, and a round hangs off a
-  `step_result` carrying `run_id` and `step_name`. So `gate:<runId>:<step>` joins exactly.
-  Remaining wrinkle: one (run, step) can have several fix rounds; round number or timestamp
-  settles it. `NmFix*` would need to carry `runId`, which `loadRoundContext` already has.
+- **`session_events` was the wrong store**, though it looked free. `hooksEverSeen` reads ANY
+  row for a session as "hooks reached us from this session"; a second writer would have made
+  every foreman-nudged session claim hooks it never emitted, silently, in a fact that gates
+  escalation. Its index `(session_id, ts)` is also useless here - the join key is the RUN,
+  and the fix log resolves from a cwd with no session id in hand. Session ids are synthetic
+  (tty+pid+start) and re-mint on restart; run ids don't.
+- **`applyVerdict` cannot call `logEvent`.** The foreman worker is a separate process that
+  reaches the daemon only over the localhost API. The write goes through `ForemanActions` and
+  a route, like every other write there.
+- **`NmFixDecision` should not absorb the byline.** It is no-mistakes' `selection_source` and
+  nothing else; the byline is our own fact from our own source. Separate field, so `replied`
+  keeps meaning exactly what the pipeline recorded.
 
-Until then phases 1-2 ship two honest lanes, `auto` and `replied`, with the reply verbatim
-so you can see who it sounds like. A third lane guessed from a time window would be worse
-than no lane.
+**Retention** (the open question): aged, never session-scoped. These hang off a session id,
+so session-scoped pruning is right there - and would delete the byline the moment the session
+exited, which is precisely when the fix log becomes interesting. 90 days, a floor on how long
+a byline stays legible rather than a bound on anything the system needs.
+
+**`findingsDigest` stays unused, and there is a test that fails if it creeps back.** It
+hashes descriptions as `axi status` rendered them, and `axi status` truncates at 600 runes
+with a `… (truncated, %d chars total)` suffix - so matching on it would replicate another
+tool's display constant and format string, forever, failing silently when either moved.
 
 ## Testing
 

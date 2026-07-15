@@ -117,6 +117,27 @@ export const NomistakesRespondSchema = z.object({
 });
 export type NomistakesRespond = z.infer<typeof NomistakesRespondSchema>;
 
+/**
+ * Record who answered a no-mistakes gate - the fix log's byline.
+ *
+ * Posted by the Foreman worker, which is a separate process and reaches the DB
+ * only through routes like this one. The dashboard's own replies are logged
+ * server-side (the respond route already holds everything this carries), so this
+ * has exactly one caller.
+ *
+ * `findingIds` identifies WHICH round of a step was answered. Deliberately ids
+ * and not a digest of the findings' text: `axi status` truncates descriptions,
+ * so anything hashing them binds us to another tool's display constants.
+ */
+export const GateReplySchema = z.object({
+  runId: z.string().min(1),
+  step: z.string().min(1),
+  findingIds: z.array(z.string()).optional().default([]),
+  /** What the author wrote. Empty is meaningful: findings selected, nothing typed. */
+  text: z.string().optional().default(""),
+});
+export type GateReply = z.infer<typeof GateReplySchema>;
+
 /** MCP `report_status`: update the session's activity line. */
 export const StatusSchema = z.object({
   env: EnvSchema,

@@ -600,8 +600,47 @@ export interface NmRunSummary {
  * Who caused a fix to happen. `auto` - the pipeline fixed it under its own
  * round limit, nobody was asked. `replied` - it was fixed because someone
  * answered the gate; the reply text is on `NmFixDetail`.
+ *
+ * This is no-mistakes' own `selection_source` and nothing more: it says THAT
+ * somebody answered, never who. The byline is a separate fact from a separate
+ * source - see `NmFixAttribution`, which deliberately does not fold into this
+ * union. `replied` stays honest that way: it means exactly what the pipeline
+ * recorded, and an unattributed reply (the common case - the agent drove its own
+ * gate) reads as `replied` with no byline rather than as a third enum member
+ * that would have to mean "replied, source unknown".
  */
 export type NmFixDecision = "auto" | "replied";
+
+/**
+ * Who the reply came from. `you` - typed into the dashboard's Fix box. `foreman`
+ * - the foreman nudged the session's pane about this gate and the agent answered
+ * it afterwards.
+ *
+ * Absent for the common case: the agent answered its own gate (via the
+ * `/no-mistakes` skill), which no-mistakes records identically to a human reply
+ * and which nothing on our side witnessed. So this is only ever ADDITIVE - it
+ * names an author when we logged one, and says nothing when we didn't.
+ */
+export type NmFixReplySource = "you" | "foreman";
+
+/**
+ * The byline on a fix's reply, joined from our own record of who said what to
+ * which gate.
+ *
+ * `foreman` attribution is INDIRECT and the shape says so. The foreman never
+ * calls `axi respond`; it types into the session's pane, and the *agent* decides
+ * what to send. So `text` is what the foreman said about this gate - context for
+ * the reply, never the reply itself - and the agent was free to ignore it. The
+ * UI must keep those two sentences visibly apart; collapsing them would be its
+ * own attribution bug.
+ */
+export interface NmFixAttribution {
+  source: NmFixReplySource;
+  /** What the author actually wrote. Null when they selected findings and typed nothing. */
+  text: string | null;
+  /** When it was said (epoch ms). Always before the fix it explains. */
+  at: number;
+}
 
 /** One no-mistakes fix commit on a session's branch. Card-weight. */
 export interface NmFixSummary {
@@ -616,6 +655,13 @@ export interface NmFixSummary {
   removed: number;
   /** From the round that produced it; null when no round matched the commit. */
   decision: NmFixDecision | null;
+  /**
+   * The reply's author, when we logged one. Card-weight (an enum, not the text)
+   * so a foreman-caused fix is spottable down the list without opening each row -
+   * which is the whole point: a bot changing your branch while you were away is
+   * the thing you'd want to catch at a glance. The text is on `NmFixDetail`.
+   */
+  repliedBy: NmFixReplySource | null;
   /** How many findings justified it. The TRUE count, even if the detail caps its list. */
   findingCount: number;
 }
@@ -649,6 +695,11 @@ export interface NmFixDetail {
    * reply, so it belongs to the fix. Null when auto-fixed or unmatched.
    */
   reply: string | null;
+  /**
+   * Who wrote the reply, and what they said in their own words. Null when nobody
+   * we know about did - see `NmFixAttribution`.
+   */
+  attribution: NmFixAttribution | null;
   /** Capped: compare against `findingCount` to know if this is the whole set. */
   findings: NmFixFinding[];
   /** The true number of findings, which can exceed `findings.length`. */

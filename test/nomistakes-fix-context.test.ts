@@ -28,6 +28,11 @@ function tmp(prefix: string): string {
 }
 
 process.env.NM_HOME = tmp("nm-home-");
+// Isolate the DAEMON's db too, before the import below resolves DB_PATH from it.
+// The fix log now reads our own `gate_replies` for the byline, so an unset home
+// would point that read at ~/.fleet-control/harness.db - the developer's live
+// database - from a unit test.
+process.env.FLEET_HOME = tmp("fleet-fix-context-");
 
 const { readFixLog, lastRoundsRead } = await import("../src/server/nomistakes-fixes.ts");
 

@@ -196,7 +196,7 @@ test("a failed reset leaves the fix log alone", async () => {
   registry.applyNomistakesFixes("sess-bad", [
     {
       sha: "abc1234", step: "review", summary: "keep me", committedAt: 1,
-      filesChanged: 1, added: 1, removed: 0, decision: null, findingCount: 0,
+      filesChanged: 1, added: 1, removed: 0, decision: null, repliedBy: null, findingCount: 0,
     },
   ]);
 

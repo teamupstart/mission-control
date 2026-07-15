@@ -4,7 +4,16 @@ import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 import { run } from "./util/exec.ts";
 import { sourceRef } from "./diff.ts";
-import type { NmFixDecision, NmFixDetail, NmFixFile, NmFixFinding, NmFixSummary } from "@shared/types.ts";
+import { gateRepliesFor } from "./db.ts";
+import type { GateReplyRow } from "./db.ts";
+import type {
+  NmFixAttribution,
+  NmFixDecision,
+  NmFixDetail,
+  NmFixFile,
+  NmFixFinding,
+  NmFixSummary,
+} from "@shared/types.ts";
 
 // The log of what no-mistakes actually changed on a branch, and why.
 //
@@ -16,6 +25,11 @@ import type { NmFixDecision, NmFixDetail, NmFixFile, NmFixFinding, NmFixSummary 
 //   nm db - each `step_rounds` row holds the findings that justified the fix and
 //           the reply that authorized it, keyed by a `fix_summary` that is
 //           character-for-character the commit subject after the prefix.
+//   ours  - `gate_replies`, the one thing no-mistakes cannot tell us: WHO wrote
+//           that reply. It records only what we witnessed ourselves (the Fix box
+//           typing, the foreman nudging a pane), so it names an author when there
+//           is one to name and stays quiet otherwise - most replies come from the
+//           agent driving its own gate, which we never saw.
 //
 // Driven FROM git, never from the rounds: a round can record a fix_summary and
 // commit nothing (the lint step does this constantly - "typecheck clean, no
@@ -183,6 +197,79 @@ interface RoundContext {
   findings: NmFixFinding[];
   /** True count, before MAX_FINDINGS - so the card can say "40 of 50 shown". */
   findingCount: number;
+  /** The run this fix's round belongs to. Half the key the byline joins on. */
+  runId: string;
+  /**
+   * Every finding id the DECIDING round reported - uncapped, and independent of
+   * which side (`findings` above) we ended up displaying.
+   *
+   * The byline's discriminator between two rounds of one step. Uncapped because a
+   * capped set silently weakens the match rather than the display, and untangled
+   * from `findings` because that list is narrowed to what was ACTED on, while a
+   * reply's ids are drawn from everything that was up at the gate.
+   */
+  roundFindingIds: string[];
+}
+
+/**
+ * How far AFTER a fix's commit timestamp a reply may still be read as its cause.
+ *
+ * Not a clock-skew allowance - both timestamps are made on this machine. It's
+ * `%ct`, which git reports in whole SECONDS: `committedAt` is therefore truncated
+ * down by up to 999ms, so a reply logged at 10:00:00.500 against a fix committed
+ * at 10:00:00.900 reads as 500ms in its own future. Without this, that true match
+ * is discarded. One second exactly, because that is the size of the defect being
+ * corrected: anything larger stops being a rounding fix and starts admitting the
+ * NEXT round's reply as an explanation for this round's commit.
+ */
+const COMMIT_SECOND_MS = 1000;
+
+/**
+ * The reply that best explains a fix, out of every reply filed against its gate.
+ *
+ * Pure, and exported for tests: the cases that matter (two rounds of one step, a
+ * re-run round with an identical finding set, an unreadable blob leaving no ids)
+ * are all about which candidate wins, which is invisible from the outside.
+ *
+ * Three rules, in order:
+ *  1. CAUSALITY. A reply filed after the fix landed cannot have caused it. This
+ *     runs first so it constrains the other two rather than being their tiebreak.
+ *  2. OVERLAP. Prefer the reply whose finding ids overlap this round's most. This
+ *     is what separates round 1 from round 2 of the same step - they share a run
+ *     and a step, so ids are the only thing telling them apart. Ids, never
+ *     `findingsDigest`: descriptions arrive TRUNCATED by `axi status` (600 runes
+ *     plus a "… (truncated, %d chars total)" suffix) and a digest of them would
+ *     bind this join to another tool's display constants, failing silently and
+ *     invisibly the day either changed. Ids are short, stable and never truncated.
+ *  3. RECENCY. Ties, and rounds we could read no ids for, fall back to the newest
+ *     surviving candidate - the plain "who spoke last before this landed".
+ */
+export function pickGateReply(
+  replies: GateReplyRow[],
+  roundFindingIds: string[],
+  committedAt: number,
+): GateReplyRow | null {
+  // Exclusive, and the boundary is load-bearing rather than a style choice. `%ct`
+  // floors the commit, so the true commit time is somewhere in [committedAt,
+  // committedAt + 1000) - never at the top of that range. A reply landing at
+  // exactly +1000ms is therefore after the fix however the flooring fell, and is
+  // the NEXT round's, not this one's.
+  const caused = replies.filter((r) => r.ts < committedAt + COMMIT_SECOND_MS);
+  if (caused.length === 0) return null;
+  const round = new Set(roundFindingIds);
+  let best: GateReplyRow | null = null;
+  let bestOverlap = -1;
+  for (const r of caused) {
+    const overlap = round.size === 0 ? 0 : r.findingIds.filter((id) => round.has(id)).length;
+    // `>=` on a tie, over a list already sorted oldest-first: the later reply wins,
+    // which is rule 3. A strict `>` would keep the earliest instead and explain a
+    // fix with a superseded decision.
+    if (overlap > bestOverlap || (overlap === bestOverlap && r.ts >= (best?.ts ?? 0))) {
+      best = r;
+      bestOverlap = overlap;
+    }
+  }
+  return best;
 }
 
 /**
@@ -267,6 +354,27 @@ function parseFindings(
     console.warn(`[nomistakes] carrying ${findings.length} of ${total} findings (cap)`);
   }
   return { findings, reply, total };
+}
+
+/**
+ * Every finding id in a findings_json blob, uncapped and in file order.
+ *
+ * Separate from `parseFindings` on purpose: that one caps its list for display
+ * and narrows to what was acted on, and both are exactly wrong for a join key.
+ * Same defensiveness - another tool's private schema, so a bad blob costs the
+ * byline, not the log.
+ */
+function findingIdsOf(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const items = (JSON.parse(raw) as { findings?: unknown })?.findings;
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((it) => (it as Record<string, unknown>)?.id)
+      .filter((id): id is string => typeof id === "string" && id !== "");
+  } catch {
+    return [];
+  }
 }
 
 /** Parse a `selected_finding_ids` JSON array into a set, or null when absent. */
@@ -360,7 +468,8 @@ async function loadRoundContext(
     const holes = summaries.map(() => "?").join(",");
     const fixSql = `
       SELECT s.step_name AS step, r.fix_summary AS summary,
-             r.step_result_id AS stepResultId, r.round AS round
+             r.step_result_id AS stepResultId, r.round AS round,
+             s.run_id AS runId
       FROM step_rounds r
       JOIN step_results s ON s.id = r.step_result_id
       JOIN runs n ON n.id = s.run_id
@@ -401,6 +510,7 @@ async function loadRoundContext(
       const step = typeof row.step === "string" ? row.step : "";
       const summary = typeof row.summary === "string" ? row.summary.trim() : "";
       const stepResultId = typeof row.stepResultId === "string" ? row.stepResultId : "";
+      const runId = typeof row.runId === "string" ? row.runId : "";
       const round = Number(row.round);
       if (!step || !summary || !stepResultId || !Number.isFinite(round) || round < 1) continue;
       // The SQL narrowed by summary alone; the real key is (step, summary).
@@ -426,6 +536,13 @@ async function loadRoundContext(
         reply: userSide.reply,
         findings: context.findings,
         findingCount: context.total,
+        runId,
+        // Off findings_json, which is the round's WHOLE finding set - not off
+        // `context`, which is narrowed to what was acted on. A reply's ids are
+        // drawn from everything that was up at the gate (the foreman logs the lot;
+        // the Fix box logs a selection out of it), so the full set is the one both
+        // are subsets of, and the only one that can overlap either.
+        roundFindingIds: findingIdsOf(typeof p.findings === "string" ? p.findings : null),
       });
     }
   } catch {
@@ -525,11 +642,25 @@ export async function fixDetail(cwd: string, sha: string, now = Date.now()): Pro
   return (await ensureFixLog(cwd, now)).details.get(sha) ?? null;
 }
 
+/** Reads the replies filed against one run's gate at a step. See `readFixLog`. */
+export type GateReplyReader = (runId: string, step: string) => GateReplyRow[];
+
 /**
  * The full fix log for a checkout: card-weight summaries plus the per-fix detail
  * behind them, keyed by short sha.
+ *
+ * `replies` is injected, defaulting to the daemon's own store. Not for looseness -
+ * the reader is a two-column lookup with no shape worth abstracting - but because
+ * `gateRepliesFor` opens the daemon's DB at a path fixed from the environment at
+ * import time, and this module's tests point NM_HOME at a fixture while leaving
+ * that alone. Called for real, they'd read (and create) the developer's live
+ * database from a unit test. The seam keeps the default honest in production and
+ * the tests off the real thing.
  */
-export async function readFixLog(cwd: string): Promise<FixLog> {
+export async function readFixLog(
+  cwd: string,
+  replies: GateReplyReader = gateRepliesFor,
+): Promise<FixLog> {
   const commits = await listFixes(cwd);
   // A fresh value per call, not a shared constant: this reads as per-checkout
   // state and gets cached under a cwd and hung off a session, so one instance
@@ -544,6 +675,7 @@ export async function readFixLog(cwd: string): Promise<FixLog> {
   const details = new Map<string, NmFixDetail>();
   for (const c of commits) {
     const ctx = context.get(key(c.step, c.summary)) ?? null;
+    const attribution = ctx ? attribute(ctx, c, replies) : null;
     summaries.push({
       sha: c.sha,
       step: c.step,
@@ -553,6 +685,7 @@ export async function readFixLog(cwd: string): Promise<FixLog> {
       added: c.added,
       removed: c.removed,
       decision: ctx?.decision ?? null,
+      repliedBy: attribution?.source ?? null,
       findingCount: ctx?.findingCount ?? 0,
     });
     details.set(c.sha, {
@@ -562,6 +695,7 @@ export async function readFixLog(cwd: string): Promise<FixLog> {
       committedAt: c.committedAt,
       decision: ctx?.decision ?? null,
       reply: ctx?.reply ?? null,
+      attribution,
       findings: ctx?.findings ?? [],
       findingCount: ctx?.findingCount ?? 0,
       files: c.files,
@@ -571,4 +705,41 @@ export async function readFixLog(cwd: string): Promise<FixLog> {
     });
   }
   return { summaries, details };
+}
+
+/**
+ * Put a byline on one fix, or don't.
+ *
+ * Only ever for a fix no-mistakes says was `replied`. An `auto` fix was decided
+ * under the pipeline's own round limit with nobody asked - so a reply that merely
+ * shares its run and step (an earlier gate on the same step) explains something
+ * else entirely, and hanging an author on it would invent the one fact this whole
+ * feature exists to state precisely.
+ *
+ * A `replied` fix with no match stays unattributed, which is the honest and COMMON
+ * answer, not a failure: the usual replier is the agent driving its own gate via
+ * the `/no-mistakes` skill, which nothing on our side witnessed. The card says
+ * `replied` and names nobody, exactly as it did before.
+ *
+ * Fails soft for the same reason the rest of this file does: a byline is never
+ * worth taking the log down for.
+ */
+function attribute(
+  ctx: RoundContext,
+  c: FixCommit,
+  replies: GateReplyReader,
+): NmFixAttribution | null {
+  if (ctx.decision !== "replied" || !ctx.runId) return null;
+  try {
+    const hit = pickGateReply(replies(ctx.runId, c.step), ctx.roundFindingIds, c.committedAt);
+    if (!hit) return null;
+    return {
+      source: hit.source,
+      text: hit.text ? clamp(hit.text, MAX_REPLY) : null,
+      at: hit.ts,
+    };
+  } catch (err) {
+    console.warn(`[nomistakes] fix ${c.sha}: cannot read the gate reply byline:`, err);
+    return null;
+  }
 }

@@ -12,6 +12,7 @@ import type {
   SessionDiff,
   SessionNote,
   SessionQueue,
+  ToolCall,
   TranscriptMessage,
   WorkItem,
 } from "@shared/types.ts";
@@ -52,6 +53,35 @@ export interface TranscriptWindowResponse {
    * against a near-empty window and invent gaps.
    */
   reset?: boolean;
+}
+
+/**
+ * Coerce one turn's `tools` back to `ToolCall[]` across a daemon/worker version skew.
+ *
+ * `tools` used to be `string[]` and is now `ToolCall[]`. The worker is started separately from
+ * the daemon, so an old daemon still serving `["Bash"]` to a new worker is an ordinary
+ * upgrade-window state - and this is the one cast where that stops being free. Those strings
+ * reach `riskContextFrom` as `t.input ? … : t.name`, where BOTH are undefined, so every call
+ * flattens to the literal "undefined": the tool names and the commands vanish from the denylist
+ * blob while prose still scans, so `hasProse` holds, backstop 3(a) does not fire, and a
+ * `Bash(rm -rf …)` reads as clean - the exact hole carrying inputs was filed to close, failing
+ * silently and OPEN. `formatTranscript` degrades the same way, rendering "(tools: undefined)".
+ *
+ * So this follows `recentTurns`' precedent rather than the blanket cast rule: a field arriving
+ * over the wire must never let its own absence become the permissive answer. A string becomes
+ * `{ name }`, which restores exactly the pre-input behaviour (names scan, inputs are absent
+ * because that daemon never had them) and invents nothing. Anything unrecognisable is dropped
+ * instead of being carried as a half-formed call.
+ */
+function normalizeTools(tools: unknown): ToolCall[] {
+  if (!Array.isArray(tools)) return [];
+  return tools.flatMap((t): ToolCall[] => {
+    if (typeof t === "string") return [{ name: t }];
+    if (!t || typeof t !== "object") return [];
+    const { name, input } = t as Record<string, unknown>;
+    if (typeof name !== "string") return [];
+    return [{ name, input: typeof input === "string" ? input : undefined }];
+  });
 }
 
 /** Read + write helpers over the daemon API; satisfies `ForemanActions`. */
@@ -98,8 +128,15 @@ export class ForemanClient implements ForemanActions {
     return get<ReviewItem[]>("/api/reviews");
   }
 
-  transcript(id: string, turns = 48): Promise<TranscriptWindowResponse> {
-    return get<TranscriptWindowResponse>(`/api/sessions/${enc(id)}/transcript?turns=${turns}`);
+  /**
+   * The transcript window, with each turn's `tools` normalized - see `normalizeTools`. The rest
+   * of the response is cast like every other read: `headCount` already refuses to let its own
+   * absence mean anything permissive (see `recentTurns`), and the remaining fields cost a bad
+   * log line at worst.
+   */
+  async transcript(id: string, turns = 48): Promise<TranscriptWindowResponse> {
+    const w = await get<TranscriptWindowResponse>(`/api/sessions/${enc(id)}/transcript?turns=${turns}`);
+    return { ...w, messages: (w.messages ?? []).map((m) => ({ ...m, tools: normalizeTools(m.tools) })) };
   }
 
   /** The transcript's current byte size - a work item's delivery anchor. */

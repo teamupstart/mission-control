@@ -117,7 +117,7 @@ snapshot, so the mid-review safety net still applies.
 - New `src/server/foreman/pending.ts`: `classifyPending`, lifted out of `worker.ts` (which runs a
   top-level loop on import, so `triage.ts` could not have imported it there) and given a richer
   `situation` discriminant - `input-review` / `non-input-review` / `terminal-pane` /
-  `terminal-no-pane` / `no-question` - which is exactly what Tier 0 switches on.
+  `terminal-no-pane` / `gate-parked` / `no-question` - which is exactly what Tier 0 switches on.
 - `worker.ts`: `processSession` delegates to `decide`, which switches over the posture and returns
   `{ verdict, tier }` - `fullReviewOnly` (off), `shadowBoth` (shadow), or `cheapTierDecides` (on).
   `reviewSession` is reached only when the cheap tier routes up, or on every session under `off` /

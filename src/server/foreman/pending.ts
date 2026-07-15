@@ -54,20 +54,26 @@ export interface Pending {
  * summary. Naming the findings here means the reviewer gets the decision framed even before
  * it reads a single turn.
  *
- * `ask-user` rows lead because they are definitionally the human's call; `auto-fix` rows are
- * the agent's own to drive and are noise on this card. But the question never *depends* on
- * finding one - see `classifyPending`.
+ * `ask-user` rows lead because they ARE the decision: no-mistakes routed them to the user's
+ * judgment instead of fixing them itself, which is precisely what Foreman stands in for.
+ * `auto-fix` rows are the agent's own to drive and are noise on this card. This deliberately
+ * frames them as the user's call to MAKE rather than as off-limits, because the reviewer POLICY
+ * tells the reviewer to judge a gate - answer when the session's goal makes the call clear,
+ * escalate when it turns on the user's intent or is risky. A heading declaring the rows
+ * human-only would contradict that, and the model would be reading both. But the question never
+ * *depends* on finding an ask-user row - see `classifyPending`.
  */
 function gateQuestion(nm: NmRunSummary): string {
   const step = nm.gateStep ? `the "${nm.gateStep}" gate` : "a gate";
   const lines = [
     `The no-mistakes run on ${nm.branch} is parked at ${step} and the agent driving it has ` +
-      `stopped, so this decision is the human's. Answer with what you want done and the child ` +
-      `will translate it into the matching \`no-mistakes axi respond\` call.`,
+      `stopped, so this decision is waiting on the user - and you are standing in for them. ` +
+      `Answer with what you want done and the child will translate it into the matching ` +
+      `\`no-mistakes axi respond\` call.`,
   ];
   const asks = nm.findings.filter((f) => f.action === "ask-user");
   if (asks.length > 0) {
-    lines.push("", "Findings the pipeline says only a human can call:");
+    lines.push("", "Findings no-mistakes routed to the user's judgment rather than fixing itself:");
     for (const f of asks) lines.push(`- ${f.id} [${f.severity}] ${f.file}: ${f.description}`);
   } else if (nm.findingsSummary) {
     // No ask-user row scraped (yet, or at all) - say what IS known rather than invent a reason.

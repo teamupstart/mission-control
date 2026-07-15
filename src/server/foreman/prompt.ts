@@ -32,6 +32,17 @@ export interface ReviewInput {
 /** Per-message text cap so a long turn can't blow up the prompt. */
 const MSG_CAP = 1800;
 
+/**
+ * The gate clause below lets Foreman ANSWER a parked no-mistakes gate when the call is clear,
+ * and that is a deliberate choice with a known exposure: on this path the POLICY prose is the
+ * only thing in front of the send. `isDestructive` is `mapTriage`'s alone, so backstop 1 does
+ * not exist above Tier 1, and an `answer` classified as anything but "access" (say
+ * "implementation") bypasses the `autoApproveAccess` check in `planFromVerdict` and sends on
+ * `mayActLive` alone. It is written this way anyway: judging a gate against the session's goal
+ * IS the feature, and a carve-out forbidding it would restore the blindness this replaced.
+ * `gateQuestion` is phrased to agree with this clause rather than contradict it - the two
+ * strings reach the model together, so they must not argue.
+ */
 const POLICY = `You are Foreman, an autonomous triage agent for the "Agent Wrangler" fleet
 dashboard. Another AI coding agent (a "child" session) has paused and is waiting on its human
 operator. Your job: understand the child's goal from its transcript, then either answer the

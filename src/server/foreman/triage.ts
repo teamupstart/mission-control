@@ -321,6 +321,16 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   if (report.bucket === "human-only") {
     // A quiet skip is only allowed for a non-risky ask; anything risky is surfaced (escalated).
     if (report.disposition === "skip" && !risky) {
+      // ...and never for a gate. Backstop 4's reasoning - the ROUTER is only ever taught
+      // permission prompts, so it has no notion of what a gate is - applies to `skip` exactly as
+      // it does to `routine-access`, and a gate disposed here would never reach the one tier that
+      // was taught. That is the outcome this whole path exists to prevent, and the boilerplate
+      // variant makes it likely: before the poller scrapes the findings, `gateQuestion` reduces
+      // to a template, and "genuinely can't tell what is being asked" (the ROUTER's own skip
+      // criterion) becomes a fair read of it. Only the DISPOSITION is blocked, not the bucket:
+      // `human-only` + `escalate` still disposes below, which is cheap, safe, and puts the gate
+      // in front of the human - buying an Opus review for every gate would not be.
+      if (pending.situation === "gate-parked") return { kind: "route-up", reason: "gate-needs-review" };
       return { kind: "dispose", tier: 1, reason: "human-only-skip", verdict: skipVerdict(report.purpose, report.brief) };
     }
     return {
@@ -355,12 +365,14 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // `risky === false` means "unknown" rather than "safe". `gate-parked` sits on that same side:
   // its question is a template Foreman synthesizes from the run summary, which never names a
   // command, and a run whose findings haven't been scraped yet reduces it to pure boilerplate -
-  // so a prose-free window leaves the ask unread there too. Backstop 4 routes every gate up
-  // regardless; this still names the situation because it fires first, and "nothing was scanned"
-  // is the sharper diagnosis for the worker log than "it was a gate". On `input-review` the
-  // question IS the child's own review body, scanned in full above: the window corroborates it, it
-  // is not the only witness, so its absence proves nothing and gating on it would route up asks
-  // that were perfectly scannable.
+  // so a prose-free window leaves the ask unread there too. A gate reaching this line is on the
+  // routine-access path (a `human-only` one was already routed up in the block above), and
+  // backstop 4 would route it up anyway; this still names the situation because it fires first,
+  // and "nothing was scanned" is the sharper diagnosis for the worker log than "it was a gate".
+  // Between the three sites, no gate is ever disposed by Tier 1 as anything but an escalation.
+  // On `input-review` the question IS the child's own review body, scanned in full above: the
+  // window corroborates it, it is not the only witness, so its absence proves nothing and gating
+  // on it would route up asks that were perfectly scannable.
   if (
     (pending.situation === "terminal-pane" || pending.situation === "gate-parked") &&
     !hasProse(scan.messages)
@@ -372,10 +384,11 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // either surface, however much prose they hold. Not scoped by situation for that reason.
   if (scan.boundaryUnknown) return { kind: "route-up", reason: "no-window-boundary" };
 
-  // Backstop 4: a parked no-mistakes gate is never Tier 1's to answer, however clean the window
+  // Backstop 4: a parked no-mistakes gate is never Tier 1's to ANSWER, however clean the window
   // and however sure the router. Backstop 3(a) above only catches the rare half of this - a
   // gate-parked window is almost never prose-free, since the skill relays the finding AS prose
-  // and then stops, which is the whole reason the situation exists.
+  // and then stops, which is the whole reason the situation exists. The `human-only` block above
+  // withholds the other disposal a gate could reach (a quiet skip) on the same grounds.
   //
   // The router has no notion of what a gate is: `buildTriagePrompt`'s ROUTER only ever describes
   // permission prompts, so a `routine-access` bucket here is Haiku bucketing a question shape it

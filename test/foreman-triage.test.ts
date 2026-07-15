@@ -408,6 +408,86 @@ test("mapTriage: human-only skip is allowed only for a non-risky ask", () => {
   if (risky.kind === "dispose") assert.equal(risky.verdict.action, "escalate");
 });
 
+test("mapTriage: a gate-parked run is never quietly skipped either, clean window or not", () => {
+  // The other door into disposing a gate without a model reading it. Backstop 4 sits below the
+  // human-only block, so `skip` bypassed it entirely: same reasoning, opposite disposition. It is
+  // a plausible bucketing rather than a contrived one - before the poller scrapes the findings the
+  // question is pure boilerplate, and "can't tell what is being asked" is the ROUTER's own stated
+  // skip criterion. A skip takes no wrong action, but it stamps the marker handled with no brief
+  // and no recommendation, so the gate silently never gets judged - the outcome this path exists
+  // to prevent.
+  const out = mapTriage(
+    report({ bucket: "human-only", disposition: "skip", answer: undefined }),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("The pipeline flagged one finding for you - relaying it as written.")] },
+  );
+  assert.equal(out.kind, "route-up", "a gate must reach the only tier taught what a gate is");
+  if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
+});
+
+test("mapTriage: a gate-parked run bucketed human-only ESCALATE still disposes at Tier 1", () => {
+  // Only the disposition is withheld, not the bucket. An escalation puts the gate in front of the
+  // human with Haiku's brief - safe, cheap, and exactly what routing up would have cost an Opus
+  // call to conclude. Buying a full review for every gate is the trade this deliberately refuses.
+  const out = mapTriage(
+    report({ bucket: "human-only", disposition: "escalate", brief: "## Gate\nreview", recommendation: "Make it configurable", answer: undefined }),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("The pipeline flagged one finding for you - relaying it as written.")] },
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.verdict.recommendation, "Make it configurable");
+});
+
+test("mapTriage: across EVERY report shape, a gate is only ever routed up or escalated", () => {
+  // The invariant behind the two tests above, pinned directly rather than one door at a time.
+  // Tier 1 has leaked a gate twice now, each time through a disposal path that simply wasn't
+  // scoped by situation - first `routine-access`, then `human-only` + `skip` - so the class of
+  // bug is "someone adds a third disposal and no test notices". Enumerating the report space
+  // catches that at the door: whatever Haiku returns, a gate may only reach the human (escalate)
+  // or the tier that was taught what a gate is (route-up). It may never be ANSWERED (typing an
+  // approval the pipeline reserved for the user) or SKIPPED (stamped handled, never judged).
+  const buckets = ["human-only", "routine-access", "needs-judgment"] as const;
+  const dispositions = [undefined, "escalate", "skip"] as const;
+  const answers = [undefined, { text: "Approve - go ahead." }];
+  const confidences = [0.5, 0.9];
+  const windows: ScanWindow[] = [
+    { messages: [] },
+    { messages: [msg("", ["Bash"])] },
+    { messages: [msg("Relaying the finding as the pipeline wrote it.")] },
+    { messages: [msg("Relaying the finding.")], boundaryUnknown: true },
+    { messages: [msg("", ["Read"])], unavailable: true },
+  ];
+  const gate = pend({
+    situation: "gate-parked",
+    question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+  });
+
+  let disposals = 0;
+  for (const bucket of buckets)
+    for (const disposition of dispositions)
+      for (const answer of answers)
+        for (const confidence of confidences)
+          for (const scan of windows) {
+            const out = mapTriage(report({ bucket, disposition, answer, confidence }), gate, scan);
+            if (out.kind !== "dispose") continue;
+            disposals++;
+            assert.equal(
+              out.verdict.action,
+              "escalate",
+              `gate disposed as "${out.verdict.action}" (${out.reason}) for ${bucket}/${disposition}/conf ${confidence}`,
+            );
+          }
+  assert.ok(disposals > 0, "the escalate path must actually be exercised, not vacuously absent");
+});
+
 // ---- shadow-mode divergence classifier (pure) ----
 
 function opus(action: Verdict["action"]): Verdict {

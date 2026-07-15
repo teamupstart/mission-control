@@ -176,6 +176,21 @@ export const ForemanConfigSchema = z.object({
   repoAllowlist: z.array(z.string()).default([]),
   /** Whether Foreman may auto-approve non-destructive access asks (still gated by risk). */
   autoApproveAccess: z.boolean().default(true),
+  /**
+   * The cheap-tier gate in front of the full `claude -p` reviewer (see
+   * docs/plans/foreman-watcher/plan.md). `off` = every new marker gets a full review
+   * (the pre-triage behaviour); `on` = a pure-code Tier 0 + Haiku Tier 1 dispose the
+   * easy cases and only route the hard ones up to the full review; `shadow` = run both
+   * the cheap tier and the full review, act on the full review, and log every
+   * divergence so the cheap tier's accuracy is measured before it's trusted. Defaults
+   * to `shadow` so the first ship gathers evidence rather than short-circuiting blind.
+   */
+  triage: z.enum(["off", "shadow", "on"]).default("shadow"),
+  /**
+   * Model id for the Tier 1 triage call (a cheap router, not the full reviewer). Falls
+   * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default, in the worker.
+   */
+  triageModel: z.string().optional(),
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 

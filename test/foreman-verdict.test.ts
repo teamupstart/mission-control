@@ -25,7 +25,7 @@ function ctx(over: Partial<ReviewContext> = {}): ReviewContext {
 }
 
 function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
-  return { enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true, ...over };
+  return { enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true, triage: "off", ...over };
 }
 
 const ANSWER: Verdict = {

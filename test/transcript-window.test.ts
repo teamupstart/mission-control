@@ -26,6 +26,7 @@ test("a small transcript is returned whole, not truncated", () => {
   );
   const w = readTranscriptWindow(path);
   assert.equal(w.truncated, false);
+  assert.equal(w.headCount, 0, "no split, so every turn is contiguous");
   assert.equal(w.messages.length, 3);
   assert.equal(w.messages[0]?.text, "the goal");
   assert.equal(w.messages.at(-1)?.text, "thanks");
@@ -48,9 +49,14 @@ test("a large transcript returns the opening goal + recent tail, marked truncate
   assert.equal(w.messages.at(-1)?.text, "THE FINAL TURN");
   // Bounded: head (<=12) + tail (<=48), nowhere near all 902 turns.
   assert.ok(w.messages.length <= 60, `expected a bounded window, got ${w.messages.length}`);
+  // The head/tail boundary is reported, so a reader wanting the genuinely recent turns can
+  // slice forward from it instead of back from the end (which would land in the opening).
+  assert.equal(w.headCount, 12);
+  assert.equal(w.messages[w.headCount - 1]?.text.includes("step"), true);
+  assert.ok(w.messages.slice(w.headCount).every((m) => !m.text.includes("THE ORIGINAL GOAL")));
 });
 
 test("a missing file yields an empty, non-truncated window", () => {
   const w = readTranscriptWindow(join(dir, "nope.jsonl"));
-  assert.deepEqual(w, { messages: [], truncated: false });
+  assert.deepEqual(w, { messages: [], truncated: false, headCount: 0 });
 });

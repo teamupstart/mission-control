@@ -1,17 +1,30 @@
 import type { ReviewItem, Session } from "@shared/types.ts";
+import type { ForemanConfig } from "@shared/protocol.ts";
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
-import { reviewSession } from "./review.ts";
+import { reviewSession, runClaudeText } from "./review.ts";
 import { EvaluationDebounce } from "./debounce.ts";
+import { classifyPending } from "./pending.ts";
+import type { Pending } from "./pending.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { applyVerdict, foremanMayActLive, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
-import type { ReviewContext } from "./verdict.ts";
+import type { ReviewContext, Verdict } from "./verdict.ts";
+import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
+import type { TriageDeps, TriageOutcome } from "./triage.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
 // the fleet's needs-you queue one session at a time, reviewing each in a FRESH
 // `claude -p` process so context never bleeds between sessions. It reaches the
 // daemon only over the localhost API - it never touches the DB directly - so it
 // is a plain client that can run in its own terminal, exactly as designed.
+//
+// In front of the full reviewer sits the cheap TRIAGE tier (see
+// docs/plans/foreman-watcher/plan.md): a pure-code Tier 0 gate + a Haiku Tier 1
+// router that dispose the easy cases and route only the hard ones up to the full
+// (Tier 2) review. The `triage` config picks the posture: `off` (always Tier 2),
+// `on` (cheap tier decides, full review only on route-up), or `shadow` (run both,
+// act on the full review, log every divergence so the cheap tier is measured
+// before it's trusted).
 
 /** How often to poll while idle or disabled. */
 const IDLE_MS = 4000;
@@ -24,6 +37,15 @@ const BETWEEN_MS = 400;
  * spawning a fresh `claude -p` every loop. Overridable for tests/tuning; default 60s.
  */
 const EVAL_DEBOUNCE_MS = Number(process.env.FOREMAN_EVAL_DEBOUNCE_MS || 60_000);
+/**
+ * The Tier 1 router's own wall-clock cap, well under the full reviewer's 120s: this is Haiku
+ * emitting one small object over a trimmed window, not Opus reading 48 turns with the whole
+ * POLICY. The budgets must differ because `on` mode runs the two SERIALLY (the router, then the
+ * full review on route-up), so sharing Tier 2's cap would let a degraded API double the serial
+ * queue's worst case rather than fail fast. A timeout is just a spawn failure to `triageSession`,
+ * which routes up - i.e. degrades to exactly the pre-triage cost.
+ */
+const TRIAGE_TIMEOUT_MS = Number(process.env.FOREMAN_TRIAGE_TIMEOUT_MS || 30_000);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -108,7 +130,7 @@ function waitedSince(s: Session): number {
 /** Review + act on one session, unless we've already handled its current prompt. */
 async function processSession(
   client: ForemanClient,
-  cfg: Awaited<ReturnType<ForemanClient["getConfig"]>>,
+  cfg: ForemanConfig,
   session: Session,
   reviews: ReviewItem[],
 ): Promise<void> {
@@ -125,21 +147,6 @@ async function processSession(
   // for the first time is due at once, so genuinely new work is never delayed.
   if (!evaluations.claim(session.id)) return;
 
-  const window = await client.transcript(session.id).catch(() => ({ messages: [], truncated: false }));
-  const input: ReviewInput = {
-    session: {
-      name: session.name,
-      cwd: session.cwd,
-      gitBranch: session.gitBranch,
-      state: session.state,
-      activity: session.activity,
-    },
-    surface: pending.surface,
-    question: pending.question,
-    transcript: window.messages,
-    truncated: window.truncated,
-  };
-
   const ctx: ReviewContext = {
     sessionId: session.id,
     repoRoot: session.cwd,
@@ -148,24 +155,12 @@ async function processSession(
     canSend: pending.canSend,
   };
 
-  const result = await reviewSession(input);
-  if (result.kind === "failed") {
-    // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
-    // marker, or the idempotency check above would abandon this prompt forever after
-    // a single blip. Leave it queued to retry; only after several consecutive
-    // failures do we give up with a marker-stamped skip so a persistently-broken
-    // reviewer stops re-spawning `claude -p` every loop.
-    const outcome = reviewFailures.onFailure(ctx, result.reason);
-    if (outcome.retry) {
-      log(`${session.name}: review failed, will retry (${result.reason})`);
-      return;
-    }
-    await client.putNote(session.id, outcome.note).catch(() => {});
-    log(`${session.name}: review failed repeatedly; giving up (skipped)`);
-    return;
-  }
-  reviewFailures.onSuccess(session.id);
-  const verdict = result.verdict;
+  // Resolve the verdict through the tier ladder (off / shadow / on). A null here means
+  // the outcome was already handled - a transient review failure that will retry, or a
+  // give-up note that was already written - so there's nothing left to apply.
+  const decision = await decide(client, cfg, session, pending, ctx);
+  if (!decision) return;
+  const { verdict, tier } = decision;
 
   let plan = planFromVerdict(
     verdict,
@@ -174,7 +169,7 @@ async function processSession(
     cfg.autoApproveAccess,
   );
 
-  // The review spawned a fresh `claude -p` that can run for up to two minutes, so
+  // The review may have spawned a fresh `claude -p` that ran for up to two minutes, so
   // both the fleet snapshot and the config are stale by the time we're ready to act.
   // Before a LIVE send, re-confirm against a fresh fleet that this session still
   // needs *this* exact prompt; if the human already handled it (answered, left
@@ -183,7 +178,8 @@ async function processSession(
   // - disable, leaving live mode, dropping the repo from the allowlist, or turning
   // off access auto-approval - is honoured even for an in-flight review. Re-planning
   // (not just re-checking mayActLive) makes autoApproveAccess=false downgrade a live
-  // access approval to an escalation mid-review.
+  // access approval to an escalation mid-review. This applies identically whether the
+  // verdict came from Tier 1 or the full Tier 2 review.
   if (plan.send) {
     if (!(await sendStillValid(client, session.id, pending))) {
       await client
@@ -206,9 +202,159 @@ async function processSession(
 
   await applyVerdict(client, ctx, plan);
   log(
-    `${session.name}: ${verdict.action}/${verdict.classification} -> ${plan.note.disposition}` +
+    `${session.name}: [tier ${tier}] ${verdict.action}/${verdict.classification} -> ${plan.note.disposition}` +
       (plan.send ? " (sent)" : ""),
   );
+}
+
+/**
+ * The verdict for one session + which tier produced it, or null when the outcome was already
+ * fully handled (a transient failure that will retry, or a give-up note that was written).
+ */
+type Decision = { verdict: Verdict; tier: 0 | 1 | 2 } | null;
+
+/**
+ * Resolve a verdict for one session through the tier ladder, honouring the `triage` config.
+ *
+ * The posture is resolved by `triagePosture`, never by falling through: `on` is the only
+ * posture where Tier 1's verdicts are APPLIED rather than merely logged, so it must be
+ * reachable only by an exact match, and a missing or unrecognised value must land on a safe
+ * posture. Switching exhaustively over the three known postures keeps it that way - it also
+ * means adding a fourth is a compile error here rather than a silent new path into `on`.
+ */
+async function decide(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  switch (triagePosture(cfg.triage)) {
+    case "off":
+      return fullReviewOnly(client, session, pending, ctx);
+    case "shadow":
+      return shadowBoth(client, cfg, session, pending, ctx);
+    case "on":
+      return cheapTierDecides(client, cfg, session, pending, ctx);
+  }
+}
+
+/** `off`: the pre-triage behaviour - every new marker gets a full review. */
+async function fullReviewOnly(
+  client: ForemanClient,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  const r = await fullReview(client, session, pending, ctx);
+  return r && { verdict: r.verdict, tier: 2 };
+}
+
+/**
+ * `shadow`: run the cheap tier AND the full review, act on the full review, and log the
+ * divergence. Concurrent, so the cheap call adds no serial latency to the queue.
+ */
+async function shadowBoth(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  const [cheap, r] = await Promise.all([
+    triageSession(triageDeps(client), pending, session, cfg),
+    fullReview(client, session, pending, ctx),
+  ]);
+  if (!r) return null; // full review failed + handled; don't act on the cheap tier
+  log(
+    `${session.name}: shadow ${classifyDivergence(cheap, r.verdict)} ` +
+      `(cheap=${describeCheap(cheap)} opus=${r.verdict.action}/${r.verdict.classification})`,
+  );
+  return { verdict: r.verdict, tier: 2 };
+}
+
+/** `on`: the cheap tier decides; the full review fires only on route-up. */
+async function cheapTierDecides(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<Decision> {
+  const cheap = await triageSession(triageDeps(client), pending, session, cfg);
+  if (cheap.kind === "dispose") {
+    log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
+    return { verdict: cheap.verdict, tier: cheap.tier };
+  }
+  log(`${session.name}: routed up to full review (${cheap.reason})`);
+  return fullReviewOnly(client, session, pending, ctx);
+}
+
+/**
+ * The full Tier 2 review: a fresh `claude -p` on the wide (48-turn) window with the
+ * whole POLICY. Returns the verdict, or null when a transient failure was handled -
+ * either a retry (nothing written, left queued) or, after repeated strikes, a
+ * marker-stamped give-up skip so a persistently-broken reviewer stops re-spawning.
+ */
+async function fullReview(
+  client: ForemanClient,
+  session: Session,
+  pending: Pending,
+  ctx: ReviewContext,
+): Promise<{ verdict: Verdict } | null> {
+  const window = await client.transcript(session.id).catch(() => ({ messages: [], truncated: false }));
+  const input: ReviewInput = {
+    session: {
+      name: session.name,
+      cwd: session.cwd,
+      gitBranch: session.gitBranch,
+      state: session.state,
+      activity: session.activity,
+    },
+    surface: pending.surface,
+    question: pending.question,
+    transcript: window.messages,
+    truncated: window.truncated,
+  };
+
+  const result = await reviewSession(input);
+  if (result.kind === "failed") {
+    // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
+    // marker, or the idempotency check would abandon this prompt forever after a
+    // single blip. Leave it queued to retry; only after several consecutive failures
+    // do we give up with a marker-stamped skip so a persistently-broken reviewer stops
+    // re-spawning `claude -p` every loop.
+    const outcome = reviewFailures.onFailure(ctx, result.reason);
+    if (outcome.retry) {
+      log(`${session.name}: review failed, will retry (${result.reason})`);
+      return null;
+    }
+    await client.putNote(session.id, outcome.note).catch(() => {});
+    log(`${session.name}: review failed repeatedly; giving up (skipped)`);
+    return null;
+  }
+  reviewFailures.onSuccess(session.id);
+  return { verdict: result.verdict };
+}
+
+/** Adapt the daemon client to the cheap tier's read-only dependency surface. */
+function triageDeps(client: ForemanClient): TriageDeps {
+  return {
+    transcript: (id, turns) => client.transcript(id, turns),
+    runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
+  };
+}
+
+/**
+ * One-line description of a cheap-tier outcome, for the shadow-divergence log. The reason
+ * is the point: shadow mode exists to measure the cheap tier before `on` is flipped, and
+ * without it every route-up reads alike - a router that never spawns (`tier1-failed`) is
+ * indistinguishable from one deferring on genuine judgment (`needs-judgment`).
+ */
+function describeCheap(cheap: TriageOutcome): string {
+  return cheap.kind === "route-up"
+    ? `route-up(${cheap.reason})`
+    : `tier${cheap.tier}:${cheap.verdict.action}(${cheap.reason})`;
 }
 
 /**
@@ -234,65 +380,6 @@ async function sendStillValid(
   } catch {
     return false;
   }
-}
-
-interface Pending {
-  surface: "input-review" | "terminal";
-  question: string;
-  /** Set only for an `input` review, the one surface Foreman resolves via the API. */
-  inputReviewId: string | null;
-  /** Whether a terminal reply can be typed (a pane exists and the ask is terminal). */
-  canSend: boolean;
-  /** Stable id of this waiting episode, stamped as the note's handledMarker. */
-  marker: string;
-}
-
-/**
- * Work out what a needs-you session is actually blocked on, and how (if at all)
- * Foreman may reply. An `input` review is directly answerable (resolve it); a
- * plan/diff review is not (Foreman can only frame it); a terminal `awaiting_input`
- * is answerable by typing when a pane exists; anything else is purpose-only.
- */
-function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
-  const pend = reviews.filter((r) => r.sessionId === s.id && r.status === "pending");
-  const inputReview = pend.find((r) => r.kind === "input");
-  if (inputReview) {
-    return {
-      surface: "input-review",
-      question: inputReview.body,
-      inputReviewId: inputReview.id,
-      canSend: false,
-      marker: `review:${inputReview.id}`,
-    };
-  }
-  const other = pend[0];
-  if (other) {
-    return {
-      surface: "input-review",
-      question:
-        `The child posted a ${other.kind} titled "${other.title}" for review. You cannot ` +
-        `auto-approve a ${other.kind}; write the purpose and escalate if it needs the human.`,
-      inputReviewId: null,
-      canSend: false,
-      marker: `review:${other.id}`,
-    };
-  }
-  if (s.state === "awaiting_input") {
-    return {
-      surface: "terminal",
-      question: s.activity ?? "",
-      inputReviewId: null,
-      canSend: Boolean(s.tmux || s.wezterm),
-      marker: `await:${s.lastActivity ?? s.firstSeen}`,
-    };
-  }
-  return {
-    surface: "terminal",
-    question: s.activity ?? "(the session needs you, but no explicit question was found)",
-    inputReviewId: null,
-    canSend: false,
-    marker: `state:${s.state}:${s.lastActivity ?? s.firstSeen}`,
-  };
 }
 
 function log(msg: string): void {

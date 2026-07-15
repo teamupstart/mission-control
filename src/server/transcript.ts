@@ -354,6 +354,16 @@ export interface TranscriptWindow {
   messages: TranscriptMessage[];
   /** True when turns between the head and the tail were dropped for size. */
   truncated: boolean;
+  /**
+   * How many leading `messages` came from the opening slice - the boundary of the elided
+   * middle. Non-zero only when `truncated`, where `messages[headCount - 1]` and
+   * `messages[headCount]` sit next to each other in the array but far apart in the session.
+   * A reader that wants the genuinely recent turns must therefore slice forward from here
+   * rather than back from the end: the tail's turn count is byte-bounded, so when it yields
+   * fewer turns than the head, slicing from the end runs back into the opening. 0 when the
+   * file was returned whole and every turn is contiguous.
+   */
+  headCount: number;
 }
 
 /**
@@ -373,12 +383,12 @@ export function readTranscriptWindow(
   try {
     size = statSync(path).size;
   } catch {
-    return { messages: [], truncated: false };
+    return { messages: [], truncated: false, headCount: 0 };
   }
   // Small enough to read whole: no head/tail split, no truncation.
   if (size <= WINDOW_HEAD_BYTES + WINDOW_TAIL_BYTES) {
     const all = parseLines(readTailLines(path, size));
-    return { messages: all, truncated: false };
+    return { messages: all, truncated: false, headCount: 0 };
   }
   // Head begins at byte 0 (first line is whole) but ends mid-file (drop the partial
   // last line). Tail begins mid-file (drop the partial first line) but ends at EOF
@@ -390,7 +400,7 @@ export function readTranscriptWindow(
   // De-dupe by record id in case the windows overlap on a mid-size file.
   const seen = new Set(head.map((m) => m.id));
   const merged = [...head, ...tail.filter((m) => !seen.has(m.id))];
-  return { messages: merged, truncated: true };
+  return { messages: merged, truncated: true, headCount: head.length };
 }
 
 /**

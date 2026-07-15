@@ -692,6 +692,28 @@ body {
   font-size: 11px;
   font-weight: 520;
 }
+/* The run's ticking wall-clock duration, directly under the head's findings summary. */
+.nm-elapsed {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.nm-elapsed-glyph {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.nm-elapsed-live .nm-elapsed-glyph {
+  color: var(--working);
+}
+.nm-elapsed-time {
+  color: var(--fg);
+  font-weight: 560;
+  /* Even digit widths, so a ticking second never jiggles the line. */
+  font-variant-numeric: tabular-nums;
+}
 .nm-stage {
   font-size: 11.5px;
   color: var(--muted);

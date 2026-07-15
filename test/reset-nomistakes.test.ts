@@ -68,6 +68,8 @@ function finishedRun(branch: string, id = "01RUN_FINISHED"): NmRunSummary {
     id,
     status: "completed",
     branch,
+    startedAt: null,
+    endedAt: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

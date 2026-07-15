@@ -76,7 +76,10 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
 
   return {
     ok: true, error: null,
-    base: parent === EMPTY_TREE ? null : parent.slice(0, 12),
+    // `base` is a branch name ("main"), and a commit isn't diffed against one -
+    // it's diffed against its parent, which is what `baseSha` is for. Putting the
+    // parent's sha in `base` reads as a branch to every consumer of the field.
+    base: null,
     baseSha: parent === EMPTY_TREE ? null : parent.slice(0, 12),
     headSha, branch, repoRoot, filesChanged, insertions, deletions, patch, truncated,
   };

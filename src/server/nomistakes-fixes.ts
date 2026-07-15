@@ -408,8 +408,6 @@ export interface FixLog {
   details: Map<string, NmFixDetail>;
 }
 
-const EMPTY: FixLog = { summaries: [], details: new Map() };
-
 /**
  * Per-checkout cache, keyed by HEAD. The log only changes when a commit lands, so
  * a gated session on a still branch costs one `rev-parse` per poll instead of a
@@ -431,6 +429,24 @@ const RETRY_MS = 5_000;
 /** Drop a checkout's cached log, so the next read is from scratch. */
 export function forgetFixLog(cwd: string): void {
   cache.delete(cwd);
+}
+
+/**
+ * Keep only the checkouts in `live`, dropping every other cached log.
+ *
+ * The cache is keyed by cwd and nothing else evicts it: sessions leave the
+ * registry with no say here, so a daemon that ran for a week held the log of
+ * every worktree it had ever polled - each carrying up to MAX_FIXES x
+ * MAX_FINDINGS descriptions. FRESH_MS bounds staleness, not size.
+ *
+ * Bounded by the live fleet rather than by age on purpose: age alone still lets
+ * a long-lived busy fleet accumulate, whereas the set of checkouts worth
+ * remembering is exactly the set we're still polling. Dropping one costs a
+ * re-read, never a wrong answer - the detail route re-reads its own cwd on a miss.
+ */
+export function retainFixLogs(live: Iterable<string>): void {
+  const keep = new Set(live);
+  for (const cwd of [...cache.keys()]) if (!keep.has(cwd)) cache.delete(cwd);
 }
 
 async function ensureFixLog(cwd: string, now: number): Promise<FixLog> {
@@ -462,7 +478,10 @@ export async function fixDetail(cwd: string, sha: string, now = Date.now()): Pro
  */
 export async function readFixLog(cwd: string): Promise<FixLog> {
   const commits = await listFixes(cwd);
-  if (commits.length === 0) return EMPTY;
+  // A fresh value per call, not a shared constant: this reads as per-checkout
+  // state and gets cached under a cwd and hung off a session, so one instance
+  // aliased across every fix-less checkout is a hazard waiting for its first mutation.
+  if (commits.length === 0) return { summaries: [], details: new Map() };
 
   const branchRes = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   const branch = branchRes.code === 0 ? branchRes.stdout.trim() : "";

@@ -307,6 +307,46 @@ test("findingCount is the true count even when the carried list is capped", asyn
   assert.equal(log.summaries[0]!.findingCount, 45, "the row agrees with the detail");
 });
 
+/**
+ * Selecting findings and typing nothing is the ORDINARY path, not an edge case:
+ * the dashboard's Fix box sends its instructions as `trim() || undefined`, so
+ * every click without typing lands here. A human still decided it, so it has to
+ * read as `replied` carrying no reply - the one shape that must never be
+ * mistaken for an auto-fix, since it says the opposite of what happened.
+ */
+test("selecting findings without typing is replied, with no reply to quote", async () => {
+  const repo = mkRepo();
+  const db = mkNmDb(repo, "main");
+  db.prepare("INSERT INTO step_results (id, run_id, step_name) VALUES (?, ?, ?)").run("sr10", "run1", "review");
+  // user_findings_json, but with no user_instructions on the finding - exactly
+  // what no-mistakes records for a Fix pressed with an empty instructions box.
+  db.prepare(
+    `INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json,
+       user_findings_json, selected_finding_ids, selection_source, fix_summary, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "rd10", "sr10", 1, "initial",
+    findings({ id: "picked", desc: "Chosen by hand, with nothing typed alongside." }),
+    findings({ id: "picked", desc: "Chosen by hand, with nothing typed alongside." }),
+    JSON.stringify(["picked"]), "user", null, 1000,
+  );
+  db.prepare(
+    `INSERT INTO step_rounds (id, step_result_id, round, trigger_type, fix_summary, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run("rd11", "sr10", 2, "auto_fix", "fix the ones I picked", 1100);
+  db.close();
+
+  commit(repo, "h.ts", "no-mistakes(review): fix the ones I picked");
+  forgetFixLog(repo);
+  const log = await readFixLog(repo);
+
+  const detail = log.details.get(log.summaries[0]!.sha)!;
+  assert.equal(detail.decision, "replied", "a human picked these, so nobody auto-fixed anything");
+  assert.equal(detail.reply, null, "nothing was typed, so there is nothing to quote");
+  assert.deepEqual(detail.findings.map((f) => f.id), ["picked"], "the selection still explains the fix");
+  assert.equal(log.summaries[0]!.decision, "replied", "the row agrees with the detail");
+});
+
 /** A commit whose round is gone still lists - the log degrades, never vanishes. */
 test("a fix with no matching round lists without context", async () => {
   const repo = mkRepo();

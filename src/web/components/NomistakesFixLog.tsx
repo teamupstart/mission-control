@@ -174,8 +174,12 @@ function FixContext({
               · {detail.findingCount} finding{detail.findingCount === 1 ? "" : "s"}
             </span>
           </h4>
-          {shown.map((f) => (
-            <div className="nm-find" key={f.id || f.file}>
+          {/* Keyed by position: an id is not guaranteed (the server admits a
+              finding with an empty id as long as it has a description), so two
+              findings in one file can share `id || file`. The list is static
+              once fetched, and the shown slice is taken from the front. */}
+          {shown.map((f, i) => (
+            <div className="nm-find" key={`${f.id}:${f.file}:${i}`}>
               <div className="nm-find-top">
                 {f.severity && <span className={`nm-sev nm-sev-${f.severity}`}>{f.severity}</span>}
                 <span className="nm-find-loc mono">
@@ -202,13 +206,23 @@ function FixContext({
         </section>
       )}
 
+      {/* Three lanes, and `decision` picks them - not `reply`. Answering a gate by
+          selecting findings and typing nothing is the common case (the Fix box
+          sends its instructions as `trim() || undefined`), which yields
+          replied-with-no-text. Reading that off `reply` put the auto lane's copy
+          under a "replied" label, claiming the opposite of what happened. There
+          is nothing to quote there, so nothing is quoted. */}
       {detail.decision && (
         <section className="nm-ctx">
           <h4 className="nm-ctx-label">
             <span className={detail.decision === "replied" ? "nm-who-you" : "nm-who-auto"}>
               {detail.decision === "replied" ? "replied" : "auto-fixed"}
             </span>
-            {detail.decision === "auto" && <span className="nm-ctx-meta">· nobody was asked</span>}
+            {detail.decision === "auto" ? (
+              <span className="nm-ctx-meta">· nobody was asked</span>
+            ) : detail.reply ? null : (
+              <span className="nm-ctx-meta">· no guidance given</span>
+            )}
           </h4>
           {detail.reply ? (
             <>
@@ -219,11 +233,11 @@ function FixContext({
                 </button>
               )}
             </>
-          ) : (
+          ) : detail.decision === "auto" ? (
             <p className="nm-reply nm-reply-auto">
               The pipeline fixed this under its own round limit.
             </p>
-          )}
+          ) : null}
         </section>
       )}
 

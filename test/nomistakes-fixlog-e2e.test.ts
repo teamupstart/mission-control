@@ -19,7 +19,7 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { pollFixLogs } = await import("../src/server/nomistakes.ts");
-const { forgetFixLog } = await import("../src/server/nomistakes-fixes.ts");
+const { fixSummaries, forgetFixLog } = await import("../src/server/nomistakes-fixes.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { NmFixDetail, Session, SessionDiff } from "../src/shared/types.ts";
 
@@ -223,6 +223,98 @@ test("?commit= isolates one fix and doesn't leak the commits after it", async ()
   const whole = await app.request("/api/sessions/sess-diff/diff", { headers: LOOPBACK });
   const wholeDiff = (await whole.json()) as SessionDiff;
   assert.equal(wholeDiff.filesChanged, 2);
+});
+
+/**
+ * The cache is keyed by cwd, and nothing but Reset drops an entry - so a daemon
+ * that has been up a week holds the log of every worktree it ever polled, each
+ * carrying its findings' text. It has to be bounded by the LIVE FLEET rather than
+ * by uptime: the checkouts still being polled are exactly the ones worth keeping,
+ * and an age-based sweep alone still lets a busy long-lived fleet accumulate.
+ */
+test("a checkout that leaves the fleet doesn't keep its cached fix log", async () => {
+  const clone = mkOriginAndClone();
+  const registry = new Registry();
+  buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
+
+  commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing");
+  registry.applyDiscovery([disco({ syntheticId: "sess-swp", cwd: clone })]);
+  forgetFixLog(clone);
+  // Taken BEFORE the poll, so every read below happens at an instant the entry
+  // cannot yet have gone stale at. What's asserted is eviction, never timing.
+  const t0 = Date.now();
+  await pollFixLogs(registry);
+  assert.equal(registry.getSession("sess-swp")!.nomistakesFixes.length, 1); // precondition
+
+  // Move the source ref up to HEAD, so a FRESH read finds nothing in
+  // `origin/main..HEAD` while a cache hit still answers with the old log. HEAD
+  // itself never moves - the entry stays keyed on a live sha, which is the
+  // freshness the cache exists for and which the sweep must not cost us.
+  execFileSync("git", ["-C", clone, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+  assert.equal((await fixSummaries(clone, t0)).length, 1, "still cached: HEAD hasn't moved");
+
+  // The session leaves the fleet, so its checkout stops being polled.
+  registry.applyDiscovery([]);
+  await pollFixLogs(registry);
+
+  // Same instant, so only the eviction can explain the re-read.
+  assert.equal((await fixSummaries(clone, t0)).length, 0, "the log left with the session");
+});
+
+/**
+ * `base` is documented as the source BRANCH and the viewer renders it as one, but
+ * a commit isn't diffed against a branch - it's diffed against its parent, which
+ * is what `baseSha` carries. A parent sha in `base` shows a raw sha where a
+ * branch name is expected.
+ */
+test("a commit diff names no base branch and carries its parent as a sha", async () => {
+  const clone = mkOriginAndClone();
+  const registry = new Registry();
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
+
+  commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing");
+  registry.applyDiscovery([disco({ syntheticId: "sess-base", cwd: clone })]);
+  forgetFixLog(clone);
+  await pollFixLogs(registry);
+
+  const sha = registry.getSession("sess-base")!.nomistakesFixes[0]!.sha;
+  const res = await app.request(`/api/sessions/sess-base/diff?commit=${sha}`, { headers: LOOPBACK });
+  const diff = (await res.json()) as SessionDiff;
+  assert.equal(diff.ok, true);
+  assert.equal(diff.base, null, "one commit has a parent, not a base branch");
+  const parent = execFileSync("git", ["-C", clone, "rev-parse", "HEAD~1"]).toString().trim();
+  assert.equal(diff.baseSha, parent.slice(0, 12), "the parent is carried as a sha, where it belongs");
+
+  // The branch diff is the one that HAS a base branch, and still names it.
+  const whole = await app.request("/api/sessions/sess-base/diff", { headers: LOOPBACK });
+  assert.equal(((await whole.json()) as SessionDiff).base, "main");
+});
+
+/**
+ * An empty fix commit is real - `lint` commits "typecheck clean, no fixes needed"
+ * constantly, and parseFixLog models it - so it can be opened. That's the state
+ * the viewer's empty copy renders for, and it must not be framed against a base.
+ */
+test("an empty fix commit opens as a diff with no changes and no base branch", async () => {
+  const clone = mkOriginAndClone();
+  const registry = new Registry();
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
+
+  execFileSync("git", ["-C", clone, "commit", "-q", "--allow-empty", "-m", "no-mistakes(lint): typecheck clean"], { stdio: "pipe" });
+  registry.applyDiscovery([disco({ syntheticId: "sess-mt", cwd: clone })]);
+  forgetFixLog(clone);
+  await pollFixLogs(registry);
+
+  const fixes = registry.getSession("sess-mt")!.nomistakesFixes;
+  assert.equal(fixes.length, 1, "a fix that changed nothing still listed");
+  assert.equal(fixes[0]!.filesChanged, 0);
+
+  const res = await app.request(`/api/sessions/sess-mt/diff?commit=${fixes[0]!.sha}`, { headers: LOOPBACK });
+  const diff = (await res.json()) as SessionDiff;
+  assert.equal(diff.ok, true, "an empty commit is not an error");
+  assert.equal(diff.filesChanged, 0);
+  assert.equal(diff.patch, "");
+  assert.equal(diff.base, null);
 });
 
 /** A sha that's been rebased away should say so, not answer with a wrong diff. */

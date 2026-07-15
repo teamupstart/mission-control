@@ -124,8 +124,14 @@ export function DiffViewer({
           {!loading && diff && !diff.ok && (
             <p className="diff-empty">Couldn't load a diff: {diff.error ?? "unknown error"}.</p>
           )}
+          {/* An empty fix commit is a real thing to open, and "against <branch>"
+              is the wrong frame for one commit - it has no base branch, only a parent. */}
           {!loading && diff?.ok && files.length === 0 && (
-            <p className="diff-empty">No changes against {diff.base ?? "the source branch"}.</p>
+            <p className="diff-empty">
+              {commit
+                ? "No changes in this commit."
+                : `No changes against ${diff.base ?? "the source branch"}.`}
+            </p>
           )}
           {!loading && diff?.ok && files.length > 0 && (
             <>

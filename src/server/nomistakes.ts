@@ -5,7 +5,7 @@ import { run } from "./util/exec.ts";
 import { envVar } from "./config.ts";
 import { unref } from "./util/timers.ts";
 import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
-import { fixSummaries } from "./nomistakes-fixes.ts";
+import { fixSummaries, retainFixLogs } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 
@@ -192,8 +192,14 @@ export function timeRun(run: NmRunSummary, now = Date.now()): NmRunSummary {
  * `rev-parse` per session per tick.
  */
 export async function pollFixLogs(registry: Registry): Promise<void> {
+  const targets = registry.nomistakesFixTargets();
+  // This set IS what "still worth remembering" means, and it's already computed
+  // here each tick - so the cache is bounded by the live fleet rather than by how
+  // long the daemon has been up. A checkout that leaves the fleet takes its log
+  // with it; one that comes back pays a re-read.
+  retainFixLogs(targets.map((t) => t.cwd));
   await Promise.all(
-    registry.nomistakesFixTargets().map(async ({ id, cwd }) => {
+    targets.map(async ({ id, cwd }) => {
       try {
         registry.applyNomistakesFixes(id, await fixSummaries(cwd));
       } catch (err) {

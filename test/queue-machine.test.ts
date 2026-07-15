@@ -53,6 +53,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     state: "idle",
     cwd: "/repo",
     gitBranch: "feature",
+    gitRoot: "/repo",
     nomistakesGated: false,
     pid: 1,
     tty: "ttys001",

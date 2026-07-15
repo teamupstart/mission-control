@@ -558,6 +558,12 @@ export async function reapPool(
   // and so read as a leak. Re-derive the liveness rungs against a reading taken
   // NOW, immediately before acting.
   //
+  // Per candidate, not once for the batch: a `return --force` is itself allowed
+  // 30s, so on a pool with ten leaks to collect the last one would act on a
+  // reading taken nine forced returns ago - minutes in which the user can walk
+  // into any tree still on the list and start an agent in it. Freshness only
+  // means anything if it holds at the moment of each return.
+  //
   // The git rungs are deliberately NOT re-read, and that is a tradeoff rather
   // than a free pass. Staleness is only conservative in the skip direction - a
   // tree already judged dirty or unmerged stays skipped, since work only ever
@@ -566,21 +572,17 @@ export async function reapPool(
   // anything written since. What makes that acceptable is that dirtying a tree
   // takes a WRITER, and no writer gets in without a process, a session, or a task
   // record - every one of which is re-read below, fresh.
-  const fresh = await deps.status(repoRoot);
-  // Fail closed: a re-check we couldn't take is not a re-check that passed.
-  if (fresh.code !== 0) {
-    return {
-      reaped: [],
-      skipped: plan.map((c) => ({
-        tree: c.tree,
-        skip: c.skip ?? "its pool state could not be re-read before returning it",
-      })),
-    };
-  }
-  const now = parsePoolStatus(fresh.stdout);
-  const nowPins = canonicalPins(pins());
-
   for (const tree of candidates) {
+    const fresh = await deps.status(repoRoot);
+    // Fail closed, and only for this tree: a re-check we couldn't take is not a
+    // re-check that passed, but one unreadable moment is no reason to strand the
+    // rest of the pool until the next sweep.
+    if (fresh.code !== 0) {
+      result.skipped.push({ tree, skip: "its pool state could not be re-read before returning it" });
+      continue;
+    }
+    const now = parsePoolStatus(fresh.stdout);
+    const nowPins = canonicalPins(pins());
     // Re-confirm the slot is still leased and still looks like the lease we
     // judged. Same path, same holder is ALL the identity `treehouse status`
     // affords - it prints no lease id and no timestamp - so be clear about what

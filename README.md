@@ -544,6 +544,11 @@ treehouse status                 # see the pool
 treehouse return <path>          # give the worktree back to the pool
 ```
 
+Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
+safety, the warm+gate step is run by `make session` itself. To make **every**
+`treehouse get` (not just `make session`) warm and gate automatically, add a
+`post_create` hook to your user config - see the comments in `treehouse.toml`.
+
 ### Leaked leases are reclaimed for you
 
 A durable lease is what lets a backgrounded agent survive a restart, but it also
@@ -594,11 +599,6 @@ existed.
 Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool
 for a throwaway worktree.
-
-Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
-safety, the warm+gate step is run by `make session` itself. To make **every**
-`treehouse get` (not just `make session`) warm and gate automatically, add a
-`post_create` hook to your user config - see the comments in `treehouse.toml`.
 
 ## Configuration
 

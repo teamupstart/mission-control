@@ -530,6 +530,38 @@ test("reapPool reaps nothing when it cannot re-read the pool before acting", asy
   );
 });
 
+test("reapPool re-checks between returns instead of trusting one reading for the batch", async () => {
+  // A `return --force` is allowed 30s of its own, so a pool with several leaks to
+  // collect spends minutes inside the loop - long enough for the user to walk into
+  // a tree further down the list and start an agent. One reading taken before the
+  // first return cannot see that; it has to be re-taken before each one.
+  const clone = mkPoolRepo("harness-pool-race-loop-");
+  const first = mkLinkedWorktree(clone, "first", join(clone, "..", "l-first"));
+  const second = mkLinkedWorktree(clone, "second", join(clone, "..", "l-second"));
+  const leased = (p: string, name: string) => `${name}     leased       ${p}  (held by fleet-control)`;
+  const idle = [leased(first, "1"), leased(second, "2")].join("\n");
+
+  const returned: string[] = [];
+  const deps: PoolDeps = {
+    // The world only moves once tree 1 is actually back in the pool.
+    status: async () => ({
+      stdout: returned.length === 0 ? idle : [leased(first, "1"), leased(second, "2"), "                   claude (999)"].join("\n"),
+      stderr: "",
+      code: 0,
+    }),
+    returnTree: async (_root, path) => {
+      returned.push(path);
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+
+  const r = await reapPool(clone, () => pins(), deps);
+
+  assert.deepEqual(returned, [first], "tree 2 came alive while tree 1 was being returned");
+  assert.deepEqual(r.reaped.map((t) => t.name), ["1"]);
+  assert.deepEqual(r.skipped.map((c) => c.skip), ["processes are still running in it"]);
+});
+
 // --- which pools get swept --------------------------------------------------
 
 test("poolRepos sweeps a treehouse repo the workspace scan alone can name", async () => {

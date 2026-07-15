@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
+import { LEASE_HOLDER } from "../shared/harness-runtime.mjs";
 import { remoteDefaultRef } from "./actions.ts";
 import { envVar } from "./config.ts";
 import type { Registry } from "./registry.ts";
@@ -41,16 +42,16 @@ import { unref } from "./util/timers.ts";
  */
 
 /**
- * The holder this harness records on every lease it takes, and the only one it
- * will ever hand back. One constant rather than two literals because the code that
- * TAKES a lease and the code that decides it may RETURN one have to agree: drift
- * between them doesn't fail loudly, it just silently retires the reaper (nothing
- * matches, nothing is ever collected) or - worse, if the gate's label were the one
- * to move - points it at leases we never took. `scripts/new-session.mjs` defaults
- * its `--holder` to this same string; it can't import from here, so that one is
- * kept in step by hand.
+ * The holder this harness records on every lease it takes, and the only one this
+ * gate will ever hand back. Defined on the shared runtime surface rather than here
+ * beside the policy that reads it, because the third site that has to agree -
+ * `scripts/new-session.mjs`, which is what takes the leases that actually leak -
+ * runs under bare `node` with no build step, so the only definition all three can
+ * share is one that crosses that boundary. Re-exported so the rung below and the
+ * dispatcher's `--lease-holder` keep reading it from one place; see the constant
+ * itself for why drift here is silent in both directions.
  */
-export const LEASE_HOLDER = "fleet-control";
+export { LEASE_HOLDER };
 
 /** A worktree in the pool, as `treehouse status` reports it. */
 export interface PoolTree {

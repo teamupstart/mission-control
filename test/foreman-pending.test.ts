@@ -22,6 +22,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
+    hooksSeen: true,
     activity: null,
     startedAt: null,
     firstSeen: 0,
@@ -37,6 +38,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    queue: null,
+    orphanedQueue: null,
     ...over,
   };
 }

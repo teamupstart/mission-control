@@ -32,7 +32,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     provider: null,
     tmuxSession: null,
     sessionId: null,
-    status: "queued",
+    status: "backlog",
     outcome: null,
     outcomeUrl: null,
     error: null,
@@ -66,7 +66,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 test("task round-trips and upsert updates in place (no duplicate row)", () => {
   openDb();
   upsertTask(mkTask());
-  assert.equal(getTask("t1")?.status, "queued");
+  assert.equal(getTask("t1")?.status, "backlog");
 
   upsertTask(mkTask({ status: "running", worktreePath: "/wt", sessionId: "s1", updatedAt: 2000 }));
   assert.equal(getTask("t1")?.status, "running");
@@ -74,7 +74,7 @@ test("task round-trips and upsert updates in place (no duplicate row)", () => {
   assert.equal(listTasks().length, 1);
 });
 
-test("loadActiveTasks keeps queued/dispatching/running, drops terminal states", () => {
+test("loadActiveTasks keeps backlog/dispatching/running, drops terminal states", () => {
   upsertTask(mkTask({ id: "t2", status: "done" }));
   upsertTask(mkTask({ id: "t3", status: "running" }));
   upsertTask(mkTask({ id: "t4", status: "cancelled" }));
@@ -137,9 +137,9 @@ test("prune never evicts a failed-but-alive task that still holds a worktree", (
   assert.ok(r.getTask("alive-fail"), "a failed task with a worktree is never evicted");
 });
 
-test("a queued task (no worktree) never decorates a session", () => {
+test("a backlog task (no worktree) never decorates a session", () => {
   const r = new Registry();
-  r.upsertTask(mkTask({ id: "tB", status: "queued", worktreePath: null }));
+  r.upsertTask(mkTask({ id: "tB", status: "backlog", worktreePath: null }));
   r.applyDiscovery([mkDiscovered({ cwd: "/some/other/dir" })]);
   const s = r.snapshot().sessions.find((x) => x.cwd === "/some/other/dir");
   assert.equal(s?.task, null);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import { cwdAllowlisted } from "@shared/foreman.ts";
 import {
   canRenameSession,
   compactTokens,
@@ -16,6 +17,7 @@ import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
+import { WorkQueue } from "./WorkQueue.tsx";
 
 function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) {
@@ -29,6 +31,14 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
   claude: "Claude Code",
   codex: "Codex",
 };
+
+/**
+ * Whether Foreman may send live in this session's cwd - the SAME predicate the
+ * server decides with (`foremanMayActLive` calls it too), not a copy of it.
+ */
+function allowlisted(cwd: string | null, allowlist: string[] | undefined): boolean {
+  return cwdAllowlisted(cwd, allowlist ?? []);
+}
 
 export function SessionCard({
   session,
@@ -46,6 +56,8 @@ export function SessionCard({
   onRenameStart,
   onRenameClose,
   foremanMode = "dry-run",
+  foremanEnabled = false,
+  foremanAllowlist,
   inputReviewId = null,
   pendingReviewIds,
 }: {
@@ -69,6 +81,11 @@ export function SessionCard({
   onRenameClose?: () => void;
   /** Current Foreman mode, so an expanded note can show semi-auto controls. */
   foremanMode?: string;
+  /** Whether Foreman is switched on at all - the mode says nothing while it's off. */
+  foremanEnabled?: boolean;
+  /** Repo roots Foreman may send live in, so the queue can be honest about why
+   *  it's only drafting (the allowlist is a prefix match on the repo root). */
+  foremanAllowlist?: string[];
   /** A pending `input` review id for this session (for Foreman's Approve). */
   inputReviewId?: string | null;
   /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
@@ -253,6 +270,27 @@ export function SessionCard({
         </div>
       )}
 
+      {session.queue && session.queue.openCount > 0 && (
+        <button
+          className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
+          title={
+            session.queue.inFlightIntent
+              ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
+              : "Work queued for this session - expand to see it"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand?.();
+          }}
+        >
+          <span className="qc-count">{session.queue.openCount} queued</span>
+          {session.queue.inFlightIntent && (
+            <span className="qc-intent">{session.queue.inFlightIntent}</span>
+          )}
+          {session.queue.round > 0 && <span className="qc-round">fix {session.queue.round}</span>}
+        </button>
+      )}
+
       {session.activity && <p className="activity">{session.activity}</p>}
 
       {session.nomistakes && (
@@ -305,6 +343,12 @@ export function SessionCard({
               pendingReviewIds={pendingReviewIds}
             />
           )}
+          <WorkQueue
+            session={session}
+            foremanMode={foremanMode}
+            foremanEnabled={foremanEnabled}
+            allowlisted={allowlisted(session.cwd, foremanAllowlist)}
+          />
           <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
         </>
       )}

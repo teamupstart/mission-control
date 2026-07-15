@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeSessionDiff } from "../src/server/diff.ts";
@@ -169,4 +169,165 @@ test("parsePatch handles new files, deletions, and multiple files", () => {
   assert.equal(files[1]!.path, "gone.txt");
   assert.equal(files[1]!.status, "deleted");
   assert.equal(files[1]!.removed, 1);
+});
+
+test("computeSessionDiff reports the repo TOPLEVEL, even when run from a subdirectory", async () => {
+  // `patch`'s paths are toplevel-relative (git emits them that way wherever it's
+  // invoked from), so anything resolving them needs the toplevel - and the standards
+  // reader is exactly that. It used to be computed here and thrown away, which left
+  // the reader trusting a session's cwd instead.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  mkdirSync(join(repo, "packages", "app"), { recursive: true });
+  writeFileSync(join(repo, "packages", "app", "a.txt"), "hello\n");
+  git("add", "-A");
+  git("commit", "-qm", "nested");
+  writeFileSync(join(repo, "packages", "app", "a.txt"), "hello\nagain\n");
+
+  const d = await computeSessionDiff(join(repo, "packages", "app"));
+
+  assert.equal(d.ok, true);
+  assert.equal(d.repoRoot, repo, "the toplevel, not the cwd it was invoked from");
+  assert.match(d.patch, /\+\+\+ b\/packages\/app\/a\.txt/, "and the patch's paths are relative to it");
+});
+
+test("computeSessionDiff reports no repoRoot outside a git repo", async () => {
+  const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-norepo-")));
+  const d = await computeSessionDiff(notRepo);
+  assert.equal(d.ok, false);
+  assert.equal(d.repoRoot, null);
+});
+
+test("computeSessionDiff fails closed when an explicit base was AMENDED away", async () => {
+  // merge-base exits non-zero only when there is no common ancestor at all. After an
+  // amend the old commit is still alive in the reflog, so merge-base SUCCEEDS and
+  // returns an older ancestor - and the diff then silently widens to span the
+  // PREVIOUS item's committed work. `diffMayIncludeOtherWork` cannot catch that: it
+  // compares recorded base shas, and these differ. So the base must be an ancestor
+  // of HEAD, not merely share one with it.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  git("checkout", "-qb", "feature/work");
+
+  // Item 1's work, committed. Item 2 is then scoped against THIS commit.
+  writeFileSync(join(repo, "item1.txt"), "the first item's work\n");
+  git("add", "-A");
+  git("commit", "-qm", "item 1");
+  const itemTwoBase = execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+
+  // The agent does item 2's work and amends it onto item 1's commit, which rewrites
+  // the commit item 2 recorded as its base.
+  writeFileSync(join(repo, "item2.txt"), "the second item's work\n");
+  git("add", "-A");
+  git("commit", "-q", "--amend", "--no-edit");
+
+  const r = await computeSessionDiff(repo, itemTwoBase);
+
+  assert.equal(r.ok, false, "an amended-away base must escalate, not answer");
+  assert.match(r.error ?? "", /not reachable/);
+  // The whole point: it must NOT hand back a diff containing item 1's work.
+  assert.equal(r.patch, "");
+  assert.ok(!r.patch.includes("item1.txt"));
+});
+
+test("computeSessionDiff reports an explicit base that IS an ancestor normally", async () => {
+  // The other half of the check above: the ordinary case must still answer. Without
+  // this, "fail closed" could pass by failing always.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  git("checkout", "-qb", "feature/work");
+  writeFileSync(join(repo, "item1.txt"), "the first item's work\n");
+  git("add", "-A");
+  git("commit", "-qm", "item 1");
+  const base = execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], {
+    encoding: "utf8",
+  }).trim();
+
+  writeFileSync(join(repo, "item2.txt"), "the second item's work\n");
+
+  const r = await computeSessionDiff(repo, base);
+
+  assert.equal(r.ok, true);
+  assert.ok(r.patch.includes("item2.txt"), "this item's work is visible");
+  assert.ok(!r.patch.includes("item1.txt"), "the earlier item's committed work is not");
+});
+
+test("computeSessionDiff reports untracked paths relative to the TOPLEVEL, not the cwd", async () => {
+  // `SessionDiff.repoRoot` documents that `patch`'s paths are relative to the
+  // toplevel, and the tracked half already is (`git diff` ignores cwd). Untracked
+  // paths were emitted relative to the session's cwd, so one patch mixed two bases -
+  // and the standards reader then resolved `src/x.ts` against the toplevel, missing
+  // the package's own CLAUDE.md in exactly the monorepo case repoRoot exists for.
+  const repo = mkRepo();
+  const pkg = join(repo, "packages", "app", "src");
+  mkdirSync(pkg, { recursive: true });
+  writeFileSync(join(pkg, "untracked.ts"), "export const x = 1;\n");
+
+  const r = await computeSessionDiff(join(repo, "packages", "app"));
+
+  assert.equal(r.ok, true);
+  assert.ok(
+    r.patch.includes("packages/app/src/untracked.ts"),
+    `expected a toplevel-relative path, got:\n${r.patch}`,
+  );
+});
+
+test("computeSessionDiff fails closed when the diff command itself fails", async () => {
+  // The fail-open the evidence-first design exists to eliminate: `run` reports a
+  // timeout or a crash as a non-zero code with whatever stdout was flushed, so an
+  // unchecked `git diff` returned ok:true with an EMPTY patch - which the verify
+  // prompt renders as "(no changes were made)". The verifier then reports blocking
+  // gaps for work that was finished and they get typed back into the agent.
+  //
+  // Reproduced the way it actually happens rather than by mocking: a missing object
+  // makes `git diff` exit non-zero while `merge-base` and `rev-parse` (which read
+  // only commits) still succeed, so the function reaches the diff and the diff is
+  // what breaks - the same shape as the 15s timeout on a large worktree.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+  git("checkout", "-qb", "feature/work");
+  writeFileSync(join(repo, "keep.txt"), "line1\nCHANGED\nline3\n");
+  git("add", "-A");
+  git("commit", "-qm", "work");
+
+  const blob = execFileSync("git", ["-C", repo, "rev-parse", "main:keep.txt"], {
+    encoding: "utf8",
+  }).trim();
+  rmSync(join(repo, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+
+  const r = await computeSessionDiff(repo);
+
+  assert.equal(r.ok, false, "a broken diff must never read as 'no changes were made'");
+  assert.equal(r.patch, "");
+  assert.match(r.error ?? "", /could not read the diff/);
+});
+
+test("an unborn HEAD is confirmed positively, not inferred from a failed rev-parse", () => {
+  // `run` reports a timeout as the same non-zero exit as any other failure, so
+  // "HEAD didn't resolve" cannot by itself mean "this branch has no commits". Only a
+  // branch that EXISTS while HEAD resolves to nothing is unborn - and that is what
+  // `symbolic-ref -q HEAD` answers, failing (like everything else) under a timeout,
+  // so the tracked diff still runs and still fails closed.
+  const repo = mkRepo();
+  const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
+
+  git("checkout", "-q", "--orphan", "orphan/work");
+  const sym = execFileSync("git", ["-C", repo, "symbolic-ref", "-q", "HEAD"], { encoding: "utf8" });
+  assert.match(sym.trim(), /^refs\/heads\/orphan\/work$/, "the branch exists...");
+  assert.throws(
+    () => execFileSync("git", ["-C", repo, "rev-parse", "--verify", "--quiet", "HEAD"], { stdio: "pipe" }),
+    "...while HEAD resolves to nothing - which is exactly what unborn means",
+  );
+
+  // A DETACHED HEAD is the counterexample the check has to keep apart: HEAD resolves
+  // fine, and `symbolic-ref` fails - so a repo in this state is never read as unborn
+  // and its tracked diff is never skipped.
+  git("checkout", "-q", "main");
+  git("checkout", "-q", "--detach");
+  assert.throws(
+    () => execFileSync("git", ["-C", repo, "symbolic-ref", "-q", "HEAD"], { stdio: "pipe" }),
+    "a detached HEAD has no symbolic ref",
+  );
 });

@@ -1,6 +1,6 @@
 # Plan: session work queues - Foreman drains a batch and validates each item
 
-Status: proposed (§0a + §0b landed in #36; the rest awaits review)
+Status: **implemented** (§0a + §0b landed in #36; §0c-§4 landed after)
 Owner: ai-harness (Agent Wrangler)
 Related: extends `docs/plans/foreman/plan.md` (the auto-responder), which deliberately scoped
 itself to *reacting* to the needs-you queue. This is the proactive half. Distinct from
@@ -55,11 +55,17 @@ and are called out here because each one is a trap the next reader would otherwi
    `diffBase` stays `"HEAD"` and it returns **`ok: true`** with a working-tree-only diff. The
    verifier sees near-nothing for completed work and invents gaps. `ok` does not detect this;
    `baseSha === null` does. Fixed at the source in §0b.
-   *Correction to an earlier draft of this doc:* this does **not** trigger on a plain rebase or
-   amend while the old object survives - `merge-base` then succeeds and returns the shared
-   ancestor, giving a diff that is too **wide** rather than empty. The fail-open path needs the
-   base to be genuinely unreachable (garbage-collected, or a sha from another checkout). Verified
-   by the regression test in #36.
+   *Correction to an earlier draft of this doc:* the **`merge-base` failure** does not trigger on a
+   plain rebase or amend while the old object survives - `merge-base` then succeeds and returns the
+   shared ancestor, so that path needs the base to be genuinely unreachable (garbage-collected, or
+   a sha from another checkout). The rebase/amend case is a *second* fail-open, with the same
+   consequence and a different cause: a base that is no longer an ancestor of HEAD silently widens
+   the diff to span an earlier item's committed work, which `diffMayIncludeOtherWork` cannot catch
+   (it compares recorded base shas, and they differ). So for an **explicitly requested** base
+   `computeSessionDiff` now requires the resolved merge-base to *be* that commit and fails closed
+   otherwise, which is what makes Verification step 10 below true. Auto-detected refs are
+   unaffected and keep their deliberate fall-back to HEAD (a brand-new branch with no shared
+   history).
 4. **Conventions docs make the verifier non-converging.** Asked "does this diff comply?" against a
    long prescriptive doc, it finds a style nit every round; the agent fixes it and introduces
    another; the item rides the round budget to escalation while the intent was satisfied in round
@@ -124,14 +130,25 @@ Auto-detected behavior unchanged. The queue treats this as a **verify-infrastruc
 escalates immediately** - not a gap, not a transient retry: "the base commit is gone; verify this
 item by hand."
 
-Note the trigger precisely: a plain amend or rebase does **not** hit this path while the old object
-is still in the object database - `merge-base` succeeds against it and returns the shared ancestor,
-which yields a diff that is too wide, not empty. Fail-open needs the base to be genuinely
-unreachable (GC'd, or a sha from another checkout).
+Note the trigger precisely: a plain amend or rebase does **not** hit *this* path while the old
+object is still in the object database - `merge-base` succeeds against it and returns the shared
+ancestor. That is a **second** fail-open with the same consequence: the diff silently widens to span
+an earlier item's committed work, and `diffMayIncludeOtherWork` cannot catch it (it compares
+recorded base shas, and after an amend they differ). So an explicit base must be an **ancestor of
+HEAD**, not merely share one with it:
+
+> when `source` was explicitly passed and the resolved merge-base is not `source` itself ->
+> the same `ok: false` as above
+
+That is what makes Verification step 10 true. Auto-detected refs are exempt by construction -
+`merge-base(HEAD, origin/main)` is *supposed* to be an ancestor of both and equal to neither - and
+keep their fall-back to HEAD.
 
 > **Landed in #36** as `fix(diff): fail closed when an explicitly requested base is unreachable`,
 > with a regression test asserting `ok: false` on an unreachable base plus a second test guarding
-> that the deliberate auto-detected fallback still works.
+> that the deliberate auto-detected fallback still works. The ancestor check landed later, on this
+> branch, with a regression test that amends over an item's recorded base and asserts the diff is
+> refused rather than widened.
 
 ### 0c. Vocabulary cleanup: the task backlog stops calling itself a queue
 
@@ -205,9 +222,10 @@ would desync from the thing it mirrors:
 
 - *blocked on a question* = `in_progress && bucket === 'needs-you'`. Triage owns that episode; the
   item simply doesn't advance.
-- *fixing* = `round >= 1 && state in {sending, awaiting_pickup, in_progress}`. A fix round reuses
-  the **same** send/pickup/work/verify cycle; only the payload differs. Collapsing this is what
-  keeps the machine small - one cycle plus a counter, not two parallel paths.
+- *fixing* = `round >= 1 && state in {queued, sending, awaiting_pickup, in_progress}`. A fix round
+  reuses the **same** send/pickup/work/verify cycle; only the payload differs. Collapsing this is
+  what keeps the machine small - one cycle plus a counter, not two parallel paths. It re-enters that
+  cycle at `queued`, not `sending`: see the transition table.
 - *drained* = every item terminal. Only `wrapup_asked_at` is stored.
 
 ### Key transitions
@@ -223,11 +241,11 @@ would desync from the thing it mirrors:
 | `awaiting_pickup` | `sending` | pickup timeout ∧ `lastActivity <= sentAt` ∧ still `idle` ∧ under cap |
 | `in_progress` | `verifying` | `settledIdle(s, now, settleMs)` |
 | `verifying` | `verified` | no **blocking** gaps |
-| `verifying` | `sending` (round+1) | blocking gaps ∧ no gap at `maxFixAttempts` ∧ `round+1 <= maxFixRounds` ∧ `mayActLive` |
+| `verifying` | `queued` (round+1) | blocking gaps ∧ no gap at `maxFixAttempts` ∧ `round+1 <= maxFixRounds` ∧ `mayActLive` - the next tick sends it via the `queued -> sending` row, guard and all |
 | `verifying` | `proposed` (round+1) | **same, but `!mayActLive`** - draft the fix prompt, await Approve |
-| `verifying` | `escalated` | gap at `maxFixAttempts` ∨ round budget spent ∨ diff base unreachable ∨ `verifyFailures` cap |
+| `verifying` | `escalated` | gap at `maxFixAttempts` ∨ round budget spent ∨ `verifyFailures` cap (a failed diff, base unreachable included, is a verify-infrastructure failure and retries first) |
 | `proposed` | `sending` | `approved_at != null` ∧ every `queued -> sending` guard |
-| *any non-terminal* | `escalated` | session `exited` (or its queue is swept as orphaned, §1.1) |
+| *the in-flight item* | `escalated` | session `exited` (or its queue is swept as orphaned, §1.1). Waiting items are left INTACT - see §1.1 |
 
 **Every `verifying` exit is covered in both modes.** The `proposed (round+1)` row is load-bearing:
 without it a dry-run item with blocking gaps, under all caps, matches no transition and the
@@ -398,7 +416,9 @@ queueDrained(items): boolean
 **Decision precedence** (every branch an early return):
 
 ```
-1. exited                    -> escalate non-terminal items
+0. tickTargets(sessions)     -> needs-you first (oldest-waiting), then queues with open work
+                                OR drained-and-unasked   // the selector is policy - see §5
+1. exited                    -> escalate the IN-FLIGHT item only (waiting items survive, §1.1)
 2. bucket === 'needs-you'    -> { triage }        // an unanswered question blocks the item anyway
 3. !instrumented             -> escalate head ('not hook-instrumented')
 4. in-flight item            -> sending          -> recover-send (post-crash only)
@@ -408,7 +428,7 @@ queueDrained(items): boolean
 5. no head                   -> drained && !wrapupAskedAt ? ask-wrapup : none
 6. !settledIdle              -> none
 7. !hasPane                  -> escalate head
-8. !mayActLive && !head.approvedAt -> head.state === 'proposed' ? none : propose head
+8. !mayActLive && !head.approvedAt -> draft still current ? none : propose head
 9.                           -> send head    // live (any head), or approved in any mode
 ```
 
@@ -644,6 +664,9 @@ the two subsystems actively fight.
   Optimistic order, `PUT .../order` on drop.
 - **Mutations CAS on `revision`** and surface a 409 honestly ("Foreman just sent this item").
   Without it the UI will happily let someone edit an item already typed into a pane.
+- **A drafted item shows the text it would send** ("Foreman would send:", collapsed). Approve is
+  consent to a *specific* prompt, and from round 1 that prompt is the rendered fix prompt rather than
+  the item's intent - so the card has to show it, or Approve means consenting to text never read.
 - **Wrap-up block** at drained: two checkboxes (Create PR / Run no-mistakes) over an editable
   prefilled textarea, plus Send and Dismiss. Both ticked prefills `/no-mistakes` (the pipeline
   pushes and opens the PR itself); PR-only prefills a PR instruction; Dismiss closes and sends
@@ -760,8 +783,110 @@ Following the repo convention (plan docs land before code), this doc is the firs
 its fix. They were split out because both are live bugs independent of this feature, so they should
 land regardless of what happens to this plan.
 
-**Next,** in order, each independently testable: §0c (the rename) -> §1 (server + schema, incl. the
-leased heartbeat) -> §2 (the pure machine, with its test table) -> §3 (worker + verify) -> §4 (UI).
+**Done:** §0c (the rename) -> §1 (server + schema, incl. the leased heartbeat) -> §2 (the pure
+machine) -> §3 (worker + verify) -> §4 (UI), each its own commit.
+
+### What implementation changed
+
+Eight things the plan didn't anticipate, called out so the next reader doesn't re-derive them:
+
+1. **`WorkItem` needed a `recoveredAt` field.** The plan's crash-recovery row ("`sending` ->
+   `awaiting_pickup` with `sentAt := row.updatedAt`, and let the pickup detector adjudicate; if the
+   window expires with no advance, escalate") is not implementable from the columns it lists: at
+   pickup-expiry the machine cannot distinguish a crash-adopted item from a normally-sent one, and
+   they must behave differently - a normal send resends (the worker watched the inject resolve, so
+   "never ingested" is positive evidence of non-delivery) while a crash-adopted one must escalate
+   (we never learned whether Enter was pressed, so a second paste could mangle a prompt sitting
+   unsubmitted in the pane). `sentAt === null` doesn't work as the marker either: a fix round
+   inherits round 0's `sentAt`. So the flag is durable, and `markSent` clears it - otherwise a later
+   round of a once-recovered item would refuse to resend for a crash it never suffered.
+2. **The single-flight index needed a legible refusal.** The partial unique index is the right
+   enforcement, but its raw `ERR_SQLITE_ERROR` escaped the route: the daemon logged a stack trace and
+   answered an opaque 500, so a caller couldn't tell "you broke the invariant" from "the daemon fell
+   over". `QueueManager` catches it and the route answers 409. Found by an E2E run against the real
+   daemon, not by the unit tests - which is the argument for that run existing.
+3. **`sentAt`/`recoveredAt` are absent from `SetWorkItemStateSchema`.** The plan says `sentAt` is
+   stamped server-side; the way that's *enforced* is by not offering it on the worker's write at all.
+   Delivery and recovery got their own routes (`.../sent`, `.../recover`) so the clock stays the
+   daemon's by construction.
+4. **The wrap-up needed two routes, not one.** "Foreman asked" and "the human answered" have
+   different writers, and one endpoint doing both would let either clobber the other.
+5. **A live fix round re-enters at `queued`, not `sending`.** The plan's `verifying -> sending
+   (round+1)` row contradicts its own crash-recovery design: `sending` means "we crashed mid-
+   delivery" and the machine adopts it unconditionally on that premise. A fix round parked there was
+   adopted as a phantom crash and escalated ~45s later having typed nothing - the core loop, dead in
+   the only mode that types, while both halves passed their own unit tests. Writing `queued` lets the
+   next tick send it through the ordinary `queued -> sending` row, which is also the only way the
+   plan's "every send re-runs `queueSendStillValid`" requirement holds without a second copy of the
+   guard. `sending` is now reachable ONLY via a real crash, and the tests pin that.
+6. **The tick's session SELECTOR is policy, so it lives with the machine.** `tickTargets` gated on
+   `openCount > 0`, which is mutually exclusive with *drained* (drained **is** `openCount === 0`) -
+   so `decideQueueTick` was never called for a drained queue and the entire `ask-wrapup` branch was
+   unreachable, with `wrapupAskedAt` stuck null and both its consumers dark. Invisible because the
+   selector sat in a worker script that starts a daemon loop on import, i.e. one no test could
+   reach. It now lives in `queue-machine.ts` and is tested as a table like everything else there.
+7. **`WorkItem` needed a `proposedPayload`.** Per-round approval only means something if the human
+   can read what they're approving, and from round 1 the payload is the rendered fix prompt rather
+   than `intent` - so a card showing `intent` was asking for consent to text they never saw, the
+   exact hazard §2's per-round approval exists to prevent. The drafted text is stored, shown on the
+   card, and dropped the moment the item leaves `proposed`; `decideQueueTick` re-drafts whenever it
+   stops matching what would be rendered now, so `proposed` always means "THIS text".
+8. **`sendAttempts` has to reset on pickup.** The cap counts *consecutive* failures, but nothing
+   cleared it, which only became reachable once fix rounds actually sent (see 5): an item that took
+   two tries in round 0 and reached round 2 sat at the cap, so its first pickup timeout escalated
+   with no resend, claiming "the agent never picked this up" about an agent that had picked it up
+   twice. A pickup is positive evidence the send landed, so it clears the count.
+9. **A stale-send abort must not demote an IN-FLIGHT item.** The abort path wrote any
+   non-`queued`/`in_progress` item back to `queued`, which caught `awaiting_pickup` - an item whose
+   prompt is already in the pane. `queued` isn't an in-flight state, so the next tick never re-enters
+   `decideInFlight`, the `picked-up` branch that would adjudicate the delivery is unreachable, and
+   step 9 simply types the item a **second time**. The race is not hypothetical: the guard aborts
+   because "the session did something since we looked", which is *precisely* what the agent picking
+   the item up looks like - so the abort fired exactly when re-typing was most wrong. In-flight items
+   are now left alone; `proposed` still falls back, because nothing was typed.
+10. **A schema bound on model text must CLAMP, not reject.** `detail` used Zod `.max()`, which fails
+    the parse. A verifier that judged an item **complete** but wrote a 700-char detail lost its whole
+    verdict; `runStructured` retried the identical prompt, got the identical answer, and the item
+    escalated as "Foreman could not verify this item" after six `claude -p` spawns - over a verbose
+    sentence, on work that was done. The cap was never even a rule the model was told (the prompt
+    documents `<= 600 chars` for `fix` alone). Clamping gives up no protection: `renderFixPrompt`
+    re-sanitizes every field through a fixed template before anything reaches a pane. The gap-count
+    cap had the same shape and now trims most-severe-first, so three advisory nits can't crowd out
+    the one blocking gap that drives the fix round.
+11. **The single-flight index rebuild needed a transaction.** DDL is transactional in SQLite, and
+    without `BEGIN`/`COMMIT` the `DROP` commits on its own: the `CREATE` then fails on the violating
+    rows the rebuild exists to surface, the catch logs, and the table is left with **no index at
+    all**. Single-flight enforcement is silently gone *and* the next `openDb()` runs
+    `CREATE UNIQUE INDEX IF NOT EXISTS` against those same rows with nothing to make it a no-op,
+    throws uncaught, and the daemon never starts again - the exact bricking the catch was written to
+    prevent. Confirmed by running three real starts: without the transaction, start 2 leaves
+    `NO INDEX` and start 3 dies on `UNIQUE constraint failed`. Rolling back keeps the old index, so
+    the `CREATE` stays a no-op and the daemon opens.
+
+## Verification performed
+
+`npm run typecheck` + `npm test` green (369 tests). Beyond the suites, an E2E run drove the **real**
+daemon against a **real** throwaway scratch git repo and a **real** transcript file (never a live
+session - the plan's guardrail), confirming: CRUD + reorder + the CAS 409; the mode gate (dry-run
+proposes, live sends, and it sends the *first* item); a diff scoped to a real base sha; an
+unreachable base failing closed with a real reason; `?since=<anchor>` returning only one item's turns
+and excluding the previous item's; a cleared transcript reporting `reset`; the repo's `AGENTS.md`
+read while the operator's global `~/.claude/CLAUDE.md` is not; the wrap-up firing once and re-arming
+on new work; and the single-flight index holding through the real HTTP path. A later pass added the
+`proposed_payload` column and re-ran the **real** `openDb()` against a **real** pre-upgrade DB (the
+old schema, holding rows): the ALTER lands, existing rows read as "no draft recorded", drafts round
+trip, and re-running it proves `migrate()` is idempotent across restarts, as its contract requires.
+
+**The seams are now tested, because that is where both of the worst bugs lived.** Every unit test
+asserted one half of the loop and passed while the composition was broken end to end (see 5 and 6
+above). The regression tests deliberately cross those seams: a verify plan is fed back into
+`decideQueueTick` and asserted to SEND the fix prompt, and `tickTargets` is exercised as the real
+selector rather than assumed. Both fail against the original code - which is the only thing that
+makes them worth having.
+
+**Not exercised end-to-end:** the actual tmux delivery and a real `claude -p` verify round - both
+need a live agent, which the project guardrail puts off-limits for an automated check. Steps 6-12 of
+the manual list below remain worth a human pass with a scratch tmux session before trusting live mode.
 
 ## Out of scope (future)
 

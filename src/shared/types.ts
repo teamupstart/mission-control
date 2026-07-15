@@ -130,8 +130,25 @@ export interface Session {
    * from the cwd. Null until a hook reports it (or for agents without hooks).
    */
   transcriptPath: string | null;
-  /** True once we've received at least one hook event from this session. */
+  /**
+   * True while this session's hook overlay is FRESH - i.e. a hook has reported
+   * within the overlay TTL (30 min). This is a liveness window, NOT a fact about
+   * whether the integrations are installed: a healthy instrumented session that
+   * simply goes quiet flips this back to false, because nothing but a hook event
+   * refreshes the overlay. Read it as "we have current hook-sourced state for this
+   * session"; for "does this session have hooks at all", read `hooksSeen`.
+   */
   instrumented: boolean;
+  /**
+   * True once a hook has EVER been seen from this session - the installation fact,
+   * with no freshness window on it.
+   *
+   * The distinction is load-bearing. Conflating the two reads a 30-minute silence
+   * as "the integrations aren't installed", which is precisely what an agent parked
+   * waiting on a human looks like - so anything that punishes a hookless session
+   * (see the work queue's step 3) must gate on THIS, not on `instrumented`.
+   */
+  hooksSeen: boolean;
   /** Free-form one-liner from the last hook/report (e.g. current tool, last prompt). */
   activity: string | null;
   /** When the agent process actually started (epoch ms), for a real uptime. */
@@ -180,6 +197,18 @@ export interface Session {
    */
   note: SessionNoteSummary | null;
   /**
+   * Compact view of this session's Foreman work queue - the batch of work queued
+   * for it to do next. Denormalized like `note`, keyed on the same stable note
+   * key. Null when the session has no queue.
+   */
+  queue: SessionQueueSummary | null;
+  /**
+   * A queue left behind by a PREVIOUS session at this same cwd (its note key died
+   * - a `/clear` or a crash-relaunch mints a new agent session id). A hint on a
+   * live card offering re-attach, never an automatic rebind. Null normally.
+   */
+  orphanedQueue: OrphanedQueueHint | null;
+  /**
    * Rolled-up state of the PR's CI checks (GitHub status-check rollup): `failing`
    * if any check failed, else `pending` while any is still running, else
    * `passing`. Null when the PR has no checks (or `gh` couldn't be asked). Only
@@ -221,6 +250,175 @@ export interface SessionNote {
   updatedAt: number;
 }
 
+// ---- Foreman session work queues ----
+
+/**
+ * Lifecycle of one work item in a session's queue.
+ *
+ * Three states you might expect are deliberately DERIVED, not stored - each would
+ * otherwise need its own re-entry transition and would desync from the thing it
+ * mirrors:
+ *  - *blocked on a question* = `in_progress` && the session's bucket is
+ *    `needs-you`. Triage owns that episode; the item simply doesn't advance.
+ *  - *fixing* = `round >= 1` && state in {sending, awaiting_pickup, in_progress}.
+ *    A fix round reuses the SAME send/pickup/work/verify cycle - only the payload
+ *    differs - so it's one cycle plus a counter, not two parallel paths.
+ *  - *drained* = every item terminal (see `queueDrained`).
+ */
+export type WorkItemState =
+  | "queued"
+  | "proposed"
+  | "sending"
+  | "awaiting_pickup"
+  | "in_progress"
+  | "verifying"
+  | "verified"
+  | "escalated"
+  | "cancelled";
+
+/** How badly a gap misses: ONLY `blocking` drives a fix round. */
+export type GapSeverity = "blocking" | "advisory";
+
+export type GapKind = "incomplete" | "untested" | "standards" | "regression";
+
+/**
+ * One shortfall the verifier found, with the strike count that decides when to
+ * stop asking the agent to fix it.
+ *
+ * Strikes are counted PER GAP (not per attempt), so an item that keeps missing
+ * the same thing escalates while an agent working through several distinct gaps
+ * isn't punished for having found more work. This is a heuristic, not an identity
+ * mechanism: the model will sometimes remint an id for a semantically identical
+ * gap, resetting its strikes. `maxFixRounds` is the only real termination
+ * guarantee - see `reconcileGaps`.
+ */
+export interface TrackedGap {
+  /** Reused across rounds when it's the same underlying problem. */
+  id: string;
+  severity: GapSeverity;
+  kind: GapKind;
+  /** Repo-relative path the gap is about; also backs the deterministic id merge. */
+  path: string;
+  detail: string;
+  /** What the agent should do about it (capped + sanitized before injection). */
+  fix: string;
+  /** How many rounds this same gap has survived. Escalates at `maxFixAttempts`. */
+  strikes: number;
+  /** The round it was first seen, for the audit trail. */
+  firstSeenRound: number;
+}
+
+/** One unit of queued work for a session, and everything its lifecycle needs. */
+export interface WorkItem {
+  id: string;
+  /** The queue this belongs to: `noteKeyFor(session)`. */
+  noteKey: string;
+  /** Authored order. Whole-list renumber on reorder, in a txn. */
+  seq: number;
+  /** What the human asked for - the payload of round 0. */
+  intent: string;
+  state: WorkItemState;
+  /** Fix rounds spent. 0 = the original attempt. Bounded by `maxFixRounds`. */
+  round: number;
+  /** HEAD at delivery, so the verifier's diff is scoped to THIS item. */
+  baseSha: string | null;
+  /**
+   * Transcript byte offset at delivery, scoping the verify window to this item.
+   * A byte offset (not a ts/uuid) because the window reader elides the middle of
+   * a big file, so filtering by time would silently drop an item's earliest turns.
+   */
+  transcriptAnchor: number | null;
+  gaps: TrackedGap[];
+  sendAttempts: number;
+  /** Transient verify failures (spawn/timeout/parse-miss). Durable - see the machine. */
+  verifyFailures: number;
+  escalationReason: string | null;
+  /** The verifier's last summary, for the card's audit trail. */
+  lastVerdict: string | null;
+  /** Set when a human approves a `proposed` item (the dry-run path). */
+  approvedAt: number | null;
+  /**
+   * The exact text Foreman would type, while this item is `proposed`. Null in
+   * every other state.
+   *
+   * It is what Approve consents TO, which is why it's stored rather than
+   * recomputed for display: from round 1 on the payload is the rendered fix
+   * prompt, not `intent`, so a card showing `intent` would be asking the human to
+   * approve text they never read. `decideQueueTick` re-drafts whenever this stops
+   * matching the payload it would render now, so "proposed" always means "THIS
+   * text".
+   */
+  proposedPayload: string | null;
+  /**
+   * Set when Foreman restarted while this item was mid-`sending` and adopted it.
+   *
+   * The distinction is load-bearing at pickup-expiry, and it is NOT derivable from
+   * anything else. On the normal path the worker watched the inject resolve, so
+   * "delivered but never ingested" is positive evidence of non-delivery and a
+   * resend is safe. On the crash path we never learned whether the Enter was
+   * pressed - the text may be sitting unsubmitted in the pane - so a resend would
+   * paste a second copy after the first and mangle the prompt. A recovered item
+   * therefore escalates at expiry instead of resending.
+   */
+  recoveredAt: number | null;
+  /** CAS token: bumped on every edit, so a stale UI write 409s. */
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  sentAt: number | null;
+  completedAt: number | null;
+}
+
+/** A session's whole work queue: its items plus the drain-time wrap-up state. */
+export interface SessionQueue {
+  noteKey: string;
+  /** Re-attach hint for when the note key dies (a `/clear` mints a new one). */
+  cwd: string | null;
+  branch: string | null;
+  /** The drain ask fires exactly once - cleared when new items arrive. */
+  wrapupAskedAt: number | null;
+  wrapupAnswer: string | null;
+  updatedAt: number;
+  items: WorkItem[];
+}
+
+/**
+ * Compact queue view denormalized onto a Session card (like TaskSummary).
+ *
+ * Deliberately NOT the full item list: the card only needs counts + the in-flight
+ * headline, while the worker fetches the full queue (with gaps, shas, anchors and
+ * strike counts) over the API when it actually needs to decide.
+ */
+export interface SessionQueueSummary {
+  /** Items not yet terminal (queued/proposed/sending/…/verifying). */
+  openCount: number;
+  totalCount: number;
+  /** The single in-flight item's state, or null when nothing is in flight. */
+  inFlightState: WorkItemState | null;
+  /** The in-flight item's intent, for the chip. */
+  inFlightIntent: string | null;
+  /** Fix round of the in-flight item (0 = the first attempt). */
+  round: number;
+  /** Blocking gaps on the in-flight item - what the agent is being asked to fix. */
+  blockingGaps: number;
+  escalatedCount: number;
+  /** True when every item is terminal and the wrap-up ask is due/answered. */
+  drained: boolean;
+  wrapupAskedAt: number | null;
+  updatedAt: number;
+}
+
+/**
+ * A queue whose own session is gone, surfaced on a LIVE card at the same cwd as a
+ * re-attach hint. Never an auto-rebind: a different agent at that cwd may be doing
+ * something else entirely, so re-attaching is always an explicit click.
+ */
+export interface OrphanedQueueHint {
+  noteKey: string;
+  itemCount: number;
+  branch: string | null;
+}
+
 /** Compact note view denormalized onto a Session card (like TaskSummary). */
 export interface SessionNoteSummary {
   purpose: string | null;
@@ -242,7 +440,12 @@ export interface SessionNoteSummary {
 export interface ForemanStatus {
   enabled: boolean;
   mode: "dry-run" | "live" | "semi-auto";
-  /** True when the worker process heartbeated recently. */
+  /**
+   * True when a worker currently HOLDS THE LEASE and renewed it recently - i.e. a
+   * leader is alive. A second `npm run foreman` idles as a standby (so it can take
+   * over when the leader's lease expires) and never acquires the lease, so it can
+   * neither make this true on its own nor make the dashboard claim two workers.
+   */
   running: boolean;
   /** How many sessions currently need you (Foreman's inbound queue). */
   queueDepth: number;
@@ -266,12 +469,17 @@ export type TaskKind = "ship" | "scout";
 /**
  * Coarse lifecycle of a dispatched task. Deliberately does NOT mirror the live
  * session's runtime state (working/idle/needs-input) - that stays a property of
- * the Session so runtime status is never duplicated. A task is queued in the
- * backlog, provisioned (`dispatching`), bound to a live session (`running`), and
- * then reaches a terminal state.
+ * the Session so runtime status is never duplicated. A task waits in the
+ * `backlog`, is provisioned (`dispatching`), bound to a live session (`running`),
+ * and then reaches a terminal state.
+ *
+ * `backlog` (not "queued"): a session work queue (`SessionQueue`) is a different
+ * thing entirely - it feeds items to an EXISTING agent, where this provisions a
+ * new worktree + agent per task. The UI has always said "backlog"; the word here
+ * matches it so "queue" only ever means the session work queue.
  */
 export type TaskStatus =
-  | "queued"
+  | "backlog"
   | "dispatching"
   | "running"
   | "done"
@@ -291,7 +499,7 @@ export interface Task {
   agent: AgentType;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
-  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while queued. */
+  /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
   worktreePath: string | null;
   /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
@@ -415,7 +623,7 @@ export interface FleetReport {
     idle: number;
     needsYou: number;
     exited: number;
-    queued: number;
+    backlog: number;
   };
   needsYou: ReportItem[];
   working: ReportItem[];
@@ -479,6 +687,13 @@ export interface SessionDiff {
   /** Short sha of the merge-base actually diffed against, or null (diffed vs HEAD). */
   baseSha: string | null;
   headSha: string | null;
+  /**
+   * The repo's toplevel (`git rev-parse --show-toplevel`), or null when the cwd
+   * isn't a git repo. The paths in `patch` are relative to THIS, not to the
+   * session's cwd - git emits toplevel-relative paths wherever it's invoked from -
+   * so anything resolving a changed path needs it.
+   */
+  repoRoot: string | null;
   branch: string | null;
   filesChanged: number;
   insertions: number;

@@ -6,13 +6,15 @@ import { buildApp } from "../src/server/routes.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
+import type { QueueManager } from "../src/server/queue.ts";
 
 // The /api/health handler reads none of the managers, so minimal stubs keep this
 // test hermetic (no db, no discovery pollers).
 const registry = {} as unknown as Registry;
 const reviews = {} as unknown as ReviewManager;
 const tasks = {} as unknown as TaskManager;
-const app = buildApp(registry, reviews, tasks);
+const queues = {} as unknown as QueueManager;
+const app = buildApp(registry, reviews, tasks, queues);
 
 // The endpoint should surface exactly the version declared in package.json.
 const pkgVersion = (

@@ -9,6 +9,7 @@ import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
+import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPrPoller } from "./pr.ts";
@@ -20,12 +21,13 @@ ensureToken();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
+const queues = new QueueManager(registry);
 const stopPoller = startPoller(registry);
 const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 
-const app = buildApp(registry, reviews, tasks);
+const app = buildApp(registry, reviews, tasks, queues);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

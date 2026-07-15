@@ -23,6 +23,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
+    hooksSeen: true,
     activity: null,
     startedAt: null,
     firstSeen: 0,
@@ -38,6 +39,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    queue: null,
+    orphanedQueue: null,
     ...over,
   };
 }
@@ -55,7 +58,7 @@ function mkTask(over: Partial<Task> = {}): Task {
     provider: null,
     tmuxSession: null,
     sessionId: null,
-    status: "queued",
+    status: "backlog",
     outcome: null,
     outcomeUrl: null,
     error: null,
@@ -86,7 +89,7 @@ test("buildReport buckets sessions the same way the shared helper does", () => {
   ];
   const tasks = [
     mkTask({ id: "task-run", status: "running", worktreePath: "/wt" }),
-    mkTask({ id: "q1", title: "Queued one", status: "queued" }),
+    mkTask({ id: "q1", title: "Backlog one", status: "backlog" }),
     mkTask({ id: "d1", title: "Shipped it", status: "done", outcome: "opened PR #7", updatedAt: 50 }),
   ];
 

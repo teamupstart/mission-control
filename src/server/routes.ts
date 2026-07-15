@@ -2,37 +2,59 @@ import { Hono } from "hono";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
+  AddWorkItemSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
+  EditWorkItemSchema,
   ForemanConfigPatchSchema,
+  ForemanHeartbeatSchema,
   HookIngestSchema,
+  InjectPromptSchema,
+  MarkItemSentSchema,
   NomistakesRespondSchema,
+  ReattachQueueSchema,
   RenameSchema,
+  ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
   SendTextSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
+  SetWorkItemStateSchema,
+  StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  WrapupSchema,
 } from "@shared/protocol.ts";
+import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
+import type { QueueManager } from "./queue.ts";
+import type { WorkItem } from "@shared/types.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
-import { readTranscriptWindow, resolveTranscriptPath, transcriptStreamHandler } from "./transcript.ts";
 import {
+  readTranscriptSince,
+  readTranscriptWindow,
+  resolveTranscriptPath,
+  transcriptSize,
+  transcriptStreamHandler,
+} from "./transcript.ts";
+import {
+  claimForemanLease,
   foremanStatus,
   getForemanConfig,
-  recordForemanHeartbeat,
+  releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
-import { computeSessionDiff } from "./diff.ts";
+import { readStandards } from "./standards.ts";
+import { computeSessionDiff, repoRootOf } from "./diff.ts";
 import { checkToken } from "./auth.ts";
 import {
   cyclePermissionMode,
   focus,
+  injectPrompt,
   kill,
   rename,
   resetPreview,
@@ -57,13 +79,49 @@ const WAIT_TIMEOUT_MS = 30000;
  * or a ready-to-return 400 response - collapsing the safeParse/400 boilerplate
  * every write endpoint otherwise repeats.
  */
+// `error` is carried alongside the ready-made `res` so a route with extra facts to
+// report on a refusal can build its own body without re-reading this one's. /inject
+// is that route: its contract is that EVERY refusal states whether text was pasted.
 async function parseBody<S extends ZodTypeAny>(
   c: Context,
   schema: S,
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; res: Response }> {
+): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
   const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return { ok: false, res: c.json({ error: parsed.error.message }, 400) };
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
+  }
   return { ok: true, data: parsed.data };
+}
+
+/**
+ * Resolve an item-scoped queue route: the `:id` session must exist, and `:itemId`
+ * must belong to ITS queue.
+ *
+ * Without the ownership half, `:id` was decoration - the item was addressed
+ * globally, so `POST /api/sessions/does-not-exist/queue/<real-item>/approve`
+ * answered 200. That isn't hypothetical mischief: item ids SURVIVE a re-attach
+ * (`reattachQueue` preserves `i.id` while re-keying), so a tab holding a
+ * pre-re-attach list - SSE dropped, or backgrounded, so no refresh fired - would
+ * click Remove on item X under session A and delete it out of session B's live
+ * queue. Membership is the only thing that distinguishes those two, and it is
+ * checked at the write because that is the boundary the damage crosses.
+ *
+ * The queue's own key is the unit of ownership, not `session.id`: the id churns
+ * with pid/tty while the note key is the identity the queue is stored under.
+ */
+function ownedItem(
+  registry: Registry,
+  queues: QueueManager,
+  c: Context,
+): { ok: true; item: WorkItem } | { ok: false; res: Response } {
+  const session = registry.getSession(c.req.param("id") ?? "");
+  if (!session) return { ok: false, res: c.json({ error: "no such session" }, 404) };
+  const item = queues.getItem(c.req.param("itemId") ?? "");
+  if (!item) return { ok: false, res: c.json({ error: "no such item" }, 404) };
+  if (item.noteKey !== noteKeyFor(session)) {
+    return { ok: false, res: c.json({ error: "that item is not in this session's queue" }, 404) };
+  }
+  return { ok: true, item };
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
@@ -78,7 +136,12 @@ function readVersion(): string {
   }
 }
 
-export function buildApp(registry: Registry, reviews: ReviewManager, tasks: TaskManager): Hono {
+export function buildApp(
+  registry: Registry,
+  reviews: ReviewManager,
+  tasks: TaskManager,
+  queues: QueueManager,
+): Hono {
   const app = new Hono();
 
   // The daemon binds to loopback, but that alone doesn't stop a web page the user
@@ -109,15 +172,59 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.get("/events", sseHandler(registry));
   // Live transcript for the expanded card (localhost-only, like the actions).
   app.get("/api/sessions/:id/transcript/stream", transcriptStreamHandler(registry));
-  // One-shot transcript window (head + tail) for the Foreman reviewer.
+  // One-shot transcript window for a non-streaming reader (Foreman's triage
+  // reviewer, and the queue verifier).
+  //
+  // `?since=<byteOffset>` reads FORWARD from an offset - how the queue scopes a
+  // window to one work item. A turn count can't do that: a 48-turn window can span
+  // three items, and the head+tail window elides the middle of a big file, so
+  // filtering it by timestamp would silently drop an item's earliest turns (the
+  // ones that establish what the agent set out to do). The transcript is
+  // append-only, so a stored file size is an exact, O(1) item boundary.
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     const path = resolveTranscriptPath(session);
     if (!path) return c.json({ messages: [], truncated: false, unavailable: true });
+    const since = Number(c.req.query("since"));
+    if (Number.isFinite(since) && since >= 0) return c.json(readTranscriptSince(path, since));
     const turns = Number(c.req.query("turns"));
     const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
     return c.json(readTranscriptWindow(path, 12, tail));
+  });
+
+  // The transcript's current byte size - the anchor a work item records when it's
+  // delivered, so its verify window starts exactly at its first turn.
+  app.get("/api/sessions/:id/transcript/size", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const path = resolveTranscriptPath(session);
+    return c.json({ size: path ? transcriptSize(path) : null });
+  });
+
+  // The repo standards the queue verifier judges an item's diff against.
+  //
+  // Resolved against the git TOPLEVEL, not the session's cwd: `paths` come from the
+  // diff, and git emits those relative to the toplevel wherever it was invoked from.
+  // A session sitting in a subdirectory (a monorepo package - the ordinary case)
+  // would otherwise look for the root AGENTS.md one level down and resolve every
+  // changed path into a directory chain that doesn't exist, quietly loading NO
+  // standards at all. Worse, `truncated` would be false, so the prompt wouldn't even
+  // print its "some standards docs were omitted" line - the verifier would judge
+  // against the repo's main contract without it, and nothing would say so.
+  //
+  // A POST carrying the paths in its body, though it is a pure read: the list comes
+  // from a patch capped at 1.2MB, so as `path=` query params a large refactor's few
+  // hundred encoded paths overrun Node's 16KB default `maxHeaderSize` and the request
+  // never arrives. The caller degrades that to an empty bundle, which is the exact
+  // silent failure the paragraph above is about.
+  app.post("/api/sessions/:id/standards", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, StandardsRequestSchema);
+    if (!parsed.ok) return parsed.res;
+    const root = await repoRootOf(session.cwd);
+    return c.json(readStandards(root, parsed.data.paths));
   });
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
@@ -212,6 +319,33 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     if (!free.ok) return c.json({ ok: false, error: free.error }, 400);
     const r = await rename(session, valid.name);
     if (r.ok) registry.renameSession(session.id, valid.name);
+    return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Deliver a whole prompt as ONE submission (bracketed paste), unlike /send's
+  // literal send-keys where every embedded newline submits. This is the only way
+  // to deliver a multi-line intent or a bulleted gap list at all.
+  //
+  // Mirrors /send's contract exactly - `c.json(r, r.ok ? 200 : 500)` - so the
+  // client genuinely throws on failure. That's what lets the worker write
+  // `awaiting_pickup` only AFTER the inject resolves (the send-first-then-stamp
+  // discipline applyVerdict already encodes).
+  // The response carries `pasted`, which is what lets the worker tell a delivery
+  // that never happened (retryable) from one that may be sitting unsubmitted in the
+  // pane (must not be retyped over). Every refusal below reports it too, since
+  // rejecting a request outright is the one case where we KNOW nothing was typed.
+  app.post("/api/sessions/:id/inject", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session", pasted: false }, 404);
+    // `parseBody`'s generic 400 carries no `pasted`, and the client reads a MISSING
+    // field as "may have landed" (absence of evidence is not evidence - see
+    // InjectError). That default is right everywhere else and exactly wrong here: a
+    // rejected body never reached tmux, so reporting the refusal without the field
+    // terminally escalates the item ("Foreman couldn't tell whether this reached the
+    // pane", no undo) instead of taking the clean re-queue. Say what we know.
+    const parsed = await parseBody(c, InjectPromptSchema);
+    if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
+    const r = await injectPrompt(session, parsed.data.text);
     return c.json(r, r.ok ? 200 : 500);
   });
 
@@ -315,6 +449,168 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(note);
   });
 
+  // --- Foreman session work queues (localhost only) ---
+  app.get("/api/sessions/:id/queue", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(queues.get(session.id));
+  });
+
+  app.post("/api/sessions/:id/queue", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, AddWorkItemSchema);
+    if (!parsed.ok) return parsed.res;
+    const item = queues.add(session.id, parsed.data.intent);
+    // The session resolved above, so the only refusal `ensureQueue` has left is the
+    // Claude-only one - and saying "no such session" about a session that plainly
+    // exists sends the caller hunting for the wrong bug.
+    if (!item) {
+      return c.json(
+        { error: "work queues are Claude-only - Foreman reads transcripts to check the work" },
+        409,
+      );
+    }
+    return c.json(item);
+  });
+
+  // Edit: 409 on a CAS miss or an item that has left queued/proposed - Foreman may
+  // already have typed it into a pane, and "edited" would then be a lie.
+  app.patch("/api/sessions/:id/queue/:itemId", async (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const parsed = await parseBody(c, EditWorkItemSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.edit(owned.item.id, parsed.data.intent, parsed.data.revision);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
+  app.delete("/api/sessions/:id/queue/:itemId", (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const r = queues.remove(owned.item.id);
+    return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
+  });
+
+  app.put("/api/sessions/:id/queue/order", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ReorderQueueSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.reorder(session.id, parsed.data.ids);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  app.post("/api/sessions/:id/queue/:itemId/approve", (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const r = queues.approve(owned.item.id);
+    return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
+  });
+
+  app.put("/api/sessions/:id/queue/:itemId/state", async (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const parsed = await parseBody(c, SetWorkItemStateSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.setState(owned.item.id, parsed.data);
+    if (r.ok) return c.json(r.item);
+    // 409, not 500: a single-flight refusal means the caller broke the invariant,
+    // and it must be able to tell that from the daemon falling over.
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
+  // Stamp delivery. Separate from /state because `sentAt` is the daemon's clock,
+  // not the worker's: the pickup guard compares it against `lastActivity`, which
+  // the registry stamps from the hook payload, so the two must share a writer.
+  app.post("/api/sessions/:id/queue/:itemId/sent", async (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const parsed = await parseBody(c, MarkItemSentSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.markSent(owned.item.id, parsed.data.baseSha, parsed.data.transcriptAnchor);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
+  // Adopt an item a restart left mid-send (see QueueManager.recover).
+  app.post("/api/sessions/:id/queue/:itemId/recover", (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const r = queues.recover(owned.item.id);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
+  // The human's answer to the drain-time ask.
+  app.put("/api/sessions/:id/queue/wrapup", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const queue = queues.get(session.id);
+    if (!queue) return c.json({ error: "no queue for this session" }, 404);
+    const parsed = await parseBody(c, WrapupSchema);
+    if (!parsed.ok) return parsed.res;
+    queues.setWrapupAnswer(queue.noteKey, parsed.data.answer);
+    return c.json(queues.get(session.id));
+  });
+
+  // The worker's "I've raised the ask" stamp - what makes it fire exactly once.
+  // Separate from the answer above because they have different writers: this is
+  // Foreman recording that it asked, that is the human recording what they said.
+  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const queue = queues.get(session.id);
+    if (!queue) return c.json({ error: "no queue for this session" }, 404);
+    queues.markWrapupAsked(queue.noteKey);
+    return c.json(queues.get(session.id));
+  });
+
+  // Re-attach an orphaned queue onto this live session. Always an explicit click:
+  // a different agent at the same cwd may be doing something else entirely.
+  app.post("/api/sessions/:id/queue/reattach", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ReattachQueueSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.reattach(parsed.data.noteKey, session.id);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Fleet-level: queues with no live session at all, so nothing is stranded with
+  // no surface whatsoever (the cwd-match hint only covers a queue whose cwd still
+  // has a live session on it).
+  app.get("/api/queues", (c) =>
+    c.json(c.req.query("orphaned") === "1" ? queues.orphaned() : queues.list()),
+  );
+
+  /*
+    The same write, addressed by QUEUE KEY - the orphan sweep's route.
+
+    It exists because the session-scoped routes above now insist the session
+    resolves, and the sweep's whole subject is a queue whose session is GONE: it
+    terminalizes the in-flight item of a queue nothing can drive any more, so there
+    is no `:id` for it to name. It previously borrowed the session route by passing
+    the note key as the session id, which worked only because that route ignored the
+    segment entirely - i.e. the sweep was relying on the very bug that let any tab
+    write to any queue.
+
+    Ownership is checked the same way, against the key the caller named.
+  */
+  app.put("/api/queues/:key/items/:itemId/state", async (c) => {
+    const item = queues.getItem(c.req.param("itemId"));
+    if (!item) return c.json({ error: "no such item" }, 404);
+    if (item.noteKey !== c.req.param("key")) {
+      return c.json({ error: "that item is not in this queue" }, 404);
+    }
+    const parsed = await parseBody(c, SetWorkItemStateSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.setState(item.id, parsed.data);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
+
   // --- Foreman config + status (localhost only) ---
   app.get("/api/foreman/config", (c) => c.json(getForemanConfig()));
   app.put("/api/foreman/config", async (c) => {
@@ -323,8 +619,24 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
-  app.post("/api/foreman/heartbeat", (c) => {
-    recordForemanHeartbeat();
+
+  // A LEASED heartbeat: acquires when free/expired, renews when already ours, and
+  // reports leader:false otherwise. The old bare heartbeat was one module-global
+  // timestamp that couldn't detect a second worker at all - it just got beaten
+  // twice, and both workers would drain the fleet.
+  app.post("/api/foreman/heartbeat", async (c) => {
+    const parsed = await parseBody(c, ForemanHeartbeatSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(claimForemanLease(parsed.data.workerId));
+  });
+
+  // A leader handing the lease back on a clean shutdown, so a standby takes over
+  // at once rather than waiting out the TTL. Best-effort by nature: a crash just
+  // lets the lease expire, which is exactly what the TTL is for.
+  app.post("/api/foreman/heartbeat/release", async (c) => {
+    const parsed = await parseBody(c, ForemanHeartbeatSchema);
+    if (!parsed.ok) return parsed.res;
+    releaseForemanLease(parsed.data.workerId);
     return c.body(null, 204);
   });
 

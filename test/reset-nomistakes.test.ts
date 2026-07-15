@@ -13,6 +13,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { NmRunSummary, Session } from "../src/shared/types.ts";
@@ -23,7 +24,12 @@ const LOOPBACK = { host: "127.0.0.1:7317" };
 const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-token": TOKEN };
 
 const registry = new Registry();
-const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+const app = buildApp(
+  registry,
+  new ReviewManager(registry),
+  new TaskManager(registry),
+  new QueueManager(registry),
+);
 
 /** A clone on `branch` with the local work a finished run would have validated. */
 const mkClone = (branch: string): string => mkCloneOnBranch("harness-reset-nm-", branch);

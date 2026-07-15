@@ -108,6 +108,32 @@ export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings):
       });
     }
 
+    // queue: an item Foreman was driving needs you (it escalated), or the batch
+    // drained and it's asking whether to ship. Read from the ITEM state rather
+    // than overloading the note to get this for free: the note is triage's record
+    // for a prompt episode, and a queue write there would skew its tallies.
+    const esc = s.queue?.escalatedCount ?? 0;
+    if (esc > (before?.queue?.escalatedCount ?? 0)) {
+      alerts.push({
+        id: `queue:${s.id}`,
+        kind: "foreman",
+        title: `${label} - Foreman is stuck on a queued item`,
+        body: "an item couldn't be finished and needs you",
+        sessionId: s.id,
+        severity: "attention",
+      });
+    }
+    if (s.queue?.wrapupAskedAt && !before?.queue?.wrapupAskedAt) {
+      alerts.push({
+        id: `wrapup:${s.id}`,
+        kind: "foreman",
+        title: `${label} - the work queue drained`,
+        body: "ship it? Foreman is waiting on you",
+        sessionId: s.id,
+        severity: "attention",
+      });
+    }
+
     // idle (AFK): finished a burst of work and is now waiting.
     if (
       settings.afk &&
@@ -168,10 +194,10 @@ export function batchSeverity(alerts: Alert[]): AlertSeverity {
 /** Whether the fleet has anything worth reporting, so a quiet digest can be skipped. */
 export function hasReportable(fleet: Fleet): boolean {
   for (const s of fleet.sessions) if (reportBucket(s) !== "exited") return true;
-  return fleet.tasks.some((t) => t.status === "queued");
+  return fleet.tasks.some((t) => t.status === "backlog");
 }
 
-/** Compact fleet digest, e.g. "2 need you · 3 working · 1 idle · 1 queued". */
+/** Compact fleet digest, e.g. "2 need you · 3 working · 1 idle · 1 in backlog". */
 export function digestLine(fleet: Fleet): string {
   let needsYou = 0;
   let working = 0;
@@ -182,8 +208,8 @@ export function digestLine(fleet: Fleet): string {
     else if (b === "working") working++;
     else if (b === "idle") idle++;
   }
-  const queued = fleet.tasks.filter((t) => t.status === "queued").length;
+  const backlog = fleet.tasks.filter((t) => t.status === "backlog").length;
   const parts = [`${needsYou} need you`, `${working} working`, `${idle} idle`];
-  if (queued > 0) parts.push(`${queued} queued`);
+  if (backlog > 0) parts.push(`${backlog} in backlog`);
   return parts.join(" · ");
 }

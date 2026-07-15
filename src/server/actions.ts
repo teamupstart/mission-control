@@ -70,41 +70,63 @@ export async function sendText(
 }
 
 /**
+ * The outcome of a prompt delivery, plus the one thing a failed caller cannot
+ * work out for itself: did any text reach the pane?
+ *
+ * Delivery is a NON-ATOMIC sequence (buffer -> paste -> Enter), so `ok: false` is
+ * not proof that nothing landed. When `pasted` is true the text may be sitting
+ * unsubmitted in the pane, and re-delivering would paste a second copy after the
+ * first and mangle the prompt. Only `pasted: false` is positive evidence of
+ * non-delivery, and therefore the only state a caller may safely retry from.
+ */
+export interface InjectResult extends ActionResult {
+  pasted: boolean;
+}
+
+/**
  * Deliver a whole prompt (possibly multi-line) into a session's input as a single
  * submission. Unlike `sendText`, newlines here must NOT each submit - so we send
  * the body via bracketed paste (tmux `paste-buffer -p` / wezterm's default paste),
  * which agent TUIs treat as one pasted block, then press Enter once to submit.
- * Used by dispatch to seed an agent's first task.
+ * Used by dispatch to seed an agent's first task, and by the work queue to deliver
+ * an item.
+ *
+ * Reports which PHASE failed via `pasted`, because the two failures mean opposite
+ * things to a caller: a paste that never happened is retryable, while a paste that
+ * landed and then failed to submit must not be retyped over.
  */
-export async function injectPrompt(session: Session, text: string): Promise<ActionResult> {
+export async function injectPrompt(session: Session, text: string): Promise<InjectResult> {
   if (session.tmux) {
     const target = session.tmux.paneId;
     const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
     const set = await step("tmux", ["set-buffer", "-b", buf, "--", text], "tmux set-buffer failed");
-    if (!set.ok) return set;
+    if (!set.ok) return { ...set, pasted: false };
     // -p: bracketed paste (so embedded newlines don't submit); -d: drop the buffer after.
+    // A non-zero exit here means tmux couldn't resolve the buffer or the pane, both
+    // of which it checks BEFORE writing: nothing reached the pane.
     const paste = await step(
       "tmux",
       ["paste-buffer", "-p", "-d", "-b", buf, "-t", target],
       "tmux paste-buffer failed",
     );
-    if (!paste.ok) return paste;
+    if (!paste.ok) return { ...paste, pasted: false };
+    // Past this point the text IS in the pane, submitted or not.
     const enter = await step("tmux", ["send-keys", "-t", target, "Enter"], "tmux Enter failed");
-    if (!enter.ok) return enter;
-    return { ok: true };
+    if (!enter.ok) return { ...enter, pasted: true };
+    return { ok: true, pasted: true };
   }
   if (session.wezterm) {
     const bin = resolveWeztermBin();
     const id = String(session.wezterm.paneId);
     // Omitting --no-paste makes wezterm send the text as a bracketed paste.
     const pasted = await step(bin, ["cli", "send-text", "--pane-id", id, text], "wezterm send-text failed");
-    if (!pasted.ok) return pasted;
+    if (!pasted.ok) return { ...pasted, pasted: false };
     const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
     const entered = await step(bin, enterArgs, "wezterm Enter failed");
-    if (!entered.ok) return entered;
-    return { ok: true };
+    if (!entered.ok) return { ...entered, pasted: true };
+    return { ok: true, pasted: true };
   }
-  return { ok: false, error: NO_HANDLE };
+  return { ok: false, error: NO_HANDLE, pasted: false };
 }
 
 /**

@@ -98,20 +98,22 @@ export function SessionCard({
           {renaming ? (
             <RenameEditor session={session} onClose={() => onRenameClose?.()} />
           ) : canRename ? (
-            <button
-              type="button"
-              className="card-title-edit"
-              title={`Rename "${session.name}"`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onRenameStart?.();
-              }}
-            >
-              <h2>{session.name || "(unnamed)"}</h2>
-              <span className="rename-pencil" aria-hidden>
-                ✎
-              </span>
-            </button>
+            <h2>
+              <button
+                type="button"
+                className="card-title-edit"
+                title={`Rename "${session.name}"`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRenameStart?.();
+                }}
+              >
+                <span className="card-title-name">{session.name || "(unnamed)"}</span>
+                <span className="rename-pencil" aria-hidden>
+                  ✎
+                </span>
+              </button>
+            </h2>
           ) : (
             <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
           )}

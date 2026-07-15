@@ -366,10 +366,18 @@ export class Registry extends EventEmitter {
    * Discovery converges on this exact value on its next tick (the terminal really
    * was renamed), so there's nothing to reconcile - a stale in-flight sweep that
    * started before the rename can briefly show the old name, then self-heals.
+   *
+   * A dispatched task holds its own persisted copy of the tmux name, and that copy
+   * drives destructive teardown: `reconcileOnStartup` reads `tmuxSession` back after
+   * a restart and reclaims the worktree when the name no longer resolves. Left
+   * stale, a renamed agent's tree would be force-removed out from under it, so the
+   * binding moves with the rename here (names are unique, so matching the old one
+   * is exact) and is persisted through `upsertTask` to reach SQLite.
    */
   renameSession(sessionId: string, name: string): void {
     const s = this.sessions.get(sessionId);
     if (!s || s.name === name) return;
+    const priorTmux = s.tmux?.session ?? null;
     const next: Session = {
       ...s,
       name,
@@ -378,6 +386,12 @@ export class Registry extends EventEmitter {
     };
     this.sessions.set(sessionId, next);
     this.emitSession(next);
+    if (!priorTmux || priorTmux === name) return;
+    for (const t of this.listTasks()) {
+      if (t.tmuxSession === priorTmux) {
+        this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
+      }
+    }
   }
 
   private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {

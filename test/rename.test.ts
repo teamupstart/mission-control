@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { rename, validateSessionName, type RenameDeps } from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { Session, SessionState, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
+import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
 
 // Isolate the daemon's SQLite DB before the Registry (which reads config/db) loads.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-rename-"));
@@ -254,4 +254,73 @@ test("renameSession on an unknown session id is a safe no-op", () => {
   const r = new Registry();
   r.applyDiscovery([disco()]);
   assert.doesNotThrow(() => r.renameSession("nope", "x"));
+});
+
+// ---- Registry.renameSession (dispatched task binding) ----
+
+function mkTask(over: Partial<Task> = {}): Task {
+  return {
+    id: "t1",
+    title: "T",
+    intent: "do the thing",
+    kind: "ship",
+    agent: "claude",
+    repoRoot: "/repo",
+    worktreePath: "/wt/work",
+    branch: null,
+    provider: null,
+    tmuxSession: "work",
+    sessionId: "s1",
+    status: "running",
+    outcome: null,
+    outcomeUrl: null,
+    error: null,
+    createdAt: 0,
+    updatedAt: 0,
+    dispatchedAt: null,
+    completedAt: null,
+    ...over,
+  };
+}
+
+function taskOf(r: InstanceType<typeof Registry>, id = "t1"): Task | undefined {
+  return r.snapshot().tasks.find((t) => t.id === id);
+}
+
+test("renameSession moves a dispatched task's tmuxSession binding with the name", () => {
+  const r = new Registry();
+  r.applyDiscovery([disco()]);
+  r.upsertTask(mkTask());
+
+  r.renameSession("s1", "renamed");
+
+  // reconcileOnStartup probes this name after a restart and force-removes the
+  // worktree when it doesn't resolve - a stale binding would destroy live work.
+  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+});
+
+test("renameSession leaves a task bound to a different tmux session untouched", () => {
+  const r = new Registry();
+  r.applyDiscovery([disco()]);
+  r.upsertTask(mkTask({ id: "other", tmuxSession: "unrelated", worktreePath: "/wt/other" }));
+
+  r.renameSession("s1", "renamed");
+
+  assert.equal(taskOf(r, "other")?.tmuxSession, "unrelated");
+});
+
+test("renameSession touches no task binding when the session has no tmux handle", () => {
+  const r = new Registry();
+  r.applyDiscovery([
+    disco({
+      tmux: null,
+      nameSource: "wezterm",
+      wezterm: { paneId: 12, tabId: 4, windowId: 1, tabTitle: "work", isActive: true },
+    }),
+  ]);
+  r.upsertTask(mkTask());
+
+  r.renameSession("s1", "renamed");
+
+  assert.equal(taskOf(r)?.tmuxSession, "work");
 });

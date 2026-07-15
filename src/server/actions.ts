@@ -282,14 +282,16 @@ export function validateSessionName(
  * (tmux vs wezterm) without renaming a real tmux session or shelling out.
  */
 export interface RenameDeps {
-  /** `tmux rename-session -t <from> <to>`. */
+  /** `tmux rename-session -t <from> -- <to>`. */
   renameTmuxSession: (from: string, to: string) => Promise<RunResult>;
-  /** `wezterm cli set-tab-title --pane-id <id> <title>`. */
+  /** `wezterm cli set-tab-title --pane-id <id> -- <title>`. */
   setWeztermTabTitle: (paneId: number, title: string) => Promise<RunResult>;
 }
 
 const defaultRenameDeps: RenameDeps = {
-  renameTmuxSession: (from, to) => run("tmux", ["rename-session", "-t", from, to]),
+  // `--` ends flag parsing so a name like "-wip" is read as the new name rather
+  // than as a flag bundle (which would surface an arg-parser dump behind a 500).
+  renameTmuxSession: (from, to) => run("tmux", ["rename-session", "-t", from, "--", to]),
   setWeztermTabTitle,
 };
 

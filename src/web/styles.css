@@ -327,8 +327,11 @@ body {
   color: var(--dim);
 }
 
-/* Clickable title: looks like the h2, reveals a pencil + underline on hover to
-   advertise that it opens the inline rename editor. */
+/* Clickable title: looks like the h2 it sits inside, reveals a pencil + underline
+   on hover to advertise that it opens the inline rename editor. The button nests
+   inside the h2 (never the reverse - a heading isn't phrasing content, and
+   role=button makes its children presentational, dropping the heading from the
+   accessibility tree). */
 .card-title-edit {
   display: flex;
   align-items: center;
@@ -343,8 +346,12 @@ body {
   text-align: left;
   cursor: text;
 }
-.card-title-edit h2 {
+/* The h2 clips, but text-overflow doesn't reach through the flex button, so the
+   name carries its own ellipsis. */
+.card-title-name {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .rename-pencil {
   flex: none;
@@ -357,7 +364,7 @@ body {
 .card-title-edit:focus-visible .rename-pencil {
   opacity: 1;
 }
-.card-title-edit:hover h2 {
+.card-title-edit:hover .card-title-name {
   text-decoration: underline;
   text-decoration-color: color-mix(in oklab, var(--fg) 35%, transparent);
   text-underline-offset: 2px;

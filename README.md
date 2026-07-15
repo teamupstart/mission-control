@@ -12,15 +12,21 @@ and get your decision back.
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
 - **Names** each session by its **tmux session name**, else its **wezterm tab
-  title**, else the repo folder.
+  title**, else the repo folder. Click a card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to
+  rename it - it renames the underlying tmux session / wezterm tab, which the next
+  sweep reads straight back onto the card. Only a live session with a tmux or wezterm
+  pane can be renamed - a session found in neither, or one that has exited, has
+  nothing to rename, so its title isn't clickable.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
-- **Acts** on a session: send it a message, focus its tab, or kill it.
+- **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
+  reset its checkout back to origin (with a preview of exactly what that would
+  discard).
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
-  agent in its own isolated worktree + detached tmux session (or queues it in a
+  agent in its own isolated worktree + detached tmux session (or shelves it in a
   backlog for later).
 - **Rounds up** the whole fleet: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
@@ -267,7 +273,7 @@ repo to base the task on rather than typing a path. Type to filter; arrow/enter 
 
 The new session then shows up on the grid like any other, with an **intent chip** naming
 what it's working on. It's headless until you want it - click **Focus** on the card to open
-it in a tab. Choose **Add to backlog** instead of **Dispatch now** to queue a task without
+it in a tab. Choose **Add to backlog** instead of **Dispatch now** to shelve a task without
 launching it yet.
 
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
@@ -285,7 +291,7 @@ Set `FLEET_CLAUDE_BIN` / `FLEET_CODEX_BIN` if the agent CLI isn't on the daemon'
 Click **Roundup** for a one-look snapshot of the whole fleet, assembled from the same live
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
 gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
-and **recent outcomes**. Dispatch a queued task or drop it right from the panel, and **Mark
+and **recent outcomes**. Dispatch a backlog task or drop it right from the panel, and **Mark
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
@@ -353,6 +359,78 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
+Only one worker drives the fleet at a time. `npm run foreman` twice is safe: the second
+process acquires no **lease** and idles as a standby, taking over automatically if the
+leader dies. That matters because two workers would double-answer a prompt - or, with work
+queues below, type the same work instruction into a live agent twice.
+
+### The cheap tier
+
+Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
+it and spends the big model only where judgment is actually required. **Tier 0** is pure code
+and costs nothing: a plan/diff/gate review is always yours to approve, so it's disposed with a
+Purpose and no model call at all. **Tier 1** is a cheap router (Haiku) that reads a trimmed
+transcript and *buckets* the ask rather than solving it. Only the genuine judgment calls route
+up to the full **Tier 2** review, which is unchanged.
+
+The tier is **asymmetric on purpose**. It may hand a session back to you (skip) or ask you
+(escalate) freely, but it may auto-answer only one tightly bounded category - routine,
+non-destructive access - and that answer flows through the *same* mode + allowlist +
+auto-approve gate the full reviewer's answers do, so it can never send under a looser config
+than Opus would. Two code backstops the router cannot override sit behind it: the destructive
+denylist above forces an escalation, and low confidence routes up.
+
+Pick the posture with the **Cheap tier** control in the popover:
+
+| Cheap tier | What it does |
+|------|--------------|
+| **shadow** (default) | runs the cheap tier *alongside* the full review, acts on the **full review**, and logs every divergence - so its accuracy is measured before you trust it |
+| **on** | the cheap tier disposes the easy cases; the full review fires only on route-up |
+| **off** | every new prompt gets a full review (the pre-tier behavior) |
+
+The worker log is the audit surface for the rollout: every acted session logs the tier that
+decided it (`[tier 2] answer/access -> answered (sent)`), and shadow mode adds a divergence line
+per session (`shadow cheap-over-eager (cheap=… opus=…)`). `cheap-over-eager` - the cheap tier
+would have answered where Opus would not - is the one to watch before flipping to **on**.
+
+## Work queues (load a session up and walk away)
+
+Foreman above is *reactive* - it answers what a blocked session is asking. A **work queue**
+is the proactive half: queue a batch of work for one specific session, and Foreman feeds it
+in one item at a time, in the order you authored, checking each one before releasing the
+next.
+
+Open a card and use the **Work queue** panel: type an intent, **Add**, repeat. Items are
+drag-reorderable, editable, and removable while they wait. Then walk away. For each item
+Foreman:
+
+1. waits for the session to actually go **idle and settle** (not just look idle);
+2. **delivers** the intent as a single bracketed paste (so a multi-line prompt doesn't
+   submit halfway through);
+3. waits for the agent to finish, then **verifies** the work in a fresh tool-less
+   `claude -p` - reading the item's own diff and transcript against the repo's `AGENTS.md`
+   / `CLAUDE.md`;
+4. if something's genuinely missing, hands the **specific gaps** back to the agent to fix
+   and re-checks - escalating to you only once an issue looks beyond it;
+5. releases the next item.
+
+When the queue drains it asks whether to open a PR and run no-mistakes. It always **asks**;
+it never launches those itself.
+
+**Verification is evidence-only by design.** It reads the diff and the transcript - it does
+not run tests. `/no-mistakes` remains the gate that actually executes things; Foreman's job
+here is the narrower question no pipeline answers: *was the thing you asked for actually
+done?* Gaps carry a severity, and only **blocking** ones send the agent back - a style nit
+lands as advisory, shows on the card, and never costs a round. Two knobs in the Foreman
+popover bound it: **fix attempts per issue** (default 3) and **max fix rounds per item**
+(default 10, the hard stop).
+
+Sends obey the same gate as everything else: dry-run **drafts** each item and waits for your
+**Approve**, and live sends only happen in allowlisted repos. Verification is read-only, so
+it runs in any mode - you see Foreman's judgment before it ever types. A queue needs a
+hook-instrumented Claude session (there's no completion signal otherwise), and the panel
+says so rather than letting you queue work that can't run.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - select a card with the arrow keys and act on it
@@ -370,12 +448,17 @@ without reaching for the mouse:
 | <kbd>s</kbd> | Send a message to the selected session | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
+| <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
+| <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
 **Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
 Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
-(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd>). Bindings persist per machine,
+(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
+<kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
+plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
+(<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
 them) to its default. The arrow keys and <kbd>Esc</kbd> drive grid navigation and can't be
 reassigned.
@@ -399,8 +482,20 @@ step aside while a run is parked, where the gate line already conveys that state
 When a run is parked at a gate you can **approve / fix / skip** it right there;
 those map to `no-mistakes axi respond --action …` (fix lets you pick findings and
 add guidance). Approve and skip confirm first since they advance the pipeline
-toward pushing your branch. Set `NOMISTAKES_BIN` if the binary isn't on the
-daemon's PATH.
+toward pushing your branch.
+
+Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>R</kbd>) also
+**retires the run the card was showing**, clearing the strip and its narration for
+good. The reset throws away the very work that run validated, but `axi status` keeps
+reporting it for the branch long after - a reset moves the branch *pointer*, not the
+branch *name* - so simply clearing the strip wouldn't hold: the next poll would put
+it straight back. The dismissal is remembered per run, so a **new** run on the same
+branch decorates the card again, and it's scoped to the checkout that was wiped
+(worktree root + branch): a session sharing that worktree clears too, while a session
+on the same branch in a *different* worktree keeps its strip, its work still being on
+disk. A reset that fails leaves the strip alone.
+
+Set `NOMISTAKES_BIN` if the binary isn't on the daemon's PATH.
 
 ## Isolated worktrees per session (treehouse)
 
@@ -457,6 +552,9 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | Foreman reviewer: Claude CLI path override |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned |
+| `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
+| `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
+| `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 
 > **Upgrading from `HARNESS_*`?** The old `HARNESS_*` env names are still honored as
 > a fallback, and an existing `~/.ai-harness` state dir is kept in place (the new
@@ -486,4 +584,4 @@ it via DNS-rebinding - a defense that matters now that dispatch can launch agent
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
 and MCP ingress is authenticated with a per-machine token in `~/.fleet-control/token`
 so other local processes can't spoof session or task state. Session and task
-actions (send / focus / kill, dispatch / cancel / complete) are localhost-only.
+actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.

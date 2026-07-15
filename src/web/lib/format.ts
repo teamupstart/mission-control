@@ -1,3 +1,4 @@
+import { runInFlight } from "@shared/session.ts";
 import type { PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
@@ -22,6 +23,21 @@ export function uptime(startedAt: number | null): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `up ${h}h`;
   return `up ${Math.floor(h / 24)}d`;
+}
+
+/**
+ * A span of time for a ticking clock: "42s", "3m 07s", "2h 09m". Always carries
+ * two units once past a minute, and zero-pads the smaller one, so the text neither
+ * changes width nor stalls between ticks the way a rounded "3m" would.
+ */
+export function duration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  return `${Math.floor(h / 24)}d ${String(h % 24).padStart(2, "0")}h`;
 }
 
 export type ContextTone = "ok" | "warn" | "high";
@@ -68,6 +84,13 @@ export interface StateDisplay {
  * Map a session to a badge label + tone. Non-instrumented sessions can't report
  * precise state, so they render as a neutral "running" rather than pretending to
  * know whether the agent is busy or idle.
+ *
+ * Mirrors reportBucket's precedence (see src/shared/session.ts): a session whose
+ * agent backgrounded a no-mistakes run and ended its turn reads "validating"
+ * rather than "idle", both because it isn't idle and because the badge would
+ * otherwise contradict the run's live progress in the strip right below it. The
+ * strip already brands itself "no-mistakes", so the badge names the agent's own
+ * state instead of repeating it.
  */
 export function stateDisplay(session: Session): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
@@ -75,11 +98,14 @@ export function stateDisplay(session: Session): StateDisplay {
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
   }
-  if (!session.instrumented) return { label: "running", tone: "neutral" };
+  const validating: StateDisplay = { label: "validating", tone: "working" };
+  if (!session.instrumented) {
+    return runInFlight(session) ? validating : { label: "running", tone: "neutral" };
+  }
   const map: Record<SessionState, StateDisplay> = {
     starting: { label: "starting", tone: "working" },
     working: { label: "working", tone: "working" },
-    idle: { label: "idle", tone: "idle" },
+    idle: runInFlight(session) ? validating : { label: "idle", tone: "idle" },
     awaiting_input: { label: "needs input", tone: "attention" },
     awaiting_review: { label: "needs review", tone: "attention" },
     exited: { label: "exited", tone: "exited" },
@@ -107,4 +133,35 @@ const MODE_DISPLAY: Record<PermissionMode, PermissionModeDisplay> = {
 /** How to render a session's permission mode, or null when it's unknown. */
 export function permissionModeDisplay(mode: PermissionMode | null): PermissionModeDisplay | null {
   return mode ? MODE_DISPLAY[mode] : null;
+}
+
+/**
+ * The modes the picker offers, in Claude's own Shift+Tab cycle order - the list
+ * reads in the same order as the keystroke it replaces.
+ *
+ * `dontAsk` is deliberately absent: it's settable only at startup and Shift+Tab
+ * never reaches it, so offering it would promise a walk that can't arrive. It
+ * still renders on the chip when a session was started in it.
+ *
+ * `bypassPermissions` and `auto` are listed but aren't available everywhere -
+ * they enter the cycle only behind a launch flag / account support the daemon
+ * can't see. Picking one the session lacks is harmless: the walk goes all the way
+ * around, lands back where it started, and says so.
+ */
+export const PICKABLE_MODES: readonly PermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "auto",
+];
+
+/**
+ * True when a session can be renamed: renaming drives its tmux session / wezterm
+ * tab, so it needs one of those handles, and a dead session has nothing to rename.
+ * Shared by the clickable card title, the command bar's keycap, and the hotkey gate
+ * so the rule can't drift between them.
+ */
+export function canRenameSession(s: Pick<Session, "state" | "tmux" | "wezterm">): boolean {
+  return s.state !== "exited" && Boolean(s.tmux || s.wezterm);
 }

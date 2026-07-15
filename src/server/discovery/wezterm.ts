@@ -97,27 +97,58 @@ export async function spawnWeztermTab(argv: string[], title: string): Promise<nu
   if (res.code !== 0) return null;
   const paneId = Number(res.stdout.trim());
   if (!Number.isInteger(paneId)) return null;
-  if (title) await weztermCli(bin, ["set-tab-title", "--pane-id", String(paneId), title]);
+  if (title) await setWeztermTabTitle(paneId, title);
   return paneId;
 }
 
 /**
- * Find the wezterm pane that already hosts a tmux client for `session`, so Focus
- * can raise that tab instead of opening a new one. A wezterm pane running
- * `tmux attach` shares its tty with the tmux client, so we match on that shared
- * tty (tmux reports it as `/dev/ttysNN`, wezterm strips the `/dev/`). Returns
- * the first match (deterministic in input order), or null.
+ * Rename the tab a pane lives in by setting its explicit tab title, the value
+ * `wezterm cli list` reports back as `tab_title` and discovery reads as the card
+ * name. This is the same override `spawnWeztermTab` applies to a fresh tab.
+ *
+ * `--` ends flag parsing so a title like "-wip" is read as the title rather than
+ * as a flag bundle.
+ */
+export async function setWeztermTabTitle(paneId: number, title: string): Promise<RunResult> {
+  const bin = resolveWeztermBin();
+  return weztermCli(bin, ["set-tab-title", "--pane-id", String(paneId), "--", title]);
+}
+
+/**
+ * Find every wezterm pane hosting a tmux client for `session`. A wezterm pane
+ * running `tmux attach` shares its tty with the tmux client, so we match on that
+ * shared tty (tmux reports it as `/dev/ttysNN`, wezterm strips the `/dev/`).
+ *
+ * This tty join is the ONLY link between a tmux session and the tab showing it:
+ * the agent inside tmux sits on a tmux *pane* tty while the tab sits on the
+ * *client* tty, so `correlate` - which keys off the agent's tty - never gives a
+ * tmux-hosted session a `wezterm` handle. Anything that needs the visible tab
+ * (Focus raising it, Rename retitling it) has to come through here.
+ *
+ * Returns matches in input order, so callers wanting just one get a
+ * deterministic pick.
+ */
+export function findSessionHostPanes(
+  session: string,
+  clients: { tty: string; session: string }[],
+  panes: WeztermPane[],
+): WeztermPane[] {
+  const ttys = new Set(
+    clients.filter((c) => c.session === session).map((c) => c.tty.replace(/^\/dev\//, "")),
+  );
+  return panes.filter((p) => p.tty && ttys.has(p.tty));
+}
+
+/**
+ * The first wezterm pane hosting a tmux client for `session`, so Focus can raise
+ * that tab instead of opening a new one. Null when no tab hosts it.
  */
 export function findSessionHostPane(
   session: string,
   clients: { tty: string; session: string }[],
   panes: WeztermPane[],
 ): WeztermPane | null {
-  const ttys = new Set(
-    clients.filter((c) => c.session === session).map((c) => c.tty.replace(/^\/dev\//, "")),
-  );
-  for (const p of panes) if (p.tty && ttys.has(p.tty)) return p;
-  return null;
+  return findSessionHostPanes(session, clients, panes)[0] ?? null;
 }
 
 /** Convert wezterm's `file://host/path` cwd URL to a plain filesystem path. */

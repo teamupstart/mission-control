@@ -11,7 +11,13 @@ import {
   type Fleet,
 } from "../src/web/lib/alerts.ts";
 import { chimeGate } from "../src/web/lib/chime.ts";
-import type { NmRunSummary, Session, SessionState, Task } from "../src/shared/types.ts";
+import type {
+  NmRunSummary,
+  Session,
+  SessionQueueSummary,
+  SessionState,
+  Task,
+} from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -22,6 +28,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     state: "working" as SessionState,
     cwd: null,
     gitBranch: null,
+    gitRoot: null,
     nomistakesGated: false,
     nomistakesNarration: null,
     pid: 1,
@@ -32,6 +39,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
+    hooksSeen: true,
     activity: null,
     startedAt: null,
     firstSeen: 0,
@@ -47,6 +55,8 @@ function mkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    queue: null,
+    orphanedQueue: null,
     ...over,
   };
 }
@@ -102,9 +112,11 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   assert.equal(r[0]?.body, "2 to review");
 
   const gate: NmRunSummary = {
-    id: "run-gate",
+    id: "01RUN_GATE",
     status: "running",
     branch: "x",
+    startedAt: null,
+    endedAt: null,
     awaitingAgent: "parked 1m",
     findingsSummary: null,
     gateStep: "review",
@@ -164,6 +176,37 @@ test("idle + task-done alerts are AFK-only", () => {
   assert.ok(r.every((a) => a.severity === "info"));
 });
 
+test("backgrounding a no-mistakes run is not 'went idle'", () => {
+  // The AFK alert fires on a working -> idle bucket transition. An agent that
+  // backgrounds its no-mistakes run and ends its turn goes `working` -> `idle` in
+  // hook state, but it hasn't finished a burst of work and it isn't waiting on
+  // you - the run is still going and will re-invoke it. Alerting here trains you
+  // to ignore the alert that matters.
+  const running: NmRunSummary = {
+    id: "01RUN_BACKGROUNDED",
+    status: "running",
+    branch: "feature/x",
+    startedAt: null,
+    endedAt: null,
+    awaitingAgent: null,
+    findingsSummary: null,
+    gateStep: null,
+    gateSummary: null,
+    gateRisk: null,
+    steps: [{ step: "review", status: "running", findings: 0 }],
+    findings: [],
+    outcome: null,
+  };
+  const driving = mkSession({ id: "a", state: "working", nomistakes: running });
+  const backgrounded = mkSession({ id: "a", state: "idle", nomistakes: running });
+  assert.equal(detectAlerts(fleet([driving]), fleet([backgrounded]), AFK).length, 0);
+
+  // Once the run finishes and the agent is genuinely parked, it does fire.
+  const finished = mkSession({ id: "a", state: "idle", nomistakes: { ...running, status: "completed" } });
+  const r = detectAlerts(fleet([driving]), fleet([finished]), AFK);
+  assert.deepEqual(r.map((a) => a.kind), ["idle"]);
+});
+
 test("summarizeAlerts lists titles and caps the overflow", () => {
   const a = (title: string): Alert => ({
     id: title, kind: "needs-input", title, body: "", sessionId: null, severity: "attention",
@@ -189,7 +232,7 @@ test("hasReportable is false for an empty/all-exited fleet, true when there's ac
   assert.equal(hasReportable(fleet([])), false);
   assert.equal(hasReportable(fleet([mkSession({ state: "exited" })])), false);
   assert.equal(hasReportable(fleet([mkSession({ state: "idle" })])), true);
-  assert.equal(hasReportable(fleet([], [mkTask({ status: "queued" })])), true);
+  assert.equal(hasReportable(fleet([], [mkTask({ status: "backlog" })])), true);
   assert.equal(hasReportable(fleet([], [mkTask({ status: "done" })])), false);
 });
 
@@ -204,7 +247,7 @@ test("chimeGate rate-limits, but lets an urgent tone cut through a recent info c
   assert.equal(chimeGate(400, 0, "attention", "info"), true);
 });
 
-test("digestLine counts sessions by bucket and includes queued tasks", () => {
+test("digestLine counts sessions by bucket and includes backlog tasks", () => {
   const line = digestLine(
     fleet(
       [
@@ -213,8 +256,86 @@ test("digestLine counts sessions by bucket and includes queued tasks", () => {
         mkSession({ id: "3", state: "working" }),
         mkSession({ id: "4", state: "idle" }),
       ],
-      [mkTask({ id: "q", status: "queued" })],
+      [mkTask({ id: "q", status: "backlog" })],
     ),
   );
-  assert.equal(line, "1 need you · 2 working · 1 idle · 1 queued");
+  assert.equal(line, "1 need you · 2 working · 1 idle · 1 in backlog");
+});
+
+// ---- the work queue's two causes ----
+
+function mkQueue(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary {
+  return {
+    openCount: 1,
+    totalCount: 1,
+    inFlightState: null,
+    inFlightIntent: null,
+    round: 0,
+    blockingGaps: 0,
+    escalatedCount: 0,
+    drained: false,
+    wrapupAskedAt: null,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+test("an item escalating alerts once, and a SECOND escalation alerts again", () => {
+  // Edge-triggered on the COUNT rising rather than on `escalatedCount > 0`: the
+  // latter would re-fire on every tick for the life of the row, and a queue that is
+  // driving a batch will sit with a finished escalation in it for a long time.
+  const before = mkSession({ id: "a", queue: mkQueue() });
+  const stuck = mkSession({ id: "a", queue: mkQueue({ escalatedCount: 1 }) });
+
+  const first = detectAlerts(fleet([before]), fleet([stuck]), WATCHING);
+  assert.equal(first.length, 1);
+  assert.equal(first[0]?.kind, "foreman");
+  assert.equal(first[0]?.id, "queue:a");
+  assert.equal(first[0]?.severity, "attention");
+
+  // Same count next tick -> quiet.
+  assert.equal(detectAlerts(fleet([stuck]), fleet([stuck]), WATCHING).length, 0);
+
+  // A second item escalating is a second thing needing you, so it speaks again.
+  const worse = mkSession({ id: "a", queue: mkQueue({ escalatedCount: 2 }) });
+  assert.equal(detectAlerts(fleet([stuck]), fleet([worse]), WATCHING).length, 1);
+});
+
+test("a queue's first sight with an escalation already in it still alerts", () => {
+  // The same first-sight convention the sibling `review:` alert uses: a session that
+  // appears (or that the panel sees for the first time) already needing you must not
+  // be silently swallowed just because there is no `before` to compare against.
+  const stuck = mkSession({ id: "a", queue: mkQueue({ escalatedCount: 1 }) });
+  const r = detectAlerts(fleet([]), fleet([stuck]), WATCHING);
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.id, "queue:a");
+});
+
+test("the drain-time wrap-up ask alerts once, when it first appears", () => {
+  // `wrapupAskedAt` is stamped once and then stays, so this has to trigger on it
+  // APPEARING - not on it being set, which is true forever afterwards.
+  const draining = mkSession({ id: "a", queue: mkQueue({ openCount: 0, drained: true }) });
+  const asked = mkSession({
+    id: "a",
+    queue: mkQueue({ openCount: 0, drained: true, wrapupAskedAt: 123 }),
+  });
+
+  const r = detectAlerts(fleet([draining]), fleet([asked]), WATCHING);
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.id, "wrapup:a");
+  assert.equal(r[0]?.kind, "foreman");
+
+  assert.equal(detectAlerts(fleet([asked]), fleet([asked]), WATCHING).length, 0);
+});
+
+test("an escalation and a wrap-up ask on one tick are two separate alerts", () => {
+  // They are different questions - "this item is stuck" and "the batch is done, ship
+  // it?" - so neither may swallow the other.
+  const before = mkSession({ id: "a", queue: mkQueue() });
+  const both = mkSession({
+    id: "a",
+    queue: mkQueue({ escalatedCount: 1, wrapupAskedAt: 123, drained: true }),
+  });
+  const r = detectAlerts(fleet([before]), fleet([both]), WATCHING);
+  assert.deepEqual(r.map((a: Alert) => a.id).sort(), ["queue:a", "wrapup:a"]);
 });

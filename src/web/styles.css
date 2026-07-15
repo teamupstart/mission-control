@@ -327,6 +327,112 @@ body {
   color: var(--dim);
 }
 
+/* Clickable title: looks like the h2 it sits inside, reveals a pencil + underline
+   on hover to advertise that it opens the inline rename editor. The button nests
+   inside the h2 (never the reverse - a heading isn't phrasing content, and
+   role=button makes its children presentational, dropping the heading from the
+   accessibility tree). */
+.card-title-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+/* The h2 clips, but text-overflow doesn't reach through the flex button, so the
+   name carries its own ellipsis. */
+.card-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rename-pencil {
+  flex: none;
+  font-size: 11px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.card-title-edit:hover .rename-pencil,
+.card-title-edit:focus-visible .rename-pencil {
+  opacity: 1;
+}
+.card-title-edit:hover .card-title-name {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--fg) 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+/* Inline rename editor - the text box that replaces the title. */
+.rename-edit {
+  flex: 1;
+  min-width: 0;
+}
+.rename-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 640;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border));
+  border-radius: 7px;
+  padding: 3px 8px;
+  outline: none;
+}
+.rename-input:focus {
+  border-color: var(--working);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 22%, transparent);
+}
+.rename-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.rename-btn:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.rename-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rename-save {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.rename-cancel {
+  color: var(--dim);
+}
+.rename-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--exited);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -589,6 +695,28 @@ body {
   color: var(--muted);
   font-size: 11px;
   font-weight: 520;
+}
+/* The run's ticking wall-clock duration, directly under the head's findings summary. */
+.nm-elapsed {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.nm-elapsed-glyph {
+  color: var(--dim);
+  font-size: 10.5px;
+}
+.nm-elapsed-live .nm-elapsed-glyph {
+  color: var(--working);
+}
+.nm-elapsed-time {
+  color: var(--fg);
+  font-weight: 560;
+  /* Even digit widths, so a ticking second never jiggles the line. */
+  font-variant-numeric: tabular-nums;
 }
 .nm-stage {
   font-size: 11.5px;
@@ -1139,11 +1267,20 @@ body {
 .card-foot {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
+  row-gap: 5px;
   font-size: 11.5px;
   color: var(--muted);
   padding-top: 3px;
   border-top: 1px solid var(--border-soft);
+}
+/* Every atom here is a short label or chip, so the row wraps *between* them. Left
+   to shrink, a long pid or a 3-char uptime would instead break one mid-phrase and
+   stack "Claude / Code" two lines tall. */
+.card-foot > *:not(.spacer) {
+  flex: none;
+  white-space: nowrap;
 }
 .agent-name {
   color: var(--muted);
@@ -1198,9 +1335,17 @@ body {
   font-weight: 560;
   padding: 1px 6px;
   border-radius: 5px;
+  /* Must stay ahead of the tone rules below, which override it. The chip renders
+     as a <button> (the mode picker's trigger), and a button with no background of
+     its own falls back to the UA's grey ButtonFace - which `manual`, the one tone
+     that sets no background, would otherwise pick up as a grey blob. */
+  background: transparent;
 }
+/* `manual` carries no tint, so its text is the whole chip - it sits at --muted
+   (matching the `Claude Code` label beside it) rather than the --dim used for
+   incidental metadata. Still the quietest mode, just not unreadable. */
 .mode-default {
-  color: var(--dim);
+  color: var(--muted);
 }
 .mode-accept {
   color: var(--working);
@@ -1213,6 +1358,148 @@ body {
 .mode-bypass {
   color: #e5675f;
   background: color-mix(in oklab, #e5534b 16%, transparent);
+}
+/* The chip doubles as the mode picker's trigger. It has to keep reading as a chip
+   (the footer is a dense row of them) while still inviting a click, so the affordance
+   is a small caret plus a hover lift rather than button chrome. */
+.mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  /* No `background` here on purpose: it would land after the tone rules and flatten
+     every chip's color. The base `.mode` clears the UA default instead. */
+  appearance: none;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 560;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.mode-btn:hover,
+.mode-btn.open {
+  border-color: color-mix(in oklab, currentColor 38%, transparent);
+}
+.mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.mode-caret {
+  font-size: 8px;
+  line-height: 1;
+  opacity: 0.7;
+  transform: translateY(-1px);
+}
+.mode-btn.open .mode-caret {
+  transform: translateY(-1px) rotate(180deg);
+}
+
+/* ---- mode picker popover ---- */
+/* `.alert-pop` is written to hang off a positioned parent: `position: absolute;
+   top: calc(100% + 8px); right: 0`. This popover is a body-level portal placed from
+   JS instead, so all four have to be neutralized here. The inline style sets `left`
+   plus exactly ONE of top/bottom (depending on which way it opens), so whichever it
+   leaves alone must resolve to `auto` - inheriting `.alert-pop`'s `top` alongside an
+   inline `bottom` pins the box to both edges at once and crushes it to a sliver.
+
+   Qualified with `.alert-pop` on purpose: a bare `.mode-pop` ties for specificity
+   and would lose to whichever rule sits later in this file - which it did, since
+   `.alert-pop` is defined ~1500 lines below here. */
+.alert-pop.mode-pop {
+  position: fixed;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  /* A short window can leave less room than the list needs; scroll rather than
+     overflow off the top edge. */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  gap: 2px;
+  padding: 6px;
+}
+.mode-opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.mode-opt:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--fg) 7%, transparent);
+}
+.mode-opt:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.mode-opt.active {
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+/* Reuses the `.mode-<tone>` colors as a swatch, so an option's dot matches the
+   chip that option would produce. */
+.mode-opt-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+.mode-opt-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.mode-opt-label {
+  font-size: 12px;
+  font-weight: 560;
+}
+.mode-opt-desc {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--dim);
+}
+.mode-opt-check {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--accent);
+}
+.mode-opt-spin {
+  margin-left: auto;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in oklab, var(--fg) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mode-spin 0.7s linear infinite;
+}
+@keyframes mode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-opt-spin {
+    animation-duration: 2s;
+  }
+}
+/* A failed walk explains itself here rather than closing the popover on a lie. */
+.mode-pop-err {
+  margin: 4px 6px 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #e5675f;
 }
 .seen {
   font-variant-numeric: tabular-nums;
@@ -3209,4 +3496,380 @@ kbd {
   .tooltip {
     animation: none;
   }
+}
+
+/* ---- work queue (the batch of work queued for one session) ---- */
+
+.work-queue {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--working);
+  border-radius: 10px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wq-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--bg);
+  background: color-mix(in oklab, var(--working) 78%, var(--fg));
+}
+.wq-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.wq-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  counter-reset: wq;
+}
+.wq-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.wq-item.dragging {
+  opacity: 0.45;
+}
+/* The item Foreman is actually driving reads as live; the rest as waiting. */
+.wq-item.wq-sending,
+.wq-item.wq-awaiting_pickup,
+.wq-item.wq-in_progress,
+.wq-item.wq-verifying {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.wq-item.wq-proposed {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+}
+.wq-item.wq-escalated {
+  border-color: color-mix(in oklab, var(--attention) 60%, var(--border));
+}
+.wq-item.wq-verified {
+  opacity: 0.62;
+}
+.wq-item.wq-cancelled {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.wq-grip {
+  cursor: grab;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1.5;
+  user-select: none;
+}
+.wq-grip:active {
+  cursor: grabbing;
+}
+.wq-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.wq-intent {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wq-edit {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wq-controls,
+.wq-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wq-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.wq-state {
+  font-weight: 600;
+  color: var(--muted);
+}
+.wq-state-in_progress,
+.wq-state-verifying,
+.wq-state-sending,
+.wq-state-awaiting_pickup {
+  color: var(--working);
+}
+.wq-state-proposed {
+  color: var(--attention);
+}
+.wq-state-verified {
+  color: var(--idle);
+}
+.wq-state-escalated {
+  color: var(--attention);
+}
+.wq-round {
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+.wq-escalation {
+  color: var(--attention);
+  line-height: 1.4;
+}
+.wq-gaps {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wq-gap {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.wq-gap-kind {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.wq-gap-blocking .wq-gap-kind {
+  color: var(--bg);
+  background: var(--attention);
+}
+/* Advisory gaps are visibly quieter: they never drive a fix round. */
+.wq-gap-advisory {
+  color: var(--dim);
+}
+.wq-gap-advisory .wq-gap-kind {
+  color: var(--dim);
+  border: 1px solid var(--border);
+}
+.wq-strikes {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--attention);
+}
+.wq-verdict {
+  margin: 0;
+  width: 100%;
+  color: var(--idle);
+  line-height: 1.45;
+}
+/* The exact prompt a drafted item would type - what Approve consents to. Collapsed
+   by default: a fix prompt is long, and it must not bury the queue it sits in. */
+.wq-payload {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 11.5px;
+}
+.wq-payload > summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+.wq-payload > summary:hover {
+  color: var(--fg);
+}
+/* Spell the marker out: the platform default renders flush against the label, and
+   its glyph differs per OS. */
+.wq-payload > summary::marker {
+  content: "▸  ";
+}
+.wq-payload[open] > summary::marker {
+  content: "▾  ";
+}
+.wq-payload-text {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wq-add {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.wq-add .field-input {
+  flex: 1;
+  resize: vertical;
+}
+.wq-hint,
+.wq-blocked {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.wq-blocked {
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.wq-hint code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+.wq-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+.wq-orphan,
+.wq-wrapup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in oklab, var(--attention) 40%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--attention) 6%, var(--panel));
+}
+.wq-orphan p,
+.wq-wrapup p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.wq-wrapup-title {
+  font-weight: 600;
+  color: var(--fg) !important;
+}
+.wq-wrapup .field-input {
+  resize: vertical;
+}
+
+/* ---- collapsed-card queue chip ---- */
+
+.queue-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.queue-chip:hover {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+}
+.queue-chip.qc-sending,
+.queue-chip.qc-awaiting_pickup,
+.queue-chip.qc-in_progress,
+.queue-chip.qc-verifying {
+  border-left-color: var(--working);
+}
+.queue-chip.qc-proposed {
+  border-left-color: var(--attention);
+}
+.qc-count {
+  flex: none;
+  font-weight: 600;
+  color: var(--fg);
+}
+.qc-intent {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qc-round {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--attention);
+}
+
+/* ---- foreman queue knobs ---- */
+
+.foreman-knobs {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.foreman-knobs legend {
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.foreman-knobs input[type="number"] {
+  width: 52px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.foreman-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--danger);
 }

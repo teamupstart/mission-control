@@ -18,6 +18,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     state: "working",
     cwd: null,
     gitBranch: null,
+    gitRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
@@ -27,6 +28,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: false,
+    hooksSeen: false,
     activity: null,
     startedAt: null,
     firstSeen: 0,
@@ -43,6 +45,8 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    queue: null,
+    orphanedQueue: null,
     ...p,
   };
 }

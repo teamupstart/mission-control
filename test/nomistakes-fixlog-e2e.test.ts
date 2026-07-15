@@ -16,6 +16,7 @@ const { ensureToken } = await import("../src/server/auth.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { ReviewManager } = await import("../src/server/reviews.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { pollFixLogs } = await import("../src/server/nomistakes.ts");
 const { forgetFixLog } = await import("../src/server/nomistakes-fixes.ts");
@@ -61,6 +62,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     nameSource: "tmux",
     cwd: "/repo",
     gitBranch: "main",
+    gitRoot: null,
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",
@@ -79,7 +81,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
 test("the fix log lists no-mistakes commits, with their stats, newest first", async () => {
   const clone = mkOriginAndClone();
   const registry = new Registry();
-  buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+  buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
 
   commit(clone, "a.ts", "one\n", "feat: my own work");
   commit(clone, "b.ts", "x\ny\n", "no-mistakes(review): fix(queue): reject bad names");
@@ -112,7 +114,7 @@ test("the fix log lists no-mistakes commits, with their stats, newest first", as
 test("pressing Reset empties the fix log, and polling can't bring it back", async () => {
   const clone = mkOriginAndClone();
   const registry = new Registry();
-  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
 
   commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing");
   registry.applyDiscovery([disco({ syntheticId: "sess-rst", cwd: clone })]);
@@ -146,7 +148,7 @@ test("pressing Reset empties the fix log, and polling can't bring it back", asyn
 test("a failed reset leaves the fix log alone", async () => {
   const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-fixlog-nogit-")));
   const registry = new Registry();
-  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
 
   registry.applyDiscovery([disco({ syntheticId: "sess-bad", cwd: notRepo, pid: 99 })]);
   registry.applyNomistakesFixes("sess-bad", [
@@ -170,7 +172,7 @@ test("a failed reset leaves the fix log alone", async () => {
 test("the detail route returns one fix, and 404s for a sha that isn't one", async () => {
   const clone = mkOriginAndClone();
   const registry = new Registry();
-  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
 
   commit(clone, "b.ts", "x\ny\nz\n", "no-mistakes(review): fix the guard");
   registry.applyDiscovery([disco({ syntheticId: "sess-det", cwd: clone })]);
@@ -199,7 +201,7 @@ test("the detail route returns one fix, and 404s for a sha that isn't one", asyn
 test("?commit= isolates one fix and doesn't leak the commits after it", async () => {
   const clone = mkOriginAndClone();
   const registry = new Registry();
-  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
 
   commit(clone, "first.ts", "first\n", "no-mistakes(review): the fix we want");
   commit(clone, "second.ts", "second\n", "no-mistakes(lint): a later fix");
@@ -227,7 +229,7 @@ test("?commit= isolates one fix and doesn't leak the commits after it", async ()
 test("?commit= reports an unreachable sha rather than guessing", async () => {
   const clone = mkOriginAndClone();
   const registry = new Registry();
-  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry));
+  const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
   registry.applyDiscovery([disco({ syntheticId: "sess-gone", cwd: clone })]);
 
   const res = await app.request("/api/sessions/sess-gone/diff?commit=deadbee", { headers: LOOPBACK });

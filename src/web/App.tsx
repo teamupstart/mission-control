@@ -17,7 +17,7 @@ import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { stateDisplay, type Tone } from "./lib/format.ts";
+import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 
 // Sort priority: things needing you first, then busy, then calm, then
 // unconfirmed (uninstrumented "running"), then gone.
@@ -50,6 +50,9 @@ export function App(): React.JSX.Element {
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
+  // Which card's title is being edited (its inline rename box is open). App owns
+  // this so the rename shortcut and a title click drive the same one card.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
@@ -121,8 +124,13 @@ export function App(): React.JSX.Element {
     [pendingReviews],
   );
   const foremanMode = foreman.config?.mode ?? "dry-run";
+  const foremanAllowlist = foreman.config?.repoAllowlist;
+  // The shipped default is OFF, and the worker short-circuits its whole loop on it -
+  // so a card that reports only the MODE would explain a queue that isn't running by
+  // describing what Foreman would do if it were running at all.
+  const foremanEnabled = foreman.config?.enabled ?? false;
 
-  const backlogCount = useMemo(() => tasks.filter((t) => t.status === "queued").length, [tasks]);
+  const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -141,6 +149,14 @@ export function App(): React.JSX.Element {
 
   // Drop selection / collapse / close the diff if the session disappears
   // (exited + reaped, etc.).
+  //
+  // The rename editor lives inside a card, so it reconciles against `visible` -
+  // the list the grid actually renders - rather than every known session. A card
+  // that leaves the filter (its status label is part of the haystack, so an agent
+  // going idle is enough) unmounts its editor without an unmount-time onBlur, and
+  // nothing else would ever clear `renamingId`; the stand-down guard below would
+  // then swallow every grid shortcut for good. The overlay ids stay on `sessions`
+  // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
@@ -149,7 +165,8 @@ export function App(): React.JSX.Element {
       setDiffCommit(null);
     }
     if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
-  }, [sessions, selectedId, expandedId, diffSessionId, resetSessionId]);
+    if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
+  }, [sessions, visible, selectedId, expandedId, diffSessionId, resetSessionId, renamingId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
@@ -193,31 +210,6 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
-      // Ctrl+R hard-resets the selected session's checkout to origin's default
-      // branch and clears its context - a "start this checkout over" chord. Only
-      // fires with a card that has a working dir selected; otherwise we leave
-      // Ctrl+R to the browser (a harmless reload). Held back behind any overlay.
-      if (
-        !typing &&
-        !modalOpen &&
-        !dispatchOpen &&
-        !reportOpen &&
-        !settingsOpen &&
-        !diffSession &&
-        !resetSession &&
-        e.ctrlKey &&
-        !e.metaKey &&
-        !e.altKey &&
-        e.key.toLowerCase() === "r"
-      ) {
-        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
-        if (sel?.cwd) {
-          e.preventDefault();
-          setResetSessionId(sel.id);
-          return;
-        }
-      }
-
       // Roundup toggles whether it's open or closed - held back only while a
       // review/dispatch/settings overlay owns the screen or you're typing.
       if (
@@ -227,6 +219,7 @@ export function App(): React.JSX.Element {
         !diffSession &&
         !settingsOpen &&
         !resetSession &&
+        !renamingId &&
         chord === bindings.roundup
       ) {
         e.preventDefault();
@@ -234,9 +227,18 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      // Stand down while any overlay owns the screen, so grid shortcuts don't
-      // drive a background card behind the panel/modal.
-      if (modalOpen || dispatchOpen || reportOpen || settingsOpen || diffSession || resetSession || typing)
+      // Stand down while any overlay owns the screen (or a card's title is being
+      // edited), so grid shortcuts don't drive a background card behind it.
+      if (
+        modalOpen ||
+        dispatchOpen ||
+        reportOpen ||
+        settingsOpen ||
+        diffSession ||
+        resetSession ||
+        renamingId ||
+        typing
+      )
         return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
@@ -305,6 +307,26 @@ export function App(): React.JSX.Element {
         setDiffSessionId(selectedId);
         return;
       }
+      if (chord === bindings.rename) {
+        if (!selectedId) return;
+        const sel = visible.find((s) => s.id === selectedId);
+        // Only renameable sessions (a live tmux/wezterm pane) open the editor.
+        if (!sel || !canRenameSession(sel)) return;
+        e.preventDefault();
+        setRenamingId(selectedId);
+        return;
+      }
+      // Hard-resets the selected session's checkout to origin's default branch and
+      // clears its context - a "start this checkout over" chord, confirmed first by
+      // ResetModal. Needs a card with a working dir; without one we leave the chord
+      // alone, so the default Ctrl+R still falls through to a harmless browser reload.
+      if (chord === bindings.reset) {
+        const sel = selectedId ? visible.find((s) => s.id === selectedId) : null;
+        if (!sel?.cwd) return;
+        e.preventDefault();
+        setResetSessionId(sel.id);
+        return;
+      }
       const h = handle();
       if (!h) return;
       if (chord === bindings.send) {
@@ -333,6 +355,7 @@ export function App(): React.JSX.Element {
     settingsOpen,
     diffSession,
     resetSession,
+    renamingId,
     toggleExpand,
     bindings,
   ]);
@@ -439,7 +462,12 @@ export function App(): React.JSX.Element {
             onReset={() => setResetSessionId(s.id)}
             registerEl={registerEl}
             registerActions={registerActions}
+            renaming={renamingId === s.id}
+            onRenameStart={() => setRenamingId(s.id)}
+            onRenameClose={() => setRenamingId(null)}
             foremanMode={foremanMode}
+            foremanEnabled={foremanEnabled}
+            foremanAllowlist={foremanAllowlist}
             inputReviewId={inputReviewBySession.get(s.id) ?? null}
             pendingReviewIds={pendingReviewIds}
           />
@@ -520,6 +548,7 @@ export function App(): React.JSX.Element {
             setDiffSessionId(selected.id);
           }}
           onReset={() => setResetSessionId(selected.id)}
+          onRename={() => setRenamingId(selected.id)}
           onDeselect={() => setSelectedId(null)}
         />
       )}
@@ -540,6 +569,7 @@ function CommandBar({
   onAction,
   onDiff,
   onReset,
+  onRename,
   onDeselect,
 }: {
   session: Session;
@@ -549,11 +579,13 @@ function CommandBar({
   onAction: (action: "startSend" | "focusPane" | "cycleMode" | "requestKill") => void;
   onDiff: () => void;
   onReset: () => void;
+  onRename: () => void;
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
   // Permission modes are Claude-only, and cycling one needs a pane to send into.
   const canCycleMode = live && session.agent === "claude" && Boolean(session.tmux || session.wezterm);
+  const canRename = canRenameSession(session);
   const barRef = useRef<HTMLDivElement>(null);
 
   // The bar floats fixed over the bottom of the page, so it hides whatever
@@ -597,6 +629,11 @@ function CommandBar({
                 <kbd>{formatChord(bindings.mode)}</kbd> mode
               </button>
             )}
+            {canRename && (
+              <button className="keycap-btn" onClick={onRename} title="Rename this session's tab">
+                <kbd>{formatChord(bindings.rename)}</kbd> rename
+              </button>
+            )}
             <button className="keycap-btn" onClick={() => onAction("requestKill")}>
               <kbd>{formatChord(bindings.kill)}</kbd> kill
             </button>
@@ -609,7 +646,7 @@ function CommandBar({
         )}
         {live && session.cwd && (
           <button className="keycap-btn" onClick={onReset} title="Reset to origin & clear context">
-            <kbd>⌃R</kbd> reset
+            <kbd>{formatChord(bindings.reset)}</kbd> reset
           </button>
         )}
         <button className="keycap-btn" onClick={onToggleExpand}>

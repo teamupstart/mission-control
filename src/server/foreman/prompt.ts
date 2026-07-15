@@ -1,4 +1,5 @@
 import type { TranscriptMessage } from "@shared/types.ts";
+import { sanitizeGapText } from "./queue-machine.ts";
 
 // Builds the review prompt handed to a fresh `claude -p` per session. This text
 // IS Foreman's judgment contract - the policy from docs/plans/foreman/plan.md,
@@ -18,6 +19,14 @@ export interface ReviewInput {
   question: string;
   transcript: TranscriptMessage[];
   truncated: boolean;
+  /**
+   * The work-queue item Foreman itself commissioned, when the blocked session is
+   * working on one. Without it triage is blind to the queue and the two subsystems
+   * fight: the reviewer can answer "no, don't do that" to a question about the very
+   * item Foreman asked for, or escalate something it could have answered trivially
+   * had it known the intent.
+   */
+  queueItem?: { intent: string; round: number; openGaps: string[] };
 }
 
 /** Per-message text cap so a long turn can't blow up the prompt. */
@@ -68,7 +77,7 @@ one-line rationale. For a permission/menu prompt, reply in natural language ("Ap
 
 /** Assemble the full review prompt for one session. */
 export function buildReviewPrompt(input: ReviewInput): string {
-  const { session, surface, question, transcript, truncated } = input;
+  const { session, surface, question, transcript, truncated, queueItem } = input;
   const head = [
     POLICY,
     "",
@@ -80,6 +89,7 @@ export function buildReviewPrompt(input: ReviewInput): string {
     `activity: ${session.activity ?? "(none)"}`,
     `reply surface: ${surface} (this is how your answer will be delivered to the child)`,
     "",
+    ...(queueItem ? queueItemSection(queueItem) : []),
     "## The pending question",
     question.trim() || "(no explicit question text - infer it from the transcript tail)",
     "",
@@ -98,7 +108,39 @@ export function buildReviewPrompt(input: ReviewInput): string {
   return head.join("\n");
 }
 
-function formatTranscript(messages: TranscriptMessage[]): string {
+/**
+ * Tell the reviewer what Foreman itself asked this session to do, so it answers
+ * *for* the commissioned work rather than second-guessing it.
+ */
+function queueItemSection(item: NonNullable<ReviewInput["queueItem"]>): string[] {
+  const lines = [
+    "## Foreman commissioned this work (IMPORTANT)",
+    "This session is not freelancing: it is working on an item YOU (Foreman) delivered from the",
+    "human's work queue. The human already asked for this, so do not re-litigate whether it should",
+    "happen - answer the question in a way that helps the agent finish it.",
+    "",
+    `The item: ${item.intent.trim()}`,
+  ];
+  if (item.round > 0) {
+    lines.push(`This is fix round ${item.round} - the agent was already sent feedback on it.`);
+  }
+  if (item.openGaps.length > 0) {
+    lines.push("Still outstanding on this item:");
+    // Through `sanitizeGapText`, exactly as the fix-prompt path renders the same
+    // field. This text is model-produced, from a verdict the schema only
+    // LENGTH-clamps - so newlines and control characters survive it - and it is
+    // emitted ABOVE "## The pending question", the heading the reviewer answers. Left
+    // raw, a multi-line detail can close this block and counterfeit that heading, and
+    // in live mode the answer to the forged question is typed into a tool-enabled
+    // child. Flattening to one line is what confines it to the line it was given.
+    for (const g of item.openGaps) lines.push(`- ${sanitizeGapText(g)}`);
+  }
+  lines.push("");
+  return lines;
+}
+
+/** Render a transcript window as `[role] (tools: …) text`, per-message capped. Shared with triage. */
+export function formatTranscript(messages: TranscriptMessage[]): string {
   if (messages.length === 0) return "(transcript unavailable)";
   return messages
     .map((m) => {

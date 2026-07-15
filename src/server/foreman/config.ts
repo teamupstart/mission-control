@@ -1,6 +1,6 @@
 import type { ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
-import type { ForemanConfig, ForemanConfigPatch } from "@shared/protocol.ts";
+import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
 import { reportBucket } from "@shared/session.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { noteKeyFor } from "../registry.ts";
@@ -13,14 +13,32 @@ import type { Registry } from "../registry.ts";
 // holds - so the dashboard's status is honest without the worker pushing it.
 
 const CONFIG_KEY = "foreman";
-/**
- * A worker heartbeat older than this means "not running". It must comfortably
- * exceed one review-with-retry (2 * REVIEW_TIMEOUT_MS) since the worker beats
- * once per session and then blocks on a `claude -p` for the whole review.
- */
-const HEARTBEAT_TTL_MS = 300_000;
+const LEASE_KEY = "foreman.lease";
 
-let lastHeartbeatAt = 0;
+/**
+ * How long a lease survives without a renewal - 3 missed renewals at the worker's
+ * 30s timer. Deliberately NOT tied to how long a tick can take: renewal runs on a
+ * background timer, not from the loop, so the lease means "this worker process is
+ * alive", not "this worker recently finished a session".
+ *
+ * That decoupling is the whole point. The old heartbeat only advanced when the
+ * loop did, and a loop tick can block on a `claude -p` for up to
+ * 2 * REVIEW_TIMEOUT_MS = 240s - which is exactly why the old TTL had to be 300s.
+ * A lease renewed only by loop progress would have to outlive 240s too, so a
+ * "comfortably > one tick" value like 90s would expire MID-VERIFY, a standby would
+ * acquire, and both workers would run - reintroducing the very double-send race
+ * the lease exists to kill. A timer instead renews every 30s regardless of what
+ * the loop is blocked on (a `claude -p` is async I/O, so the event loop is free
+ * throughout), which keeps failover fast at 90s and survives any future timeout
+ * change by construction.
+ */
+export const LEASE_TTL_MS = 90_000;
+
+/** The durable lease, in app_config: who owns the fleet right now, and until when. */
+interface ForemanLease {
+  workerId: string;
+  expiresAt: number;
+}
 
 /** The current config, with schema defaults applied over whatever was stored. */
 export function getForemanConfig(): ForemanConfig {
@@ -34,9 +52,42 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
   return next;
 }
 
-/** The worker calls this each loop tick so the dashboard can show "running". */
-export function recordForemanHeartbeat(now = Date.now()): void {
-  lastHeartbeatAt = now;
+/**
+ * Acquire or renew the worker lease - the mutual exclusion the fleet had none of.
+ *
+ * Before this, `npm run foreman` twice gave two loops, and the heartbeat was a
+ * single module-global timestamp that could not even *detect* a second worker: it
+ * just got beaten twice. For triage the damage was a duplicate answer; for a work
+ * queue it would be a duplicated WORK INSTRUCTION typed into a live agent - which
+ * can duplicate commits or re-run migrations.
+ *
+ * Compare-and-swap on (workerId, expiresAt): acquires when the lease is free or
+ * expired, renews when it's already ours, and reports `leader: false` otherwise.
+ * A non-leader is expected to idle and keep asking, not exit - that's what makes
+ * takeover automatic when the leader crashes or is Ctrl-C'd.
+ */
+export function claimForemanLease(workerId: string, now = Date.now()): ForemanLeaseResult {
+  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  const held = cur && cur.expiresAt > now;
+  if (held && cur.workerId !== workerId) {
+    return { leader: false, expiresAt: cur.expiresAt, holder: cur.workerId };
+  }
+  const next: ForemanLease = { workerId, expiresAt: now + LEASE_TTL_MS };
+  setAppConfig(LEASE_KEY, next);
+  return { leader: true, expiresAt: next.expiresAt, holder: workerId };
+}
+
+/** Release the lease if we hold it, so a standby takes over at once rather than
+ *  waiting out the TTL. Best-effort: a crash just lets the lease expire. */
+export function releaseForemanLease(workerId: string): void {
+  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  if (cur?.workerId === workerId) setAppConfig(LEASE_KEY, { workerId, expiresAt: 0 });
+}
+
+/** True when some worker currently holds a live lease - i.e. a leader is alive. */
+function leaderAlive(now: number): boolean {
+  const cur = getAppConfig<ForemanLease>(LEASE_KEY);
+  return !!cur && cur.expiresAt > now;
 }
 
 /** Live status: config + whether the worker heartbeated + derived queue/counts. */
@@ -62,7 +113,9 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   return {
     enabled: cfg.enabled,
     mode: cfg.mode,
-    running: now - lastHeartbeatAt < HEARTBEAT_TTL_MS,
+    // "A leader heartbeated recently", not "someone beat recently": a standby
+    // worker never acquires the lease, so it can't make this true on its own.
+    running: leaderAlive(now),
     queueDepth,
     counts,
     lastActionAt,

@@ -1,20 +1,24 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import { cwdAllowlisted } from "@shared/foreman.ts";
 import {
+  canRenameSession,
   compactTokens,
   contextTone,
-  permissionModeDisplay,
   relativeTime,
   shortenCwd,
   stateDisplay,
   uptime,
 } from "../lib/format.ts";
+import { api } from "../lib/api.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
+import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
+import { WorkQueue } from "./WorkQueue.tsx";
 
 function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) {
@@ -29,6 +33,14 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
   codex: "Codex",
 };
 
+/**
+ * Whether Foreman may send live in this session's cwd - the SAME predicate the
+ * server decides with (`foremanMayActLive` calls it too), not a copy of it.
+ */
+function allowlisted(cwd: string | null, allowlist: string[] | undefined): boolean {
+  return cwdAllowlisted(cwd, allowlist ?? []);
+}
+
 export function SessionCard({
   session,
   gateNeedsYou = false,
@@ -41,7 +53,12 @@ export function SessionCard({
   onToggleExpand,
   registerEl,
   registerActions,
+  renaming = false,
+  onRenameStart,
+  onRenameClose,
   foremanMode = "dry-run",
+  foremanEnabled = false,
+  foremanAllowlist,
   inputReviewId = null,
   pendingReviewIds,
 }: {
@@ -58,8 +75,19 @@ export function SessionCard({
   onToggleExpand?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
+  /** Whether this card's title is currently in its rename editor (App owns the id). */
+  renaming?: boolean;
+  /** Enter rename mode for this card (click the title, or the rename shortcut). */
+  onRenameStart?: () => void;
+  /** Leave rename mode (saved, cancelled, or the input blurred). */
+  onRenameClose?: () => void;
   /** Current Foreman mode, so an expanded note can show semi-auto controls. */
   foremanMode?: string;
+  /** Whether Foreman is switched on at all - the mode says nothing while it's off. */
+  foremanEnabled?: boolean;
+  /** Repo roots Foreman may send live in, so the queue can be honest about why
+   *  it's only drafting (the allowlist is a prefix match on the repo root). */
+  foremanAllowlist?: string[];
   /** A pending `input` review id for this session (for Foreman's Approve). */
   inputReviewId?: string | null;
   /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
@@ -68,7 +96,7 @@ export function SessionCard({
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
-  const mode = permissionModeDisplay(session.permissionMode);
+  const canRename = canRenameSession(session);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -86,8 +114,29 @@ export function SessionCard({
       <header className="card-head">
         <span className={`agent-dot agent-${session.agent}`} aria-hidden />
         <div className="card-title">
-          <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
-          <span className="name-source">{subtitle(session)}</span>
+          {renaming ? (
+            <RenameEditor session={session} onClose={() => onRenameClose?.()} />
+          ) : canRename ? (
+            <h2>
+              <button
+                type="button"
+                className="card-title-edit"
+                title={`Rename "${session.name}"`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRenameStart?.();
+                }}
+              >
+                <span className="card-title-name">{session.name || "(unnamed)"}</span>
+                <span className="rename-pencil" aria-hidden>
+                  ✎
+                </span>
+              </button>
+            </h2>
+          ) : (
+            <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
+          )}
+          {!renaming && <span className="name-source">{subtitle(session)}</span>}
         </div>
         {session.prUrl && (
           <Tooltip
@@ -223,6 +272,27 @@ export function SessionCard({
         </div>
       )}
 
+      {session.queue && session.queue.openCount > 0 && (
+        <button
+          className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
+          title={
+            session.queue.inFlightIntent
+              ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
+              : "Work queued for this session - expand to see it"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleExpand?.();
+          }}
+        >
+          <span className="qc-count">{session.queue.openCount} queued</span>
+          {session.queue.inFlightIntent && (
+            <span className="qc-intent">{session.queue.inFlightIntent}</span>
+          )}
+          {session.queue.round > 0 && <span className="qc-round">fix {session.queue.round}</span>}
+        </button>
+      )}
+
       {session.activity && <p className="activity">{session.activity}</p>}
 
       {session.nomistakes && (
@@ -249,11 +319,7 @@ export function SessionCard({
             <span className="gated">◇ gated</span>
           </Tooltip>
         )}
-        {mode && (
-          <span className={`mode mode-${mode.tone}`} title={mode.title}>
-            {mode.label}
-          </span>
-        )}
+        {session.agent === "claude" && <ModePicker session={session} />}
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>
         <span className="spacer" />
@@ -287,10 +353,139 @@ export function SessionCard({
               pendingReviewIds={pendingReviewIds}
             />
           )}
+          <WorkQueue
+            session={session}
+            foremanMode={foremanMode}
+            foremanEnabled={foremanEnabled}
+            allowlisted={allowlisted(session.cwd, foremanAllowlist)}
+          />
           <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
         </>
       )}
     </article>
+  );
+}
+
+/**
+ * Inline title editor: the card title swapped for a text box (click the title or
+ * press the rename shortcut). Enter or the ✓ button commits, Escape or ✕ cancels,
+ * and clicking away blurs to cancel - so a rename only lands on an explicit save.
+ * The button controls guard their own mousedown (`preventDefault`) so clicking one
+ * doesn't blur-cancel the field before its click fires. A failing rename (e.g. an
+ * invalid tmux name) keeps the editor open with the reason, rather than dropping
+ * the edit. On success App drops rename mode; the registry's optimistic echo (and
+ * the next discovery sweep) update the title, so nothing here has to.
+ */
+function RenameEditor({
+  session,
+  onClose,
+}: {
+  session: Session;
+  onClose: () => void;
+}): React.JSX.Element {
+  const [value, setValue] = useState(session.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus and select the whole name on open so the user can type over it at once.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
+
+  // The input is disabled while the request is in flight, which drops focus to
+  // <body>; without taking it back, a rejected name leaves Enter/Escape unheard
+  // here and every grid chord held by App (which stands down while renaming).
+  // Keyed on `busy` too, not just `error`: retrying the same bad name re-reports
+  // an identical string, so `error` alone wouldn't fire.
+  useEffect(() => {
+    if (busy || !error) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [busy, error]);
+
+  async function submit(): Promise<void> {
+    const name = value.trim();
+    if (!name || name === session.name) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    const r = await api.rename(session.id, name);
+    setBusy(false);
+    if (r.ok) onClose();
+    else setError(r.error ?? "rename failed");
+  }
+
+  return (
+    <div className="rename-edit" onClick={(e) => e.stopPropagation()}>
+      <div className="rename-row">
+        <input
+          ref={inputRef}
+          className="rename-input"
+          value={value}
+          disabled={busy}
+          // Mirrors RenameSchema's .max(200): a longer paste would come back as a
+          // raw Zod error dump, which the .rename-error span renders verbatim.
+          maxLength={200}
+          aria-label="Rename session"
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            // Keep grid shortcuts from firing while typing a name.
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          // Clicking away cancels, but switching apps must not: the browser fires
+          // blur at the focused element before the window itself loses focus, so
+          // without the hasFocus guard a Cmd+Tab to the session's terminal - the
+          // core loop here - would discard a half-typed name.
+          onBlur={() => {
+            if (!busy && document.hasFocus()) onClose();
+          }}
+        />
+        <button
+          type="button"
+          className="rename-btn rename-save"
+          aria-label="Save name"
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => void submit()}
+        >
+          ✓
+        </button>
+        <button
+          type="button"
+          className="rename-btn rename-cancel"
+          aria-label="Cancel rename"
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </div>
+      {error && (
+        <span className="rename-error" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
 

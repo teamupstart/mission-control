@@ -3,6 +3,7 @@ import type {
   MetaSource,
   NmFixSummary,
   NmRunSummary,
+  OrphanedQueueHint,
   PermissionMode,
   PrChecks,
   PrState,
@@ -12,11 +13,16 @@ import type {
   SessionMeta,
   SessionNote,
   SessionNoteSummary,
+  SessionQueue,
+  SessionQueueSummary,
   SessionState,
   Task,
   TaskSummary,
+  WorkItem,
+  WorkItemState,
 } from "@shared/types.ts";
 import type { HookIngest, SetNote, StatusLineIngest } from "@shared/protocol.ts";
+import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -26,14 +32,29 @@ import {
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
 import {
+  deleteQueueItem,
   deleteTask as dbDeleteTask,
+  getQueueItem,
+  getQueueRow,
   getSessionNote,
+  listQueueItems,
+  listQueueRows,
   loadActiveTasks,
   loadResourceHoldingTerminalTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionNotes,
+  hooksEverSeen,
+  lastAgentBinding,
   logEvent,
+  recordAgentBinding,
+  rekeyQueue,
+  listQueueRowsForCwd,
+  countOpenQueueItems,
+  pruneDeadQueues,
+  reorderQueueItems,
+  upsertQueue,
+  upsertQueueItem,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
 } from "./db.ts";
@@ -53,6 +74,18 @@ const RECENT_TERMINAL_TASKS = 50;
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
+/**
+ * How long a FINISHED, session-less queue is kept before it's pruned.
+ *
+ * Generous on purpose. Nothing can act on such a queue any more - the only thing
+ * that reads it is the re-attach hint, which skips it because it has no open items -
+ * so this is a floor on how long its record stays legible to a human going back
+ * through what a batch did, not a bound on anything the system needs. A queue with
+ * open work is never pruned at any age; see `pruneDeadQueues`.
+ */
+const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
+const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
 /**
@@ -62,6 +95,14 @@ const OVERLAY_TTL_MS = 30 * 60 * 1000;
  * allowed to take over so an idle card doesn't freeze on a stale exact figure.
  */
 const STATUSLINE_TTL_MS = 3 * 60 * 1000;
+/**
+ * Caps on remembered no-mistakes dismissals (see `nmDismissed`): how many
+ * checkouts we keep at all, and how many retired runs per checkout. Only a reset
+ * ever adds one, so these sit far above any real session's worth of resets; they
+ * exist so the map can't grow with a long-lived daemon's uptime.
+ */
+const NM_DISMISSED_CHECKOUTS = 200;
+const NM_DISMISSED_RUNS_PER_CHECKOUT = 8;
 
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
@@ -102,14 +143,32 @@ export class Registry extends EventEmitter {
    */
   private nmBindings = new Map<string, Map<string, { branch: string | null; updatedAt: number }>>();
   /**
-   * Runs a session has retired from its card: sessionId -> run ids. `axi status`
-   * keeps reporting a run for its branch long after the run has finished and its
-   * PR has merged, so clearing the decoration alone doesn't hold - the next poll
-   * would re-attach it. A dismissal is what makes the clear stick, and it's keyed
-   * on the run id so a *new* run on the same branch still decorates the card.
-   * Dropped with the session (see `remove`); at most a handful of ids per session.
+   * Runs retired from a checkout: `checkoutKey` (worktree root + branch) -> run
+   * ids. A reset moves the branch pointer but not the branch *name*, and `axi
+   * status` goes on reporting a finished run for that branch indefinitely - so
+   * clearing the decoration alone doesn't hold, the next poll just re-attaches
+   * it. Remembering the run is what makes the clear stick.
+   *
+   * Keyed on the *checkout*, because that is what a reset acts on: `reset --hard`
+   * wipes one worktree, so the run stops describing anything real for whoever
+   * stands in that worktree on that branch - a property of the checkout, not of
+   * the session that happened to click the button. Keying on the session id
+   * instead would drop the dismissal on the next agent restart (a new pid mints a
+   * new synthetic id), and the strip would come back on a card the user already
+   * cleared. Keyed on run id within the checkout, so a *new* run on the same
+   * branch still decorates the card.
+   *
+   * Bounded by eviction rather than reaped on the run disappearing from `axi
+   * status`: the active-run set only covers worktrees we polled, and those come
+   * from live sessions (`nomistakesPollCwds`), so "the run is gone" and "nobody
+   * asked about it this tick" are indistinguishable - reaping on absence would be
+   * session-presence reaping in disguise, reopening the very bug. Entries are
+   * tiny and only a reset creates one, so the caps are far above real use.
    */
   private nmDismissed = new Map<string, Set<string>>();
+  /** Whether a discovery sweep has ever completed - see `fleetObserved`. */
+  private sweptFleet = false;
+  private lastQueuePrune = 0;
 
   constructor() {
     super();
@@ -152,6 +211,9 @@ export class Registry extends EventEmitter {
   applyDiscovery(discovered: DiscoveredSession[]): void {
     const now = Date.now();
     const seen = new Set<string>();
+    // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
+    // so this is the moment the session map starts meaning anything. See `fleetObserved`.
+    this.sweptFleet = true;
 
     for (const d of discovered) {
       seen.add(d.syntheticId);
@@ -168,13 +230,57 @@ export class Registry extends EventEmitter {
     }
     this.pruneNmBindings(now);
 
+    // Anything a COMPLETED sweep didn't see is gone, and gets an eviction timer -
+    // whether or not it already reads as exited.
+    //
+    // Skipping on `state === "exited"` instead left a permanent zombie: `applyHook`
+    // writes that state straight into the map on SessionEnd with no timer, and this
+    // loop then skipped it forever, so `remove` (which only this timer calls) never
+    // ran. Its key counted as live to `orphanedQueueFor`, so a queue the human could
+    // still resume was never offered on any card - stranded, with nothing to heal it.
+    // Keying the skip on the TIMER instead says what was meant ("already on its way
+    // out"), and makes the two ways a session can be marked exited converge here.
     for (const [id, s] of this.sessions) {
-      if (seen.has(id) || s.state === "exited") continue;
-      const exited: Session = { ...s, state: "exited" };
-      this.sessions.set(id, exited);
-      this.emitSession(exited);
+      if (seen.has(id) || this.exitTimers.has(id)) continue;
+      if (s.state !== "exited") {
+        const exited: Session = { ...s, state: "exited" };
+        this.sessions.set(id, exited);
+        this.emitSession(exited);
+      }
       const t = unref(setTimeout(() => this.remove(id), EXIT_LINGER_MS));
       this.exitTimers.set(id, t);
+    }
+
+    // Hints LAST, once the map is whole. `mergeDiscovered` resolved each session's
+    // hint as it merged, i.e. against a map still being filled one session at a time:
+    // on the first sweep after a restart the first session merged saw only its own
+    // key as live, so every OTHER live session's queue looked orphaned to it. That
+    // hint is actionable, and `reattachQueue` trusts it - it checks only that the
+    // target is Claude and holds no open items, never that the source is really
+    // orphaned - so a click inside that window re-keys a healthy session's live queue
+    // onto another card and drops the original row. The hint's correctness is the
+    // only guard on that write, so it must never be computed from a partial map.
+    this.syncAllOrphanHints();
+    this.pruneQueues(now);
+  }
+
+  /**
+   * Age out queues nothing can reach any more, at most hourly.
+   *
+   * Rides the discovery sweep because this is the one place a freshly-reconciled live
+   * key set exists - and it must run AFTER the merge and eviction loops above, since
+   * a key the map hasn't been filled in with yet reads as dead. Throttled because the
+   * sweep is ~1.5s and this is neither cheap nor urgent.
+   */
+  private pruneQueues(now: number): void {
+    if (now - this.lastQueuePrune < QUEUE_PRUNE_INTERVAL_MS) return;
+    this.lastQueuePrune = now;
+    try {
+      pruneDeadQueues(this.liveNoteKeys(), now - QUEUE_RETENTION_MS);
+    } catch (err) {
+      // Retention is housekeeping: a failure here must not take down the sweep that
+      // keeps the whole dashboard current.
+      console.error("[registry] queue prune failed:", err);
     }
   }
 
@@ -183,6 +289,10 @@ export class Registry extends EventEmitter {
     d: DiscoveredSession,
     now: number,
   ): Session {
+    // Read the stored binding ONCE, on first sight. After that the in-memory value
+    // is the freshest truth - every rebinding goes through this process first - so
+    // re-reading each sweep could only ever return what we already have.
+    const known = prev ? prev.agentSessionId : lastAgentBinding(d.syntheticId);
     const base: Session = {
       id: d.syntheticId,
       agent: d.agent,
@@ -191,15 +301,29 @@ export class Registry extends EventEmitter {
       state: "working",
       cwd: d.cwd,
       gitBranch: d.gitBranch,
+      gitRoot: d.gitRoot,
       nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
-      permissionMode: prev?.permissionMode ?? null,
+      // A mode read straight off the pane outranks every remembered value; absent
+      // one (Codex, no pane, or a dialog covering Claude's mode line) we keep the
+      // last we knew rather than blanking the chip.
+      permissionMode: d.permissionMode ?? prev?.permissionMode ?? null,
       wezterm: d.wezterm,
       tmux: d.tmux,
-      agentSessionId: prev?.agentSessionId ?? null,
+      // Seeded from the DB for the same reason `hooksSeen` below is: only a live
+      // hook/statusLine reports it, so on a daemon restart a quiet-but-healthy
+      // session would rebuild with a null binding - and `noteKeyFor` would hand its
+      // note and its WORK QUEUE to the synthetic id instead, making every stored
+      // queue in the fleet look orphaned. See `recordAgentBinding`.
+      agentSessionId: known,
       transcriptPath: prev?.transcriptPath ?? null,
       instrumented: false,
+      // Sticky, and seeded from the DB the first time we see a session so it
+      // survives a daemon restart. `instrumented` above is rebuilt as false every
+      // sweep because it tracks the overlay's freshness; this tracks whether hooks
+      // exist at all, which nothing but uninstalling them can un-learn.
+      hooksSeen: prev?.hooksSeen ?? hooksEverSeen(d.syntheticId),
       activity: prev?.activity ?? null,
       startedAt: d.startedAt || prev?.startedAt || null,
       firstSeen: prev?.firstSeen ?? now,
@@ -216,20 +340,38 @@ export class Registry extends EventEmitter {
       prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
       note: null,
+      queue: null,
+      orphanedQueue: null,
     };
     const overlay = this.overlayFor(base);
+    if (overlay) base.hooksSeen = true;
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
       base.instrumented = true;
       base.state = overlay.state;
       base.activity = overlay.activity;
-      base.permissionMode = overlay.permissionMode ?? base.permissionMode;
+      // The hook overlay is a fallback for the pane read, never an override of it.
+      base.permissionMode = d.permissionMode ?? overlay.permissionMode ?? base.permissionMode;
       base.lastActivity = overlay.lastActivity;
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
     }
-    // Resolve the note only after the overlay may have supplied agentSessionId,
-    // so the note key (which prefers agentSessionId) is stable.
+    // The overlay may have just supplied a binding nothing has persisted yet, and
+    // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
+    // been discovered yet has no live session to apply to, so it only ever reaches
+    // a Session here. Left to `applyHook` alone the binding would then never be
+    // written at all - its live-session branch writes on CHANGE, and by the time it
+    // runs the overlay has already put the same id on the card.
+    this.rememberAgentSession(base, known);
+    // Resolve the note + queue only after the overlay may have supplied
+    // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
+    base.queue = this.queueSummaryFor(base);
+    // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
+    // statement about the whole fleet ("no live session holds that key"), and this
+    // runs per session while `applyDiscovery` is still filling the map. Carry the
+    // last known value and let `applyDiscovery` re-resolve every hint once the map is
+    // whole. `applyHook` resolves its own inline because by then the map already is.
+    base.orphanedQueue = prev?.orphanedQueue ?? null;
     return base;
   }
 
@@ -277,6 +419,7 @@ export class Registry extends EventEmitter {
         ...target,
         ...pr,
         instrumented: true,
+        hooksSeen: true,
         state,
         activity,
         permissionMode,
@@ -284,10 +427,16 @@ export class Registry extends EventEmitter {
         agentSessionId: evt.sessionId ?? target.agentSessionId,
         transcriptPath: evt.transcriptPath ?? target.transcriptPath,
       };
-      // Binding the agent session id can change the note key, so re-resolve the
-      // note now (a rehydrated Purpose attaches the instant the session is
-      // identified, rather than waiting for the next discovery sweep).
+      // Binding the agent session id can change the note key, so re-resolve
+      // everything keyed by it NOW rather than waiting for the next discovery
+      // sweep. A `/clear` mints a new agent session id mid-pane, and until this
+      // re-resolves the card would keep showing the PREVIOUS key's queue while its
+      // real one sits orphaned and unoffered - stale in the exact moment the human
+      // is looking, since a /clear is something they just did.
       next.note = this.noteSummaryFor(next);
+      next.queue = this.queueSummaryFor(next);
+      next.orphanedQueue = this.orphanedQueueFor(next);
+      this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
       if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
@@ -296,44 +445,107 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Optimistically advance a session's permission-mode chip one Shift+Tab step,
-   * called right after we inject a cycle keystroke into its pane. Claude changes
-   * the mode instantly but emits no signal carrying the new value on an idle
-   * session (its hooks omit it and the statusLine payload never has it), so
-   * without this the chip would stay on the old mode and the toggle would look
-   * like a no-op. Only the steps whose landing mode is certain advance (see
-   * `MODE_CYCLE`); from a step whose landing mode depends on config we leave the
-   * chip for a real hook to set rather than invent a value.
+   * Record a permission mode we just *read off a session's pane*, so the chip
+   * reflects it immediately instead of waiting up to a poll interval for the next
+   * sweep to observe the same thing. Called after a mode change succeeds.
    *
-   * The result is a best-effort hint, not an authoritative reading. The caller
-   * fires this on a successful injection, which only proves the keystroke bytes
-   * reached the pane - if the session wasn't at its normal prompt (a permission or
-   * plan-approval dialog, a slash-command menu, a REPL that isn't foreground) Claude
-   * swallows it without cycling, and the chip advances regardless. It stays diverged
-   * until a hook carrying `permission_mode` reconciles it.
+   * This is an observation, not a guess: the caller read the mode back from the
+   * terminal (see `setPermissionMode`), so unlike the mode we infer from a
+   * keystroke, it can't diverge from what Claude is actually doing. A null mode -
+   * one we couldn't read - is ignored rather than written, leaving the last known
+   * value up for the next poll to correct.
    *
-   * The pane overlay's mode is updated whenever one exists, regardless of its
-   * age. Both readers handle that correctly: `mergeDiscovered` gates the overlay
-   * behind its own OVERLAY_TTL_MS freshness check, so a stale one won't resurface
-   * passive state (and the new mode still reaches the next sweep via the updated
-   * session, which `mergeDiscovered` seeds from `prev`); `applyHook` reads the
-   * overlay's mode with no TTL check as its sticky fallback, so keeping it current
-   * means a later hook that omits permission_mode reconciles to the advanced mode
-   * instead of the pre-cycle one. `updatedAt` is deliberately left alone: that
-   * stamp is the overlay's freshness clock, and bumping it on an injected
-   * keystroke would revive an overlay already past OVERLAY_TTL_MS, re-applying all
-   * of its stale fields (instrumented, state, activity) over the card.
+   * The pane overlay's mode is updated whenever one exists, regardless of its age.
+   * Both readers handle that correctly: `mergeDiscovered` gates the overlay behind
+   * its own OVERLAY_TTL_MS freshness check, so a stale one won't resurface passive
+   * state (and the mode still reaches the next sweep via the updated session, which
+   * `mergeDiscovered` seeds from `prev`); `applyHook` reads the overlay's mode with
+   * no TTL check as its sticky fallback, so keeping it current means a later hook
+   * that omits permission_mode reconciles to the new mode rather than the old one.
+   * `updatedAt` is deliberately left alone: that stamp is the overlay's freshness
+   * clock, and bumping it here would revive an overlay already past OVERLAY_TTL_MS,
+   * re-applying all of its stale fields (instrumented, state, activity) over the card.
    */
-  optimisticCyclePermissionMode(sessionId: string): void {
+  recordObservedPermissionMode(sessionId: string, mode: PermissionMode | null): void {
+    if (!mode) return;
     const s = this.sessions.get(sessionId);
-    if (!s) return;
-    const next = nextPermissionMode(s.permissionMode);
-    if (!next) return;
+    if (!s || s.permissionMode === mode) return;
     const overlay = this.overlayFor(s);
-    if (overlay) overlay.permissionMode = next;
-    const updated: Session = { ...s, permissionMode: next };
+    if (overlay) overlay.permissionMode = mode;
+    const updated: Session = { ...s, permissionMode: mode };
     this.sessions.set(sessionId, updated);
     this.emitSession(updated);
+  }
+
+  /**
+   * Optimistically apply a rename to the live card the instant the tmux/wezterm
+   * rename lands, rather than waiting up to a poll interval for discovery to read
+   * the new name back. For a tmux session the display name IS the tmux session
+   * name, so the tmux handle's `session` field moves with it - otherwise Focus and
+   * Kill (which target `tmux.session` by name) would address the now-renamed
+   * session by its old name until the next sweep. The wezterm handle's `tabTitle`
+   * is kept in step for the same consistency, though no action keys off it.
+   *
+   * Discovery converges on this exact value on its next tick (the terminal really
+   * was renamed), so there's nothing to reconcile - a stale in-flight sweep that
+   * started before the rename can briefly show the old name, then self-heals.
+   *
+   * Renaming a tmux session renames it for every card hosted on it: `correlate`
+   * groups agents by tty, so two agents in two windows of one tmux session are two
+   * cards sharing a `tmux.session`. All of them are re-pointed, or a sibling's Focus
+   * would attach by a name that no longer resolves until the next sweep. A sibling
+   * named after tmux (`nameSource`) takes the new display name too - its title just
+   * IS the tmux session name.
+   *
+   * A dispatched task holds its own persisted copy of the tmux name, and that copy
+   * drives destructive teardown: `reconcileOnStartup` reads `tmuxSession` back after
+   * a restart and reclaims the worktree when the name no longer resolves. Left
+   * stale, a renamed agent's tree would be force-removed out from under it, so the
+   * binding moves with the rename here, persisted through `upsertTask` to reach
+   * SQLite. The old name alone is too weak a key: it is unique only among LIVE
+   * sessions, while `tmuxSession` is a historical record and tmux frees a dead
+   * session's name for immediate reuse. So the task must also hold the worktree of
+   * a session actually on this tmux session (the `cwd` join `activeTaskForCwd`
+   * uses) - otherwise a long-dead task that merely recorded a since-reused name
+   * would be re-pointed onto a live session and later kill it. `sessionId` can't be
+   * the key: the dispatcher only sets it on the success path, so a failed-but-alive
+   * task - which still holds a worktree and must still follow - has none.
+   */
+  renameSession(sessionId: string, name: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.name === name) return;
+    const priorTmux = s.tmux?.session ?? null;
+    const next: Session = {
+      ...s,
+      name,
+      tmux: s.tmux ? { ...s.tmux, session: name } : s.tmux,
+      wezterm: s.wezterm ? { ...s.wezterm, tabTitle: name } : s.wezterm,
+    };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+    if (!priorTmux || priorTmux === name) return;
+
+    const hostedCwds = new Set<string>();
+    if (s.cwd) hostedCwds.add(s.cwd);
+    for (const [id, other] of [...this.sessions]) {
+      if (id === sessionId) continue;
+      const pane = other.tmux;
+      if (!pane || pane.session !== priorTmux) continue;
+      if (other.cwd) hostedCwds.add(other.cwd);
+      const renamed: Session = {
+        ...other,
+        name: other.nameSource === "tmux" ? name : other.name,
+        tmux: { ...pane, session: name },
+      };
+      this.sessions.set(id, renamed);
+      this.emitSession(renamed);
+    }
+
+    for (const t of this.listTasks()) {
+      if (t.tmuxSession !== priorTmux) continue;
+      if (!t.worktreePath || !hostedCwds.has(t.worktreePath)) continue;
+      this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
+    }
   }
 
   private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {
@@ -466,46 +678,82 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * The active run this session owns, by exact branch or a launcher binding.
-   * A run this session has dismissed is not owned - it stays off the card for
-   * good, however long `axi status` goes on reporting it.
+   * The active run this session owns: the one on its own branch (exact worktree
+   * owner) or, failing that, one it drives in a worktree it launched (binding).
+   *
+   * A retired run is skipped *while* matching rather than nulled out afterwards,
+   * so it never shadows a run the session still owns. A reset retires the run on
+   * the session's own branch, but `axi status` keeps reporting it for that branch
+   * for good - so once the session dispatches new work elsewhere, its own branch
+   * still resolves to the dead run. Skipping it falls through to the binding, and
+   * a run parked at a gate keeps the approve/fix/skip buttons that are the only
+   * way to answer it; returning null there would blank the card instead.
    */
   private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
-    const run = this.matchRun(id, s, byBranch);
-    if (run && this.nmDismissed.get(id)?.has(run.id)) return null;
-    return run;
-  }
-
-  /** The run attributable to this session, before dismissals are applied. */
-  private matchRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
-    if (s.gitBranch && byBranch.has(s.gitBranch)) return byBranch.get(s.gitBranch)!;
-    const map = this.nmBindings.get(id);
-    if (map) {
-      for (const { branch } of map.values()) {
-        if (branch && byBranch.has(branch)) return byBranch.get(branch)!;
-      }
+    const key = checkoutKey(s.gitRoot, s.gitBranch);
+    const retired = key ? this.nmDismissed.get(key) : undefined;
+    const live = (branch: string | null): NmRunSummary | null => {
+      const run = branch ? byBranch.get(branch) : undefined;
+      return run && !retired?.has(run.id) ? run : null;
+    };
+    const own = live(s.gitBranch);
+    if (own) return own;
+    for (const { branch } of this.nmBindings.get(id)?.values() ?? []) {
+      const bound = live(branch);
+      if (bound) return bound;
     }
     return null;
   }
 
   /**
-   * Retire the session's current no-mistakes run from its card. Called when the
-   * session is reset to origin: that discards the work the run validated, so the
-   * run - finished or not - no longer describes this checkout, and the strip
-   * would otherwise sit there indefinitely (see `nmDismissed`).
+   * Retire `run` from the checkout a reset just wiped - `root`, standing on
+   * `branch` - for good. A reset throws away the very work the run validated, so
+   * the run - finished or not - no longer describes that checkout, and the strip
+   * would otherwise sit there forever (see `nmDismissed`).
    *
-   * A no-op when no run is showing. Deliberately narrow: it retires only the run
-   * on THIS session, so a sibling driving the same run keeps its own decoration.
+   * Scoped to that one checkout: `reset --hard` only touches one worktree, so the
+   * run is retired exactly for whoever stands in that worktree on the branch whose
+   * work just went away - now or after a restart. That covers a sibling sharing
+   * the checkout (its strip describes the same dead work), while a same-branch
+   * twin in an independent worktree keeps its strip, its work being still on disk.
+   *
+   * A run on a *different* branch than the reset checkout lives in a different
+   * worktree that the reset never touched (git won't check one branch out twice),
+   * so it is never retired - keeping the approve/fix/skip buttons that are the
+   * only way to answer a parked gate.
+   *
+   * The caller passes the run it saw before the reset, rather than us re-reading
+   * it after: a fetch can take ~30s, and the poller may have swapped or cleared
+   * the run in that window. We retire the run the user was actually looking at.
    */
-  dismissNomistakes(sessionId: string): void {
-    const s = this.sessions.get(sessionId);
-    if (!s?.nomistakes) return;
-    let dismissed = this.nmDismissed.get(sessionId);
-    if (!dismissed) this.nmDismissed.set(sessionId, (dismissed = new Set()));
-    dismissed.add(s.nomistakes.id);
-    const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
-    this.sessions.set(sessionId, next);
-    this.emitSession(next);
+  dismissNomistakes(run: NmRunSummary, root: string | null, branch: string | null): void {
+    // No id means we can't name the run, and dismissing "" would gag every
+    // id-less run on the card for good. Leave the strip rather than over-suppress.
+    if (!run.id || branch !== run.branch) return;
+    const key = checkoutKey(root, branch);
+    if (!key) return;
+    this.rememberDismissal(key, run.id);
+    for (const [id, s] of this.sessions) {
+      if (checkoutKey(s.gitRoot, s.gitBranch) !== key || s.nomistakes?.id !== run.id) continue;
+      const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
+  /** Record a retired run against its checkout, evicting the oldest past the caps. */
+  private rememberDismissal(key: string, runId: string): void {
+    const ids = this.nmDismissed.get(key) ?? new Set<string>();
+    ids.add(runId);
+    // Re-insert, so this checkout moves to the tail. A Map keeps first-insertion
+    // order, so mutating the set in place would leave the checkout ranked by its
+    // *oldest* dismissal and let eviction drop one reset seconds ago.
+    this.nmDismissed.delete(key);
+    this.nmDismissed.set(key, ids);
+    // `axi status` reports the latest run for a branch, so once newer runs have
+    // been retired on this checkout the older ids can no longer suppress anything.
+    evictOldest(ids, NM_DISMISSED_RUNS_PER_CHECKOUT);
+    evictOldest(this.nmDismissed, NM_DISMISSED_CHECKOUTS);
   }
 
   /**
@@ -576,12 +824,26 @@ export class Registry extends EventEmitter {
     const next: Session = {
       ...s,
       instrumented: true,
+      hooksSeen: true,
       activity,
       lastActivity: Date.now(),
       agentSessionId: agentSessionId ?? s.agentSessionId,
     };
+    this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
     this.emitSession(next);
+  }
+
+  /**
+   * Persist a session's agent binding the moment it changes, so the note/queue key
+   * it decides outlives this process. Written only on a CHANGE because every hook
+   * event reaches here: on a restart the row is what seeded `agentSessionId` in the
+   * first place, so a hook merely restating it has nothing to record.
+   */
+  private rememberAgentSession(s: Session, prev: string | null): void {
+    if (s.agentSessionId && s.agentSessionId !== prev) {
+      recordAgentBinding(s.id, s.agentSessionId, Date.now());
+    }
   }
 
   // ---- runtime metadata (model / thinking level / context %) ----
@@ -604,6 +866,7 @@ export class Registry extends EventEmitter {
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
     const changed = !metaDisplayEqual(s.meta, meta) || s.agentSessionId !== agentSessionId;
     const next: Session = { ...s, meta, agentSessionId };
+    this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
     if (changed) this.emitSession(next);
   }
@@ -649,8 +912,14 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
-    this.nmDismissed.delete(id);
-    if (this.sessions.delete(id)) this.emitEvent({ type: "session_remove", id });
+    if (!this.sessions.delete(id)) return;
+    this.emitEvent({ type: "session_remove", id });
+    // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
+    // liveness from this very map - so no sibling's hint is right until this runs.
+    // Waiting for the next sweep to notice isn't enough on its own either: the card
+    // that should show the hint is typically an idle session at the same cwd, which
+    // is exactly the case where nothing else about it moves.
+    this.syncAllOrphanHints();
   }
 
   // ---- reviews (used by phase 3) ----
@@ -770,7 +1039,7 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Most-recently-updated task whose worktree matches this cwd. A queued task has
+   * Most-recently-updated task whose worktree matches this cwd. A backlog task has
    * no worktree; a cancelled or cleanly-failed task cleared its worktree fields, so
    * it can't match a cwd here. A failed-but-alive task keeps its worktree, so it
    * still decorates its live session's card - the agent stays actionable there.
@@ -780,7 +1049,7 @@ export class Registry extends EventEmitter {
     let best: Task | undefined;
     for (const t of this.tasks.values()) {
       if (t.worktreePath !== cwd) continue;
-      if (t.status === "queued" || t.status === "cancelled") continue;
+      if (t.status === "backlog" || t.status === "cancelled") continue;
       if (!best || t.updatedAt > best.updatedAt) best = t;
     }
     return best;
@@ -866,9 +1135,423 @@ export class Registry extends EventEmitter {
       this.emitSession(next);
     }
   }
+
+  // ---- Foreman work queues ----
+
+  /** The compact queue view denormalized onto a session card. */
+  private queueSummaryFor(s: Session): SessionQueueSummary | null {
+    const key = noteKeyFor(s);
+    const row = getQueueRow(key);
+    const items = listQueueItems(key);
+    if (!row && items.length === 0) return null;
+    return summarizeQueue(items, row?.wrapupAskedAt ?? null, row?.updatedAt ?? 0);
+  }
+
+  /**
+   * A queue whose own session is gone but whose cwd matches this live one - the
+   * re-attach hint.
+   *
+   * Without this a queue orphaned by a `/clear` (which mints a new agent session
+   * id) would match NO live session, so it would appear on NO card and nothing
+   * would drive its tick. It is deliberately only a hint: a different agent at
+   * that cwd may be doing something else entirely, so rebinding is always an
+   * explicit click, never automatic.
+   */
+  private orphanedQueueFor(s: Session): OrphanedQueueHint | null {
+    if (!s.cwd) return null;
+    // No sweep yet means no evidence, only an empty map - and "no live session holds
+    // that key" read off it is a statement about a map nobody has filled in, not a
+    // finding. Same rule as the exit linger, and the same reason: the hint is what
+    // `reattachQueue` relies on to know a queue is really orphaned. See fleetObserved.
+    if (!this.sweptFleet) return null;
+    const key = noteKeyFor(s);
+    // Every OTHER live session's key, plus this session's CURRENT one. Its stored copy
+    // is deliberately excluded: `s` may be in the map under a key it just moved off -
+    // a `/clear` rebinds agentSessionId, and the queue it just orphaned is keyed on
+    // the old id. Counting that stale entry as live would mean the queue this session
+    // just abandoned looks like it still has a session, so the hint that offers to
+    // resume it never appears. Liveness goes through `holdsKey`, the same predicate
+    // the worker's sweep uses, so the card and the sweep cannot disagree about who is
+    // still here.
+    const liveKeys = new Set<string>();
+    for (const [id, o] of this.sessions) {
+      if (o.id !== s.id && this.holdsKey(id, o)) liveKeys.add(noteKeyFor(o));
+    }
+    liveKeys.add(key);
+    let best: OrphanedQueueHint | null = null;
+    // Indexed by cwd rather than scanning every queue the DB has ever held: this runs
+    // per discovered session per sweep, i.e. O(sessions x queues) several times a
+    // second, on the one synchronous SQLite handle that also serves hook ingest and
+    // SSE.
+    for (const q of listQueueRowsForCwd(s.cwd)) {
+      if (liveKeys.has(q.noteKey)) continue;
+      const open = countOpenQueueItems(q.noteKey);
+      if (open === 0) continue; // nothing left to resume - not worth a hint
+      if (!best || open > best.itemCount) {
+        best = { noteKey: q.noteKey, itemCount: open, branch: q.branch };
+      }
+    }
+    return best;
+  }
+
+  /** Full queue for a session (items + wrap-up state), or null when it has none. */
+  getQueue(id: string): SessionQueue | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    return this.getQueueByKey(noteKeyFor(s));
+  }
+
+  /** Full queue by note key - the orphan path, where no live session resolves it. */
+  getQueueByKey(key: string): SessionQueue | null {
+    const row = getQueueRow(key);
+    const items = listQueueItems(key);
+    if (!row && items.length === 0) return null;
+    return {
+      noteKey: key,
+      cwd: row?.cwd ?? null,
+      branch: row?.branch ?? null,
+      wrapupAskedAt: row?.wrapupAskedAt ?? null,
+      wrapupAnswer: row?.wrapupAnswer ?? null,
+      updatedAt: row?.updatedAt ?? 0,
+      items,
+    };
+  }
+
+  /** Every stored queue (items included) - the orphan sweep + the fleet-level list. */
+  listQueues(): SessionQueue[] {
+    const out: SessionQueue[] = [];
+    for (const row of listQueueRows()) {
+      out.push({ ...row, items: listQueueItems(row.noteKey) });
+    }
+    return out;
+  }
+
+  /**
+   * Whether a session in the map still counts as holding its note key.
+   *
+   * A session inside its exit linger counts as LIVE. `exited` is provisional by
+   * design: `applyDiscovery` marks any session missing from a single sweep as exited
+   * and only evicts it EXIT_LINGER_MS later, cancelling that timer if it reappears.
+   * Reading `state === "exited"` as gone ignores the very guard the linger exists to
+   * provide - one hiccuping `ps` sweep would mark the whole fleet exited, and
+   * `sweepOrphanedQueues` (which runs several times a second) would escalate every
+   * in-flight item before the next poll un-marked them. Escalation is terminal and
+   * has no undo, so it must not turn on a single missed poll.
+   *
+   * Defined ONCE because two readers must agree on it: `liveNoteKeys` (the worker's
+   * orphan sweep) and `orphanedQueueFor` (the card's re-attach hint). They previously
+   * held separate copies, and the copies disagreed about a session marked exited by a
+   * hook - the sweep skipped it and escalated its in-flight item, while the hint
+   * counted it as live and so never offered the leftover queue to anyone.
+   */
+  private holdsKey(id: string, s: Session): boolean {
+    return s.state !== "exited" || this.exitTimers.has(id);
+  }
+
+  /** Note keys with at least one live session - what makes a queue "not orphaned". */
+  liveNoteKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const [id, s] of this.sessions) {
+      if (this.holdsKey(id, s)) keys.add(noteKeyFor(s));
+    }
+    return keys;
+  }
+
+  /**
+   * Whether the session map has ever been reconciled against the OS - i.e. whether
+   * "no live session holds this key" is a FINDING or merely a fact about a map
+   * nobody has filled in yet.
+   *
+   * The daemon serves `/api/*` the instant it binds its port, while the first
+   * discovery sweep is an async `ps` scan that lands some time after. Anything
+   * reading `liveNoteKeys` in that window sees an empty set and concludes the whole
+   * fleet is gone - and the orphan sweep polls several times a second, so it will be
+   * in that window. Same rule as the exit linger just above, and the same reason:
+   * escalation is terminal and has no undo, so it must not turn on an absence of
+   * evidence. A sweep that completes and genuinely finds nothing DOES flip this -
+   * that's a fleet we looked at, so a queue with no session really is orphaned.
+   */
+  fleetObserved(): boolean {
+    return this.sweptFleet;
+  }
+
+  /**
+   * Ensure a queue row exists for a session, refreshing its cwd/branch (the
+   * re-attach hint must track where the session actually is). Returns the key.
+   *
+   * Claude-only, and refused HERE because this is the boundary the write crosses -
+   * the panel hiding its add box is presentation, not enforcement, and the loopback
+   * API (which the worker is itself a client of) goes straight past it. Every tick
+   * filters to `agent === "claude"`, so a queue on a Codex session would never
+   * advance; and because that session is LIVE, its key is live, so neither the cwd
+   * re-attach hint nor the fleet orphan sweep would ever offer the batch to anyone.
+   * That is the same one-way trip to nowhere `reattachQueue` refuses, arriving by a
+   * different door.
+   */
+  ensureQueue(id: string, now = Date.now()): string | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    if (s.agent !== "claude") return null;
+    const key = noteKeyFor(s);
+    const prev = getQueueRow(key);
+    upsertQueue({
+      noteKey: key,
+      cwd: s.cwd,
+      branch: s.gitBranch,
+      wrapupAskedAt: prev?.wrapupAskedAt ?? null,
+      wrapupAnswer: prev?.wrapupAnswer ?? null,
+      updatedAt: now,
+    });
+    return key;
+  }
+
+  /** Patch a queue's wrap-up state, then re-denormalize. */
+  setQueueWrapup(
+    key: string,
+    patch: { wrapupAskedAt?: number | null; wrapupAnswer?: string | null },
+    now = Date.now(),
+  ): void {
+    const prev = getQueueRow(key);
+    if (!prev) return;
+    upsertQueue({
+      ...prev,
+      wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
+      wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
+      updatedAt: now,
+    });
+    this.syncSessionsForQueue(key);
+  }
+
+  /**
+   * Persist an item and re-denormalize onto every live session sharing its key.
+   *
+   * The item write also touches its QUEUE ROW's `updatedAt`, which is what makes the
+   * card's summary move at all. `SessionQueueSummary` is a deliberately compact
+   * projection - counts, the in-flight state - so transitions it doesn't model
+   * produce a byte-identical summary, `syncSessionsForQueue` short-circuits on its
+   * equality check, and no `session_upsert` is emitted. `queued -> proposed` is
+   * exactly that shape: `proposed` isn't in-flight and isn't terminal, so neither
+   * `inFlightState` nor `openCount` moves, and in dry-run - the default mode - the
+   * panel would never learn a draft was waiting on the one action that advances the
+   * queue. Timestamping the row makes "an item changed" observable to the summary
+   * without teaching it every state, and keeps the fix at the write rather than
+   * spreading a special case across the readers.
+   */
+  putQueueItem(item: WorkItem): void {
+    upsertQueueItem(item);
+    this.touchQueue(item.noteKey, item.updatedAt);
+    this.syncSessionsForQueue(item.noteKey);
+  }
+
+  /**
+   * Move a queue row's `updatedAt`, so any item write is visible in the summary.
+   *
+   * STRICTLY increasing, not just `max(now, …)`: this is a change token, not a
+   * displayed time (nothing renders it - the panel only diffs it), and two writes
+   * inside the same millisecond are ordinary. A signal that silently fails to move
+   * when the clock doesn't tick is a signal that works until it doesn't.
+   */
+  private touchQueue(key: string, now: number): void {
+    const row = getQueueRow(key);
+    if (!row) return;
+    upsertQueue({ ...row, updatedAt: Math.max(now, row.updatedAt + 1) });
+  }
+
+  getQueueItem(id: string): WorkItem | undefined {
+    return getQueueItem(id);
+  }
+
+  /**
+   * Drop an item, then make the change observable.
+   *
+   * `touchQueue` for the reason `putQueueItem` documents, and removing a TERMINAL
+   * item is the case that needs it most: the summary projects `openCount` and the
+   * in-flight state, neither of which a finished item contributes to, so the delete
+   * produced a byte-identical summary and every OTHER viewer kept rendering the item
+   * that is no longer there - indefinitely, on an idle queue, since nothing would
+   * ever heal it. Removing a waiting item happened to be fine only because
+   * `openCount` moved; that's a coincidence of the projection, not a rule.
+   */
+  removeQueueItem(id: string, now = Date.now()): void {
+    const item = getQueueItem(id);
+    if (!item) return;
+    deleteQueueItem(id);
+    this.touchQueue(item.noteKey, now);
+    this.syncSessionsForQueue(item.noteKey);
+  }
+
+  /**
+   * Re-sequence a queue, then make the change observable.
+   *
+   * `touchQueue` for the reason `putQueueItem` documents, and a reorder is the
+   * purest case of it: the summary projects counts and the in-flight item but never
+   * `seq`, so re-ordering produces a byte-identical summary and every reader other
+   * than the tab that dragged would keep rendering the old order - indefinitely, on
+   * an idle queue, since nothing else would ever heal it.
+   */
+  reorderQueue(key: string, ids: string[], now = Date.now()): void {
+    reorderQueueItems(key, ids, now);
+    this.touchQueue(key, now);
+    this.syncSessionsForQueue(key);
+  }
+
+  /**
+   * Re-key a queue onto a live session (the explicit re-attach). Rewrites the
+   * queue row and every item to the new note key, so the queue resumes on the
+   * session the human pointed at.
+   *
+   * The SOURCE must actually be orphaned, and that is checked HERE rather than
+   * trusted from the hint the button was drawn from. The hint is stale by
+   * construction: `applyHook` re-resolves only the hooked session's own
+   * `orphanedQueue`, so a sibling card's copy waits for the next `applyDiscovery`,
+   * and a browser tab holds whatever it last received over SSE for longer still. A
+   * session can reappear on `fromKey` in that gap (an exit-linger cancel after a
+   * missed `ps` sweep), and by then Foreman may have typed its in-flight item into
+   * that pane - so a click on the stale button would re-key live work onto another
+   * session, verify it against the wrong transcript and diff (baseSha and
+   * transcriptAnchor are anchored on the session it was sent to), and delete the
+   * source row inside the transaction with no undo.
+   *
+   * `fleetObserved` is required for the same reason `orphaned()` requires it, in the
+   * same direction: "no live session holds this key" read off a map no sweep has
+   * filled in is a statement about the map, not about the fleet. The daemon answers
+   * routes the instant it binds its port, so a tab that outlives a restart can land a
+   * click in exactly that window. Refusing costs a re-click; guessing costs the batch.
+   */
+  reattachQueue(fromKey: string, toSessionId: string, now = Date.now()): boolean {
+    const s = this.sessions.get(toSessionId);
+    const row = getQueueRow(fromKey);
+    if (!s || !row) return false;
+    // Only onto a session that can actually RUN a queue. `orphanedQueueFor` matches
+    // on cwd alone, so the hint is offered beside any live session at the orphan's
+    // directory - including a Codex one, which `tickTargets` filters out of every
+    // tick. Re-keying onto it is a one-way trip to nowhere: the queue never ticks
+    // again, and because the target now holds the key, the queue counts as live, so
+    // neither the cwd hint nor the fleet-level orphan sweep will ever offer it
+    // again. Refusing here is what makes the button agree with the panel's own
+    // "Claude-only for now" copy instead of silently stranding the batch.
+    if (s.agent !== "claude") return false;
+    const toKey = noteKeyFor(s);
+    // Already where the human wants it: nothing to write, so nothing to guard.
+    if (toKey === fromKey) return true;
+    // The source must really be orphaned - see the note above on why the hint that
+    // drew the button cannot be the thing that authorises the write.
+    if (!this.sweptFleet) return false;
+    if (this.liveNoteKeys().has(fromKey)) return false;
+    // A live queue at the target key would collide on the single-flight index and
+    // silently merge two batches of work; refuse rather than guess which wins.
+    //
+    // Only OPEN items count. A finished batch left on this key can't collide (the
+    // index only covers in-flight states) and isn't work anyone is waiting on, so
+    // refusing over it would block the re-attach in a case that is actually safe -
+    // and the card would be offering a button that always 409s.
+    const existing = listQueueItems(toKey);
+    if (existing.some((i) => !isTerminalItem(i.state))) return false;
+    const items = listQueueItems(fromKey);
+    // Renumber onto the END of whatever the target already holds. Source seqs start
+    // at 0 and so do the finished batch's the guard above deliberately allows, so
+    // preserving them would collide - and `listQueueItems` orders by seq with an
+    // arbitrary tiebreak, leaving the re-attached work interleaved among completed
+    // items. `items` is already in seq order, so the offset keeps their order.
+    const base = existing.reduce((max, i) => Math.max(max, i.seq + 1), 0);
+    rekeyQueue(
+      fromKey,
+      {
+        noteKey: toKey,
+        cwd: s.cwd,
+        branch: s.gitBranch,
+        wrapupAskedAt: row.wrapupAskedAt,
+        wrapupAnswer: row.wrapupAnswer,
+        updatedAt: now,
+      },
+      items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
+    );
+    // BOTH keys, not just the target. The guard above proves no LIVE session holds
+    // `fromKey`, but a session ended by a `SessionEnd` hook is marked exited without
+    // an exit timer - so it stops holding its key while staying in the map until a
+    // sweep evicts it. Its card would go on rendering a summary of the queue that is
+    // no longer there, and on an idle fleet nothing else would ever heal it.
+    this.syncSessionsForQueue(fromKey);
+    this.syncSessionsForQueue(toKey);
+    this.syncAllOrphanHints();
+    return true;
+  }
+
+  private syncSessionsForQueue(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const summary = this.queueSummaryFor(s);
+      if (JSON.stringify(s.queue) === JSON.stringify(summary)) continue;
+      const next = { ...s, queue: summary };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
+  /** Re-resolve every card's orphan hint (after a re-attach changes who's orphaned). */
+  private syncAllOrphanHints(): void {
+    for (const [id, s] of this.sessions) {
+      const hint = this.orphanedQueueFor(s);
+      if (JSON.stringify(s.orphanedQueue) === JSON.stringify(hint)) continue;
+      const next = { ...s, orphanedQueue: hint };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+}
+
+/**
+ * The lifecycle predicates, exported under this module's historical names.
+ *
+ * The definitions live in @shared/queue.ts because the DB's partial unique index is
+ * built from the same constant - one set of states, one place to change it.
+ */
+export const isTerminalItem = isTerminalState;
+export const inFlightOf = inFlightItemOf;
+
+/** Project a queue's items into the compact card summary. Pure, for tests. */
+export function summarizeQueue(
+  items: WorkItem[],
+  wrapupAskedAt: number | null,
+  updatedAt: number,
+): SessionQueueSummary {
+  const open = items.filter((i) => !isTerminalItem(i.state));
+  const inFlight = inFlightOf(items);
+  return {
+    openCount: open.length,
+    totalCount: items.length,
+    inFlightState: inFlight?.state ?? null,
+    inFlightIntent: inFlight?.intent ?? null,
+    round: inFlight?.round ?? 0,
+    blockingGaps: inFlight ? inFlight.gaps.filter((g) => g.severity === "blocking").length : 0,
+    escalatedCount: items.filter((i) => i.state === "escalated").length,
+    drained: items.length > 0 && open.length === 0,
+    wrapupAskedAt,
+    updatedAt,
+  };
 }
 
 // ---- pure helpers ----
+
+/**
+ * Identity of a checkout: the worktree root plus the branch standing in it. Two
+ * sessions share a key exactly when they share a working tree, which is the unit
+ * `git reset --hard` acts on. Null when either half is unknown, so an
+ * unreadable checkout never collides with another under a partial key. Encoded
+ * rather than concatenated, so no root/branch pair can spell another's key.
+ */
+function checkoutKey(root: string | null, branch: string | null): string | null {
+  return root && branch ? JSON.stringify([root, branch]) : null;
+}
+
+/** Drop oldest-inserted entries until `m` is within `cap`. */
+function evictOldest(m: Pick<Map<string, unknown>, "size" | "keys" | "delete">, cap: number): void {
+  while (m.size > cap) {
+    const oldest = m.keys().next();
+    if (oldest.done) return;
+    m.delete(oldest.value);
+  }
+}
 
 /** A task in a terminal state has no further lifecycle - safe to evict from memory. */
 function isTerminalTask(status: Task["status"]): boolean {
@@ -906,43 +1589,6 @@ const PERMISSION_MODES = new Set<PermissionMode>([
  */
 export function normalizePermissionMode(raw: string | undefined | null): PermissionMode | null {
   return raw && PERMISSION_MODES.has(raw as PermissionMode) ? (raw as PermissionMode) : null;
-}
-
-/**
- * Claude's Shift+Tab cycle order, used to *optimistically* advance the card's
- * mode chip the instant we inject a cycle keystroke (see
- * `optimisticCyclePermissionMode` for why the chip has to guess at all).
- *
- * We only advance a step when its outcome is *certain*. default -> acceptEdits and
- * acceptEdits -> plan are the only transitions that land on the same mode in every
- * config: the optional `bypassPermissions`/`auto` modes slot into the cycle only
- * after `plan`, gated behind flags / account settings the daemon can't observe. So
- * from `plan` the next mode is config-dependent - `default` in the base cycle, but
- * `bypassPermissions`/`auto` when those are enabled - and `plan`/`bypassPermissions`/
- * `auto` therefore map to null rather than fabricate a mode we can't derive, as
- * `dontAsk` (never in the cycle) already did. Their chips keep the last mode a hook
- * reported until the next one updates them.
- *
- * That last-known chip can lag reality, as any hook-sourced value can - a
- * pre-existing property of the overlay this neither introduces nor fixes. The point
- * here is narrower: don't add a *new* wrong value on top of it.
- */
-const MODE_CYCLE: Record<PermissionMode, PermissionMode | null> = {
-  default: "acceptEdits",
-  acceptEdits: "plan",
-  plan: null,
-  bypassPermissions: null,
-  auto: null,
-  dontAsk: null,
-};
-
-/**
- * The next mode a Shift+Tab lands on from `current`, or null when we can't tell -
- * in which case the chip is left for a real hook to update rather than guessed.
- */
-export function nextPermissionMode(current: PermissionMode | null): PermissionMode | null {
-  if (!current) return null;
-  return MODE_CYCLE[current];
 }
 
 /**
@@ -1034,11 +1680,13 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.state === b.state &&
     a.cwd === b.cwd &&
     a.gitBranch === b.gitBranch &&
+    a.gitRoot === b.gitRoot &&
     a.pid === b.pid &&
     a.nameSource === b.nameSource &&
     a.agentSessionId === b.agentSessionId &&
     a.transcriptPath === b.transcriptPath &&
     a.instrumented === b.instrumented &&
+    a.hooksSeen === b.hooksSeen &&
     a.activity === b.activity &&
     a.permissionMode === b.permissionMode &&
     a.pendingReviews === b.pendingReviews &&
@@ -1053,7 +1701,15 @@ function sessionEqual(a: Session, b: Session): boolean {
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&
-    JSON.stringify(a.note) === JSON.stringify(b.note)
+    JSON.stringify(a.note) === JSON.stringify(b.note) &&
+    // The other two denormalized fields `mergeDiscovered` resolves next to `note`.
+    // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
+    // particular depends on OTHER sessions (a queue is orphaned only once its own
+    // session is evicted), so the session whose hint changes need not have changed
+    // in any way of its own - an idle sibling is equal by every field above, stays
+    // quiet, and never surfaces the stranded batch.
+    JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
+    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue)
   );
 }
 

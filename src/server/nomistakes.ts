@@ -137,10 +137,51 @@ export async function pollAndReconcile(registry: Registry): Promise<void> {
   await Promise.all(
     cwds.map(async (cwd) => {
       const s = await fetchStatus(cwd);
-      if (s && s.branch) runs.set(s.branch, s); // dedup: several worktrees can report one run
+      if (s && s.branch) runs.set(s.branch, timeRun(s)); // dedup: several worktrees can report one run
     }),
   );
   registry.reconcileNomistakes([...runs.values()]);
+}
+
+// ---- run clock ----
+
+/**
+ * Runs we have watched running, mapped to when we saw them stop (null while still
+ * going). Absent means we never saw the run go - and such a run is never stamped,
+ * because we'd be recording when the daemon started looking, not when the run
+ * ended. A card that says a 4-minute run took 3 hours is worse than one that
+ * shows no duration at all.
+ */
+const watched = new Map<string, number | null>();
+
+/** How many runs the clock remembers, so a long-lived daemon can't grow forever. */
+const WATCHED_CAP = 200;
+
+/** Forget everything the run clock has watched. Test seam. */
+export function resetRunClock(): void {
+  watched.clear();
+}
+
+/**
+ * Time `run`: its end stamped the moment we see it stop running (its start comes
+ * from its own id, in summarize). Idempotent - every worktree on a run's branch
+ * reports it each poll, and only the first sighting of its end is kept.
+ */
+export function timeRun(run: NmRunSummary, now = Date.now()): NmRunSummary {
+  if (!run.id) return run; // an id-less run can't be told apart from the next one
+  if (run.status === "running") {
+    if (!watched.has(run.id)) {
+      watched.set(run.id, null);
+      // Map keeps insertion order, and re-setting a key holds its place - so the
+      // first key is always the run we've been watching longest.
+      if (watched.size > WATCHED_CAP) watched.delete(watched.keys().next().value!);
+    }
+    return { ...run, endedAt: null };
+  }
+  const seen = watched.get(run.id);
+  if (seen === undefined) return { ...run, endedAt: null }; // it was over before we looked
+  if (seen === null) watched.set(run.id, now);
+  return { ...run, endedAt: seen ?? now };
 }
 
 /**
@@ -372,13 +413,39 @@ function assignGateScalar(gate: NonNullable<NmRun["gate"]>, line: string): void 
   if (risk !== null) return void (gate.risk = risk);
 }
 
-/** Reduce a parsed run to the compact summary the UI shows. */
-function summarize(run: NmRun | null): NmRunSummary | null {
+/** Crockford base32, the ULID alphabet (no I, L, O or U). */
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * The start time a ULID carries in its leading 10 characters (a 48-bit epoch-ms
+ * timestamp). `axi status` reports no timestamps, but every run id it prints is a
+ * ULID - so a run dates itself, with no extra subprocess and nothing to remember.
+ *
+ * Returns null for an id that isn't a ULID, so an id format we don't recognise
+ * costs the card its duration rather than showing a wrong one.
+ */
+export function ulidTime(id: string): number | null {
+  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/i.test(id)) return null;
+  let ms = 0;
+  for (const c of id.slice(0, 10).toUpperCase()) ms = ms * 32 + CROCKFORD.indexOf(c);
+  return ms;
+}
+
+/**
+ * Reduce a parsed run to the compact summary the UI shows. Exported alongside
+ * `parseAxiStatus` so tests can pin the whole status -> card path, notably that
+ * the run id survives it: a dropped id silently un-retires a dismissed run.
+ *
+ * Pure: `endedAt` is left null for the poller's clock (see timeRun) to stamp.
+ */
+export function summarize(run: NmRun | null): NmRunSummary | null {
   if (!run) return null;
   return {
     id: run.id,
     status: run.status,
     branch: run.branch,
+    startedAt: ulidTime(run.id),
+    endedAt: null,
     awaitingAgent: run.awaitingAgent,
     findingsSummary: run.findingsSummary,
     gateStep: run.gate?.step ?? null,

@@ -354,6 +354,16 @@ export interface TranscriptWindow {
   messages: TranscriptMessage[];
   /** True when turns between the head and the tail were dropped for size. */
   truncated: boolean;
+  /**
+   * How many leading `messages` came from the opening slice - the boundary of the elided
+   * middle. Non-zero only when `truncated`, where `messages[headCount - 1]` and
+   * `messages[headCount]` sit next to each other in the array but far apart in the session.
+   * A reader that wants the genuinely recent turns must therefore slice forward from here
+   * rather than back from the end: the tail's turn count is byte-bounded, so when it yields
+   * fewer turns than the head, slicing from the end runs back into the opening. 0 when the
+   * file was returned whole and every turn is contiguous.
+   */
+  headCount: number;
 }
 
 /**
@@ -373,12 +383,12 @@ export function readTranscriptWindow(
   try {
     size = statSync(path).size;
   } catch {
-    return { messages: [], truncated: false };
+    return { messages: [], truncated: false, headCount: 0 };
   }
   // Small enough to read whole: no head/tail split, no truncation.
   if (size <= WINDOW_HEAD_BYTES + WINDOW_TAIL_BYTES) {
     const all = parseLines(readTailLines(path, size));
-    return { messages: all, truncated: false };
+    return { messages: all, truncated: false, headCount: 0 };
   }
   // Head begins at byte 0 (first line is whole) but ends mid-file (drop the partial
   // last line). Tail begins mid-file (drop the partial first line) but ends at EOF
@@ -390,7 +400,69 @@ export function readTranscriptWindow(
   // De-dupe by record id in case the windows overlap on a mid-size file.
   const seen = new Set(head.map((m) => m.id));
   const merged = [...head, ...tail.filter((m) => !seen.has(m.id))];
-  return { messages: merged, truncated: true };
+  return { messages: merged, truncated: true, headCount: head.length };
+}
+
+/** Cap on a `since` window, so one long-running item can't return a whole file. */
+const SINCE_MAX_BYTES = 512 * 1024;
+
+/**
+ * The transcript's current byte size - the anchor a work item records at delivery
+ * so its verify window can start exactly at its first turn. An O(1) stat; null
+ * when the file is missing. See `readTranscriptSince` for why bytes and not a
+ * timestamp or a turn count.
+ */
+export function transcriptSize(path: string): number | null {
+  try {
+    return statSync(path).size;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A transcript window read FORWARD from a byte offset - how the work queue scopes
+ * a window to a single item.
+ *
+ * The transcript is append-only, so the file size recorded when an item was
+ * delivered is an exact item boundary, and seeking to it is O(1). That beats every
+ * alternative: the diff is cumulative whenever the agent doesn't commit, a turn
+ * count can span three items, and filtering a head+tail window by timestamp would
+ * silently drop the item's earliest turns (the ones establishing what the agent
+ * set out to do) whenever its work exceeds the tail.
+ *
+ * `reset: true` means the file is now SHORTER than the offset - the transcript was
+ * cleared (a `/clear`), so the anchor is meaningless. Callers must treat that as a
+ * verify-infrastructure failure and escalate, NOT judge the item against a
+ * near-empty window and invent gaps.
+ */
+export function readTranscriptSince(
+  path: string,
+  offset: number,
+  maxBytes = SINCE_MAX_BYTES,
+): TranscriptWindow & { reset?: boolean } {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { messages: [], truncated: false, headCount: 0 };
+  }
+  if (size < offset) return { messages: [], truncated: false, reset: true, headCount: 0 };
+  // Bound the window from the TAIL when an item wrote more than the cap: the
+  // recent turns are what show whether the work landed.
+  const truncated = size - offset > maxBytes;
+  const start = truncated ? size - maxBytes : offset;
+  const buf = readRange(path, start, size);
+  // Drop the partial first line ONLY when we truncated into the middle of a line.
+  // `offset` itself is a line boundary (it was EOF when the item was delivered),
+  // so dropping there would discard a real turn - the item's opening one. If the
+  // file happened to end mid-line at delivery, parseLines skips the unparseable
+  // fragment anyway, so not dropping is safe in both cases.
+  const lines = completeLines(buf, truncated, false);
+  // headCount is 0 even when truncated: this window drops a PREFIX rather than a
+  // middle, so the turns it returns are always contiguous and a reader slicing
+  // forward from 0 can never run back into an elided boundary.
+  return { messages: parseLines(lines), truncated, headCount: 0 };
 }
 
 /**

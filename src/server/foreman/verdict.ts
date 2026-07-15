@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ForemanConfig, SetNote } from "@shared/protocol.ts";
+import { cwdAllowlisted } from "@shared/foreman.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
 // concrete actions the worker takes. Kept pure and free of I/O so it's unit
@@ -286,15 +287,6 @@ function oneLine(s: string, max = 80): string {
  * of typing into a session. Pure.
  */
 export function foremanMayActLive(cfg: ForemanConfig, cwd: string | null): boolean {
-  if (!cfg.enabled || cfg.mode !== "live" || !cwd) return false;
-  const dir = stripTrailingSlash(cwd);
-  return cfg.repoAllowlist.some((root) => {
-    const r = stripTrailingSlash(root);
-    return dir === r || dir.startsWith(`${r}/`);
-  });
-}
-
-/** Drop a single trailing "/" (keeping bare "/") so "/repo/" and "/repo" compare equal. */
-function stripTrailingSlash(p: string): string {
-  return p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p;
+  if (!cfg.enabled || cfg.mode !== "live") return false;
+  return cwdAllowlisted(cwd, cfg.repoAllowlist);
 }

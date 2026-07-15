@@ -18,6 +18,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     nameSource: "process",
     cwd: "/repo",
     gitBranch: "main",
+    gitRoot: null,
     nomistakesGated: true,
     pid: 1,
     tty: null,
@@ -30,9 +31,11 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
 
 function runOn(branch: string): NmRunSummary {
   return {
-    id: `run-${branch}`,
+    id: `01RUN_${branch}`,
     status: "running",
     branch,
+    startedAt: null,
+    endedAt: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

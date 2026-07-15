@@ -1,9 +1,18 @@
-import type { ForemanStatus, NmFixDetail, ResetPreview, SessionDiff } from "@shared/types.ts";
+import type {
+  ForemanStatus,
+  NmFixDetail,
+  PermissionMode,
+  ResetPreview,
+  SessionDiff,
+  SessionQueue,
+} from "@shared/types.ts";
 import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
 
 export interface ActionResult {
   ok: boolean;
   error?: string;
+  /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
+  status?: number;
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -44,7 +53,7 @@ export async function fetchResetPreview(id: string): Promise<ResetPreview> {
  */
 export async function fetchSessionDiff(id: string, commit?: string): Promise<SessionDiff> {
   const fail = (error: string): SessionDiff => ({
-    ok: false, error, base: null, baseSha: null, headSha: null, branch: null,
+    ok: false, error, base: null, baseSha: null, headSha: null, repoRoot: null, branch: null,
     filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
   });
   try {
@@ -86,10 +95,10 @@ async function request(method: string, path: string, body?: unknown): Promise<Ac
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = (await res.json().catch(() => ({}))) as ActionResult;
-    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
     // Task endpoints return the Task object (no `ok` field); a 2xx is success.
     // Errors always arrive as a non-2xx (handled above), so this can't mask one.
-    return { ...data, ok: true };
+    return { ...data, ok: true, status: res.status };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -97,7 +106,28 @@ async function request(method: string, path: string, body?: unknown): Promise<Ac
 
 const post = (path: string, body?: unknown) => request("POST", path, body);
 const put = (path: string, body?: unknown) => request("PUT", path, body);
+const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
+
+/**
+ * Fetch a session's work queue, saying WHICH kind of nothing it got.
+ *
+ * `fetchJson` collapses "this session has no queue" (a 200 with a null body) and
+ * "the request failed" into the same null, and those two must never render the
+ * same: a populated queue whose GET fails would otherwise draw as an empty one,
+ * under an add box, inviting the human to re-queue work that already exists.
+ */
+export async function fetchQueue(
+  id: string,
+): Promise<{ ok: true; queue: SessionQueue | null } | { ok: false }> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/queue`);
+    if (!res.ok) return { ok: false };
+    return { ok: true, queue: (await res.json()) as SessionQueue | null };
+  } catch {
+    return { ok: false };
+  }
+}
 
 export interface DispatchInput {
   repoRoot: string;
@@ -105,15 +135,24 @@ export interface DispatchInput {
   title?: string;
   kind: "ship" | "scout";
   agent: "claude" | "codex";
-  queue?: boolean;
+  backlog?: boolean;
 }
 
 export const api = {
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
+  rename: (id: string, name: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
+  /**
+   * Drive a session to a specific permission mode. Slower than it looks - the
+   * daemon walks the Shift+Tab cycle a step at a time, verifying against the pane
+   * - so callers should show a pending state while it runs.
+   */
+  setMode: (id: string, mode: PermissionMode) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
@@ -126,7 +165,7 @@ export const api = {
 
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
-  dispatchQueued: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
+  dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>
@@ -134,6 +173,29 @@ export const api = {
   deleteTask: (id: string) => del(`/api/tasks/${encodeURIComponent(id)}`),
 
   // --- Foreman (auto-responder) ---
-  setForemanConfig: (patch: ForemanConfigPatch) => put(`/api/foreman/config`, patch),
-  setNote: (id: string, patch: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, patch),
+  setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),
+  setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
+
+  // --- Foreman session work queues ---
+  addWorkItem: (id: string, intent: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/queue`, { intent }),
+  /** Edit a waiting item. CAS on `revision` - a 409 means Foreman got there first. */
+  editWorkItem: (id: string, itemId: string, intent: string, revision: number) =>
+    patch(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}`, {
+      intent,
+      revision,
+    }),
+  removeWorkItem: (id: string, itemId: string) =>
+    del(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}`),
+  reorderQueue: (id: string, ids: string[]) =>
+    put(`/api/sessions/${encodeURIComponent(id)}/queue/order`, { ids }),
+  approveWorkItem: (id: string, itemId: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(itemId)}/approve`),
+  setWrapupAnswer: (id: string, answer: string | null) =>
+    put(`/api/sessions/${encodeURIComponent(id)}/queue/wrapup`, { answer }),
+  reattachQueue: (id: string, noteKey: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/queue/reattach`, { noteKey }),
+  /** Deliver a whole multi-line prompt as one bracketed-paste submission. */
+  injectPrompt: (id: string, text: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/inject`, { text }),
 };

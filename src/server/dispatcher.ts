@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
+import { isTreehouseRepo, occupiedCwds, reapPool } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -42,7 +43,7 @@ export class Dispatcher {
       const slug = slugify(task.title);
       const shortId = taskId.slice(0, 6);
 
-      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId);
+      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId, occupiedCwds(this.registry));
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
@@ -157,22 +158,42 @@ export async function provisionWorktree(
   taskId: string,
   slug: string,
   shortId: string,
+  /** Live sessions' cwds, so a reap here can't evict a tree someone is standing in. */
+  liveCwds: readonly string[] = [],
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
   if (check.code !== 0 || check.stdout.trim() !== "true") {
     throw new Error(`${repoRoot} is not a git repository`);
   }
 
-  if ((await hasBin("treehouse")) && existsSync(join(repoRoot, "treehouse.toml"))) {
-    const r = await run("treehouse", ["get", "--lease", "--lease-holder", "fleet-control"], {
-      cwd: repoRoot,
-      timeoutMs: 180000,
-    });
-    const path = r.stdout.trim().split("\n").filter(Boolean).pop();
-    if (r.code === 0 && path && existsSync(path)) {
+  if ((await hasBin("treehouse")) && isTreehouseRepo(repoRoot)) {
+    let path = await leaseFromPool(repoRoot);
+    // A dry pool is usually a LEAKED pool: leases are durable, so every agent that
+    // went away without returning its tree still holds a slot, and at `max_trees`
+    // the pool has nothing left to give. Collect those and ask once more - the
+    // alternative (below) is silently abandoning the pool for this dispatch.
+    if (!path) {
+      const { reaped } = await reapPool(repoRoot, liveCwds);
+      if (reaped.length > 0) {
+        console.log(
+          `[fleet-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped
+            .map((t) => t.name)
+            .join(", ")}`,
+        );
+        path = await leaseFromPool(repoRoot);
+      }
+    }
+    if (path) {
       return { path: realpathSync(path), branch: await currentBranch(path), provider: "treehouse" };
     }
-    // Fall through to a plain worktree if the pool couldn't hand one over.
+    // Fall through to a plain worktree - but say so. This used to be silent, which
+    // hid a full pool behind trees that merely looked unfamiliar; the fallback is a
+    // throwaway checkout with none of the pool's pre-warming.
+    console.warn(
+      `[fleet-control] treehouse pool in ${repoRoot} could not hand over a worktree ` +
+        `(every tree is leased or in use, and none could be reclaimed) - ` +
+        `falling back to a throwaway git worktree. Free slots with: treehouse status`,
+    );
   }
 
   mkdirSync(WORKTREES_DIR, { recursive: true });
@@ -183,6 +204,20 @@ export async function provisionWorktree(
   });
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
   return { path: realpathSync(path), branch, provider: "git" };
+}
+
+/**
+ * Ask the pool for a tree. Returns its path, or null when the pool has nothing to
+ * give (which `provisionWorktree` treats as "maybe leaked", not "no pool").
+ * `get --lease` prints the path on stdout; its banners go to stderr.
+ */
+async function leaseFromPool(repoRoot: string): Promise<string | null> {
+  const r = await run("treehouse", ["get", "--lease", "--lease-holder", "fleet-control"], {
+    cwd: repoRoot,
+    timeoutMs: 180000,
+  });
+  const path = r.stdout.trim().split("\n").filter(Boolean).pop();
+  return r.code === 0 && path && existsSync(path) ? path : null;
 }
 
 /**

@@ -544,6 +544,26 @@ treehouse status                 # see the pool
 treehouse return <path>          # give the worktree back to the pool
 ```
 
+### Leaked leases are reclaimed for you
+
+A durable lease is what lets a backgrounded agent survive a restart, but it also
+means nothing frees a tree when its agent simply goes away. Left alone those
+leases pile up until the pool hits `max_trees` with **zero available**, and every
+later `treehouse get` fails - at which point a dispatch quietly falls back to a
+throwaway `git worktree` and the pool stops being reused at all. (`treehouse
+prune` can't help: it skips any tree with an owner reservation, and a leaked
+lease is one.)
+
+So the daemon sweeps the pools it knows about (every `FLEET_POOL_REAP_MS`, and
+again whenever a dispatch finds the pool dry) and hands back only the leases it
+can prove are dead. A tree is returned **only** when treehouse reports no
+processes under it, no live session's cwd is inside it, it has no uncommitted
+changes, and origin's default branch already contains its HEAD. Anything else -
+including any uncertainty - leaves the lease alone: a leaked lease costs a slot,
+a wrong reap costs your work. Note that a *live* agent's tree is often clean and
+merged (right after a push), so it's the liveness checks, not the git ones, that
+keep it yours.
+
 Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
 safety, the warm+gate step is run by `make session` itself. To make **every**
 `treehouse get` (not just `make session`) warm and gate automatically, add a
@@ -558,6 +578,7 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 | `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker |
 | `FLEET_POLL_MS` | `1500` | discovery interval |
 | `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
+| `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases |
 | `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
 | `FLEET_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |

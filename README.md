@@ -407,7 +407,7 @@ without reaching for the mouse:
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
-| <kbd>⌃</kbd><kbd>r</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
+| <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
 **Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
@@ -441,7 +441,7 @@ those map to `no-mistakes axi respond --action …` (fix lets you pick findings 
 add guidance). Approve and skip confirm first since they advance the pipeline
 toward pushing your branch.
 
-Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>r</kbd>) also
+Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>R</kbd>) also
 **retires the run the card was showing**, clearing the strip and its narration for
 good. The reset throws away the very work that run validated, but `axi status` keeps
 reporting it for the branch long after - a reset moves the branch *pointer*, not the

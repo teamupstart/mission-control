@@ -89,17 +89,26 @@ test("a lone modifier press yields no chord", () => {
 
 // ---- formatChord (keycaps) ----
 
-test("formatChord renders a shifted letter as an upper-case keycap", () => {
+test("formatChord renders a modified letter as an upper-case keycap", () => {
   assert.equal(formatChord("shift+o"), "⇧O");
+  assert.equal(formatChord("cmd+k"), "⌘K");
+  assert.equal(formatChord("ctrl+r"), "⌃R");
+  assert.equal(formatChord("alt+e"), "⌥E");
   assert.equal(formatChord("cmd+shift+k"), "⌘⇧K");
 });
 
-test("formatChord leaves other chords alone", () => {
+test("formatChord leaves an unmodified letter lower-case", () => {
+  // The stock keycaps are bare letters and must keep reading as typed.
   assert.equal(formatChord("o"), "o");
-  assert.equal(formatChord("cmd+k"), "⌘k");
+  assert.equal(formatChord("s"), "s");
+});
+
+test("formatChord leaves uncased and named keys alone", () => {
   assert.equal(formatChord("shift+Tab"), "⇧⇥");
+  assert.equal(formatChord("cmd++"), "⌘+");
   assert.equal(formatChord("+"), "+");
   assert.equal(formatChord("/"), "/");
+  assert.equal(formatChord("Escape"), "Esc");
   assert.equal(formatChord(""), "");
 });
 
@@ -145,7 +154,7 @@ test("reset is a first-class action defaulting to Ctrl+R on the selected card", 
   // The chord a real Ctrl+R keydown produces must be what the handler matches on.
   assert.equal(chordFromEvent(key("r", { ctrl: true })), "ctrl+r");
   assert.equal(chordFromEvent(key("R", { ctrl: true })), "ctrl+r");
-  assert.equal(formatChord(reset.defaultBinding), "⌃r");
+  assert.equal(formatChord(reset.defaultBinding), "⌃R");
 });
 
 // ---- the override store ----

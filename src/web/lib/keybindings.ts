@@ -201,13 +201,14 @@ const KEY_LABEL: Record<string, string> = {
   Delete: "⌦",
 };
 
-/** Human-readable form of a chord for keycaps and the editor (e.g. "⌘k", "⇧O", "⇥", "/"). */
+/** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
 export function formatChord(chord: string): string {
   if (!chord) return "";
   const { mods, key } = parseChord(chord);
   const modStr = mods.map((m) => MOD_SYMBOL[m] ?? m).join("");
-  // A shifted letter reads as the keycap you actually press ("⇧O", not "⇧o").
-  if (mods.includes("shift") && key.length === 1 && isCased(key)) return modStr + key.toUpperCase();
+  // A modified letter reads as the keycap convention it's written in everywhere
+  // else ("⌘K", "⇧O"), while a bare letter stays as typed ("k").
+  if (mods.length > 0 && key.length === 1 && isCased(key)) return modStr + key.toUpperCase();
   return modStr + (KEY_LABEL[key] ?? key);
 }
 

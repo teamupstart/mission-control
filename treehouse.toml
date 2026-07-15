@@ -4,6 +4,12 @@
 # never share one working tree. `make session` leases one of these, warms it,
 # and gates it with no-mistakes (see scripts/new-session.mjs).
 #
+# Those leases are durable, so nothing frees a tree when its agent goes away. The
+# daemon therefore sweeps this pool and hands back the leases it can prove are
+# dead - its own, idle, clean, and already merged - or `max_trees` below would
+# eventually fill with leaks and every `treehouse get` would fail. See
+# src/server/pool.ts and the README's "Leaked leases are reclaimed for you".
+#
 # NOTE: treehouse ignores a [hooks] block in this repo-level file on purpose - a
 # cloned repo must not be able to run commands on your machine. `make session`
 # runs scripts/worktree-setup.mjs itself, so no hook is needed for that flow.

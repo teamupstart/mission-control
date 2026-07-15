@@ -19,8 +19,10 @@ import { unref } from "./util/timers.ts";
  * agent keeps its checkout across restarts - which means nothing frees a tree
  * when its agent simply goes away. Leases accumulate, the pool hits `max_trees`
  * with zero available, and every later `treehouse get` fails: `provisionWorktree`
- * then quietly falls back to a throwaway `git worktree`, so the pool's whole
- * point (pre-warmed, reused trees) is lost while the leak stays invisible.
+ * then falls back to a throwaway `git worktree`, so the pool's whole point
+ * (pre-warmed, reused trees) is lost. That fallback now warns rather than passing
+ * silently - which is how the leak stayed invisible long enough to fill a pool -
+ * but a warning only reports the leak; this module is what collects it.
  *
  * treehouse's own `prune` can't fix this: it skips any tree with an owner
  * reservation, and a leaked lease IS a reservation. So the harness collects its

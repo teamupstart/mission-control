@@ -525,6 +525,7 @@ managing worktrees"): each session gets its own isolated tree, and dependencies
 ```sh
 make session                      # lease a worktree, warm it, gate it, drop you in a subshell
 make session ARGS="-- claude"     # …or launch an agent in it directly
+make session ARGS="--holder mine" # …under your own lease label (see below)
 node scripts/new-session.mjs -- claude   # equivalent, without make
 ```
 
@@ -554,10 +555,9 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 A durable lease is what lets a backgrounded agent survive a restart, but it also
 means nothing frees a tree when its agent simply goes away. Left alone those
 leases pile up until the pool hits `max_trees` with **zero available**, and every
-later `treehouse get` fails - at which point a dispatch quietly falls back to a
-throwaway `git worktree` and the pool stops being reused at all. (`treehouse
-prune` can't help: it skips any tree with an owner reservation, and a leaked
-lease is one.)
+later `treehouse get` fails - at which point a dispatch falls back to a throwaway
+`git worktree` and the pool stops being reused at all. (`treehouse prune` can't
+help: it skips any tree with an owner reservation, and a leaked lease is one.)
 
 So the daemon sweeps every treehouse repo it can name - the ones behind your live
 sessions and tracked tasks, plus every checkout under `FLEET_WORKSPACE_DIRS` -
@@ -582,6 +582,12 @@ purpose**, and the sweep leaves it exactly where you put it, in this repo or any
 other one it walks. Reclaiming a `fleet-control` lease is only fair game because
 this harness took it and can tell its holder is gone.
 
+That is also the escape hatch from this side: `make session ARGS="--holder my-label"`
+(or `node scripts/new-session.mjs --holder my-label`) still warms and gates the tree
+the usual way, but records the lease under **your** label instead, so the sweep will
+never collect it - park a tree that way and it is yours until you
+`treehouse return` it yourself.
+
 The flip side is that the sweep only knows the label it records *today*. A lease
 `make session` took under this project's old `ai-harness` name is skipped like any
 other holder's, since nothing tells it apart from a reservation someone made under
@@ -599,6 +605,13 @@ existed.
 Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool
 for a throwaway worktree.
+
+That last-resort fallback is no longer silent, which is how a pool could sit full
+without anyone noticing: a dispatch that still can't get a tree warns in the daemon
+log and points you at `treehouse status`. It reports what it actually observed and
+quotes treehouse's own words rather than blaming a full pool - `get` fails the same
+way for an unresolvable pool or a bad config, and sending you to a `treehouse status`
+that looks perfectly healthy would help nobody.
 
 ## Configuration
 

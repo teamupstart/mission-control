@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
-import { isTerminal, isWaiting, itemLabel, moveTarget, queueHintKind } from "../lib/queue.ts";
+import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
+import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
 import { api, fetchQueue } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
 
@@ -460,7 +461,7 @@ export function WorkQueue({
         when something IS waiting: with nothing pending there's nothing to explain.
       */}
       {open.length > 0 && (
-        <QueueHint enabled={foremanEnabled} mode={foremanMode} allowlisted={allowlisted} cwd={session.cwd} />
+        <QueueHint enabled={foremanEnabled} mode={foremanMode} allowlisted={allowlisted} session={session} />
       )}
 
       {queue && queue.wrapupAskedAt !== null && (
@@ -474,16 +475,23 @@ export function WorkQueue({
 
 /**
  * The one line explaining what Foreman will do with the waiting items. Which line is
- * owed is `queueHintKind`'s call (it's a rule, and rules are tested without a DOM);
+ * owed is `foremanSendBlock`'s call (it's a rule, and rules are tested without a DOM);
  * this renders it.
  */
 function QueueHint(props: {
   enabled: boolean;
   mode: string;
   allowlisted: boolean;
-  cwd: string | null;
+  session: Session;
 }): React.JSX.Element | null {
-  switch (queueHintKind(props)) {
+  switch (
+    foremanSendBlock({
+      enabled: props.enabled,
+      mode: props.mode,
+      allowlisted: props.allowlisted,
+      cwd: props.session.cwd,
+    })
+  ) {
     case "foreman-off":
       return (
         <p className="wq-hint dim">
@@ -491,15 +499,14 @@ function QueueHint(props: {
           wait - turn Foreman on from the toolbar to start working through them.
         </p>
       );
-    // Allowlist honesty. foremanMayActLive's prefix match doesn't cover
-    // dispatched-task worktrees (they aren't under the repo root), so a queue on a
-    // dispatched agent would silently never go live and every item would sit
-    // `proposed` - reading as a bug. Say so, and say where to fix it.
+    // Allowlist honesty. An off-allowlist queue silently never goes live and every
+    // item sits `proposed` - reading as a bug. Say so, and say where to fix it.
     case "not-allowlisted":
       return (
         <p className="wq-hint dim">
           This repo isn&apos;t allowlisted for live sends, so items will be drafted for your OK. Add{" "}
-          <code>{props.cwd}</code> to Foreman&apos;s allowlist to let it send here.
+          <code>{allowlistSuggestion(props.session)}</code> to Foreman&apos;s allowlist to let it
+          send here.
         </p>
       );
     case "no-cwd":

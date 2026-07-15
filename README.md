@@ -349,7 +349,12 @@ pick a mode.
 | **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
 
 Live sending is gated by an explicit **repo allowlist** (paths, one per line in the
-popover); with an empty allowlist Foreman never types into any live session. A separate
+popover); with an empty allowlist Foreman never types into any live session. An entry
+allowlists the **repo**, not just the directory: a session in a *worktree* of an
+allowlisted repo is cleared too, wherever that worktree sits on disk. That's what makes
+live mode usable - dispatched agents and treehouse checkouts run in worktrees parked far
+from the repo, so a directory-only rule would draft forever on the very repo you cleared.
+A worktree of a repo you haven't allowlisted is still refused. A separate
 **Auto-approve non-destructive access** switch (on by default) governs whether it may
 approve access/permission asks - turn it off and those escalate to you instead.
 Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ForemanConfig, SetNote } from "@shared/protocol.ts";
-import { cwdAllowlisted } from "@shared/foreman.ts";
+import { foremanAllowlisted } from "@shared/foreman.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
 // concrete actions the worker takes. Kept pure and free of I/O so it's unit
@@ -42,8 +42,6 @@ export type Verdict = z.infer<typeof VerdictSchema>;
 /** What the worker knows about a session's pending prompt when applying a verdict. */
 export interface ReviewContext {
   sessionId: string;
-  /** Repo root the session runs in (allowlist check). */
-  repoRoot: string | null;
   /** Stable id of the prompt being handled - stamped as the note's handledMarker. */
   promptMarker: string;
   /** A pending MCP `input` review's id, if the ask arrived that way. */
@@ -278,15 +276,21 @@ function oneLine(s: string, max = 80): string {
 }
 
 /**
- * True when Foreman is cleared to *send* for a session running in `cwd`: config
- * enabled + live, and `cwd` is at or under an allowlisted repo root. The prefix
- * match only covers worktrees physically nested under an allowlisted root;
- * worktrees kept elsewhere (e.g. dispatched-task worktrees under the harness
- * worktrees dir) need their own allowlist entry to receive live sends.
- * Dry-run / semi-auto / off-allowlist all return false, so they draft instead
- * of typing into a session. Pure.
+ * True when Foreman is cleared to *send* for a session: config enabled + live, and
+ * the session is allowlisted - either its `cwd` sits under an allowlisted root, or
+ * it's a worktree OF an allowlisted repo (`repoRoot`, from git's common dir).
+ * Dry-run / semi-auto / off-allowlist all return false, so they draft instead of
+ * typing into a session. Pure.
+ *
+ * `repoRoot` is optional so a caller without one (a test, or a session whose git
+ * resolution failed) degrades to the old cwd-prefix rule rather than throwing -
+ * fail-closed: a missing repoRoot can only ever withhold a send, never grant one.
  */
-export function foremanMayActLive(cfg: ForemanConfig, cwd: string | null): boolean {
+export function foremanMayActLive(
+  cfg: ForemanConfig,
+  cwd: string | null,
+  repoRoot: string | null = null,
+): boolean {
   if (!cfg.enabled || cfg.mode !== "live") return false;
-  return cwdAllowlisted(cwd, cfg.repoAllowlist);
+  return foremanAllowlisted(cwd, repoRoot, cfg.repoAllowlist);
 }

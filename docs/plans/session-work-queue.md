@@ -305,14 +305,17 @@ on the critical path, not a detail. Replace the bare heartbeat with a leased one
 
 **Renewal runs on a background `setInterval`, not from the loop.** This is the difference between a
 lease that works and one that hands the fleet to two workers mid-verify. The existing loop
-heartbeats *per session* and then blocks on a `claude -p` for the whole review - which is exactly
-why `HEARTBEAT_TTL_MS` is 300s and says so in its comment (`config.ts:16-21`): one review-with-retry
-is `2 * REVIEW_TIMEOUT_MS` = **240s**. A lease renewed only by loop progress must therefore outlive
-240s, so an earlier draft's `leaseTtlMs = 90_000` ("comfortably > one loop tick") was wrong on its
-own terms: a tick containing a verify *is* up to 240s. It would expire mid-verify, a standby would
-CAS-acquire, and both workers would run - reintroducing the triage double-answer race the lease
-exists to kill. (The original's post-verify send would still abort via §3.2's guard, so no double
-work-instruction - but the concurrent triage window would be wide open and the 240s verify wasted.)
+heartbeats *per session* and then blocks on `claude -p` for the whole review - which is exactly
+why `HEARTBEAT_TTL_MS` is 300s and says so in its comment (`config.ts:16-24`): one
+review-with-retry is `2 * REVIEW_TIMEOUT_MS` = **240s**, and since the cheap triage tier shipped a
+route-up under `triage: 'on'` blocks on the router *and* the review serially, for
+`TRIAGE_TIMEOUT_MS + 2 * REVIEW_TIMEOUT_MS` = **270s**. A lease renewed only by loop progress must
+therefore outlive 270s, so an earlier draft's `leaseTtlMs = 90_000` ("comfortably > one loop tick")
+was wrong on its own terms: a tick containing a verify *is* up to 240s, and one containing a
+routed-up review is longer still. It would expire mid-verify, a standby would CAS-acquire, and both
+workers would run - reintroducing the triage double-answer race the lease exists to kill. (The
+original's post-verify send would still abort via §3.2's guard, so no double work-instruction - but
+the concurrent triage window would be wide open and the 240s verify wasted.)
 
 Bumping the TTL past 240s would paper over it; decoupling fixes it. A timer renews every
 `leaseRenewMs` regardless of what the loop is blocked on - `claude -p` is async I/O, so the event
@@ -544,7 +547,11 @@ strike** - a stale-send abort is not evidence about the work.
 {kind:'failed'}` - the contract that separates "the model judged" from "the infra blipped"). Extract
 `review.ts`'s spawn/timeout/retry-on-parse-miss into a generic `runStructured<T>(prompt, schema)`;
 `reviewSession` becomes a thin caller, and the verifier inherits the tool-less spawn, the detached
-group, and the timeout cap. Reuse the exported `extractVerdict` candidate ladder.
+group, and the timeout cap. The cheap triage tier already generalized most of this: reuse the
+exported `runClaudeText(prompt, {model, timeoutMs})` and the `parseModelJson(raw, schema)` candidate
+ladder - **not** `extractVerdict`, which is now just a `VerdictSchema`-bound wrapper over the latter
+and so is precisely what a different-schema verifier cannot reuse. The remaining delta is the
+retry-on-parse-miss loop.
 
 Because the reviewer is tool-less it cannot read the repo, so the worker gathers everything: intent,
 per-item diff (`?base=<baseSha>`), transcript window, standards text, and **prior gaps with ids and
@@ -702,7 +709,9 @@ Each of these is a sentence of behavior that is otherwise left to whoever writes
 - `noteKeyFor` (`registry.ts:779`) - the queue key, same stability story as notes.
 - `foremanMayActLive` (`verdict.ts:288`) - the send gate, unchanged.
 - `sendStillValid` (`worker.ts:204`) - the shape of `queueSendStillValid`.
-- `review.ts`'s spawn/timeout/parse-retry + `extractVerdict` - extracted to `runStructured`.
+- `review.ts`'s `runClaudeText` + `parseModelJson` - the tool-less spawn and the schema-generic
+  parse ladder, both already exported for the triage tier; only the parse-retry loop is left to
+  extract into `runStructured`.
 - `injectPrompt` (`actions.ts:74`) - bracketed-paste delivery, newly exposed over HTTP.
 - `computeSessionDiff(cwd, base)` (`diff.ts:47`) - per-item diff scoping, once §0b lands.
 - `ReviewManager` (`reviews.ts:17`) / `upsertNote` (`registry.ts:697`) - the `QueueManager` shape.

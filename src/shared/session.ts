@@ -78,14 +78,44 @@ export function gateParked(s: Session, fleet: Session[] = [s]): boolean {
 }
 
 /**
+ * True while a no-mistakes run this session owns is actively *executing a step*.
+ *
+ * The agent can background the `axi run`/`axi respond` that drives the run and
+ * end its turn. That reports `idle`, which is a true statement about the agent -
+ * it isn't thinking or calling tools - but the run keeps going, and its
+ * completion re-invokes the agent. So the session is committed to that work and
+ * will resume on its own, with no human in the loop: not idle in the only sense
+ * the dashboard's idle bucket means ("free, could take work").
+ *
+ * Executing excludes parked (see gatePending): `status` stays "running" while a
+ * run sits at a gate, but a parked run is *waiting* on a decision, not working.
+ * Whether that wait needs you is gateParked's call, and conflating the two here
+ * would let a gate parked under a presumed-driving agent masquerade as confirmed
+ * work.
+ *
+ * This clears the same bar as hook instrumentation rather than lowering it (see
+ * reportBucket). The registry only attributes a run to a session whose *own*
+ * agent process has a live `no-mistakes` descendant driving it (see
+ * discovery/nomistakes-launch.ts), so this is a live process re-confirmed every
+ * poll - stronger evidence than a hook, and it self-expires: when the driver
+ * dies or the run ends, `status` stops reporting running and the session drops
+ * back to idle on the next poll. Nothing can get stuck "working" forever.
+ */
+export function runInFlight(s: Session): boolean {
+  return s.nomistakes?.status === "running" && !gatePending(s);
+}
+
+/**
  * Which report section a session belongs to:
  *  - needs-you: prompting you - a pending review, a parked gate that needs you,
  *    or the agent explicitly awaiting your input/review.
  *  - working: an agent we can *confirm* is running. That takes hook
- *    instrumentation (starting/working); an uninstrumented session reports no
- *    live state, so we don't claim it's busy.
+ *    instrumentation (starting/working) or a live no-mistakes run the agent
+ *    backgrounded (runInFlight); an uninstrumented session with neither reports
+ *    no live state, so we don't claim it's busy.
  *  - idle: open but not prompting you and not confirmed running - instrumented
- *    sessions the agent has parked at idle, plus every uninstrumented session.
+ *    sessions the agent has parked at idle, plus uninstrumented sessions with no
+ *    run in flight behind them.
  *
  * `fleet` lets a parked gate defer to a same-run session that's still driving it
  * (see gateParked).
@@ -98,6 +128,10 @@ export function reportBucket(s: Session, fleet: Session[] = [s]): ReportBucket {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
   }
+  // Ranks below every state the hook stream can confirm, so a genuine "needs
+  // input" still wins over a run churning in the background. A gate that needs
+  // YOU already returned above, so this only claims the run is self-driving.
+  if (runInFlight(s)) return "working";
   return "idle"; // instrumented-idle, or uninstrumented (open, not confirmed busy)
 }
 

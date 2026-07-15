@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildReport, renderReportMarkdown } from "../src/server/report.ts";
-import { gateParked, needsYouReason, reportBucket } from "../src/shared/session.ts";
+import { gateParked, needsYouReason, reportBucket, runInFlight } from "../src/shared/session.ts";
 import type { NmRunSummary, Session, SessionState, Task, TaskSummary } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -233,6 +233,88 @@ test("a parked gate defers to a same-worktree sibling still driving the run", ()
   const allIdle = [{ ...driver, state: "idle" as SessionState }, idleA, idleB];
   assert.equal(gateParked(idleA, allIdle), true);
   assert.equal(buildReport({ sessions: allIdle, tasks: [] }, 0).counts.needsYou, 3);
+});
+
+/** A run mid-step: executing, not parked at a gate (no awaitingAgent/gateStep). */
+function runningMidStep(over: Partial<NmRunSummary> = {}): NmRunSummary {
+  return {
+    id: "01RUN_MIDSTEP",
+    status: "running",
+    branch: "feature/x",
+    awaitingAgent: null,
+    findingsSummary: "2 awaiting, 7 auto-fix",
+    gateStep: null,
+    gateSummary: null,
+    gateRisk: null,
+    steps: [{ step: "review", status: "running", findings: 9 }],
+    findings: [],
+    outcome: null,
+    ...over,
+  };
+}
+
+test("a backgrounded no-mistakes run keeps its session out of the idle bucket", () => {
+  // The agent can background the driving `axi respond` and end its turn: `Stop`
+  // reports `idle` (true - it isn't thinking or calling tools), while the run
+  // keeps going in a process descended from it and re-invokes it on completion.
+  // Both signals are accurate; the session is simply not idle-and-available.
+  const bg = mkSession({ id: "bg", state: "idle", nomistakes: runningMidStep() });
+  assert.equal(reportBucket(bg), "working");
+  // Mid-step is not a parked gate, so this must not nag you either.
+  assert.equal(gateParked(bg), false);
+  assert.equal(needsYouReason(bg), null);
+
+  // Uninstrumented sessions get the same treatment: the live run is the proof.
+  assert.equal(reportBucket(mkSession({ state: "idle", instrumented: false, nomistakes: runningMidStep() })), "working");
+
+  // A finished/failed run proves nothing is in flight - back to idle.
+  for (const status of ["completed", "failed"]) {
+    assert.equal(reportBucket(mkSession({ state: "idle", nomistakes: runningMidStep({ status }) })), "idle");
+  }
+  // And no run at all is still plain idle.
+  assert.equal(reportBucket(mkSession({ state: "idle" })), "idle");
+
+  const r = buildReport({ sessions: [bg], tasks: [] }, 0);
+  assert.deepEqual(r.working.map((i) => i.sessionId), ["bg"]);
+  assert.equal(r.idle.length, 0);
+});
+
+test("a run in flight never outranks a state the hook stream can confirm", () => {
+  // The whole point of the run-in-flight case is that it's weaker evidence than a
+  // direct report from the agent. A real ask must still reach you, and a parked
+  // gate that needs you must not be masked by the run that parked it.
+  const asking = mkSession({ state: "awaiting_input", nomistakes: runningMidStep() });
+  assert.equal(reportBucket(asking), "needs-you");
+  assert.equal(needsYouReason(asking), "needs input");
+
+  const reviewing = mkSession({ state: "awaiting_review", nomistakes: runningMidStep() });
+  assert.equal(reportBucket(reviewing), "needs-you");
+
+  const toReview = mkSession({ state: "idle", pendingReviews: 1, nomistakes: runningMidStep() });
+  assert.equal(reportBucket(toReview), "needs-you");
+
+  // A gate parked under a stopped agent stays needs-you even though the run that
+  // parked it still reports `status: "running"` - the run is waiting ON you, so
+  // treating "running" as self-driving here would swallow the ask forever.
+  const parked = mkSession({ state: "idle", nomistakes: parkedGate() });
+  assert.equal(parked.nomistakes?.status, "running");
+  assert.equal(reportBucket(parked), "needs-you");
+  assert.equal(needsYouReason(parked), "gate parked at review");
+});
+
+test("a parked run is waiting, not executing", () => {
+  // `status` stays "running" while a run sits at a gate, so run-in-flight has to
+  // mean "executing a step", not "not finished". An uninstrumented session whose
+  // gate is deferred to its presumed-driving agent is the case that catches this:
+  // gateParked says don't nag, and there's no confirmed execution behind it, so
+  // it must stay idle rather than pad the working count on a technicality.
+  const deferred = mkSession({ state: "working", instrumented: false, nomistakes: parkedGate() });
+  assert.equal(gateParked(deferred), false);
+  assert.equal(runInFlight(deferred), false);
+  assert.equal(reportBucket(deferred), "idle");
+
+  // Same session, same agent, run now executing again: confirmed work.
+  assert.equal(runInFlight({ ...deferred, nomistakes: runningMidStep() }), true);
 });
 
 test("renderReportMarkdown reflects sections, counts, and outcomes", () => {

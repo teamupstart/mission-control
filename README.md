@@ -354,6 +354,35 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
+### The cheap tier
+
+Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
+it and spends the big model only where judgment is actually required. **Tier 0** is pure code
+and costs nothing: a plan/diff/gate review is always yours to approve, so it's disposed with a
+Purpose and no model call at all. **Tier 1** is a cheap router (Haiku) that reads a trimmed
+transcript and *buckets* the ask rather than solving it. Only the genuine judgment calls route
+up to the full **Tier 2** review, which is unchanged.
+
+The tier is **asymmetric on purpose**. It may hand a session back to you (skip) or ask you
+(escalate) freely, but it may auto-answer only one tightly bounded category - routine,
+non-destructive access - and that answer flows through the *same* mode + allowlist +
+auto-approve gate the full reviewer's answers do, so it can never send under a looser config
+than Opus would. Two code backstops the router cannot override sit behind it: the destructive
+denylist above forces an escalation, and low confidence routes up.
+
+Pick the posture with the **Cheap tier** control in the popover:
+
+| Cheap tier | What it does |
+|------|--------------|
+| **shadow** (default) | runs the cheap tier *alongside* the full review, acts on the **full review**, and logs every divergence - so its accuracy is measured before you trust it |
+| **on** | the cheap tier disposes the easy cases; the full review fires only on route-up |
+| **off** | every new prompt gets a full review (the pre-tier behavior) |
+
+The worker log is the audit surface for the rollout: every acted session logs the tier that
+decided it (`[tier 2] answer/access -> answered (sent)`), and shadow mode adds a divergence line
+per session (`shadow cheap-over-eager (cheap=… opus=…)`). `cheap-over-eager` - the cheap tier
+would have answered where Opus would not - is the one to watch before flipping to **on**.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - select a card with the arrow keys and act on it
@@ -471,6 +500,9 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | Foreman reviewer: Claude CLI path override |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned |
+| `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
+| `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
+| `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 
 > **Upgrading from `HARNESS_*`?** The old `HARNESS_*` env names are still honored as
 > a fallback, and an existing `~/.ai-harness` state dir is kept in place (the new

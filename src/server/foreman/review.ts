@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
+import type { z } from "zod";
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { VerdictSchema } from "./verdict.ts";
@@ -38,7 +39,7 @@ export async function reviewSession(input: ReviewInput): Promise<ReviewResult> {
   for (const p of attempts) {
     let raw: string;
     try {
-      raw = await runClaude(p);
+      raw = await runClaudeText(p);
     } catch (err) {
       return { kind: "failed", reason: `Foreman review failed: ${String(err)}` };
     }
@@ -48,8 +49,18 @@ export async function reviewSession(input: ReviewInput): Promise<ReviewResult> {
   return { kind: "failed", reason: "Foreman could not parse a verdict from the reviewer." };
 }
 
-/** Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. */
-function runClaude(prompt: string): Promise<string> {
+/**
+ * Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. Exported so the
+ * cheap Tier 1 triage reuses the exact same headless, tool-less, injection-isolated
+ * subprocess machinery - only with a different (cheaper) model. `opts.model` maps to
+ * `--model`; omit it for the default (full-reviewer) model. `opts.timeoutMs` defaults to
+ * the full review's budget, which is sized for Opus reading 48 turns with the whole POLICY -
+ * a cheaper caller should pass its own (see the worker's Tier 1 router).
+ */
+export function runClaudeText(
+  prompt: string,
+  opts: { model?: string; timeoutMs?: number } = {},
+): Promise<string> {
   return new Promise((resolve, reject) => {
     // `--tools ""` is a valid Claude Code CLI flag (verified to exit 0 with an
     // empty value) that sets the available-tool list to empty, disabling every
@@ -61,7 +72,9 @@ function runClaude(prompt: string): Promise<string> {
     // no controlling terminal, so the fleet poller (which groups agents by tty
     // and skips tty-less ones) never discovers this headless reviewer as a
     // phantom session.
-    const child = spawn(CLAUDE_BIN, ["-p", "--output-format", "json", "--tools", ""], {
+    const args = ["-p", "--output-format", "json", "--tools", ""];
+    if (opts.model) args.push("--model", opts.model);
+    const child = spawn(CLAUDE_BIN, args, {
       cwd: tmpdir(),
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env,
@@ -72,7 +85,7 @@ function runClaude(prompt: string): Promise<string> {
     const timer = setTimeout(() => {
       killReviewer(child);
       reject(new Error("review timed out"));
-    }, REVIEW_TIMEOUT_MS);
+    }, opts.timeoutMs ?? REVIEW_TIMEOUT_MS);
     timer.unref?.();
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
@@ -105,12 +118,12 @@ function killReviewer(child: ReturnType<typeof spawn>): void {
 }
 
 /**
- * Pull a valid Verdict out of a reviewer's raw stdout. Handles the `claude -p`
+ * Pull a schema-valid object out of a `claude -p` reviewer's raw stdout. Handles the
  * JSON envelope (`{ result: "<text>" }`), markdown-fenced JSON, or a bare object,
- * trying each candidate against the schema. Returns null when none validate.
- * Pure, exported for tests.
+ * trying each candidate against the schema. Returns null when none validate. Pure,
+ * exported so the Tier 1 triage parses its own (different) schema the same way.
  */
-export function extractVerdict(raw: string): Verdict | null {
+export function parseModelJson<T extends z.ZodTypeAny>(raw: string, schema: T): z.infer<T> | null {
   const text = resultText(raw);
   for (const candidate of jsonCandidates(text)) {
     let obj: unknown;
@@ -119,10 +132,15 @@ export function extractVerdict(raw: string): Verdict | null {
     } catch {
       continue;
     }
-    const r = VerdictSchema.safeParse(obj);
+    const r = schema.safeParse(obj);
     if (r.success) return r.data;
   }
   return null;
+}
+
+/** Pull a valid Verdict out of a reviewer's raw stdout. Pure, exported for tests. */
+export function extractVerdict(raw: string): Verdict | null {
+  return parseModelJson(raw, VerdictSchema);
 }
 
 /** Unwrap the `claude -p --output-format json` envelope to its `result` text. */

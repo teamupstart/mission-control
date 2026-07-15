@@ -164,6 +164,35 @@ test("idle + task-done alerts are AFK-only", () => {
   assert.ok(r.every((a) => a.severity === "info"));
 });
 
+test("backgrounding a no-mistakes run is not 'went idle'", () => {
+  // The AFK alert fires on a working -> idle bucket transition. An agent that
+  // backgrounds its no-mistakes run and ends its turn goes `working` -> `idle` in
+  // hook state, but it hasn't finished a burst of work and it isn't waiting on
+  // you - the run is still going and will re-invoke it. Alerting here trains you
+  // to ignore the alert that matters.
+  const running: NmRunSummary = {
+    id: "01RUN_BACKGROUNDED",
+    status: "running",
+    branch: "feature/x",
+    awaitingAgent: null,
+    findingsSummary: null,
+    gateStep: null,
+    gateSummary: null,
+    gateRisk: null,
+    steps: [{ step: "review", status: "running", findings: 0 }],
+    findings: [],
+    outcome: null,
+  };
+  const driving = mkSession({ id: "a", state: "working", nomistakes: running });
+  const backgrounded = mkSession({ id: "a", state: "idle", nomistakes: running });
+  assert.equal(detectAlerts(fleet([driving]), fleet([backgrounded]), AFK).length, 0);
+
+  // Once the run finishes and the agent is genuinely parked, it does fire.
+  const finished = mkSession({ id: "a", state: "idle", nomistakes: { ...running, status: "completed" } });
+  const r = detectAlerts(fleet([driving]), fleet([finished]), AFK);
+  assert.deepEqual(r.map((a) => a.kind), ["idle"]);
+});
+
 test("summarizeAlerts lists titles and caps the overflow", () => {
   const a = (title: string): Alert => ({
     id: title, kind: "needs-input", title, body: "", sessionId: null, severity: "attention",

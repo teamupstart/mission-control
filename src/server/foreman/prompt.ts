@@ -98,7 +98,8 @@ export function buildReviewPrompt(input: ReviewInput): string {
   return head.join("\n");
 }
 
-function formatTranscript(messages: TranscriptMessage[]): string {
+/** Render a transcript window as `[role] (tools: …) text`, per-message capped. Shared with triage. */
+export function formatTranscript(messages: TranscriptMessage[]): string {
   if (messages.length === 0) return "(transcript unavailable)";
   return messages
     .map((m) => {

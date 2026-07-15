@@ -4,7 +4,8 @@ import type { ForemanState } from "../useForeman.ts";
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
 // worker is running; the popover flips the mode, the repo allowlist for live
-// sends, and the access-approval switch. Mirrors AlertBar's popover pattern.
+// sends, the access-approval switch, and the cheap-tier posture (off / shadow /
+// on - see docs/plans/foreman-watcher/plan.md). Mirrors AlertBar's popover pattern.
 
 const MODE_LABEL: Record<string, string> = {
   "dry-run": "dry-run",
@@ -85,6 +86,23 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
             />
             Auto-approve non-destructive access
           </label>
+
+          <fieldset className="foreman-modes" disabled={!enabled}>
+            <legend>Cheap tier</legend>
+            {(["off", "shadow", "on"] as const).map((t) => (
+              <label className="alert-row" key={t}>
+                <input
+                  type="radio"
+                  name="foreman-triage"
+                  checked={(config.triage ?? "shadow") === t}
+                  onChange={() => void update({ triage: t })}
+                />
+                {t === "off" && "Off - full review for every prompt"}
+                {t === "shadow" && "Shadow - run the cheap tier alongside, measure it"}
+                {t === "on" && "On - cheap tier answers the easy ones"}
+              </label>
+            ))}
+          </fieldset>
 
           {mode === "live" && (
             <label className="foreman-allowlist">

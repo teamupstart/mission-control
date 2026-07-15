@@ -558,15 +558,24 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, GateReplySchema);
     if (!parsed.ok) return parsed.res;
-    logGateReply({
-      sessionId: session.id,
-      ts: Date.now(),
-      source: "foreman",
-      runId: parsed.data.runId,
-      step: parsed.data.step,
-      findingIds: parsed.data.findingIds,
-      text: parsed.data.text || null,
-    });
+    try {
+      logGateReply({
+        sessionId: session.id,
+        ts: Date.now(),
+        source: "foreman",
+        runId: parsed.data.runId,
+        step: parsed.data.step,
+        findingIds: parsed.data.findingIds,
+        text: parsed.data.text || null,
+      });
+    } catch (err) {
+      // Fail soft, like every other byline write (stakeYourByline, retractByline,
+      // attribute, the prune). A byline is never worth an error to its caller: the
+      // foreman's reply is already delivered by the time it posts this, so a DB
+      // failure must cost the byline and nothing else. 500ing here would be the one
+      // write in the feature that breaks that posture.
+      console.error("[nomistakes] could not record the foreman gate reply:", err);
+    }
     return c.json({ ok: true });
   });
 

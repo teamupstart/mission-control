@@ -617,7 +617,14 @@ async function loadRoundContext(
         // drawn from everything that was up at the gate (the foreman logs the lot;
         // the Fix box logs a selection out of it), so the full set is the one both
         // are subsets of, and the only one that can overlap either.
-        roundFindingIds: findingIdsOf(typeof p.findings === "string" ? p.findings : null),
+        //
+        // Only for a `replied` round, because only those can carry a byline
+        // (`attribute` returns early otherwise and never reads this). Auto fixes are
+        // the majority, and this re-parses the same ~20KB blob `parseFindings` just
+        // read - so parsing it for them doubles the JSON work on the common path of
+        // a read this file deliberately keeps proportional to the branch.
+        roundFindingIds:
+          decision === "replied" ? findingIdsOf(typeof p.findings === "string" ? p.findings : null) : [],
       });
     }
   } catch {

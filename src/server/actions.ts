@@ -512,7 +512,7 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  * remote-only: a reset pulls from origin, so a stale *local* main is never a
  * valid target (unlike the diff's source ref, which may fall back to local).
  */
-async function remoteDefaultRef(cwd: string): Promise<string | null> {
+export async function remoteDefaultRef(cwd: string): Promise<string | null> {
   const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
   for (const ref of ["origin/main", "origin/master"]) {

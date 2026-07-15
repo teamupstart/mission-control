@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitInfo } from "../src/server/util/git.ts";
+import { gitInfo, mainRepoRoot } from "../src/server/util/git.ts";
 
 const NM_CONFIG = '[remote "no-mistakes"]\n\turl = /Users/x/.no-mistakes/repos/demo\n';
 
@@ -53,6 +53,23 @@ test("gitInfo resolves a linked worktree's branch, own root, and shared gating",
   });
   assert.notEqual(gitInfo(worktree).root, gitInfo(main).root);
   assert.equal(gitInfo(worktree).repoRoot, gitInfo(main).repoRoot, "same repo, different trees");
+});
+
+test("mainRepoRoot walks a linked worktree back to the repo that owns it", () => {
+  const { main, worktree } = makeRepoWithWorktree();
+  // The pool reaper's key move: a session in a pooled tree reports that tree as
+  // its cwd, but treehouse keys the pool off the OWNING repo. `gitInfo().root`
+  // stops at the worktree; this has to go one hop further, via commondir.
+  assert.equal(mainRepoRoot(worktree), main);
+  assert.equal(gitInfo(worktree).root, worktree);
+});
+
+test("mainRepoRoot is the checkout itself for a normal clone, and null outside a repo", () => {
+  const { main } = makeRepoWithWorktree();
+  assert.equal(mainRepoRoot(main), main);
+  assert.equal(mainRepoRoot(join(main, "packages", "app")), main);
+  assert.equal(mainRepoRoot(realpathSync(mkdtempSync(join(tmpdir(), "git-norepo-")))), null);
+  assert.equal(mainRepoRoot(null), null);
 });
 
 test("gitInfo reports the worktree root from a nested subdir", () => {

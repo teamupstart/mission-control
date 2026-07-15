@@ -12,6 +12,7 @@ import {
   ResolveReviewSchema,
   SendTextSchema,
   SetNoteSchema,
+  SetPermissionModeSchema,
   StatusLineIngestSchema,
   StatusSchema,
 } from "@shared/protocol.ts";
@@ -28,7 +29,15 @@ import {
 } from "./foreman/config.ts";
 import { computeSessionDiff } from "./diff.ts";
 import { checkToken } from "./auth.ts";
-import { cyclePermissionMode, focus, kill, resetPreview, resetToOrigin, sendText } from "./actions.ts";
+import {
+  cyclePermissionMode,
+  focus,
+  kill,
+  resetPreview,
+  resetToOrigin,
+  sendText,
+  setPermissionMode,
+} from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos } from "./repos.ts";
@@ -198,17 +207,34 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Cycle the session's permission mode (Shift+Tab) - Claude only.
+  // Cycle the session's permission mode one Shift+Tab step - Claude only.
   app.post("/api/sessions/:id/mode/cycle", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
     if (session.agent !== "claude")
       return c.json({ error: "permission modes are a Claude feature" }, 400);
     const r = await cyclePermissionMode(session);
-    // Advance the chip optimistically - see `optimisticCyclePermissionMode` for why
-    // `r.ok` isn't confirmation that Claude actually cycled.
-    if (r.ok) registry.optimisticCyclePermissionMode(session.id);
+    // `r.mode` was read back off the pane, so recording it can't diverge from
+    // what Claude actually did; it's null when the pane didn't show us a mode.
+    if (r.ok) registry.recordObservedPermissionMode(session.id, r.mode ?? null);
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Drive the session to a specific permission mode - Claude only. Walks the
+  // Shift+Tab cycle, verifying against the pane at each step; see
+  // `setPermissionMode` for why the distance can't just be computed.
+  app.post("/api/sessions/:id/mode", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (session.agent !== "claude")
+      return c.json({ error: "permission modes are a Claude feature" }, 400);
+    const parsed = await parseBody(c, SetPermissionModeSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await setPermissionMode(session, parsed.data.mode);
+    // Record on failure too: a walk that stops early still leaves the session in a
+    // mode we observed, and the chip should show where it actually ended up.
+    registry.recordObservedPermissionMode(session.id, r.mode ?? null);
+    return c.json(r, r.ok ? 200 : 409);
   });
 
   // Preview what a reset-to-origin would discard (fetches origin; localhost read).

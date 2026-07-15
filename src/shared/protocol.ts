@@ -138,6 +138,16 @@ export const ResetSchema = z.object({
 });
 export type ResetInput = z.infer<typeof ResetSchema>;
 
+/**
+ * Drive a Claude session to a named permission mode. Closed to the modes Shift+Tab
+ * can actually reach: `dontAsk` is settable only at startup, so accepting it here
+ * would promise a walk that can never arrive.
+ */
+export const SetPermissionModeSchema = z.object({
+  mode: z.enum(["default", "acceptEdits", "plan", "bypassPermissions", "auto"]),
+});
+export type SetPermissionModeInput = z.infer<typeof SetPermissionModeSchema>;
+
 /** Close a task with a human-recorded outcome (the `/stow` intent -> result loop). */
 export const CompleteTaskSchema = z.object({
   outcome: z.string().min(1),

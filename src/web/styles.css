@@ -768,11 +768,20 @@ body {
 .card-foot {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 7px;
+  row-gap: 5px;
   font-size: 11.5px;
   color: var(--muted);
   padding-top: 3px;
   border-top: 1px solid var(--border-soft);
+}
+/* Every atom here is a short label or chip, so the row wraps *between* them. Left
+   to shrink, a long pid or a 3-char uptime would instead break one mid-phrase and
+   stack "Claude / Code" two lines tall. */
+.card-foot > *:not(.spacer) {
+  flex: none;
+  white-space: nowrap;
 }
 .agent-name {
   color: var(--muted);
@@ -827,9 +836,17 @@ body {
   font-weight: 560;
   padding: 1px 6px;
   border-radius: 5px;
+  /* Must stay ahead of the tone rules below, which override it. The chip renders
+     as a <button> (the mode picker's trigger), and a button with no background of
+     its own falls back to the UA's grey ButtonFace - which `manual`, the one tone
+     that sets no background, would otherwise pick up as a grey blob. */
+  background: transparent;
 }
+/* `manual` carries no tint, so its text is the whole chip - it sits at --muted
+   (matching the `Claude Code` label beside it) rather than the --dim used for
+   incidental metadata. Still the quietest mode, just not unreadable. */
 .mode-default {
-  color: var(--dim);
+  color: var(--muted);
 }
 .mode-accept {
   color: var(--working);
@@ -842,6 +859,148 @@ body {
 .mode-bypass {
   color: #e5675f;
   background: color-mix(in oklab, #e5534b 16%, transparent);
+}
+/* The chip doubles as the mode picker's trigger. It has to keep reading as a chip
+   (the footer is a dense row of them) while still inviting a click, so the affordance
+   is a small caret plus a hover lift rather than button chrome. */
+.mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  /* No `background` here on purpose: it would land after the tone rules and flatten
+     every chip's color. The base `.mode` clears the UA default instead. */
+  appearance: none;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 560;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.mode-btn:hover,
+.mode-btn.open {
+  border-color: color-mix(in oklab, currentColor 38%, transparent);
+}
+.mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.mode-caret {
+  font-size: 8px;
+  line-height: 1;
+  opacity: 0.7;
+  transform: translateY(-1px);
+}
+.mode-btn.open .mode-caret {
+  transform: translateY(-1px) rotate(180deg);
+}
+
+/* ---- mode picker popover ---- */
+/* `.alert-pop` is written to hang off a positioned parent: `position: absolute;
+   top: calc(100% + 8px); right: 0`. This popover is a body-level portal placed from
+   JS instead, so all four have to be neutralized here. The inline style sets `left`
+   plus exactly ONE of top/bottom (depending on which way it opens), so whichever it
+   leaves alone must resolve to `auto` - inheriting `.alert-pop`'s `top` alongside an
+   inline `bottom` pins the box to both edges at once and crushes it to a sliver.
+
+   Qualified with `.alert-pop` on purpose: a bare `.mode-pop` ties for specificity
+   and would lose to whichever rule sits later in this file - which it did, since
+   `.alert-pop` is defined ~1500 lines below here. */
+.alert-pop.mode-pop {
+  position: fixed;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  /* A short window can leave less room than the list needs; scroll rather than
+     overflow off the top edge. */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  gap: 2px;
+  padding: 6px;
+}
+.mode-opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.mode-opt:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--fg) 7%, transparent);
+}
+.mode-opt:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.mode-opt.active {
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+/* Reuses the `.mode-<tone>` colors as a swatch, so an option's dot matches the
+   chip that option would produce. */
+.mode-opt-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border-radius: 50%;
+  background: currentColor;
+}
+.mode-opt-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.mode-opt-label {
+  font-size: 12px;
+  font-weight: 560;
+}
+.mode-opt-desc {
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--dim);
+}
+.mode-opt-check {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+  color: var(--accent);
+}
+.mode-opt-spin {
+  margin-left: auto;
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in oklab, var(--fg) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mode-spin 0.7s linear infinite;
+}
+@keyframes mode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mode-opt-spin {
+    animation-duration: 2s;
+  }
+}
+/* A failed walk explains itself here rather than closing the popover on a lie. */
+.mode-pop-err {
+  margin: 4px 6px 2px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #e5675f;
 }
 .seen {
   font-variant-numeric: tabular-nums;

@@ -1,4 +1,4 @@
-import type { ForemanStatus, ResetPreview, SessionDiff } from "@shared/types.ts";
+import type { ForemanStatus, PermissionMode, ResetPreview, SessionDiff } from "@shared/types.ts";
 import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
 
 export interface ActionResult {
@@ -104,6 +104,13 @@ export const api = {
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
+  /**
+   * Drive a session to a specific permission mode. Slower than it looks - the
+   * daemon walks the Shift+Tab cycle a step at a time, verifying against the pane
+   * - so callers should show a pending state while it runs.
+   */
+  setMode: (id: string, mode: PermissionMode) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>

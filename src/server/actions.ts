@@ -1,5 +1,6 @@
-import type { ResetPreview, ResetResult, Session } from "@shared/types.ts";
+import type { PermissionMode, ResetPreview, ResetResult, Session } from "@shared/types.ts";
 import { resolveWeztermBin } from "./config.ts";
+import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { listTmuxClients } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
@@ -8,6 +9,7 @@ import {
   spawnWeztermTab,
 } from "./discovery/wezterm.ts";
 import { run, type RunResult } from "./util/exec.ts";
+import { sleep } from "./util/timers.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -103,18 +105,20 @@ export async function injectPrompt(session: Session, text: string): Promise<Acti
 }
 
 /**
- * Cycle a Claude session's permission mode one step by injecting a Shift+Tab into
- * its pane - the exact keystroke a human presses in the TUI, so it advances
- * default -> acceptEdits -> plan (and on to any further modes) exactly as it would
- * live. There is no API to *set* the mode, so this simulated keypress is the only
- * mechanism. Injecting it tells us nothing about where the mode landed - the
- * mode/cycle route advances the card's chip itself once this succeeds (see
- * `Registry.optimisticCyclePermissionMode`).
+ * Inject one Shift+Tab into a Claude session's pane - the exact keystroke a human
+ * presses in the TUI, so it advances the permission mode one step exactly as it
+ * would live. There is no API to set the mode, so this simulated keypress is the
+ * only mechanism.
+ *
+ * A successful injection only proves the bytes reached the pane. It does NOT mean
+ * Claude cycled: if the session isn't at its normal prompt (a permission dialog, a
+ * slash-command menu) Claude binds Tab itself and swallows this. Callers must read
+ * the pane back to learn where the mode actually landed - see `readPaneModeLine`.
  *
  * tmux resolves the `BTab` key name to the terminal's back-tab sequence; wezterm
  * takes the raw sequence, so we send CSI Z (ESC [ Z) - the standard Shift+Tab code.
  */
-export async function cyclePermissionMode(session: Session): Promise<ActionResult> {
+async function injectShiftTab(session: Session): Promise<ActionResult> {
   if (session.tmux) {
     // No -l here: we want tmux to interpret `BTab` as a key name, not literal text.
     return step("tmux", ["send-keys", "-t", session.tmux.paneId, "BTab"], "tmux send-keys BTab failed");
@@ -126,6 +130,115 @@ export async function cyclePermissionMode(session: Session): Promise<ActionResul
     return step(bin, args, "wezterm send-text (Shift+Tab) failed");
   }
   return { ok: false, error: NO_HANDLE };
+}
+
+/** Result of a mode change: the mode the pane was actually in when we stopped. */
+export interface ModeResult extends ActionResult {
+  /** Observed from the pane, not assumed. Null when we couldn't read it. */
+  mode?: PermissionMode | null;
+}
+
+/** How long to wait for the TUI to repaint after a Shift+Tab before calling it swallowed. */
+const REPAINT_TIMEOUT_MS = 900;
+/** How often to re-read the pane while waiting for that repaint. */
+const REPAINT_POLL_MS = 50;
+/**
+ * Cap on Shift+Tabs per request. The longest cycle Claude has is five
+ * (manual, accept edits, plan, bypass, auto), so anything beyond six steps means
+ * loop detection already should have fired - this is a backstop, not a budget.
+ */
+const MAX_CYCLE_STEPS = 6;
+
+/** Sessions currently being walked, so two requests can't interleave keystrokes. */
+const driving = new Set<string>();
+
+/** Wait for the pane's mode line to differ from `prev`, or null if it never does. */
+async function awaitModeLineChange(session: Session, prev: string): Promise<PaneModeLine | null> {
+  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  for (;;) {
+    const line = await readPaneModeLine(session);
+    if (line && line.text !== prev) return line;
+    if (Date.now() >= deadline) return null;
+    await sleep(REPAINT_POLL_MS);
+  }
+}
+
+/**
+ * Advance a Claude session's permission mode one step, reporting the mode it
+ * actually landed on rather than guessing at it.
+ */
+export async function cyclePermissionMode(session: Session): Promise<ModeResult> {
+  const before = await readPaneModeLine(session);
+  const sent = await injectShiftTab(session);
+  if (!sent.ok) return sent;
+  // With no line to compare against we can't tell a repaint from a no-op, so
+  // report the mode as unknown and let the next poll's read settle the chip.
+  if (!before) return { ok: true, mode: null };
+  const after = await awaitModeLineChange(session, before.text);
+  return after ? { ok: true, mode: after.mode } : { ok: true, mode: before.mode };
+}
+
+/**
+ * Drive a Claude session to a specific permission mode.
+ *
+ * Shift+Tab is the only lever, and it only steps forward - so reaching a chosen
+ * mode means walking the cycle to it. We can't precompute how far: the optional
+ * `bypassPermissions`/`auto` modes slot in after `plan` only when flags and
+ * account settings we can't observe enable them, so the cycle's length is unknown
+ * until we walk it. Instead of counting steps we read the pane after each one,
+ * which makes every step self-verifying and needs no model of the cycle at all.
+ *
+ * Three ways this stops short, each fail-safe:
+ *   - No mode line to start from. A dialog or menu is foreground, where Claude
+ *     binds Tab itself and would swallow the keystroke (or worse, act on it). We
+ *     refuse rather than fire blind keystrokes at a dialog.
+ *   - The line doesn't change within `REPAINT_TIMEOUT_MS`. Something ate the
+ *     keystroke; stop rather than hammer.
+ *   - We come back to a mode line we've already seen. The cycle is a loop, so
+ *     this means the target isn't in it - and, because it's a loop, walking it
+ *     fully has landed us back where we started. Nothing to undo.
+ */
+export async function setPermissionMode(session: Session, target: PermissionMode): Promise<ModeResult> {
+  if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  if (driving.has(session.id)) return { ok: false, error: "already changing this session's mode" };
+  driving.add(session.id);
+  try {
+    let line = await readPaneModeLine(session);
+    if (!line) return { ok: false, error: CANNOT_SEE_MODE, mode: null };
+    if (line.mode === target) return { ok: true, mode: target };
+
+    // Keyed on the line text, not the parsed mode, so a mode this build doesn't
+    // recognize is still a distinct position we can step through and loop on.
+    const seen = new Set<string>([line.text]);
+    for (let i = 0; i < MAX_CYCLE_STEPS; i++) {
+      const sent = await injectShiftTab(session);
+      if (!sent.ok) return { ...sent, mode: line.mode };
+      const next = await awaitModeLineChange(session, line.text);
+      if (!next) return { ok: false, error: SWALLOWED, mode: line.mode };
+      if (next.mode === target) return { ok: true, mode: target };
+      if (seen.has(next.text)) return { ok: false, error: notInCycle(target), mode: next.mode };
+      seen.add(next.text);
+      line = next;
+    }
+    return { ok: false, error: notInCycle(target), mode: line.mode };
+  } finally {
+    driving.delete(session.id);
+  }
+}
+
+const CANNOT_SEE_MODE =
+  "can't see Claude's mode line - a dialog or menu is probably open in this session";
+const SWALLOWED = "Claude ignored Shift+Tab - a dialog may have opened in this session";
+
+/** Explain an unreachable target, naming the flag that would put it in the cycle. */
+function notInCycle(target: PermissionMode): string {
+  const why: Partial<Record<PermissionMode, string>> = {
+    auto: "auto isn't enabled for this session - it needs an account and model that support it",
+    bypassPermissions:
+      "bypass isn't enabled for this session - it needs Claude started with --dangerously-skip-permissions",
+    dontAsk: "don't-ask can't be reached by Shift+Tab - it's only settable at startup",
+  };
+  return why[target] ?? `${target} isn't in this session's Shift+Tab cycle`;
 }
 
 /** Bring the session's pane/tab into focus. */

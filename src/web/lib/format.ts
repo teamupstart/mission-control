@@ -119,3 +119,24 @@ const MODE_DISPLAY: Record<PermissionMode, PermissionModeDisplay> = {
 export function permissionModeDisplay(mode: PermissionMode | null): PermissionModeDisplay | null {
   return mode ? MODE_DISPLAY[mode] : null;
 }
+
+/**
+ * The modes the picker offers, in Claude's own Shift+Tab cycle order - the list
+ * reads in the same order as the keystroke it replaces.
+ *
+ * `dontAsk` is deliberately absent: it's settable only at startup and Shift+Tab
+ * never reaches it, so offering it would promise a walk that can't arrive. It
+ * still renders on the chip when a session was started in it.
+ *
+ * `bypassPermissions` and `auto` are listed but aren't available everywhere -
+ * they enter the cycle only behind a launch flag / account support the daemon
+ * can't see. Picking one the session lacks is harmless: the walk goes all the way
+ * around, lands back where it started, and says so.
+ */
+export const PICKABLE_MODES: readonly PermissionMode[] = [
+  "default",
+  "acceptEdits",
+  "plan",
+  "bypassPermissions",
+  "auto",
+];

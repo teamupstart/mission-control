@@ -107,6 +107,16 @@ export interface Session {
    * sessions that merely share a branch name across different worktrees.
    */
   gitRoot: string | null;
+  /**
+   * The root of the REPO this checkout belongs to, from git's common dir. Equals
+   * `gitRoot` for a normal checkout; for a linked worktree it points back at the
+   * main repo rather than the worktree's own directory. Null outside a repo.
+   *
+   * Shipped to the dashboard so the UI can answer "may Foreman send here?" with
+   * the same `foremanAllowlisted` the server gates on - a worktree of an
+   * allowlisted repo is allowlisted, and the card has to be able to say so.
+   */
+  repoRoot: string | null;
   /** True when this session's repo is gated by no-mistakes. */
   nomistakesGated: boolean;
   /** The leaf agent process pid (what we act on / kill). */

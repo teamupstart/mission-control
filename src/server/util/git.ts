@@ -1,5 +1,5 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface GitInfo {
   branch: string | null;
@@ -10,6 +10,20 @@ export interface GitInfo {
    * worktree" without shelling out per session.
    */
   root: string | null;
+  /**
+   * The root of the repo every linked worktree of this checkout SHARES - i.e. the
+   * main checkout, derived from the common git dir. Equals `root` for a normal
+   * checkout; for a linked worktree it points back at the main repo instead of at
+   * the worktree's own throwaway directory. Null when the dir isn't in a repo.
+   *
+   * Exists so identity questions ("is this the ai-harness repo?") stop being asked
+   * as location questions ("is this path under the ai-harness directory?"). A
+   * worktree of an allowlisted repo lives nowhere near it on disk - under
+   * `~/.treehouse/...` or the daemon's own worktrees dir - so a path prefix says
+   * "no" about the very repo the user allowlisted. `repoRoot` is what makes
+   * Foreman's allowlist mean the repo rather than the directory.
+   */
+  repoRoot: string | null;
   /** True when the repo is gated by no-mistakes (has a `no-mistakes` remote). */
   nomistakesGated: boolean;
 }
@@ -25,7 +39,7 @@ export interface GitInfo {
  * without this, agents in a dispatched worktree show no branch and never gate.
  */
 export function gitInfo(cwd: string | null): GitInfo {
-  const none: GitInfo = { branch: null, root: null, nomistakesGated: false };
+  const none: GitInfo = { branch: null, root: null, repoRoot: null, nomistakesGated: false };
   if (!cwd) return none;
   const found = resolveGitDir(cwd);
   if (!found) return none;
@@ -35,11 +49,29 @@ export function gitInfo(cwd: string | null): GitInfo {
   } catch {
     return none;
   }
+  // Resolved once and shared: the no-mistakes probe needs the same common dir, so
+  // this reads the `commondir` pointer once per session per poll rather than twice.
+  const common = commonDir(found.gitDir);
   return {
     branch: branchFromHead(head),
     root: realPath(found.root),
-    nomistakesGated: hasNoMistakesRemote(commonDir(found.gitDir)),
+    repoRoot: realPath(mainRootFromCommonDir(common)),
+    nomistakesGated: hasNoMistakesRemote(common),
   };
+}
+
+/**
+ * The main checkout's root, from a common git dir.
+ *
+ * A non-bare repo's common dir is the main worktree's `.git`, so its parent is the
+ * root that every linked worktree shares. A BARE repo has no worktree at all and
+ * its common dir is the repo itself (`/srv/repo.git`) - taking the parent there
+ * would name the directory that merely CONTAINS the repo, which for an allowlist
+ * would silently clear every sibling repo next to it. So the parent is only taken
+ * when the common dir is actually a `.git`.
+ */
+function mainRootFromCommonDir(common: string): string {
+  return basename(common) === ".git" ? dirname(common) : common;
 }
 
 /**

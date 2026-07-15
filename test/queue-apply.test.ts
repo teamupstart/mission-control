@@ -29,6 +29,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: "/repo",
     gitBranch: "feature",
     gitRoot: "/repo",
+    repoRoot: "/repo",
     nomistakesGated: false,
     pid: 1,
     tty: "ttys001",

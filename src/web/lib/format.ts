@@ -1,3 +1,4 @@
+import { runInFlight } from "@shared/session.ts";
 import type { PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
@@ -68,6 +69,13 @@ export interface StateDisplay {
  * Map a session to a badge label + tone. Non-instrumented sessions can't report
  * precise state, so they render as a neutral "running" rather than pretending to
  * know whether the agent is busy or idle.
+ *
+ * Mirrors reportBucket's precedence (see src/shared/session.ts): a session whose
+ * agent backgrounded a no-mistakes run and ended its turn reads "validating"
+ * rather than "idle", both because it isn't idle and because the badge would
+ * otherwise contradict the run's live progress in the strip right below it. The
+ * strip already brands itself "no-mistakes", so the badge names the agent's own
+ * state instead of repeating it.
  */
 export function stateDisplay(session: Session): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
@@ -75,11 +83,14 @@ export function stateDisplay(session: Session): StateDisplay {
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
   }
-  if (!session.instrumented) return { label: "running", tone: "neutral" };
+  const validating: StateDisplay = { label: "validating", tone: "working" };
+  if (!session.instrumented) {
+    return runInFlight(session) ? validating : { label: "running", tone: "neutral" };
+  }
   const map: Record<SessionState, StateDisplay> = {
     starting: { label: "starting", tone: "working" },
     working: { label: "working", tone: "working" },
-    idle: { label: "idle", tone: "idle" },
+    idle: runInFlight(session) ? validating : { label: "idle", tone: "idle" },
     awaiting_input: { label: "needs input", tone: "attention" },
     awaiting_review: { label: "needs review", tone: "attention" },
     exited: { label: "exited", tone: "exited" },

@@ -12,6 +12,7 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
+import { startPoolReaper } from "./pool.ts";
 import { startPrPoller } from "./pr.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { buildApp } from "./routes.ts";
@@ -26,6 +27,7 @@ const stopPoller = startPoller(registry);
 const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
+const stopPoolReaper = startPoolReaper(registry);
 
 const app = buildApp(registry, reviews, tasks, queues);
 
@@ -57,6 +59,7 @@ function shutdown(): void {
   stopNomistakes();
   stopPrPoller();
   stopRuntimeMeta();
+  stopPoolReaper();
   server.close();
   process.exit(0);
 }

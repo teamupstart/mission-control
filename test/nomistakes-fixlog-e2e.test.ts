@@ -69,6 +69,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     cwd: "/repo",
     gitBranch: "main",
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",

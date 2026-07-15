@@ -188,6 +188,12 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
           {mode === "live" && (
             <label className="foreman-allowlist">
               Live only in these repos (one path per line):
+              {/* Worktrees are the normal case, not the exception - every dispatched
+                  agent runs in one, parked far from the repo. Saying so here is what
+                  stops "I set it to live and it still asks me" from reading as a bug. */}
+              <span className="foreman-allowlist-hint dim">
+                Worktrees of these repos count too, wherever they live on disk.
+              </span>
               <textarea
                 rows={3}
                 defaultValue={config.repoAllowlist.join("\n")}

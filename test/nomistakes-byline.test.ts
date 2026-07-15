@@ -414,7 +414,6 @@ const ANSWER: Verdict = {
 function ctx(over: Partial<ReviewContext> = {}): ReviewContext {
   return {
     sessionId: "sess-1",
-    repoRoot: "/repo",
     promptMarker: "gate:run-parked:review:abc",
     inputReviewId: null,
     canSend: true,

@@ -43,44 +43,6 @@ export function itemLabel(item: WorkItem): string {
 }
 
 /**
- * Which one-line explanation the panel owes the human about the waiting items, or
- * null when the panel already shows the whole truth.
- *
- * Ordered by what actually stops the queue FIRST. Foreman being off short-circuits
- * the worker's entire loop before it ever reads a queue, so it outranks whatever the
- * mode and the allowlist would say: "it will draft each item and wait for your
- * Approve" describes a draft that is never coming, and an item sitting `queued`
- * forever under that sentence reads as a bug in the queue rather than a switch the
- * human hasn't flipped. Queueing first and enabling after is a perfectly natural
- * order of work - the panel just has to be honest about which one you're in.
- *
- * `no-cwd` is a separate answer from `not-allowlisted` rather than folded into it:
- * `foremanMayActLive` returns false on a null cwd, so the OUTCOME is the same, but
- * the allowlist sentence names the directory to add and here there isn't one. The
- * case is reachable - `queueBlockedReason` doesn't gate on cwd and the note key never
- * needs one, so a session whose cwd discovery failed while its hooks report gets a
- * fully working panel - and it used to fall through every branch to silence, which is
- * the exact failure this hint exists to prevent.
- *
- * The decision lives here rather than in the component for the reason this module
- * exists: it is a rule about what is true, and rules get tested without a DOM.
- */
-export type QueueHintKind = "foreman-off" | "not-allowlisted" | "no-cwd" | "drafts-only" | null;
-
-export function queueHintKind(o: {
-  enabled: boolean;
-  mode: string;
-  allowlisted: boolean;
-  cwd: string | null;
-}): QueueHintKind {
-  if (!o.enabled) return "foreman-off";
-  if (o.mode !== "live") return "drafts-only";
-  if (!o.cwd) return "no-cwd";
-  if (!o.allowlisted) return "not-allowlisted";
-  return null; // live, enabled, allowlisted: it does what the panel already shows
-}
-
-/**
  * Where a one-place move would land `item`, or -1 when there is nowhere to go.
  *
  * Steps to the nearest other WAITING row rather than the adjacent one, which is the

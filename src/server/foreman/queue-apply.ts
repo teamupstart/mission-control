@@ -204,7 +204,7 @@ export async function queueSendStillValid(
     //    `item`, not the caller's snapshot - a "yes" that arrived after the machine
     //    decided is still a yes, and re-planning from fresh state is the whole point.
     const freshCfg = await actions.getConfig();
-    if (!foremanMayActLive(freshCfg, fresh.cwd) && !item.approvedAt) {
+    if (!foremanMayActLive(freshCfg, fresh.cwd, fresh.repoRoot) && !item.approvedAt) {
       return { ok: false, why: "Foreman is no longer cleared to send live for this repo" };
     }
 

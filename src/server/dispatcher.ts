@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
+import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -42,7 +43,9 @@ export class Dispatcher {
       const slug = slugify(task.title);
       const shortId = taskId.slice(0, 6);
 
-      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId);
+      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId, () =>
+        poolPins(this.registry),
+      );
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
@@ -157,22 +160,65 @@ export async function provisionWorktree(
   taskId: string,
   slug: string,
   shortId: string,
+  /**
+   * What the harness is already holding, so a reap here can't evict a tree that is
+   * someone else's. Read as a callback rather than a snapshot because the lease
+   * attempt below can block for minutes: a concurrent dispatch that leases the last
+   * tree in that window records its worktree on its task, and only a reading taken
+   * AT the reap can see it.
+   *
+   * Required, with no empty default: this function can reach a forced return, and
+   * an empty spared set silently disarms the two rungs that carry that gate - a
+   * just-pushed agent's tree is clean, merged, and momentarily processless, so
+   * treehouse's process list alone would not save it. Better a caller that won't
+   * compile than one that reaps by omission.
+   */
+  pins: () => PoolPins,
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
   if (check.code !== 0 || check.stdout.trim() !== "true") {
     throw new Error(`${repoRoot} is not a git repository`);
   }
 
-  if ((await hasBin("treehouse")) && existsSync(join(repoRoot, "treehouse.toml"))) {
-    const r = await run("treehouse", ["get", "--lease", "--lease-holder", "fleet-control"], {
-      cwd: repoRoot,
-      timeoutMs: 180000,
-    });
-    const path = r.stdout.trim().split("\n").filter(Boolean).pop();
-    if (r.code === 0 && path && existsSync(path)) {
-      return { path: realpathSync(path), branch: await currentBranch(path), provider: "treehouse" };
+  if ((await hasBin("treehouse")) && isTreehouseRepo(repoRoot)) {
+    let lease = await leaseFromPool(repoRoot);
+    // A dry pool is usually a LEAKED pool: leases are durable, so every agent that
+    // went away without returning its tree still holds a slot, and at `max_trees`
+    // the pool has nothing left to give. Collect those and ask once more - the
+    // alternative (below) is silently abandoning the pool for this dispatch.
+    if (!lease.path) {
+      const { reaped } = await reapPool(repoRoot, pins);
+      if (reaped.length > 0) {
+        console.log(
+          `[fleet-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped
+            .map((t) => t.name)
+            .join(", ")}`,
+        );
+        lease = await leaseFromPool(repoRoot);
+      }
     }
-    // Fall through to a plain worktree if the pool couldn't hand one over.
+    if (lease.path !== null) {
+      return {
+        path: realpathSync(lease.path),
+        branch: await currentBranch(lease.path),
+        provider: "treehouse",
+      };
+    }
+    // Fall through to a plain worktree - but say so. This used to be silent, which
+    // hid a full pool behind trees that merely looked unfamiliar; the fallback is a
+    // throwaway checkout with none of the pool's pre-warming.
+    //
+    // Report what we OBSERVED, not what we assume: a full pool is the likely cause
+    // and the reason we just tried to reap, but `get` fails the same shape for an
+    // unresolvable pool or a bad config, and telling someone their pool is full
+    // sends them to a `treehouse status` that will look perfectly healthy. So the
+    // failure names itself and treehouse's own words ride along verbatim.
+    const { what, stderr } = lease.failure;
+    console.warn(
+      `[fleet-control] treehouse pool in ${repoRoot} could not hand over a worktree: ${what}` +
+        (stderr ? ` - treehouse said: ${stderr}` : "") +
+        ` - falling back to a throwaway git worktree. Inspect the pool with: treehouse status`,
+    );
   }
 
   mkdirSync(WORKTREES_DIR, { recursive: true });
@@ -183,6 +229,44 @@ export async function provisionWorktree(
   });
   if (add.code !== 0) throw new Error(`git worktree add failed: ${add.stderr.trim() || "unknown"}`);
   return { path: realpathSync(path), branch, provider: "git" };
+}
+
+/**
+ * Why the pool didn't hand a tree over. Carried rather than collapsed to null,
+ * because the three ways `get` can fail look identical to the caller and mean
+ * completely different things - a dry pool is routine and reaping may fix it, a
+ * broken binary or an unreadable pool never will. `stderr` is treehouse's own
+ * account: `get --help` promises stdout carries the path ALONE and every banner
+ * and error goes to stderr, so it is the only channel a cause we never
+ * anticipated can arrive on, and it is quoted rather than interpreted.
+ */
+interface LeaseFailure {
+  what: string;
+  stderr: string;
+}
+
+type LeaseAttempt = { path: string; failure?: undefined } | { path: null; failure: LeaseFailure };
+
+/**
+ * Ask the pool for a tree. Returns its path, or the reason it got nothing (which
+ * `provisionWorktree` treats as "maybe leaked", not "no pool").
+ *
+ * The holder label is what later marks this lease as ours to reclaim, so it comes
+ * from the reaper's own constant rather than a literal here.
+ */
+async function leaseFromPool(repoRoot: string): Promise<LeaseAttempt> {
+  const r = await run("treehouse", ["get", "--lease", "--lease-holder", LEASE_HOLDER], {
+    cwd: repoRoot,
+    timeoutMs: 180000,
+  });
+  const stderr = r.stderr.trim();
+  const path = r.stdout.trim().split("\n").filter(Boolean).pop();
+  if (r.code !== 0) return { path: null, failure: { what: `treehouse get exited ${r.code}`, stderr } };
+  if (!path) return { path: null, failure: { what: "treehouse get printed no worktree path", stderr } };
+  if (!existsSync(path)) {
+    return { path: null, failure: { what: `treehouse get printed a path that does not exist: ${path}`, stderr } };
+  }
+  return { path };
 }
 
 /**

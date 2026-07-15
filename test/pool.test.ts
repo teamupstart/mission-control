@@ -1,10 +1,26 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { parsePoolStatus, planReap, reapPool, type PoolDeps, type PoolTree } from "../src/server/pool.ts";
+import { dirname, join } from "node:path";
+import {
+  parsePoolStatus,
+  planReap,
+  reapIntervalMs,
+  reapPool,
+  startPoolReaper,
+  type PoolDeps,
+  type PoolPins,
+  type PoolTree,
+} from "../src/server/pool.ts";
+import type { Registry } from "../src/server/registry.ts";
+import { sleep } from "../src/server/util/timers.ts";
 import { gitIn, mkOriginAndClone, mkLinkedWorktree } from "./helpers/git-fixture.ts";
+
+/** What the harness is holding; nothing, unless a test says otherwise. */
+function pins(over: Partial<PoolPins> = {}): PoolPins {
+  return { sessionCwds: [], taskWorktrees: [], ...over };
+}
 
 // --- parsing ----------------------------------------------------------------
 
@@ -89,7 +105,7 @@ function mkPoolRepo(prefix: string): string {
 
 test("planReap reclaims a leased tree that is idle, clean, and already in origin", async () => {
   const { wt } = mkIdleTree();
-  const [c] = await planReap([tree(wt)], []);
+  const [c] = await planReap([tree(wt)], pins());
   assert.equal(c!.skip, null, "a clean, merged, idle lease is exactly the leak we collect");
 });
 
@@ -98,7 +114,7 @@ test("planReap spares a BUSY tree even though it is clean and merged", async () 
   // clean AND merged, so the git checks alone would happily reap it out from
   // under a live session. Only the process list saves it.
   const { wt } = mkIdleTree();
-  const [c] = await planReap([tree(wt, { busy: true })], []);
+  const [c] = await planReap([tree(wt, { busy: true })], pins());
   assert.equal(c!.skip, "processes are still running in it");
 });
 
@@ -106,14 +122,35 @@ test("planReap spares a tree a live session stands in, including from a nested s
   const { wt } = mkIdleTree();
   // Discovery reports a pane's cwd, which may be nested well below the worktree
   // top - that still pins the tree.
-  const [c] = await planReap([tree(wt)], [join(wt, "packages", "app")]);
+  const [c] = await planReap([tree(wt)], pins({ sessionCwds: [join(wt, "packages", "app")] }));
   assert.equal(c!.skip, "a live session is standing in it");
+});
+
+test("planReap matches a live session's cwd through a symlinked tree path", async () => {
+  // treehouse prints whatever `root` is configured as, while a session's cwd comes
+  // from the kernel and is always physical. Compare them raw and the liveness rung
+  // silently never fires - leaving `busy` as the only thing between a live agent
+  // and a forced return.
+  const { wt } = mkIdleTree("symlinked");
+  const link = join(dirname(wt), "link-to-tree");
+  symlinkSync(wt, link);
+  const [c] = await planReap([tree(link)], pins({ sessionCwds: [wt] }));
+  assert.equal(c!.skip, "a live session is standing in it");
+});
+
+test("planReap spares a tree a task still holds, though it is idle, clean, and merged", async () => {
+  // A task deliberately keeps its tree once its agent exits (a mid-flight complete
+  // must not discard work), so no process and no session speaks for it - it looks
+  // exactly like the leak we collect. Only the task record saves it.
+  const { wt } = mkIdleTree("task-held");
+  const [c] = await planReap([tree(wt)], pins({ taskWorktrees: [wt] }));
+  assert.equal(c!.skip, "a task still holds it");
 });
 
 test("planReap spares a tree with uncommitted changes", async () => {
   const { wt } = mkIdleTree();
   writeFileSync(join(wt, "keep.txt"), "base\nwork in progress\n");
-  const [c] = await planReap([tree(wt)], []);
+  const [c] = await planReap([tree(wt)], pins());
   assert.equal(c!.skip, "it has uncommitted changes", "`treehouse return` would reset this away");
 });
 
@@ -121,25 +158,25 @@ test("planReap spares a tree holding commits origin has never seen", async () =>
   const { wt } = mkIdleTree();
   writeFileSync(join(wt, "keep.txt"), "base\nunpushed\n");
   gitIn(wt, "commit", "-qam", "unpushed work");
-  const [c] = await planReap([tree(wt)], []);
+  const [c] = await planReap([tree(wt)], pins());
   assert.equal(c!.skip, "it has commits origin/main doesn't have");
 });
 
 test("planReap spares an untracked-file-only tree (clean checkout, real scratch work)", async () => {
   const { wt } = mkIdleTree();
   writeFileSync(join(wt, "scratch.txt"), "notes\n");
-  const [c] = await planReap([tree(wt)], []);
+  const [c] = await planReap([tree(wt)], pins());
   assert.equal(c!.skip, "it has uncommitted changes");
 });
 
 test("planReap leaves available and in-use trees alone", async () => {
   const { wt } = mkIdleTree();
-  const plan = await planReap([tree(wt, { state: "available" }), tree(wt, { state: "in-use" })], []);
+  const plan = await planReap([tree(wt, { state: "available" }), tree(wt, { state: "in-use" })], pins());
   assert.deepEqual(plan.map((c) => c.skip), ["it is available", "it is in-use"]);
 });
 
 test("planReap spares a tree whose directory has gone missing", async () => {
-  const [c] = await planReap([tree("/definitely/not/a/worktree")], []);
+  const [c] = await planReap([tree("/definitely/not/a/worktree")], pins());
   assert.equal(c!.skip, "the worktree is missing");
 });
 
@@ -179,7 +216,7 @@ test("reapPool returns only the reclaimable leases and leaves live/dirty ones he
     ].join("\n"),
   );
 
-  const r = await reapPool(clone, [live], deps);
+  const r = await reapPool(clone, pins({ sessionCwds: [live] }), deps);
 
   assert.deepEqual(returned, [idle], "only the idle, clean, merged tree goes back to the pool");
   assert.deepEqual(r.reaped.map((t) => t.name), ["1"]);
@@ -205,7 +242,7 @@ test("reapPool still reports every tree when none is even plausibly idle", async
       "                   claude (999)",
     ].join("\n"),
   );
-  const r = await reapPool(clone, [], deps);
+  const r = await reapPool(clone, pins(), deps);
   assert.deepEqual(returned, []);
   assert.deepEqual(
     r.skipped.map((c) => [c.tree.name, c.skip]),
@@ -216,10 +253,25 @@ test("reapPool still reports every tree when none is even plausibly idle", async
   );
 });
 
+test("reapPool leaves a task's worktree leased rather than handing it to the next agent", async () => {
+  // The whole failure this guards: reaping a done-with-worktree task's tree both
+  // discards the work Mark done promised to keep AND leaves the task pointing at a
+  // path the pool can re-lease, so its later teardown returns someone else's tree.
+  const clone = mkPoolRepo("harness-pool-task-");
+  const held = mkLinkedWorktree(clone, "held", join(clone, "..", "k-held"));
+  const { deps, returned } = fakeDeps(`1     leased       ${held}  (held by fleet-control)`);
+
+  const r = await reapPool(clone, pins({ taskWorktrees: [held] }), deps);
+
+  assert.deepEqual(returned, [], "no process, no session, clean and merged - and still not ours to take");
+  assert.deepEqual(r.reaped, []);
+  assert.deepEqual(r.skipped.map((c) => c.skip), ["a task still holds it"]);
+});
+
 test("reapPool does nothing in a repo that never opted into treehouse", async () => {
   const { clone } = mkOriginAndClone("harness-pool-nontree-");
   const { deps, returned } = fakeDeps(`1     leased       ${clone}  (held by x)`);
-  const r = await reapPool(clone, [], deps);
+  const r = await reapPool(clone, pins(), deps);
   assert.deepEqual(returned, []);
   assert.deepEqual(r, { reaped: [], skipped: [] });
 });
@@ -232,7 +284,53 @@ test("reapPool reports a failed return as a skip instead of claiming the slot is
     status: async () => ({ stdout: `1     leased       ${idle}  (held by x)`, stderr: "", code: 0 }),
     returnTree: async () => ({ stdout: "", stderr: "lease is held elsewhere", code: 1 }),
   };
-  const r = await reapPool(clone, [], deps);
+  const r = await reapPool(clone, pins(), deps);
   assert.deepEqual(r.reaped, []);
   assert.deepEqual(r.skipped.map((c) => c.skip), ["treehouse return failed: lease is held elsewhere"]);
+});
+
+// --- the sweep's interval ---------------------------------------------------
+
+/** Run `body` with `FLEET_POOL_REAP_MS` set to `value` (or unset), then restore it. */
+async function withReapEnv(value: string | undefined, body: () => void | Promise<void>): Promise<void> {
+  const prev = process.env.FLEET_POOL_REAP_MS;
+  if (value === undefined) delete process.env.FLEET_POOL_REAP_MS;
+  else process.env.FLEET_POOL_REAP_MS = value;
+  try {
+    await body();
+  } finally {
+    if (prev === undefined) delete process.env.FLEET_POOL_REAP_MS;
+    else process.env.FLEET_POOL_REAP_MS = prev;
+  }
+}
+
+test("reapIntervalMs disables on 0 and refuses to hand setTimeout a hot loop", async () => {
+  await withReapEnv(undefined, () => assert.equal(reapIntervalMs(), 300_000));
+  await withReapEnv("", () => assert.equal(reapIntervalMs(), 300_000, "empty reads as unset, not off"));
+  await withReapEnv("900000", () => assert.equal(reapIntervalMs(), 900_000));
+  await withReapEnv("0", () => assert.equal(reapIntervalMs(), null, "0 is the off switch"));
+  await withReapEnv("-1", () => assert.equal(reapIntervalMs(), null, "so is any non-positive value"));
+  // Both of these would otherwise reach setTimeout as a ~1ms tick of forced
+  // returns and fetches - the opposite of what either value was asking for.
+  await withReapEnv("nope", () => assert.equal(reapIntervalMs(), 300_000, "a typo is not an instruction"));
+  await withReapEnv("5", () => assert.equal(reapIntervalMs(), 30_000, "a tiny value is clamped"));
+});
+
+test("FLEET_POOL_REAP_MS=0 schedules no sweep at all", async () => {
+  await withReapEnv("0", async () => {
+    let sweeps = 0;
+    const registry = {
+      liveSessions: () => {
+        sweeps++;
+        return [];
+      },
+      listTasks: () => [],
+    } as unknown as Registry;
+
+    const stop = startPoolReaper(registry);
+    // A 0 that reached setTimeout would tick every ~1ms; this window would see hundreds.
+    await sleep(50);
+    stop();
+    assert.equal(sweeps, 0, "the off switch must schedule nothing, not spin");
+  });
 });

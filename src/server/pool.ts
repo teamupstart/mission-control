@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { remoteDefaultRef } from "./actions.ts";
@@ -70,8 +70,38 @@ export const defaultPoolDeps: PoolDeps = {
     run("treehouse", ["return", "--force", path], { cwd: repoRoot, timeoutMs: 30000 }),
 };
 
-/** How often the daemon sweeps known pools for leaked leases. */
-const POOL_REAP_MS = Number(envVar("POOL_REAP_MS") ?? 300_000);
+/** How often the daemon sweeps known pools for leaked leases, absent an override. */
+const DEFAULT_REAP_MS = 300_000;
+
+/**
+ * The floor under a configured sweep interval. A sweep shells out to `treehouse
+ * status` per pool and can reach the network, so a fat-fingered
+ * `FLEET_POOL_REAP_MS=5` would hammer treehouse and origin forever. Nobody wants
+ * a five-millisecond leak collector; clamp rather than obey.
+ */
+const MIN_REAP_MS = 30_000;
+
+/**
+ * The sweep interval, or null when the sweep is switched OFF.
+ *
+ * `FLEET_POOL_REAP_MS=0` is how anyone would try to disable a periodic job, and
+ * it has to actually disable it: handed to `setTimeout`, 0 is a ~1ms tick, which
+ * turns the off switch into a hot loop of `treehouse status`, `git fetch`, and
+ * forced returns - the opposite of what was asked for. Same for any negative
+ * value. An unparseable value is a typo rather than an instruction, so it falls
+ * back to the default instead of into that same spin.
+ *
+ * Read per call, not at import, so the value is whatever the daemon was started
+ * with rather than whatever won the module-load race.
+ */
+export function reapIntervalMs(): number | null {
+  const raw = envVar("POOL_REAP_MS");
+  if (raw === undefined || raw.trim() === "") return DEFAULT_REAP_MS;
+  const ms = Number(raw);
+  if (!Number.isFinite(ms)) return DEFAULT_REAP_MS;
+  if (ms <= 0) return null;
+  return Math.max(ms, MIN_REAP_MS);
+}
 
 /** A repo opts into the pool by committing a `treehouse.toml` at its root. */
 export function isTreehouseRepo(repoRoot: string): boolean {
@@ -79,16 +109,39 @@ export function isTreehouseRepo(repoRoot: string): boolean {
 }
 
 /**
- * The working dirs of every live agent, so a reap can't pull a tree out from
- * under one. This is the harness's own view of liveness, independent of the
- * process list treehouse reports - either one seeing a session is enough to
- * spare its tree.
+ * Everything the harness itself is holding, so a reap can't pull a tree out from
+ * under its own work. Two separate claims, because they miss different things:
+ *
+ *  - `sessionCwds` - where live agents are actually standing. Independent of the
+ *    process list treehouse reports; either view seeing a session spares its tree.
+ *  - `taskWorktrees` - worktrees still recorded on a task. A task deliberately
+ *    KEEPS its tree after its agent exits (a mid-flight complete must not discard
+ *    work; a failed-but-alive task still holds its checkout), and such a tree is
+ *    exactly what the git gate green-lights: idle, clean, and merged if the agent
+ *    pushed. Sessions alone cannot see it, because there is no session left.
  */
+export interface PoolPins {
+  sessionCwds: readonly string[];
+  taskWorktrees: readonly string[];
+}
+
+/** The working dirs of every live agent. */
 export function occupiedCwds(registry: Registry): string[] {
   return registry
     .liveSessions()
     .map((s) => s.cwd)
     .filter((cwd): cwd is string => cwd !== null);
+}
+
+/** Everything a reap must leave alone; pass to `reapPool`/`planReap`. */
+export function poolPins(registry: Registry): PoolPins {
+  return {
+    sessionCwds: occupiedCwds(registry),
+    taskWorktrees: registry
+      .listTasks()
+      .map((t) => t.worktreePath)
+      .filter((p): p is string => p !== null && p !== undefined),
+  };
 }
 
 /**
@@ -120,8 +173,15 @@ export function poolRepos(registry: Registry): string[] {
  * Slow on purpose: each tick shells out to treehouse and git per pool, and a
  * leaked lease is a resource leak, not an emergency. Reaping is idempotent, so a
  * missed tick costs nothing.
+ *
+ * `FLEET_POOL_REAP_MS=0` switches the sweep off entirely - nothing is scheduled.
+ * The dispatch-time reap stays on either way: that one is on-demand, and its
+ * alternative is abandoning the pool for a throwaway worktree.
  */
 export function startPoolReaper(registry: Registry): () => void {
+  const intervalMs = reapIntervalMs();
+  if (intervalMs === null) return () => {};
+
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -129,7 +189,7 @@ export function startPoolReaper(registry: Registry): () => void {
     if (stopped) return;
     try {
       for (const repoRoot of poolRepos(registry)) {
-        const { reaped } = await reapPool(repoRoot, occupiedCwds(registry));
+        const { reaped } = await reapPool(repoRoot, poolPins(registry));
         if (reaped.length > 0) {
           console.log(
             `[fleet-control] returned ${reaped.length} leaked lease(s) to the pool in ` +
@@ -140,10 +200,10 @@ export function startPoolReaper(registry: Registry): () => void {
     } catch {
       // Never let a sweep take the daemon down - the pool heals on the next tick.
     }
-    if (!stopped) timer = unref(setTimeout(() => void tick(), POOL_REAP_MS));
+    if (!stopped) timer = unref(setTimeout(() => void tick(), intervalMs));
   };
 
-  timer = unref(setTimeout(() => void tick(), POOL_REAP_MS));
+  timer = unref(setTimeout(() => void tick(), intervalMs));
   return () => {
     stopped = true;
     if (timer) clearTimeout(timer);
@@ -197,6 +257,39 @@ function within(cwd: string, root: string): boolean {
   return cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
+/**
+ * Resolve a path to its physical form, because the two sides of `within` arrive
+ * by different routes and only agree once canonicalized. A session's cwd is read
+ * from the kernel (`lsof`), which always reports the physical path; a tree's path
+ * is whatever `treehouse status` prints for the configured `root`. One symlink
+ * anywhere on that route - `~/work` -> `/Volumes/Data/work`, a `$TMPDIR` under
+ * `/private` - and the strings never match, which would silently retire the
+ * liveness rung that is the one saving a just-pushed agent.
+ *
+ * An unresolvable path (gone, unreadable) falls back to the raw string: a failed
+ * realpath must read as "compare what we have", never as "nobody is standing here".
+ */
+function canonical(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+/** `PoolPins` with every path resolved once, rather than per tree. */
+interface CanonicalPins {
+  sessionCwds: string[];
+  taskWorktrees: string[];
+}
+
+function canonicalPins(pins: PoolPins): CanonicalPins {
+  return {
+    sessionCwds: pins.sessionCwds.map(canonical),
+    taskWorktrees: pins.taskWorktrees.map(canonical),
+  };
+}
+
 function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult> {
   return run("git", ["-C", cwd, ...args], { timeoutMs });
 }
@@ -211,6 +304,12 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  *    saves a live agent, and it is NOT redundant with the git checks below: an
  *    agent that has just pushed sits in a tree that is clean AND merged, so the
  *    git gate alone would happily reap the tree out from under it.
+ *  - a task still holds it - the harness's own record of ownership, and the only
+ *    rung that survives the agent's exit: a task keeps its tree precisely so a
+ *    mid-flight complete doesn't discard work, and that tree has no processes and
+ *    no session left to speak for it. Reaping one both throws the work away and
+ *    leaves the task pointing at a path the pool may have re-leased to someone
+ *    else, whose tree its teardown would then return.
  *  - a live session's cwd is inside it - the harness's own independent view of
  *    liveness, so a session treehouse can't see still pins its tree.
  *  - uncommitted changes  - `return` would `clean`/`reset` them away.
@@ -224,13 +323,17 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  * failed git call. Leaving a lease leaked costs a pool slot; a wrong reap costs
  * the user's work.
  */
-export async function planReap(
+export async function planReap(trees: readonly PoolTree[], pins: PoolPins): Promise<ReapCandidate[]> {
+  return planReapWith(trees, canonicalPins(pins));
+}
+
+async function planReapWith(
   trees: readonly PoolTree[],
-  occupiedCwds: readonly string[],
+  pins: CanonicalPins,
 ): Promise<ReapCandidate[]> {
   const out: ReapCandidate[] = [];
   for (const tree of trees) {
-    out.push({ tree, skip: await verdict(tree, occupiedCwds) });
+    out.push({ tree, skip: await verdict(tree, pins) });
   }
   return out;
 }
@@ -241,16 +344,18 @@ export async function planReap(
  * paying for a fetch - the common case, since a healthy pool is all busy trees.
  * Returns the skip reason, or null when the tree is still a candidate.
  */
-function cheapVerdict(tree: PoolTree, occupiedCwds: readonly string[]): string | null {
+function cheapVerdict(tree: PoolTree, pins: CanonicalPins): string | null {
   if (tree.state !== "leased") return `it is ${tree.state}`;
   if (tree.busy) return "processes are still running in it";
-  if (occupiedCwds.some((cwd) => within(cwd, tree.path))) return "a live session is standing in it";
+  const root = canonical(tree.path);
+  if (pins.taskWorktrees.some((wt) => within(wt, root))) return "a task still holds it";
+  if (pins.sessionCwds.some((cwd) => within(cwd, root))) return "a live session is standing in it";
   if (!existsSync(tree.path)) return "the worktree is missing";
   return null;
 }
 
-async function verdict(tree: PoolTree, occupiedCwds: readonly string[]): Promise<string | null> {
-  const cheap = cheapVerdict(tree, occupiedCwds);
+async function verdict(tree: PoolTree, pins: CanonicalPins): Promise<string | null> {
+  const cheap = cheapVerdict(tree, pins);
   if (cheap) return cheap;
 
   const dirty = await git(tree.path, ["status", "--porcelain"]);
@@ -275,12 +380,13 @@ async function verdict(tree: PoolTree, occupiedCwds: readonly string[]): Promise
  * binary, or a single failed `return` degrades to "reaped fewer trees", never to
  * a thrown error - this runs on a poller and behind a dispatch.
  *
- * `occupiedCwds` are the live sessions' working dirs; pass them so a tree the
- * harness knows is in use is spared even if treehouse can't see its processes.
+ * `pins` is everything the harness is already holding - live sessions' cwds and
+ * task-held worktrees - so a tree it knows is in use is spared even when treehouse
+ * can see no processes under it.
  */
 export async function reapPool(
   repoRoot: string,
-  occupiedCwds: readonly string[],
+  pins: PoolPins,
   deps: PoolDeps = defaultPoolDeps,
 ): Promise<ReapResult> {
   const empty: ReapResult = { reaped: [], skipped: [] };
@@ -290,11 +396,12 @@ export async function reapPool(
   if (status.code !== 0) return empty;
   const trees = parsePoolStatus(status.stdout);
   if (trees.length === 0) return empty;
+
+  const canon = canonicalPins(pins);
   // Nothing even plausibly idle (the healthy case: every tree busy or available)?
   // Then don't reach for the network at all - a sweep costs one `treehouse status`.
-  if (trees.every((t) => cheapVerdict(t, occupiedCwds) !== null)) {
-    return { reaped: [], skipped: trees.map((t) => ({ tree: t, skip: cheapVerdict(t, occupiedCwds)! })) };
-  }
+  const cheap = trees.map((tree) => ({ tree, skip: cheapVerdict(tree, canon) }));
+  if (cheap.every((c) => c.skip !== null)) return { reaped: [], skipped: cheap };
 
   // One fetch for the whole pool: linked worktrees share the main repo's git dir,
   // so this refreshes `origin/*` for every tree at once. It's what keeps the
@@ -303,7 +410,7 @@ export async function reapPool(
   // skips. Safe.
   await git(repoRoot, ["fetch", "origin"], 30000);
 
-  const plan = await planReap(trees, occupiedCwds);
+  const plan = await planReapWith(trees, canon);
   const result: ReapResult = { reaped: [], skipped: plan.filter((c) => c.skip !== null) };
   for (const { tree } of plan.filter((c) => c.skip === null)) {
     const r = await deps.returnTree(repoRoot, tree.path);

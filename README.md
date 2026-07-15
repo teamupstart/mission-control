@@ -557,12 +557,18 @@ lease is one.)
 So the daemon sweeps the pools it knows about (every `FLEET_POOL_REAP_MS`, and
 again whenever a dispatch finds the pool dry) and hands back only the leases it
 can prove are dead. A tree is returned **only** when treehouse reports no
-processes under it, no live session's cwd is inside it, it has no uncommitted
-changes, and origin's default branch already contains its HEAD. Anything else -
-including any uncertainty - leaves the lease alone: a leaked lease costs a slot,
-a wrong reap costs your work. Note that a *live* agent's tree is often clean and
-merged (right after a push), so it's the liveness checks, not the git ones, that
-keep it yours.
+processes under it, no live session's cwd is inside it, no task the harness
+tracks still records it, it has no uncommitted changes, and origin's default
+branch already contains its HEAD. Anything else - including any uncertainty -
+leaves the lease alone: a leaked lease costs a slot, a wrong reap costs your
+work. Note that a *live* agent's tree is often clean and merged (right after a
+push), so it's the liveness checks, not the git ones, that keep it yours - and a
+task's tree stays its own even after the agent exits, which is what lets **Mark
+done** keep your work.
+
+Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
+dispatch-time reap stays on, since its only alternative is abandoning the pool
+for a throwaway worktree.
 
 Because treehouse ignores lifecycle hooks in the repo-level `treehouse.toml` for
 safety, the warm+gate step is run by `make session` itself. To make **every**
@@ -578,7 +584,7 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 | `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker |
 | `FLEET_POLL_MS` | `1500` | discovery interval |
 | `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
-| `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases |
+| `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default, and anything under `30000` is clamped to it |
 | `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
 | `FLEET_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |

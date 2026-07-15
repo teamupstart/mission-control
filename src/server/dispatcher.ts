@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt } from "./actions.ts";
-import { isTreehouseRepo, occupiedCwds, reapPool } from "./pool.ts";
+import { isTreehouseRepo, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -43,7 +43,9 @@ export class Dispatcher {
       const slug = slugify(task.title);
       const shortId = taskId.slice(0, 6);
 
-      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId, occupiedCwds(this.registry));
+      const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId, () =>
+        poolPins(this.registry),
+      );
       // Record the worktree BEFORE spawning, so a spawn failure can still tear it down.
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
@@ -158,8 +160,14 @@ export async function provisionWorktree(
   taskId: string,
   slug: string,
   shortId: string,
-  /** Live sessions' cwds, so a reap here can't evict a tree someone is standing in. */
-  liveCwds: readonly string[] = [],
+  /**
+   * What the harness is already holding, so a reap here can't evict a tree that is
+   * someone else's. Read as a callback rather than a snapshot because the lease
+   * attempt below can block for minutes: a concurrent dispatch that leases the last
+   * tree in that window records its worktree on its task, and only a reading taken
+   * AT the reap can see it.
+   */
+  pins: () => PoolPins = () => ({ sessionCwds: [], taskWorktrees: [] }),
 ): Promise<ProvisionedWorktree> {
   const check = await run("git", ["-C", repoRoot, "rev-parse", "--is-inside-work-tree"]);
   if (check.code !== 0 || check.stdout.trim() !== "true") {
@@ -173,7 +181,7 @@ export async function provisionWorktree(
     // the pool has nothing left to give. Collect those and ask once more - the
     // alternative (below) is silently abandoning the pool for this dispatch.
     if (!path) {
-      const { reaped } = await reapPool(repoRoot, liveCwds);
+      const { reaped } = await reapPool(repoRoot, pins());
       if (reaped.length > 0) {
         console.log(
           `[fleet-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped

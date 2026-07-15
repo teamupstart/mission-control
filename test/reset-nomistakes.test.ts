@@ -200,6 +200,46 @@ test("a run driven in another worktree survives a reset that never touched it", 
   assert.equal((await card("drv")).nomistakes?.awaitingAgent, "parked 1m30s");
 });
 
+test("a retired run does not shadow a live run the session drives elsewhere", async () => {
+  const own = "mancej/shadowed";
+  const runBranch = "harness/dispatched";
+  const clone = mkClone(own);
+  seedSession("shadow", clone, own);
+
+  registry.reconcileNomistakes([finishedRun(own, "01RUN_RETIRED")]);
+  const res = await app.request("/api/sessions/shadow/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await card("shadow")).nomistakes, null);
+
+  // Resetting and then dispatching fresh work is the natural next move. The new
+  // run lands in its own worktree (a launcher binding), while the session itself
+  // never left `own` - a reset keeps the branch name - so `axi status` goes on
+  // reporting the retired run for the session's own branch indefinitely.
+  const wt = mkLinkedWorktree(clone, runBranch, join(clone, "..", "wt-dispatched"));
+  registry.applyDiscovery([
+    mkDisco("shadow", clone, own, { nomistakesRuns: [{ cwd: wt, branch: runBranch }] }),
+  ]);
+  const parked: NmRunSummary = {
+    ...finishedRun(runBranch, "01RUN_DISPATCHED"),
+    status: "running",
+    awaitingAgent: "parked 0m20s",
+    gateStep: "review",
+    outcome: null,
+  };
+  registry.reconcileNomistakes([finishedRun(own, "01RUN_RETIRED"), parked]);
+
+  // The retired run wins the exact-branch match, so it must be skipped *during*
+  // matching and fall through to the binding. Dropping it afterwards would blank
+  // the card and strand the parked gate with no approve/fix/skip buttons.
+  const shown = (await card("shadow")).nomistakes;
+  assert.equal(shown?.id, "01RUN_DISPATCHED", "the live run the session drives is shown");
+  assert.equal(shown?.awaitingAgent, "parked 0m20s", "its parked gate is still answerable");
+});
+
 test("a same-branch session in a different worktree keeps its strip", async () => {
   const branch = "mancej/twin";
   const a = mkClone(branch);
@@ -318,6 +358,49 @@ test("repeated resets on one checkout evict the oldest run, never the newest", a
 
   registry.reconcileNomistakes([finishedRun(branch, "01RUN_CHURN_11")]);
   assert.equal((await card("churn")).nomistakes, null, "the newest retired run stays retired");
+});
+
+test("evicting checkouts drops the stalest, not the one just reset", async () => {
+  const branch = "mancej/recent";
+  const clone = mkClone(branch);
+  seedSession("recent", clone, branch);
+  const reset = async (): Promise<void> => {
+    const res = await app.request("/api/sessions/recent/reset", {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({ clear: false }),
+    });
+    assert.equal(res.status, 200);
+  };
+  /** Another checkout retiring a run, without the cost of a real clone per entry. */
+  const filler = (i: number): void =>
+    registry.dismissNomistakes(
+      finishedRun(`filler/${i}`, `01RUN_FILLER_${i}`),
+      `/filler/${i}`,
+      `filler/${i}`,
+    );
+
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_FIRST")]);
+  await reset();
+  // Fill the rest of the checkout cap (200) behind this one.
+  for (let i = 0; i < 199; i++) filler(i);
+
+  // A new run on the branch decorates the card again and the user resets again,
+  // making this checkout the most recently retired of the 200.
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_SECOND")]);
+  await reset();
+  assert.equal((await card("recent")).nomistakes, null);
+
+  // One more checkout pushes past the cap. Eviction walks insertion order, so it
+  // must rank this checkout by its latest reset, not its first: dropping it here
+  // would let the very next poll bring back a strip cleared seconds ago.
+  filler(199);
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_SECOND")]);
+  assert.equal(
+    (await card("recent")).nomistakes,
+    null,
+    "the freshly reset checkout outlives 200 staler ones",
+  );
 });
 
 test("a failed reset leaves the strip alone", async () => {

@@ -450,25 +450,29 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * The active run this session owns, by exact branch or a launcher binding.
-   * A run the session has retired is not owned - it stays off the card for good,
-   * however long `axi status` goes on reporting it.
+   * The active run this session owns: the one on its own branch (exact worktree
+   * owner) or, failing that, one it drives in a worktree it launched (binding).
+   *
+   * A retired run is skipped *while* matching rather than nulled out afterwards,
+   * so it never shadows a run the session still owns. A reset retires the run on
+   * the session's own branch, but `axi status` keeps reporting it for that branch
+   * for good - so once the session dispatches new work elsewhere, its own branch
+   * still resolves to the dead run. Skipping it falls through to the binding, and
+   * a run parked at a gate keeps the approve/fix/skip buttons that are the only
+   * way to answer it; returning null there would blank the card instead.
    */
   private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
-    const run = this.matchRun(id, s, byBranch);
-    if (!run) return null;
     const key = checkoutKey(s.gitRoot, s.gitBranch);
-    return key && this.nmDismissed.get(key)?.has(run.id) ? null : run;
-  }
-
-  /** The run attributable to this session, before dismissals are applied. */
-  private matchRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
-    if (s.gitBranch && byBranch.has(s.gitBranch)) return byBranch.get(s.gitBranch)!;
-    const map = this.nmBindings.get(id);
-    if (map) {
-      for (const { branch } of map.values()) {
-        if (branch && byBranch.has(branch)) return byBranch.get(branch)!;
-      }
+    const retired = key ? this.nmDismissed.get(key) : undefined;
+    const live = (branch: string | null): NmRunSummary | null => {
+      const run = branch ? byBranch.get(branch) : undefined;
+      return run && !retired?.has(run.id) ? run : null;
+    };
+    const own = live(s.gitBranch);
+    if (own) return own;
+    for (const { branch } of this.nmBindings.get(id)?.values() ?? []) {
+      const bound = live(branch);
+      if (bound) return bound;
     }
     return null;
   }
@@ -511,9 +515,13 @@ export class Registry extends EventEmitter {
 
   /** Record a retired run against its checkout, evicting the oldest past the caps. */
   private rememberDismissal(key: string, runId: string): void {
-    let ids = this.nmDismissed.get(key);
-    if (!ids) this.nmDismissed.set(key, (ids = new Set()));
+    const ids = this.nmDismissed.get(key) ?? new Set<string>();
     ids.add(runId);
+    // Re-insert, so this checkout moves to the tail. A Map keeps first-insertion
+    // order, so mutating the set in place would leave the checkout ranked by its
+    // *oldest* dismissal and let eviction drop one reset seconds ago.
+    this.nmDismissed.delete(key);
+    this.nmDismissed.set(key, ids);
     // `axi status` reports the latest run for a branch, so once newer runs have
     // been retired on this checkout the older ids can no longer suppress anything.
     evictOldest(ids, NM_DISMISSED_RUNS_PER_CHECKOUT);

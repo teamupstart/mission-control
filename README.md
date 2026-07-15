@@ -14,7 +14,9 @@ and get your decision back.
 - **Names** each session by its **tmux session name**, else its **wezterm tab
   title**, else the repo folder. Click a card's title (or press <kbd>O</kbd>) to
   rename it - it renames the underlying tmux session / wezterm tab, which the next
-  sweep reads straight back onto the card.
+  sweep reads straight back onto the card. Only a live session with a tmux or wezterm
+  pane can be renamed - a session found in neither, or one that has exited, has
+  nothing to rename, so its title isn't clickable.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
@@ -536,4 +538,4 @@ it via DNS-rebinding - a defense that matters now that dispatch can launch agent
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
 and MCP ingress is authenticated with a per-machine token in `~/.fleet-control/token`
 so other local processes can't spoof session or task state. Session and task
-actions (send / focus / kill, dispatch / cancel / complete) are localhost-only.
+actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.

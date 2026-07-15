@@ -32,6 +32,17 @@ export interface ReviewInput {
 /** Per-message text cap so a long turn can't blow up the prompt. */
 const MSG_CAP = 1800;
 
+/**
+ * The gate clause below lets Foreman ANSWER a parked no-mistakes gate when the call is clear,
+ * and that is a deliberate choice with a known exposure: on this path the POLICY prose is the
+ * only thing in front of the send. `isDestructive` is `mapTriage`'s alone, so backstop 1 does
+ * not exist above Tier 1, and an `answer` classified as anything but "access" (say
+ * "implementation") bypasses the `autoApproveAccess` check in `planFromVerdict` and sends on
+ * `mayActLive` alone. It is written this way anyway: judging a gate against the session's goal
+ * IS the feature, and a carve-out forbidding it would restore the blindness this replaced.
+ * `gateQuestion` is phrased to agree with this clause rather than contradict it - the two
+ * strings reach the model together, so they must not argue.
+ */
 const POLICY = `You are Foreman, an autonomous triage agent for the "Agent Wrangler" fleet
 dashboard. Another AI coding agent (a "child" session) has paused and is waiting on its human
 operator. Your job: understand the child's goal from its transcript, then either answer the
@@ -68,8 +79,14 @@ WHEN TO ESCALATE (action="escalate"):
 Fill "brief" (the framed decision) and "recommendation" (what you'd suggest) so the human can decide fast.
 
 WHEN TO SKIP (action="skip"):
-- The pending item is a plan/diff review or a gate rather than an answerable question, or you genuinely
+- The pending item is a plan/diff review rather than an answerable question, or you genuinely
   can't tell what is being asked. Still fill in "purpose".
+- A parked no-mistakes gate is NOT one of those. It reads as "The no-mistakes run on <branch> is parked
+  at the "<step>" gate...", usually listing the findings no-mistakes routed to the user's judgment rather
+  than fixing itself. It IS answerable prose-to-prose: the child translates your reply into the matching
+  command. Those findings are what you are standing in for the user to decide. Judge them under the rules
+  above - answer when the call is clear from the session's goal, escalate when it turns on the user's
+  intent or is risky - but never skip merely for being a gate.
 
 PHRASING answer.text: write the exact message to send to the child agent - concise and directive, with a
 one-line rationale. For a permission/menu prompt, reply in natural language ("Approve - go ahead." or
@@ -139,12 +156,22 @@ function queueItemSection(item: NonNullable<ReviewInput["queueItem"]>): string[]
   return lines;
 }
 
-/** Render a transcript window as `[role] (tools: …) text`, per-message capped. Shared with triage. */
+/**
+ * Render a transcript window as `[role] (tools: …) text`, per-message capped. Shared with triage.
+ *
+ * A tool renders as `Name(input)` - the input already capped at parse time (TOOL_INPUT_CAP).
+ * Carrying it is what makes the terminal surface legible at all: the pending question there
+ * is the generic "Claude needs your permission", so an `AskUserQuestion(...)` rendering its
+ * question and options is the ONLY place the reviewer can read what it is being asked to
+ * decide. A name-only chip left it judging blind, and the policy correctly escalated rather
+ * than guess - which read as Foreman being unhelpful when it was being honest.
+ */
 export function formatTranscript(messages: TranscriptMessage[]): string {
   if (messages.length === 0) return "(transcript unavailable)";
   return messages
     .map((m) => {
-      const tools = m.tools.length ? ` (tools: ${m.tools.join(", ")})` : "";
+      const calls = m.tools.map((t) => (t.input ? `${t.name}(${t.input})` : t.name));
+      const tools = calls.length ? ` (tools: ${calls.join(", ")})` : "";
       const text = m.text.length > MSG_CAP ? `${m.text.slice(0, MSG_CAP)}…` : m.text;
       return `[${m.role}]${tools} ${text}`.trim();
     })

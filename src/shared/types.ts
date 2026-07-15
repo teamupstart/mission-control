@@ -731,6 +731,24 @@ export type ServerEvent =
 
 // ---- session transcript (expanded card) ----
 
+/** One tool call in a turn: what was invoked, and what it was invoked with. */
+export interface ToolCall {
+  /** Tool name, e.g. "Bash" - rendered as a compact chip on the card. */
+  name: string;
+  /**
+   * The call's arguments, JSON-serialized and capped (see TOOL_INPUT_CAP). Undefined
+   * when the record carried no input, or an empty one.
+   *
+   * This is the only place the CONCRETE action a turn takes is written down: the name
+   * says "Bash", the input says `rm -rf /`. Foreman's whole judgment surface rests on
+   * it - on the terminal surface the pending question is the generic, 120-char-capped
+   * "Claude needs your permission" (see the Notification branch of registry.ts's
+   * `hookToState`), so an `AskUserQuestion`'s options and a `Bash`'s command reach the
+   * reviewer through here or not at all.
+   */
+  input?: string;
+}
+
 /** One normalized turn from a Claude/Codex transcript, for the expanded card. */
 export interface TranscriptMessage {
   /** Stable id (the record uuid) - used to de-dupe across init/append. */
@@ -738,8 +756,8 @@ export interface TranscriptMessage {
   role: "user" | "assistant";
   /** Prose the human/agent wrote. May be empty on a pure tool-call turn. */
   text: string;
-  /** Names of tools invoked in this turn, rendered as compact chips. */
-  tools: string[];
+  /** Tools invoked in this turn. The card chips their names; Foreman reads their inputs. */
+  tools: ToolCall[];
   /** epoch ms of the turn, 0 when the record had no timestamp. */
   ts: number;
 }

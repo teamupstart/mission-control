@@ -10,6 +10,7 @@ import {
   parseLines,
   resolveTranscriptPath,
   toMessage,
+  TOOL_INPUT_CAP,
 } from "../src/server/transcript.ts";
 import type { Session } from "@shared/types.ts";
 
@@ -26,6 +27,29 @@ const asstTool = JSON.stringify({
   uuid: "a2",
   timestamp: "2026-07-11T02:00:01.000Z",
   message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: {} }] },
+});
+const asstAsk = JSON.stringify({
+  type: "assistant",
+  uuid: "a3",
+  timestamp: "2026-07-11T02:00:03.000Z",
+  message: {
+    role: "assistant",
+    content: [
+      {
+        type: "tool_use",
+        name: "AskUserQuestion",
+        input: {
+          questions: [
+            {
+              question: "The review gate flagged r2: branch and commit them?",
+              header: "Gate",
+              options: [{ label: "Commit here" }, { label: "Branch first" }],
+            },
+          ],
+        },
+      },
+    ],
+  },
 });
 const userPrompt = JSON.stringify({
   type: "user",
@@ -65,10 +89,49 @@ test("toMessage extracts text, tools, role, and timestamp", () => {
   });
   const tool = toMessage(JSON.parse(asstTool));
   assert.equal(tool!.text, "");
-  assert.deepEqual(tool!.tools, ["Bash"]);
+  // An empty input carries no `input` at all rather than a literal "{}".
+  assert.deepEqual(tool!.tools, [{ name: "Bash" }]);
   const prompt = toMessage(JSON.parse(userPrompt));
   assert.equal(prompt!.role, "user");
   assert.equal(prompt!.text, "run the tests");
+});
+
+test("toMessage carries the tool input, so the reviewer can see the real ask", () => {
+  const call = toMessage(JSON.parse(asstAsk))!.tools[0]!;
+  assert.equal(call.name, "AskUserQuestion");
+  // The question and its options are the whole point: without the input, this turn
+  // renders as a bare "AskUserQuestion" chip and Foreman is judging a prompt blind.
+  assert.match(call.input!, /branch and commit them\?/i);
+  assert.match(call.input!, /Branch first/);
+});
+
+test("toMessage caps a tool input, so one call can't blow up the window", () => {
+  const huge = JSON.stringify({
+    type: "assistant",
+    uuid: "a4",
+    message: {
+      role: "assistant",
+      content: [{ type: "tool_use", name: "Write", input: { file_path: "/x.ts", content: "x".repeat(50_000) } }],
+    },
+  });
+  const call = toMessage(JSON.parse(huge))!.tools[0]!;
+  assert.equal(call.name, "Write");
+  assert.ok(call.input!.length <= TOOL_INPUT_CAP + 1, `capped, got ${call.input!.length}`);
+  assert.ok(call.input!.endsWith("…"), "marked as truncated");
+  assert.match(call.input!, /x\.ts/, "the path leads, so what survives the cap is the useful part");
+});
+
+test("toMessage survives a malformed tool input rather than dropping the window", () => {
+  const cyclic: Record<string, unknown> = { name: "Bash" };
+  cyclic.self = cyclic;
+  const rec = {
+    type: "assistant",
+    uuid: "a5",
+    message: { role: "assistant", content: [{ type: "tool_use", name: "Bash", input: cyclic }] },
+  };
+  const call = toMessage(rec)!.tools[0]!;
+  assert.equal(call.name, "Bash");
+  assert.equal(call.input, undefined, "unserializable input is dropped, the call is not");
 });
 
 test("toMessage drops noise: sidechains, pure tool-results, empty turns, non-messages", () => {

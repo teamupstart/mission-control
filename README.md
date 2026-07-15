@@ -324,6 +324,9 @@ Claude session, reads the transcript to understand the goal, then:
   correct, secure, non-duplicative option) and non-destructive access requests;
 - **escalates** the genuine forks - a call that hinges on your intent, or anything
   destructive/risky - as a framed **decision brief** with its recommendation, and pings you;
+- **stands in for you at a parked [no-mistakes](#no-mistakes) gate** - when a run stops to put
+  an `ask-user` finding to you, Foreman reads the finding and the session's goal, answers when
+  the call is clear from that goal, and escalates when it turns on your intent;
 - writes a 1-2 sentence **Purpose** on every session it inspects, shown in the expanded
   card so you can re-orient at a glance.
 
@@ -368,7 +371,7 @@ queues below, type the same work instruction into a live agent twice.
 
 Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
 it and spends the big model only where judgment is actually required. **Tier 0** is pure code
-and costs nothing: a plan/diff/gate review is always yours to approve, so it's disposed with a
+and costs nothing: a plan/diff review is always yours to approve, so it's disposed with a
 Purpose and no model call at all. **Tier 1** is a cheap router (Haiku) that reads a trimmed
 transcript and *buckets* the ask rather than solving it. Only the genuine judgment calls route
 up to the full **Tier 2** review, which is unchanged.
@@ -377,8 +380,11 @@ The tier is **asymmetric on purpose**. It may hand a session back to you (skip) 
 (escalate) freely, but it may auto-answer only one tightly bounded category - routine,
 non-destructive access - and that answer flows through the *same* mode + allowlist +
 auto-approve gate the full reviewer's answers do, so it can never send under a looser config
-than Opus would. Two code backstops the router cannot override sit behind it: the destructive
-denylist above forces an escalation, and low confidence routes up.
+than Opus would. Four code backstops the router cannot override sit behind it: the destructive
+denylist above forces an escalation, low confidence routes up, a window with nothing to scan
+counts as *unknown* rather than safe and routes up, and a parked no-mistakes gate is never the
+cheap tier's to answer - it may only escalate (cheap, and puts the gate in front of you) or
+route up to the reviewer that was taught to judge one.
 
 Pick the posture with the **Cheap tier** control in the popover:
 
@@ -482,7 +488,10 @@ step aside while a run is parked, where the gate line already conveys that state
 When a run is parked at a gate you can **approve / fix / skip** it right there;
 those map to `no-mistakes axi respond --action …` (fix lets you pick findings and
 add guidance). Approve and skip confirm first since they advance the pipeline
-toward pushing your branch.
+toward pushing your branch. [Foreman](#foreman-auto-responder), if enabled, can take
+the first look at a parked gate for you: it reads the finding the run relayed and
+either answers it or escalates it as a decision brief, rather than leaving the run
+parked until you get to it.
 
 Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>R</kbd>) also
 **retires the run the card was showing**, clearing the strip and its narration for

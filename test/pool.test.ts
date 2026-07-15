@@ -631,7 +631,12 @@ test("reapIntervalMs disables on 0 and refuses to hand setTimeout a hot loop", a
   // The far end of the same trap: past setTimeout's 32-bit range an "effectively
   // off" value fires every ~1ms, so a huge interval must clamp, not overflow.
   await withReapEnv("99999999999", () =>
-    assert.equal(reapIntervalMs(), 3_600_000, "a huge value is clamped, not handed to setTimeout"),
+    assert.equal(reapIntervalMs(), 604_800_000, "a huge value is clamped, not handed to setTimeout"),
+  );
+  // The clamp dodges the overflow; it does not overrule the user. A slow sweep is
+  // a legitimate ask, so anything short of nonsense is honored exactly as written.
+  await withReapEnv("21600000", () =>
+    assert.equal(reapIntervalMs(), 21_600_000, "a deliberate 6h interval is honored, not downgraded"),
   );
 });
 

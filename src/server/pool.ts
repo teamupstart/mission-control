@@ -121,11 +121,14 @@ const MIN_REAP_MS = 30_000;
  * end: `setTimeout`'s delay is a 32-bit signed int, so anything past 2^31-1 ms
  * (~24.8 days) silently becomes a 1ms tick rather than a long wait. Someone
  * disabling the sweep with `FLEET_POOL_REAP_MS=99999999999` would get the
- * busiest reaper possible. An hour is far past any useful leak-collection
- * cadence and nowhere near the overflow, so clamp to it rather than tracking
- * node's limit; `0` stays the one real off switch.
+ * busiest reaper possible.
+ *
+ * This exists ONLY to stay clear of that overflow, not to have an opinion about
+ * cadence: a week is a deliberate interval and gets honored, so every realistic
+ * value passes through untouched and only a nonsense one clamps. `0` stays the
+ * one real off switch.
  */
-const MAX_REAP_MS = 3_600_000;
+const MAX_REAP_MS = 604_800_000;
 
 /**
  * The sweep interval, or null when the sweep is switched OFF.

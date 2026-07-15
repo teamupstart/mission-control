@@ -53,6 +53,7 @@ function mkDisco(
     cwd,
     gitBranch: branch,
     gitRoot: cwd,
+    repoRoot: cwd,
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",

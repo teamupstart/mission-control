@@ -18,6 +18,7 @@ import type {
 } from "@shared/types.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { InjectError } from "./queue-apply.ts";
+import type { GateRef } from "./pending.ts";
 import type { ForemanActions } from "./verdict.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
@@ -294,6 +295,17 @@ export class ForemanClient implements ForemanActions {
   async resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown> {
     const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, { action, response });
     if (!res.ok) throw new Error(`resolveReview ${reviewId} -> ${res.status}`);
+    return res.json();
+  }
+
+  async logGateReply(id: string, gate: GateRef, text: string): Promise<unknown> {
+    const res = await send("POST", `/api/sessions/${enc(id)}/gate-reply`, {
+      runId: gate.runId,
+      step: gate.step,
+      findingIds: gate.findingIds,
+      text,
+    });
+    if (!res.ok) throw new Error(`logGateReply ${id} -> ${res.status}`);
     return res.json();
   }
 }

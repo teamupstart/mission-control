@@ -33,6 +33,7 @@ function mkDiscovered(
     cwd: "/repo",
     gitBranch: "feature",
     gitRoot: "/repo",
+    repoRoot: "/repo",
     nomistakesGated: false,
     pid: 1,
     tty: `ttys${++paneN}`,

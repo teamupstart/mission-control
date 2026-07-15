@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitInfo } from "../src/server/util/git.ts";
+import { gitInfo, mainRepoRoot } from "../src/server/util/git.ts";
 
 const NM_CONFIG = '[remote "no-mistakes"]\n\turl = /Users/x/.no-mistakes/repos/demo\n';
 
@@ -35,7 +35,7 @@ function makeRepoWithWorktree(): { main: string; worktree: string } {
 
 test("gitInfo reads a normal checkout's branch, root, and no-mistakes gating", () => {
   const { main } = makeRepoWithWorktree();
-  assert.deepEqual(gitInfo(main), { branch: "main", root: main, nomistakesGated: true });
+  assert.deepEqual(gitInfo(main), { branch: "main", root: main, repoRoot: main, nomistakesGated: true });
 });
 
 test("gitInfo resolves a linked worktree's branch, own root, and shared gating", () => {
@@ -46,9 +46,30 @@ test("gitInfo resolves a linked worktree's branch, own root, and shared gating",
   assert.deepEqual(gitInfo(worktree), {
     branch: "mancej/dispatch-fleet-report",
     root: worktree,
+    // The worktree's own root is itself, but the REPO it belongs to is the main
+    // checkout - the distinction Foreman's allowlist turns on.
+    repoRoot: main,
     nomistakesGated: true,
   });
   assert.notEqual(gitInfo(worktree).root, gitInfo(main).root);
+  assert.equal(gitInfo(worktree).repoRoot, gitInfo(main).repoRoot, "same repo, different trees");
+});
+
+test("mainRepoRoot walks a linked worktree back to the repo that owns it", () => {
+  const { main, worktree } = makeRepoWithWorktree();
+  // The pool reaper's key move: a session in a pooled tree reports that tree as
+  // its cwd, but treehouse keys the pool off the OWNING repo. `gitInfo().root`
+  // stops at the worktree; this has to go one hop further, via commondir.
+  assert.equal(mainRepoRoot(worktree), main);
+  assert.equal(gitInfo(worktree).root, worktree);
+});
+
+test("mainRepoRoot is the checkout itself for a normal clone, and null outside a repo", () => {
+  const { main } = makeRepoWithWorktree();
+  assert.equal(mainRepoRoot(main), main);
+  assert.equal(mainRepoRoot(join(main, "packages", "app")), main);
+  assert.equal(mainRepoRoot(realpathSync(mkdtempSync(join(tmpdir(), "git-norepo-")))), null);
+  assert.equal(mainRepoRoot(null), null);
 });
 
 test("gitInfo reports the worktree root from a nested subdir", () => {
@@ -66,10 +87,38 @@ test("gitInfo returns a short sha for a detached HEAD", () => {
   mkdirSync(gitDir, { recursive: true });
   writeFileSync(join(gitDir, "HEAD"), "06a99e5b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f\n");
   writeFileSync(join(gitDir, "config"), "");
-  assert.deepEqual(gitInfo(root), { branch: "06a99e5b", root, nomistakesGated: false });
+  assert.deepEqual(gitInfo(root), { branch: "06a99e5b", root, repoRoot: root, nomistakesGated: false });
 });
 
 test("gitInfo returns nulls for a non-repo dir", () => {
   const root = mkdtempSync(join(tmpdir(), "git-none-"));
-  assert.deepEqual(gitInfo(root), { branch: null, root: null, nomistakesGated: false });
+  assert.deepEqual(gitInfo(root), { branch: null, root: null, repoRoot: null, nomistakesGated: false });
+});
+
+/**
+ * A worktree of a BARE repo: its commondir points at `/…/demo.git`, which is the repo
+ * itself rather than some checkout's `.git`. Taking the parent there would report the
+ * directory that merely CONTAINS the repo as the repo root - and since `repoRoot` feeds
+ * Foreman's allowlist, that would silently clear every sibling repo sitting next to it.
+ */
+test("gitInfo reports a bare repo as its own root, never its parent directory", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "git-bare-")));
+  const bare = join(root, "demo.git");
+  mkdirSync(bare, { recursive: true });
+  writeFileSync(join(bare, "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(bare, "config"), "");
+
+  const wtGitDir = join(bare, "worktrees", "wt1");
+  mkdirSync(wtGitDir, { recursive: true });
+  writeFileSync(join(wtGitDir, "HEAD"), "ref: refs/heads/feature\n");
+  writeFileSync(join(wtGitDir, "commondir"), "../..\n");
+
+  const worktree = join(root, "wt");
+  mkdirSync(worktree, { recursive: true });
+  writeFileSync(join(worktree, ".git"), `gitdir: ${wtGitDir}\n`);
+
+  const info = gitInfo(worktree);
+  assert.equal(info.branch, "feature");
+  assert.equal(info.repoRoot, bare, "the bare repo itself");
+  assert.notEqual(info.repoRoot, root, "NOT the dir that merely contains it");
 });

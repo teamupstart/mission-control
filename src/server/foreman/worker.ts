@@ -314,7 +314,7 @@ async function processTarget(
     bucket: reportBucket(fresh, fleet),
     queue,
     cfg: qcfg,
-    mayActLive: foremanMayActLive(cfg, fresh.cwd),
+    mayActLive: foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot),
     now: Date.now(),
   });
 
@@ -504,7 +504,12 @@ async function runVerify(
   // A verdict the machine can't act on is the same event as a reviewer that never
   // produced one, so it takes the same retry-then-escalate path rather than a second
   // one of its own.
-  const outcome = planFromVerify(item, result.verdict, foremanMayActLive(cfg, session.cwd), qcfg);
+  const outcome = planFromVerify(
+    item,
+    result.verdict,
+    foremanMayActLive(cfg, session.cwd, session.repoRoot),
+    qcfg,
+  );
   if (outcome.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, outcome.reason));
   }
@@ -611,10 +616,13 @@ async function processSession(
 
   const ctx: ReviewContext = {
     sessionId: session.id,
-    repoRoot: session.cwd,
     promptMarker: pending.marker,
     inputReviewId: pending.inputReviewId,
     canSend: pending.canSend,
+    // Read off the pending classification, not re-derived from the session: the two
+    // would be answering the same question from the same object, and the one that
+    // drifted would file replies against the wrong gate.
+    gate: pending.gate ?? null,
   };
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means
@@ -628,7 +636,7 @@ async function processSession(
   let plan = planFromVerdict(
     verdict,
     ctx,
-    foremanMayActLive(cfg, session.cwd),
+    foremanMayActLive(cfg, session.cwd, session.repoRoot),
     cfg.autoApproveAccess,
   );
 
@@ -655,7 +663,7 @@ async function processSession(
     plan = planFromVerdict(
       verdict,
       ctx,
-      !!freshCfg && foremanMayActLive(freshCfg, session.cwd),
+      !!freshCfg && foremanMayActLive(freshCfg, session.cwd, session.repoRoot),
       (freshCfg ?? cfg).autoApproveAccess,
     );
     if (!plan.send) {

@@ -9,6 +9,7 @@ import {
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
   ForemanHeartbeatSchema,
+  GateReplySchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -27,10 +28,11 @@ import {
   StatusSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
+import type { NomistakesRespond } from "@shared/protocol.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
-import type { WorkItem } from "@shared/types.ts";
+import type { NmRunSummary, Session, WorkItem } from "@shared/types.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
@@ -52,6 +54,7 @@ import { readStandards } from "./standards.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
+import { dropGateReply, logGateReply } from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -123,6 +126,57 @@ function ownedItem(
     return { ok: false, res: c.json({ error: "that item is not in this session's queue" }, 404) };
   }
   return { ok: true, item };
+}
+
+/**
+ * Stake the "you typed this" byline on a gate decision that is about to go out.
+ * Returns the row to retract if it doesn't land, or null if there is nothing to
+ * take back (the byline is best-effort, so a failed write costs the byline alone).
+ */
+function stakeYourByline(
+  session: Session,
+  gate: NmRunSummary,
+  step: string,
+  body: NomistakesRespond,
+): number | null {
+  try {
+    return logGateReply({
+      sessionId: session.id,
+      ts: Date.now(),
+      source: "you",
+      runId: gate.id,
+      step,
+      // What the human actually picked. Falling back to every finding at the gate
+      // matches the Fix box's own contract - it sends an empty list to mean "all
+      // shown findings" - so the recorded set is what was decided either way, which
+      // is what the join reads.
+      findingIds:
+        body.findings.length > 0 ? body.findings : gate.findings.map((f) => f.id).filter(Boolean),
+      // The Fix box sends `trim() || undefined`, so selecting findings and typing
+      // nothing is ordinary and lands as null: an author with no words, not an
+      // absent author.
+      text: body.instructions ?? null,
+    });
+  } catch (err) {
+    // The decision still goes out; losing the byline must not fail the request.
+    console.error("[nomistakes] could not record the gate reply:", err);
+    return null;
+  }
+}
+
+/**
+ * Take back a "you typed this" byline the gate never received.
+ *
+ * Fail-soft, like the write it undoes: this runs both in a request path and in a
+ * background `.then()`, and losing the retraction costs one wrong byline while
+ * throwing would cost the caller its response or its reconcile.
+ */
+function retractByline(rowId: number): void {
+  try {
+    dropGateReply(rowId);
+  } catch (err) {
+    console.error("[nomistakes] could not retract the gate reply:", err);
+  }
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
@@ -452,8 +506,77 @@ export function buildApp(
     if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
     const parsed = await parseBody(c, NomistakesRespondSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, parsed.data);
+    // The "you typed this" byline. Recorded HERE rather than inside `respond()`
+    // because this route is what the claim actually means: `respond()` is a helper
+    // keyed by cwd that anything could call, while a POST to this route is by
+    // definition the dashboard's Fix box. It's also the only side holding a session
+    // and its live run.
+    //
+    // Only for `fix`: `approve`/`skip` commit nothing, so they have no fix to put a
+    // byline on.
+    //
+    // Written BEFORE the decision goes out and RETRACTED if it doesn't land, rather
+    // than written once we know. The ordering is load-bearing, not an optimisation:
+    // `axi respond` blocks server-side until the run reaches the next gate or an
+    // outcome, so by the time it settles the fix it authorized is already committed -
+    // a byline stamped then would date from after that commit, and `pickGateReply`'s
+    // causality filter would discard it. Logging on the way out is the only way the
+    // row's `ts` can precede the fix it explains; the alternative silently deletes
+    // the whole "you" lane.
+    const gate = session.nomistakes;
+    const step = parsed.data.step || gate?.gateStep;
+    const rowId =
+      parsed.data.action === "fix" && gate && step
+        ? stakeYourByline(session, gate, step, parsed.data)
+        : null;
+
+    const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, {
+      ...parsed.data,
+      // Undelivered is un-authored. The gate the user answered may be one the run has
+      // already moved past (status is polled, so the Fix box can be ~seconds stale),
+      // and `axi respond` then exits non-zero having said nothing. Left behind, that
+      // row would sign whatever the agent later decided for itself through the
+      // `/no-mistakes` skill - stamping "by you, in the dashboard" on an autonomous
+      // fix, which is the feature's own distinction inverted, in its worst direction.
+      //
+      // KNOWN LIMITATION: only the LOUD failure is compensated. `axi` exiting 0 while
+      // no-opping on an already-decided gate leaves a row nothing here can tell from a
+      // delivered one, so that byline stands. Guessing at it would reintroduce exactly
+      // the misattribution this closes.
+      onUndelivered: rowId === null ? undefined : () => retractByline(rowId),
+    });
+    // Rejected before anything was spawned (no binary, or a decision already in
+    // flight): the gate heard nothing, so the same retraction applies.
+    if (!r.ok && rowId !== null) retractByline(rowId);
     return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Record a Foreman gate nudge, for the fix log's byline. Loopback-gated like
+  // every /api route: the worker is a separate process with no DB access of its own.
+  app.post("/api/sessions/:id/gate-reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, GateReplySchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      logGateReply({
+        sessionId: session.id,
+        ts: Date.now(),
+        source: "foreman",
+        runId: parsed.data.runId,
+        step: parsed.data.step,
+        findingIds: parsed.data.findingIds,
+        text: parsed.data.text || null,
+      });
+    } catch (err) {
+      // Fail soft, like every other byline write (stakeYourByline, retractByline,
+      // attribute, the prune). A byline is never worth an error to its caller: the
+      // foreman's reply is already delivered by the time it posts this, so a DB
+      // failure must cost the byline and nothing else. 500ing here would be the one
+      // write in the feature that breaks that posture.
+      console.error("[nomistakes] could not record the foreman gate reply:", err);
+    }
+    return c.json({ ok: true });
   });
 
   // --- Foreman session notes (localhost only) ---

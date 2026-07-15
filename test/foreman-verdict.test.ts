@@ -16,7 +16,6 @@ import { extractVerdict } from "../src/server/foreman/review.ts";
 function ctx(over: Partial<ReviewContext> = {}): ReviewContext {
   return {
     sessionId: "s1",
-    repoRoot: "/repo",
     promptMarker: "await:100",
     inputReviewId: null,
     canSend: true,
@@ -196,12 +195,41 @@ test("foremanMayActLive: only enabled + live + allowlisted (prefix) cwd sends", 
   assert.equal(foremanMayActLive(cfg(), "/repo/"), true, "trailing-slash cwd still matches");
 });
 
+/**
+ * The bug this covers: live mode kept asking for confirmation on every session in the
+ * fleet. Every real checkout is a WORKTREE parked outside the repo (`~/.treehouse/...`,
+ * the daemon's worktrees dir), so a cwd-prefix allowlist said "no" about the very repo
+ * the human had allowlisted - and Foreman drafted, forever, everywhere.
+ */
+test("foremanMayActLive: a worktree of an allowlisted repo may send, wherever it sits", () => {
+  const wt = "/Users/me/.treehouse/ai-harness-c7356c/14/ai-harness";
+  assert.equal(foremanMayActLive(cfg(), wt, "/repo"), true, "worktree OF an allowlisted repo");
+  assert.equal(
+    foremanMayActLive(cfg(), "/var/folders/tmp/worktrees/abc", "/repo/"),
+    true,
+    "trailing-slash repo root still matches",
+  );
+  // The repo identity is what's allowlisted - not the worktree's throwaway location.
+  assert.equal(foremanMayActLive(cfg(), wt, "/other-repo"), false, "worktree of an OFF-list repo");
+  assert.equal(foremanMayActLive(cfg(), wt, null), false, "no repo root, off-list cwd: no send");
+  assert.equal(foremanMayActLive(cfg({ mode: "dry-run" }), wt, "/repo"), false, "mode still rules");
+  assert.equal(foremanMayActLive(cfg({ enabled: false }), wt, "/repo"), false, "enabled still rules");
+  assert.equal(
+    foremanMayActLive(cfg({ repoAllowlist: ["/repofoo"] }), wt, "/repo"),
+    false,
+    "no partial-token match on the repo root either",
+  );
+  // Fail-closed: an omitted repoRoot degrades to the cwd rule, never grants a send.
+  assert.equal(foremanMayActLive(cfg(), wt), false, "absent repoRoot can't grant");
+});
+
 test("applyVerdict: live answer sends first, then records the answered note", async () => {
   const calls: string[] = [];
   const actions: ForemanActions = {
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
+    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await applyVerdict(actions, ctx(), plan);
@@ -216,6 +244,7 @@ test("applyVerdict: a failed send records purpose only (no marker) and rethrows"
       throw new Error("pane gone");
     },
     resolveReview: async () => ({}),
+    logGateReply: async () => ({}),
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await assert.rejects(applyVerdict(actions, ctx(), plan), /pane gone/);
@@ -231,6 +260,7 @@ test("applyVerdict: dry-run draft writes the note and sends nothing", async () =
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
+    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   await applyVerdict(actions, ctx(), planFromVerdict(ANSWER, ctx(), false));
   assert.deepEqual(calls, ["putNote"]);

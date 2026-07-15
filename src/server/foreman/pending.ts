@@ -26,6 +26,23 @@ export type PendingSituation =
   | "gate-parked"
   | "no-question";
 
+/**
+ * Which no-mistakes gate round a `gate-parked` session sits on - enough to file a
+ * reply against it later, and nothing more.
+ *
+ * The same three facts the marker above is built from, carried in structured form
+ * rather than re-derived: the marker is a hash meant for an equality check and
+ * can't be read back. Note what is NOT here: `findingsDigest`. The ids are the
+ * discriminator (see `logGateReply`), because they survive `axi status`'
+ * description truncation and a digest of that text does not.
+ */
+export interface GateRef {
+  runId: string;
+  step: string;
+  /** Every finding up at the gate, ask-user and auto-fix alike. */
+  findingIds: string[];
+}
+
 export interface Pending {
   /** The rich block kind the Tier 0 gate branches on. */
   situation: PendingSituation;
@@ -42,6 +59,8 @@ export interface Pending {
   reviewKind?: string;
   /** For a non-input review: its title, if any. */
   reviewTitle?: string;
+  /** Set only for `gate-parked`: which gate round, so a send can be filed against it. */
+  gate?: GateRef;
 }
 
 /**
@@ -163,6 +182,15 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   // agent puts the finding up as a live prompt), and the live prompt is the precise thing
   // blocked right now - answering it is what unblocks the run. The gate behind it is context,
   // and the reviewer reads it off the transcript either way.
+  //
+  // That ordering decides the BYLINE too, and deliberately so: `gate` below is set on this
+  // branch and nowhere else, so a send that answers a live prompt is filed against no gate
+  // and its fix is credited to nobody. The ref attaches only when the gate IS the live
+  // question. A prompt that's up may be about anything - the agent may be asking something
+  // the gate never raised - so filing our answer to it against the gate would claim the reply
+  // was about the gate when nothing establishes that. That's an OVERCLAIM, and it's the
+  // direction this byline keeps having to close; a missing byline is the safe side of the
+  // same trade. So the foreman is named only where it stopped a gate that stayed a gate.
   if (gateParked(s) && s.nomistakes) {
     return {
       situation: "gate-parked",
@@ -179,6 +207,17 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       // ("parked 1m30s"), whose elapsed time ticks and would churn the marker into re-handling
       // the same gate every loop.
       marker: `gate:${s.nomistakes.id}:${s.nomistakes.gateStep ?? "parked"}:${findingsDigest(s.nomistakes.findings)}`,
+      // The same run/step/findings the marker hashes, kept readable so a send can be
+      // filed against this exact round (see `GateRef`). Only when the step is known:
+      // it is half the join key, and a reply filed under "parked" would attach to
+      // whatever step the fix log later asked about.
+      gate: s.nomistakes.gateStep
+        ? {
+            runId: s.nomistakes.id,
+            step: s.nomistakes.gateStep,
+            findingIds: s.nomistakes.findings.map((f) => f.id).filter(Boolean),
+          }
+        : undefined,
     };
   }
   return {

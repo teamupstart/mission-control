@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { itemLabel, moveTarget, queueHintKind } from "../src/web/lib/queue.ts";
-import type { QueueHintKind } from "../src/web/lib/queue.ts";
+import { itemLabel, moveTarget } from "../src/web/lib/queue.ts";
+import { foremanSendBlock } from "../src/web/lib/foreman.ts";
+import type { ForemanSendBlock } from "../src/web/lib/foreman.ts";
 import type { WorkItem, WorkItemState } from "../src/shared/types.ts";
 
 // The work-queue panel's pure presentation logic. It lives in src/web/lib precisely
@@ -108,8 +109,8 @@ test("moveTarget returns -1 for an item that isn't in the list", () => {
 
 // ---- the hint: what the panel owes you about items that aren't moving ----
 
-const hint = (over: Partial<Parameters<typeof queueHintKind>[0]> = {}): QueueHintKind =>
-  queueHintKind({ enabled: true, mode: "live", allowlisted: true, cwd: "/repo", ...over });
+const hint = (over: Partial<Parameters<typeof foremanSendBlock>[0]> = {}): ForemanSendBlock =>
+  foremanSendBlock({ enabled: true, mode: "live", allowlisted: true, cwd: "/repo", ...over });
 
 test("a live, allowlisted, enabled queue says nothing - the panel already shows it", () => {
   assert.equal(hint(), null);

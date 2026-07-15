@@ -52,6 +52,7 @@ import {
   listQueueRowsForCwd,
   countOpenQueueItems,
   pruneDeadQueues,
+  pruneGateReplies,
   reorderQueueItems,
   upsertQueue,
   upsertQueueItem,
@@ -84,6 +85,18 @@ const EXIT_LINGER_MS = 8000;
  * open work is never pruned at any age; see `pruneDeadQueues`.
  */
 const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * How long a no-mistakes gate reply is kept before it's pruned.
+ *
+ * Much longer than the queue window, because the thing it dates is much longer
+ * lived: the fix log reads `origin..HEAD`, so a byline stays useful for as long
+ * as the BRANCH does, and a branch outlives the session that opened it by weeks.
+ * The cost of being generous is a row per gate verdict; the cost of being tight
+ * is a fix log that says "replied" and can't say by whom on the exact branch a
+ * human finally sat down to review. See `pruneGateReplies` for why this is aged
+ * rather than scoped to a session.
+ */
+const GATE_REPLY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 /** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
 const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
@@ -282,6 +295,13 @@ export class Registry extends EventEmitter {
       // keeps the whole dashboard current.
       console.error("[registry] queue prune failed:", err);
     }
+    // Its own try: a gate-reply prune that threw must not stop the queue prune above
+    // (or vice versa), since they share only this timer and nothing else.
+    try {
+      pruneGateReplies(now - GATE_REPLY_RETENTION_MS);
+    } catch (err) {
+      console.error("[registry] gate reply prune failed:", err);
+    }
   }
 
   private mergeDiscovered(
@@ -302,6 +322,7 @@ export class Registry extends EventEmitter {
       cwd: d.cwd,
       gitBranch: d.gitBranch,
       gitRoot: d.gitRoot,
+      repoRoot: d.repoRoot,
       nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
@@ -1754,6 +1775,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.cwd === b.cwd &&
     a.gitBranch === b.gitBranch &&
     a.gitRoot === b.gitRoot &&
+    a.repoRoot === b.repoRoot &&
     a.pid === b.pid &&
     a.nameSource === b.nameSource &&
     a.agentSessionId === b.agentSessionId &&

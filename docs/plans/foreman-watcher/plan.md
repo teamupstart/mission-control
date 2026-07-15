@@ -59,12 +59,12 @@ the note, and the `classifyPending` surface). Disposes without any model call wh
 structurally determined:
 
 - Marker already handled ⇒ skip. *(Exists today via `handledMarker`.)*
-- Surface is a non-`input` review (plan / diff / gate) ⇒ structurally human-only ⇒ `skip`. This
-  previously spent a full review just to write the Purpose; Tier 0 disposes it outright, naming
-  the Purpose straight from the review's own kind and title. *(This resolves the third open
-  question below in the cheap direction: the Purpose here is written by pure code, not handed
-  down to Haiku - "this is a plan review for you" is all Foreman has to add, and it needs no
-  model to say it.)*
+- Surface is a non-`input` review (plan / diff - `ReviewKind` has never had a `gate` member) ⇒
+  structurally human-only ⇒ `skip`. This previously spent a full review just to write the Purpose;
+  Tier 0 disposes it outright, naming the Purpose straight from the review's own kind and title.
+  *(This resolves the third open question below in the cheap direction: the Purpose here is
+  written by pure code, not handed down to Haiku - "this is a plan review for you" is all Foreman
+  has to add, and it needs no model to say it.)*
 - Answerable surface but no delivery channel (a terminal prompt with no tmux/wezterm pane) ⇒ would
   escalate regardless ⇒ route **up**. *(This bullet originally read "escalate directly when the
   question is short and self-contained, else route up". Implementation found the premise doesn't
@@ -75,8 +75,9 @@ structurally determined:
   instead; no-pane sessions are rare, so the Opus cost is negligible.)*
 
 ### Tier 1 — cheap model triage (Haiku, trimmed transcript)
-For sessions that reach here there IS an answerable surface (an `input` review or a terminal
-prompt with a pane). Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
+For sessions that reach here there IS an answerable surface (an `input` review, a terminal prompt
+with a pane, or a parked no-mistakes gate - the last is why backstop 4 below has to exist).
+Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
 but with `--model claude-haiku-4-5` and a smaller window (fetch `turns=12` instead of 48). The
 endpoint's `turns` turned out to be a *byte*-bound hint rather than a turn bound - under its byte
 budget `readTranscriptWindow` returns the file whole - so the real bound is applied client-side in

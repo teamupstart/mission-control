@@ -12,7 +12,7 @@ import type { NmFixDecision, NmFixDetail, NmFixFile, NmFixFinding, NmFixSummary 
 // anything new:
 //
 //   git   - every fix self-commits as `no-mistakes(<step>): <summary>`, so the
-//           list of fixes IS `git log <base>..HEAD --grep '^no-mistakes('`.
+//           list of fixes IS `git log <base>..HEAD --grep '^no-mistakes'`.
 //   nm db - each `step_rounds` row holds the findings that justified the fix and
 //           the reply that authorized it, keyed by a `fix_summary` that is
 //           character-for-character the commit subject after the prefix.
@@ -143,10 +143,15 @@ async function listFixes(cwd: string): Promise<FixCommit[]> {
   const res = await git(cwd, [
     "log",
     `${ref}..HEAD`,
-    // Basic regex on purpose: `(` is literal here. With --extended-regexp git
-    // reads it as an unbalanced group and dies ("parentheses not balanced").
-    // This is only a prefilter anyway - parseFixSubject is the real gate.
-    "--grep=^no-mistakes(",
+    // The pattern carries no metacharacter on purpose. `(` is literal in basic
+    // regex but opens a group in extended and perl, and which one git uses is the
+    // USER's choice (`grep.patternType`) - so `^no-mistakes(` dies with
+    // "parentheses not balanced" on their machine and not on ours. Escaping only
+    // moves the failure between modes, since basic regex spells a group `\(`.
+    // Dropping the paren means the same thing in all three; --basic-regexp then
+    // pins the mode regardless of config, and parseFixSubject is the real gate.
+    "--basic-regexp",
+    "--grep=^no-mistakes",
     FORMAT,
     "--numstat",
     // One MORE than the cap, so hitting the cap is something we detect rather
@@ -154,7 +159,14 @@ async function listFixes(cwd: string): Promise<FixCommit[]> {
     // of more", and a log that quietly drops the tail reads as complete.
     `--max-count=${MAX_FIXES + 1}`,
   ]);
-  if (res.code !== 0) return [];
+  if (res.code !== 0) {
+    // Never silently: an empty log renders as "the pipeline changed nothing",
+    // which is what a failed read would claim too. Those must not look alike.
+    console.warn(
+      `[nomistakes] ${cwd}: cannot read the fix log (git exited ${res.code}): ${res.stderr.trim()}`,
+    );
+    return [];
+  }
   const all = parseFixLog(res.stdout);
   if (all.length > MAX_FIXES) {
     console.warn(
@@ -171,6 +183,25 @@ interface RoundContext {
   findings: NmFixFinding[];
   /** True count, before MAX_FINDINGS - so the card can say "40 of 50 shown". */
   findingCount: number;
+}
+
+/**
+ * Rounds the last `loadRoundContext` pulled from the database.
+ *
+ * A test seam, and the only way to see the narrowing that matters. Keeping the
+ * read proportional to the BRANCH is invisible in the output: whatever the SQL
+ * returns, the (step, summary) key re-filters it to the same answer, so dropping
+ * `AND r.fix_summary IN (...)` reads the repo's entire round history and still
+ * produces a log that looks right. Only the size of the read tells them apart.
+ *
+ * Last-write-wins, so it means nothing when logs are read concurrently (the
+ * poller does). Nothing outside tests reads it.
+ */
+let roundsRead = 0;
+
+/** Rounds the last `loadRoundContext` read. See `roundsRead`. Test seam. */
+export function lastRoundsRead(): number {
+  return roundsRead;
 }
 
 /** Join key. A summary is unique per (branch, step) in practice; scope covers the rest. */
@@ -291,6 +322,7 @@ async function loadRoundContext(
   commits: FixCommit[],
 ): Promise<Map<string, RoundContext>> {
   const out = new Map<string, RoundContext>();
+  roundsRead = 0;
   const path = nmDbPath();
   if (!branch || commits.length === 0 || !existsSync(path)) return out;
 
@@ -340,6 +372,7 @@ async function loadRoundContext(
     const fixRows = db.prepare(fixSql).all(repoId ?? branch, ...summaries) as Array<
       Record<string, unknown>
     >;
+    roundsRead = fixRows.length;
 
     // Pass 2: the round that DECIDED each fix.
     //

@@ -925,11 +925,16 @@ body {
 .nm-rollup:hover {
   background: color-mix(in oklab, var(--idle) 4%, transparent);
 }
+/* Never the element that gives: at the grid's 330px floor the row has to shrink
+   somewhere, and "fixed by no-mistakes" breaking across two lines grows the row
+   instead. The split next to it is the one built to truncate. */
 .nm-log-brand {
   color: var(--muted);
   font-weight: 620;
   font-size: 11px;
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex: none;
 }
 .nm-log-split {
   color: var(--dim);

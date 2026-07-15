@@ -1,10 +1,11 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 
 // The join from a fix commit to the round that explains it.
 //
@@ -13,9 +14,22 @@ import { DatabaseSync } from "node:sqlite";
 // ~/.no-mistakes/state.sqlite). If no-mistakes moves the schema, these fail -
 // which is the point: they're the tripwire for the coupling the plan calls out.
 
-process.env.NM_HOME = realpathSync(mkdtempSync(join(tmpdir(), "nm-home-")));
+/** Every temp dir this file makes. NM_HOME is re-pointed per test, so cleanup
+    has to remember all of them, not just the one that's current at the end. */
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
 
-const { readFixLog, forgetFixLog } = await import("../src/server/nomistakes-fixes.ts");
+function tmp(prefix: string): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  temps.push(dir);
+  return dir;
+}
+
+process.env.NM_HOME = tmp("nm-home-");
+
+const { readFixLog, lastRoundsRead } = await import("../src/server/nomistakes-fixes.ts");
 
 /**
  * no-mistakes' schema, trimmed to the columns the join reads. Each call gets its
@@ -23,7 +37,7 @@ const { readFixLog, forgetFixLog } = await import("../src/server/nomistakes-fixe
  * the env var per lookup, so re-pointing it is enough.
  */
 function mkNmDb(repoPath: string, branch: string): DatabaseSync {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "nm-home-")));
+  const home = tmp("nm-home-");
   process.env.NM_HOME = home;
   const db = new DatabaseSync(join(home, "state.sqlite"));
   db.exec(`
@@ -60,21 +74,10 @@ function findings(...items: Array<{ id: string; desc: string; instructions?: str
   });
 }
 
+/** A clone on `main` whose `origin/main` bounds the log. See helpers/git-fixture. */
 function mkRepo(): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "fixctx-")));
-  const origin = join(root, "origin");
-  execFileSync("git", ["init", "-q", origin]);
-  const og = (...a: string[]) => execFileSync("git", ["-C", origin, ...a], { stdio: "pipe" });
-  og("branch", "-M", "main");
-  og("config", "user.email", "t@test");
-  og("config", "user.name", "t");
-  writeFileSync(join(origin, "keep.txt"), "base\n");
-  og("add", "-A");
-  og("commit", "-qm", "base");
-  const clone = join(root, "clone");
-  execFileSync("git", ["clone", "-q", origin, clone]);
-  execFileSync("git", ["-C", clone, "config", "user.email", "t@test"]);
-  execFileSync("git", ["-C", clone, "config", "user.name", "t"]);
+  const { root, clone } = mkOriginAndClone("fixctx-");
+  temps.push(root);
   return clone;
 }
 
@@ -125,7 +128,6 @@ test("a fix takes the PRECEDING round's findings and reply, not its own", async 
   db.close();
 
   commit(repo, "b.ts", "no-mistakes(review): fix the guard");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   const detail = log.details.get(log.summaries[0]!.sha)!;
@@ -160,7 +162,6 @@ test("a round-1 fix uses its own findings and reads as auto-fixed", async () => 
   db.close();
 
   commit(repo, "docs.md", "no-mistakes(document): sync the docs");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   const detail = log.details.get(log.summaries[0]!.sha)!;
@@ -193,7 +194,6 @@ test("an auto-fix carries only the findings it actually selected", async () => {
   db.close();
 
   commit(repo, "c.ts", "no-mistakes(review): drop the unused import");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   const detail = log.details.get(log.summaries[0]!.sha)!;
@@ -228,9 +228,8 @@ test("context is found even when the round was recorded on another branch", asyn
   ).run("rd7", "sr4", 2, "auto_fix", "carried across a rebase", 700);
   db.close();
 
-  execFileSync("git", ["-C", repo, "checkout", "-qb", "a-newer-branch"]);
+  gitIn(repo, "checkout", "-qb", "a-newer-branch");
   commit(repo, "d.ts", "no-mistakes(review): carried across a rebase");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   const detail = log.details.get(log.summaries[0]!.sha)!;
@@ -244,8 +243,11 @@ test("context is found even when the round was recorded on another branch", asyn
  * handful, and each round drags ~20KB of json - so resolving every round in the
  * repo to explain six commits gets steadily worse as the repo ages.
  *
- * Asserted through behaviour rather than by counting queries: rounds belonging to
- * commits that aren't on this branch must not end up in the log at all.
+ * The output alone cannot show this, which is why `lastRoundsRead` exists: the
+ * (step, summary) key re-filters whatever the SQL hands back, so an unnarrowed
+ * read that loads all 31 rounds and throws 30 away produces a byte-identical log.
+ * Asserting the log here would pass with the narrowing deleted. The size of the
+ * read is the property, so the size of the read is what's asserted.
  */
 test("context is read for this branch's fixes, not the repo's whole history", async () => {
   const repo = mkRepo();
@@ -270,14 +272,13 @@ test("context is read for this branch's fixes, not the repo's whole history", as
   db.close();
 
   commit(repo, "g.ts", "no-mistakes(review): the only fix on this branch");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
+  // The 30 unrelated rounds explain nothing here, and must not be paid for.
+  assert.equal(lastRoundsRead(), 1, "the SQL asked for this branch's fix, not the repo's 31 rounds");
   assert.equal(log.summaries.length, 1);
   const detail = log.details.get(log.summaries[0]!.sha)!;
   assert.deepEqual(detail.findings.map((f) => f.id), ["current"]);
-  // The 30 unrelated rounds resolve to nothing - they aren't fixes on this branch.
-  assert.equal(log.details.size, 1, "only the branch's own fixes are in the log");
 });
 
 /**
@@ -298,7 +299,6 @@ test("findingCount is the true count even when the carried list is capped", asyn
   db.close();
 
   commit(repo, "f.ts", "no-mistakes(review): fix the pile");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   const detail = log.details.get(log.summaries[0]!.sha)!;
@@ -337,7 +337,6 @@ test("selecting findings without typing is replied, with no reply to quote", asy
   db.close();
 
   commit(repo, "h.ts", "no-mistakes(review): fix the ones I picked");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   const detail = log.details.get(log.summaries[0]!.sha)!;
@@ -354,7 +353,6 @@ test("a fix with no matching round lists without context", async () => {
   db.close(); // no rounds at all
 
   commit(repo, "e.ts", "no-mistakes(review): nobody remembers why");
-  forgetFixLog(repo);
   const log = await readFixLog(repo);
 
   assert.equal(log.summaries.length, 1);

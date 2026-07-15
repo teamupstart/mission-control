@@ -1,15 +1,28 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
+
+/** Every temp dir this file makes, removed once the suite is done with them. */
+const temps: string[] = [];
+after(() => {
+  for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+});
+
+function tmp(prefix: string): string {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  temps.push(dir);
+  return dir;
+}
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
-process.env.FLEET_HOME = mkdtempSync(join(tmpdir(), "fleet-fixlog-"));
+process.env.FLEET_HOME = tmp("fleet-fixlog-");
 // Point the no-mistakes DB lookup at an empty dir: these tests are about the git
 // side, and the join must degrade to "log without context" when there's no db.
-process.env.NM_HOME = mkdtempSync(join(tmpdir(), "nm-home-empty-"));
+process.env.NM_HOME = tmp("nm-home-empty-");
 
 const { openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -30,21 +43,8 @@ const authed = { ...LOOPBACK, "content-type": "application/json", "x-harness-tok
 
 /** A real origin + clone, so reset runs a genuine fetch/reset/clean. */
 function mkOriginAndClone(): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "harness-fixlog-")));
-  const origin = join(root, "origin");
-  execFileSync("git", ["init", "-q", origin]);
-  const og = (...a: string[]) => execFileSync("git", ["-C", origin, ...a], { stdio: "pipe" }).toString();
-  og("branch", "-M", "main");
-  og("config", "user.email", "t@test");
-  og("config", "user.name", "t");
-  writeFileSync(join(origin, "keep.txt"), "base\n");
-  og("add", "-A");
-  og("commit", "-qm", "base");
-  const clone = join(root, "clone");
-  execFileSync("git", ["clone", "-q", origin, clone]);
-  const cg = (...a: string[]) => execFileSync("git", ["-C", clone, ...a], { stdio: "pipe" }).toString();
-  cg("config", "user.email", "t@test");
-  cg("config", "user.name", "t");
+  const { root, clone } = mkFixture("harness-fixlog-");
+  temps.push(root);
   return clone;
 }
 
@@ -107,6 +107,42 @@ test("the fix log lists no-mistakes commits, with their stats, newest first", as
 });
 
 /**
+ * `grep.patternType` belongs to the USER, and it picks which regex dialect
+ * `--grep` speaks. A `(` in the pattern is a literal in basic and an unbalanced
+ * group in extended and perl, where git exits 128 instead of matching - and an
+ * unread log is an empty log, so the whole feature silently vanished for anyone
+ * who had set it. Escaping doesn't save it either: basic regex spells a group
+ * `\(`, so `\(` breaks exactly the dialects the bare paren worked in.
+ *
+ * Every dialect, not just the broken one: the point is that the prefilter means
+ * the same thing in all of them, which one config value can't demonstrate.
+ */
+for (const patternType of ["basic", "extended", "perl"]) {
+  test(`the fix log survives grep.patternType = ${patternType}`, async () => {
+    const clone = mkOriginAndClone();
+    const registry = new Registry();
+    buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
+
+    // Repo-local, which is how a user's ~/.gitconfig reaches this code.
+    execFileSync("git", ["-C", clone, "config", "grep.patternType", patternType], { stdio: "pipe" });
+    commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing");
+    commit(clone, "own.ts", "mine\n", "feat: my own work");
+
+    const id = `sess-pt-${patternType}`;
+    registry.applyDiscovery([disco({ syntheticId: id, cwd: clone })]);
+    forgetFixLog(clone);
+    await pollFixLogs(registry);
+
+    const fixes = registry.getSession(id)!.nomistakesFixes;
+    assert.equal(fixes.length, 1, "the fix still lists");
+    assert.equal(fixes[0]!.summary, "fix a thing");
+    // The paren left the --grep pattern, so parseFixSubject is now the only thing
+    // keeping non-fix commits out. It still has to.
+    assert.ok(!fixes.some((f) => f.summary === "my own work"), "a hand-written commit is not a fix");
+  });
+}
+
+/**
  * The user's report, driven the way they'd hit it: fixes landed, then they press
  * Reset. Reset hard-resets to origin, which destroys the very commits the log is
  * read from - so the log must empty, and stay empty when polling resumes.
@@ -146,7 +182,7 @@ test("pressing Reset empties the fix log, and polling can't bring it back", asyn
 
 /** A failed reset leaves the work in place, so its fixes must stay on the card. */
 test("a failed reset leaves the fix log alone", async () => {
-  const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-fixlog-nogit-")));
+  const notRepo = realpathSync(tmp("harness-fixlog-nogit-"));
   const registry = new Registry();
   const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
 

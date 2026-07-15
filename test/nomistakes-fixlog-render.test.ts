@@ -106,6 +106,31 @@ test("a foreman byline with no text shows no empty quote block", () => {
   assert.doesNotMatch(html, /the foreman said this about this gate/);
 });
 
+/**
+ * Two true statements that read as a contradiction, so only one of them gets to speak.
+ *
+ * An ordinary shape: the foreman nudges the pane, the agent relays it as `axi respond
+ * --action fix` with no `--instructions`, so the REPLY carries no guidance and the card
+ * has the foreman's guidance to quote. "No guidance given" is defensible about the reply
+ * and indefensible two lines above the words themselves. The block shows guidance
+ * exists, so the block wins.
+ */
+test("no guidance given stands down when the foreman's words are on the card", () => {
+  const html = render(detail({ reply: null, attribution: attribution() }));
+  assert.match(html, /the foreman said this about this gate/);
+  assert.match(html, /This looks safe - apply them\./);
+  assert.doesNotMatch(html, /no guidance given/);
+});
+
+/** ...and it still says it when there is nothing on the card to contradict it. */
+test("no guidance given still renders for a reply with nothing said at all", () => {
+  assert.match(render(detail({ reply: null, attribution: null })), /no guidance given/);
+  // Including for a foreman that nudged without typing: the lane is coloured, but
+  // nothing was quoted, so nothing disagrees.
+  const quiet = render(detail({ reply: null, attribution: attribution({ text: null }) }));
+  assert.match(quiet, /no guidance given/);
+});
+
 // ---- the collapsed row ----
 
 function summary(over: Partial<NmFixSummary> = {}): NmFixSummary {

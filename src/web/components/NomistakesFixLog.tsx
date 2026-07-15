@@ -129,6 +129,19 @@ function byline(detail: NmFixDetail): string {
   return "";
 }
 
+/**
+ * The foreman's own words about this gate, or null when there are none to show.
+ *
+ * One function because two places have to agree about it: the block that quotes the
+ * nudge, and the "no guidance given" meta above it. Answered separately they
+ * contradicted each other on the same card - the lane said nothing was said, while
+ * the foreman's sentence sat two lines below it.
+ */
+function foremanSaid(detail: NmFixDetail): string | null {
+  if (detail.attribution?.source !== "foreman") return null;
+  return detail.attribution.text || null;
+}
+
 /** "review 5 · document 3", in the order the steps actually ran. */
 function byStep(fixes: NmFixSummary[]): string {
   const counts = new Map<string, number>();
@@ -220,6 +233,7 @@ export function FixContext({
   // were, so the count here is the real one - and when the list is short of it,
   // the gap is stated rather than left to look like the whole set.
   const capped = detail.findingCount - detail.findings.length;
+  const said = foremanSaid(detail);
 
   return (
     <>
@@ -284,7 +298,13 @@ export function FixContext({
             ) : (
               <>
                 {byline(detail) && <span className="nm-ctx-meta">· {byline(detail)}</span>}
-                {!detail.reply && <span className="nm-ctx-meta">· no guidance given</span>}
+                {/* Only when there is nothing on the card to contradict it. The
+                    statement is about the REPLY - the agent relayed a nudge with no
+                    `--instructions`, so no guidance reached the fix - but a reader
+                    sees the foreman's guidance quoted below and reads the two as
+                    disagreeing. The block already shows that something was said, so
+                    the block wins and the meta stands down. */}
+                {!detail.reply && !said && <span className="nm-ctx-meta">· no guidance given</span>}
               </>
             )}
           </h4>
@@ -312,14 +332,14 @@ export function FixContext({
               gate, before this fix. Only for the foreman; the "you" lane's text
               IS the reply already quoted above, so repeating it would say the
               same sentence twice under two labels. */}
-          {detail.attribution?.source === "foreman" && detail.attribution.text && (
+          {said && (
             <div className="nm-foreman-said">
               <span className="nm-foreman-tag">the foreman said this about this gate</span>
               {/* Clamped in CSS and full on hover, like the findings above rather
                   than like the reply, which earns its own expander by being the
                   thing you came to read. This is context for it. */}
-              <p className="nm-reply nm-reply-foreman" title={detail.attribution.text}>
-                {detail.attribution.text}
+              <p className="nm-reply nm-reply-foreman" title={said}>
+                {said}
               </p>
             </div>
           )}

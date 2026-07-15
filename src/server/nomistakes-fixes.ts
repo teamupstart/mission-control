@@ -200,10 +200,17 @@ interface RoundContext {
   /** The run this fix's round belongs to. Half the key the byline joins on. */
   runId: string;
   /**
+   * When this fix's gate was open, off no-mistakes' round clock. See `ReplyWindow`.
+   *
+   * Null when either round's `created_at` was unreadable, which costs the byline and
+   * not the log - the same trade the rest of this file makes.
+   */
+  window: ReplyWindow | null;
+  /**
    * Every finding id the DECIDING round reported - uncapped, and independent of
    * which side (`findings` above) we ended up displaying.
    *
-   * The byline's discriminator between two rounds of one step. Uncapped because a
+   * The byline's tiebreak between two replies inside one `window`. Uncapped because a
    * capped set silently weakens the match rather than the display, and untangled
    * from `findings` because that list is narrowed to what was ACTED on, while a
    * reply's ids are drawn from everything that was up at the gate.
@@ -212,32 +219,35 @@ interface RoundContext {
 }
 
 /**
- * How far AFTER a fix's commit timestamp a reply may still be read as its cause.
+ * The span in which a reply to a fix's gate must have been filed.
  *
- * Not a clock-skew allowance - both timestamps are made on this machine. It's
- * `%ct`, which git reports in whole SECONDS: `committedAt` is therefore truncated
- * down by up to 999ms, so a reply logged at 10:00:00.500 against a fix committed
- * at 10:00:00.900 reads as 500ms in its own future. Without this, that true match
- * is discarded. One second exactly, because that is the size of the defect being
- * corrected: anything larger stops being a rounding fix and starts admitting the
- * NEXT round's reply as an explanation for this round's commit.
+ * Bounded by no-mistakes' OWN round clock, and pointedly not by git's. A fix's
+ * `committedAt` is `%ct`, which this very pipeline REWRITES: `axi run` rebases before
+ * it pushes, re-stamping every replayed fix with the rebase's own committer time. Two
+ * fixes minutes apart during the run then share one second, and any ordering read off
+ * them collapses silently. The round rows are rows in a database - a rebase cannot
+ * reach them - so bracketing against those makes the byline rebase-immune by
+ * construction rather than by tolerance.
+ *
+ * What makes the bracket exact is WHEN the executor writes a round: after the step
+ * returns (the same fact `RETRY_MS` below exists for). So:
+ *
+ *   after  - the DECIDING round's `created_at`. Its review had just returned the
+ *            findings, so this is the moment the gate parked, and the first moment
+ *            anyone could have answered it.
+ *   before - the FIX round's `created_at`. The fix had run by then, so a reply filed
+ *            later cannot have caused it.
+ *
+ * A reply to that gate necessarily falls strictly between the two. Both bounds are
+ * whole seconds and real rounds sit 11-79 minutes apart, so that granularity is
+ * immaterial and wants no tolerance - the tolerance this design replaced existed for
+ * `%ct`'s flooring, and `%ct` no longer has a say here.
  */
-const COMMIT_SECOND_MS = 1000;
-
-/**
- * Whether a reply filed at `ts` could have caused a fix committed at `committedAt`.
- *
- * The boundary is exclusive, and load-bearing rather than a style choice. `%ct`
- * floors the commit, so the true commit time is somewhere in [committedAt,
- * committedAt + 1000) - never at the top of that range. A reply landing at exactly
- * +1000ms is therefore after the fix however the flooring fell, and is the NEXT
- * round's, not this one's.
- *
- * Factored out because the byline asks this twice: once about the fix it is
- * explaining, and once - negated - about the fix before it.
- */
-function couldHaveCaused(ts: number, committedAt: number): boolean {
-  return ts < committedAt + COMMIT_SECOND_MS;
+export interface ReplyWindow {
+  /** When the gate parked: the deciding round returned its findings. Milliseconds. */
+  after: number;
+  /** When the fix had run: the fix round returned. Milliseconds. */
+  before: number;
 }
 
 /**
@@ -247,40 +257,42 @@ function couldHaveCaused(ts: number, committedAt: number): boolean {
  * re-run round with an identical finding set, an unreadable blob leaving no ids)
  * are all about which candidate wins, which is invisible from the outside.
  *
- * Three rules, in order:
- *  1. CAUSALITY. A reply filed after the fix landed cannot have caused it, and
- *     neither can one the PREVIOUS fix on this gate already consumed (see
- *     `previousFixOnGate`). This runs first so it constrains the other two rather
- *     than being their tiebreak.
- *  2. OVERLAP. Prefer the reply whose finding ids overlap this round's most, and
- *     REJECT one that shares none when both sides had ids to compare. This is what
- *     separates round 1 from round 2 of the same step - they share a run and a
- *     step, so ids are the only thing telling them apart. Ids, never
- *     `findingsDigest`: descriptions arrive TRUNCATED by `axi status` (600 runes
- *     plus a "… (truncated, %d chars total)" suffix) and a digest of them would
- *     bind this join to another tool's display constants, failing silently and
- *     invisibly the day either changed. Ids are short, stable and never truncated.
- *  3. RECENCY. Ties, and rounds we could read no ids for, fall back to the newest
- *     surviving candidate - the plain "who spoke last before this landed".
+ * Two rules, in order:
+ *  1. THE WINDOW. A reply outside it answered a different gate - filed before this one
+ *     parked, or after its fix had already run. This runs first and carries the join,
+ *     so the ids below only ever break a tie WITHIN one gate's lifetime.
+ *  2. OVERLAP, then RECENCY. A window can still hold more than one reply - you answered
+ *     twice, or a foreman nudge landed before your dashboard reply - so prefer the one
+ *     whose finding ids overlap this round's most, and REJECT one that shares none when
+ *     both sides had ids to compare. Ties, and rounds we could read no ids for, fall
+ *     back to the newest: the plain "who spoke last before this landed".
  *
- * `previousFixAt` is the lower bound of rule 1, and null when this is the first fix
- * on its gate - which is the ordinary case and carries no bound at all.
+ * Ids confirm here; they do not carry. They are semantic slugs rather than per-round
+ * handles ("zero-overlap-misattribution", "prune-redundant-count"), so a finding that
+ * SURVIVES a fix returns under the SAME id at the next round - which makes two rounds
+ * of one (run, step), the case ids exist to separate, the likeliest of all to share
+ * one. That is why the window and not the ids is what keeps rounds apart.
+ *
+ * Ids, never `findingsDigest`: descriptions arrive TRUNCATED by `axi status` (600 runes
+ * plus a "… (truncated, %d chars total)" suffix), so a digest of them would bind this
+ * join to another tool's display constants, failing silently and invisibly the day
+ * either moved. Ids are short, stable and never truncated.
  */
 export function pickGateReply(
   replies: GateReplyRow[],
   roundFindingIds: string[],
-  committedAt: number,
-  previousFixAt: number | null = null,
+  window: ReplyWindow,
 ): GateReplyRow | null {
-  // Both halves of causality, stated with the same predicate on purpose: the
-  // replies this fix may draw from are exactly the ones that could have caused it
-  // and could NOT have caused the fix before it. So two consecutive fixes on one
-  // gate can never be signed by the same reply, whichever way `%ct` floored either.
-  const caused = replies.filter(
-    (r) =>
-      couldHaveCaused(r.ts, committedAt) &&
-      (previousFixAt === null || !couldHaveCaused(r.ts, previousFixAt)),
-  );
+  // Both bounds STRICT, which is what makes a collapsed window admit nothing - and it
+  // does collapse, for a real case rather than a defensive one: a round-1 fix decides
+  // and fixes inside a single round, so `after` and `before` are the same row's stamp.
+  // `document` and `lint` do their work on first execution, and such rounds DO record
+  // `selection_source = user` (3 of them on this machine), so they read as `replied`
+  // and reach here rather than being turned away as `auto` upstream. One timestamp
+  // taken after the fix had run orders nothing, so they get no byline - the honest
+  // answer, and one this filter already gives. Nothing else is needed to say it: a
+  // second guard restating the same thing is how the byline collected its bugs.
+  const caused = replies.filter((r) => r.ts > window.after && r.ts < window.before);
   if (caused.length === 0) return null;
   const round = new Set(roundFindingIds);
   let best: GateReplyRow | null = null;
@@ -291,7 +303,8 @@ export function pickGateReply(
     // different round, not an absence of evidence - we read this round's ids, we
     // read the candidate's, and they disagree - so it disqualifies the candidate
     // outright rather than falling through to recency. Ids missing from EITHER side
-    // are the genuine "we cannot tell" that rule 3 exists for, and still fall back.
+    // are the genuine "we cannot tell" the recency half of rule 2 exists for, and
+    // still fall back to it.
     if (round.size > 0 && r.findingIds.length > 0 && overlap === 0) continue;
     // `>=` on a tie, over a list already sorted oldest-first: the later reply wins,
     // which is rule 3. A strict `>` would keep the earliest instead and explain a
@@ -329,40 +342,24 @@ function key(step: string, summary: string): string {
 }
 
 /**
- * When the fix BEFORE `fix` on the same (runId, step) landed, or null when there
- * isn't one. `pickGateReply`'s lower bound.
+ * A `step_rounds.created_at` as milliseconds, or null when it isn't readable.
  *
- * Overlap is a weaker discriminator than it looks, and weakest exactly where it is
- * needed most. no-mistakes' finding ids are semantic slugs, not per-round handles
- * ("zero-overlap-misattribution", "prune-redundant-count"), so a finding that
- * SURVIVES a fix is re-reported under the SAME id by the re-review that follows it.
- * Two rounds of one (run, step) - the case ids exist to separate - are therefore the
- * likeliest of all to share one, and a single shared id is enough to readmit round
- * 1's reply as round 2's author. Time is the independent evidence: round 1's reply
- * was already spent explaining round 1's fix, so it cannot also explain round 2's.
+ * Two clocks meet in the byline's window and they are NOT in the same unit:
+ * no-mistakes stamps `created_at` in whole SECONDS, while our own `gate_replies.ts`
+ * is `Date.now()`, in milliseconds. Verified against live data - the newest
+ * `created_at` is 1784141997, which reads as today as seconds and as 1970 as millis.
  *
- * This is a lower bound and not a containment test on ids for a reason: the Fix box
- * legitimately answers a SUBSET of what the gate showed, so demanding the reply's
- * ids contain the round's would drop those bylines instead.
- *
- * Keyed by (runId, step), never step alone: successive runs share a branch and a
- * step name, so a step-only bound would let one run's fix bound another run's.
+ * Named rather than left as a `* 1000` inside the comparison because getting it wrong
+ * fails SILENTLY and totally: every reply's `ts` (~1.78e12) is a thousand times every
+ * `created_at` (~1.78e9), so an unconverted upper bound rejects every reply ever filed
+ * and the byline vanishes from the product without one error to explain it - which is
+ * exactly the failure this design exists to stop making. Pinned by "the byline reads
+ * no-mistakes' round clock in seconds and its own in milliseconds".
  */
-function previousFixOnGate(
-  commits: FixCommit[],
-  context: Map<string, RoundContext>,
-  runId: string,
-  fix: FixCommit,
-): number | null {
-  let prev: number | null = null;
-  for (const c of commits) {
-    // Strictly earlier, so two fixes `%ct` floored into the SAME second bound
-    // neither - we cannot order them, and guessing is what this whole file avoids.
-    if (c.step !== fix.step || c.committedAt >= fix.committedAt) continue;
-    if (context.get(key(c.step, c.summary))?.runId !== runId) continue;
-    if (prev === null || c.committedAt > prev) prev = c.committedAt;
-  }
-  return prev;
+function roundMs(createdAt: unknown): number | null {
+  const seconds = Number(createdAt);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return seconds * 1000;
 }
 
 function clamp(s: string, max: number): string {
@@ -538,7 +535,7 @@ async function loadRoundContext(
     const fixSql = `
       SELECT s.step_name AS step, r.fix_summary AS summary,
              r.step_result_id AS stepResultId, r.round AS round,
-             s.run_id AS runId
+             s.run_id AS runId, r.created_at AS fixedAt
       FROM step_rounds r
       JOIN step_results s ON s.id = r.step_result_id
       JOIN runs n ON n.id = s.run_id
@@ -570,7 +567,8 @@ async function loadRoundContext(
     // nobody was ever asked. There is no earlier round - the context is its own.
     const priorSql = `
       SELECT r.findings_json AS findings, r.user_findings_json AS userFindings,
-             r.selection_source AS source, r.selected_finding_ids AS selected
+             r.selection_source AS source, r.selected_finding_ids AS selected,
+             r.created_at AS decidedAt
       FROM step_rounds r
       WHERE r.step_result_id = ? AND r.round = ?`;
     const prior = db.prepare(priorSql);
@@ -600,12 +598,20 @@ async function loadRoundContext(
           ? userSide
           : parseFindings(typeof p.findings === "string" ? p.findings : null, parseSelected(p.selected));
 
+      // The gate's lifetime, from the two rows this join already had in hand: the
+      // deciding round returned the findings (the gate parked), the fix round returned
+      // once the fix had run. For a round-1 fix those are ONE row, so the window
+      // collapses to a point and `pickGateReply` turns it away - see it there.
+      const decidedAt = roundMs(p.decidedAt);
+      const fixedAt = roundMs(row.fixedAt);
+
       out.set(key(step, summary), {
         decision,
         reply: userSide.reply,
         findings: context.findings,
         findingCount: context.total,
         runId,
+        window: decidedAt !== null && fixedAt !== null ? { after: decidedAt, before: fixedAt } : null,
         // Off findings_json, which is the round's WHOLE finding set - not off
         // `context`, which is narrowed to what was acted on. A reply's ids are
         // drawn from everything that was up at the gate (the foreman logs the lot;
@@ -744,9 +750,7 @@ export async function readFixLog(
   const details = new Map<string, NmFixDetail>();
   for (const c of commits) {
     const ctx = context.get(key(c.step, c.summary)) ?? null;
-    const attribution = ctx
-      ? attribute(ctx, c, replies, previousFixOnGate(commits, context, ctx.runId, c))
-      : null;
+    const attribution = ctx ? attribute(ctx, c, replies) : null;
     summaries.push({
       sha: c.sha,
       step: c.step,
@@ -799,16 +803,10 @@ function attribute(
   ctx: RoundContext,
   c: FixCommit,
   replies: GateReplyReader,
-  previousAt: number | null,
 ): NmFixAttribution | null {
-  if (ctx.decision !== "replied" || !ctx.runId) return null;
+  if (ctx.decision !== "replied" || !ctx.runId || !ctx.window) return null;
   try {
-    const hit = pickGateReply(
-      replies(ctx.runId, c.step),
-      ctx.roundFindingIds,
-      c.committedAt,
-      previousAt,
-    );
+    const hit = pickGateReply(replies(ctx.runId, c.step), ctx.roundFindingIds, ctx.window);
     if (!hit) return null;
     return {
       source: hit.source,

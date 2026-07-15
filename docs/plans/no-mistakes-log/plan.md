@@ -292,3 +292,12 @@ exists to prevent - now "fix \<sha\>".
 - **Rebase/squash.** `axi run` rebases and a squash-merge rewrites these commits, so the
   log is honestly "fixes currently on this branch", not "fixes ever applied". Consistent
   with resetting on reset.
+
+  This is a risk to the log's COMPLETENESS, and it was once a risk to attribution too -
+  a sharper one, because a rewrite also re-stamps `%ct`, collapsing fixes that were
+  minutes apart into a single second. Any byline ordering read off that clock lost its
+  ordering silently, and the byline is a claim about who changed your branch: the way it
+  fails matters more than that it fails. The byline no longer consults `%ct` at all. It
+  brackets a reply between the deciding round's `created_at` and the fix round's - rows
+  in no-mistakes' database, which nothing git does can rewrite - so it is rebase-immune
+  by construction rather than by tolerance. `%ct` keeps only the display timestamp.

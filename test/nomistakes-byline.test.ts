@@ -67,89 +67,94 @@ function reply(over: Partial<GateReplyRow> = {}): GateReplyRow {
   };
 }
 
-test("pickGateReply: a reply filed AFTER the fix landed cannot have caused it", () => {
+/**
+ * The gate this fix's reply must have been answered in: parked at 1000, fixed by 4000.
+ * See `ReplyWindow` - the bounds are no-mistakes' own round rows, which a rebase cannot
+ * rewrite, rather than git's `%ct`, which `axi run` rewrites every time it rebases.
+ */
+const WINDOW = { after: 1000, before: 4000 };
+
+test("pickGateReply: a reply filed after the fix had run cannot have caused it", () => {
   const late = reply({ ts: 5000 });
-  assert.equal(pickGateReply([late], ["f1"], 4000), null);
+  assert.equal(pickGateReply([late], ["f1"], WINDOW), null);
 });
 
-test("pickGateReply: finding ids separate two rounds of the SAME (run, step)", () => {
-  // The case the whole id scheme exists for: both replies share a run and a step,
-  // so only the ids say which round each answered.
-  const round1 = reply({ ts: 1000, findingIds: ["f1", "f2"], text: "apply both" });
-  const round2 = reply({ ts: 3000, findingIds: ["f9"], text: "fix the new one" });
-  // Round 1's fix committed at 3500 - AFTER round 2's reply was filed, which is
-  // ordinary (the re-review parks again while the first fix is still committing).
-  // Recency alone would pick round 2's reply; the ids are what get this right.
-  const hit = pickGateReply([round1, round2], ["f1", "f2"], 3500);
-  assert.equal(hit?.text, "apply both");
+test("pickGateReply: a reply filed before the gate parked answered something else", () => {
+  const early = reply({ ts: 500 });
+  assert.equal(pickGateReply([early], ["f1"], WINDOW), null);
 });
 
 /**
- * The other half of the id scheme, and the one recency alone gets WRONG: round 2 was
- * answered by the agent driving its own gate via the `/no-mistakes` skill, which
- * nothing witnessed, so round 1's foreman reply is the only candidate left. Ids we
- * read on both sides that share nothing say "different round" - they do not say
- * "no idea, take the newest".
+ * Two rounds of one (run, step) - the case the join has to get right, since they share
+ * everything the byline keys on. Each round's gate is its own window, and that is what
+ * separates them: round 1's reply is outside round 2's window however the ids fall.
  */
-test("pickGateReply: a reply whose ids share nothing with the round is not its cause", () => {
-  const round1 = reply({ ts: 1000, findingIds: ["f1"], text: "nudged about the first one" });
-  assert.equal(pickGateReply([round1], ["f9"], 3000), null);
-  // But ids missing from the CANDIDATE are "we cannot tell", not a disagreement,
-  // so that one still falls back to recency.
-  const idless = reply({ ts: 1000, findingIds: [], text: "ids we could not read" });
-  assert.equal(pickGateReply([idless], ["f9"], 3000)?.text, "ids we could not read");
+test("pickGateReply: each round's window holds only its own reply", () => {
+  const round1 = reply({ ts: 2000, findingIds: ["f1", "f2"], text: "apply both" });
+  const round2 = reply({ ts: 6000, findingIds: ["f9"], text: "fix the new one" });
+  const both = [round1, round2];
+  assert.equal(pickGateReply(both, ["f1", "f2"], WINDOW)?.text, "apply both");
+  assert.equal(pickGateReply(both, ["f9"], { after: 5000, before: 8000 })?.text, "fix the new one");
 });
 
 /**
- * Where the ids run out, and why the join needs a clock as well as a set.
- *
- * no-mistakes' finding ids are semantic slugs, so a finding that SURVIVES a fix comes
- * back under the SAME id in the next round's re-review. Two rounds of one (run, step)
- * are therefore the likeliest of all to share one - the case the ids exist to separate
- * is the case they separate worst - and one shared id is all it takes for overlap to
- * readmit round 1's reply as round 2's author. What settles it is that round 1's reply
- * was already spent: it explained round 1's fix, so it cannot explain round 2's too.
+ * The gap ids alone cannot close, and the reason the window carries the join rather than
+ * confirming it. Round 1's gate showed [f1, f2] and the Fix box answered it. f1 outlived
+ * the fix and came back at round 2 beside a new f3 - ids are semantic slugs, so a
+ * surviving finding keeps its name - which leaves overlap at 1, not 0, and the
+ * zero-overlap guard sails right past it. The window is what says round 1's reply was
+ * answering round 1's gate.
  */
-test("pickGateReply: a reply the PREVIOUS fix already consumed cannot sign this one", () => {
-  // Round 1's gate showed [f1, f2] and the Fix box answered it. f1 outlived the fix
-  // and came back at round 2 beside a new f3, so overlap is 1 - not 0 - and the
-  // zero-overlap guard never fires.
-  const round1 = reply({ ts: 1000, source: "you", findingIds: ["f1", "f2"], text: "fix both" });
-  assert.equal(pickGateReply([round1], ["f1", "f3"], 9000, 5000), null);
-  // ...and the bound is doing that work, not the ids: with no earlier fix on this
-  // gate there is nothing to say the reply was spent, and it stands as the cause.
-  assert.equal(pickGateReply([round1], ["f1", "f3"], 9000)?.text, "fix both");
+test("pickGateReply: a reply from the previous round's gate cannot sign this one", () => {
+  const round1 = reply({ ts: 2000, source: "you", findingIds: ["f1", "f2"], text: "fix both" });
+  assert.equal(pickGateReply([round1], ["f1", "f3"], { after: 5000, before: 8000 }), null);
+  // ...and the window is doing that work, not the ids: inside its own gate that same
+  // partial overlap stands as the cause.
+  assert.equal(pickGateReply([round1], ["f1", "f3"], WINDOW)?.text, "fix both");
 });
 
-test("pickGateReply: with no ids to match on, the newest surviving reply wins", () => {
+test("pickGateReply: with no ids to match on, the newest reply in the window wins", () => {
   // A findings_json we couldn't read leaves no ids, so the fallback is "who spoke
-  // last before this landed" - never the one that came after.
-  const older = reply({ ts: 1000, text: "first" });
+  // last inside this gate" - never one from outside it.
+  const older = reply({ ts: 1500, text: "first" });
   const newer = reply({ ts: 2000, text: "second" });
   const later = reply({ ts: 9000, text: "after the fix" });
-  assert.equal(pickGateReply([older, newer, later], [], 3000)?.text, "second");
-});
-
-test("pickGateReply: an identical re-run round falls back to the one before the fix", () => {
-  // A round can be re-run with the SAME findings, so ids tie. Causality breaks it.
-  const first = reply({ ts: 1000, findingIds: ["f1"], text: "first attempt" });
-  const rerun = reply({ ts: 9000, findingIds: ["f1"], text: "second attempt" });
-  assert.equal(pickGateReply([first, rerun], ["f1"], 3000)?.text, "first attempt");
+  assert.equal(pickGateReply([older, newer, later], [], WINDOW)?.text, "second");
 });
 
 /**
- * `%ct` is git's committer date in whole SECONDS, so `committedAt` is truncated
- * down by up to 999ms. A reply logged inside that same second reads as being in
- * its own fix's future and would be discarded without the one-second tolerance.
+ * Ids still earn their keep, in the job the window leaves them: telling two replies
+ * apart WITHIN one gate. You can answer twice, or a foreman nudge can land before your
+ * dashboard reply. Ids read on both sides that share nothing say "different round" -
+ * they do not say "no idea, take the newest".
  */
-test("pickGateReply: survives %ct's truncation to the second", () => {
-  const at = reply({ ts: 10_000_500 }); // logged mid-second...
-  const committed = 10_000_000; // ...and %ct floored the commit to the second
-  assert.equal(pickGateReply([at], ["f1"], committed)?.ts, 10_000_500);
+test("pickGateReply: inside one window, ids still separate two replies", () => {
+  const mine = reply({ ts: 2000, source: "you", findingIds: ["f9"], text: "about f9" });
+  const nudge = reply({ ts: 3000, source: "foreman", findingIds: ["f1"], text: "about f1" });
+  assert.equal(pickGateReply([mine, nudge], ["f9"], WINDOW)?.text, "about f9");
+  // ...and one sharing nothing with the round is rejected outright, not fallen back on.
+  assert.equal(pickGateReply([nudge], ["f9"], WINDOW), null);
+  // But ids missing from the CANDIDATE are "we cannot tell", not a disagreement,
+  // so that one still falls back to recency.
+  const idless = reply({ ts: 2000, findingIds: [], text: "ids we could not read" });
+  assert.equal(pickGateReply([idless], ["f9"], WINDOW)?.text, "ids we could not read");
+});
+
+/**
+ * A round-1 fix decides and fixes inside ONE round, so both bounds come from that single
+ * row and the window collapses to a point. Not hypothetical and not caught upstream:
+ * `document` and `lint` do their work on first execution, and such rounds really do
+ * record `selection_source = user` (3 on this machine), so they read as `replied` and
+ * arrive here rather than being turned away as `auto`. One stamp taken after the fix ran
+ * orders nothing, so the honest answer is no byline.
+ */
+test("pickGateReply: a window collapsed to a point admits nothing", () => {
+  const any = reply({ ts: 2000, findingIds: ["f1"] });
+  assert.equal(pickGateReply([any], ["f1"], { after: 2000, before: 2000 }), null);
 });
 
 test("pickGateReply: no candidates at all is null, not a guess", () => {
-  assert.equal(pickGateReply([], ["f1"], 1000), null);
+  assert.equal(pickGateReply([], ["f1"], WINDOW), null);
 });
 
 // ---- the store ----
@@ -532,10 +537,33 @@ function mkRepo(): string {
   return clone;
 }
 
+// The two clocks, in the two units they really arrive in - the thing most easily got
+// wrong here, and the way it fails is silent and total.
+//
+// `step_rounds.created_at` is no-mistakes' own, in whole SECONDS (verified against live
+// data: its newest value reads as today as seconds, and as 1970 as milliseconds). Our
+// `gate_replies.ts` is `Date.now()`, in MILLISECONDS. Compared raw, every reply ts is a
+// thousand times every created_at, so an upper bound that skipped the conversion would
+// reject every reply ever filed and the byline would disappear from the product without
+// a single error - so these fixtures use real epoch seconds, and every reply below is
+// stamped `* 1000`. Drop the conversion in `roundMs` and this whole section fails.
+//
+// A round returns, THEN its row is written, so: round 1 returns its findings and the
+// gate parks; someone answers it 50s later; round 2 runs the fix and returns.
+/** Round 1 returned its findings - the gate parks. The window's lower bound. */
+const GATE_PARKED = 1_700_000_000;
+/** ...and is answered, well inside the gate. Real rounds sit 11-79 MINUTES apart. */
+const GATE_ANSWERED = 1_700_000_050;
+/** Round 2 returned: the fix had run. The window's upper bound. */
+const FIX_RAN = 1_700_000_100;
+/** Round 3 returned: the SECOND fix on this gate had run. */
+const FIX_TWO_RAN = 1_700_000_200;
+
 /**
- * `at` pins the COMMITTER date (epoch seconds) - the one `%ct` reports and the byline
- * reads. Left off, git uses the wall clock, which lands consecutive commits in the same
- * second as often as not; any test about the ORDER of two fixes has to say so itself.
+ * `at` pins the COMMITTER date (epoch seconds), which `%ct` reports and the fix log
+ * DISPLAYS. The byline no longer reads it at all - it brackets against the round rows
+ * above, which a rebase cannot rewrite - so this is here to prove that independence
+ * rather than to arrange it. Left off, git uses the wall clock.
  */
 function commit(cwd: string, file: string, subject: string, at?: number): void {
   writeFileSync(join(cwd, file), `${file}\n`);
@@ -561,26 +589,30 @@ function seedRepliedFix(repo: string, opts: { desc?: string } = {}): void {
     "rd1", "sr1", 1, "initial",
     findings({ id: "caused-it", desc }),
     findings({ id: "caused-it", desc, instructions: "Apply all four." }),
-    JSON.stringify(["caused-it"]), "user", null, 100,
+    JSON.stringify(["caused-it"]), "user", null, GATE_PARKED,
   );
   db.prepare(
     `INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json,
        selection_source, fix_summary, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("rd2", "sr1", 2, "auto_fix", findings({ id: "after", desc: "re-review" }), "user", "fix the guard", 200);
+  ).run("rd2", "sr1", 2, "auto_fix", findings({ id: "after", desc: "re-review" }), "user", "fix the guard", FIX_RAN);
   db.close();
   commit(repo, "b.ts", "no-mistakes(review): fix the guard");
+}
+
+/** A reply filed inside `seedRepliedFix`'s gate, by whoever. */
+function witnessed(over: Partial<GateReplyRow> = {}): GateReplyRow {
+  return {
+    sessionId: "s", ts: GATE_ANSWERED * 1000, source: "foreman", runId: "run1",
+    step: "review", findingIds: ["caused-it"], text: "This looks safe to apply - go ahead.",
+    ...over,
+  };
 }
 
 test("a foreman nudge puts a byline on the fix its reply produced", async () => {
   const repo = mkRepo();
   seedRepliedFix(repo);
-  const log = await readFixLog(repo, () => [
-    {
-      sessionId: "s", ts: 1, source: "foreman", runId: "run1", step: "review",
-      findingIds: ["caused-it"], text: "This looks safe to apply - go ahead.",
-    },
-  ]);
+  const log = await readFixLog(repo, () => [witnessed()]);
 
   const summary = log.summaries[0]!;
   assert.equal(summary.repliedBy, "foreman");
@@ -596,12 +628,30 @@ test("a dashboard reply reads as you, not as the foreman", async () => {
   const repo = mkRepo();
   seedRepliedFix(repo);
   const log = await readFixLog(repo, () => [
-    {
-      sessionId: "s", ts: 1, source: "you", runId: "run1", step: "review",
-      findingIds: ["caused-it"], text: "Apply all four.",
-    },
+    witnessed({ source: "you", text: "Apply all four." }),
   ]);
   assert.equal(log.summaries[0]!.repliedBy, "you");
+});
+
+/**
+ * The units, pinned on their own - because getting them wrong takes the whole feature
+ * down in silence rather than loudly.
+ *
+ * `step_rounds.created_at` is SECONDS and `gate_replies.ts` is MILLISECONDS, so every
+ * reply's ts is ~1000x every round's created_at. Unconverted, the window's upper bound
+ * rejects every reply there has ever been: no byline anywhere, no error, nothing to
+ * notice. Here the reply sits squarely inside its gate in real units, and only the
+ * conversion in `roundMs` puts it there.
+ */
+test("the byline reads no-mistakes' round clock in seconds and its own in milliseconds", async () => {
+  const repo = mkRepo();
+  seedRepliedFix(repo);
+  const inside = witnessed({ ts: GATE_ANSWERED * 1000 });
+  assert.ok(
+    inside.ts > FIX_RAN && inside.ts > GATE_PARKED,
+    "raw, the reply looks like it postdates a gate it is actually inside",
+  );
+  assert.equal((await readFixLog(repo, () => [inside])).summaries[0]!.repliedBy, "foreman");
 });
 
 /**
@@ -642,18 +692,15 @@ test("an unrelated round's nudge does not sign the next round's fix", async () =
       findings({ id: ids, desc: `round ${n}`, instructions: `apply ${ids}` }),
       JSON.stringify([ids]), "user", summary, at,
     );
-  round("rd1", 1, "f1", null, 100); // the foreman nudged this one...
-  round("rd2", 2, "f9", "fix one", 200); // ...and it produced "fix one"
-  round("rd3", 3, "f13", "fix two", 300); // round 2 produced "fix two", unwitnessed
+  round("rd1", 1, "f1", null, GATE_PARKED); // the foreman nudged this one...
+  round("rd2", 2, "f9", "fix one", FIX_RAN); // ...and it produced "fix one"
+  round("rd3", 3, "f13", "fix two", FIX_TWO_RAN); // round 2 produced "fix two", unwitnessed
   db.close();
   commit(repo, "d.ts", "no-mistakes(review): fix one");
   commit(repo, "e.ts", "no-mistakes(review): fix two");
 
   const log = await readFixLog(repo, () => [
-    {
-      sessionId: "s", ts: 1, source: "foreman", runId: "run1", step: "review",
-      findingIds: ["f1"], text: "Go ahead and fix f1.",
-    },
+    witnessed({ findingIds: ["f1"], text: "Go ahead and fix f1." }),
   ]);
 
   const two = log.summaries.find((s) => s.summary === "fix two")!;
@@ -667,20 +714,18 @@ test("an unrelated round's nudge does not sign the next round's fix", async () =
 });
 
 /**
- * The same misattribution as above, but through the gap ids alone cannot close - and
- * pointing the other way, at the user.
+ * Two rounds of one (run, step) where a finding SURVIVES the first fix - the gap ids
+ * alone cannot close, and the reason the window has to carry the join.
  *
  * Round 1's gate showed [f1, f2] and the Fix box answered it with the box's default,
- * every finding selected. f1 was only partly addressed, so the re-review reports it
- * AGAIN - ids are semantic slugs, a surviving finding keeps its name - beside a new f3.
- * Round 2's own reply is the agent's, through the `/no-mistakes` skill, and unwitnessed.
- * So round 1's "you" row is the only candidate fix 2 has, and it shares f1 with round 2:
- * overlap is 1, and the zero-overlap guard sails right past it. Left there, the card
- * signs an autonomous fix "by you, in the dashboard" and prints the AGENT's words under
- * the user's name - this feature's distinction inverted, in its worst direction.
+ * every finding selected, producing "fix one". f1 was only partly addressed, so the
+ * re-review reports it AGAIN - ids are semantic slugs, a surviving finding keeps its
+ * name - beside a new f3. Round 2's gate is answered by the agent itself through the
+ * `/no-mistakes` skill, unwitnessed, producing "fix two". So round 1's "you" row is the
+ * only candidate fix two has, and it shares f1 with round 2: overlap is 1, and the
+ * zero-overlap guard sails right past it. Only the window rules it out.
  */
-test("a reply the previous fix already used does not sign the next one", async () => {
-  const repo = mkRepo();
+function seedSurvivingFinding(repo: string): void {
   const db = mkNmDb(repo, "main");
   db.prepare("INSERT INTO step_results (id, run_id, step_name) VALUES (?, ?, ?)").run(
     "sr1", "run1", "review",
@@ -695,32 +740,64 @@ test("a reply the previous fix already used does not sign the next one", async (
       findings(...ids.map((i) => ({ id: i, desc: `round ${n}`, instructions: `apply ${ids.join()}` }))),
       JSON.stringify(ids), "user", summary, at,
     );
-  round("rd1", 1, ["f1", "f2"], null, 100); // the Fix box answered this one...
-  round("rd2", 2, ["f1", "f3"], "fix one", 200); // ...producing "fix one"; f1 survived it
-  round("rd3", 3, ["f13"], "fix two", 300); // round 2 produced "fix two", unwitnessed
+  round("rd1", 1, ["f1", "f2"], null, GATE_PARKED); // the Fix box answered this one...
+  round("rd2", 2, ["f1", "f3"], "fix one", FIX_RAN); // ...producing "fix one"; f1 survived it
+  round("rd3", 3, ["f13"], "fix two", FIX_TWO_RAN); // round 2 produced "fix two", unwitnessed
   db.close();
-  // Explicit seconds: which fix came FIRST is the whole question here, and git's wall
-  // clock would happily stamp both with the same one.
-  const FIX_ONE_AT = 1_700_000_000;
-  const FIX_TWO_AT = 1_700_000_100;
-  commit(repo, "d.ts", "no-mistakes(review): fix one", FIX_ONE_AT);
-  commit(repo, "e.ts", "no-mistakes(review): fix two", FIX_TWO_AT);
+}
 
-  const log = await readFixLog(repo, () => [
-    {
-      sessionId: "s", ts: (FIX_ONE_AT - 10) * 1000, source: "you", runId: "run1",
-      step: "review", findingIds: ["f1", "f2"], text: "Fix both of them.",
-    },
-  ]);
+/** The Fix box's answer to round 1's gate, shared f1 and all. */
+const FIX_BOX_REPLY: GateReplyRow = {
+  sessionId: "s", ts: GATE_ANSWERED * 1000, source: "you", runId: "run1",
+  step: "review", findingIds: ["f1", "f2"], text: "Fix both of them.",
+};
+
+test("a reply from the previous round's gate does not sign the next fix", async () => {
+  const repo = mkRepo();
+  seedSurvivingFinding(repo);
+  commit(repo, "d.ts", "no-mistakes(review): fix one");
+  commit(repo, "e.ts", "no-mistakes(review): fix two");
+
+  const log = await readFixLog(repo, () => [FIX_BOX_REPLY]);
 
   const two = log.summaries.find((s) => s.summary === "fix two")!;
   assert.equal(log.details.get(two.sha)!.decision, "replied");
-  assert.equal(two.repliedBy, null, "a reply spent on fix one is not fix two's author");
+  assert.equal(two.repliedBy, null, "a reply from fix one's gate is not fix two's author");
   assert.equal(log.details.get(two.sha)!.attribution, null);
   // ...while the fix that reply DID authorize still carries it, f1 and all.
   const one = log.summaries.find((s) => s.summary === "fix one")!;
   assert.equal(one.repliedBy, "you");
   assert.equal(log.details.get(one.sha)!.attribution?.text, "Fix both of them.");
+});
+
+/**
+ * THE reason the window is bracketed by no-mistakes' rounds and not by git.
+ *
+ * `axi run` rebases before it pushes, and a rebase re-stamps every replayed commit with
+ * its own committer time - so two fixes minutes apart during the run arrive on the
+ * branch you sit down to review sharing one second, with `%ct` no longer ordering them
+ * at all. The byline must not so much as flinch: it reads round rows, which live in a
+ * database and cannot be rewritten by anything git does. Same seeding as above, same
+ * two answers expected, every commit stamped identically.
+ */
+test("a rebase that re-stamps every fix into one second changes no byline", async () => {
+  const repo = mkRepo();
+  seedSurvivingFinding(repo);
+  // What a rebase leaves behind: one committer second across the pair, in whatever
+  // order it replayed them.
+  const REBASED_AT = 1_700_009_999;
+  commit(repo, "d.ts", "no-mistakes(review): fix one", REBASED_AT);
+  commit(repo, "e.ts", "no-mistakes(review): fix two", REBASED_AT);
+
+  const log = await readFixLog(repo, () => [FIX_BOX_REPLY]);
+
+  const one = log.summaries.find((s) => s.summary === "fix one")!;
+  const two = log.summaries.find((s) => s.summary === "fix two")!;
+  assert.equal(one.committedAt, two.committedAt, "the rebase really did collapse the clock");
+  assert.equal(one.repliedBy, "you", "the reply still signs the fix it authorized");
+  assert.equal(two.repliedBy, null, "and still signs nothing else");
+  // `%ct` keeps the one job it can still do honestly: saying when the fix arrived.
+  assert.equal(one.committedAt, REBASED_AT * 1000);
 });
 
 /**
@@ -741,16 +818,13 @@ test("a foreman reply with no matching fix attributes nothing", async () => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     "rd1", "sr1", 1, "initial", findings({ id: "auto1", desc: "found and fixed itself" }),
-    JSON.stringify(["auto1"]), "auto_fix", "tidy the imports", 100,
+    JSON.stringify(["auto1"]), "auto_fix", "tidy the imports", GATE_PARKED,
   );
   db.close();
   commit(repo, "c.ts", "no-mistakes(review): tidy the imports");
 
   const log = await readFixLog(repo, () => [
-    {
-      sessionId: "s", ts: 1, source: "foreman", runId: "run1", step: "review",
-      findingIds: ["something-else"], text: "about a different gate entirely",
-    },
+    witnessed({ findingIds: ["something-else"], text: "about a different gate entirely" }),
   ]);
   const detail = log.details.get(log.summaries[0]!.sha)!;
   assert.equal(detail.decision, "auto");
@@ -788,11 +862,8 @@ test("the byline survives descriptions that no digest could match", async () => 
   // and one built from findings_json could not possibly agree.
   seedRepliedFix(repo, { desc: "x".repeat(900) });
   const log = await readFixLog(repo, () => [
-    {
-      sessionId: "s", ts: 1, source: "foreman", runId: "run1", step: "review",
-      // Only the ID. No description, no digest, nothing derived from the text.
-      findingIds: ["caused-it"], text: "go ahead",
-    },
+    // Only the ID. No description, no digest, nothing derived from the text.
+    witnessed({ findingIds: ["caused-it"], text: "go ahead" }),
   ]);
   assert.equal(log.summaries[0]!.repliedBy, "foreman");
 });

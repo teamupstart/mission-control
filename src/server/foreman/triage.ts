@@ -348,15 +348,21 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // stay allowed however little was scanned.
   //
   // (a) Nothing scannable in the window - but only where the question can't carry the command
-  // itself. The two answerable surfaces genuinely differ here, and this must not be re-broadened
-  // to cover both: on `terminal-pane` the question is the Notification hook's generic line
+  // itself. The answerable surfaces genuinely differ here, and this must not be re-broadened to
+  // cover all of them: on `terminal-pane` the question is the Notification hook's generic line
   // ("Claude needs your permission") and the reply is the router's own "Approve - go ahead.", so
   // the window's prose is the ONLY text backstop 1 could match a command in - with none,
-  // `risky === false` means "unknown" rather than "safe". On `input-review` the question IS the
+  // `risky === false` means "unknown" rather than "safe". `gate-parked` sits on that same side:
+  // its question is a template Foreman synthesizes from the run summary, which never names a
+  // command, and a run whose findings haven't been scraped yet reduces it to pure boilerplate -
+  // so a prose-free window leaves the ask unread there too. On `input-review` the question IS the
   // child's own review body, scanned in full above: the window corroborates it, it is not the
   // only witness, so its absence proves nothing and gating on it would route up asks that were
   // perfectly scannable.
-  if (pending.situation === "terminal-pane" && !hasProse(scan.messages)) {
+  if (
+    (pending.situation === "terminal-pane" || pending.situation === "gate-parked") &&
+    !hasProse(scan.messages)
+  ) {
     return { kind: "route-up", reason: scan.unavailable ? "no-transcript-file" : "no-transcript-context" };
   }
   // (b) The window's shape could not be established (see `recentTurns`), so these turns can't be

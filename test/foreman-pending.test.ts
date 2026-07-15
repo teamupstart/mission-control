@@ -188,6 +188,29 @@ test("the gate marker is stable while parked, so one gate is handled once", () =
   assert.equal(classifyPending(b, []).marker, a.marker);
 });
 
+test("re-parking the SAME step with new findings is a new episode, not a handled one", () => {
+  // A run works its review step in ROUNDS: the ask is answered, fixes land, review re-runs and
+  // parks again with different findings. Run id + step alone repeat, so the marker would match
+  // the first round's handledMarker and every later round would be silently skipped.
+  const round1 = classifyPending(mkGateParked(), []);
+  const s = mkGateParked();
+  s.nomistakes!.findings = [
+    { id: "r7", severity: "error", file: "cmd/main.go", action: "ask-user", description: "The new guard drops the CI path" },
+  ];
+  const round2 = classifyPending(s, []);
+  assert.notEqual(round2.marker, round1.marker, "round 2 must be reviewed, not inherit round 1");
+  assert.match(round2.marker, /^gate:run-01:review:/, "still keyed on the run and its step");
+});
+
+test("re-parking with the SAME findings keeps the marker, so a gate stays handled once", () => {
+  // The flip side: the digest must discriminate ROUNDS, not poll ticks. Findings that come back
+  // unchanged (or merely reordered by the scrape) are the same episode and must not re-spawn.
+  const a = classifyPending(mkGateParked(), []);
+  const b = mkGateParked();
+  b.nomistakes!.findings = [...b.nomistakes!.findings].reverse();
+  assert.equal(classifyPending(b, []).marker, a.marker);
+});
+
 test("a gate-parked run with no pane is seen but has no delivery channel", () => {
   const p = classifyPending(mkGateParked({ tmux: null, wezterm: null }), []);
   assert.equal(p.situation, "gate-parked");

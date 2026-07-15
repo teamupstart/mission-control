@@ -1,4 +1,5 @@
-import type { NmRunSummary, ReviewItem, Session } from "@shared/types.ts";
+import { createHash } from "node:crypto";
+import type { NmFinding, NmRunSummary, ReviewItem, Session } from "@shared/types.ts";
 import { gateParked } from "@shared/session.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
@@ -76,6 +77,24 @@ function gateQuestion(nm: NmRunSummary): string {
 }
 
 /**
+ * A stable digest of the gate's findings - the discriminator that keeps two parkings at the
+ * SAME step within one run apart. A run works its review step in rounds (the pipeline applies
+ * the fixes and re-runs it), so run id + step alone repeats across rounds 2..n, and the marker
+ * being identical is read as "already handled" - silently dropping every round after the first.
+ *
+ * Built from only `id` + `description`: the two fields that say WHICH decision is up, and the
+ * only ones that hold still while a gate sits parked. Sorted, so a scrape that reorders the same
+ * findings is not a new episode. Findings arriving late (the poller scrapes them after the park)
+ * does move it once, which is right - the first look was blind, the second reads the real ask.
+ */
+function findingsDigest(findings: NmFinding[]): string {
+  const rows = findings
+    .map((f): [string, string] => [f.id, f.description])
+    .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+  return createHash("sha1").update(JSON.stringify(rows)).digest("hex").slice(0, 12);
+}
+
+/**
  * Stand-in `question` `classifyPending` substitutes when a needs-you session carries no
  * activity line at all. It is phrased as prose because it goes straight into the Tier 2
  * reviewer prompt as the question.
@@ -149,9 +168,11 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       canSend: Boolean(s.tmux || s.wezterm),
       // Keyed on the RUN id, not its branch (successive runs share one, and the second would
       // inherit the first's handled marker and be silently skipped - the very thing NmRunSummary
-      // carries an id to prevent) and not on `awaitingAgent` ("parked 1m30s"), whose elapsed
-      // time ticks and would churn the marker into re-handling the same gate every loop.
-      marker: `gate:${s.nomistakes.id}:${s.nomistakes.gateStep ?? "parked"}`,
+      // carries an id to prevent); on the step; and on the findings up at it (see
+      // `findingsDigest`, which separates that step's successive rounds). NOT on `awaitingAgent`
+      // ("parked 1m30s"), whose elapsed time ticks and would churn the marker into re-handling
+      // the same gate every loop.
+      marker: `gate:${s.nomistakes.id}:${s.nomistakes.gateStep ?? "parked"}:${findingsDigest(s.nomistakes.findings)}`,
     };
   }
   return {

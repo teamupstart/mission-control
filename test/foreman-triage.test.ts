@@ -522,6 +522,28 @@ test("triageSession: a window of pure TOOL CALLS routes up (tool names name no c
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
 });
 
+test("triageSession: a prose-free window routes a GATE-PARKED ask up, never auto-approves it", async () => {
+  // A gate-parked question is a template Foreman synthesizes from the run summary, and it never
+  // names a command - so it sits on the terminal-pane side of this backstop, not the input-review
+  // side. A run whose findings the poller hasn't scraped reduces it to pure boilerplate, and with
+  // a prose-free window the denylist has scanned nothing either: approving a gate (possibly a push
+  // gate) off that is exactly the fail-open this exists to stop.
+  const out = await triageSession(
+    deps({
+      transcript: async () => ({ messages: Array.from({ length: 12 }, () => msg("", ["Bash"])), truncated: false }),
+    }),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+      marker: "gate:run-01:review:abc123",
+    }),
+    mkSession(),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
 test("triageSession: an `unavailable` window routes up with its OWN reason, not the generic one", async () => {
   // "no transcript file at all" and "the window came back empty" are different diagnoses, and
   // the worker log is the only place this feature's accuracy gets measured - so they must not

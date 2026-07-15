@@ -144,7 +144,7 @@ function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): 
           {m.tools.map((t, i) => (
             // The chip stays the bare name - the card is a glance, not an audit. `t.input`
             // rides along for Foreman's reviewer and is deliberately not rendered here.
-            <span key={`${t.name}-${i}`} className="tool-chip" title={t.input}>
+            <span key={`${t.name}-${i}`} className="tool-chip">
               {t.name}
             </span>
           ))}

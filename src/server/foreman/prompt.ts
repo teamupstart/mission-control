@@ -68,8 +68,13 @@ WHEN TO ESCALATE (action="escalate"):
 Fill "brief" (the framed decision) and "recommendation" (what you'd suggest) so the human can decide fast.
 
 WHEN TO SKIP (action="skip"):
-- The pending item is a plan/diff review or a gate rather than an answerable question, or you genuinely
+- The pending item is a plan/diff review rather than an answerable question, or you genuinely
   can't tell what is being asked. Still fill in "purpose".
+- A parked no-mistakes gate is NOT one of those. It reads as "The no-mistakes run on <branch> is parked
+  at the "<step>" gate...", usually listing findings only a human can call. It IS answerable prose-to-prose:
+  the child translates your reply into the matching command. Judge it under the rules above - answer it when
+  the call is clear from the session's goal, escalate when it turns on the user's intent or is risky - but
+  never skip it merely for being a gate.
 
 PHRASING answer.text: write the exact message to send to the child agent - concise and directive, with a
 one-line rationale. For a permission/menu prompt, reply in natural language ("Approve - go ahead." or

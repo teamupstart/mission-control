@@ -327,6 +327,112 @@ body {
   color: var(--dim);
 }
 
+/* Clickable title: looks like the h2 it sits inside, reveals a pencil + underline
+   on hover to advertise that it opens the inline rename editor. The button nests
+   inside the h2 (never the reverse - a heading isn't phrasing content, and
+   role=button makes its children presentational, dropping the heading from the
+   accessibility tree). */
+.card-title-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+/* The h2 clips, but text-overflow doesn't reach through the flex button, so the
+   name carries its own ellipsis. */
+.card-title-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rename-pencil {
+  flex: none;
+  font-size: 11px;
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.card-title-edit:hover .rename-pencil,
+.card-title-edit:focus-visible .rename-pencil {
+  opacity: 1;
+}
+.card-title-edit:hover .card-title-name {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--fg) 35%, transparent);
+  text-underline-offset: 2px;
+}
+
+/* Inline rename editor - the text box that replaces the title. */
+.rename-edit {
+  flex: 1;
+  min-width: 0;
+}
+.rename-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rename-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 640;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border));
+  border-radius: 7px;
+  padding: 3px 8px;
+  outline: none;
+}
+.rename-input:focus {
+  border-color: var(--working);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--working) 22%, transparent);
+}
+.rename-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.rename-btn:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.rename-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.rename-save {
+  color: var(--working);
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.rename-cancel {
+  color: var(--dim);
+}
+.rename-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--exited);
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

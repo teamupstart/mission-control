@@ -1,6 +1,7 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
 import {
+  canRenameSession,
   compactTokens,
   contextTone,
   relativeTime,
@@ -8,6 +9,7 @@ import {
   stateDisplay,
   uptime,
 } from "../lib/format.ts";
+import { api } from "../lib/api.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
@@ -40,6 +42,9 @@ export function SessionCard({
   onToggleExpand,
   registerEl,
   registerActions,
+  renaming = false,
+  onRenameStart,
+  onRenameClose,
   foremanMode = "dry-run",
   inputReviewId = null,
   pendingReviewIds,
@@ -56,6 +61,12 @@ export function SessionCard({
   onToggleExpand?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
+  /** Whether this card's title is currently in its rename editor (App owns the id). */
+  renaming?: boolean;
+  /** Enter rename mode for this card (click the title, or the rename shortcut). */
+  onRenameStart?: () => void;
+  /** Leave rename mode (saved, cancelled, or the input blurred). */
+  onRenameClose?: () => void;
   /** Current Foreman mode, so an expanded note can show semi-auto controls. */
   foremanMode?: string;
   /** A pending `input` review id for this session (for Foreman's Approve). */
@@ -66,6 +77,7 @@ export function SessionCard({
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
+  const canRename = canRenameSession(session);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -83,8 +95,29 @@ export function SessionCard({
       <header className="card-head">
         <span className={`agent-dot agent-${session.agent}`} aria-hidden />
         <div className="card-title">
-          <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
-          <span className="name-source">{subtitle(session)}</span>
+          {renaming ? (
+            <RenameEditor session={session} onClose={() => onRenameClose?.()} />
+          ) : canRename ? (
+            <h2>
+              <button
+                type="button"
+                className="card-title-edit"
+                title={`Rename "${session.name}"`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRenameStart?.();
+                }}
+              >
+                <span className="card-title-name">{session.name || "(unnamed)"}</span>
+                <span className="rename-pencil" aria-hidden>
+                  ✎
+                </span>
+              </button>
+            </h2>
+          ) : (
+            <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
+          )}
+          {!renaming && <span className="name-source">{subtitle(session)}</span>}
         </div>
         {session.prUrl && (
           <Tooltip
@@ -276,6 +309,129 @@ export function SessionCard({
         </>
       )}
     </article>
+  );
+}
+
+/**
+ * Inline title editor: the card title swapped for a text box (click the title or
+ * press the rename shortcut). Enter or the ✓ button commits, Escape or ✕ cancels,
+ * and clicking away blurs to cancel - so a rename only lands on an explicit save.
+ * The button controls guard their own mousedown (`preventDefault`) so clicking one
+ * doesn't blur-cancel the field before its click fires. A failing rename (e.g. an
+ * invalid tmux name) keeps the editor open with the reason, rather than dropping
+ * the edit. On success App drops rename mode; the registry's optimistic echo (and
+ * the next discovery sweep) update the title, so nothing here has to.
+ */
+function RenameEditor({
+  session,
+  onClose,
+}: {
+  session: Session;
+  onClose: () => void;
+}): React.JSX.Element {
+  const [value, setValue] = useState(session.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus and select the whole name on open so the user can type over it at once.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, []);
+
+  // The input is disabled while the request is in flight, which drops focus to
+  // <body>; without taking it back, a rejected name leaves Enter/Escape unheard
+  // here and every grid chord held by App (which stands down while renaming).
+  // Keyed on `busy` too, not just `error`: retrying the same bad name re-reports
+  // an identical string, so `error` alone wouldn't fire.
+  useEffect(() => {
+    if (busy || !error) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [busy, error]);
+
+  async function submit(): Promise<void> {
+    const name = value.trim();
+    if (!name || name === session.name) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    const r = await api.rename(session.id, name);
+    setBusy(false);
+    if (r.ok) onClose();
+    else setError(r.error ?? "rename failed");
+  }
+
+  return (
+    <div className="rename-edit" onClick={(e) => e.stopPropagation()}>
+      <div className="rename-row">
+        <input
+          ref={inputRef}
+          className="rename-input"
+          value={value}
+          disabled={busy}
+          // Mirrors RenameSchema's .max(200): a longer paste would come back as a
+          // raw Zod error dump, which the .rename-error span renders verbatim.
+          maxLength={200}
+          aria-label="Rename session"
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(null);
+          }}
+          onKeyDown={(e) => {
+            // Keep grid shortcuts from firing while typing a name.
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            }
+          }}
+          // Clicking away cancels, but switching apps must not: the browser fires
+          // blur at the focused element before the window itself loses focus, so
+          // without the hasFocus guard a Cmd+Tab to the session's terminal - the
+          // core loop here - would discard a half-typed name.
+          onBlur={() => {
+            if (!busy && document.hasFocus()) onClose();
+          }}
+        />
+        <button
+          type="button"
+          className="rename-btn rename-save"
+          aria-label="Save name"
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => void submit()}
+        >
+          ✓
+        </button>
+        <button
+          type="button"
+          className="rename-btn rename-cancel"
+          aria-label="Cancel rename"
+          disabled={busy}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={onClose}
+        >
+          ✕
+        </button>
+      </div>
+      {error && (
+        <span className="rename-error" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
   );
 }
 

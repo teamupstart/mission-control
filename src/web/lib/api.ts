@@ -102,6 +102,8 @@ export const api = {
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),
+  rename: (id: string, name: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/rename`, { name }),
   kill: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/kill`),
   cycleMode: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/mode/cycle`),
   /**

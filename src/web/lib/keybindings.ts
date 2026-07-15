@@ -19,6 +19,7 @@ export type ActionId =
   | "send"
   | "focus"
   | "mode"
+  | "rename"
   | "kill"
   | "reset";
 
@@ -91,6 +92,13 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
+    id: "rename",
+    label: "Rename session",
+    description: "Rename the selected session's tmux session or wezterm tab (Shift+O).",
+    defaultBinding: "shift+o",
+    group: "selection",
+  },
+  {
     id: "kill",
     label: "Kill session",
     description: "Request termination of the selected session.",
@@ -116,11 +124,22 @@ const RESERVED_KEYS = new Set(["Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "A
 const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
 
 /**
- * Canonical chord for a keydown: modifier tokens (cmd/ctrl/alt, plus shift only
- * for named keys) joined by "+" ahead of the key. A printable character already
- * bakes shift into itself ("?" not "shift+/"), and letters are lower-cased so case
- * never matters. Returns null for a lone modifier press so key capture can keep
- * waiting for a real key.
+ * Canonical chord for a keydown: modifier tokens (cmd/ctrl/alt/shift) joined by
+ * "+" ahead of the key. Returns null for a lone modifier press so key capture can
+ * keep waiting for a real key.
+ *
+ * Whether shift is a modifier depends on whether the key is *cased*:
+ *
+ * - A cased character (a letter) only changes case under shift, so shift is a real
+ *   modifier: Shift+O is "shift+o", distinct from a bare "o". That asymmetry is
+ *   what makes a shift+letter binding expressible at all - and it cuts both ways:
+ *   Shift+S is "shift+s" and so no longer triggers "s" (send), Shift+K no longer
+ *   kills, and so on. Deliberate.
+ * - An uncased character comes out of the keyboard *different* under shift ("+"
+ *   from Shift+= on a US layout, "?" from Shift+/), so shift stays baked into the
+ *   character and is never emitted as a token - "+" and "/" bind as themselves.
+ * - A named key (Tab, Enter) has no character to bake shift into, so shift is a
+ *   modifier there too: "shift+Tab".
  */
 export function chordFromEvent(e: KeyboardEvent): string | null {
   const k = e.key;
@@ -130,13 +149,18 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
   if (e.ctrlKey) mods.push("ctrl");
   if (e.altKey) mods.push("alt");
   let key: string;
-  if (k.length === 1) {
-    key = k.toLowerCase();
-  } else {
+  if (k.length === 1 && !isCased(k)) {
     key = k;
+  } else {
+    key = k.length === 1 ? k.toLowerCase() : k;
     if (e.shiftKey) mods.push("shift");
   }
   return [...mods, key].join("+");
+}
+
+/** True for a character whose case shift merely flips (i.e. a letter). */
+function isCased(ch: string): boolean {
+  return ch.toLowerCase() !== ch.toUpperCase();
 }
 
 /**
@@ -177,11 +201,14 @@ const KEY_LABEL: Record<string, string> = {
   Delete: "⌦",
 };
 
-/** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇥", "/"). */
+/** Human-readable form of a chord for keycaps and the editor (e.g. "⌘K", "⇧O", "⇥", "/"). */
 export function formatChord(chord: string): string {
   if (!chord) return "";
   const { mods, key } = parseChord(chord);
   const modStr = mods.map((m) => MOD_SYMBOL[m] ?? m).join("");
+  // A modified letter reads as the keycap convention it's written in everywhere
+  // else ("⌘K", "⇧O"), while a bare letter stays as typed ("k").
+  if (mods.length > 0 && key.length === 1 && isCased(key)) return modStr + key.toUpperCase();
   return modStr + (KEY_LABEL[key] ?? key);
 }
 

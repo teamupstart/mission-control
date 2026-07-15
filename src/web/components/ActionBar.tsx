@@ -4,8 +4,9 @@ import { api } from "../lib/api.ts";
 
 /**
  * Imperative surface an ActionBar registers with the App so keyboard shortcuts
- * (s / f / k / esc on the selected card) drive the exact same compose and
- * confirm-kill flow as the on-card buttons - one source of truth for both.
+ * (send / focus / mode / kill / esc on the selected card) drive the exact same
+ * compose, mode-cycle and confirm-kill flows as the on-card buttons - one source
+ * of truth for both.
  */
 export interface ActionBarHandle {
   startSend: () => void;
@@ -16,9 +17,10 @@ export interface ActionBarHandle {
 }
 
 /**
- * Per-session controls: focus its pane, send a message into its prompt, or
- * terminate it. "Send" reveals an inline input; "Kill" requires a second
- * confirming click so a stray click can't take down a session.
+ * Per-session controls: focus its pane, send a message into its prompt, reset its
+ * checkout, or terminate it. "Send" reveals an inline input; "Reset" (only with a
+ * working dir) opens an app-level confirm; "Kill" requires a second confirming
+ * click so a stray click can't take down a session.
  */
 export function ActionBar({
   session,

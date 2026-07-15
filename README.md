@@ -12,11 +12,16 @@ and get your decision back.
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
 - **Names** each session by its **tmux session name**, else its **wezterm tab
-  title**, else the repo folder.
+  title**, else the repo folder. Click a card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to
+  rename it - it renames the underlying tmux session / wezterm tab, which the next
+  sweep reads straight back onto the card. Only a live session with a tmux or wezterm
+  pane can be renamed - a session found in neither, or one that has exited, has
+  nothing to rename, so its title isn't clickable.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
-- **Acts** on a session: send it a message, focus its tab, kill it, or reset its
-  checkout back to origin (with a preview of exactly what that would discard).
+- **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
+  reset its checkout back to origin (with a preview of exactly what that would
+  discard).
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
@@ -400,13 +405,17 @@ without reaching for the mouse:
 | <kbd>s</kbd> | Send a message to the selected session | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
+| <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
-| <kbd>⌃</kbd><kbd>r</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
+| <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
 **Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
 Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
-(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd>). Bindings persist per machine,
+(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
+<kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
+plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
+(<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
 them) to its default. The arrow keys and <kbd>Esc</kbd> drive grid navigation and can't be
 reassigned.
@@ -432,7 +441,7 @@ those map to `no-mistakes axi respond --action …` (fix lets you pick findings 
 add guidance). Approve and skip confirm first since they advance the pipeline
 toward pushing your branch.
 
-Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>r</kbd>) also
+Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>R</kbd>) also
 **retires the run the card was showing**, clearing the strip and its narration for
 good. The reset throws away the very work that run validated, but `axi status` keeps
 reporting it for the branch long after - a reset moves the branch *pointer*, not the
@@ -532,4 +541,4 @@ it via DNS-rebinding - a defense that matters now that dispatch can launch agent
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
 and MCP ingress is authenticated with a per-machine token in `~/.fleet-control/token`
 so other local processes can't spoof session or task state. Session and task
-actions (send / focus / kill, dispatch / cancel / complete) are localhost-only.
+actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.

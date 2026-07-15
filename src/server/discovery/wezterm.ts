@@ -97,8 +97,21 @@ export async function spawnWeztermTab(argv: string[], title: string): Promise<nu
   if (res.code !== 0) return null;
   const paneId = Number(res.stdout.trim());
   if (!Number.isInteger(paneId)) return null;
-  if (title) await weztermCli(bin, ["set-tab-title", "--pane-id", String(paneId), title]);
+  if (title) await setWeztermTabTitle(paneId, title);
   return paneId;
+}
+
+/**
+ * Rename the tab a pane lives in by setting its explicit tab title, the value
+ * `wezterm cli list` reports back as `tab_title` and discovery reads as the card
+ * name. This is the same override `spawnWeztermTab` applies to a fresh tab.
+ *
+ * `--` ends flag parsing so a title like "-wip" is read as the title rather than
+ * as a flag bundle.
+ */
+export async function setWeztermTabTitle(paneId: number, title: string): Promise<RunResult> {
+  const bin = resolveWeztermBin();
+  return weztermCli(bin, ["set-tab-title", "--pane-id", String(paneId), "--", title]);
 }
 
 /**

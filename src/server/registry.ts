@@ -354,6 +354,77 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
+  /**
+   * Optimistically apply a rename to the live card the instant the tmux/wezterm
+   * rename lands, rather than waiting up to a poll interval for discovery to read
+   * the new name back. For a tmux session the display name IS the tmux session
+   * name, so the tmux handle's `session` field moves with it - otherwise Focus and
+   * Kill (which target `tmux.session` by name) would address the now-renamed
+   * session by its old name until the next sweep. The wezterm handle's `tabTitle`
+   * is kept in step for the same consistency, though no action keys off it.
+   *
+   * Discovery converges on this exact value on its next tick (the terminal really
+   * was renamed), so there's nothing to reconcile - a stale in-flight sweep that
+   * started before the rename can briefly show the old name, then self-heals.
+   *
+   * Renaming a tmux session renames it for every card hosted on it: `correlate`
+   * groups agents by tty, so two agents in two windows of one tmux session are two
+   * cards sharing a `tmux.session`. All of them are re-pointed, or a sibling's Focus
+   * would attach by a name that no longer resolves until the next sweep. A sibling
+   * named after tmux (`nameSource`) takes the new display name too - its title just
+   * IS the tmux session name.
+   *
+   * A dispatched task holds its own persisted copy of the tmux name, and that copy
+   * drives destructive teardown: `reconcileOnStartup` reads `tmuxSession` back after
+   * a restart and reclaims the worktree when the name no longer resolves. Left
+   * stale, a renamed agent's tree would be force-removed out from under it, so the
+   * binding moves with the rename here, persisted through `upsertTask` to reach
+   * SQLite. The old name alone is too weak a key: it is unique only among LIVE
+   * sessions, while `tmuxSession` is a historical record and tmux frees a dead
+   * session's name for immediate reuse. So the task must also hold the worktree of
+   * a session actually on this tmux session (the `cwd` join `activeTaskForCwd`
+   * uses) - otherwise a long-dead task that merely recorded a since-reused name
+   * would be re-pointed onto a live session and later kill it. `sessionId` can't be
+   * the key: the dispatcher only sets it on the success path, so a failed-but-alive
+   * task - which still holds a worktree and must still follow - has none.
+   */
+  renameSession(sessionId: string, name: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.name === name) return;
+    const priorTmux = s.tmux?.session ?? null;
+    const next: Session = {
+      ...s,
+      name,
+      tmux: s.tmux ? { ...s.tmux, session: name } : s.tmux,
+      wezterm: s.wezterm ? { ...s.wezterm, tabTitle: name } : s.wezterm,
+    };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+    if (!priorTmux || priorTmux === name) return;
+
+    const hostedCwds = new Set<string>();
+    if (s.cwd) hostedCwds.add(s.cwd);
+    for (const [id, other] of [...this.sessions]) {
+      if (id === sessionId) continue;
+      const pane = other.tmux;
+      if (!pane || pane.session !== priorTmux) continue;
+      if (other.cwd) hostedCwds.add(other.cwd);
+      const renamed: Session = {
+        ...other,
+        name: other.nameSource === "tmux" ? name : other.name,
+        tmux: { ...pane, session: name },
+      };
+      this.sessions.set(id, renamed);
+      this.emitSession(renamed);
+    }
+
+    for (const t of this.listTasks()) {
+      if (t.tmuxSession !== priorTmux) continue;
+      if (!t.worktreePath || !hostedCwds.has(t.worktreePath)) continue;
+      this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
+    }
+  }
+
   private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {
     return this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key);
   }

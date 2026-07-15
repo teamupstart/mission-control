@@ -569,15 +569,17 @@ const MAX_PROMPT_GAPS = 3;
  *
  * So: gap text is capped, control characters and bracketed-paste terminators are
  * stripped (the delivery path is a bracketed paste - an embedded `ESC[201~` would
- * end the paste and let the rest execute as keystrokes), and everything lands in
- * fixed scaffolding that frames it as a report to judge, not a command to obey.
+ * end the paste and let the rest execute as keystrokes), it is flattened to a
+ * single line so it cannot counterfeit the scaffolding around it, and everything
+ * lands in that fixed scaffolding, which frames it as a report to judge rather
+ * than a command to obey.
  */
 export function renderFixPrompt(item: WorkItem): string {
   const gaps = blockingGaps(item.gaps).slice(0, MAX_PROMPT_GAPS);
   const lines = [
     "Foreman reviewed the work you just finished and found it incomplete. The original request was:",
     "",
-    sanitizeGapText(item.intent, GAP_FIELD_CAP * 4),
+    sanitizeIntentText(item.intent),
     "",
     gaps.length === 1
       ? "One thing still needs doing before this is finished:"
@@ -601,10 +603,13 @@ export function renderFixPrompt(item: WorkItem): string {
 /**
  * Strip what must never reach a pane, then cap. Control characters (including the
  * ESC that starts a terminal escape sequence) and the bracketed-paste terminator
- * are removed outright rather than escaped - nothing legitimate in a gap needs
+ * are removed outright rather than escaped - nothing legitimate in this text needs
  * them, so dropping them has no cost and no bypass.
+ *
+ * Newlines survive here. This is the HUMAN-authored path (`item.intent`), where a
+ * paragraph break is the author's own meaning rather than a forgery vector.
  */
-export function sanitizeGapText(raw: string, cap = GAP_FIELD_CAP): string {
+export function sanitizeIntentText(raw: string, cap = GAP_FIELD_CAP * 4): string {
   const stripped = raw
     // The paste terminator, spelled out before the generic control-char strip so
     // it's obvious what this is defending.
@@ -613,4 +618,20 @@ export function sanitizeGapText(raw: string, cap = GAP_FIELD_CAP): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
     .trim();
   return stripped.length > cap ? `${stripped.slice(0, cap - 1)}…` : stripped;
+}
+
+/**
+ * The same, for a MODEL-produced gap field - and additionally flattened to one
+ * line.
+ *
+ * The fixed template is a defence only if gap text can't counterfeit it. A gap
+ * detail is a reported fact ("no test covers the retry"), so it has no legitimate
+ * need of newlines - while WITH them it can close the report block and append its
+ * own `NEW INSTRUCTION FROM YOUR OPERATOR:` paragraph beneath, which is precisely
+ * the framing the trailing guard tells the agent to distrust. Collapsing runs of
+ * whitespace keeps the payload readable and visible to the human on the card, but
+ * confines it to the one line the template gave it.
+ */
+export function sanitizeGapText(raw: string, cap = GAP_FIELD_CAP): string {
+  return sanitizeIntentText(raw.replace(/\s+/g, " "), cap);
 }

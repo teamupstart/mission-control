@@ -760,7 +760,14 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
-    if (this.sessions.delete(id)) this.emitEvent({ type: "session_remove", id });
+    if (!this.sessions.delete(id)) return;
+    this.emitEvent({ type: "session_remove", id });
+    // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
+    // liveness from this very map - so no sibling's hint is right until this runs.
+    // Waiting for the next sweep to notice isn't enough on its own either: the card
+    // that should show the hint is typically an idle session at the same cwd, which
+    // is exactly the case where nothing else about it moves.
+    this.syncAllOrphanHints();
   }
 
   // ---- reviews (used by phase 3) ----
@@ -1163,8 +1170,18 @@ export class Registry extends EventEmitter {
     this.syncSessionsForQueue(item.noteKey);
   }
 
+  /**
+   * Re-sequence a queue, then make the change observable.
+   *
+   * `touchQueue` for the reason `putQueueItem` documents, and a reorder is the
+   * purest case of it: the summary projects counts and the in-flight item but never
+   * `seq`, so re-ordering produces a byte-identical summary and every reader other
+   * than the tab that dragged would keep rendering the old order - indefinitely, on
+   * an idle queue, since nothing else would ever heal it.
+   */
   reorderQueue(key: string, ids: string[], now = Date.now()): void {
     reorderQueueItems(key, ids, now);
+    this.touchQueue(key, now);
     this.syncSessionsForQueue(key);
   }
 
@@ -1186,8 +1203,15 @@ export class Registry extends EventEmitter {
     // index only covers in-flight states) and isn't work anyone is waiting on, so
     // refusing over it would block the re-attach in a case that is actually safe -
     // and the card would be offering a button that always 409s.
-    if (listQueueItems(toKey).some((i) => !isTerminalItem(i.state))) return false;
+    const existing = listQueueItems(toKey);
+    if (existing.some((i) => !isTerminalItem(i.state))) return false;
     const items = listQueueItems(fromKey);
+    // Renumber onto the END of whatever the target already holds. Source seqs start
+    // at 0 and so do the finished batch's the guard above deliberately allows, so
+    // preserving them would collide - and `listQueueItems` orders by seq with an
+    // arbitrary tiebreak, leaving the re-attached work interleaved among completed
+    // items. `items` is already in seq order, so the offset keeps their order.
+    const base = existing.reduce((max, i) => Math.max(max, i.seq + 1), 0);
     upsertQueue({
       noteKey: toKey,
       cwd: s.cwd,
@@ -1196,9 +1220,9 @@ export class Registry extends EventEmitter {
       wrapupAnswer: row.wrapupAnswer,
       updatedAt: now,
     });
-    for (const i of items) {
+    for (const [n, i] of items.entries()) {
       deleteQueueItem(i.id);
-      upsertQueueItem({ ...i, noteKey: toKey, updatedAt: now });
+      upsertQueueItem({ ...i, noteKey: toKey, seq: base + n, updatedAt: now });
     }
     deleteQueue(fromKey);
     this.syncSessionsForQueue(toKey);
@@ -1428,7 +1452,15 @@ function sessionEqual(a: Session, b: Session): boolean {
     metaDisplayEqual(a.meta, b.meta) &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&
-    JSON.stringify(a.note) === JSON.stringify(b.note)
+    JSON.stringify(a.note) === JSON.stringify(b.note) &&
+    // The other two denormalized fields `mergeDiscovered` resolves next to `note`.
+    // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
+    // particular depends on OTHER sessions (a queue is orphaned only once its own
+    // session is evicted), so the session whose hint changes need not have changed
+    // in any way of its own - an idle sibling is equal by every field above, stays
+    // quiet, and never surfaces the stranded batch.
+    JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
+    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue)
   );
 }
 

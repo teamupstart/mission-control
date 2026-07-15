@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyQueueAction, queueSendStillValid, observe } from "../src/server/foreman/queue-apply.ts";
+import {
+  InjectError,
+  applyQueueAction,
+  queueSendStillValid,
+  observe,
+} from "../src/server/foreman/queue-apply.ts";
 import type { QueueActions } from "../src/server/foreman/queue-apply.ts";
 import { SEND_ATTEMPT_CAP } from "../src/server/foreman/queue-machine.ts";
 import type { QueueConfig } from "../src/server/foreman/queue-machine.ts";
@@ -89,6 +94,14 @@ const LIVE_CFG: ForemanConfig = {
   maxFixRounds: 10,
 };
 
+/** Foreman on, but drafting. The default mode - and the one Approve exists for. */
+const DRY_CFG: ForemanConfig = { ...LIVE_CFG, mode: "dry-run" };
+
+/** A drafted item the human has said yes to. */
+function mkApproved(over: Partial<WorkItem> = {}): WorkItem {
+  return mkItem({ state: "proposed", proposedPayload: "do it", approvedAt: NOW - 5_000, ...over });
+}
+
 interface Fake extends QueueActions {
   injected: string[];
   states: Array<{ itemId: string; patch: Record<string, unknown> }>;
@@ -97,7 +110,18 @@ interface Fake extends QueueActions {
   wrapups: number;
 }
 
-function mkFake(over: Partial<{ session: Session; items: WorkItem[]; cfg: ForemanConfig; lease: boolean; injectThrows: boolean }> = {}): Fake {
+function mkFake(
+  over: Partial<{
+    session: Session;
+    items: WorkItem[];
+    cfg: ForemanConfig;
+    lease: boolean;
+    /** The delivery fails before any text reaches the pane (retryable). */
+    injectThrows: boolean;
+    /** The delivery fails with the text already pasted, or in an unknown state. */
+    injectFailure: unknown;
+  }> = {},
+): Fake {
   const session = over.session ?? mkSession();
   const items = over.items ?? [mkItem()];
   const cfg = over.cfg ?? LIVE_CFG;
@@ -120,7 +144,10 @@ function mkFake(over: Partial<{ session: Session; items: WorkItem[]; cfg: Forema
     }),
     setItemState: async (_s, itemId, patch) => void fake.states.push({ itemId, patch }),
     inject: async (_s, text) => {
-      if (over.injectThrows) throw new Error("tmux paste-buffer failed");
+      if (over.injectFailure !== undefined) throw over.injectFailure;
+      // What the real client throws when the paste itself never happened: tmux
+      // resolves the buffer and the pane before writing, so nothing reached it.
+      if (over.injectThrows) throw new InjectError("tmux paste-buffer failed", false);
       fake.injected.push(text);
     },
     markSent: async () => void fake.sentMarks++,
@@ -210,6 +237,58 @@ test("a repeatedly-failing inject escalates instead of retrying forever", async 
   assert.equal(fake2.states.at(-1)?.patch.state, "queued");
 });
 
+test("a send that may have HALF-LANDED escalates instead of re-typing over it", async () => {
+  // Delivery is a non-atomic paste-then-Enter. If the paste landed and the Enter
+  // failed, the prompt is sitting unsubmitted in the pane - so going back to
+  // `queued` would paste a second copy after the first and mangle the instruction.
+  // Same rule the crash path follows: absence of evidence is not evidence.
+  const session = mkSession();
+  const item = mkItem();
+  const fake = mkFake({
+    session,
+    items: [item],
+    injectFailure: new InjectError("inject s1 -> 500: tmux Enter failed", true),
+  });
+  const out = await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
+
+  assert.equal(out.kind, "aborted");
+  assert.equal(fake.sentMarks, 0, "a failed send must never look delivered");
+  assert.equal(fake.states.at(-1)?.patch.state, "escalated");
+  assert.equal(
+    fake.states.find((w) => w.patch.state === "queued"),
+    undefined,
+    "text that may be in the pane must never go back to be re-typed",
+  );
+});
+
+test("an UNRECOGNISED delivery failure escalates - it says nothing about the pane", async () => {
+  // The conservative default is the whole point. Only a positive `pasted: false`
+  // earns a retry; anything else (a bug, a dropped connection mid-request) leaves
+  // the pane's state unknown, and guessing "nothing landed" is the guess that
+  // double-types.
+  const session = mkSession();
+  const item = mkItem();
+  const fake = mkFake({ session, items: [item], injectFailure: new Error("socket hang up") });
+  const out = await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
+
+  assert.equal(out.kind, "aborted");
+  assert.equal(fake.states.at(-1)?.patch.state, "escalated");
+});
+
+test("a half-landed send escalates even well below the attempt cap", async () => {
+  // The cap governs RETRIES. An item that may already be in the pane has no safe
+  // retry to spend, so the remaining attempts are irrelevant to it.
+  const session = mkSession();
+  const item = mkItem({ sendAttempts: 0 });
+  const fake = mkFake({
+    session,
+    items: [item],
+    injectFailure: new InjectError("inject s1 -> 500: wezterm Enter failed", true),
+  });
+  await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
+  assert.equal(fake.states.at(-1)?.patch.state, "escalated");
+});
+
 // ---- the stale-send guard ----
 
 test("the guard passes for an unchanged, settled, allowlisted session", async () => {
@@ -284,6 +363,83 @@ test("the guard refuses when the repo dropped off the allowlist", async () => {
   const fake = mkFake({ session, items: [item], cfg: { ...LIVE_CFG, repoAllowlist: [] } });
   const r = await queueSendStillValid(fake, observe(session, item), CFG, NOW);
   assert.equal(r.ok, false);
+});
+
+// ---- Approve is consent, in any mode ----
+
+test("an APPROVED item passes the guard in dry-run, and sends", async () => {
+  // The whole point of the dry-run Approve workflow: draft, human reads it, human
+  // says yes, Foreman types THAT text. Step 8 asks "would this item still need to be
+  // a draft?" - and an approved one would not, because the human already read it.
+  const session = mkSession();
+  const item = mkApproved();
+  const fake = mkFake({ session, items: [item], cfg: DRY_CFG });
+
+  const r = await queueSendStillValid(fake, observe(session, item), CFG, NOW);
+  assert.equal(r.ok, true, "consent clears step 8");
+
+  const out = await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
+  assert.equal(out.kind, "sent");
+  assert.deepEqual(fake.injected, ["do it"], "an approved draft is what actually reaches the pane");
+  assert.equal(fake.sentMarks, 1);
+});
+
+test("an UNAPPROVED item still refuses to send in dry-run", async () => {
+  // The other half. Without consent there is nothing authorising the keystrokes, so
+  // dry-run must stay a draft - this is what keeps step 8 a real gate rather than a
+  // formality that any item walks through.
+  const session = mkSession();
+  const item = mkItem({ state: "proposed", proposedPayload: "do it" });
+  const fake = mkFake({ session, items: [item], cfg: DRY_CFG });
+
+  const r = await queueSendStillValid(fake, observe(session, item), CFG, NOW);
+  assert.equal(r.ok, false);
+  assert.match(r.ok === false ? r.why : "", /no longer cleared/);
+
+  const out = await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
+  assert.equal(out.kind, "aborted");
+  assert.deepEqual(fake.injected, [], "no consent, no keystrokes");
+});
+
+test("step 8 reads the FRESHLY-FETCHED item's consent, not the caller's snapshot", async () => {
+  // The guard re-fetches the item at step 6 precisely so it re-plans from current
+  // state. A human who approves between the machine's decision and the guard has
+  // consented; reading a stale snapshot would ignore that yes and demote the draft.
+  const session = mkSession();
+  const stale = mkItem({ state: "proposed", proposedPayload: "do it" }); // approvedAt: null
+  const approved = mkApproved(); // same id/state/round/revision, now with consent
+  const fake = mkFake({ session, items: [approved], cfg: DRY_CFG });
+
+  const r = await queueSendStillValid(fake, observe(session, stale), CFG, NOW);
+  assert.equal(r.ok, true);
+});
+
+test("an approved dry-run send STILL aborts when another guard fails, costing no round or strike", async () => {
+  // Approve records consent; it does not bypass guards 1-7 and 9. The human's yes
+  // arrives minutes after the draft, so the session may have moved on since - and
+  // that abort is not evidence about the work.
+  const observed = mkSession({ lastActivity: NOW - 60_000 });
+  const item = mkApproved({ round: 2 });
+  const moved = mkSession({ lastActivity: NOW - 1_000 }); // a human typed in the pane
+  const fake = mkFake({ session: moved, items: [item], cfg: DRY_CFG });
+
+  const r = await queueSendStillValid(fake, observe(observed, item), CFG, NOW);
+  assert.equal(r.ok, false);
+  assert.match(r.ok === false ? r.why : "", /did something since/);
+
+  const out = await applyQueueAction(
+    fake,
+    observed,
+    { kind: "send", item, payload: "do it", round: 3 },
+    CFG,
+    NOW,
+  );
+  assert.equal(out.kind, "aborted");
+  assert.deepEqual(fake.injected, [], "consent does not survive a session that moved on");
+  for (const w of fake.states) {
+    assert.notEqual(w.patch.round, 3, "the round must not advance on an abort");
+    assert.equal(w.patch.gaps, undefined, "and no strike is recorded");
+  }
 });
 
 test("the guard refuses when we no longer hold the lease", async () => {

@@ -990,6 +990,37 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
   assert.ok(paths.includes("packages/app/CLAUDE.md"), "and so must the package's own");
 });
 
+test("a reorder moves the queue's change token, so a second tab learns about it", async () => {
+  // `SessionQueueSummary` projects counts and the in-flight item but never `seq`, so
+  // a reorder is byte-identical to it and `syncSessionsForQueue`'s equality check
+  // short-circuits. Without touching the row, the tab that dragged looks right (it
+  // refetches itself) while every other reader keeps rendering the old order - and
+  // on an idle queue nothing ever heals it.
+  seedSession();
+  const a = await addItem("first");
+  const b = await addItem("second");
+  const token = async (): Promise<number> =>
+    (await sessions()).find((s) => s.id === "sess-1")!.queue!.updatedAt;
+
+  const before = await token();
+  const r = await app.request("/api/sessions/sess-1/queue/order", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ ids: [b.id, a.id] }),
+  });
+  assert.equal(r.status, 200);
+
+  assert.ok((await token()) > before, "a reorder has to be observable to other tabs");
+  const q = (await (await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK })).json()) as {
+    items: Array<{ id: string }>;
+  };
+  assert.deepEqual(q.items.map((i) => i.id), [b.id, a.id], "and it actually reordered");
+
+  for (const i of [a, b]) {
+    await app.request(`/api/sessions/sess-1/queue/${i.id}`, { method: "DELETE", headers: LOOPBACK });
+  }
+});
+
 test("a /clear orphans the queue, and re-attaching it is offered where it can succeed", async () => {
   // The whole point of leaving waiting items intact when a session goes: resuming a
   // batch. `noteKeyFor` is `agentSessionId ?? id`, so a /clear mints a new key and
@@ -1035,12 +1066,25 @@ test("a /clear orphans the queue, and re-attaching it is offered where it can su
   assert.equal(r.status, 200, "terminal items can't collide, so this has to be allowed");
 
   const after = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
-  const q = (await after.json()) as { noteKey: string; items: Array<{ id: string; intent: string }> };
+  const q = (await after.json()) as {
+    noteKey: string;
+    items: Array<{ id: string; intent: string; seq: number }>;
+  };
   assert.equal(q.noteKey, "after-clear");
   assert.ok(
     q.items.some((i) => i.intent === "resume me"),
     "the stranded work resumes on the live session",
   );
+  // Re-attached items are renumbered onto the END of the finished batch. Both runs
+  // start their seq at 0, so preserving the source numbering collides - and
+  // `listQueueItems` orders by seq with an arbitrary tiebreak, which would leave the
+  // resumed work interleaved among items that are already done.
+  assert.deepEqual(
+    q.items.map((i) => i.intent),
+    ["already finished", "resume me"],
+    "the resumed work lands after the batch that's already done, not among it",
+  );
+  assert.equal(new Set(q.items.map((i) => i.seq)).size, q.items.length, "and every seq is distinct");
 
   for (const i of q.items) {
     await app.request(`/api/sessions/sess-1/queue/${i.id}/state`, {

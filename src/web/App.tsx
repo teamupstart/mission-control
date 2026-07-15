@@ -123,6 +123,10 @@ export function App(): React.JSX.Element {
   );
   const foremanMode = foreman.config?.mode ?? "dry-run";
   const foremanAllowlist = foreman.config?.repoAllowlist;
+  // The shipped default is OFF, and the worker short-circuits its whole loop on it -
+  // so a card that reports only the MODE would explain a queue that isn't running by
+  // describing what Foreman would do if it were running at all.
+  const foremanEnabled = foreman.config?.enabled ?? false;
 
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
 
@@ -453,6 +457,7 @@ export function App(): React.JSX.Element {
             onRenameStart={() => setRenamingId(s.id)}
             onRenameClose={() => setRenamingId(null)}
             foremanMode={foremanMode}
+            foremanEnabled={foremanEnabled}
             foremanAllowlist={foremanAllowlist}
             inputReviewId={inputReviewBySession.get(s.id) ?? null}
             pendingReviewIds={pendingReviewIds}

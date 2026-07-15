@@ -282,9 +282,13 @@ export function buildApp(
   // client genuinely throws on failure. That's what lets the worker write
   // `awaiting_pickup` only AFTER the inject resolves (the send-first-then-stamp
   // discipline applyVerdict already encodes).
+  // The response carries `pasted`, which is what lets the worker tell a delivery
+  // that never happened (retryable) from one that may be sitting unsubmitted in the
+  // pane (must not be retyped over). Every refusal below reports it too, since
+  // rejecting a request outright is the one case where we KNOW nothing was typed.
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
-    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session) return c.json({ error: "no such session", pasted: false }, 404);
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return parsed.res;
     const r = await injectPrompt(session, parsed.data.text);

@@ -13,8 +13,66 @@ const MODE_LABEL: Record<string, string> = {
   live: "live",
 };
 
+/**
+ * A bounded number setting that commits on BLUR, not per keystroke.
+ *
+ * Typing "50" over "3" passes through "5" on the way - a valid value - so a
+ * per-keystroke commit silently persists a setting the human never chose, then
+ * sends the rejected one. Nor do HTML min/max constrain typed input, and an emptied
+ * field reads as `Number("") === 0`, which the schema refuses. So: hold the text
+ * locally, send only a value that is actually in range, and otherwise snap back to
+ * what's in force rather than firing a patch we know the server will refuse.
+ *
+ * Mirrors the allowlist textarea's commit-on-blur, which is here for the same reason.
+ */
+function NumberSetting({
+  value,
+  min,
+  max,
+  label,
+  onCommit,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  label: string;
+  onCommit: (n: number) => void;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(String(value));
+
+  // Follow the setting whenever it actually moves - a commit landing, a rejected
+  // edit reverting, another tab changing it. Keyed on `value` alone, so a poll that
+  // returns the same number doesn't fire and typing is never yanked out from under.
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  function commit(): void {
+    const n = Number(draft);
+    if (!Number.isInteger(n) || n < min || n > max) return setDraft(String(value));
+    if (n !== value) onCommit(n);
+  }
+
+  return (
+    <label className="alert-row">
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+      />
+      {label}
+    </label>
+  );
+}
+
 export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Element {
-  const { config, status, update } = state;
+  const { config, status, update, error } = state;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -111,26 +169,20 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
           */}
           <fieldset className="foreman-knobs" disabled={!enabled}>
             <legend>Work queues</legend>
-            <label className="alert-row">
-              <input
-                type="number"
-                min={1}
-                max={10}
-                value={config.maxFixAttempts}
-                onChange={(e) => void update({ maxFixAttempts: Number(e.target.value) })}
-              />
-              Fix attempts per issue before escalating
-            </label>
-            <label className="alert-row">
-              <input
-                type="number"
-                min={1}
-                max={50}
-                value={config.maxFixRounds}
-                onChange={(e) => void update({ maxFixRounds: Number(e.target.value) })}
-              />
-              Max fix rounds per item
-            </label>
+            <NumberSetting
+              value={config.maxFixAttempts}
+              min={1}
+              max={10}
+              label="Fix attempts per issue before escalating"
+              onCommit={(n) => void update({ maxFixAttempts: n })}
+            />
+            <NumberSetting
+              value={config.maxFixRounds}
+              min={1}
+              max={50}
+              label="Max fix rounds per item"
+              onCommit={(n) => void update({ maxFixRounds: n })}
+            />
           </fieldset>
 
           {mode === "live" && (
@@ -151,6 +203,8 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
               />
             </label>
           )}
+
+          {error && <p className="foreman-error">{error}</p>}
 
           <p className="alert-hint">
             {running ? "Worker running." : "Worker not running - start it with "}

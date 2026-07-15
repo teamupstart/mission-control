@@ -10,6 +10,26 @@ import { foremanMayActLive } from "./verdict.ts";
 // narrow interface so the whole thing can be driven against a fake in tests -
 // mirroring foreman-verdict.test.ts's ForemanActions fake.
 
+/**
+ * A delivery that failed, carrying the only fact that decides what happens next.
+ *
+ * Defined here rather than in the HTTP client because it is part of THIS module's
+ * contract: `inject` promises that a rejection says whether text may have reached
+ * the pane, and the client is merely one implementation of that promise.
+ *
+ * `mayHaveLanded` is true unless the delivery positively reported that nothing was
+ * pasted. That default is the point: absence of evidence is not evidence.
+ */
+export class InjectError extends Error {
+  readonly mayHaveLanded: boolean;
+
+  constructor(message: string, mayHaveLanded: boolean) {
+    super(message);
+    this.name = "InjectError";
+    this.mayHaveLanded = mayHaveLanded;
+  }
+}
+
 /** The daemon surface applying a queue action needs. Tests inject a fake. */
 export interface QueueActions {
   sessions(): Promise<Session[]>;
@@ -31,6 +51,16 @@ export interface QueueActions {
   ): Promise<{ baseSha: string | null; transcriptAnchor: number | null }>;
   /** True while this worker still holds the fleet lease. */
   holdsLease(): boolean;
+}
+
+/**
+ * Whether a failed delivery might have put text in the pane. Anything that isn't
+ * an `InjectError` saying otherwise counts as "might have": an unrecognised
+ * failure tells us nothing about the pane, and guessing "nothing landed" is the
+ * guess that re-types over a prompt already sitting there.
+ */
+function mayHaveLanded(err: unknown): boolean {
+  return !(err instanceof InjectError) || err.mayHaveLanded;
 }
 
 /** noteKeyFor, inlined so this module doesn't drag the whole registry in. */
@@ -140,10 +170,16 @@ export async function queueSendStillValid(
     }
 
     // 8. Re-PLAN from a fresh config, not merely re-check a cached mayActLive - the
-    //    lesson the triage path already encodes. A mid-verify flip out of live must
-    //    downgrade to a draft rather than type.
+    //    lesson the triage path already encodes. The question is the one the machine
+    //    asks: would this item still have to be a DRAFT? A mid-verify flip out of
+    //    live must downgrade an unapproved item rather than type it. An approved one
+    //    is already past that: the human read this exact text and said yes, which is
+    //    the authority live mode would otherwise supply.
+    //
+    //    `item`, not the caller's snapshot - a "yes" that arrived after the machine
+    //    decided is still a yes, and re-planning from fresh state is the whole point.
     const freshCfg = await actions.getConfig();
-    if (!foremanMayActLive(freshCfg, fresh.cwd)) {
+    if (!foremanMayActLive(freshCfg, fresh.cwd) && !item.approvedAt) {
       return { ok: false, why: "Foreman is no longer cleared to send live for this repo" };
     }
 
@@ -267,6 +303,19 @@ export async function applyQueueAction(
       try {
         await actions.inject(target.id, action.payload);
       } catch (err) {
+        // A throw is NOT evidence that nothing landed. Delivery is a non-atomic
+        // paste-then-Enter, so a failure after the paste leaves the prompt sitting
+        // unsubmitted in the pane - and a retry would paste a second copy after the
+        // first and mangle the work instruction. That is the same hazard the crash
+        // path already refuses to gamble on (see the `recoveredAt` branch): absence
+        // of evidence is not evidence, so hand it to the human instead of guessing.
+        if (mayHaveLanded(err)) {
+          await actions.setItemState(target.id, action.item.id, {
+            state: "escalated",
+            escalationReason: `Foreman couldn't tell whether this item reached the pane - check it before retrying (${String(err)})`,
+          });
+          return { kind: "aborted", why: "send failed and may have half-landed; escalated" };
+        }
         const attempts = action.item.sendAttempts + 1;
         if (attempts >= SEND_ATTEMPT_CAP) {
           await actions.setItemState(target.id, action.item.id, {
@@ -275,7 +324,7 @@ export async function applyQueueAction(
           });
           return { kind: "aborted", why: `send failed ${attempts}x; escalated` };
         }
-        // The inject threw, so nothing landed: it's safe to go back and retry.
+        // The paste never happened, so nothing landed: safe to go back and retry.
         await actions.setItemState(target.id, action.item.id, { state: "queued" });
         return { kind: "aborted", why: `send failed (${String(err)})` };
       }

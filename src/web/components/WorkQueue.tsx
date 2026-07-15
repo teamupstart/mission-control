@@ -33,11 +33,17 @@ function isTerminal(state: WorkItemState): boolean {
 export function WorkQueue({
   session,
   foremanMode,
+  foremanEnabled,
   allowlisted,
 }: {
   session: Session;
   /** Current Foreman mode, so a dry-run queue explains why it isn't sending. */
   foremanMode: string;
+  /**
+   * Whether Foreman is on at all. The worker short-circuits its whole loop when it
+   * isn't, so this outranks the mode when explaining a queue that isn't moving.
+   */
+  foremanEnabled: boolean;
   /** Whether this session's repo is cleared for live sends (see the panel note). */
   allowlisted: boolean;
 }): React.JSX.Element | null {
@@ -283,21 +289,11 @@ export function WorkQueue({
       )}
 
       {/*
-        Allowlist honesty. foremanMayActLive's prefix match doesn't cover
-        dispatched-task worktrees (they aren't under the repo root), so a queue on
-        a dispatched agent would silently never go live and every item would sit
-        `proposed` - reading as a bug. Say so, and say where to fix it.
+        What will happen to the items that are waiting - or why nothing will. Only
+        when something IS waiting: with nothing pending there's nothing to explain.
       */}
-      {foremanMode === "live" && !allowlisted && session.cwd && (
-        <p className="wq-hint dim">
-          This repo isn&apos;t allowlisted for live sends, so items will be drafted for your OK. Add{" "}
-          <code>{session.cwd}</code> to Foreman&apos;s allowlist to let it send here.
-        </p>
-      )}
-      {foremanMode !== "live" && open.length > 0 && (
-        <p className="wq-hint dim">
-          Foreman is in {foremanMode} - it will draft each item and wait for your Approve.
-        </p>
+      {open.length > 0 && (
+        <QueueHint enabled={foremanEnabled} mode={foremanMode} allowlisted={allowlisted} cwd={session.cwd} />
       )}
 
       {queue && queue.wrapupAskedAt !== null && (
@@ -307,6 +303,59 @@ export function WorkQueue({
       {error && <p className="wq-error">{error}</p>}
     </section>
   );
+}
+
+/**
+ * The one line explaining what Foreman will do with the waiting items.
+ *
+ * Ordered by what actually stops the queue FIRST. Foreman being off short-circuits
+ * the worker's entire loop before it ever reads a queue, so it outranks whatever
+ * the mode and the allowlist would say: "it will draft each item and wait for your
+ * Approve" describes a draft that is never coming, and an item sitting `queued`
+ * forever under that sentence reads as a bug in the queue rather than a switch the
+ * human hasn't flipped. Queueing first and enabling after is a perfectly natural
+ * order of work - the panel just has to be honest about which one you're in.
+ */
+function QueueHint({
+  enabled,
+  mode,
+  allowlisted,
+  cwd,
+}: {
+  enabled: boolean;
+  mode: string;
+  allowlisted: boolean;
+  cwd: string | null;
+}): React.JSX.Element | null {
+  if (!enabled) {
+    return (
+      <p className="wq-hint dim">
+        Foreman is off, so nothing here will be drafted or sent. These items keep their order and
+        wait - turn Foreman on from the toolbar to start working through them.
+      </p>
+    );
+  }
+  // Allowlist honesty. foremanMayActLive's prefix match doesn't cover
+  // dispatched-task worktrees (they aren't under the repo root), so a queue on a
+  // dispatched agent would silently never go live and every item would sit
+  // `proposed` - reading as a bug. Say so, and say where to fix it.
+  if (mode === "live" && !allowlisted && cwd) {
+    return (
+      <p className="wq-hint dim">
+        This repo isn&apos;t allowlisted for live sends, so items will be drafted for your OK. Add{" "}
+        <code>{cwd}</code> to Foreman&apos;s allowlist to let it send here.
+      </p>
+    );
+  }
+  if (mode !== "live") {
+    return (
+      <p className="wq-hint dim">
+        Foreman is in {mode} - it will draft each item and wait for your Approve.
+      </p>
+    );
+  }
+  // Live, enabled, allowlisted: it does what the panel already shows. Nothing to say.
+  return null;
 }
 
 function Header({ count }: { count: number }): React.JSX.Element {
@@ -439,6 +488,8 @@ function Wrapup({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  /** The instruction reached the pane. One ask, one send - whatever happens after. */
+  const [sent, setSent] = useState(false);
 
   // Recompose the prefill as the checkboxes change, until the human edits it.
   const [touched, setTouched] = useState(false);
@@ -461,8 +512,20 @@ function Wrapup({
       setErr(r.error ?? "could not send that");
       return;
     }
-    await api.setWrapupAnswer(sessionId, body);
+    // The instruction is now in the pane, so this must never offer to send it again -
+    // and recording the answer is the only thing that retires the ask. `api.request`
+    // turns every failure into a returned `{ok:false}` rather than a throw, so an
+    // unchecked write here fails silently and leaves "Ship it?" on screen with a live
+    // Send button next to an agent that already got the instruction; a second click
+    // injects `/no-mistakes` twice. Latch on the SEND, not on the write, so the
+    // button dies even when the write is what failed.
+    setSent(true);
+    const saved = await api.setWrapupAnswer(sessionId, body);
     setBusy(false);
+    if (!saved.ok) {
+      setErr(`Sent - but this card couldn't record it (${saved.error ?? "the write failed"}).`);
+      return;
+    }
     onDone();
   }
 
@@ -493,7 +556,7 @@ function Wrapup({
         }}
       />
       <div className="wq-actions">
-        <button className="btn btn-primary" disabled={busy || !text.trim()} onClick={() => void send()}>
+        <button className="btn btn-primary" disabled={busy || sent || !text.trim()} onClick={() => void send()}>
           Send
         </button>
         <button className="btn btn-ghost" disabled={busy} onClick={() => void dismiss()}>

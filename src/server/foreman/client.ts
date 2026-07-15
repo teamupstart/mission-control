@@ -16,6 +16,7 @@ import type {
   WorkItem,
 } from "@shared/types.ts";
 import type { StandardsBundle } from "../standards.ts";
+import { InjectError } from "./queue-apply.ts";
 import type { ForemanActions } from "./verdict.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
@@ -150,12 +151,25 @@ export class ForemanClient implements ForemanActions {
   /**
    * Deliver a whole prompt as ONE bracketed-paste submission. Throws on failure,
    * which is what lets the caller stamp `awaiting_pickup` only after it resolves.
+   *
+   * The throw is an `InjectError` carrying whether text may have reached the pane,
+   * because that decides whether the caller may retry or must escalate. It is only
+   * ever safe when the daemon positively said `pasted: false`; a request that never
+   * completed tells us nothing about what the daemon did with it.
    */
   async inject(id: string, text: string): Promise<void> {
-    const res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text });
+    let res: Response;
+    try {
+      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text });
+    } catch (err) {
+      throw new InjectError(`inject ${id} -> ${String(err)}`, true);
+    }
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(`inject ${id} -> ${res.status}${body.error ? `: ${body.error}` : ""}`);
+      const body = (await res.json().catch(() => ({}))) as { error?: string; pasted?: boolean };
+      throw new InjectError(
+        `inject ${id} -> ${res.status}${body.error ? `: ${body.error}` : ""}`,
+        body.pasted !== false,
+      );
     }
   }
 

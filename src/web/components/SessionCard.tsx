@@ -64,6 +64,7 @@ export function SessionCard({
   onRenameStart,
   onRenameClose,
   foremanMode = "dry-run",
+  foremanEnabled = false,
   foremanAllowlist,
   inputReviewId = null,
   pendingReviewIds,
@@ -88,6 +89,8 @@ export function SessionCard({
   onRenameClose?: () => void;
   /** Current Foreman mode, so an expanded note can show semi-auto controls. */
   foremanMode?: string;
+  /** Whether Foreman is switched on at all - the mode says nothing while it's off. */
+  foremanEnabled?: boolean;
   /** Repo roots Foreman may send live in, so the queue can be honest about why
    *  it's only drafting (the allowlist is a prefix match on the repo root). */
   foremanAllowlist?: string[];
@@ -351,6 +354,7 @@ export function SessionCard({
           <WorkQueue
             session={session}
             foremanMode={foremanMode}
+            foremanEnabled={foremanEnabled}
             allowlisted={allowlisted(session.cwd, foremanAllowlist)}
           />
           <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />

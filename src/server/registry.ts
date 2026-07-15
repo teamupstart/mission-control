@@ -31,7 +31,6 @@ import {
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
 import {
-  deleteQueue,
   deleteQueueItem,
   deleteTask as dbDeleteTask,
   getQueueItem,
@@ -44,7 +43,9 @@ import {
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionNotes,
+  hooksEverSeen,
   logEvent,
+  rekeyQueue,
   reorderQueueItems,
   upsertQueue,
   upsertQueueItem,
@@ -241,6 +242,11 @@ export class Registry extends EventEmitter {
       agentSessionId: prev?.agentSessionId ?? null,
       transcriptPath: prev?.transcriptPath ?? null,
       instrumented: false,
+      // Sticky, and seeded from the DB the first time we see a session so it
+      // survives a daemon restart. `instrumented` above is rebuilt as false every
+      // sweep because it tracks the overlay's freshness; this tracks whether hooks
+      // exist at all, which nothing but uninstalling them can un-learn.
+      hooksSeen: prev?.hooksSeen ?? hooksEverSeen(d.syntheticId),
       activity: prev?.activity ?? null,
       startedAt: d.startedAt || prev?.startedAt || null,
       firstSeen: prev?.firstSeen ?? now,
@@ -260,6 +266,7 @@ export class Registry extends EventEmitter {
       orphanedQueue: null,
     };
     const overlay = this.overlayFor(base);
+    if (overlay) base.hooksSeen = true;
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
       base.instrumented = true;
       base.state = overlay.state;
@@ -322,6 +329,7 @@ export class Registry extends EventEmitter {
         ...target,
         ...pr,
         instrumented: true,
+        hooksSeen: true,
         state,
         activity,
         permissionMode,
@@ -687,6 +695,7 @@ export class Registry extends EventEmitter {
     const next: Session = {
       ...s,
       instrumented: true,
+      hooksSeen: true,
       activity,
       lastActivity: Date.now(),
       agentSessionId: agentSessionId ?? s.agentSessionId,
@@ -1194,6 +1203,15 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(toSessionId);
     const row = getQueueRow(fromKey);
     if (!s || !row) return false;
+    // Only onto a session that can actually RUN a queue. `orphanedQueueFor` matches
+    // on cwd alone, so the hint is offered beside any live session at the orphan's
+    // directory - including a Codex one, which `tickTargets` filters out of every
+    // tick. Re-keying onto it is a one-way trip to nowhere: the queue never ticks
+    // again, and because the target now holds the key, the queue counts as live, so
+    // neither the cwd hint nor the fleet-level orphan sweep will ever offer it
+    // again. Refusing here is what makes the button agree with the panel's own
+    // "Claude-only for now" copy instead of silently stranding the batch.
+    if (s.agent !== "claude") return false;
     const toKey = noteKeyFor(s);
     if (toKey === fromKey) return true;
     // A live queue at the target key would collide on the single-flight index and
@@ -1212,19 +1230,18 @@ export class Registry extends EventEmitter {
     // arbitrary tiebreak, leaving the re-attached work interleaved among completed
     // items. `items` is already in seq order, so the offset keeps their order.
     const base = existing.reduce((max, i) => Math.max(max, i.seq + 1), 0);
-    upsertQueue({
-      noteKey: toKey,
-      cwd: s.cwd,
-      branch: s.gitBranch,
-      wrapupAskedAt: row.wrapupAskedAt,
-      wrapupAnswer: row.wrapupAnswer,
-      updatedAt: now,
-    });
-    for (const [n, i] of items.entries()) {
-      deleteQueueItem(i.id);
-      upsertQueueItem({ ...i, noteKey: toKey, seq: base + n, updatedAt: now });
-    }
-    deleteQueue(fromKey);
+    rekeyQueue(
+      fromKey,
+      {
+        noteKey: toKey,
+        cwd: s.cwd,
+        branch: s.gitBranch,
+        wrapupAskedAt: row.wrapupAskedAt,
+        wrapupAnswer: row.wrapupAnswer,
+        updatedAt: now,
+      },
+      items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
+    );
     this.syncSessionsForQueue(toKey);
     this.syncAllOrphanHints();
     return true;
@@ -1439,6 +1456,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.agentSessionId === b.agentSessionId &&
     a.transcriptPath === b.transcriptPath &&
     a.instrumented === b.instrumented &&
+    a.hooksSeen === b.hooksSeen &&
     a.activity === b.activity &&
     a.permissionMode === b.permissionMode &&
     a.pendingReviews === b.pendingReviews &&

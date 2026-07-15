@@ -23,6 +23,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
+    hooksSeen: true,
     activity: null,
     startedAt: null,
     firstSeen: 0,

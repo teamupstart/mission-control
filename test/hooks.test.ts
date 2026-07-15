@@ -28,6 +28,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: false,
+    hooksSeen: false,
     activity: null,
     startedAt: null,
     firstSeen: 0,

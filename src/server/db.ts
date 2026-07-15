@@ -293,6 +293,26 @@ export function logEvent(sessionId: string, ts: number, kind: string, payload: u
     .run(sessionId, ts, kind, payload === undefined ? null : JSON.stringify(payload));
 }
 
+/**
+ * Whether this session has ever emitted a hook event - the durable half of
+ * `Session.hooksSeen`.
+ *
+ * `session_events` is written by exactly one caller (`applyHook`) and never
+ * pruned, so a row here means "hooks reached us from this session" for as long as
+ * the DB lives. That outlasts the process, which is the whole point: overlays are
+ * in-memory, so on a daemon restart a live, healthy, hook-instrumented session
+ * that happens to be quiet looks identical to one with no integrations at all -
+ * and anything that escalates on the latter would fire on the former. The
+ * synthetic session id is tty+pid+start, so it's stable across a daemon restart
+ * for the same agent process and mints fresh for a genuinely new one.
+ */
+export function hooksEverSeen(sessionId: string): boolean {
+  const row = openDb()
+    .prepare(`SELECT 1 AS hit FROM session_events WHERE session_id = ? LIMIT 1`)
+    .get(sessionId) as { hit: number } | undefined;
+  return row !== undefined;
+}
+
 // ---- tasks ----
 
 interface TaskRow {
@@ -641,6 +661,46 @@ export function deleteQueueItem(id: string): void {
 /** Drop a queue row (its items are re-keyed or deleted by the caller first). */
 export function deleteQueue(noteKey: string): void {
   openDb().prepare(`DELETE FROM foreman_queues WHERE note_key = ?`).run(noteKey);
+}
+
+/**
+ * Move a whole queue onto a new note key, in ONE transaction: write the target
+ * row, re-key every item, drop the source row.
+ *
+ * Atomic for the same reason `reorderQueueItems` is. This is a re-key of N rows
+ * that is only correct all-or-nothing: a throw or a crash partway through the
+ * statement sequence leaves the batch SPLIT across two keys, with some items under
+ * a queue row that has already been deleted and the rest still on the old one -
+ * a state no reader models and the re-attach button cannot repair, since the hint
+ * it keys off is computed from the very rows that got half-moved.
+ *
+ * `items` arrive already re-keyed and renumbered; the caller owns that policy
+ * (which seqs, which target row), this owns only the all-or-nothing.
+ */
+export function rekeyQueue(
+  fromKey: string,
+  toRow: Omit<SessionQueue, "items">,
+  items: WorkItem[],
+): void {
+  const d = openDb();
+  d.exec("BEGIN");
+  try {
+    upsertQueue(toRow);
+    for (const i of items) {
+      // Delete-then-insert rather than an in-place re-key: an in-flight item would
+      // otherwise have to pass through a moment where both keys hold it, which is
+      // exactly what the single-flight partial index forbids.
+      deleteQueueItem(i.id);
+      upsertQueueItem(i);
+    }
+    deleteQueue(fromKey);
+    d.exec("COMMIT");
+  } catch (err) {
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
 }
 
 /** The next authored position for a queue (max(seq) + 1, or 0 when empty). */

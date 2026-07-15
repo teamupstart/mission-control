@@ -36,6 +36,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
+    hooksSeen: true,
     activity: "idle",
     startedAt: 0,
     firstSeen: 0,

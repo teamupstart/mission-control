@@ -183,6 +183,19 @@ async function main(): Promise<void> {
       continue;
     }
 
+    // Whether this pass actually moved anything. A non-empty `targets` is NOT the
+    // same question, and conflating them spins the loop at BETWEEN_MS forever:
+    // `queueWantsATick` selects on `openCount > 0`, which is "this queue has
+    // unfinished items", not "the machine can advance it" - and the summary it reads
+    // can't tell those apart (a drafted item's `approvedAt` isn't in it). Every
+    // NORMAL steady state of the feature is a target that decides `none` every tick:
+    // a draft waiting on an Approve, an agent working, a delivered prompt inside its
+    // pickup window. The needs-you half has the same shape once a prompt's marker is
+    // handled. So the honest place to notice "nothing here right now" is the outcome,
+    // not the selector - a pass that changed nothing has, by definition, nothing to
+    // hurry back for, and IDLE_MS is the same latency an idle fleet already accepts.
+    let advanced = false;
+
     for (const session of targets) {
       // Honour a mid-drain disable/mode change without finishing the whole list.
       try {
@@ -193,12 +206,14 @@ async function main(): Promise<void> {
       if (!cfg.enabled || !isLeader) break;
 
       try {
-        await processTarget(client, cfg, session, reviews);
+        if (await processTarget(client, cfg, session, reviews)) advanced = true;
       } catch (err) {
         log(`error processing ${session.name} (${session.id}): ${String(err)}`);
       }
       await sleep(BETWEEN_MS);
     }
+
+    if (!advanced) await sleep(IDLE_MS);
   }
 }
 
@@ -237,13 +252,16 @@ async function sweepOrphanedQueues(client: ForemanClient): Promise<void> {
  * One session's tick: ask the pure machine what to do, then do it. All the policy
  * lives in `decideQueueTick` - this only performs I/O, so the precedence can never
  * drift into the loop.
+ *
+ * Returns whether it ACTUALLY advanced anything, which is what lets the loop tell
+ * "there is work here" from "there are items here". See the `advanced` flag.
  */
 async function processTarget(
   client: ForemanClient,
   cfg: ForemanConfig,
   session: Session,
   reviews: ReviewItem[],
-): Promise<void> {
+): Promise<boolean> {
   // The FULL queue: Session.queue is only the compact card summary, while the
   // machine needs gaps, baseSha, transcriptAnchor, round, revision and strikes.
   // One extra loopback round-trip per target per tick - noise next to a claude -p.
@@ -252,9 +270,9 @@ async function processTarget(
   if (!queue || queue.items.length === 0) {
     // No queue: this session is here because it needs you.
     if (reportBucket(session, [session]) === "needs-you" || session.state === "awaiting_input") {
-      await processSession(client, cfg, session, reviews);
+      return await processSession(client, cfg, session, reviews);
     }
-    return;
+    return false;
   }
 
   const qcfg = queueConfig(cfg);
@@ -274,13 +292,12 @@ async function processTarget(
     // "no, don't do that" to a question about the very item Foreman commissioned,
     // or escalate something it could have answered trivially had it known.
     const flight = inFlightItem(queue.items);
-    await processSession(client, cfg, session, reviews, queueItemContext(flight));
-    return;
+    return await processSession(client, cfg, session, reviews, queueItemContext(flight));
   }
 
   if (action.kind === "verify") {
     await runVerify(client, cfg, session, action.item, queue, qcfg);
-    return;
+    return true;
   }
 
   const outcome = await applyQueueAction(
@@ -295,6 +312,7 @@ async function processTarget(
     log(`${session.name}: drafted item "${oneLine(outcome.item.intent)}" (awaiting Approve)`);
   else if (outcome.kind === "aborted") log(`${session.name}: held off - ${outcome.why}`);
   else if (outcome.kind === "done") log(`${session.name}: ${outcome.what}`);
+  return outcome.kind !== "noop";
 }
 
 /** Policy knobs from config; timings from the module constants. */
@@ -516,26 +534,32 @@ function oneLine(s: string, max = 60): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
-/** Review + act on one session, unless we've already handled its current prompt. */
+/**
+ * Review + act on one session, unless we've already handled its current prompt.
+ *
+ * Returns whether it did any work. A session that stays `needs-you` after Foreman
+ * has escalated it to the human remains a target forever, so "already handled" and
+ * "debounced" are exactly the states the loop must not hurry back for.
+ */
 async function processSession(
   client: ForemanClient,
   cfg: ForemanConfig,
   session: Session,
   reviews: ReviewItem[],
   queueItem?: ReviewInput["queueItem"],
-): Promise<void> {
+): Promise<boolean> {
   const pending = classifyPending(session, reviews);
 
   // Idempotency: don't re-handle a prompt whose marker we've already stamped.
   const existing = await client.note(session.id).catch(() => null);
-  if (existing?.handledMarker === pending.marker) return;
+  if (existing?.handledMarker === pending.marker) return false;
 
   // Debounce: the check above skips an UNCHANGED episode for free, but a *changed*
   // marker (a new review, or a terminal whose `lastActivity` moved) would otherwise
   // spawn a full review immediately. Hold each session to at most one evaluation per
   // window so a flapping marker can't burn a `claude -p` on every loop; a session seen
   // for the first time is due at once, so genuinely new work is never delayed.
-  if (!evaluations.claim(session.id)) return;
+  if (!evaluations.claim(session.id)) return false;
 
   const ctx: ReviewContext = {
     sessionId: session.id,
@@ -547,9 +571,10 @@ async function processSession(
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means
   // the outcome was already handled - a transient review failure that will retry, or a
-  // give-up note that was already written - so there's nothing left to apply.
+  // give-up note that was already written - so there's nothing left to apply. That still
+  // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
   const decision = await decide(client, cfg, session, pending, ctx, queueItem);
-  if (!decision) return;
+  if (!decision) return true;
   const { verdict, tier } = decision;
 
   let plan = planFromVerdict(
@@ -576,7 +601,7 @@ async function processSession(
         .putNote(session.id, { purpose: verdict.purpose, disposition: "skipped" })
         .catch(() => {});
       log(`${session.name}: skipped stale send (session changed during review)`);
-      return;
+      return true;
     }
     const freshCfg = await client.getConfig().catch(() => null);
     plan = planFromVerdict(
@@ -595,6 +620,7 @@ async function processSession(
     `${session.name}: [tier ${tier}] ${verdict.action}/${verdict.classification} -> ${plan.note.disposition}` +
       (plan.send ? " (sent)" : ""),
   );
+  return true;
 }
 
 /**

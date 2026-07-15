@@ -23,6 +23,7 @@ const {
   listQueueItems,
   deleteQueueItem,
   nextQueueSeq,
+  rekeyQueue,
   reorderQueueItems,
 } = await import("../src/server/db.ts");
 
@@ -403,4 +404,63 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
   );
 
   rmSync(stuck, { recursive: true, force: true });
+});
+
+test("rekeyQueue moves a whole queue onto a new key", () => {
+  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, updatedAt: 1 });
+  const a = mkItem({ noteKey: "rk-from", seq: 0, intent: "first" });
+  const b = mkItem({ noteKey: "rk-from", seq: 1, intent: "second" });
+  upsertQueueItem(a);
+  upsertQueueItem(b);
+
+  rekeyQueue(
+    "rk-from",
+    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, updatedAt: 2 },
+    [
+      { ...a, noteKey: "rk-to", seq: 0 },
+      { ...b, noteKey: "rk-to", seq: 1 },
+    ],
+  );
+
+  assert.equal(getQueueRow("rk-from"), undefined, "the source row is gone");
+  assert.deepEqual(listQueueItems("rk-from"), []);
+  assert.deepEqual(
+    listQueueItems("rk-to").map((i) => i.intent),
+    ["first", "second"],
+    "in authored order, on the new key",
+  );
+});
+
+test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () => {
+  // The whole reason this is one transaction. Statement-by-statement, a throw partway
+  // leaves some items re-keyed under a queue row that may already be deleted and the
+  // rest on the old key: a split no reader models, and one the re-attach button can't
+  // repair, since the hint it keys off is computed from the very rows that got moved.
+  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 1 });
+  const good = mkItem({ noteKey: "rb-from", seq: 0, intent: "keep me" });
+  const also = mkItem({ noteKey: "rb-from", seq: 1, intent: "and me" });
+  upsertQueueItem(good);
+  upsertQueueItem(also);
+
+  // The second write is rejected by SQLite (intent is NOT NULL) AFTER the first has
+  // already been re-keyed - the exact "died partway" shape.
+  assert.throws(() =>
+    rekeyQueue(
+      "rb-from",
+      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 2 },
+      [
+        { ...good, noteKey: "rb-to", seq: 0 },
+        { ...also, noteKey: "rb-to", seq: 1, intent: null as unknown as string },
+      ],
+    ),
+  );
+
+  assert.ok(getQueueRow("rb-from"), "the source queue row survives");
+  assert.equal(getQueueRow("rb-to"), undefined, "and no half-built target row is left behind");
+  assert.deepEqual(
+    listQueueItems("rb-from").map((i) => i.intent),
+    ["keep me", "and me"],
+    "every item is still on the source key - all of it, or none of it",
+  );
+  assert.deepEqual(listQueueItems("rb-to"), [], "nothing leaked onto the target");
 });

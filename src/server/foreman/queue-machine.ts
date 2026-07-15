@@ -75,8 +75,17 @@ export interface QueueTickInput {
  *
  * `instrumented` is load-bearing, not decoration: `bucket === 'idle'` ALSO means
  * "uninstrumented" (it's the catch-all return in reportBucket), so gating on the
- * bucket alone would fire an entire queue into a hookless session in three ticks.
- * A session without hooks has no pickup or completion signal at all.
+ * bucket alone would fire an entire queue into a session whose idleness is a
+ * default rather than a report.
+ *
+ * And `instrumented` is the RIGHT flag here, where step 3 wants `hooksSeen` - the
+ * two are not interchangeable and this is the case that shows why. The question
+ * here is "is this session's `state` hook-sourced and CURRENT?", which is exactly
+ * the overlay's freshness window: a stale session rebuilds with the base default
+ * (`working`), so its `idle` is not a claim anyone made. Step 3 asks a different
+ * question - "do hooks exist at all?" - and a freshness window is a terrible answer
+ * to that one. The failure modes are opposite, too: being conservative here merely
+ * makes a quiet queue WAIT, which is why this one is safe to leave strict.
  *
  * The `settleMs` age absorbs hook reordering (hooks are independent HTTP posts, so
  * a PostToolUse can land after a Stop and briefly un-idle the session) and covers
@@ -87,6 +96,17 @@ export function settledIdle(s: Session, now: number, settleMs: number): boolean 
   if (s.state !== "idle") return false;
   const since = s.lastActivity ?? s.firstSeen;
   return now - since >= settleMs;
+}
+
+/**
+ * True when an item is parked on a human's decision rather than on Foreman.
+ *
+ * A drafted item with no `approvedAt` is the dry-run workflow working: it will sit
+ * there for as long as the human takes, and nothing about that is a fault to
+ * escalate. Anything that punishes a stalled queue has to exclude it first.
+ */
+export function waitingOnHuman(item: WorkItem): boolean {
+  return item.state === "proposed" && item.approvedAt === null;
 }
 
 /** True when the session has a pane we can actually type into. */
@@ -170,20 +190,29 @@ export function waitedSince(s: Session): number {
  * work to advance, OR a drained queue whose wrap-up ask hasn't fired yet. The
  * second half is not optional - it's the only way `ask-wrapup` is ever reached.
  *
- * The drained half is gated on `instrumented` to match step 5, which never fires
- * the ask for a session Foreman could never drive (step 3 stops those first). Both
- * halves must agree or a selector without work becomes a selector without END: an
- * uninstrumented queue drains to all-terminal by escalation, and if it still wanted
- * a tick after that, nothing could ever satisfy it. `targets` would never be empty,
- * so the loop would never reach its idle sleep and would instead spin at the
- * between-sessions delay, several localhost round-trips per turn, until the session
- * exited. A selector is policy: it must be able to say "nothing here".
+ * The drained half is gated on `hooksSeen` to match step 5, which never fires the
+ * ask for a session Foreman could never drive (step 3 stops those first). Both
+ * halves must agree or a selector without work becomes a selector without END: a
+ * hookless queue drains to all-terminal by escalation, and if it still wanted a
+ * tick after that, nothing could ever satisfy it. A selector is policy: it must be
+ * able to say "nothing here".
+ *
+ * What this CANNOT do is promise the machine will find something to do. It reads
+ * `SessionQueueSummary`, a compact projection with no `approvedAt` and no
+ * `proposedPayload` in it, so "a draft waiting on an Approve" and "a draft the
+ * human just approved" are the same row to it - and it must wake for the second.
+ * `openCount > 0` is therefore the honest upper bound, and every steady state of
+ * the feature (drafted-and-waiting, working, inside the pickup window) sits inside
+ * it deciding `none`. The loop closes that gap from the other end: a pass in which
+ * nothing advanced sleeps IDLE_MS. Don't try to make this precise instead - the
+ * data isn't here, and a selector that guesses wrong stalls a queue rather than
+ * merely costing a poll.
  */
 function queueWantsATick(s: Session): boolean {
   const q = s.queue;
   if (!q) return false;
   if (q.openCount > 0) return true;
-  return s.instrumented && q.drained && q.wrapupAskedAt === null;
+  return s.hooksSeen && q.drained && q.wrapupAskedAt === null;
 }
 
 /**
@@ -218,9 +247,28 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.
-  if (!session.instrumented) {
+  //
+  //    `hooksSeen`, NOT `instrumented`. The two look interchangeable and are not:
+  //    `instrumented` is a 30-minute freshness window on the hook overlay, so a
+  //    healthy instrumented session that simply goes quiet - which is EXACTLY what
+  //    an item parked on an Approve looks like - flips it back to false and used to
+  //    land here, escalating a whole batch and blaming an integration that was
+  //    installed and working the entire time. Only "a hook has never once arrived"
+  //    is evidence of a hookless session.
+  //
+  //    Accepted tradeoff: hooks uninstalled MID-FLIGHT no longer escalate here.
+  //    They now degrade to the pickup-timeout path, which escalates on positive
+  //    evidence of non-delivery rather than on silence - the same rule the crash
+  //    path already follows ("absence of evidence is not evidence").
+  if (!session.hooksSeen) {
+    // A head waiting on a human is not a queue that cannot advance - it is one
+    // advancing exactly as designed, one Approve away. Escalating it would destroy
+    // a batch over the pause the dry-run workflow is built around, so this stays
+    // out of step 3's reach regardless of what the hook signal says.
     const head = nextSendable(items);
-    if (head) return { kind: "escalate", item: head, reason: "the session is not hook-instrumented" };
+    if (head && !waitingOnHuman(head)) {
+      return { kind: "escalate", item: head, reason: "the session is not hook-instrumented" };
+    }
     return { kind: "none" };
   }
 

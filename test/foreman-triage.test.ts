@@ -371,7 +371,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s1", agent: "claude", name: "sess", nameSource: "process", state: "awaiting_input" as SessionState,
     cwd: "/repo", gitBranch: null, gitRoot: null, nomistakesGated: false, pid: 1, tty: null, permissionMode: null,
     wezterm: null, tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" }, agentSessionId: null,
-    transcriptPath: null, instrumented: true, activity: "Approve?",
+    transcriptPath: null, instrumented: true, hooksSeen: true, activity: "Approve?",
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, meta: null, note: null,
     queue: null, orphanedQueue: null,

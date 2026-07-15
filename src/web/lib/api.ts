@@ -98,9 +98,25 @@ const put = (path: string, body?: unknown) => request("PUT", path, body);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
 
-/** Fetch a session's work queue. Null when it has none (or on any failure). */
-export const fetchQueue = (id: string) =>
-  fetchJson<SessionQueue | null>(`/api/sessions/${encodeURIComponent(id)}/queue`);
+/**
+ * Fetch a session's work queue, saying WHICH kind of nothing it got.
+ *
+ * `fetchJson` collapses "this session has no queue" (a 200 with a null body) and
+ * "the request failed" into the same null, and those two must never render the
+ * same: a populated queue whose GET fails would otherwise draw as an empty one,
+ * under an add box, inviting the human to re-queue work that already exists.
+ */
+export async function fetchQueue(
+  id: string,
+): Promise<{ ok: true; queue: SessionQueue | null } | { ok: false }> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/queue`);
+    if (!res.ok) return { ok: false };
+    return { ok: true, queue: (await res.json()) as SessionQueue | null };
+  } catch {
+    return { ok: false };
+  }
+}
 
 export interface DispatchInput {
   repoRoot: string;

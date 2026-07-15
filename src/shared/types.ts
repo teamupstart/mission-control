@@ -130,8 +130,25 @@ export interface Session {
    * from the cwd. Null until a hook reports it (or for agents without hooks).
    */
   transcriptPath: string | null;
-  /** True once we've received at least one hook event from this session. */
+  /**
+   * True while this session's hook overlay is FRESH - i.e. a hook has reported
+   * within the overlay TTL (30 min). This is a liveness window, NOT a fact about
+   * whether the integrations are installed: a healthy instrumented session that
+   * simply goes quiet flips this back to false, because nothing but a hook event
+   * refreshes the overlay. Read it as "we have current hook-sourced state for this
+   * session"; for "does this session have hooks at all", read `hooksSeen`.
+   */
   instrumented: boolean;
+  /**
+   * True once a hook has EVER been seen from this session - the installation fact,
+   * with no freshness window on it.
+   *
+   * The distinction is load-bearing. Conflating the two reads a 30-minute silence
+   * as "the integrations aren't installed", which is precisely what an agent parked
+   * waiting on a human looks like - so anything that punishes a hookless session
+   * (see the work queue's step 3) must gate on THIS, not on `instrumented`.
+   */
+  hooksSeen: boolean;
   /** Free-form one-liner from the last hook/report (e.g. current tool, last prompt). */
   activity: string | null;
   /** When the agent process actually started (epoch ms), for a real uptime. */

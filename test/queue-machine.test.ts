@@ -62,6 +62,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
+    hooksSeen: true,
     activity: "idle",
     startedAt: 0,
     firstSeen: 0,
@@ -291,6 +292,7 @@ test("tickTargets drops an UNINSTRUMENTED drained queue - the selector must be a
   const s = mkSession({
     id: "hookless",
     instrumented: false,
+    hooksSeen: false,
     queue: mkSummary({ drained: true, wrapupAskedAt: null }),
   });
   assert.deepEqual(tickTargets([s]), [], "nothing can advance it, so stop waking for it");
@@ -303,10 +305,32 @@ test("tickTargets drops an UNINSTRUMENTED drained queue - the selector must be a
   );
 });
 
-test("tickTargets still selects an uninstrumented queue with OPEN work - it needs escalating", () => {
+test("tickTargets keeps a merely QUIET session's drained queue - it can still be asked", () => {
+  // The selector gates the drained half on `hooksSeen`, not `instrumented`, for the
+  // same reason step 3 does. Gating on freshness would drop the wrap-up ask for any
+  // session that finished its batch and then sat idle past the overlay TTL - i.e.
+  // exactly the session that just drained a queue and is waiting to be told to ship.
+  const s = mkSession({
+    id: "quiet",
+    instrumented: false,
+    hooksSeen: true,
+    queue: mkSummary({ drained: true, wrapupAskedAt: null }),
+  });
+  assert.deepEqual(
+    tickTargets([s]).map((t) => t.id),
+    ["quiet"],
+  );
+});
+
+test("tickTargets still selects a hookless queue with OPEN work - it needs escalating", () => {
   // The gate above is only on the drained half: open items on a hookless session
   // must still be picked up so step 3 can escalate them rather than stall silently.
-  const s = mkSession({ id: "hookless", instrumented: false, queue: mkSummary({ openCount: 1 }) });
+  const s = mkSession({
+    id: "hookless",
+    instrumented: false,
+    hooksSeen: false,
+    queue: mkSummary({ openCount: 1 }),
+  });
   assert.deepEqual(
     tickTargets([s]).map((t) => t.id),
     ["hookless"],
@@ -385,14 +409,68 @@ test("2. needs-you hands the tick to triage, even with an item in progress", () 
   assert.equal(tick({ bucket: "needs-you", items: [mkItem()] }).kind, "triage");
 });
 
-test("3. an uninstrumented session escalates rather than silently stalling", () => {
-  const a = tick({ session: { instrumented: false }, items: [mkItem()] });
+test("3. a NEVER-instrumented session escalates rather than silently stalling", () => {
+  // Both flags false: no hook has ever arrived, so the integrations really are
+  // absent and nothing will ever report a pickup.
+  const a = tick({
+    session: { instrumented: false, hooksSeen: false },
+    items: [mkItem()],
+  });
   assert.equal(a.kind, "escalate");
   assert.match(a.kind === "escalate" ? a.reason : "", /not hook-instrumented/);
 });
 
-test("3. an uninstrumented session with no items does nothing", () => {
-  assert.equal(tick({ session: { instrumented: false }, items: [] }).kind, "none");
+test("3. a never-instrumented session with no items does nothing", () => {
+  assert.equal(
+    tick({ session: { instrumented: false, hooksSeen: false }, items: [] }).kind,
+    "none",
+  );
+});
+
+test("3. a STALE overlay is not a hookless session - it must not escalate the queue", () => {
+  // The bug this exists to prevent, in the shipped default config and the exact use
+  // case the feature is for. `instrumented` is a 30-minute freshness window on the
+  // hook overlay, NOT a fact about installation: only a hook refreshes it, so an
+  // agent parked doing nothing - which is what waiting on a human IS - ages out and
+  // rebuilds as `instrumented: false`. Reading that as "no integrations" escalated
+  // the head, and since `escalated` is terminal, `nextSendable` handed up the next
+  // item to escalate on the following tick, wiping a whole batch and blaming an
+  // integration that was installed and working the entire time.
+  const quiet = { instrumented: false, hooksSeen: true } as const;
+  const a = tick({ session: quiet, items: [mkItem()] });
+  assert.notEqual(a.kind, "escalate", "hooks are installed - they've just been quiet");
+
+  // It WAITS instead, and that's the whole intent: `settledIdle` still refuses a
+  // session whose `state` isn't currently hook-sourced, so the item sits untouched
+  // until a hook arrives and proves the agent is parked. Nothing is destroyed, and
+  // the queue resumes by itself the moment the session says anything at all.
+  assert.equal(a.kind, "none");
+  assert.equal(
+    tick({ session: { ...quiet, instrumented: true }, items: [mkItem()] }).kind,
+    "send",
+    "one hook later, the same queue sends",
+  );
+});
+
+test("3. a head waiting on an Approve is never escalated, even with no hooks at all", () => {
+  // Belt and braces behind the fix above. A queue paused on an unapproved draft is
+  // not a queue that cannot advance - it is one advancing exactly as designed, one
+  // click away - so no "this session is stuck" rule may reach it.
+  const a = tick({
+    session: { instrumented: false, hooksSeen: false },
+    items: [mkProposed()],
+    mayActLive: false,
+  });
+  assert.equal(a.kind, "none");
+
+  // An APPROVED draft is not waiting on a human any more, so the hookless rule
+  // applies again: there'd be no way to observe the pickup.
+  const approved = tick({
+    session: { instrumented: false, hooksSeen: false },
+    items: [mkProposed({ approvedAt: NOW - 1_000 })],
+    mayActLive: false,
+  });
+  assert.equal(approved.kind, "escalate");
 });
 
 test("4. an in-flight item owns the tick - a later queued item never jumps it", () => {

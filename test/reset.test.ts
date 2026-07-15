@@ -15,7 +15,7 @@ function sess(cwd: string | null, branch: string | null = "main"): Session {
     id: "s1", agent: "claude", name: "work", nameSource: "process", state: "idle",
     cwd, gitBranch: branch, gitRoot: null, nomistakesGated: false, pid: 1, tty: null,
     permissionMode: null, wezterm: null, tmux: null, agentSessionId: null, transcriptPath: null,
-    instrumented: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
+    instrumented: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, nomistakes: null, task: null,
     nomistakesNarration: null, prUrl: null, prNumber: null, prState: null, prChecks: null,
     meta: null, note: null, queue: null, orphanedQueue: null,

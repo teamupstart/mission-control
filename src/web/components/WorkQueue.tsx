@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem, WorkItemState } from "@shared/types.ts";
 import { api, fetchQueue } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
@@ -54,12 +54,31 @@ export function WorkQueue({
   const [error, setError] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Set when the GET itself failed, so an unreadable queue never reads as an empty one. */
+  const [loadFailed, setLoadFailed] = useState(false);
 
   const sessionId = session.id;
   const summary = session.queue;
 
+  /**
+   * Re-fetch the full queue, discarding a response that has been superseded.
+   *
+   * The sequence token is what makes that last part true: every action awaits its
+   * own refresh while the SSE effect independently fires one, and nothing else
+   * orders them - so a slow earlier response landing last reverts the panel to a
+   * state the server left minutes ago, offering an Approve on an item already
+   * delivered. Only the newest request in flight may write.
+   *
+   * A FAILED fetch leaves the last-known queue on screen and raises the banner
+   * instead of blanking it, because "we couldn't read it" is not "it's empty".
+   */
+  const seqRef = useRef(0);
   const refresh = useCallback(async () => {
-    setQueue(await fetchQueue(sessionId));
+    const mine = ++seqRef.current;
+    const res = await fetchQueue(sessionId);
+    if (mine !== seqRef.current) return;
+    setLoadFailed(!res.ok);
+    if (res.ok) setQueue(res.queue);
   }, [sessionId]);
 
   // The card's compact summary rides the existing session_upsert, so re-fetching
@@ -74,6 +93,28 @@ export function WorkQueue({
    * just rack up escalations on arrival. Say why instead.
    */
   const blocked = queueBlockedReason(session);
+
+  // The card's summary says there IS a queue but we couldn't read it. Say so, and
+  // show nothing else - an add box under a wrong "0 to do" is the one response that
+  // makes this worse. The Retry is not a nicety: the effect above only re-fires when
+  // the summary MOVES, so on an idle session (Foreman off is the shipped default)
+  // nothing would ever heal this on its own.
+  if (loadFailed && (summary?.totalCount ?? 0) > 0) {
+    return (
+      <section className="work-queue" onClick={(e) => e.stopPropagation()}>
+        <Header count={summary?.openCount ?? 0} />
+        <p className="wq-error">
+          Couldn&apos;t load this queue. Its {summary?.totalCount}{" "}
+          {summary?.totalCount === 1 ? "item is" : "items are"} still there - don&apos;t re-add them.
+        </p>
+        <div className="wq-actions">
+          <button className="btn" disabled={busy} onClick={() => void refresh()}>
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   if (!queue && !blocked && (summary?.totalCount ?? 0) === 0) {
     // Nothing queued and nothing to explain: the add box, and the re-attach hint if
@@ -153,13 +194,25 @@ export function WorkQueue({
     setBusy(true);
     const r = await api.approveWorkItem(sessionId, item.id);
     setBusy(false);
-    if (!r.ok) setError(r.error ?? "could not approve it");
+    // Clear on success as well as set on failure. A stale error pinned under a
+    // successful Approve reads as "the send failed" about a send that is underway.
+    setError(r.ok ? null : r.error ?? "could not approve it");
     await refresh();
   }
 
-  /** Optimistic reorder, then persist. Hand-rolled HTML5 DnD - no library. */
+  /**
+   * Optimistic reorder, then persist. Hand-rolled HTML5 DnD - no library.
+   *
+   * Only WAITING items may be dragged or dropped onto. The server accepts any known
+   * id, so nothing stops a waiting item being renumbered above the completed work
+   * and rendering there - which doesn't change delivery order (`nextSendable` skips
+   * terminal items) but does break the "in the order you authored it" contract this
+   * panel is built on, and makes the done/waiting split unreadable.
+   */
   async function drop(targetId: string): Promise<void> {
     if (!queue || !dragId || dragId === targetId) return setDragId(null);
+    const target = queue.items.find((i) => i.id === targetId);
+    if (!target || !isWaiting(target.state)) return setDragId(null);
     const ids = queue.items.map((i) => i.id);
     const from = ids.indexOf(dragId);
     const to = ids.indexOf(targetId);
@@ -168,100 +221,45 @@ export function WorkQueue({
     setQueue({ ...queue, items: ids.map((id) => queue.items.find((i) => i.id === id)!) });
     setDragId(null);
     const r = await api.reorderQueue(sessionId, ids);
-    if (!r.ok) setError(r.error ?? "could not reorder");
+    setError(r.ok ? null : r.error ?? "could not reorder");
     await refresh();
   }
 
   const items = queue?.items ?? [];
   const open = items.filter((i) => !isTerminal(i.state));
 
-  return (
-    <section className="work-queue" onClick={(e) => e.stopPropagation()}>
-      <Header count={open.length} />
-
-      {session.orphanedQueue && (
-        <ReattachHint session={session} onDone={() => void refresh()} />
-      )}
-
-      {blocked ? (
+  /*
+    A blocked panel makes exactly ONE claim about why this queue is or isn't
+    running, and it is `blocked`. Everything else here is computed from the fetched
+    queue, which being blocked does not empty - so rendering the count, the hint,
+    the re-attach offer and the wrap-up ask outside this branch had the panel assert
+    four contradictory things at once ("5 to do", "re-attach?", "no hooks - install
+    the integrations", "dry-run will draft each item") while hiding the items those
+    sentences were about. The list itself stays, read-only: they are the human's
+    items, they aren't going to run, and the only thing worse than showing them is
+    stranding them somewhere with no way to clear them out by hand.
+  */
+  if (blocked) {
+    return (
+      <section className="work-queue" onClick={(e) => e.stopPropagation()}>
+        <Header count={0} />
         <p className="wq-blocked">{blocked}</p>
-      ) : (
-        <>
-          <ol className="wq-items">
-            {items.map((item) => (
-              <li
-                key={item.id}
-                className={`wq-item wq-${item.state}${dragId === item.id ? " dragging" : ""}`}
-                draggable={isWaiting(item.state)}
-                onDragStart={() => setDragId(item.id)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => void drop(item.id)}
-                onDragEnd={() => setDragId(null)}
-              >
-                {isWaiting(item.state) && (
-                  <span className="wq-grip" aria-hidden title="Drag to reorder">
-                    ⠿
-                  </span>
-                )}
-
-                {editing === item.id ? (
-                  <div className="wq-edit">
-                    <textarea
-                      className="field-input"
-                      rows={3}
-                      autoFocus
-                      value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape") setEditing(null);
-                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void saveEdit(item);
-                      }}
-                    />
-                    <div className="wq-actions">
-                      <button className="btn btn-send" disabled={busy} onClick={() => void saveEdit(item)}>
-                        Save
-                      </button>
-                      <button className="btn btn-ghost" onClick={() => setEditing(null)}>
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
+        {items.length > 0 && (
+          <>
+            <p className="wq-hint dim">
+              {items.length} {items.length === 1 ? "item is" : "items are"} queued here and won&apos;t
+              run. You can remove them.
+            </p>
+            <ol className="wq-items">
+              {items.map((item) => (
+                <li key={item.id} className={`wq-item wq-${item.state}`}>
                   <div className="wq-body">
                     <p className="wq-intent">{item.intent}</p>
                     <ItemStatus item={item} />
-                    <ProposedPayload item={item} />
                   </div>
-                )}
-
-                {editing !== item.id && (
-                  <div className="wq-controls">
-                    {/*
-                      No draft, no Approve. The button is consent to a SPECIFIC
-                      prompt, so offering it before `proposedPayload` exists would ask
-                      for consent to text that isn't on screen - and from round 1 on
-                      that text is the fix prompt, not the intent shown above. The
-                      server refuses this too; the button just shouldn't be there.
-                    */}
-                    {item.state === "proposed" && item.proposedPayload && !item.approvedAt && (
-                      <button className="btn btn-primary" disabled={busy} onClick={() => void approve(item)}>
-                        Approve
-                      </button>
-                    )}
-                    {isWaiting(item.state) && (
-                      <button
-                        className="icon-btn"
-                        aria-label="Edit this item"
-                        title="Edit"
-                        onClick={() => {
-                          setEditing(item.id);
-                          setEditText(item.intent);
-                        }}
-                      >
-                        ✎
-                      </button>
-                    )}
-                    {(isWaiting(item.state) || isTerminal(item.state)) && (
+                  {/* Same gate as the live list: never offer a Remove that can only 409. */}
+                  {(isWaiting(item.state) || isTerminal(item.state)) && (
+                    <div className="wq-controls">
                       <button
                         className="icon-btn"
                         aria-label="Remove this item"
@@ -271,22 +269,137 @@ export function WorkQueue({
                       >
                         ✕
                       </button>
-                    )}
-                  </div>
-                )}
-              </li>
-            ))}
-          </ol>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </>
+        )}
+        {error && <p className="wq-error">{error}</p>}
+      </section>
+    );
+  }
 
-          <AddBox
-            value={adding}
-            onChange={setAdding}
-            disabled={busy}
-            onAdd={() => void add()}
-            placeholder="Queue more work…"
-          />
-        </>
+  return (
+    <section className="work-queue" onClick={(e) => e.stopPropagation()}>
+      <Header count={open.length} />
+
+      {session.orphanedQueue && (
+        <ReattachHint session={session} onDone={() => void refresh()} />
       )}
+
+      <ol className="wq-items">
+        {items.map((item) => (
+          <li
+            key={item.id}
+            className={`wq-item wq-${item.state}${dragId === item.id ? " dragging" : ""}`}
+            draggable={isWaiting(item.state)}
+            onDragStart={() => setDragId(item.id)}
+            /*
+              Drop targets are waiting items only, matching `draggable`. Allowing a
+              drop onto a done or in-flight row let a waiting item be renumbered in
+              among the completed work - harmless to delivery order, wrong on screen.
+            */
+            onDragOver={(e) => {
+              if (isWaiting(item.state)) e.preventDefault();
+            }}
+            onDrop={() => void drop(item.id)}
+            onDragEnd={() => setDragId(null)}
+          >
+            {isWaiting(item.state) && (
+              <span className="wq-grip" aria-hidden title="Drag to reorder">
+                ⠿
+              </span>
+            )}
+
+            {/*
+              The editor closes as soon as the item leaves the states an edit can
+              land in. Keeping it open on an item Foreman has already picked up
+              offers a Save that CAN only 409, and it hides the state the item just
+              moved to behind the textarea that replaced it.
+            */}
+            {editing === item.id && isWaiting(item.state) ? (
+              <div className="wq-edit">
+                <textarea
+                  className="field-input"
+                  rows={3}
+                  autoFocus
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setEditing(null);
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void saveEdit(item);
+                  }}
+                />
+                <div className="wq-actions">
+                  <button className="btn btn-send" disabled={busy} onClick={() => void saveEdit(item)}>
+                    Save
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => setEditing(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="wq-body">
+                <p className="wq-intent">{item.intent}</p>
+                <ItemStatus item={item} />
+                <ProposedPayload item={item} />
+              </div>
+            )}
+
+            {!(editing === item.id && isWaiting(item.state)) && (
+              <div className="wq-controls">
+                {/*
+                  No draft, no Approve. The button is consent to a SPECIFIC
+                  prompt, so offering it before `proposedPayload` exists would ask
+                  for consent to text that isn't on screen - and from round 1 on
+                  that text is the fix prompt, not the intent shown above. The
+                  server refuses this too; the button just shouldn't be there.
+                */}
+                {item.state === "proposed" && item.proposedPayload && !item.approvedAt && (
+                  <button className="btn btn-primary" disabled={busy} onClick={() => void approve(item)}>
+                    Approve
+                  </button>
+                )}
+                {isWaiting(item.state) && (
+                  <button
+                    className="icon-btn"
+                    aria-label="Edit this item"
+                    title="Edit"
+                    onClick={() => {
+                      setEditing(item.id);
+                      setEditText(item.intent);
+                    }}
+                  >
+                    ✎
+                  </button>
+                )}
+                {(isWaiting(item.state) || isTerminal(item.state)) && (
+                  <button
+                    className="icon-btn"
+                    aria-label="Remove this item"
+                    title="Remove"
+                    disabled={busy}
+                    onClick={() => void remove(item)}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
+          </li>
+        ))}
+      </ol>
+
+      <AddBox
+        value={adding}
+        onChange={setAdding}
+        disabled={busy}
+        onAdd={() => void add()}
+        placeholder="Queue more work…"
+      />
 
       {/*
         What will happen to the items that are waiting - or why nothing will. Only
@@ -529,9 +642,21 @@ function Wrapup({
     onDone();
   }
 
+  /**
+   * Retire the ask without sending anything. The write is what actually retires it -
+   * `dismissed` is only local state, so a failure here means the ask returns the
+   * moment the card is collapsed and re-expanded (which remounts this) and the human
+   * is left dismissing the same thing forever. Same reason `send()` checks its write.
+   */
   async function dismiss(): Promise<void> {
+    setBusy(true);
+    const saved = await api.setWrapupAnswer(sessionId, "");
+    setBusy(false);
+    if (!saved.ok) {
+      setErr(saved.error ?? "could not dismiss this - it'll come back");
+      return;
+    }
     setDismissed(true);
-    await api.setWrapupAnswer(sessionId, "");
     onDone();
   }
 
@@ -619,12 +744,20 @@ function ReattachHint({
 /**
  * Why this session can't hold a work queue, or null when it can. Letting someone
  * queue work that escalates on arrival is a worse answer than not offering it.
+ *
+ * Both reasons are PERMANENT incapacities, and that is the bar. `hooksSeen` rather
+ * than `instrumented`: the latter is a 30-minute freshness window on the hook
+ * overlay, so gating on it declared "install the Claude integrations" over a
+ * perfectly instrumented session that had merely been quiet for half an hour - and
+ * then hid its whole queue behind that sentence, leaving the items unreachable. A
+ * session that has ever reported a hook has the integrations; whether it reported
+ * one recently is not this question.
  */
 function queueBlockedReason(s: Session): string | null {
   if (s.agent !== "claude") {
     return "Work queues are Claude-only for now - Foreman reads transcripts to check the work, and there's no transcript for a Codex session.";
   }
-  if (!s.instrumented) {
+  if (!s.hooksSeen) {
     return "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.";
   }
   return null;

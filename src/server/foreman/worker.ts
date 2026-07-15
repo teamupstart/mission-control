@@ -21,7 +21,7 @@ import {
   tickTargets,
 } from "./queue-machine.ts";
 import type { QueueConfig } from "./queue-machine.ts";
-import { applyQueueAction, noteKeyOf } from "./queue-apply.ts";
+import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import { verifyItem } from "./queue-verify.ts";
 import { killLiveReviewers, runClaudeText } from "./structured.ts";
@@ -277,26 +277,31 @@ async function processTarget(
 
   const qcfg = queueConfig(cfg);
 
-  // Re-resolve the target against a FRESH fleet before deciding anything, the same
-  // way `queueSendStillValid` re-resolves before typing and for the same reason: a
-  // pass walks its targets serially and any one of them can block on a `claude -p`
-  // for up to 240s, so the snapshot this target was selected with can be minutes
-  // old. Deciding from it reads a long-dead `state: "idle"` against a fresh `now`,
-  // which makes `settledIdle` trivially true and fires a verify at an agent that
-  // went back to work - and unlike a send, a verify has no guard of its own to
-  // catch it. Resolve by NOTE KEY, never by `session.id`: the id churns with
-  // pid/tty, while the key is the identity the queue is stored under.
+  // Re-resolve the target against a FRESH fleet before deciding anything, through
+  // the same `resolveLiveSession` the send guard uses, for the same reason: a pass
+  // walks its targets serially and any one of them can block on a `claude -p` for up
+  // to 240s, so the snapshot this target was selected with can be minutes old.
+  // Deciding from it reads a long-dead `state: "idle"` against a fresh `now`, which
+  // makes `settledIdle` trivially true and fires a verify at an agent that went back
+  // to work - and unlike a send, a verify has no guard of its own to catch it.
+  //
+  // A FAILED read is not evidence of anything, so it decides nothing: skip the
+  // target and re-decide next tick. Falling back to the stale `session` here would
+  // reintroduce the exact bug this re-resolve exists to close, and a one-element
+  // fallback would also lie to `reportBucket` below, which needs the real fleet to
+  // tell a gate this agent is driving from one that needs you.
   const fleet = await client.sessions().catch(() => null);
-  const sessions = fleet ?? [session];
-  const fresh = sessions.find((s) => noteKeyOf(s) === noteKeyOf(session));
-  // A successful read that no longer lists this session says the fleet moved on
-  // under us. Say nothing about it from a stale snapshot: if it's really gone the
-  // orphan sweep owns its in-flight item, and if it isn't, the next pass sees it.
+  if (!fleet) return false;
+  // A successful read that no longer lists this session (or lists it as exited) says
+  // the fleet moved on under us. Say nothing about it from a stale snapshot: if it's
+  // really gone the orphan sweep owns its in-flight item - and unlike this path, that
+  // sweep waits out the exit linger before calling anything orphaned.
+  const fresh = resolveLiveSession(fleet, noteKeyOf(session));
   if (!fresh) return false;
 
   const action = decideQueueTick({
     session: fresh,
-    bucket: reportBucket(fresh, sessions),
+    bucket: reportBucket(fresh, fleet),
     queue,
     cfg: qcfg,
     mayActLive: foremanMayActLive(cfg, fresh.cwd),
@@ -436,7 +441,14 @@ async function runVerify(
     anchor !== null
       ? await client.transcriptSince(session.id, anchor).catch(() => null)
       : await client.transcript(session.id).catch(() => null);
-  if (!window) {
+  // `unavailable` is a 200, not a throw: the route answers "I couldn't resolve a
+  // transcript path" with an EMPTY window rather than an error. It is the same
+  // verify-infrastructure failure as `!window` and must be treated as one - left to
+  // fall through it renders "(no transcript turns for this item)", the verifier
+  // finds no evidence the work was done, and its invented gaps get typed back into
+  // an agent that may well have finished. Triage already routes up on this flag
+  // (see triage.ts's `no-transcript-file`); this is the same fact, same answer.
+  if (!window || window.unavailable) {
     return void (await failVerify(client, session, item, qcfg, "could not read the transcript"));
   }
 
@@ -477,7 +489,14 @@ async function runVerify(
     return void (await failVerify(client, session, item, qcfg, result.reason));
   }
 
-  const plan = planFromVerify(item, result.verdict, foremanMayActLive(cfg, session.cwd), qcfg);
+  // A verdict the machine can't act on is the same event as a reviewer that never
+  // produced one, so it takes the same retry-then-escalate path rather than a second
+  // one of its own.
+  const outcome = planFromVerify(item, result.verdict, foremanMayActLive(cfg, session.cwd), qcfg);
+  if (outcome.kind === "failed") {
+    return void (await failVerify(client, session, item, qcfg, outcome.reason));
+  }
+  const plan = outcome.plan;
   await client.setItemState(session.id, item.id, {
     state: plan.state,
     round: plan.round,

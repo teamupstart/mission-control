@@ -85,17 +85,32 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   let baseSha: string | null = null;
   if (ref) {
     const mb = await git(cwd, ["merge-base", "HEAD", ref]);
-    if (mb.code === 0 && mb.stdout.trim()) {
-      diffBase = mb.stdout.trim();
+    const merged = mb.code === 0 ? mb.stdout.trim() : "";
+    // An EXPLICIT base must be an ancestor of HEAD, not merely share one with it.
+    //
+    // merge-base exits non-zero only when there is no common ancestor at all - the
+    // garbage-collected case. After a rebase or an amend the old commit is still
+    // alive in the reflog, so merge-base SUCCEEDS and quietly returns an older
+    // ancestor, and the diff then spans from there: item 2's diff picks up item 1's
+    // committed work, which `diffMayIncludeOtherWork` provably cannot catch (it
+    // compares recorded base shas, and these differ). So resolve what was asked for
+    // and require the two to be the same commit.
+    //
+    // Auto-detected refs get no such check, by design: `merge-base(HEAD, origin/main)`
+    // is SUPPOSED to be an ancestor of both and equal to neither. Their fall back to
+    // HEAD (a brand-new branch with no shared history) is deliberate and stays.
+    const wanted = source ? await git(cwd, ["rev-parse", "--verify", "--quiet", `${source}^{commit}`]) : null;
+    const ok = source ? Boolean(merged) && merged === wanted?.stdout.trim() : Boolean(merged);
+    if (ok) {
+      diffBase = merged;
       baseSha = diffBase.slice(0, 12);
     } else if (source) {
-      // Falling back to HEAD is right for an *auto-detected* ref (a brand-new
-      // branch with no shared history) but wrong for one the caller explicitly
-      // asked for: a caller naming a base wants the diff since THAT commit, and
-      // silently answering with a working-tree-vs-HEAD diff instead hides the
-      // committed work it asked about. That reads as "nothing was done" rather
-      // than "the base is gone" - so fail closed and say which sha we couldn't
-      // resolve. Reachability, not `ok`, is the signal callers need here.
+      // Falling back to HEAD is right for an *auto-detected* ref but wrong for one
+      // the caller explicitly asked for: a caller naming a base wants the diff since
+      // THAT commit, and silently answering with a working-tree-vs-HEAD diff instead
+      // hides the committed work it asked about. That reads as "nothing was done"
+      // rather than "the base is gone" - so fail closed and say which sha we
+      // couldn't resolve. Reachability, not `ok`, is the signal callers need here.
       return {
         ...base0,
         branch,
@@ -107,25 +122,69 @@ export async function computeSessionDiff(cwd: string | null, source?: string): P
   }
 
   // Tracked changes: numstat for accurate stats, then the patch itself.
+  //
+  // Both exit codes are checked, unlike the `--no-index` call below (whose exit 1
+  // just means "these files differ"). These two are the calls that PRODUCE the
+  // answer, and `run` reports a timeout or a crash as `code: 1` with whatever stdout
+  // was flushed - so an unchecked failure returns `ok: true` with an empty patch,
+  // which every reader renders as "no changes were made". The verifier then invents
+  // gaps for work that may well be done and they get typed back into a live agent:
+  // fail-open, in the one place the evidence-first design exists to be fail-closed.
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
-  const numstat = await git(cwd, ["diff", "--numstat", diffBase]);
-  for (const line of numstat.stdout.split("\n")) {
-    const m = line.match(/^(\d+|-)\t(\d+|-)\t/);
-    if (!m) continue;
-    filesChanged++;
-    if (m[1] !== "-") insertions += Number(m[1]);
-    if (m[2] !== "-") deletions += Number(m[2]);
+  let patch = "";
+  // An UNBORN HEAD - a brand-new or orphan branch with no commit yet - has nothing
+  // tracked to diff against, and `git diff HEAD` fails saying so. That is an empty
+  // tracked half, not a broken command, so it is skipped rather than failed: the
+  // untracked scan below is the whole answer there.
+  //
+  // Confirmed POSITIVELY rather than inferred from the failed `rev-parse` above,
+  // because `run` reports a timeout as the same plain non-zero exit as any other
+  // failure (see util/exec.ts). "HEAD didn't resolve" alone would therefore let a
+  // timing-out rev-parse skip the tracked diff and answer "no changes were made" -
+  // reintroducing, on a quieter path, the exact fail-open the exit checks below
+  // exist to close. A branch that exists while HEAD resolves to nothing IS what
+  // unborn means, and a timeout fails `symbolic-ref` too, so it falls through to the
+  // diff and fails closed there.
+  const unborn =
+    headSha === null && (await git(cwd, ["symbolic-ref", "-q", "HEAD"])).code === 0;
+  if (!unborn) {
+    const numstat = await git(cwd, ["diff", "--numstat", diffBase]);
+    if (numstat.code !== 0) {
+      return { ...base0, branch, headSha, repoRoot, base: base ?? null, baseSha, error: "could not read the diff stats" };
+    }
+    for (const line of numstat.stdout.split("\n")) {
+      const m = line.match(/^(\d+|-)\t(\d+|-)\t/);
+      if (!m) continue;
+      filesChanged++;
+      if (m[1] !== "-") insertions += Number(m[1]);
+      if (m[2] !== "-") deletions += Number(m[2]);
+    }
+    const patchRes = await git(cwd, ["diff", diffBase]);
+    if (patchRes.code !== 0) {
+      return { ...base0, branch, headSha, repoRoot, base: base ?? null, baseSha, error: "could not read the diff" };
+    }
+    patch = patchRes.stdout;
   }
-  let patch = (await git(cwd, ["diff", diffBase])).stdout;
 
   // Untracked files are worktree changes too - render them as new files. `--no-index`
   // is read-only (exit 1 just signals "differs"), so it never touches the index.
-  const untrackedRes = await git(cwd, ["ls-files", "--others", "--exclude-standard"]);
+  //
+  // Run from the TOPLEVEL, not from `cwd`. `ls-files --others` emits paths relative
+  // to where it runs and lists only what sits beneath it, while `git diff` above
+  // ignores cwd entirely and reports the whole repo against the toplevel - so
+  // running these here mixed two path bases into one patch and scoped the untracked
+  // half to a subtree. Both halves toplevel-relative is what `repoRoot` promises
+  // callers (see SessionDiff), and it's what lets the standards reader resolve these
+  // paths at all: for a session cwd'd in a monorepo package, `src/x.ts` resolved
+  // against the toplevel is a directory that doesn't exist, so that package's own
+  // CLAUDE.md never loaded.
+  const untrackedCwd = repoRoot ?? cwd;
+  const untrackedRes = await git(untrackedCwd, ["ls-files", "--others", "--exclude-standard"]);
   const untracked = untrackedRes.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
   for (const path of untracked.slice(0, MAX_UNTRACKED)) {
-    const d = await git(cwd, ["diff", "--no-index", "--", "/dev/null", path]);
+    const d = await git(untrackedCwd, ["diff", "--no-index", "--", "/dev/null", path]);
     if (!d.stdout) continue;
     patch += d.stdout;
     filesChanged++;

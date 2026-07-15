@@ -48,6 +48,9 @@ import {
   logEvent,
   recordAgentBinding,
   rekeyQueue,
+  listQueueRowsForCwd,
+  countOpenQueueItems,
+  pruneDeadQueues,
   reorderQueueItems,
   upsertQueue,
   upsertQueueItem,
@@ -70,6 +73,18 @@ const RECENT_TERMINAL_TASKS = 50;
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
+/**
+ * How long a FINISHED, session-less queue is kept before it's pruned.
+ *
+ * Generous on purpose. Nothing can act on such a queue any more - the only thing
+ * that reads it is the re-attach hint, which skips it because it has no open items -
+ * so this is a floor on how long its record stays legible to a human going back
+ * through what a batch did, not a bound on anything the system needs. A queue with
+ * open work is never pruned at any age; see `pruneDeadQueues`.
+ */
+const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
+const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
 /**
@@ -152,6 +167,7 @@ export class Registry extends EventEmitter {
   private nmDismissed = new Map<string, Set<string>>();
   /** Whether a discovery sweep has ever completed - see `fleetObserved`. */
   private sweptFleet = false;
+  private lastQueuePrune = 0;
 
   constructor() {
     super();
@@ -213,13 +229,57 @@ export class Registry extends EventEmitter {
     }
     this.pruneNmBindings(now);
 
+    // Anything a COMPLETED sweep didn't see is gone, and gets an eviction timer -
+    // whether or not it already reads as exited.
+    //
+    // Skipping on `state === "exited"` instead left a permanent zombie: `applyHook`
+    // writes that state straight into the map on SessionEnd with no timer, and this
+    // loop then skipped it forever, so `remove` (which only this timer calls) never
+    // ran. Its key counted as live to `orphanedQueueFor`, so a queue the human could
+    // still resume was never offered on any card - stranded, with nothing to heal it.
+    // Keying the skip on the TIMER instead says what was meant ("already on its way
+    // out"), and makes the two ways a session can be marked exited converge here.
     for (const [id, s] of this.sessions) {
-      if (seen.has(id) || s.state === "exited") continue;
-      const exited: Session = { ...s, state: "exited" };
-      this.sessions.set(id, exited);
-      this.emitSession(exited);
+      if (seen.has(id) || this.exitTimers.has(id)) continue;
+      if (s.state !== "exited") {
+        const exited: Session = { ...s, state: "exited" };
+        this.sessions.set(id, exited);
+        this.emitSession(exited);
+      }
       const t = unref(setTimeout(() => this.remove(id), EXIT_LINGER_MS));
       this.exitTimers.set(id, t);
+    }
+
+    // Hints LAST, once the map is whole. `mergeDiscovered` resolved each session's
+    // hint as it merged, i.e. against a map still being filled one session at a time:
+    // on the first sweep after a restart the first session merged saw only its own
+    // key as live, so every OTHER live session's queue looked orphaned to it. That
+    // hint is actionable, and `reattachQueue` trusts it - it checks only that the
+    // target is Claude and holds no open items, never that the source is really
+    // orphaned - so a click inside that window re-keys a healthy session's live queue
+    // onto another card and drops the original row. The hint's correctness is the
+    // only guard on that write, so it must never be computed from a partial map.
+    this.syncAllOrphanHints();
+    this.pruneQueues(now);
+  }
+
+  /**
+   * Age out queues nothing can reach any more, at most hourly.
+   *
+   * Rides the discovery sweep because this is the one place a freshly-reconciled live
+   * key set exists - and it must run AFTER the merge and eviction loops above, since
+   * a key the map hasn't been filled in with yet reads as dead. Throttled because the
+   * sweep is ~1.5s and this is neither cheap nor urgent.
+   */
+  private pruneQueues(now: number): void {
+    if (now - this.lastQueuePrune < QUEUE_PRUNE_INTERVAL_MS) return;
+    this.lastQueuePrune = now;
+    try {
+      pruneDeadQueues(this.liveNoteKeys(), now - QUEUE_RETENTION_MS);
+    } catch (err) {
+      // Retention is housekeeping: a failure here must not take down the sweep that
+      // keeps the whole dashboard current.
+      console.error("[registry] queue prune failed:", err);
     }
   }
 
@@ -304,7 +364,12 @@ export class Registry extends EventEmitter {
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
     base.queue = this.queueSummaryFor(base);
-    base.orphanedQueue = this.orphanedQueueFor(base);
+    // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
+    // statement about the whole fleet ("no live session holds that key"), and this
+    // runs per session while `applyDiscovery` is still filling the map. Carry the
+    // last known value and let `applyDiscovery` re-resolve every hint once the map is
+    // whole. `applyHook` resolves its own inline because by then the map already is.
+    base.orphanedQueue = prev?.orphanedQueue ?? null;
     return base;
   }
 
@@ -1054,25 +1119,36 @@ export class Registry extends EventEmitter {
    */
   private orphanedQueueFor(s: Session): OrphanedQueueHint | null {
     if (!s.cwd) return null;
+    // No sweep yet means no evidence, only an empty map - and "no live session holds
+    // that key" read off it is a statement about a map nobody has filled in, not a
+    // finding. Same rule as the exit linger, and the same reason: the hint is what
+    // `reattachQueue` relies on to know a queue is really orphaned. See fleetObserved.
+    if (!this.sweptFleet) return null;
     const key = noteKeyFor(s);
-    // Every OTHER session's key, plus this session's CURRENT one. Its stored copy is
-    // deliberately excluded: `s` may not be in the map yet (mid-merge), or may be in
-    // it under a key it just moved off - a `/clear` rebinds agentSessionId, and the
-    // queue it just orphaned is keyed on the old id. Counting that stale entry as
-    // live would mean the queue this session just abandoned looks like it still has
-    // a session, so the hint that offers to resume it never appears.
-    const liveKeys = new Set(
-      [...this.sessions.values()].filter((o) => o.id !== s.id).map(noteKeyFor),
-    );
+    // Every OTHER live session's key, plus this session's CURRENT one. Its stored copy
+    // is deliberately excluded: `s` may be in the map under a key it just moved off -
+    // a `/clear` rebinds agentSessionId, and the queue it just orphaned is keyed on
+    // the old id. Counting that stale entry as live would mean the queue this session
+    // just abandoned looks like it still has a session, so the hint that offers to
+    // resume it never appears. Liveness goes through `holdsKey`, the same predicate
+    // the worker's sweep uses, so the card and the sweep cannot disagree about who is
+    // still here.
+    const liveKeys = new Set<string>();
+    for (const [id, o] of this.sessions) {
+      if (o.id !== s.id && this.holdsKey(id, o)) liveKeys.add(noteKeyFor(o));
+    }
     liveKeys.add(key);
     let best: OrphanedQueueHint | null = null;
-    for (const q of listQueueRows()) {
-      if (q.cwd !== s.cwd || liveKeys.has(q.noteKey)) continue;
-      const items = listQueueItems(q.noteKey);
-      const open = items.filter((i) => !isTerminalItem(i.state));
-      if (open.length === 0) continue; // nothing left to resume - not worth a hint
-      if (!best || open.length > best.itemCount) {
-        best = { noteKey: q.noteKey, itemCount: open.length, branch: q.branch };
+    // Indexed by cwd rather than scanning every queue the DB has ever held: this runs
+    // per discovered session per sweep, i.e. O(sessions x queues) several times a
+    // second, on the one synchronous SQLite handle that also serves hook ingest and
+    // SSE.
+    for (const q of listQueueRowsForCwd(s.cwd)) {
+      if (liveKeys.has(q.noteKey)) continue;
+      const open = countOpenQueueItems(q.noteKey);
+      if (open === 0) continue; // nothing left to resume - not worth a hint
+      if (!best || open > best.itemCount) {
+        best = { noteKey: q.noteKey, itemCount: open, branch: q.branch };
       }
     }
     return best;
@@ -1111,25 +1187,32 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Note keys with at least one live session - what makes a queue "not orphaned".
+   * Whether a session in the map still counts as holding its note key.
    *
-   * A session still inside its exit linger counts as LIVE. `exited` is provisional
-   * by design: `applyDiscovery` marks any session missing from a single sweep as
-   * exited and only evicts it EXIT_LINGER_MS later, cancelling that timer if it
-   * reappears. Reading `state === "exited"` as gone ignores the very guard the
-   * linger exists to provide - one hiccuping `ps` sweep would mark the whole fleet
-   * exited, and `sweepOrphanedQueues` (which runs several times a second) would
-   * escalate every in-flight item before the next poll un-marked them. Escalation
-   * is terminal and has no undo, so it must not turn on a single missed poll.
+   * A session inside its exit linger counts as LIVE. `exited` is provisional by
+   * design: `applyDiscovery` marks any session missing from a single sweep as exited
+   * and only evicts it EXIT_LINGER_MS later, cancelling that timer if it reappears.
+   * Reading `state === "exited"` as gone ignores the very guard the linger exists to
+   * provide - one hiccuping `ps` sweep would mark the whole fleet exited, and
+   * `sweepOrphanedQueues` (which runs several times a second) would escalate every
+   * in-flight item before the next poll un-marked them. Escalation is terminal and
+   * has no undo, so it must not turn on a single missed poll.
    *
-   * This also makes the two readers agree: `orphanedQueueFor` builds its live keys
-   * from ALL sessions, so without the linger the worker would call a queue orphaned
-   * while the card still called its session live.
+   * Defined ONCE because two readers must agree on it: `liveNoteKeys` (the worker's
+   * orphan sweep) and `orphanedQueueFor` (the card's re-attach hint). They previously
+   * held separate copies, and the copies disagreed about a session marked exited by a
+   * hook - the sweep skipped it and escalated its in-flight item, while the hint
+   * counted it as live and so never offered the leftover queue to anyone.
    */
+  private holdsKey(id: string, s: Session): boolean {
+    return s.state !== "exited" || this.exitTimers.has(id);
+  }
+
+  /** Note keys with at least one live session - what makes a queue "not orphaned". */
   liveNoteKeys(): Set<string> {
     const keys = new Set<string>();
     for (const [id, s] of this.sessions) {
-      if (s.state !== "exited" || this.exitTimers.has(id)) keys.add(noteKeyFor(s));
+      if (this.holdsKey(id, s)) keys.add(noteKeyFor(s));
     }
     return keys;
   }
@@ -1228,10 +1311,22 @@ export class Registry extends EventEmitter {
     return getQueueItem(id);
   }
 
-  removeQueueItem(id: string): void {
+  /**
+   * Drop an item, then make the change observable.
+   *
+   * `touchQueue` for the reason `putQueueItem` documents, and removing a TERMINAL
+   * item is the case that needs it most: the summary projects `openCount` and the
+   * in-flight state, neither of which a finished item contributes to, so the delete
+   * produced a byte-identical summary and every OTHER viewer kept rendering the item
+   * that is no longer there - indefinitely, on an idle queue, since nothing would
+   * ever heal it. Removing a waiting item happened to be fine only because
+   * `openCount` moved; that's a coincidence of the projection, not a rule.
+   */
+  removeQueueItem(id: string, now = Date.now()): void {
     const item = getQueueItem(id);
     if (!item) return;
     deleteQueueItem(id);
+    this.touchQueue(item.noteKey, now);
     this.syncSessionsForQueue(item.noteKey);
   }
 

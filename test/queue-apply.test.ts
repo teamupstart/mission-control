@@ -5,6 +5,7 @@ import {
   applyQueueAction,
   queueSendStillValid,
   observe,
+  resolveLiveSession,
 } from "../src/server/foreman/queue-apply.ts";
 import type { QueueActions } from "../src/server/foreman/queue-apply.ts";
 import { SEND_ATTEMPT_CAP } from "../src/server/foreman/queue-machine.ts";
@@ -603,4 +604,44 @@ test("ask-wrapup stamps the ask and types nothing", async () => {
   assert.equal(out.kind, "done");
   assert.equal(fake.wrapups, 1);
   assert.deepEqual(fake.injected, [], "Foreman always asks - it never auto-launches the wrap-up");
+});
+
+// ---- resolveLiveSession: the one predicate two callers must agree on ----
+//
+// `queueSendStillValid` (before typing) and the worker's per-target re-resolve
+// (before deciding anything) both answer "who holds this note key right now?". They
+// used to answer it with separate copies, and the copies disagreed: the worker's
+// omitted the `exited` filter, so a transiently-exited session resolved as a live
+// target and `decideQueueTick` terminally escalated its in-flight item.
+
+test("resolveLiveSession finds the holder of a key, by KEY and not by id", () => {
+  // The id churns with pid/tty; the key is the identity the queue is stored under.
+  const a = mkSession({ id: "s1", agentSessionId: "agent-a" });
+  const b = mkSession({ id: "s2", agentSessionId: "agent-b" });
+
+  assert.equal(resolveLiveSession([a, b], "agent-b")?.id, "s2");
+  assert.equal(resolveLiveSession([a, b], "agent-missing"), null);
+  assert.equal(resolveLiveSession([], "agent-a"), null);
+});
+
+test("resolveLiveSession REFUSES a transiently-exited session", () => {
+  // `exited` is provisional: applyDiscovery marks any session missing from a single
+  // `ps` sweep as exited and only evicts it EXIT_LINGER_MS later, cancelling that
+  // timer if it reappears. Both callers act irreversibly on the answer - a typed work
+  // instruction, or an escalation with no undo - so one hiccuping poll must cost a
+  // tick, not the item.
+  const dead = mkSession({ id: "s1", agentSessionId: "agent-a", state: "exited" });
+  assert.equal(resolveLiveSession([dead], "agent-a"), null);
+
+  // ...and it resolves again the moment the session is seen alive, so the cost really
+  // is only the tick.
+  const back = { ...dead, state: "idle" as const };
+  assert.equal(resolveLiveSession([back], "agent-a")?.id, "s1");
+});
+
+test("resolveLiveSession falls back to the synthetic id when no agent binding exists", () => {
+  // noteKeyOf is `agentSessionId ?? id` - a session that has never reported a hook
+  // binding is keyed on its synthetic id, and must still be resolvable.
+  const bare = mkSession({ id: "synth-1", agentSessionId: null });
+  assert.equal(resolveLiveSession([bare], "synth-1")?.id, "synth-1");
 });

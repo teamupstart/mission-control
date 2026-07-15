@@ -171,3 +171,99 @@ test("re-attach REFUSES a session that could never run the queue", () => {
   assert.equal(registry.reattachQueue("stranded-key", "claude-1"), true);
   assert.equal(registry.getQueue("claude-1")?.items.length, 1);
 });
+
+test("a session the SessionEnd hook marked exited stops holding its key", async (t) => {
+  // The zombie. `applyHook` writes `state: "exited"` straight into the map with no
+  // exit timer, and the eviction loop used to skip anything already exited - so
+  // `remove` (the timer's only caller) never ran and the entry lived forever.
+  //
+  // That split the two readers apart: the worker's `liveNoteKeys` skipped the zombie
+  // and its orphan sweep escalated the in-flight item, deliberately leaving the rest
+  // `queued` so a human could resume them - while `orphanedQueueFor` still counted
+  // the zombie's key as live, so the hint offering exactly that never appeared on any
+  // card. The batch was stranded with nothing left to surface it.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+
+  const registry = new Registry();
+  const ending = mkDiscovered({
+    syntheticId: "ctrl-d-1",
+    cwd: "/zombie",
+    tmux: { session: "z", window: "w", windowIndex: 0, paneId: "%9" },
+  });
+  const sibling = mkDiscovered({ syntheticId: "zsib-1", cwd: "/zombie", pid: 2, tty: "ttys2" });
+  registry.applyDiscovery([ending, sibling]);
+  seedQueue("ctrl-d-1", "/zombie");
+
+  // Ctrl-D: the hook reports the session ended, with no eviction timer behind it.
+  registry.applyHook({
+    event: "SessionEnd",
+    sessionId: null,
+    transcriptPath: null,
+    cwd: "/zombie",
+    env: { tmuxPane: "%9" },
+  } as never);
+  assert.equal(registry.getSession("ctrl-d-1")?.state, "exited", "the hook marked it exited");
+
+  // The process is gone, so the next sweep no longer lists it. That sweep must put it
+  // on its way out rather than skipping it for being already exited.
+  registry.applyDiscovery([sibling]);
+  t.mock.timers.tick(9000);
+
+  assert.equal(registry.getSession("ctrl-d-1"), undefined, "the zombie is evicted, not kept forever");
+  assert.ok(
+    !registry.liveNoteKeys().has("ctrl-d-1"),
+    "the sweep says the key is dead...",
+  );
+  assert.equal(
+    registry.getSession("zsib-1")?.orphanedQueue?.noteKey,
+    "ctrl-d-1",
+    "...so the hint must agree and offer the stranded batch",
+  );
+});
+
+test("the hint is never computed from a HALF-MERGED session map", () => {
+  // `mergeDiscovered` resolved each session's hint as it merged, against a map still
+  // being filled one session at a time. On the first sweep after a daemon restart the
+  // map starts empty, so the FIRST session merged saw only its own key as live and
+  // every other live session's queue looked orphaned to it.
+  //
+  // That hint is actionable, and `reattachQueue` trusts it: it checks only that the
+  // target is Claude and holds no open items, never that the source is really
+  // orphaned. So a click inside that window re-keys B's healthy live queue onto A and
+  // drops B's row. The hint's correctness is the only guard on that write.
+  const registry = new Registry();
+  const a = mkDiscovered({ syntheticId: "restart-a", cwd: "/shared", pid: 1, tty: "ttysA" });
+  const b = mkDiscovered({ syntheticId: "restart-b", cwd: "/shared", pid: 2, tty: "ttysB" });
+  // Both sessions are alive with their own persisted queues, as after a restart.
+  seedQueue("restart-a", "/shared");
+  seedQueue("restart-b", "/shared");
+
+  // A merges first, and must NOT conclude B's live queue is orphaned.
+  registry.applyDiscovery([a, b]);
+
+  assert.equal(registry.getSession("restart-a")?.orphanedQueue, null, "B's queue is B's - it is alive");
+  assert.equal(registry.getSession("restart-b")?.orphanedQueue, null, "and vice versa");
+});
+
+test("removing a TERMINAL item moves the queue's change token", () => {
+  // The panel re-fetches on `updatedAt`, `openCount` and `inFlightState` - and a
+  // finished item contributes to none of them. So deleting one produced a
+  // byte-identical summary, no other viewer ever re-fetched, and every other open
+  // card kept rendering an item that is no longer there. Nothing heals that on an
+  // idle queue. Removing a WAITING item happened to work only because `openCount`
+  // moved: a coincidence of the projection, not a rule.
+  const registry = new Registry();
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "rm-1", cwd: "/rm" })]);
+  seedQueue("rm-1", "/rm");
+
+  const items = registry.getQueue("rm-1")?.items ?? [];
+  assert.equal(items.length, 1);
+  registry.putQueueItem({ ...items[0]!, state: "verified", updatedAt: 2000 });
+
+  const before = registry.getQueue("rm-1")!.updatedAt;
+  registry.removeQueueItem(items[0]!.id, before + 500);
+  const after = registry.getQueue("rm-1")!.updatedAt;
+
+  assert.ok(after > before, `the change token must move (${before} -> ${after})`);
+  assert.equal(registry.getQueue("rm-1")?.items.length, 0);
+});

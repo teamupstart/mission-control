@@ -462,6 +462,19 @@ export interface QueueVerifyPlan {
 }
 
 /**
+ * What a verdict means for the item, or why it means nothing.
+ *
+ * The `failed` arm mirrors `QueueVerifyResult`'s exactly, and for the same reason: a
+ * verdict the machine cannot act on is the same kind of event as a `claude -p` that
+ * never produced one, and the worker already knows how to retry-then-escalate that.
+ * Making it an arm of the RETURN rather than a check the caller is trusted to make
+ * first is what stops it being skipped.
+ */
+export type QueueVerifyOutcome =
+  | { kind: "plan"; plan: QueueVerifyPlan }
+  | { kind: "failed"; reason: string };
+
+/**
  * Map a verdict to the item's next state. The heart of the queue, and the reason
  * ONLY blocking gaps drive fix rounds:
  *
@@ -476,7 +489,7 @@ export function planFromVerify(
   v: QueueVerdict,
   mayActLive: boolean,
   cfg: QueueConfig,
-): QueueVerifyPlan {
+): QueueVerifyOutcome {
   const gaps = reconcileGaps(item.gaps, v, item.round);
   const blocking = blockingGaps(gaps);
   const base = {
@@ -489,9 +502,29 @@ export function planFromVerify(
     proposedPayload: null as string | null,
   };
 
+  // `complete: false` with nothing blocking is a verdict that contradicts itself, and
+  // `complete` is the field the prompt calls THE PRIMARY AXIS - so it decides
+  // something or the prompt is lying to the model about what it's being asked.
+  //
+  // Marking this `verified` renders "done" on the card directly above a summary
+  // saying the intent was NOT satisfied, and releases the next item on the strength
+  // of it. The two readings can't be reconciled here, so pick neither: treat it as a
+  // verifier that failed to answer. That retries, and escalates to the human if it
+  // keeps happening - which is the right home for a judgment call this confused.
+  //
+  // This is NOT the "only blocking gaps drive fix rounds" rule bending: an advisory
+  // gap still never sends the agent back to work. It says a verdict must not claim
+  // both that the work is unfinished and that nothing about it needs finishing.
+  if (!v.complete && blocking.length === 0) {
+    return {
+      kind: "failed",
+      reason: "the verifier reported the work incomplete but raised no blocking gap",
+    };
+  }
+
   // No blocking gaps: done. Advisory gaps ride along on the card as a record.
   if (blocking.length === 0) {
-    return { ...base, state: "verified", round: item.round };
+    return { kind: "plan", plan: { ...base, state: "verified", round: item.round } };
   }
 
   // A gap that has survived `maxFixAttempts` rounds isn't going to be fixed by
@@ -499,10 +532,13 @@ export function planFromVerify(
   const stuck = blocking.find((g) => g.strikes >= cfg.maxFixAttempts);
   if (stuck) {
     return {
-      ...base,
-      state: "escalated",
-      round: item.round,
-      escalationReason: `Foreman asked ${stuck.strikes}x and this is unresolved: ${stuck.detail}`,
+      kind: "plan",
+      plan: {
+        ...base,
+        state: "escalated",
+        round: item.round,
+        escalationReason: `Foreman asked ${stuck.strikes}x and this is unresolved: ${stuck.detail}`,
+      },
     };
   }
 
@@ -511,10 +547,13 @@ export function planFromVerify(
   const nextRound = item.round + 1;
   if (nextRound > cfg.maxFixRounds) {
     return {
-      ...base,
-      state: "escalated",
-      round: item.round,
-      escalationReason: `this item spent its ${cfg.maxFixRounds}-round budget without converging`,
+      kind: "plan",
+      plan: {
+        ...base,
+        state: "escalated",
+        round: item.round,
+        escalationReason: `this item spent its ${cfg.maxFixRounds}-round budget without converging`,
+      },
     };
   }
 
@@ -541,10 +580,13 @@ export function planFromVerify(
   // be `proposed` without the text that state promises.
   const next: WorkItem = { ...item, gaps, round: nextRound };
   return {
-    ...base,
-    state: mayActLive ? "queued" : "proposed",
-    round: nextRound,
-    proposedPayload: mayActLive ? null : payloadFor(next),
+    kind: "plan",
+    plan: {
+      ...base,
+      state: mayActLive ? "queued" : "proposed",
+      round: nextRound,
+      proposedPayload: mayActLive ? null : payloadFor(next),
+    },
   };
 }
 

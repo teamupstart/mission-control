@@ -677,22 +677,77 @@ test("round 0 delivers the intent verbatim; a later round delivers the fix promp
 
 // ---- planFromVerify: the cross product ----
 
+/**
+ * The plan for a verdict the machine CAN act on.
+ *
+ * `planFromVerify` returns `{plan}` or `{failed}` - a verdict that contradicts itself
+ * yields no plan at all - so tests about what a plan says go through here, and the
+ * ones about the refusal assert on the outcome directly.
+ */
+function planOf(...args: Parameters<typeof planFromVerify>): QueueVerifyPlan {
+  const o = planFromVerify(...args);
+  assert.equal(o.kind, "plan", "expected an actionable plan for this verdict");
+  return (o as { kind: "plan"; plan: QueueVerifyPlan }).plan;
+}
+
 test("planFromVerify: no gaps -> verified", () => {
-  const p = planFromVerify(mkItem(), mkVerdict(), true, CFG);
+  const p = planOf(mkItem(), mkVerdict(), true, CFG);
   assert.equal(p.state, "verified");
 });
 
 test("planFromVerify: advisory-only gaps -> verified, and they do NOT consume a round", () => {
   // The non-convergence trap: asked "does this comply?" against a long
   // prescriptive doc, a model finds a style nit every round forever.
+  //
+  // `complete: true` because that is what this verdict MEANS: the intent was
+  // satisfied and a nit was noted alongside. Saying `complete: false` here would be
+  // the verifier claiming the work is unfinished while filing nothing that needs
+  // finishing, which is a different case with its own test below.
   const v = mkVerdict({
-    complete: false,
+    complete: true,
     gaps: [{ id: "s1", severity: "advisory", kind: "standards", path: "a.ts", detail: "nit", fix: "x" }],
   });
-  const p = planFromVerify(mkItem({ round: 2 }), v, true, CFG);
+  const p = planOf(mkItem({ round: 2 }), v, true, CFG);
   assert.equal(p.state, "verified");
   assert.equal(p.round, 2, "the round is not spent on an advisory gap");
   assert.equal(p.gaps.length, 1, "but it is still recorded on the card");
+});
+
+test("planFromVerify: `complete: false` with no blocking gap is INCOHERENT, not 'done'", () => {
+  // `complete` is the field the prompt calls THE PRIMARY AXIS, so it has to decide
+  // something. Read only `blocking.length === 0`, this verdict silently marked the
+  // item verified - the panel then rendered "done" directly above a lastVerdict
+  // summary saying the intent was NOT satisfied, and released the next item on it.
+  //
+  // The two readings can't be reconciled, so the machine picks neither and reports a
+  // verify failure: that retries, and escalates to the human if it persists.
+  const advisoryOnly = mkVerdict({
+    complete: false,
+    summary: "the retry path was never added",
+    gaps: [{ id: "s1", severity: "advisory", kind: "standards", path: "a.ts", detail: "nit", fix: "x" }],
+  });
+  const o = planFromVerify(mkItem(), advisoryOnly, true, CFG);
+  assert.equal(o.kind, "failed");
+  assert.match(o.kind === "failed" ? o.reason : "", /incomplete but raised no blocking gap/);
+
+  // No gaps at all is the same contradiction, stated more baldly.
+  assert.equal(planFromVerify(mkItem(), mkVerdict({ complete: false }), true, CFG).kind, "failed");
+
+  // ...and this must NOT disturb the rule it sits next to: an advisory gap still
+  // never drives a fix round. With `complete: true` the item is done, nit recorded.
+  assert.equal(planOf(mkItem(), mkVerdict({ complete: true, gaps: [] }), true, CFG).state, "verified");
+});
+
+test("planFromVerify: a resolved blocking gap can't prop up `complete: false` either", () => {
+  // The check has to read the RECONCILED gaps, not the raw verdict's: a blocking gap
+  // the same verdict lists as resolved is dropped by reconcileGaps, so nothing
+  // blocking survives and the verdict is as incoherent as if it had raised none.
+  const v = mkVerdict({
+    complete: false,
+    gaps: [{ id: "g1", severity: "blocking", kind: "untested", path: "a.ts", detail: "d", fix: "f" }],
+    resolved: ["g1"],
+  });
+  assert.equal(planFromVerify(mkItem(), v, true, CFG).kind, "failed");
 });
 
 test("planFromVerify: blocking gaps under the caps -> another round, re-queued when live", () => {
@@ -700,7 +755,7 @@ test("planFromVerify: blocking gaps under the caps -> another round, re-queued w
     complete: false,
     gaps: [{ id: "g1", severity: "blocking", kind: "untested", path: "a.ts", detail: "d", fix: "f" }],
   });
-  const p = planFromVerify(mkItem({ round: 0 }), v, true, CFG);
+  const p = planOf(mkItem({ round: 0 }), v, true, CFG);
   // `queued`, NOT `sending`: `sending` means "crashed mid-delivery" and nothing
   // else, so parking a fix round there gets it adopted as a phantom crash and
   // escalated ~45s later having typed nothing. Step 9 does the send next tick.
@@ -716,7 +771,7 @@ test("planFromVerify: the SAME case in dry-run drafts instead of sending", () =>
     complete: false,
     gaps: [{ id: "g1", severity: "blocking", kind: "untested", path: "a.ts", detail: "d", fix: "f" }],
   });
-  const p = planFromVerify(mkItem({ round: 0 }), v, false, CFG);
+  const p = planOf(mkItem({ round: 0 }), v, false, CFG);
   assert.equal(p.state, "proposed");
   assert.equal(p.round, 1);
 });
@@ -726,12 +781,12 @@ test("planFromVerify: escalates EXACTLY at maxFixAttempts on the same gap", () =
   const v = mkVerdict({ complete: false, gaps: [gap] });
 
   // Two strikes carried in -> reconcile makes it three -> at the cap -> escalate.
-  const atCap = planFromVerify(mkItem({ gaps: [mkGap({ strikes: 2 })] }), v, true, CFG);
+  const atCap = planOf(mkItem({ gaps: [mkGap({ strikes: 2 })] }), v, true, CFG);
   assert.equal(atCap.state, "escalated");
   assert.match(atCap.escalationReason ?? "", /asked 3x/);
 
   // One strike carried in -> two -> under the cap -> another round.
-  const under = planFromVerify(mkItem({ gaps: [mkGap({ strikes: 1 })] }), v, true, CFG);
+  const under = planOf(mkItem({ gaps: [mkGap({ strikes: 1 })] }), v, true, CFG);
   assert.equal(under.state, "queued");
 });
 
@@ -742,11 +797,11 @@ test("planFromVerify: escalates exactly at maxFixRounds - the real termination g
   });
   // A brand-new gap each round means strikes never accumulate, so ONLY the round
   // budget can stop this. That's precisely why the budget exists.
-  const spent = planFromVerify(mkItem({ round: CFG.maxFixRounds }), v, true, CFG);
+  const spent = planOf(mkItem({ round: CFG.maxFixRounds }), v, true, CFG);
   assert.equal(spent.state, "escalated");
   assert.match(spent.escalationReason ?? "", /round budget/);
 
-  const last = planFromVerify(mkItem({ round: CFG.maxFixRounds - 1 }), v, true, CFG);
+  const last = planOf(mkItem({ round: CFG.maxFixRounds - 1 }), v, true, CFG);
   assert.equal(last.state, "queued", "the final round is still allowed");
   assert.equal(last.round, CFG.maxFixRounds);
 });
@@ -756,7 +811,7 @@ test("planFromVerify: a mid-verify flip out of live downgrades the next round to
     complete: false,
     gaps: [{ id: "g1", severity: "blocking", kind: "untested", path: "a.ts", detail: "d", fix: "f" }],
   });
-  assert.equal(planFromVerify(mkItem(), v, false, CFG).state, "proposed");
+  assert.equal(planOf(mkItem(), v, false, CFG).state, "proposed");
 });
 
 // ---- the seam: a verify's plan, then the NEXT tick that reads it ----
@@ -795,7 +850,7 @@ const BLOCKER = {
 
 test("seam: a LIVE fix round SENDS the fix prompt next tick, not recover-send", () => {
   const item = mkItem({ state: "verifying", seq: 0 });
-  const next = applyPlan(item, planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG));
+  const next = applyPlan(item, planOf(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG));
 
   const a = tick({ items: [next], mayActLive: true });
 
@@ -810,7 +865,7 @@ test("seam: a LIVE fix round SENDS the fix prompt next tick, not recover-send", 
 
 test("seam: the same fix round in dry-run drafts the fix prompt and types nothing", () => {
   const item = mkItem({ state: "verifying", seq: 0 });
-  const next = applyPlan(item, planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG));
+  const next = applyPlan(item, planOf(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG));
 
   const a = tick({ items: [next], mayActLive: false });
 
@@ -827,7 +882,7 @@ test("seam: a dry-run fix round is NEVER `proposed` without the text Approve con
   //
   // So the state and its draft must be decided together, in the same plan.
   const item = mkItem({ state: "verifying", seq: 0, intent: "add the retry" });
-  const plan = planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG);
+  const plan = planOf(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG);
 
   assert.equal(plan.state, "proposed");
   assert.ok(plan.proposedPayload, "a proposed plan must carry its draft");
@@ -841,16 +896,16 @@ test("seam: only a drafted plan carries text - a send or a verdict leaves none b
   // A stale draft on a sending/terminal item would advertise a prompt Foreman is no
   // longer about to type. `proposedPayload` is null on every branch but the draft.
   const item = mkItem({ state: "verifying", seq: 0 });
-  const live = planFromVerify(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG);
+  const live = planOf(item, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG);
   assert.equal(live.state, "queued");
   assert.equal(live.proposedPayload, null, "a live fix round types it - it isn't a draft");
 
-  const done = planFromVerify(item, mkVerdict({ complete: true }), false, CFG);
+  const done = planOf(item, mkVerdict({ complete: true }), false, CFG);
   assert.equal(done.state, "verified");
   assert.equal(done.proposedPayload, null);
 
   const stuck = mkItem({ state: "verifying", round: CFG.maxFixRounds, gaps: [] });
-  const gone = planFromVerify(stuck, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG);
+  const gone = planOf(stuck, mkVerdict({ complete: false, gaps: [BLOCKER] }), false, CFG);
   assert.equal(gone.state, "escalated");
   assert.equal(gone.proposedPayload, null);
 });
@@ -870,6 +925,9 @@ test("seam: NO verify outcome may park an item in `sending` - that state means a
   };
   const verdicts = [
     mkVerdict(),
+    // Coherent advisory-only: satisfied, with a nit noted. Distinct from the
+    // `complete: false` version below, which is the self-contradicting one.
+    mkVerdict({ complete: true, gaps: [advisory] }),
     mkVerdict({ complete: false, gaps: [BLOCKER] }),
     mkVerdict({ complete: false, gaps: [advisory] }),
     mkVerdict({ complete: false, gaps: [BLOCKER, advisory] }),
@@ -880,23 +938,32 @@ test("seam: NO verify outcome may park an item in `sending` - that state means a
     mkItem({ round: CFG.maxFixRounds - 1 }),
     mkItem({ gaps: [mkGap({ strikes: 2 })] }),
   ];
+  let plans = 0;
   for (const v of verdicts) {
     for (const live of [true, false]) {
       for (const item of items) {
+        const o = planFromVerify(item, v, live, CFG);
+        // An incoherent verdict yields no plan, so it parks the item nowhere at all -
+        // which satisfies this property vacuously rather than by exception.
+        if (o.kind !== "plan") continue;
+        plans++;
         assert.notEqual(
-          planFromVerify(item, v, live, CFG).state,
+          o.plan.state,
           "sending",
           "`sending` is reachable ONLY via a real crash - see decideInFlight",
         );
       }
     }
   }
+  // The cross product must not have collapsed to nothing: a property that holds
+  // because every case was skipped is a test that passes for the wrong reason.
+  assert.ok(plans > 20, `expected most of the cross product to yield plans, got ${plans}`);
 });
 
 test("seam: a live fix round stays the head - it never lets a later item jump it", () => {
   const head = mkItem({ id: "head", seq: 0, state: "verifying" });
   const behind = mkItem({ id: "behind", seq: 1 });
-  const next = applyPlan(head, planFromVerify(head, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG));
+  const next = applyPlan(head, planOf(head, mkVerdict({ complete: false, gaps: [BLOCKER] }), true, CFG));
 
   const a = tick({ items: [behind, next], mayActLive: true });
   assert.equal(a.kind === "send" ? a.item.id : "", "head");

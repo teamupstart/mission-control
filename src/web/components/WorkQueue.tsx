@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Session, SessionQueue, WorkItem, WorkItemState } from "@shared/types.ts";
+import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
+import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { api, fetchQueue } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
 
@@ -7,28 +8,6 @@ import { relativeTime } from "../lib/format.ts";
 // session, in the order you authored it. Items are drag-reorderable, editable, and
 // removable while they wait; the in-flight one shows what Foreman is doing to it.
 // Stops click propagation so interacting with it never selects/collapses the card.
-
-/** Labels for what Foreman is doing to the in-flight item. */
-const STATE_LABEL: Record<WorkItemState, string> = {
-  queued: "waiting",
-  proposed: "drafted - needs your OK",
-  sending: "delivering…",
-  awaiting_pickup: "delivered, waiting for the agent",
-  in_progress: "working",
-  verifying: "checking the work",
-  verified: "done",
-  escalated: "needs you",
-  cancelled: "cancelled",
-};
-
-/** True while an item can still be edited/removed - i.e. Foreman hasn't typed it. */
-function isWaiting(state: WorkItemState): boolean {
-  return state === "queued" || state === "proposed";
-}
-
-function isTerminal(state: WorkItemState): boolean {
-  return state === "verified" || state === "escalated" || state === "cancelled";
-}
 
 export function WorkQueue({
   session,
@@ -201,6 +180,19 @@ export function WorkQueue({
   }
 
   /**
+   * Apply a new authored order optimistically, then persist it. The ONE place an
+   * order reaches the server, so the pointer path and the keyboard path below cannot
+   * drift into disagreeing about what a reorder is.
+   */
+  async function commitOrder(ids: string[]): Promise<void> {
+    if (!queue) return;
+    setQueue({ ...queue, items: ids.map((id) => queue.items.find((i) => i.id === id)!) });
+    const r = await api.reorderQueue(sessionId, ids);
+    setError(r.ok ? null : r.error ?? "could not reorder");
+    await refresh();
+  }
+
+  /**
    * Optimistic reorder, then persist. Hand-rolled HTML5 DnD - no library.
    *
    * Only WAITING items may be dragged or dropped onto. The server accepts any known
@@ -218,11 +210,26 @@ export function WorkQueue({
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return setDragId(null);
     ids.splice(to, 0, ...ids.splice(from, 1));
-    setQueue({ ...queue, items: ids.map((id) => queue.items.find((i) => i.id === id)!) });
     setDragId(null);
-    const r = await api.reorderQueue(sessionId, ids);
-    setError(r.ok ? null : r.error ?? "could not reorder");
-    await refresh();
+    await commitOrder(ids);
+  }
+
+  /**
+   * Move a waiting item one place - the keyboard path to the same reorder.
+   *
+   * Drag-and-drop was the only way to do this, which made queue order the one thing
+   * in the panel a keyboard or screen-reader user couldn't change - and order is what
+   * decides which item gets typed into a live agent first. Every other control here
+   * is a real button; these are too, and they go through `commitOrder` like the drop
+   * handler does.
+   */
+  async function move(item: WorkItem, dir: -1 | 1): Promise<void> {
+    if (!queue || busy) return;
+    const to = moveTarget(queue.items, item, dir);
+    if (to < 0) return;
+    const ids = queue.items.map((i) => i.id);
+    ids.splice(to, 0, ...ids.splice(ids.indexOf(item.id), 1));
+    await commitOrder(ids);
   }
 
   const items = queue?.items ?? [];
@@ -285,7 +292,17 @@ export function WorkQueue({
     <section className="work-queue" onClick={(e) => e.stopPropagation()}>
       <Header count={open.length} />
 
-      {session.orphanedQueue && (
+      {/*
+        Gated on the session having no OPEN items of its own, because that is exactly
+        what `reattachQueue` refuses: a live queue at the target key would collide on
+        the single-flight index and silently merge two batches. Ungated, this offered
+        a Re-attach beside a session with work in flight and every click 409'd.
+
+        The empty branch above carries the same hint for the case that MATTERS (a
+        /clear leaves the new session with no queue at all), so between them the offer
+        appears in both places it can succeed and neither where it can't.
+      */}
+      {session.orphanedQueue && open.length === 0 && (
         <ReattachHint session={session} onDone={() => void refresh()} />
       )}
 
@@ -362,6 +379,33 @@ export function WorkQueue({
                   <button className="btn btn-primary" disabled={busy} onClick={() => void approve(item)}>
                     Approve
                   </button>
+                )}
+                {/*
+                  The keyboard path to the reorder the grip offers by drag. Disabled
+                  rather than hidden at the ends of the list, so the controls don't
+                  reflow under the pointer as items move.
+                */}
+                {isWaiting(item.state) && (
+                  <>
+                    <button
+                      className="icon-btn"
+                      aria-label={`Move "${item.intent}" earlier in the queue`}
+                      title="Move up"
+                      disabled={busy || moveTarget(items, item, -1) < 0}
+                      onClick={() => void move(item, -1)}
+                    >
+                      ↑
+                    </button>
+                    <button
+                      className="icon-btn"
+                      aria-label={`Move "${item.intent}" later in the queue`}
+                      title="Move down"
+                      disabled={busy || moveTarget(items, item, 1) < 0}
+                      onClick={() => void move(item, 1)}
+                    >
+                      ↓
+                    </button>
+                  </>
                 )}
                 {isWaiting(item.state) && (
                   <button
@@ -488,7 +532,7 @@ function ItemStatus({ item }: { item: WorkItem }): React.JSX.Element | null {
   if (!showState && item.gaps.length === 0) return null;
   return (
     <div className="wq-status">
-      {showState && <span className={`wq-state wq-state-${item.state}`}>{STATE_LABEL[item.state]}</span>}
+      {showState && <span className={`wq-state wq-state-${item.state}`}>{itemLabel(item)}</span>}
       {item.round > 0 && !isTerminal(item.state) && (
         <span className="wq-round" title="Fix rounds spent on this item">
           fix {item.round}
@@ -583,6 +627,22 @@ function AddBox({
 }
 
 /**
+ * Asks whose instruction has already reached a pane, keyed by session + which ask.
+ *
+ * The durable record of a send is `queue.wrapupAnswer`, and this exists for the one
+ * case where writing THAT is what failed. A `useState` latch dies with the mount, so
+ * collapsing and re-expanding the card (which remounts `Wrapup`) brought "Ship it?"
+ * back with a live Send button next to an agent that already had the instruction -
+ * one click from injecting `/no-mistakes` twice.
+ *
+ * Keyed on `wrapupAskedAt` too, not just the session: a later drain is a genuinely
+ * new ask, and must not be suppressed by this one. Module scope rather than a store
+ * because its whole job is to outlive a component, and its scope is honestly the tab:
+ * a reload re-reads the server's answer, which is the real record.
+ */
+const wrapupSent = new Set<string>();
+
+/**
  * The drain-time wrap-up: ask whether to ship this batch. Foreman ALWAYS asks -
  * it never launches these itself.
  */
@@ -602,7 +662,8 @@ function Wrapup({
   const [err, setErr] = useState<string | null>(null);
   const [dismissed, setDismissed] = useState(false);
   /** The instruction reached the pane. One ask, one send - whatever happens after. */
-  const [sent, setSent] = useState(false);
+  const sentKey = `${sessionId}:${queue.wrapupAskedAt}`;
+  const [sent, setSent] = useState(() => wrapupSent.has(sentKey));
 
   // Recompose the prefill as the checkboxes change, until the human edits it.
   const [touched, setTouched] = useState(false);
@@ -630,8 +691,10 @@ function Wrapup({
     // turns every failure into a returned `{ok:false}` rather than a throw, so an
     // unchecked write here fails silently and leaves "Ship it?" on screen with a live
     // Send button next to an agent that already got the instruction; a second click
-    // injects `/no-mistakes` twice. Latch on the SEND, not on the write, so the
-    // button dies even when the write is what failed.
+    // injects `/no-mistakes` twice. Latch on the SEND, not on the write, so the button
+    // dies even when the write is what failed - and latch it OUTSIDE this component,
+    // which a card collapse would otherwise unmount and reset.
+    wrapupSent.add(sentKey);
     setSent(true);
     const saved = await api.setWrapupAnswer(sessionId, body);
     setBusy(false);
@@ -688,6 +751,9 @@ function Wrapup({
           Dismiss
         </button>
       </div>
+      {/* A dead Send with no explanation reads as broken. `err` says it better when
+          there is one - this is for the remount, which has lost it. */}
+      {sent && !err && <p className="wq-hint dim">Already sent.</p>}
       {err && <p className="wq-error">{err}</p>}
     </div>
   );

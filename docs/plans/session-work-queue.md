@@ -55,11 +55,17 @@ and are called out here because each one is a trap the next reader would otherwi
    `diffBase` stays `"HEAD"` and it returns **`ok: true`** with a working-tree-only diff. The
    verifier sees near-nothing for completed work and invents gaps. `ok` does not detect this;
    `baseSha === null` does. Fixed at the source in §0b.
-   *Correction to an earlier draft of this doc:* this does **not** trigger on a plain rebase or
-   amend while the old object survives - `merge-base` then succeeds and returns the shared
-   ancestor, giving a diff that is too **wide** rather than empty. The fail-open path needs the
-   base to be genuinely unreachable (garbage-collected, or a sha from another checkout). Verified
-   by the regression test in #36.
+   *Correction to an earlier draft of this doc:* the **`merge-base` failure** does not trigger on a
+   plain rebase or amend while the old object survives - `merge-base` then succeeds and returns the
+   shared ancestor, so that path needs the base to be genuinely unreachable (garbage-collected, or
+   a sha from another checkout). The rebase/amend case is a *second* fail-open, with the same
+   consequence and a different cause: a base that is no longer an ancestor of HEAD silently widens
+   the diff to span an earlier item's committed work, which `diffMayIncludeOtherWork` cannot catch
+   (it compares recorded base shas, and they differ). So for an **explicitly requested** base
+   `computeSessionDiff` now requires the resolved merge-base to *be* that commit and fails closed
+   otherwise, which is what makes Verification step 10 below true. Auto-detected refs are
+   unaffected and keep their deliberate fall-back to HEAD (a brand-new branch with no shared
+   history).
 4. **Conventions docs make the verifier non-converging.** Asked "does this diff comply?" against a
    long prescriptive doc, it finds a style nit every round; the agent fixes it and introduces
    another; the item rides the round budget to escalation while the intent was satisfied in round
@@ -124,14 +130,25 @@ Auto-detected behavior unchanged. The queue treats this as a **verify-infrastruc
 escalates immediately** - not a gap, not a transient retry: "the base commit is gone; verify this
 item by hand."
 
-Note the trigger precisely: a plain amend or rebase does **not** hit this path while the old object
-is still in the object database - `merge-base` succeeds against it and returns the shared ancestor,
-which yields a diff that is too wide, not empty. Fail-open needs the base to be genuinely
-unreachable (GC'd, or a sha from another checkout).
+Note the trigger precisely: a plain amend or rebase does **not** hit *this* path while the old
+object is still in the object database - `merge-base` succeeds against it and returns the shared
+ancestor. That is a **second** fail-open with the same consequence: the diff silently widens to span
+an earlier item's committed work, and `diffMayIncludeOtherWork` cannot catch it (it compares
+recorded base shas, and after an amend they differ). So an explicit base must be an **ancestor of
+HEAD**, not merely share one with it:
+
+> when `source` was explicitly passed and the resolved merge-base is not `source` itself ->
+> the same `ok: false` as above
+
+That is what makes Verification step 10 true. Auto-detected refs are exempt by construction -
+`merge-base(HEAD, origin/main)` is *supposed* to be an ancestor of both and equal to neither - and
+keep their fall-back to HEAD.
 
 > **Landed in #36** as `fix(diff): fail closed when an explicitly requested base is unreachable`,
 > with a regression test asserting `ok: false` on an unreachable base plus a second test guarding
-> that the deliberate auto-detected fallback still works.
+> that the deliberate auto-detected fallback still works. The ancestor check landed later, on this
+> branch, with a regression test that amends over an item's recorded base and asserts the diff is
+> refused rather than widened.
 
 ### 0c. Vocabulary cleanup: the task backlog stops calling itself a queue
 

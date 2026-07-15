@@ -75,12 +75,17 @@ const WAIT_TIMEOUT_MS = 30000;
  * or a ready-to-return 400 response - collapsing the safeParse/400 boilerplate
  * every write endpoint otherwise repeats.
  */
+// `error` is carried alongside the ready-made `res` so a route with extra facts to
+// report on a refusal can build its own body without re-reading this one's. /inject
+// is that route: its contract is that EVERY refusal states whether text was pasted.
 async function parseBody<S extends ZodTypeAny>(
   c: Context,
   schema: S,
-): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; res: Response }> {
+): Promise<{ ok: true; data: TypeOf<S> } | { ok: false; error: string; res: Response }> {
   const parsed = schema.safeParse(await c.req.json().catch(() => ({})));
-  if (!parsed.success) return { ok: false, res: c.json({ error: parsed.error.message }, 400) };
+  if (!parsed.success) {
+    return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
+  }
   return { ok: true, data: parsed.data };
 }
 
@@ -297,8 +302,14 @@ export function buildApp(
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
+    // `parseBody`'s generic 400 carries no `pasted`, and the client reads a MISSING
+    // field as "may have landed" (absence of evidence is not evidence - see
+    // InjectError). That default is right everywhere else and exactly wrong here: a
+    // rejected body never reached tmux, so reporting the refusal without the field
+    // terminally escalates the item ("Foreman couldn't tell whether this reached the
+    // pane", no undo) instead of taking the clean re-queue. Say what we know.
     const parsed = await parseBody(c, InjectPromptSchema);
-    if (!parsed.ok) return parsed.res;
+    if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
     const r = await injectPrompt(session, parsed.data.text);
     return c.json(r, r.ok ? 200 : 500);
   });

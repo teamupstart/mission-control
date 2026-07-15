@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readStandards } from "../src/server/standards.ts";
+import { StandardsRequestSchema } from "../src/shared/protocol.ts";
 
 // What the queue verifier is handed as "this repo's bar". Getting the file set wrong
 // isn't cosmetic in either direction: too few and it misses the repo's contract, too
@@ -146,4 +147,37 @@ test("past the changed-path cap the bundle SAYS docs may be missing", () => {
 test("a missing root, or a root that isn't there, is simply no standards", () => {
   assert.deepEqual(readStandards(null, ["a.ts"]), { docs: [], truncated: false });
   assert.deepEqual(readStandards("/nope/not/here", ["a.ts"]), { docs: [], truncated: false });
+});
+
+// ---- the request boundary ----
+//
+// `readStandards` climbs `dirname` from every path to the repo root, pushing an entry
+// per level, so its cost is quadratic in a path's DEPTH. MAX_CHANGED_PATHS bounds how
+// many paths it walks and reports the drop, but nothing bounded how DEEP any one of
+// them went - and the schema accepted an unbounded array of unbounded strings, so a
+// ~16KB body could stall the daemon's event loop for seconds and a slightly bigger
+// one exhaust its heap. The bound belongs at the boundary, where every sibling schema
+// in protocol.ts already puts one.
+
+test("the standards request refuses a pathologically DEEP path", () => {
+  const deep = `${Array(8000).fill("a").join("/")}/x.ts`;
+  assert.equal(StandardsRequestSchema.safeParse({ paths: [deep] }).success, false);
+});
+
+test("the standards request refuses an unbounded number of paths", () => {
+  assert.equal(StandardsRequestSchema.safeParse({ paths: Array(6000).fill("src/a.ts") }).success, false);
+});
+
+test("the standards request still accepts the paths a real diff produces", () => {
+  // The bound is only worth anything if it never fires on real input - including the
+  // deep-ish paths a monorepo genuinely has.
+  const r = StandardsRequestSchema.safeParse({
+    paths: [
+      "src/server/foreman/queue-machine.ts",
+      "packages/app/src/components/settings/panels/deep/nested/Thing.tsx",
+      "a/very/long/but/entirely/ordinary/path/that/a/monorepo/might/really/contain/file.ts",
+    ],
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.success && r.data.paths.length, 3);
 });

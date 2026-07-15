@@ -1,4 +1,5 @@
 import type { TranscriptMessage } from "@shared/types.ts";
+import { sanitizeGapText } from "./queue-machine.ts";
 
 // Builds the review prompt handed to a fresh `claude -p` per session. This text
 // IS Foreman's judgment contract - the policy from docs/plans/foreman/plan.md,
@@ -125,7 +126,14 @@ function queueItemSection(item: NonNullable<ReviewInput["queueItem"]>): string[]
   }
   if (item.openGaps.length > 0) {
     lines.push("Still outstanding on this item:");
-    for (const g of item.openGaps) lines.push(`- ${g}`);
+    // Through `sanitizeGapText`, exactly as the fix-prompt path renders the same
+    // field. This text is model-produced, from a verdict the schema only
+    // LENGTH-clamps - so newlines and control characters survive it - and it is
+    // emitted ABOVE "## The pending question", the heading the reviewer answers. Left
+    // raw, a multi-line detail can close this block and counterfeit that heading, and
+    // in live mode the answer to the forged question is typed into a tool-enabled
+    // child. Flattening to one line is what confines it to the line it was given.
+    for (const g of item.openGaps) lines.push(`- ${sanitizeGapText(g)}`);
   }
   lines.push("");
   return lines;

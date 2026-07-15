@@ -25,6 +25,9 @@ const {
   nextQueueSeq,
   rekeyQueue,
   reorderQueueItems,
+  listQueueRowsForCwd,
+  countOpenQueueItems,
+  pruneDeadQueues,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -463,4 +466,86 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
     "every item is still on the source key - all of it, or none of it",
   );
   assert.deepEqual(listQueueItems("rb-to"), [], "nothing leaked onto the target");
+});
+
+// ---- retention + the indexed cwd lookup ----
+//
+// Nothing pruned these rows, so they accumulated for the DB's lifetime - and every
+// `/clear` mints a new note key, hence a new row. Two hot paths read the table
+// several times a second on the single synchronous handle that also serves hook
+// ingest and SSE, so the floor rose with use and never came back down.
+
+function seedRow(key: string, cwd: string, updatedAt: number): void {
+  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, updatedAt });
+}
+
+test("listQueueRowsForCwd returns only that cwd's queues", () => {
+  seedRow("cwd-a1", "/repo-a", 5000);
+  seedRow("cwd-a2", "/repo-a", 6000);
+  seedRow("cwd-b1", "/repo-b", 7000);
+
+  const a = listQueueRowsForCwd("/repo-a").map((r) => r.noteKey).sort();
+  assert.deepEqual(a, ["cwd-a1", "cwd-a2"]);
+  assert.deepEqual(listQueueRowsForCwd("/repo-b").map((r) => r.noteKey), ["cwd-b1"]);
+  assert.deepEqual(listQueueRowsForCwd("/nowhere"), []);
+});
+
+test("countOpenQueueItems counts the non-terminal items and hydrates nothing", () => {
+  seedRow("count-1", "/c", 1000);
+  upsertQueueItem(mkItem({ noteKey: "count-1", seq: 0, state: "queued" }));
+  upsertQueueItem(mkItem({ noteKey: "count-1", seq: 1, state: "verifying" }));
+  upsertQueueItem(mkItem({ noteKey: "count-1", seq: 2, state: "verified" }));
+  upsertQueueItem(mkItem({ noteKey: "count-1", seq: 3, state: "escalated" }));
+  upsertQueueItem(mkItem({ noteKey: "count-1", seq: 4, state: "cancelled" }));
+
+  assert.equal(countOpenQueueItems("count-1"), 2);
+  assert.equal(countOpenQueueItems("no-such-queue"), 0);
+});
+
+test("pruneDeadQueues drops a FINISHED, session-less, aged-out queue and its items", () => {
+  seedRow("dead-1", "/gone", 1000);
+  const item = mkItem({ noteKey: "dead-1", state: "verified" });
+  upsertQueueItem(item);
+
+  // Asserted on identity rather than a returned count: this DB is shared across the
+  // file, so a count would be measuring the other tests' rows too.
+  pruneDeadQueues(new Set(), 5000);
+  assert.equal(getQueueRow("dead-1"), undefined);
+  assert.equal(getQueueItem(item.id), undefined, "its items go with it");
+});
+
+test("pruneDeadQueues NEVER drops a queue with open work, however old", () => {
+  // The whole point of the re-attach affordance: the orphan sweep deliberately leaves
+  // `queued` items intact so a human can resume them. A retention policy that ate
+  // those would be a bug wearing a safety hat.
+  seedRow("backlog-1", "/left", 1);
+  upsertQueueItem(mkItem({ noteKey: "backlog-1", state: "queued" }));
+  seedRow("draft-1", "/left", 1);
+  upsertQueueItem(mkItem({ noteKey: "draft-1", state: "proposed" }));
+
+  pruneDeadQueues(new Set(), Date.now());
+  assert.ok(getQueueRow("backlog-1"), "an untouched backlog is not garbage");
+  assert.ok(getQueueRow("draft-1"), "nor is a draft awaiting an Approve");
+});
+
+test("pruneDeadQueues NEVER drops a LIVE session's queue, drained or not", () => {
+  // A drained queue on a session you are still sitting in is the card's own history,
+  // and the wrap-up ask hangs off that row.
+  seedRow("live-1", "/here", 1);
+  upsertQueueItem(mkItem({ noteKey: "live-1", state: "verified" }));
+
+  pruneDeadQueues(new Set(["live-1"]), Date.now());
+  assert.ok(getQueueRow("live-1"));
+
+  // ...and once that session is gone, the same row is collectable.
+  pruneDeadQueues(new Set(), Date.now());
+  assert.equal(getQueueRow("live-1"), undefined);
+});
+
+test("pruneDeadQueues leaves a recently-touched queue alone", () => {
+  seedRow("recent-1", "/fresh", 9000);
+  upsertQueueItem(mkItem({ noteKey: "recent-1", state: "verified" }));
+
+  pruneDeadQueues(new Set(), 5000);
+  assert.ok(getQueueRow("recent-1"), "inside the retention window");
 });

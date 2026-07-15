@@ -68,6 +68,31 @@ export function noteKeyOf(s: Session): string {
   return s.agentSessionId ?? s.id;
 }
 
+/**
+ * Find the live session holding `noteKey` in a FRESH fleet read, or null.
+ *
+ * Defined once because two callers must agree on it - `queueSendStillValid` before
+ * typing, and the worker's per-target re-resolve before deciding anything - and
+ * they previously did not: the worker's copy omitted the `exited` filter, so a
+ * transiently-exited session resolved as live and its in-flight item was escalated.
+ * Same lesson as IN_FLIGHT_ITEM_STATES (see @shared/queue.ts): when two readers of
+ * one predicate can disagree, the fix is one implementation, not two careful copies.
+ *
+ * Resolve by NOTE KEY, never by `session.id`: the id churns with pid/tty, while the
+ * key is the identity the queue is stored under.
+ *
+ * `exited` sessions are excluded, and that is deliberate rather than incidental.
+ * The state is PROVISIONAL - `applyDiscovery` marks any session missing from a
+ * single `ps` sweep as exited and only evicts it EXIT_LINGER_MS later, cancelling
+ * that timer if it reappears - so treating one as a live target means acting on a
+ * session that may be perfectly healthy. Both callers' actions are irreversible (a
+ * typed work instruction; a terminal escalation with no undo), so a missed poll must
+ * cost a tick, not the item.
+ */
+export function resolveLiveSession(sessions: Session[], noteKey: string): Session | null {
+  return sessions.find((s) => noteKeyOf(s) === noteKey && s.state !== "exited") ?? null;
+}
+
 /** Pane token for a session - what `inject` will actually target. */
 export function paneKeyOf(s: Session): string | null {
   if (s.tmux) return `tmux:${s.tmux.paneId}`;
@@ -124,7 +149,7 @@ export async function queueSendStillValid(
     //    multi-minute verify: it churns with pid/tty, and /inject and /diff both
     //    resolve by it - a cached id 404s or, worse, hits a DIFFERENT session.
     const sessions = await actions.sessions();
-    const fresh = sessions.find((s) => noteKeyOf(s) === obs.noteKey && s.state !== "exited");
+    const fresh = resolveLiveSession(sessions, obs.noteKey);
     if (!fresh) return { ok: false, why: "the session is gone" };
 
     // 2. An unanswered question outranks the queue.

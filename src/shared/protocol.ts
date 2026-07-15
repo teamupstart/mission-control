@@ -262,6 +262,19 @@ export interface ForemanLeaseResult {
 /** Cap on an item's intent: it gets typed into a pane, so it can't be unbounded. */
 const INTENT_MAX = 8000;
 
+/**
+ * Cap on one repo-relative path in a request. The OS won't hand out a longer one -
+ * this matches the tightest mainstream PATH_MAX (darwin's 1024; linux allows 4096) -
+ * and these are relative to the repo root, so a real path has room to spare.
+ */
+const REQUEST_PATH_MAX = 1024;
+/**
+ * Cap on how many paths one request may carry. Sits above `readStandards`'s own
+ * MAX_CHANGED_PATHS (1000), which reports what it dropped - so the schema bounds the
+ * request without pre-empting the honest truncation the bundle already reports.
+ */
+const MAX_REQUEST_PATHS = 5000;
+
 /** Add one work item to a session's queue. */
 export const AddWorkItemSchema = z.object({
   intent: z.string().min(1).max(INTENT_MAX),
@@ -295,7 +308,19 @@ export type ReorderQueue = z.infer<typeof ReorderQueueSchema>;
  * `readStandards` bounds how many it will actually walk, and reports the drop.
  */
 export const StandardsRequestSchema = z.object({
-  paths: z.array(z.string()),
+  /**
+   * Both bounds are load-bearing, and the per-string one especially so.
+   *
+   * `readStandards` climbs `dirname` from every path to the repo root, pushing an
+   * entry per level, so its cost is quadratic in a path's DEPTH - and
+   * MAX_CHANGED_PATHS bounds only how many paths it walks, never how deep any one of
+   * them goes. A single ~16KB path of nested segments blocks the daemon's event loop
+   * for seconds and a slightly longer one exhausts its heap, taking the whole fleet
+   * down with it. The routes are loopback-only so this is hardening rather than a
+   * live exploit, but an unbounded array of unbounded strings is out of step with
+   * every sibling schema here, and no real path notices the bound.
+   */
+  paths: z.array(z.string().max(REQUEST_PATH_MAX)).max(MAX_REQUEST_PATHS),
 });
 export type StandardsRequest = z.infer<typeof StandardsRequestSchema>;
 
@@ -352,7 +377,12 @@ export type SetWorkItemState = z.infer<typeof SetWorkItemStateSchema>;
 
 /** Record the human's answer to the drain-time wrap-up ask. */
 export const WrapupSchema = z.object({
-  answer: z.string().nullable(),
+  // INTENT_MAX like every sibling that carries human text, and for the same reason:
+  // the answer is delivered into a pane. The panel injects it (already capped) before
+  // recording it here, so today that bound is incidental to the flow rather than
+  // enforced at the boundary - and the boundary is where it belongs, since this value
+  // is persisted and re-served on every queue read the worker polls.
+  answer: z.string().max(INTENT_MAX).nullable(),
 });
 export type Wrapup = z.infer<typeof WrapupSchema>;
 

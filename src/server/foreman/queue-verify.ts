@@ -18,6 +18,22 @@ const MAX_GAPS = 3;
 const GAP_ID_MAX = 120;
 /** Cap on a reported path. */
 const GAP_PATH_MAX = 400;
+/**
+ * Cap on the verdict summary - 1-2 sentences per the prompt, with room to spare.
+ *
+ * Unlike the gap fields this is never typed into a pane, so the bound is about
+ * WEIGHT rather than injection: the summary is persisted to `last_verdict` and
+ * re-served on every queue read the worker polls each tick, so an editorializing
+ * verifier would otherwise ride every request for the life of the row.
+ */
+const SUMMARY_MAX = 2000;
+/**
+ * Cap on the `resolved` id list. Deliberate headroom over the ids it can meaningfully
+ * name: an item carries at most MAX_GAPS gaps into a round, so anything past a
+ * handful is the model listing ids that don't exist. This is a bound on weight, not a
+ * rule the verdict has to satisfy.
+ */
+const MAX_RESOLVED = 32;
 
 /**
  * CLAMP the model's text rather than REJECT it.
@@ -54,7 +70,9 @@ const GapSchema = z.object({
 
 export const QueueVerdictSchema = z.object({
   complete: z.boolean(),
-  summary: z.string().min(1),
+  // Clamped, not rejected, for the reason `clampTo` documents: a verdict that judged
+  // the item correctly is not worth discarding over a verbose summary.
+  summary: z.string().min(1).transform(clampTo(SUMMARY_MAX)),
   gaps: z
     .array(GapSchema)
     .default([])
@@ -67,7 +85,11 @@ export const QueueVerdictSchema = z.object({
         .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
         .slice(0, MAX_GAPS),
     ),
-  resolved: z.array(z.string()).default([]),
+  // Ids only ever looked up as a Set, so both bounds are cheap: clamp each to a gap
+  // id's length and take the first MAX_RESOLVED. Trimming can only make the verdict
+  // resolve FEWER prior gaps, which keeps them tracked for another round - the safe
+  // direction, and the same reasoning the gaps cap above uses.
+  resolved: z.array(z.string().transform(clampTo(GAP_ID_MAX))).default([]).transform((r) => r.slice(0, MAX_RESOLVED)),
   confidence: z.number().min(0).max(1).default(0.5),
 });
 

@@ -127,8 +127,18 @@ export function runClaudeText(
       reject(new Error("review timed out"));
     }, opts.timeoutMs ?? REVIEW_TIMEOUT_MS);
     timer.unref?.();
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
+    // Decode ONCE, as a stream, rather than coercing each Buffer chunk to a string
+    // independently. `claude -p` streams its response, so a multi-byte character
+    // landing across a chunk boundary is ordinary rather than exotic - and coerced
+    // per chunk it decodes to replacement characters on both sides. That either
+    // breaks the JSON parse (burning both attempts and pushing the item toward a
+    // bogus "could not verify" escalation) or, worse, parses with corrupted gap text
+    // that then gets typed into the agent. `setEncoding` hands the boundary to the
+    // stream's own StringDecoder, which holds the partial bytes until the rest lands.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => (out += d));
+    child.stderr.on("data", (d: string) => (err += d));
     child.on("error", (e) => {
       done();
       reject(e);

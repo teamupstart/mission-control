@@ -17,7 +17,7 @@ import type {
   WorkItemState,
   WorktreeProvider,
 } from "@shared/types.ts";
-import { IN_FLIGHT_ITEM_STATES } from "@shared/queue.ts";
+import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
@@ -135,6 +135,12 @@ export function openDb(): DatabaseSync {
       completed_at      INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_fqi_queue ON foreman_queue_items(note_key, seq);
+    -- The re-attach hint asks "any queue at THIS cwd?" once per discovered session
+    -- per sweep, several times a second, on the one synchronous handle that also
+    -- serves hook ingest and SSE. Unindexed that is a full scan per session per
+    -- sweep, and the table only ever grows: every /clear mints a new note key and so
+    -- a new row.
+    CREATE INDEX IF NOT EXISTS idx_fq_cwd ON foreman_queues(cwd);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -650,6 +656,98 @@ export function listQueueRows(): Omit<SessionQueue, "items">[] {
     wrapupAnswer: r.wrapup_answer,
     updatedAt: r.updated_at,
   }));
+}
+
+/** Queues recorded at one cwd - the re-attach hint's question, asked as a lookup. */
+export function listQueueRowsForCwd(cwd: string): Omit<SessionQueue, "items">[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM foreman_queues WHERE cwd = ? ORDER BY updated_at DESC`)
+    .all(cwd) as unknown as QueueRow[];
+  return rows.map((r) => ({
+    noteKey: r.note_key,
+    cwd: r.cwd,
+    branch: r.branch,
+    wrapupAskedAt: r.wrapup_asked_at,
+    wrapupAnswer: r.wrapup_answer,
+    updatedAt: r.updated_at,
+  }));
+}
+
+/**
+ * How many of a queue's items are still open, without loading any of them.
+ *
+ * The hint needs a count, and `listQueueItems` was hydrating every row - gaps JSON,
+ * verdicts, drafted payloads and all - to take its length. The predicate is DERIVED
+ * from TERMINAL_ITEM_STATES rather than restated, for the reason @shared/queue.ts
+ * gives: a lifecycle state added without updating a hand-copied SQL list makes this
+ * silently miscount. `state` is a closed enum of identifiers, so quoting them into
+ * SQL is safe by construction (same argument as `inFlightIndexSql`).
+ */
+export function countOpenQueueItems(noteKey: string): number {
+  const states = TERMINAL_ITEM_STATES.map((s) => `'${s}'`).join(",");
+  const r = openDb()
+    .prepare(
+      `SELECT COUNT(*) AS n FROM foreman_queue_items
+        WHERE note_key = ? AND state NOT IN (${states})`,
+    )
+    .get(noteKey) as unknown as { n: number };
+  return r.n;
+}
+
+/**
+ * Age out queues nothing can reach any more. Returns how many rows went.
+ *
+ * Nothing pruned these before, so they accumulated for the DB's lifetime - and every
+ * `/clear` mints a new note key, hence a new row, so the floor rose with use and
+ * never came back down.
+ *
+ * Deliberately conservative about WHAT goes, because the failure mode on this side is
+ * deleting a human's backlog:
+ *  - a queue with ANY open item is untouchable at any age. That's precisely what the
+ *    re-attach affordance exists to resume - the orphan sweep leaves `queued` items
+ *    intact on purpose so a human can pick them up later, and a retention policy that
+ *    ate them would be a bug wearing a safety hat.
+ *  - a live session's queue is untouchable, whatever its items say: `liveKeys` is
+ *    passed in rather than inferred from `updated_at`, because a drained queue on a
+ *    session you are still sitting in is not garbage - it's the card's own history,
+ *    and the wrap-up ask still hangs off that row.
+ * So this only ever drops a fully-finished batch whose session is gone and which
+ * nothing has touched since `cutoff`.
+ */
+export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
+  const db = openDb();
+  const states = TERMINAL_ITEM_STATES.map((s) => `'${s}'`).join(",");
+  const dead = db
+    .prepare(
+      `SELECT note_key FROM foreman_queues q
+        WHERE q.updated_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM foreman_queue_items i
+             WHERE i.note_key = q.note_key AND i.state NOT IN (${states})
+          )`,
+    )
+    .all(cutoff) as unknown as Array<{ note_key: string }>;
+  const drop = dead.map((r) => r.note_key).filter((k) => !liveKeys.has(k));
+  if (drop.length === 0) return 0;
+  // All-or-nothing, like `rekeyQueue`: a queue row outliving its items is a card
+  // claiming a batch it can no longer show, and orphaned items outliving their row
+  // are invisible to every reader here (all of which start from the row).
+  db.exec("BEGIN");
+  try {
+    const delItems = db.prepare(`DELETE FROM foreman_queue_items WHERE note_key = ?`);
+    const delQueue = db.prepare(`DELETE FROM foreman_queues WHERE note_key = ?`);
+    for (const key of drop) {
+      delItems.run(key);
+      delQueue.run(key);
+    }
+    db.exec("COMMIT");
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+  return drop.length;
 }
 
 export function upsertQueueItem(i: WorkItem): void {

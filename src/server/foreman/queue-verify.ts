@@ -14,25 +14,59 @@ import type { QueueVerdict } from "./queue-machine.ts";
 const GAP_TEXT_MAX = 600;
 /** At most 3 gaps per round: a fix prompt the agent can actually act on. */
 const MAX_GAPS = 3;
+/** Cap on a gap id - long enough for a descriptive slug, short enough to log. */
+const GAP_ID_MAX = 120;
+/** Cap on a reported path. */
+const GAP_PATH_MAX = 400;
+
+/**
+ * CLAMP the model's text rather than REJECT it.
+ *
+ * Every bound here is a defence on text that eventually gets typed into a
+ * tool-enabled agent, and truncating enforces that bound exactly as well as
+ * rejecting does - while rejecting throws the whole verdict away. Zod's `.max()`
+ * fails the parse, so a verifier that judged an item COMPLETE but wrote a 700-char
+ * `detail` loses its verdict entirely; `runStructured` then retries the identical
+ * prompt, gets the identical over-long answer, and the item escalates as "Foreman
+ * could not verify this item" after six `claude -p` spawns - over a verbose
+ * sentence, on work that was actually done.
+ *
+ * The `detail` cap isn't even a rule the model was told: the prompt documents
+ * `<= 600 chars` for `fix` alone and describes `detail` as "what is missing,
+ * concretely", which invites length. Clamping gives up no protection either way -
+ * `renderFixPrompt` re-sanitizes every field through a fixed template before
+ * anything reaches a pane.
+ */
+const clampTo = (max: number) => (s: string) => (s.length > max ? s.slice(0, max) : s);
+
+const SEVERITY_RANK: Record<string, number> = { blocking: 0, advisory: 1 };
+
+const GapSchema = z.object({
+  id: z.string().min(1).transform(clampTo(GAP_ID_MAX)),
+  severity: z.enum(["blocking", "advisory"]),
+  kind: z.enum(["incomplete", "untested", "standards", "regression"]),
+  // Required, so the deterministic (path + detail) fingerprint backstop for a
+  // reminted gap id always has something to key on.
+  path: z.string().transform(clampTo(GAP_PATH_MAX)),
+  detail: z.string().min(1).transform(clampTo(GAP_TEXT_MAX)),
+  fix: z.string().transform(clampTo(GAP_TEXT_MAX)),
+});
 
 export const QueueVerdictSchema = z.object({
   complete: z.boolean(),
   summary: z.string().min(1),
   gaps: z
-    .array(
-      z.object({
-        id: z.string().min(1).max(120),
-        severity: z.enum(["blocking", "advisory"]),
-        kind: z.enum(["incomplete", "untested", "standards", "regression"]),
-        // Required, so the deterministic (path + detail) fingerprint backstop for a
-        // reminted gap id always has something to key on.
-        path: z.string().max(400),
-        detail: z.string().min(1).max(GAP_TEXT_MAX),
-        fix: z.string().max(GAP_TEXT_MAX),
-      }),
-    )
-    .max(MAX_GAPS)
-    .default([]),
+    .array(GapSchema)
+    .default([])
+    // Same reasoning as the text caps: a 4th gap is not worth discarding a verdict
+    // over. The prompt asks for "AT MOST 3, most severe first", so honour that
+    // ordering while trimming - a plain slice would let three advisory nits crowd
+    // out the blocking gap that is the only kind that drives a fix round.
+    .transform((gaps) =>
+      [...gaps]
+        .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
+        .slice(0, MAX_GAPS),
+    ),
   resolved: z.array(z.string()).default([]),
   confidence: z.number().min(0).max(1).default(0.5),
 });

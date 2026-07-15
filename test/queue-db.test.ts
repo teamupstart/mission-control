@@ -346,3 +346,61 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
 
   rmSync(drifted, { recursive: true, force: true });
 });
+
+test("a single-flight rebuild that CANNOT succeed keeps the old index and still opens", () => {
+  // The failure path of the rebuild above, which the success-path test can't reach.
+  // Widening the predicate can surface rows that already violate it - that's worth
+  // reporting, but not worth refusing to open the db over.
+  //
+  // DDL is transactional in SQLite, and that is load-bearing here rather than tidy.
+  // Without a transaction the DROP commits on its own: the CREATE then fails on the
+  // violating rows, the catch logs, and the table is left with NO index at all. So
+  // single-flight enforcement is silently gone AND the next openDb() runs
+  // `CREATE UNIQUE INDEX IF NOT EXISTS` against those same rows with nothing to make
+  // it a no-op, throws uncaught, and the daemon never starts again - the exact
+  // bricking the catch was written to prevent.
+  //
+  // Hence THREE starts: the bug is invisible on the start that drops the index and
+  // only bites on the one after it.
+  const stuck = mkdtempSync(join(tmpdir(), "fleet-stuck-"));
+  const run = (src: string): string =>
+    execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], {
+      env: { ...process.env, FLEET_HOME: stuck },
+      encoding: "utf8",
+      cwd: process.cwd(),
+    }).trim();
+
+  const READ = `const d = (await import("./src/server/db.ts")).openDb();
+    const r = d.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='one_inflight_per_queue'").get();
+    console.log(r ? r.sql : "NO INDEX");`;
+
+  // Start 1: narrow the index the way an older build left it, then seed two
+  // `verifying` items in ONE queue. That's legal under the narrow predicate and a
+  // violation of the widened one, so the next start's rebuild cannot succeed.
+  run(`const db = await import("./src/server/db.ts");
+    const d = db.openDb();
+    d.exec("DROP INDEX one_inflight_per_queue;");
+    d.exec("CREATE UNIQUE INDEX one_inflight_per_queue ON foreman_queue_items(note_key) WHERE state IN ('sending','awaiting_pickup','in_progress');");
+    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 0 });
+    const mk = (id, seq) => ({ id, noteKey: "stuck", seq, intent: "i", state: "verifying", round: 0,
+      baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
+      escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
+      recoveredAt: null, revision: 0, createdAt: 0, updatedAt: 0, sentAt: null, completedAt: null });
+    db.upsertQueueItem(mk("k1", 0));
+    db.upsertQueueItem(mk("k2", 1));`);
+
+  // Start 2: the rebuild is attempted and fails. The db must still open, and the old
+  // index must still be there enforcing what it can.
+  const second = run(READ);
+  assert.notEqual(second, "NO INDEX", "a failed rebuild must not leave the table unindexed");
+  assert.doesNotMatch(second, /'verifying'/, "the old, narrower index is kept");
+
+  // Start 3: the one that actually catches it. An uncommitted DROP leaves openDb's
+  // own CREATE UNIQUE INDEX to throw here, and the daemon never starts again.
+  assert.doesNotThrow(
+    () => run(READ),
+    "a db whose rebuild failed must still open on every subsequent start",
+  );
+
+  rmSync(stuck, { recursive: true, force: true });
+});

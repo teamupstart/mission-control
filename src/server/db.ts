@@ -186,6 +186,16 @@ function migrate(d: DatabaseSync): void {
  * violate single-flight. That's worth reporting, but not worth bricking every
  * subsequent start over - the old index still enforces something, so keep it and
  * say so rather than refusing to open the db.
+ *
+ * That promise is what makes the TRANSACTION load-bearing rather than tidy. DDL is
+ * transactional in SQLite, and without a transaction the DROP commits on its own:
+ * the CREATE then fails on the violating rows, the catch logs, and the table is left
+ * with NO index at all. Single-flight enforcement is silently gone, and - worse -
+ * the next openDb() runs `db.exec(inFlightIndexSql())` against those same rows with
+ * nothing to make it a no-op, throws uncaught, and the daemon refuses to start.
+ * Failing to rebuild would brick every subsequent start: the exact outcome the catch
+ * was written to prevent. Rolling back keeps the old index, so the CREATE stays a
+ * no-op and the daemon opens.
  */
 function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
   const row = d
@@ -198,12 +208,20 @@ function rebuildInFlightIndexIfStale(d: DatabaseSync): void {
   const want = new Set<string>(IN_FLIGHT_ITEM_STATES);
   if (stored.size === want.size && [...want].every((s) => stored.has(s))) return;
   try {
+    d.exec("BEGIN IMMEDIATE;");
     d.exec("DROP INDEX one_inflight_per_queue;");
     d.exec(inFlightIndexSql());
+    d.exec("COMMIT;");
   } catch (err) {
+    // Put the old index back. Swallowing a rollback failure is deliberate: the
+    // original error is the one worth reporting, and masking it with "cannot
+    // rollback - no transaction is active" would bury the actual cause.
+    try {
+      d.exec("ROLLBACK;");
+    } catch {}
     console.error(
       "[db] could not rebuild one_inflight_per_queue (rows may already violate " +
-        `single-flight): ${String(err)}`,
+        `single-flight); keeping the previous index: ${String(err)}`,
     );
   }
 }

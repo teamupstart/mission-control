@@ -347,6 +347,63 @@ test("an aborted send consumes NO round and NO strike", async () => {
   }
 });
 
+test("an aborted RESEND leaves the item in flight, so it is never typed twice", async () => {
+  // `resend` acts ONLY on `awaiting_pickup`, which means the prompt is already in
+  // the pane. Demoting it to `queued` on an abort drops it out of the in-flight set,
+  // so the next tick never re-enters decideInFlight, the `picked-up` branch that
+  // would adjudicate the delivery is unreachable, and step 9 simply types the item a
+  // SECOND time.
+  //
+  // The abort reason here IS the race: the guard refuses because "the session did
+  // something since we looked", which is exactly what the agent picking the item up
+  // looks like. The abort fires precisely when re-typing is most wrong.
+  const observed = mkSession({ lastActivity: NOW - 60_000 });
+  const item = mkItem({ state: "awaiting_pickup", sentAt: NOW - 50_000, sendAttempts: 1 });
+  // The guard re-resolves the session and finds it has moved since we observed it.
+  const moved = mkSession({ lastActivity: NOW - 1_000 });
+  const fake = mkFake({ session: moved, items: [item] });
+
+  const out = await applyQueueAction(
+    fake,
+    observed,
+    { kind: "resend", item, payload: "do it", round: 0 },
+    CFG,
+    NOW,
+  );
+
+  assert.equal(out.kind, "aborted");
+  assert.deepEqual(fake.injected, [], "an aborted resend types nothing");
+  assert.equal(
+    fake.states.find((w) => w.patch.state === "queued"),
+    undefined,
+    "an already-delivered item must never be demoted to `queued` - that re-types it",
+  );
+});
+
+test("an aborted send DOES fall back a proposed item - nothing was typed", async () => {
+  // The other half of that rule: a draft holds no single-flight slot and no keystroke
+  // reached the pane, so re-deciding it from scratch next tick is free.
+  const observed = mkSession({ lastActivity: NOW - 60_000 });
+  const item = mkItem({ state: "proposed", approvedAt: NOW - 5_000 });
+  const moved = mkSession({ lastActivity: NOW - 1_000 });
+  const fake = mkFake({ session: moved, items: [item] });
+
+  const out = await applyQueueAction(
+    fake,
+    observed,
+    { kind: "send", item, payload: "do it", round: 0 },
+    CFG,
+    NOW,
+  );
+
+  assert.equal(out.kind, "aborted");
+  assert.deepEqual(fake.injected, []);
+  assert.ok(
+    fake.states.some((w) => w.patch.state === "queued"),
+    "a proposed item falls back to queued",
+  );
+});
+
 // ---- the remaining transitions ----
 
 test("recover-send adopts the item rather than re-injecting it", async () => {

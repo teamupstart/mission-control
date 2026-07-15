@@ -1,6 +1,7 @@
 import type { ForemanConfig } from "@shared/protocol.ts";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
+import { isInFlightState } from "@shared/queue.ts";
 import { SEND_ATTEMPT_CAP, hasPane, inFlightItem, settledIdle } from "./queue-machine.ts";
 import type { QueueAction, QueueConfig } from "./queue-machine.ts";
 import { foremanMayActLive } from "./verdict.ts";
@@ -232,7 +233,20 @@ export async function applyQueueAction(
       if (!guard.ok) {
         // A stale-send abort is NOT evidence about the work, so it must never
         // consume a round or a strike. Fall back and re-decide next tick.
-        if (action.item.state !== "in_progress" && action.item.state !== "queued") {
+        //
+        // An IN-FLIGHT item is never demoted, and `resend` is why: it acts only on
+        // `awaiting_pickup`, which means the prompt is ALREADY in the pane. Writing
+        // it back to `queued` drops it out of the in-flight set, so the next tick
+        // never re-enters decideInFlight and the `picked-up` branch that would have
+        // adjudicated the delivery is unreachable - step 9 simply types the item a
+        // SECOND time. The race isn't hypothetical: guard #3 aborts because "the
+        // session did something since we looked", which is precisely what picking
+        // the item up looks like. Leaving the state alone lets decideInFlight see
+        // `lastActivity > sentAt` next tick and settle it as picked-up.
+        //
+        // `proposed` still falls back to `queued`: nothing was typed, so it holds no
+        // single-flight slot and re-deciding it from scratch is free.
+        if (!isInFlightState(action.item.state) && action.item.state !== "queued") {
           await actions
             .setItemState(session.id, action.item.id, { state: "queued" })
             .catch(() => {});

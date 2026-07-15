@@ -819,10 +819,36 @@ Eight things the plan didn't anticipate, called out so the next reader doesn't r
    two tries in round 0 and reached round 2 sat at the cap, so its first pickup timeout escalated
    with no resend, claiming "the agent never picked this up" about an agent that had picked it up
    twice. A pickup is positive evidence the send landed, so it clears the count.
+9. **A stale-send abort must not demote an IN-FLIGHT item.** The abort path wrote any
+   non-`queued`/`in_progress` item back to `queued`, which caught `awaiting_pickup` - an item whose
+   prompt is already in the pane. `queued` isn't an in-flight state, so the next tick never re-enters
+   `decideInFlight`, the `picked-up` branch that would adjudicate the delivery is unreachable, and
+   step 9 simply types the item a **second time**. The race is not hypothetical: the guard aborts
+   because "the session did something since we looked", which is *precisely* what the agent picking
+   the item up looks like - so the abort fired exactly when re-typing was most wrong. In-flight items
+   are now left alone; `proposed` still falls back, because nothing was typed.
+10. **A schema bound on model text must CLAMP, not reject.** `detail` used Zod `.max()`, which fails
+    the parse. A verifier that judged an item **complete** but wrote a 700-char detail lost its whole
+    verdict; `runStructured` retried the identical prompt, got the identical answer, and the item
+    escalated as "Foreman could not verify this item" after six `claude -p` spawns - over a verbose
+    sentence, on work that was done. The cap was never even a rule the model was told (the prompt
+    documents `<= 600 chars` for `fix` alone). Clamping gives up no protection: `renderFixPrompt`
+    re-sanitizes every field through a fixed template before anything reaches a pane. The gap-count
+    cap had the same shape and now trims most-severe-first, so three advisory nits can't crowd out
+    the one blocking gap that drives the fix round.
+11. **The single-flight index rebuild needed a transaction.** DDL is transactional in SQLite, and
+    without `BEGIN`/`COMMIT` the `DROP` commits on its own: the `CREATE` then fails on the violating
+    rows the rebuild exists to surface, the catch logs, and the table is left with **no index at
+    all**. Single-flight enforcement is silently gone *and* the next `openDb()` runs
+    `CREATE UNIQUE INDEX IF NOT EXISTS` against those same rows with nothing to make it a no-op,
+    throws uncaught, and the daemon never starts again - the exact bricking the catch was written to
+    prevent. Confirmed by running three real starts: without the transaction, start 2 leaves
+    `NO INDEX` and start 3 dies on `UNIQUE constraint failed`. Rolling back keeps the old index, so
+    the `CREATE` stays a no-op and the daemon opens.
 
 ## Verification performed
 
-`npm run typecheck` + `npm test` green (338 tests). Beyond the suites, an E2E run drove the **real**
+`npm run typecheck` + `npm test` green (369 tests). Beyond the suites, an E2E run drove the **real**
 daemon against a **real** throwaway scratch git repo and a **real** transcript file (never a live
 session - the plan's guardrail), confirming: CRUD + reorder + the CAS 409; the mode gate (dry-run
 proposes, live sends, and it sends the *first* item); a diff scoped to a real base sha; an

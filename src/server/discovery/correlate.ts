@@ -1,10 +1,11 @@
-import type { AgentType, NameSource, TmuxInfo, WeztermInfo } from "@shared/types.ts";
+import type { AgentType, NameSource, PermissionMode, TmuxInfo, WeztermInfo } from "@shared/types.ts";
 import { listProcesses, type Proc } from "./processes.ts";
 import { listTmuxPanes, type TmuxPane } from "./tmux.ts";
 import { listWeztermPanes, weztermCwdToPath, type WeztermPane } from "./wezterm.ts";
 import { gitInfo } from "../util/git.ts";
 import { readProcCwds } from "./proc-cwd.ts";
 import { annotateNomistakesLaunches } from "./nomistakes-launch.ts";
+import { annotatePermissionModes } from "./pane-mode.ts";
 
 /** basename of a path, or "" for null/root - used for name fallbacks. */
 function basename(p: string | null): string {
@@ -33,6 +34,13 @@ export interface DiscoveredSession {
   tmux: TmuxInfo | null;
   /** Agent process start time (epoch ms), 0 when unparseable. */
   startedAt: number;
+  /**
+   * Claude's live permission mode, read off the pane by `annotatePermissionModes`.
+   * Undefined when we couldn't read it (a Codex session, no pane handle, or a
+   * dialog covering Claude's mode line) - the registry then keeps whatever a hook
+   * last reported rather than treating "unknown" as "changed".
+   */
+  permissionMode?: PermissionMode;
   /**
    * Worktrees where this session is currently driving a no-mistakes run, seen as
    * live `no-mistakes axi run/respond/...` processes in its subtree (added by
@@ -215,6 +223,9 @@ export async function discover(): Promise<DiscoveredSession[]> {
   const input = await gatherDiscoveryInput();
   const procCwds = await readProcCwds(representativeAgentPids(input.procs));
   const sessions = correlate(input, procCwds);
-  await annotateNomistakesLaunches(sessions, input.procs);
+  await Promise.all([
+    annotateNomistakesLaunches(sessions, input.procs),
+    annotatePermissionModes(sessions),
+  ]);
   return sessions;
 }

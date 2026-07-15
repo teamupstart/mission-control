@@ -184,7 +184,10 @@ export class Registry extends EventEmitter {
       nomistakesGated: d.nomistakesGated,
       pid: d.pid,
       tty: d.tty,
-      permissionMode: prev?.permissionMode ?? null,
+      // A mode read straight off the pane outranks every remembered value; absent
+      // one (Codex, no pane, or a dialog covering Claude's mode line) we keep the
+      // last we knew rather than blanking the chip.
+      permissionMode: d.permissionMode ?? prev?.permissionMode ?? null,
       wezterm: d.wezterm,
       tmux: d.tmux,
       agentSessionId: prev?.agentSessionId ?? null,
@@ -211,7 +214,8 @@ export class Registry extends EventEmitter {
       base.instrumented = true;
       base.state = overlay.state;
       base.activity = overlay.activity;
-      base.permissionMode = overlay.permissionMode ?? base.permissionMode;
+      // The hook overlay is a fallback for the pane read, never an override of it.
+      base.permissionMode = d.permissionMode ?? overlay.permissionMode ?? base.permissionMode;
       base.lastActivity = overlay.lastActivity;
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
@@ -285,42 +289,34 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Optimistically advance a session's permission-mode chip one Shift+Tab step,
-   * called right after we inject a cycle keystroke into its pane. Claude changes
-   * the mode instantly but emits no signal carrying the new value on an idle
-   * session (its hooks omit it and the statusLine payload never has it), so
-   * without this the chip would stay on the old mode and the toggle would look
-   * like a no-op. Only the steps whose landing mode is certain advance (see
-   * `MODE_CYCLE`); from a step whose landing mode depends on config we leave the
-   * chip for a real hook to set rather than invent a value.
+   * Record a permission mode we just *read off a session's pane*, so the chip
+   * reflects it immediately instead of waiting up to a poll interval for the next
+   * sweep to observe the same thing. Called after a mode change succeeds.
    *
-   * The result is a best-effort hint, not an authoritative reading. The caller
-   * fires this on a successful injection, which only proves the keystroke bytes
-   * reached the pane - if the session wasn't at its normal prompt (a permission or
-   * plan-approval dialog, a slash-command menu, a REPL that isn't foreground) Claude
-   * swallows it without cycling, and the chip advances regardless. It stays diverged
-   * until a hook carrying `permission_mode` reconciles it.
+   * This is an observation, not a guess: the caller read the mode back from the
+   * terminal (see `setPermissionMode`), so unlike the mode we infer from a
+   * keystroke, it can't diverge from what Claude is actually doing. A null mode -
+   * one we couldn't read - is ignored rather than written, leaving the last known
+   * value up for the next poll to correct.
    *
-   * The pane overlay's mode is updated whenever one exists, regardless of its
-   * age. Both readers handle that correctly: `mergeDiscovered` gates the overlay
-   * behind its own OVERLAY_TTL_MS freshness check, so a stale one won't resurface
-   * passive state (and the new mode still reaches the next sweep via the updated
-   * session, which `mergeDiscovered` seeds from `prev`); `applyHook` reads the
-   * overlay's mode with no TTL check as its sticky fallback, so keeping it current
-   * means a later hook that omits permission_mode reconciles to the advanced mode
-   * instead of the pre-cycle one. `updatedAt` is deliberately left alone: that
-   * stamp is the overlay's freshness clock, and bumping it on an injected
-   * keystroke would revive an overlay already past OVERLAY_TTL_MS, re-applying all
-   * of its stale fields (instrumented, state, activity) over the card.
+   * The pane overlay's mode is updated whenever one exists, regardless of its age.
+   * Both readers handle that correctly: `mergeDiscovered` gates the overlay behind
+   * its own OVERLAY_TTL_MS freshness check, so a stale one won't resurface passive
+   * state (and the mode still reaches the next sweep via the updated session, which
+   * `mergeDiscovered` seeds from `prev`); `applyHook` reads the overlay's mode with
+   * no TTL check as its sticky fallback, so keeping it current means a later hook
+   * that omits permission_mode reconciles to the new mode rather than the old one.
+   * `updatedAt` is deliberately left alone: that stamp is the overlay's freshness
+   * clock, and bumping it here would revive an overlay already past OVERLAY_TTL_MS,
+   * re-applying all of its stale fields (instrumented, state, activity) over the card.
    */
-  optimisticCyclePermissionMode(sessionId: string): void {
+  recordObservedPermissionMode(sessionId: string, mode: PermissionMode | null): void {
+    if (!mode) return;
     const s = this.sessions.get(sessionId);
-    if (!s) return;
-    const next = nextPermissionMode(s.permissionMode);
-    if (!next) return;
+    if (!s || s.permissionMode === mode) return;
     const overlay = this.overlayFor(s);
-    if (overlay) overlay.permissionMode = next;
-    const updated: Session = { ...s, permissionMode: next };
+    if (overlay) overlay.permissionMode = mode;
+    const updated: Session = { ...s, permissionMode: mode };
     this.sessions.set(sessionId, updated);
     this.emitSession(updated);
   }
@@ -825,43 +821,6 @@ const PERMISSION_MODES = new Set<PermissionMode>([
  */
 export function normalizePermissionMode(raw: string | undefined | null): PermissionMode | null {
   return raw && PERMISSION_MODES.has(raw as PermissionMode) ? (raw as PermissionMode) : null;
-}
-
-/**
- * Claude's Shift+Tab cycle order, used to *optimistically* advance the card's
- * mode chip the instant we inject a cycle keystroke (see
- * `optimisticCyclePermissionMode` for why the chip has to guess at all).
- *
- * We only advance a step when its outcome is *certain*. default -> acceptEdits and
- * acceptEdits -> plan are the only transitions that land on the same mode in every
- * config: the optional `bypassPermissions`/`auto` modes slot into the cycle only
- * after `plan`, gated behind flags / account settings the daemon can't observe. So
- * from `plan` the next mode is config-dependent - `default` in the base cycle, but
- * `bypassPermissions`/`auto` when those are enabled - and `plan`/`bypassPermissions`/
- * `auto` therefore map to null rather than fabricate a mode we can't derive, as
- * `dontAsk` (never in the cycle) already did. Their chips keep the last mode a hook
- * reported until the next one updates them.
- *
- * That last-known chip can lag reality, as any hook-sourced value can - a
- * pre-existing property of the overlay this neither introduces nor fixes. The point
- * here is narrower: don't add a *new* wrong value on top of it.
- */
-const MODE_CYCLE: Record<PermissionMode, PermissionMode | null> = {
-  default: "acceptEdits",
-  acceptEdits: "plan",
-  plan: null,
-  bypassPermissions: null,
-  auto: null,
-  dontAsk: null,
-};
-
-/**
- * The next mode a Shift+Tab lands on from `current`, or null when we can't tell -
- * in which case the chip is left for a real hook to update rather than guessed.
- */
-export function nextPermissionMode(current: PermissionMode | null): PermissionMode | null {
-  if (!current) return null;
-  return MODE_CYCLE[current];
 }
 
 /**

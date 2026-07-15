@@ -451,13 +451,34 @@ const cache = new Map<string, { headSha: string; at: number; log: FixLog }>();
 /** How long a fully-resolved log stays fresh. */
 const FRESH_MS = 60_000;
 /**
- * How long a log with unresolved context stays fresh. Shorter because of an
- * ordering race: the fix commits BEFORE its round row is written (the executor
- * inserts the round after the step returns), so a log read in that window sees
- * the commit with no context. Keyed on HEAD alone it would stay contextless
- * forever, since HEAD doesn't move again. Retrying soon closes that window.
+ * How long a log whose context might still be landing stays fresh. Shorter
+ * because of an ordering race: the fix commits BEFORE its round row is written
+ * (the executor inserts the round after the step returns), so a log read in that
+ * window sees the commit with no context. Keyed on HEAD alone it would stay
+ * contextless forever, since HEAD doesn't move again. Retrying soon closes that.
  */
 const RETRY_MS = 5_000;
+/**
+ * How long after a fix commits its round row might still be unwritten.
+ *
+ * The gate on RETRY_MS, and the reason it isn't `decision === null` alone: a
+ * missing round is also a PERMANENT, documented state (a fix whose run has since
+ * been deleted has no round and never will), and a contextless fix is the common
+ * case, not an edge one. Retrying on that state re-read git and sqlite on every
+ * tick forever - RETRY_MS is <= the poll interval, so the guard never held - for
+ * an answer that cannot change. Only a RECENT unresolved fix is worth a retry;
+ * the race closes in seconds, so a minute is already generous.
+ */
+const RACE_MS = 60_000;
+
+/** Whether a fix might still be waiting on a round row, vs. permanently without one. */
+function awaitingContext(log: FixLog, now: number): boolean {
+  // Distance, not age: a commit date is not our clock. It comes from whichever
+  // machine made the commit, and a skewed or rebased one dates into the future -
+  // which as a plain `now - committedAt` is negative, i.e. forever inside the
+  // window, i.e. the exact permanent re-read loop this gate exists to stop.
+  return log.summaries.some((s) => s.decision === null && Math.abs(now - s.committedAt) < RACE_MS);
+}
 
 /** Drop a checkout's cached log, so the next read is from scratch. */
 export function forgetFixLog(cwd: string): void {
@@ -487,8 +508,7 @@ async function ensureFixLog(cwd: string, now: number): Promise<FixLog> {
   const headSha = head.code === 0 ? head.stdout.trim() : "";
   const hit = cache.get(cwd);
   if (hit && headSha && hit.headSha === headSha) {
-    const resolved = hit.log.summaries.every((s) => s.decision !== null);
-    if (now - hit.at < (resolved ? FRESH_MS : RETRY_MS)) return hit.log;
+    if (now - hit.at < (awaitingContext(hit.log, now) ? RETRY_MS : FRESH_MS)) return hit.log;
   }
   const log = await readFixLog(cwd);
   cache.set(cwd, { headSha, at: now, log });

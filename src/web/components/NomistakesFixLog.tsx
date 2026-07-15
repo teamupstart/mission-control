@@ -29,6 +29,7 @@ export function NomistakesFixLog({
   const [open, setOpen] = useState(false);
   const [openSha, setOpenSha] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLUListElement>(null);
   const [atEnd, setAtEnd] = useState(true);
 
   const syncFade = useCallback(() => {
@@ -37,9 +38,21 @@ export function NomistakesFixLog({
     setAtEnd(el.scrollTop + el.clientHeight >= el.scrollHeight - 2);
   }, []);
 
-  // The fade is a lie if it lingers at the end of the list, and the list's height
-  // changes when a fix opens - so re-measure on both.
-  useEffect(() => syncFade(), [open, openSha, fixes, syncFade]);
+  // Measure the CONTENT, not this component's own state. The scroller's height is
+  // pinned by CSS, so what changes is what's inside it - and most of that is
+  // invisible from here: a fix's detail arrives from a fetch held in FixRow's own
+  // state, "+ N more findings" and "Show full reply" unclamp inside FixContext.
+  // Re-measuring on [open, openSha] alone measured the "Loading…" placeholder and
+  // never looked again, so the fade was absent exactly when the scroller had the
+  // most hidden content. Observing the list covers every growth path at once,
+  // including ones added later. Fires on observe, so it measures the first paint too.
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => syncFade());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, syncFade]);
 
   return (
     <div className={`nm-log${open ? " nm-log-open" : ""}`}>
@@ -61,7 +74,7 @@ export function NomistakesFixLog({
         <>
           <div className={`nm-scrollwrap${atEnd ? " nm-at-end" : ""}`}>
             <div className="nm-scroll" ref={scrollRef} onScroll={syncFade}>
-              <ul className="nm-fixrows">
+              <ul className="nm-fixrows" ref={contentRef}>
                 {fixes.map((f) => (
                   <FixRow
                     key={f.sha}

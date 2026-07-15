@@ -55,10 +55,22 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
   const parentRes = await git(cwd, ["rev-parse", "--verify", "--quiet", `${full}^`]);
   const parent = parentRes.code === 0 && parentRes.stdout.trim() ? parentRes.stdout.trim() : EMPTY_TREE;
 
+  const baseSha = parent === EMPTY_TREE ? null : parent.slice(0, 12);
+  const failed = (error: string): SessionDiff => ({
+    ...base0, branch, headSha, repoRoot, baseSha, error,
+  });
+
+  // Both exit codes are checked, for the reason computeSessionDiff spells out at
+  // length below: `run` reports a timeout or a crash as a plain non-zero exit with
+  // whatever stdout was flushed, so an unchecked failure returns `ok: true` with
+  // no files and an empty patch. That is exactly what an empty fix commit looks
+  // like - a real, tested state the viewer renders as "No changes in this commit."
+  // So a diff we couldn't read would claim the fix changed nothing.
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
   const numstat = await git(cwd, ["diff", "--numstat", parent, full]);
+  if (numstat.code !== 0) return failed("could not read the diff stats");
   for (const line of numstat.stdout.split("\n")) {
     const m = line.match(/^(\d+|-)\t(\d+|-)\t/);
     if (!m) continue;
@@ -67,7 +79,9 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
     if (m[2] !== "-") deletions += Number(m[2]);
   }
 
-  let patch = (await git(cwd, ["diff", parent, full])).stdout;
+  const patchRes = await git(cwd, ["diff", parent, full]);
+  if (patchRes.code !== 0) return failed("could not read the diff");
+  let patch = patchRes.stdout;
   let truncated = false;
   if (patch.length > MAX_PATCH_BYTES) {
     patch = patch.slice(0, MAX_PATCH_BYTES);
@@ -80,7 +94,7 @@ export async function computeCommitDiff(cwd: string | null, sha: string): Promis
     // it's diffed against its parent, which is what `baseSha` is for. Putting the
     // parent's sha in `base` reads as a branch to every consumer of the field.
     base: null,
-    baseSha: parent === EMPTY_TREE ? null : parent.slice(0, 12),
+    baseSha,
     headSha, branch, repoRoot, filesChanged, insertions, deletions, patch, truncated,
   };
 }

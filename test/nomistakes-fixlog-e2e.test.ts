@@ -48,10 +48,16 @@ function mkOriginAndClone(): string {
   return clone;
 }
 
-function commit(cwd: string, file: string, body: string, subject: string): void {
+function commit(cwd: string, file: string, body: string, subject: string, agoMs = 0): void {
   writeFileSync(join(cwd, file), body);
   execFileSync("git", ["-C", cwd, "add", "-A"], { stdio: "pipe" });
-  execFileSync("git", ["-C", cwd, "commit", "-qm", subject], { stdio: "pipe" });
+  // `%ct` is the committer date, and the log's freshness rules read it - so dating
+  // a commit in the past is how a fix gets to be older than the round-write race.
+  const when = new Date(Date.now() - agoMs).toISOString();
+  execFileSync("git", ["-C", cwd, "commit", "-qm", subject], {
+    stdio: "pipe",
+    env: { ...process.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when },
+  });
 }
 
 function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
@@ -298,6 +304,75 @@ test("a checkout that leaves the fleet doesn't keep its cached fix log", async (
 });
 
 /**
+ * A fix with no matching round is not an edge case, it's the STEADY STATE - the
+ * run that made it gets deleted and its rounds go with it, so the context is
+ * permanently absent, as this whole file's empty NM_HOME models. Retrying on
+ * `decision === null` alone therefore never settled: RETRY_MS is <= the poll
+ * interval, so the guard was vacuous and every tick re-ran `git log`, two more
+ * rev-parses and a sqlite open, forever, for an answer that cannot change.
+ *
+ * Freshness is invisible in the output, so the read is made observable the way the
+ * sweep test above does it: move the source ref up to HEAD and a FRESH read finds
+ * nothing in `origin/main..HEAD`, while a cache hit still answers with the old log.
+ */
+test("a fix whose round never landed settles instead of re-reading every tick", async () => {
+  const clone = mkOriginAndClone();
+  // Dated well before the race window: a round that hasn't been written in an hour
+  // is never going to be.
+  commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing", 60 * 60_000);
+  forgetFixLog(clone);
+
+  const t0 = Date.now();
+  const first = await fixSummaries(clone, t0);
+  assert.equal(first.length, 1);
+  assert.equal(first[0]!.decision, null, "no db, so no context - permanently");
+
+  execFileSync("git", ["-C", clone, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+  // Past RETRY_MS and well inside FRESH_MS. Answering 1 means the cache held.
+  assert.equal((await fixSummaries(clone, t0 + 5_001)).length, 1, "settled: no re-read");
+});
+
+/**
+ * A commit date is not our clock - it comes from whoever made the commit, and a
+ * skewed or rebased one dates into the future. Measured as a plain age that reads
+ * as negative, which is forever "recent": the same permanent re-read loop, just
+ * reached from the other side.
+ */
+test("a fix dated in the future settles too", async () => {
+  const clone = mkOriginAndClone();
+  commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing", -60 * 60_000); // an hour ahead
+  forgetFixLog(clone);
+
+  const t0 = Date.now();
+  assert.equal((await fixSummaries(clone, t0)).length, 1);
+
+  execFileSync("git", ["-C", clone, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+  assert.equal((await fixSummaries(clone, t0 + 5_001)).length, 1, "settled: no re-read");
+});
+
+/**
+ * The other half: RETRY_MS still has to do the job it was written for. A fix
+ * commits BEFORE its round row is written, so a log read in that window sees a
+ * contextless commit and, keyed on HEAD alone, would stay contextless forever.
+ * Recency is what tells that fix apart from one whose round is simply gone.
+ */
+test("a fix that just landed still retries for its context", async () => {
+  const clone = mkOriginAndClone();
+  commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing"); // dated now
+  forgetFixLog(clone);
+
+  const t0 = Date.now();
+  assert.equal((await fixSummaries(clone, t0)).length, 1);
+
+  execFileSync("git", ["-C", clone, "update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+  // Same instant as the test above, and the opposite answer: 0 proves it re-read.
+  assert.equal((await fixSummaries(clone, t0 + 5_001)).length, 0, "the race window is still open");
+});
+
+/**
  * `base` is documented as the source BRANCH and the viewer renders it as one, but
  * a commit isn't diffed against a branch - it's diffed against its parent, which
  * is what `baseSha` carries. A parent sha in `base` shows a raw sha where a
@@ -352,6 +427,55 @@ test("an empty fix commit opens as a diff with no changes and no base branch", a
   assert.equal(diff.patch, "");
   assert.equal(diff.base, null);
 });
+
+/**
+ * A read that FAILED must never look like a read that found nothing - the third
+ * instance of that class on this branch, after the caps and `listFixes` returning
+ * [] on a git error. An empty fix commit is real (the test above opens one) and
+ * renders as "No changes in this commit.", so a diff we couldn't read has to take
+ * the viewer's error path rather than borrow that copy for a fix that changed
+ * real code.
+ *
+ * Both calls, because each fails open on its own. These configs are the user's to
+ * set - the same way `grep.patternType` reached the fix log - and they fail the
+ * shape any broken diff does (a timeout, a crash): git exits non-zero having
+ * written nothing to stdout.
+ */
+for (const { setting, value, error } of [
+  // --numstat doesn't run the external program, so the stats still come back and
+  // only the patch dies: `ok: true` with real files and an empty patch, which the
+  // viewer parses to zero files and renders as "No changes in this commit."
+  { setting: "diff.external", value: "false", error: /could not read the diff$/ },
+  // An unparseable algorithm kills both calls, so the stats check is what fires.
+  { setting: "diff.algorithm", value: "bogus", error: /could not read the diff stats$/ },
+]) {
+  test(`a commit diff broken by ${setting} says so instead of claiming no changes`, async () => {
+    const clone = mkOriginAndClone();
+    const registry = new Registry();
+    const app = buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
+
+    const id = `sess-dfail-${setting}`;
+    commit(clone, "b.ts", "x\n", "no-mistakes(review): fix a thing");
+    registry.applyDiscovery([disco({ syntheticId: id, cwd: clone })]);
+    forgetFixLog(clone);
+    await pollFixLogs(registry);
+    const sha = registry.getSession(id)!.nomistakesFixes[0]!.sha;
+
+    // Set after the poll: the point is the diff, and `git log --numstat` reads this
+    // config too. Repo-local is how a user's ~/.gitconfig reaches this code.
+    execFileSync("git", ["-C", clone, "config", setting, value], { stdio: "pipe" });
+
+    const res = await app.request(`/api/sessions/${id}/diff?commit=${sha}`, { headers: LOOPBACK });
+    const diff = (await res.json()) as SessionDiff;
+    assert.equal(diff.ok, false, "an unreadable diff is not an empty one");
+    assert.match(diff.error ?? "", error);
+    // The empty-commit copy keys off `ok`, so failing closed is what keeps them apart.
+    assert.equal(diff.patch, "");
+    // The parent still belongs in baseSha, and no branch in base: an error is still a commit diff.
+    assert.equal(diff.base, null);
+    assert.equal(diff.baseSha, execFileSync("git", ["-C", clone, "rev-parse", "HEAD~1"]).toString().trim().slice(0, 12));
+  });
+}
 
 /** A sha that's been rebased away should say so, not answer with a wrong diff. */
 test("?commit= reports an unreachable sha rather than guessing", async () => {

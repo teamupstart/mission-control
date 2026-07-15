@@ -15,7 +15,7 @@ import {
 } from "../src/server/foreman/triage.ts";
 import { NO_QUESTION_PLACEHOLDER } from "../src/server/foreman/pending.ts";
 import type { Pending } from "../src/server/foreman/pending.ts";
-import type { TranscriptMessage } from "../src/shared/types.ts";
+import type { ToolCall, TranscriptMessage } from "../src/shared/types.ts";
 import { planFromVerdict } from "../src/server/foreman/verdict.ts";
 import type { ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
@@ -33,6 +33,14 @@ function pend(over: Partial<Pending> = {}): Pending {
   };
 }
 
+test("tier0 hands a gate-parked session to the reviewer instead of disposing it", () => {
+  // The regression this closes: a gate-parked run has its question sitting in the
+  // transcript, but it reached tier0 as `no-question` and was disposed with a canned
+  // line and zero model calls - so nothing ever read it.
+  const out = tier0(pend({ situation: "gate-parked", canSend: true }));
+  assert.equal(out.kind, "continue");
+});
+
 function report(over: Partial<TriageReport> = {}): TriageReport {
   return {
     purpose: "Child wants to run the tests before pushing.",
@@ -44,12 +52,15 @@ function report(over: Partial<TriageReport> = {}): TriageReport {
 }
 
 /**
- * A transcript turn as `toMessage` builds one: prose + tool NAMES, never tool inputs. Each gets
- * a distinct id, like the record uuids the real reader emits - the prompt window de-dupes on it.
+ * A transcript turn as `toMessage` builds one: prose plus its tool calls. Each gets a distinct
+ * id, like the record uuids the real reader emits - the prompt window de-dupes on it. A bare
+ * string is shorthand for a call whose input carries nothing worth scanning; pass a ToolCall to
+ * give it real arguments.
  */
 let msgSeq = 0;
-function msg(text: string, tools: string[] = []): TranscriptMessage {
-  return { id: `m${++msgSeq}`, role: "assistant", text, tools, ts: 1 };
+function msg(text: string, tools: (string | ToolCall)[] = []): TranscriptMessage {
+  const calls = tools.map((t) => (typeof t === "string" ? { name: t } : t));
+  return { id: `m${++msgSeq}`, role: "assistant", text, tools: calls, ts: 1 };
 }
 
 /** A clean (non-destructive) Tier 1 scan window - enough context for the denylist to have scanned. */
@@ -285,6 +296,102 @@ test("mapTriage: one prose turn among tool calls is enough to have scanned", () 
   if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
 });
 
+test("mapTriage: the denylist catches a command that exists ONLY as a tool input", () => {
+  // The hole this closes. On the terminal surface the pending question is the generic
+  // "Claude needs your permission", and a turn used to flatten to the bare name "Bash" - so a
+  // command never spoken about in prose was invisible to the denylist, and the router's own
+  // bucketing was the only thing in front of it. Here the router says routine-access (the
+  // failure being defended against) and the backstop must overrule it anyway.
+  const out = mapTriage(report({ bucket: "routine-access" }), pend({ question: "Claude needs your permission" }), {
+    messages: [
+      msg("Cleaning up the build directory before the next run.", []),
+      msg("", [{ name: "Bash", input: JSON.stringify({ command: "rm -rf /tmp/build" }) }]),
+    ],
+  });
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") {
+    assert.equal(out.verdict.action, "escalate", "a destructive tool input must never be auto-answered");
+  }
+});
+
+test("mapTriage: a benign tool input is not made risky by carrying it", () => {
+  const out = mapTriage(report(), pend({ question: "Claude needs your permission" }), {
+    messages: [
+      msg("Running the suite before I push.", []),
+      msg("", [{ name: "Bash", input: JSON.stringify({ command: "npm test -- --run" }) }]),
+    ],
+  });
+  assert.equal(out.kind, "dispose");
+  if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
+});
+
+test("mapTriage: a gate-parked run is never auto-answered, even on a clean prose window", () => {
+  // The common half of this, and the one the prose gate can't catch: the skill relays the
+  // ask-user finding AS prose before it stops, so `hasProse` is true and the window is clean -
+  // an ask-user finding need not name anything the denylist knows ("this hardcoded value should
+  // be configurable"). Everything lines up for the auto-answer, and Tier 1 must still route up:
+  // Haiku's ROUTER only describes permission prompts, so its `routine-access` bucket here is a
+  // guess at a shape it was never taught, and under `triage: on` that guess would type an
+  // approval into the pane for a finding the pipeline said only a human can call.
+  const out = mapTriage(
+    report(),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("The pipeline says this hardcoded value should be configurable - your call.")] },
+  );
+  assert.equal(out.kind, "route-up", "must NOT approve a gate on Haiku's say-so");
+  if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
+});
+
+test("mapTriage: a gate whose FINDING TEXT trips the denylist still reaches Tier 2", () => {
+  // Backstop 1 fires above backstop 4, so scanning the synthesized question escalated exactly the
+  // gates that most want judging: `gateQuestion` quotes the pipeline's finding prose verbatim, and
+  // a finding that merely DISCUSSES a risk reads as an ask that IS one. This fixture is the gate
+  // question built from the real one in foreman-pending.test.ts - "--force" is being reported as a
+  // bug, not requested - and it used to match /--force\b/i and dispose as an escalate at Tier 1.
+  const out = mapTriage(
+    report(),
+    pend({
+      situation: "gate-parked",
+      question:
+        'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.\n\n' +
+        "Findings no-mistakes routed to the user's judgment rather than fixing itself:\n" +
+        "- r2 [warning] src/cli.ts: New --force flag bypasses the confirm prompt",
+    }),
+    { messages: [msg("Relaying the finding as the pipeline wrote it - your call.")] },
+  );
+  assert.equal(out.kind, "route-up", "a gate must reach the tier taught to judge one, not stop at Haiku");
+  if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
+});
+
+test("mapTriage: a gate-parked window whose CHILD PROSE is destructive still escalates", () => {
+  // The other half of the same decision: only the question we wrote ourselves is exempt. The window
+  // is the child's own utterance, so backstop 1 stays fully in force over it - and it outranks
+  // backstop 4, because a destructive window is worth telling the human about now rather than
+  // spending an Opus call to reach the same place.
+  const out = mapTriage(
+    report(),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("I'll force-push over main to clear the history first.")] },
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+});
+
+test("mapTriage: a prose-free gate-parked window reports the scan failure, not the gate", () => {
+  // Both backstops route a gate up; 3(a) fires first so the log names the sharper diagnosis -
+  // this window was never scanned at all, which is true of it beyond its being a gate.
+  const out = mapTriage(report(), pend({ situation: "gate-parked" }), { messages: [msg("", ["Bash"])] });
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
 test("mapTriage: an empty window still allows the safe directions (skip + escalate)", () => {
   const esc = mapTriage(report({ bucket: "human-only", disposition: "escalate", answer: undefined }), pend(), { messages: [] });
   assert.equal(esc.kind, "dispose");
@@ -338,6 +445,86 @@ test("mapTriage: human-only skip is allowed only for a non-risky ask", () => {
   );
   assert.equal(risky.kind, "dispose");
   if (risky.kind === "dispose") assert.equal(risky.verdict.action, "escalate");
+});
+
+test("mapTriage: a gate-parked run is never quietly skipped either, clean window or not", () => {
+  // The other door into disposing a gate without a model reading it. Backstop 4 sits below the
+  // human-only block, so `skip` bypassed it entirely: same reasoning, opposite disposition. It is
+  // a plausible bucketing rather than a contrived one - before the poller scrapes the findings the
+  // question is pure boilerplate, and "can't tell what is being asked" is the ROUTER's own stated
+  // skip criterion. A skip takes no wrong action, but it stamps the marker handled with no brief
+  // and no recommendation, so the gate silently never gets judged - the outcome this path exists
+  // to prevent.
+  const out = mapTriage(
+    report({ bucket: "human-only", disposition: "skip", answer: undefined }),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("The pipeline flagged one finding for you - relaying it as written.")] },
+  );
+  assert.equal(out.kind, "route-up", "a gate must reach the only tier taught what a gate is");
+  if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
+});
+
+test("mapTriage: a gate-parked run bucketed human-only ESCALATE still disposes at Tier 1", () => {
+  // Only the disposition is withheld, not the bucket. An escalation puts the gate in front of the
+  // human with Haiku's brief - safe, cheap, and exactly what routing up would have cost an Opus
+  // call to conclude. Buying a full review for every gate is the trade this deliberately refuses.
+  const out = mapTriage(
+    report({ bucket: "human-only", disposition: "escalate", brief: "## Gate\nreview", recommendation: "Make it configurable", answer: undefined }),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("The pipeline flagged one finding for you - relaying it as written.")] },
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+  assert.equal(out.verdict.recommendation, "Make it configurable");
+});
+
+test("mapTriage: across EVERY report shape, a gate is only ever routed up or escalated", () => {
+  // The invariant behind the two tests above, pinned directly rather than one door at a time.
+  // Tier 1 has leaked a gate twice now, each time through a disposal path that simply wasn't
+  // scoped by situation - first `routine-access`, then `human-only` + `skip` - so the class of
+  // bug is "someone adds a third disposal and no test notices". Enumerating the report space
+  // catches that at the door: whatever Haiku returns, a gate may only reach the human (escalate)
+  // or the tier that was taught what a gate is (route-up). It may never be ANSWERED (typing an
+  // approval the pipeline reserved for the user) or SKIPPED (stamped handled, never judged).
+  const buckets = ["human-only", "routine-access", "needs-judgment"] as const;
+  const dispositions = [undefined, "escalate", "skip"] as const;
+  const answers = [undefined, { text: "Approve - go ahead." }];
+  const confidences = [0.5, 0.9];
+  const windows: ScanWindow[] = [
+    { messages: [] },
+    { messages: [msg("", ["Bash"])] },
+    { messages: [msg("Relaying the finding as the pipeline wrote it.")] },
+    { messages: [msg("Relaying the finding.")], boundaryUnknown: true },
+    { messages: [msg("", ["Read"])], unavailable: true },
+  ];
+  const gate = pend({
+    situation: "gate-parked",
+    question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+  });
+
+  let disposals = 0;
+  for (const bucket of buckets)
+    for (const disposition of dispositions)
+      for (const answer of answers)
+        for (const confidence of confidences)
+          for (const scan of windows) {
+            const out = mapTriage(report({ bucket, disposition, answer, confidence }), gate, scan);
+            if (out.kind !== "dispose") continue;
+            disposals++;
+            assert.equal(
+              out.verdict.action,
+              "escalate",
+              `gate disposed as "${out.verdict.action}" (${out.reason}) for ${bucket}/${disposition}/conf ${confidence}`,
+            );
+          }
+  assert.ok(disposals > 0, "the escalate path must actually be exercised, not vacuously absent");
 });
 
 // ---- shadow-mode divergence classifier (pure) ----
@@ -476,6 +663,28 @@ test("triageSession: a window of pure TOOL CALLS routes up (tool names name no c
     }),
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession({ activity: "Claude needs your permission" }),
+    cfg(),
+  );
+  assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
+test("triageSession: a prose-free window routes a GATE-PARKED ask up, never auto-approves it", async () => {
+  // A gate-parked question is a template Foreman synthesizes from the run summary, and it never
+  // names a command - so it sits on the terminal-pane side of this backstop, not the input-review
+  // side. A run whose findings the poller hasn't scraped reduces it to pure boilerplate, and with
+  // a prose-free window the denylist has scanned nothing either: approving a gate (possibly a push
+  // gate) off that is exactly the fail-open this exists to stop.
+  const out = await triageSession(
+    deps({
+      transcript: async () => ({ messages: Array.from({ length: 12 }, () => msg("", ["Bash"])), truncated: false }),
+    }),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+      marker: "gate:run-01:review:abc123",
+    }),
+    mkSession(),
     cfg(),
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");

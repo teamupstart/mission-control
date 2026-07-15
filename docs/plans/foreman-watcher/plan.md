@@ -59,12 +59,12 @@ the note, and the `classifyPending` surface). Disposes without any model call wh
 structurally determined:
 
 - Marker already handled ⇒ skip. *(Exists today via `handledMarker`.)*
-- Surface is a non-`input` review (plan / diff / gate) ⇒ structurally human-only ⇒ `skip`. This
-  previously spent a full review just to write the Purpose; Tier 0 disposes it outright, naming
-  the Purpose straight from the review's own kind and title. *(This resolves the third open
-  question below in the cheap direction: the Purpose here is written by pure code, not handed
-  down to Haiku - "this is a plan review for you" is all Foreman has to add, and it needs no
-  model to say it.)*
+- Surface is a non-`input` review (plan / diff - `ReviewKind` has never had a `gate` member) ⇒
+  structurally human-only ⇒ `skip`. This previously spent a full review just to write the Purpose;
+  Tier 0 disposes it outright, naming the Purpose straight from the review's own kind and title.
+  *(This resolves the third open question below in the cheap direction: the Purpose here is
+  written by pure code, not handed down to Haiku - "this is a plan review for you" is all Foreman
+  has to add, and it needs no model to say it.)*
 - Answerable surface but no delivery channel (a terminal prompt with no tmux/wezterm pane) ⇒ would
   escalate regardless ⇒ route **up**. *(This bullet originally read "escalate directly when the
   question is short and self-contained, else route up". Implementation found the premise doesn't
@@ -75,8 +75,9 @@ structurally determined:
   instead; no-pane sessions are rare, so the Opus cost is negligible.)*
 
 ### Tier 1 — cheap model triage (Haiku, trimmed transcript)
-For sessions that reach here there IS an answerable surface (an `input` review or a terminal
-prompt with a pane). Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
+For sessions that reach here there IS an answerable surface (an `input` review, a terminal prompt
+with a pane, or a parked no-mistakes gate - the last is why backstop 4 below has to exist).
+Reuse the same `claude -p --tools ""` subprocess machinery from `review.ts`,
 but with `--model claude-haiku-4-5` and a smaller window (fetch `turns=12` instead of 48). The
 endpoint's `turns` turned out to be a *byte*-bound hint rather than a turn bound - under its byte
 budget `readTranscriptWindow` returns the file whole - so the real bound is applied client-side in
@@ -93,11 +94,18 @@ the ask, not solve it:
 - `needs-judgment` (implementation trade-offs, anything Haiku isn't confident on) ⇒ route **up**
   to Tier 2.
 
-Two hard backstops in *code*, applied after Haiku, that Haiku cannot override:
+Four hard backstops in *code*, applied after Haiku, that Haiku cannot override:
 1. The destructive denylist the `POLICY` already enumerates (`rm -rf`, force-push, drop/delete
    data, prod changes, secrets, exfiltration, disabling safety checks) — if it matches, force
-   `escalate` regardless of Haiku.
+   `escalate` regardless of Haiku. Scanned over what the child said and did (the pending ask, the
+   recent window, Haiku's own reply), never over a question Foreman synthesized itself.
 2. Low-confidence default is route-up, never skip-answerable.
+3. An unscannable window withholds the auto-answer — the only outcome that acts. No prose for the
+   denylist to have read (`hasProse`), or turns that can't be placed in the session
+   (`boundaryUnknown`), means "unknown" rather than "safe", so it routes up.
+4. A parked no-mistakes gate is never Tier 1's to answer or skip. The router is only ever taught
+   permission prompts, so it has no notion of what a gate is; a gate may only be escalated (cheap,
+   safe, in front of the human) or routed up to the tier that was taught.
 
 ### Tier 2 — full review (unchanged)
 The existing `reviewSession` + full `POLICY` + 48-turn window. Fires only for sessions Tier 1
@@ -117,7 +125,7 @@ snapshot, so the mid-review safety net still applies.
 - New `src/server/foreman/pending.ts`: `classifyPending`, lifted out of `worker.ts` (which runs a
   top-level loop on import, so `triage.ts` could not have imported it there) and given a richer
   `situation` discriminant - `input-review` / `non-input-review` / `terminal-pane` /
-  `terminal-no-pane` / `no-question` - which is exactly what Tier 0 switches on.
+  `terminal-no-pane` / `gate-parked` / `no-question` - which is exactly what Tier 0 switches on.
 - `worker.ts`: `processSession` delegates to `decide`, which switches over the posture and returns
   `{ verdict, tier }` - `fullReviewOnly` (off), `shadowBoth` (shadow), or `cheapTierDecides` (on).
   `reviewSession` is reached only when the cheap tier routes up, or on every session under `off` /
@@ -204,9 +212,34 @@ action.
 - ~~Should Tier 0's "human-only" Purpose be written by Haiku (a summary) or skipped entirely?~~
   **Resolved:** neither - Tier 0 writes a structural Purpose in pure code, naming the review's kind
   and title, for zero tokens. See the Tier 0 bullet above.
-- The denylist can only read what a `TranscriptMessage` carries, and that is tool *names* without
+- ~~The denylist can only read what a `TranscriptMessage` carries, and that is tool *names* without
   tool *inputs* (`toMessage` in `src/server/transcript.ts` drops the arguments). A command that
   appears only as a tool input and is never spoken about in prose is therefore invisible to
   backstop 1, leaving the router's own bucketing as the only thing in front of it. Closing this
   properly means carrying tool inputs through `TranscriptMessage` - worth doing before `on` is
-  trusted on the terminal surface.
+  trusted on the terminal surface.~~
+  **Resolved:** `TranscriptMessage.tools` now carries each call's input, capped at
+  `TOOL_INPUT_CAP`, so backstop 1 scans real command strings. It also fixed a bigger problem than
+  the one it was filed under: on the terminal surface the *reviewer* was blind too, since the
+  pending question there is the generic "Claude needs your permission" and an `AskUserQuestion`
+  rendered as a bare name. Tier 2 could not produce a usable verdict at all on that input.
+- `hasProse` (backstop 3) is now deliberately narrower than what the denylist scans - it still
+  requires *prose*, though a tool input is scannable too. That only ever routes up, so it is safe,
+  but it means a prose-free window still buys an Opus call Tier 1 could now have answered.
+  Widening it loosens a safety gate, so it wants its own change and its own measurement.
+- Carrying tool *inputs* into `riskContextFrom` widened what the denylist sees from prose + tool
+  names to file paths and file bodies, and the DESTRUCTIVE patterns are word-level, not
+  command-level - so a payload that merely *discusses* a dangerous word now escalates. Measured
+  over 205 real 12-turn scan windows from this machine's transcripts: escalation 22.9% before vs
+  36.1% after (+13.2 points), leaving 63.9% still disposable by Tier 1 - so the feared "Tier 1's
+  only substantive disposal collapses toward zero" does not hold. The new escalations come from
+  `Bash` (25), `StructuredOutput` (5), `Write` (1); the hypothesised `Read`/`.env.example` and
+  `Grep`/`api_key` trips did not occur at all in real data. The `Bash` trips are overwhelmingly
+  benign scratch cleanup (`rm -f /tmp/...`) - backstop 1 over-matching exactly as its own comment
+  says it is designed to, now meeting real commands for the first time; one genuine catch observed
+  was `vercel deploy --prod`. The real noise is `StructuredOutput`/`Write` payloads discussing
+  dangerous words (~2.9% of windows). *Accepted deliberately: the direction is safe (it can only
+  route up), and `shadow`'s `cheap-over-eager` divergence is the instrument. Note for anyone
+  tempted by the obvious fix - scoping the input scan to command-bearing tools would recover only
+  ~6 of the 27 new escalations, because the bulk IS `Bash`. This is the data to weigh before
+  flipping `triage` to `on`.*

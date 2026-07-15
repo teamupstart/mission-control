@@ -250,5 +250,9 @@ server → worker → UI in that order (each independently testable).
 
 - Daemon-managed auto-launch of the worker (v1 is `npm run foreman`).
 - Codex sessions (no transcript endpoint yet) — Foreman targets Claude sessions first.
-- Auto-answering no-mistakes gates (that path already has `nomistakes/respond`; could fold in later).
+- ~~Auto-answering no-mistakes gates (that path already has `nomistakes/respond`; could fold in later).~~
+  **Resolved:** folded in. A parked gate whose driving agent has stopped classifies as the
+  `gate-parked` situation (see `foreman/pending.ts`) and reaches the full reviewer, which reads the
+  relayed finding off the transcript and judges it against the session's goal. The cheap tier is
+  never allowed to dispose one - see backstop 4 in `docs/plans/foreman-watcher/plan.md`.
 - Learning/att­ribution memory of your past decisions to sharpen its defaults.

@@ -107,37 +107,47 @@ export function isDestructive(text: string): boolean {
 }
 
 /**
- * Flatten the Tier 1 window (each turn's prose + its tool names) into one blob for the
- * denylist to scan. This is what gives the backstop something real to match on the
- * terminal surface: there, `Pending.question` is only the generic notification line
- * ("Claude needs your permission" - see the Notification branch of registry.ts's
- * `hookToState`), which never names the command being approved, so scanning the child's
- * own recent prose is the only code-level view of what it is about to run. Callers must
- * pass an already-trimmed window (see TIER1_TURNS): scanning a whole session's history
- * matches ambient prose unrelated to the pending ask.
+ * Flatten the Tier 1 window (each turn's prose + its tool calls, names AND inputs) into
+ * one blob for the denylist to scan. This is what gives the backstop something real to
+ * match on the terminal surface: there, `Pending.question` is only the generic
+ * notification line ("Claude needs your permission" - see the Notification branch of
+ * registry.ts's `hookToState`), which never names the command being approved, so the
+ * child's own recent window is the only code-level view of what it is about to run.
+ * Callers must pass an already-trimmed window (see TIER1_TURNS): scanning a whole
+ * session's history matches ambient prose unrelated to the pending ask.
  *
- * KNOWN LIMITATION - a `TranscriptMessage` carries tool NAMES only, never tool INPUTS
- * (`toMessage` in src/server/transcript.ts pushes `block.name` and drops the arguments).
- * So a command that appears ONLY as a tool input, and is never spoken about in prose, is
- * invisible here and CANNOT be caught by this backstop; the router's own bucketing is the
- * only thing standing in front of that case. Closing the gap properly means carrying tool
- * inputs through `TranscriptMessage`. Turns are joined with newlines because several
- * patterns are `[^\n]`-bounded and must not match across two unrelated turns.
+ * Tool INPUTS are scanned, not just names, so `Bash(rm -rf …)` is caught as the command
+ * it is. Before they were carried, a `TranscriptMessage` held names only and a command
+ * that never appeared in prose was invisible here - the router's own bucketing was the
+ * sole thing in front of it. Prose remains in scope precisely because it is a weaker,
+ * different signal: an agent narrating "then I'll force-push" trips this before it ever
+ * reaches for the tool.
+ *
+ * Turns are joined with newlines because several patterns are `[^\n]`-bounded and must
+ * not match across two unrelated turns; a call's name and input are joined with a space
+ * for the same reason - `Bash` and its command are one utterance, not two.
  */
 function riskContextFrom(messages: TranscriptMessage[]): string {
-  return messages.map((m) => [m.text, ...m.tools].join(" ")).join("\n");
+  return messages
+    .map((m) => [m.text, ...m.tools.map((t) => (t.input ? `${t.name} ${t.input}` : t.name))].join(" "))
+    .join("\n");
 }
 
 /**
- * Whether the window carried any prose at all - from EITHER role, exactly mirroring what
- * `riskContextFrom` scans. There is no role filter and none is implied: the gate asks only
- * whether the denylist had text to read, and proves nothing about who spoke or whether they
- * spoke about the pending ask. A turn survives `toMessage` on its tool calls alone (it drops
- * a turn only when it has neither text nor tools), and such a turn flattens to bare tool NAMES
- * ("Bash"), so a window can be non-empty and still carry nothing scannable. Backstop 3 keys on
- * this rather than on `messages.length` for that reason: a run of prose-free tool calls is an
- * ordinary shape for a tool-heavy stretch of work, and counting it as "scanned and clean" would
- * be exactly the fail-open the backstop exists to prevent.
+ * Whether the window carried any prose at all - from EITHER role. There is no role filter and
+ * none is implied: the gate proves nothing about who spoke or whether they spoke about the
+ * pending ask. Backstop 3 keys on this rather than on `messages.length` because a turn survives
+ * `toMessage` on its tool calls alone, so a window can be non-empty and still carry nothing
+ * worth scanning; counting that as "scanned and clean" would be exactly the fail-open the
+ * backstop exists to prevent.
+ *
+ * DELIBERATELY NARROWER than `riskContextFrom`, which also scans tool inputs. The two used to
+ * mirror each other exactly and no longer do, because the asymmetry only errs one way: prose is
+ * a STRICTER precondition than "something was scannable", so a window of prose-free tool calls
+ * routes UP to the full reviewer that would have been Tier 1's to answer. That costs an Opus
+ * call and can never wave anything through. Widening this to count tool inputs would be a real
+ * saving now that they are carried - but it LOOSENS a safety gate, so it belongs in its own
+ * change with its own reasoning, not smuggled in alongside the one that made it possible.
  */
 function hasProse(messages: TranscriptMessage[]): boolean {
   return messages.some((m) => m.text.trim().length > 0);
@@ -206,7 +216,7 @@ function accessAnswerVerdict(purpose: string, text: string): Verdict {
 export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
   switch (pending.situation) {
     case "non-input-review": {
-      // A plan/diff/gate review is structurally human-only: Foreman can't auto-approve a
+      // A plan/diff review is structurally human-only: Foreman can't auto-approve a
       // review. Today this still spends a full review just to write a purpose - Tier 0
       // short-circuits it with a purpose named straight from the review, no model call.
       const what = pending.reviewTitle
@@ -238,11 +248,14 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       // Needs-you for some other state with no answerable question - leave it for you.
       //
       // The activity line is deliberately NOT interpolated into the purpose: on THIS branch it
-      // is a state label, not context. `gateParked` requires the driving agent to have stopped,
-      // so a gate-parked run's state is `idle`, which the Stop hook labels "idle" verbatim -
-      // and "The session needs you: idle" is worse than saying plainly what happened. Tier 0 has
-      // no model, so it cannot do better than an honest canned line here; the transcript-derived
-      // purpose is Tier 2's job.
+      // is a state label, not context. A session reaching here is `idle`, which the Stop hook
+      // labels "idle" verbatim - and "The session needs you: idle" is worse than saying plainly
+      // what happened. Tier 0 has no model, so it cannot do better than an honest canned line.
+      //
+      // A parked no-mistakes gate used to land here and be disposed exactly like this, which
+      // was the bug: its question was sitting in the transcript and nothing ever read it. Those
+      // now classify as `gate-parked` and route to the reviewer. What remains here genuinely has
+      // no question - an idle session that is needs-you for some other reason.
       return {
         kind: "dispose",
         tier: 0,
@@ -254,6 +267,11 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
     }
     case "input-review":
     case "terminal-pane":
+    // A parked gate is answerable prose-to-prose: the child relayed the finding and stopped, so
+    // the reviewer reads the ask from the transcript and Foreman types the decision back. It
+    // gets no Tier 0 shortcut precisely because the call needs a model - which was the whole
+    // complaint about disposing it here.
+    case "gate-parked":
       return { kind: "continue" };
   }
 }
@@ -286,8 +304,19 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // `question` is only a generic notification line and never names the command itself.
   // The window is taken whole (rather than a pre-flattened string) so that "scanned and
   // clean" stays distinguishable from "there was nothing to scan" - see backstop 3.
+  //
+  // We scan what the child SAID and DID, never text we synthesized ourselves. A `gate-parked`
+  // question is the one that isn't the child's: `gateQuestion` writes it from the run summary and
+  // quotes the pipeline's finding prose verbatim, so word-level patterns match findings that merely
+  // DISCUSS a risk ("New --force flag bypasses the confirm prompt" trips /--force\b/i) rather than
+  // asks that ARE one. Since backstop 1 fires above backstop 4, that escalated the gate at Tier 1
+  // and kept it from the only tier taught to judge one - and code-review findings routinely discuss
+  // force-pushes, secrets, and deletes, so it was the common case, not the tail. The window scan
+  // below stays fully in force for a gate: those turns are the child's own utterance, which is
+  // exactly what this exists to read. Every other situation's question is the child's too, and is
+  // scanned unchanged.
   const risky =
-    isDestructive(pending.question) ||
+    (pending.situation === "gate-parked" ? false : isDestructive(pending.question)) ||
     isDestructive(riskContextFrom(scan.messages)) ||
     (report.answer ? isDestructive(report.answer.text) : false);
 
@@ -303,6 +332,16 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   if (report.bucket === "human-only") {
     // A quiet skip is only allowed for a non-risky ask; anything risky is surfaced (escalated).
     if (report.disposition === "skip" && !risky) {
+      // ...and never for a gate. Backstop 4's reasoning - the ROUTER is only ever taught
+      // permission prompts, so it has no notion of what a gate is - applies to `skip` exactly as
+      // it does to `routine-access`, and a gate disposed here would never reach the one tier that
+      // was taught. That is the outcome this whole path exists to prevent, and the boilerplate
+      // variant makes it likely: before the poller scrapes the findings, `gateQuestion` reduces
+      // to a template, and "genuinely can't tell what is being asked" (the ROUTER's own skip
+      // criterion) becomes a fair read of it. Only the DISPOSITION is blocked, not the bucket:
+      // `human-only` + `escalate` still disposes below, which is cheap, safe, and puts the gate
+      // in front of the human - buying an Opus review for every gate would not be.
+      if (pending.situation === "gate-parked") return { kind: "route-up", reason: "gate-needs-review" };
       return { kind: "dispose", tier: 1, reason: "human-only-skip", verdict: skipVerdict(report.purpose, report.brief) };
     }
     return {
@@ -330,21 +369,47 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // stay allowed however little was scanned.
   //
   // (a) Nothing scannable in the window - but only where the question can't carry the command
-  // itself. The two answerable surfaces genuinely differ here, and this must not be re-broadened
-  // to cover both: on `terminal-pane` the question is the Notification hook's generic line
+  // itself. The answerable surfaces genuinely differ here, and this must not be re-broadened to
+  // cover all of them: on `terminal-pane` the question is the Notification hook's generic line
   // ("Claude needs your permission") and the reply is the router's own "Approve - go ahead.", so
   // the window's prose is the ONLY text backstop 1 could match a command in - with none,
-  // `risky === false` means "unknown" rather than "safe". On `input-review` the question IS the
-  // child's own review body, scanned in full above: the window corroborates it, it is not the
-  // only witness, so its absence proves nothing and gating on it would route up asks that were
-  // perfectly scannable.
-  if (pending.situation === "terminal-pane" && !hasProse(scan.messages)) {
+  // `risky === false` means "unknown" rather than "safe". `gate-parked` sits on that same side:
+  // its question is a template Foreman synthesizes from the run summary, which never names a
+  // command, and a run whose findings haven't been scraped yet reduces it to pure boilerplate -
+  // so a prose-free window leaves the ask unread there too. A gate reaching this line is on the
+  // routine-access path (a `human-only` one was already routed up in the block above), and
+  // backstop 4 would route it up anyway; this still names the situation because it fires first,
+  // and "nothing was scanned" is the sharper diagnosis for the worker log than "it was a gate".
+  // Between the three sites, no gate is ever disposed by Tier 1 as anything but an escalation.
+  // On `input-review` the question IS the child's own review body, scanned in full above: the
+  // window corroborates it, it is not the only witness, so its absence proves nothing and gating
+  // on it would route up asks that were perfectly scannable.
+  if (
+    (pending.situation === "terminal-pane" || pending.situation === "gate-parked") &&
+    !hasProse(scan.messages)
+  ) {
     return { kind: "route-up", reason: scan.unavailable ? "no-transcript-file" : "no-transcript-context" };
   }
   // (b) The window's shape could not be established (see `recentTurns`), so these turns can't be
   // placed in the session - a clean scan over them is not evidence about the PENDING ask on
   // either surface, however much prose they hold. Not scoped by situation for that reason.
   if (scan.boundaryUnknown) return { kind: "route-up", reason: "no-window-boundary" };
+
+  // Backstop 4: a parked no-mistakes gate is never Tier 1's to ANSWER, however clean the window
+  // and however sure the router. Backstop 3(a) above only catches the rare half of this - a
+  // gate-parked window is almost never prose-free, since the skill relays the finding AS prose
+  // and then stops, which is the whole reason the situation exists. The `human-only` block above
+  // withholds the other disposal a gate could reach (a quiet skip) on the same grounds.
+  //
+  // The router has no notion of what a gate is: `buildTriagePrompt`'s ROUTER only ever describes
+  // permission prompts, so a `routine-access` bucket here is Haiku bucketing a question shape it
+  // was never taught - and under `triage: on` that guess is final and types an approval into the
+  // pane, approving a finding the pipeline said only a human can call. Routing up costs an Opus
+  // call and can never take a wrong action, and it makes true what tier0 already claims of this
+  // situation: it gets no shortcut precisely because the call needs a model. Teaching the ROUTER
+  // about gates instead would let Tier 1 keep disposing them - that LOOSENS rather than tightens,
+  // so it belongs in its own change with its own shadow-mode measurement.
+  if (pending.situation === "gate-parked") return { kind: "route-up", reason: "gate-needs-review" };
 
   if (!report.answer?.text) {
     // Bucketed routine-access but produced no reply to send - don't guess; route up.

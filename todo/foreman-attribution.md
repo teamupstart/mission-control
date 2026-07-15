@@ -1,6 +1,9 @@
 # Foreman attribution - putting a byline on the fix log's reply
 
-Status: backlog / designed, not started
+Status: SHIPPED. Kept for the reasoning, not as work - the design below is the thinking that
+produced it, and three parts of it turned out to be wrong on contact with the code (see
+"What actually shipped"). The durable summary lives in `docs/plans/no-mistakes-log/plan.md`;
+this file can be deleted whenever its history stops being useful.
 Owner: ai-harness (Agent Wrangler)
 Related: `docs/plans/no-mistakes-log/plan.md` (the fix log, which this completes - it defers
 this as "phase 3"), PR #48 `mancej/foreman-sees-nomistakes-gates` (the integration this was
@@ -231,16 +234,45 @@ attribution bug.
 
 ## Remaining work
 
-- [ ] `logEvent` in `applyVerdict` for `gate-parked` verdicts, with `{runId, step, findingIds, text}`.
-- [ ] Thread `runId` + round finding ids through `loadRoundContext` → `NmFixSummary`/`NmFixDetail`.
-- [ ] Join in the fix log; add `"foreman"` to the decision lanes.
-- [ ] `logEvent` in `respond()` for dashboard-originated instructions → the "you" lane.
-- [ ] Prune `session_events` for this kind, or confirm the existing retention covers it - the
-      table is durable and this adds a row per gate verdict.
-- [ ] UI lane + the foreman's text as its own block.
-- [ ] Tests: the join with several rounds on one (run, step); a foreman reply with no matching
-      fix; a fix with no reply; and - explicitly - that **no** part of this depends on
-      `findingsDigest` or on description text.
+- [x] Log the foreman's send for `gate-parked` verdicts, with `{runId, step, findingIds, text}`.
+      **Not** via `logEvent` - see below.
+- [x] Thread `runId` + round finding ids through `loadRoundContext` → `NmFixSummary`/`NmFixDetail`.
+- [x] Join in the fix log; add the foreman lane.
+- [x] Log dashboard-originated instructions → the "you" lane. In the ROUTE, not `respond()`.
+- [x] Retention: aged, 90 days, never session-scoped. See below.
+- [x] UI lane + the foreman's text as its own block.
+- [x] Tests: `test/nomistakes-byline.test.ts` (the join, both stores, the foreman path) and
+      `test/nomistakes-fixlog-render.test.ts` (what the lane says, and what it must not).
+
+## What actually shipped
+
+The shape held; three of its mechanics did not survive contact with the code.
+
+- **`session_events` was the wrong store.** Two reasons, either sufficient. (1) `hooksEverSeen`
+  reads ANY row for a session as "hooks reached us from this session" - it does not filter by
+  kind, and its comment leans on there being exactly one writer. A second writer would make
+  every foreman-nudged session claim hooks it never emitted, silently, in a fact that gates
+  escalation. (2) The design called it "durable and indexed", but it is indexed
+  `(session_id, ts)` - and the join key is the RUN. `readFixLog` resolves from a cwd and never
+  holds a session id, and a session id is synthetic (tty+pid+start) so it re-mints on restart
+  while a run id doesn't. So: a `gate_replies` table, indexed `(run_id, step)`.
+- **`applyVerdict` cannot call `logEvent`.** The foreman worker is a separate process; it
+  "reaches the daemon only over the localhost API - it never touches the DB directly"
+  (`worker.ts`). It goes through `ForemanActions` + `POST /api/sessions/:id/gate-reply`.
+- **The "you" lane is logged in the route, not `respond()`.** `respond()` is a helper keyed by
+  cwd that anything could call; a POST to the route is by definition the Fix box, and is the
+  only side holding a session and its live run.
+
+Two additions the design didn't call:
+
+- **`NmFixDecision` stays a two-way union.** It is no-mistakes' `selection_source` and nothing
+  more. The byline is a different fact from a different source, so it is a separate
+  `attribution` field - which keeps `replied` meaning exactly what the pipeline recorded, and
+  lets "replied, author unknown" (the common case) stay the plain absence of a byline.
+- **A one-second causality tolerance.** `%ct` is git's committer date in whole SECONDS, so
+  `committedAt` is floored by up to 999ms and a reply logged in that same second reads as
+  being in its own fix's future. Without the tolerance the true match is discarded; with more
+  than a second, the next round's reply starts explaining this round's commit.
 
 ## Risks and open questions
 
@@ -248,12 +280,18 @@ attribution bug.
   what to send to `axi respond`. So "the foreman authorized this fix" is really "the foreman
   said X about this gate, and the agent then answered it." The UI must not overclaim: show the
   foreman's text as context for the reply, not as the reply.
-- **The agent can ignore the nudge.** A logged `foreman_gate_reply` for a gate does not prove
-  the fix that followed reflects it. The honest label is *"the foreman said this about this
-  gate"*, which is exactly what the data supports.
-- **Retention.** The fix log is branch-scoped and self-clearing (reset destroys the commits).
-  `session_events` is not - it is durable and keyed by session id. A fix log surviving a
-  daemon restart would want these events to outlive the session, which cuts against any
-  session-scoped pruning. Decide deliberately.
+  **Resolved:** the lane reads `replied · after a nudge from the foreman`, and the foreman's
+  words are a separate block headed "the foreman said this about this gate". A render test
+  asserts the card never says "by the foreman".
+- **The agent can ignore the nudge.** A logged reply for a gate does not prove the fix that
+  followed reflects it. The honest label is *"the foreman said this about this gate"*, which
+  is exactly what the data supports. **Resolved:** that is verbatim what it says.
+- **Retention.** **Resolved: aged (90 days), never session-scoped.** The rows hang off a
+  session id, so session-scoped pruning is right there and is a trap: the fix log outlives its
+  session by design (it is read from git, and a finished run is exactly when it becomes worth
+  reviewing), so that would delete the byline for the branch you sat down to review. Age is
+  the only bound that doesn't fight the feature.
 - **`findingsDigest` is private** to `pending.ts` and, per above, must stay unused here. If a
   future change makes the digest look tempting again, re-read the truncation section first.
+  **Resolved:** nothing here touches it, and "the byline survives descriptions that no digest
+  could match" in `test/nomistakes-byline.test.ts` fails if it ever creeps back.

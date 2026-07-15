@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { itemLabel, moveTarget } from "../src/web/lib/queue.ts";
+import { itemLabel, moveTarget, queueHintKind } from "../src/web/lib/queue.ts";
+import type { QueueHintKind } from "../src/web/lib/queue.ts";
 import type { WorkItem, WorkItemState } from "../src/shared/types.ts";
 
 // The work-queue panel's pure presentation logic. It lives in src/web/lib precisely
@@ -103,4 +104,49 @@ test("moveTarget steps OVER done and in-flight rows, never onto them", () => {
 
 test("moveTarget returns -1 for an item that isn't in the list", () => {
   assert.equal(moveTarget([mkItem({ id: "a" })], mkItem({ id: "ghost" }), 1), -1);
+});
+
+// ---- the hint: what the panel owes you about items that aren't moving ----
+
+const hint = (over: Partial<Parameters<typeof queueHintKind>[0]> = {}): QueueHintKind =>
+  queueHintKind({ enabled: true, mode: "live", allowlisted: true, cwd: "/repo", ...over });
+
+test("a live, allowlisted, enabled queue says nothing - the panel already shows it", () => {
+  assert.equal(hint(), null);
+});
+
+test("Foreman being off outranks whatever the mode and allowlist would say", () => {
+  // It short-circuits the worker's loop before it ever reads a queue, so "it will
+  // draft each item and wait for your Approve" would describe a draft that is never
+  // coming - and an item sitting there forever under that sentence reads as a bug in
+  // the queue rather than a switch nobody flipped.
+  assert.equal(hint({ enabled: false }), "foreman-off");
+  assert.equal(hint({ enabled: false, mode: "dry-run" }), "foreman-off");
+  assert.equal(hint({ enabled: false, allowlisted: false, cwd: null }), "foreman-off");
+});
+
+test("a session with NO cwd is told why it only ever gets drafts", () => {
+  // `foremanMayActLive` returns false on a null cwd, so this session drafts forever.
+  // Nothing else says so: `queueBlockedReason` doesn't gate on cwd and the note key
+  // never needs one, so a session whose cwd discovery failed while its hooks report
+  // gets a fully working panel whose items sit `proposed` under no explanation at
+  // all - which is the exact silence this hint exists to break.
+  assert.equal(hint({ cwd: null }), "no-cwd");
+  assert.equal(
+    hint({ cwd: null, allowlisted: false }),
+    "no-cwd",
+    "a null cwd can't be allowlisted, so this must not fall through to the sentence that names one",
+  );
+});
+
+test("a live but un-allowlisted repo is told which directory to add", () => {
+  assert.equal(hint({ allowlisted: false }), "not-allowlisted");
+});
+
+test("a non-live mode explains the drafts, whatever the allowlist says", () => {
+  // Approve is the gate in every non-live mode, so the allowlist is not what is
+  // stopping the send and naming it would send the human to fix the wrong thing.
+  assert.equal(hint({ mode: "dry-run" }), "drafts-only");
+  assert.equal(hint({ mode: "dry-run", allowlisted: false }), "drafts-only");
+  assert.equal(hint({ mode: "semi-auto", cwd: null }), "drafts-only");
 });

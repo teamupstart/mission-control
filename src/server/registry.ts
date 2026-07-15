@@ -1238,10 +1238,20 @@ export class Registry extends EventEmitter {
   /**
    * Ensure a queue row exists for a session, refreshing its cwd/branch (the
    * re-attach hint must track where the session actually is). Returns the key.
+   *
+   * Claude-only, and refused HERE because this is the boundary the write crosses -
+   * the panel hiding its add box is presentation, not enforcement, and the loopback
+   * API (which the worker is itself a client of) goes straight past it. Every tick
+   * filters to `agent === "claude"`, so a queue on a Codex session would never
+   * advance; and because that session is LIVE, its key is live, so neither the cwd
+   * re-attach hint nor the fleet orphan sweep would ever offer the batch to anyone.
+   * That is the same one-way trip to nowhere `reattachQueue` refuses, arriving by a
+   * different door.
    */
   ensureQueue(id: string, now = Date.now()): string | null {
     const s = this.sessions.get(id);
     if (!s) return null;
+    if (s.agent !== "claude") return null;
     const key = noteKeyFor(s);
     const prev = getQueueRow(key);
     upsertQueue({
@@ -1349,6 +1359,24 @@ export class Registry extends EventEmitter {
    * Re-key a queue onto a live session (the explicit re-attach). Rewrites the
    * queue row and every item to the new note key, so the queue resumes on the
    * session the human pointed at.
+   *
+   * The SOURCE must actually be orphaned, and that is checked HERE rather than
+   * trusted from the hint the button was drawn from. The hint is stale by
+   * construction: `applyHook` re-resolves only the hooked session's own
+   * `orphanedQueue`, so a sibling card's copy waits for the next `applyDiscovery`,
+   * and a browser tab holds whatever it last received over SSE for longer still. A
+   * session can reappear on `fromKey` in that gap (an exit-linger cancel after a
+   * missed `ps` sweep), and by then Foreman may have typed its in-flight item into
+   * that pane - so a click on the stale button would re-key live work onto another
+   * session, verify it against the wrong transcript and diff (baseSha and
+   * transcriptAnchor are anchored on the session it was sent to), and delete the
+   * source row inside the transaction with no undo.
+   *
+   * `fleetObserved` is required for the same reason `orphaned()` requires it, in the
+   * same direction: "no live session holds this key" read off a map no sweep has
+   * filled in is a statement about the map, not about the fleet. The daemon answers
+   * routes the instant it binds its port, so a tab that outlives a restart can land a
+   * click in exactly that window. Refusing costs a re-click; guessing costs the batch.
    */
   reattachQueue(fromKey: string, toSessionId: string, now = Date.now()): boolean {
     const s = this.sessions.get(toSessionId);
@@ -1364,7 +1392,12 @@ export class Registry extends EventEmitter {
     // "Claude-only for now" copy instead of silently stranding the batch.
     if (s.agent !== "claude") return false;
     const toKey = noteKeyFor(s);
+    // Already where the human wants it: nothing to write, so nothing to guard.
     if (toKey === fromKey) return true;
+    // The source must really be orphaned - see the note above on why the hint that
+    // drew the button cannot be the thing that authorises the write.
+    if (!this.sweptFleet) return false;
+    if (this.liveNoteKeys().has(fromKey)) return false;
     // A live queue at the target key would collide on the single-flight index and
     // silently merge two batches of work; refuse rather than guess which wins.
     //
@@ -1393,6 +1426,12 @@ export class Registry extends EventEmitter {
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
     );
+    // BOTH keys, not just the target. The guard above proves no LIVE session holds
+    // `fromKey`, but a session ended by a `SessionEnd` hook is marked exited without
+    // an exit timer - so it stops holding its key while staying in the map until a
+    // sweep evicts it. Its card would go on rendering a summary of the queue that is
+    // no longer there, and on an idle fleet nothing else would ever heal it.
+    this.syncSessionsForQueue(fromKey);
     this.syncSessionsForQueue(toKey);
     this.syncAllOrphanHints();
     return true;

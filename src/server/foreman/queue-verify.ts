@@ -57,6 +57,55 @@ const clampTo = (max: number) => (s: string) => (s.length > max ? s.slice(0, max
 
 const SEVERITY_RANK: Record<string, number> = { blocking: 0, advisory: 1 };
 
+/**
+ * Make gap ids unique WITHIN one verdict, by reminting a collision rather than
+ * dropping it.
+ *
+ * The prompt asks for "a stable slug for this problem" and nothing tells the model
+ * that two gaps in one verdict can't share one - so two blocking gaps about two
+ * different files both slugged `untested` is an ordinary answer, and `clampTo` can
+ * additionally collapse two long distinct ids into one. Round 0 has no prior gaps to
+ * reconcile against, so duplicates land in `item.gaps` as-is and everything keyed on
+ * the id then quietly speaks about the wrong one: the panel renders `<li key={g.id}>`
+ * and React folds both rows onto one keyed slot, so the human sees ONE gap while the
+ * fix prompt (which lists by index) tells the agent to fix TWO. Strike tracking
+ * collapses the same way - `byId.get` hands both duplicates the same prior, so they
+ * share a count and can only ever resolve together.
+ *
+ * Reminting rather than keep-first because a duplicate id is a NAMING collision, not
+ * a duplicate finding: the two gaps are about different files, so dropping one
+ * silently discards a real blocking gap - and the model would likely re-mint the same
+ * colliding slug next round, dropping it again, forever.
+ *
+ * Honest about what this does NOT fix: the suffix is assigned by POSITION, so if the
+ * model reports the same two colliding gaps in the opposite order next round, they
+ * swap ids and swap strike counts. `reconcileGaps`'s (path + detail) fingerprint does
+ * not save it either - that is only consulted when the id MISSES, and here it hits,
+ * wrongly. Both gaps still strike and still reach the agent, so this is the same
+ * bounded imprecision the per-gap strike heuristic already documents, with
+ * `maxFixRounds` as the real termination guarantee. Distinct ids are what this
+ * function owes; exact strike attribution across a reorder was never on offer.
+ */
+function uniqueGapIds<T extends { id: string }>(gaps: T[]): T[] {
+  const seen = new Set<string>();
+  return gaps.map((g) => {
+    if (!seen.has(g.id)) {
+      seen.add(g.id);
+      return g;
+    }
+    let n = 2;
+    let id: string;
+    // Re-clamped, not just suffixed: an id already at GAP_ID_MAX would otherwise
+    // grow past the bound the cap exists to hold.
+    do {
+      const suffix = `~${n++}`;
+      id = `${g.id.slice(0, GAP_ID_MAX - suffix.length)}${suffix}`;
+    } while (seen.has(id));
+    seen.add(id);
+    return { ...g, id };
+  });
+}
+
 const GapSchema = z.object({
   id: z.string().min(1).transform(clampTo(GAP_ID_MAX)),
   severity: z.enum(["blocking", "advisory"]),
@@ -80,10 +129,15 @@ export const QueueVerdictSchema = z.object({
     // over. The prompt asks for "AT MOST 3, most severe first", so honour that
     // ordering while trimming - a plain slice would let three advisory nits crowd
     // out the blocking gap that is the only kind that drives a fix round.
+    //
+    // Ids are made unique only AFTER the trim, so a collision with a gap that didn't
+    // survive can't remint one that did.
     .transform((gaps) =>
-      [...gaps]
-        .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
-        .slice(0, MAX_GAPS),
+      uniqueGapIds(
+        [...gaps]
+          .sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9))
+          .slice(0, MAX_GAPS),
+      ),
     ),
   // Ids only ever looked up as a Set, so both bounds are cheap: clamp each to a gap
   // id's length and take the first MAX_RESOLVED. Trimming can only make the verdict

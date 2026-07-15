@@ -29,6 +29,11 @@ export class QueueManager {
     return this.registry.getQueueByKey(key);
   }
 
+  /** One item by id - what the routes check ownership against before writing. */
+  getItem(itemId: string): WorkItem | undefined {
+    return this.registry.getQueueItem(itemId);
+  }
+
   /** Every stored queue - backs the orphan sweep and the fleet-level list. */
   list(): SessionQueue[] {
     return this.registry.listQueues();
@@ -128,22 +133,24 @@ export class QueueManager {
   }
 
   /**
-   * Remove a waiting item, or cancel one already terminal. An in-flight item is
+   * Remove a waiting item, or clear one already terminal. An in-flight item is
    * refused: it has already been typed into a pane, so "remove" would be a lie -
    * the agent is working on it right now.
+   *
+   * The two accepting cases read differently to a human and identically to the DB, so
+   * they are one condition: what makes a row removable is that nothing will advance
+   * it again, which is true of a waiting item (queued/proposed) and of a finished one
+   * (terminal) and false only in between.
    */
-  remove(itemId: string, now = Date.now()): { ok: boolean; error?: string } {
+  remove(itemId: string): { ok: boolean; error?: string } {
     const item = this.registry.getQueueItem(itemId);
     if (!item) return { ok: false, error: "no such item" };
-    if (item.state === "queued" || item.state === "proposed") {
-      this.registry.removeQueueItem(itemId);
-      return { ok: true };
+    const waiting = item.state === "queued" || item.state === "proposed";
+    if (!waiting && !isTerminalItem(item.state)) {
+      return { ok: false, error: `cannot remove an item that is ${item.state}` };
     }
-    if (isTerminalItem(item.state)) {
-      this.registry.removeQueueItem(itemId);
-      return { ok: true };
-    }
-    return { ok: false, error: `cannot remove an item that is ${item.state}` };
+    this.registry.removeQueueItem(itemId);
+    return { ok: true };
   }
 
   /** Reorder a queue to the given id order (whole-list renumber, in a txn). */
@@ -195,6 +202,15 @@ export class QueueManager {
    * pickup guard compares it against `lastActivity`, which the registry stamps
    * from the hook payload. Both must share a clock; pinning them to the same
    * writer keeps that true by construction rather than by coincidence.
+   *
+   * It is stamped on the way INTO `sending`, and that is what makes it readable
+   * after a crash. `sentAt` is otherwise only ever set, never cleared, so a fix
+   * round re-entering `sending` used to carry the PREVIOUS round's delivery time -
+   * and `recover` adopting that stamp made every scrap of the earlier round's work
+   * look like a pickup of a prompt that may never have been typed, which silently
+   * removed the escalation branch for every round >= 1. Deriving it from
+   * `updatedAt` instead is no better: a reorder stamps that on every row in the
+   * queue, in-flight ones included.
    */
   setState(
     itemId: string,
@@ -217,6 +233,10 @@ export class QueueManager {
       escalationReason:
         patch.escalationReason !== undefined ? patch.escalationReason : item.escalationReason,
       lastVerdict: patch.lastVerdict !== undefined ? patch.lastVerdict : item.lastVerdict,
+      // Entering `sending` IS the send attempt, so this is where its clock starts.
+      // The row is written before the tmux write, which makes it the only timestamp
+      // a crash is guaranteed to leave behind - and `recover` adjudicates against it.
+      sentAt: state === "sending" ? now : item.sentAt,
       // The draft belongs to `proposed` and to nothing else, so ANY transition out
       // of it clears the text. Doing that here - the one place every transition
       // lands - is what keeps "there is a drafted payload" and "the card is asking
@@ -307,10 +327,11 @@ export class QueueManager {
    * Adopt an item a restart left mid-`sending`, and let the pickup detector
    * adjudicate on evidence.
    *
-   * `sentAt` is the row's own pre-crash `updatedAt` (when the send was attempted),
-   * NOT now - the pickup guard compares it against `lastActivity`, so stamping now
-   * would make any activity from the crash window look older than the send and
-   * hide a pickup that already happened.
+   * `sentAt` is CARRIED, not restamped: `setState` stamped it on the way into
+   * `sending`, so it already says when this round's send was attempted. Stamping
+   * `now` would make any activity from the crash window look older than the send and
+   * hide a pickup that already happened; re-deriving it from `updatedAt` would trust
+   * a field an unrelated reorder can move.
    *
    * `recoveredAt` is what stops this item from ever resending: we never learned
    * whether the Enter was pressed, so the text may be sitting unsubmitted in the
@@ -325,7 +346,6 @@ export class QueueManager {
     const next: WorkItem = {
       ...item,
       state: "awaiting_pickup",
-      sentAt: item.sentAt ?? item.updatedAt,
       recoveredAt: now,
       updatedAt: now,
     };

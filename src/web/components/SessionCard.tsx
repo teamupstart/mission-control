@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import { cwdAllowlisted } from "@shared/foreman.ts";
 import {
   canRenameSession,
   compactTokens,
@@ -32,20 +33,11 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
 };
 
 /**
- * Whether Foreman may send live in this session's cwd. Mirrors the server's
- * `foremanMayActLive` prefix match deliberately - the panel's whole job here is to
- * explain a "why is nothing sending?" that the server would otherwise decide
- * silently (a dispatched-task worktree isn't under the repo root, so it never
- * matches, and every item would sit drafted while reading as a bug).
+ * Whether Foreman may send live in this session's cwd - the SAME predicate the
+ * server decides with (`foremanMayActLive` calls it too), not a copy of it.
  */
 function allowlisted(cwd: string | null, allowlist: string[] | undefined): boolean {
-  if (!cwd || !allowlist) return false;
-  const strip = (p: string): string => (p.length > 1 && p.endsWith("/") ? p.slice(0, -1) : p);
-  const dir = strip(cwd);
-  return allowlist.some((root) => {
-    const r = strip(root);
-    return dir === r || dir.startsWith(`${r}/`);
-  });
+  return cwdAllowlisted(cwd, allowlist ?? []);
 }
 
 export function SessionCard({

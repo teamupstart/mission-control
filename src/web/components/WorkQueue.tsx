@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
-import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
+import { isTerminal, isWaiting, itemLabel, moveTarget, queueHintKind } from "../lib/queue.ts";
 import { api, fetchQueue } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
 
@@ -46,7 +46,8 @@ export function WorkQueue({
    * own refresh while the SSE effect independently fires one, and nothing else
    * orders them - so a slow earlier response landing last reverts the panel to a
    * state the server left minutes ago, offering an Approve on an item already
-   * delivered. Only the newest request in flight may write.
+   * delivered. Only the newest write may land - which is why `commitOrder`'s
+   * optimistic write bumps the token too rather than sitting outside the ordering.
    *
    * A FAILED fetch leaves the last-known queue on screen and raises the banner
    * instead of blanking it, because "we couldn't read it" is not "it's empty".
@@ -183,9 +184,18 @@ export function WorkQueue({
    * Apply a new authored order optimistically, then persist it. The ONE place an
    * order reaches the server, so the pointer path and the keyboard path below cannot
    * drift into disagreeing about what a reorder is.
+   *
+   * The optimistic write takes a sequence token like a fetch does, because it is
+   * exactly as much a writer of `queue` as one - and `refresh`'s rule is that only
+   * the newest write may land. Without this the token ordered GETs against each other
+   * but not against THIS, so an in-flight refresh (the SSE effect fires one whenever
+   * Foreman touches the queue) could resolve carrying the pre-drag order, pass its
+   * own staleness check, and visibly snap the dragged row back until the PUT's own
+   * refresh restored it.
    */
   async function commitOrder(ids: string[]): Promise<void> {
     if (!queue) return;
+    seqRef.current++;
     setQueue({ ...queue, items: ids.map((id) => queue.items.find((i) => i.id === id)!) });
     const r = await api.reorderQueue(sessionId, ids);
     setError(r.ok ? null : r.error ?? "could not reorder");
@@ -463,56 +473,51 @@ export function WorkQueue({
 }
 
 /**
- * The one line explaining what Foreman will do with the waiting items.
- *
- * Ordered by what actually stops the queue FIRST. Foreman being off short-circuits
- * the worker's entire loop before it ever reads a queue, so it outranks whatever
- * the mode and the allowlist would say: "it will draft each item and wait for your
- * Approve" describes a draft that is never coming, and an item sitting `queued`
- * forever under that sentence reads as a bug in the queue rather than a switch the
- * human hasn't flipped. Queueing first and enabling after is a perfectly natural
- * order of work - the panel just has to be honest about which one you're in.
+ * The one line explaining what Foreman will do with the waiting items. Which line is
+ * owed is `queueHintKind`'s call (it's a rule, and rules are tested without a DOM);
+ * this renders it.
  */
-function QueueHint({
-  enabled,
-  mode,
-  allowlisted,
-  cwd,
-}: {
+function QueueHint(props: {
   enabled: boolean;
   mode: string;
   allowlisted: boolean;
   cwd: string | null;
 }): React.JSX.Element | null {
-  if (!enabled) {
-    return (
-      <p className="wq-hint dim">
-        Foreman is off, so nothing here will be drafted or sent. These items keep their order and
-        wait - turn Foreman on from the toolbar to start working through them.
-      </p>
-    );
+  switch (queueHintKind(props)) {
+    case "foreman-off":
+      return (
+        <p className="wq-hint dim">
+          Foreman is off, so nothing here will be drafted or sent. These items keep their order and
+          wait - turn Foreman on from the toolbar to start working through them.
+        </p>
+      );
+    // Allowlist honesty. foremanMayActLive's prefix match doesn't cover
+    // dispatched-task worktrees (they aren't under the repo root), so a queue on a
+    // dispatched agent would silently never go live and every item would sit
+    // `proposed` - reading as a bug. Say so, and say where to fix it.
+    case "not-allowlisted":
+      return (
+        <p className="wq-hint dim">
+          This repo isn&apos;t allowlisted for live sends, so items will be drafted for your OK. Add{" "}
+          <code>{props.cwd}</code> to Foreman&apos;s allowlist to let it send here.
+        </p>
+      );
+    case "no-cwd":
+      return (
+        <p className="wq-hint dim">
+          Foreman can&apos;t tell which directory this session is in, so it can&apos;t match the
+          allowlist - items will be drafted for your OK rather than sent.
+        </p>
+      );
+    case "drafts-only":
+      return (
+        <p className="wq-hint dim">
+          Foreman is in {props.mode} - it will draft each item and wait for your Approve.
+        </p>
+      );
+    default:
+      return null;
   }
-  // Allowlist honesty. foremanMayActLive's prefix match doesn't cover
-  // dispatched-task worktrees (they aren't under the repo root), so a queue on a
-  // dispatched agent would silently never go live and every item would sit
-  // `proposed` - reading as a bug. Say so, and say where to fix it.
-  if (mode === "live" && !allowlisted && cwd) {
-    return (
-      <p className="wq-hint dim">
-        This repo isn&apos;t allowlisted for live sends, so items will be drafted for your OK. Add{" "}
-        <code>{cwd}</code> to Foreman&apos;s allowlist to let it send here.
-      </p>
-    );
-  }
-  if (mode !== "live") {
-    return (
-      <p className="wq-hint dim">
-        Foreman is in {mode} - it will draft each item and wait for your Approve.
-      </p>
-    );
-  }
-  // Live, enabled, allowlisted: it does what the panel already shows. Nothing to say.
-  return null;
 }
 
 function Header({ count }: { count: number }): React.JSX.Element {

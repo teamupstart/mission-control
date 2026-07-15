@@ -11,7 +11,9 @@ import {
   ForemanHeartbeatSchema,
   HookIngestSchema,
   InjectPromptSchema,
+  MarkItemSentSchema,
   NomistakesRespondSchema,
+  ReattachQueueSchema,
   RenameSchema,
   ReorderQueueSchema,
   ResetSchema,
@@ -25,8 +27,10 @@ import {
   StatusSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
+import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
+import type { WorkItem } from "@shared/types.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
@@ -87,6 +91,37 @@ async function parseBody<S extends ZodTypeAny>(
     return { ok: false, error: parsed.error.message, res: c.json({ error: parsed.error.message }, 400) };
   }
   return { ok: true, data: parsed.data };
+}
+
+/**
+ * Resolve an item-scoped queue route: the `:id` session must exist, and `:itemId`
+ * must belong to ITS queue.
+ *
+ * Without the ownership half, `:id` was decoration - the item was addressed
+ * globally, so `POST /api/sessions/does-not-exist/queue/<real-item>/approve`
+ * answered 200. That isn't hypothetical mischief: item ids SURVIVE a re-attach
+ * (`reattachQueue` preserves `i.id` while re-keying), so a tab holding a
+ * pre-re-attach list - SSE dropped, or backgrounded, so no refresh fired - would
+ * click Remove on item X under session A and delete it out of session B's live
+ * queue. Membership is the only thing that distinguishes those two, and it is
+ * checked at the write because that is the boundary the damage crosses.
+ *
+ * The queue's own key is the unit of ownership, not `session.id`: the id churns
+ * with pid/tty while the note key is the identity the queue is stored under.
+ */
+function ownedItem(
+  registry: Registry,
+  queues: QueueManager,
+  c: Context,
+): { ok: true; item: WorkItem } | { ok: false; res: Response } {
+  const session = registry.getSession(c.req.param("id") ?? "");
+  if (!session) return { ok: false, res: c.json({ error: "no such session" }, 404) };
+  const item = queues.getItem(c.req.param("itemId") ?? "");
+  if (!item) return { ok: false, res: c.json({ error: "no such item" }, 404) };
+  if (item.noteKey !== noteKeyFor(session)) {
+    return { ok: false, res: c.json({ error: "that item is not in this session's queue" }, 404) };
+  }
+  return { ok: true, item };
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
@@ -427,22 +462,34 @@ export function buildApp(
     const parsed = await parseBody(c, AddWorkItemSchema);
     if (!parsed.ok) return parsed.res;
     const item = queues.add(session.id, parsed.data.intent);
-    if (!item) return c.json({ error: "no such session" }, 404);
+    // The session resolved above, so the only refusal `ensureQueue` has left is the
+    // Claude-only one - and saying "no such session" about a session that plainly
+    // exists sends the caller hunting for the wrong bug.
+    if (!item) {
+      return c.json(
+        { error: "work queues are Claude-only - Foreman reads transcripts to check the work" },
+        409,
+      );
+    }
     return c.json(item);
   });
 
   // Edit: 409 on a CAS miss or an item that has left queued/proposed - Foreman may
   // already have typed it into a pane, and "edited" would then be a lie.
   app.patch("/api/sessions/:id/queue/:itemId", async (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
     const parsed = await parseBody(c, EditWorkItemSchema);
     if (!parsed.ok) return parsed.res;
-    const r = queues.edit(c.req.param("itemId"), parsed.data.intent, parsed.data.revision);
+    const r = queues.edit(owned.item.id, parsed.data.intent, parsed.data.revision);
     if (r.ok) return c.json(r.item);
     return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
   });
 
   app.delete("/api/sessions/:id/queue/:itemId", (c) => {
-    const r = queues.remove(c.req.param("itemId"));
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const r = queues.remove(owned.item.id);
     return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
   });
 
@@ -456,14 +503,18 @@ export function buildApp(
   });
 
   app.post("/api/sessions/:id/queue/:itemId/approve", (c) => {
-    const r = queues.approve(c.req.param("itemId"));
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const r = queues.approve(owned.item.id);
     return c.json(r, r.ok ? 200 : r.error === "no such item" ? 404 : 409);
   });
 
   app.put("/api/sessions/:id/queue/:itemId/state", async (c) => {
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
     const parsed = await parseBody(c, SetWorkItemStateSchema);
     if (!parsed.ok) return parsed.res;
-    const r = queues.setState(c.req.param("itemId"), parsed.data);
+    const r = queues.setState(owned.item.id, parsed.data);
     if (r.ok) return c.json(r.item);
     // 409, not 500: a single-flight refusal means the caller broke the invariant,
     // and it must be able to tell that from the daemon falling over.
@@ -474,20 +525,20 @@ export function buildApp(
   // not the worker's: the pickup guard compares it against `lastActivity`, which
   // the registry stamps from the hook payload, so the two must share a writer.
   app.post("/api/sessions/:id/queue/:itemId/sent", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as {
-      baseSha?: unknown;
-      transcriptAnchor?: unknown;
-    };
-    const baseSha = typeof body.baseSha === "string" ? body.baseSha : null;
-    const anchor = typeof body.transcriptAnchor === "number" ? body.transcriptAnchor : null;
-    const r = queues.markSent(c.req.param("itemId"), baseSha, anchor);
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const parsed = await parseBody(c, MarkItemSentSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.markSent(owned.item.id, parsed.data.baseSha, parsed.data.transcriptAnchor);
     if (r.ok) return c.json(r.item);
     return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
   });
 
   // Adopt an item a restart left mid-send (see QueueManager.recover).
   app.post("/api/sessions/:id/queue/:itemId/recover", (c) => {
-    const r = queues.recover(c.req.param("itemId"));
+    const owned = ownedItem(registry, queues, c);
+    if (!owned.ok) return owned.res;
+    const r = queues.recover(owned.item.id);
     if (r.ok) return c.json(r.item);
     return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
   });
@@ -521,9 +572,9 @@ export function buildApp(
   app.post("/api/sessions/:id/queue/reattach", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const body = (await c.req.json().catch(() => ({}))) as { noteKey?: unknown };
-    if (typeof body.noteKey !== "string") return c.json({ error: "noteKey is required" }, 400);
-    const r = queues.reattach(body.noteKey, session.id);
+    const parsed = await parseBody(c, ReattachQueueSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.reattach(parsed.data.noteKey, session.id);
     return c.json(r, r.ok ? 200 : 409);
   });
 
@@ -533,6 +584,32 @@ export function buildApp(
   app.get("/api/queues", (c) =>
     c.json(c.req.query("orphaned") === "1" ? queues.orphaned() : queues.list()),
   );
+
+  /*
+    The same write, addressed by QUEUE KEY - the orphan sweep's route.
+
+    It exists because the session-scoped routes above now insist the session
+    resolves, and the sweep's whole subject is a queue whose session is GONE: it
+    terminalizes the in-flight item of a queue nothing can drive any more, so there
+    is no `:id` for it to name. It previously borrowed the session route by passing
+    the note key as the session id, which worked only because that route ignored the
+    segment entirely - i.e. the sweep was relying on the very bug that let any tab
+    write to any queue.
+
+    Ownership is checked the same way, against the key the caller named.
+  */
+  app.put("/api/queues/:key/items/:itemId/state", async (c) => {
+    const item = queues.getItem(c.req.param("itemId"));
+    if (!item) return c.json({ error: "no such item" }, 404);
+    if (item.noteKey !== c.req.param("key")) {
+      return c.json({ error: "that item is not in this queue" }, 404);
+    }
+    const parsed = await parseBody(c, SetWorkItemStateSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = queues.setState(item.id, parsed.data);
+    if (r.ok) return c.json(r.item);
+    return c.json({ error: r.error }, r.error === "no such item" ? 404 : 409);
+  });
 
   // --- Foreman config + status (localhost only) ---
   app.get("/api/foreman/config", (c) => c.json(getForemanConfig()));

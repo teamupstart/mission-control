@@ -909,6 +909,158 @@ test("the queue endpoints 404 for an unknown session", async () => {
   assert.equal(add.status, 404);
 });
 
+test("adding to a NON-claude session is refused, with a reason that isn't a lie", async () => {
+  // The panel hides its add box for a Codex session, but presentation is not
+  // enforcement and this route is reachable without it - the worker is itself a
+  // client of this API. Every tick filters to claude, so the queue would never
+  // advance, and because the session is live its key is live: neither the re-attach
+  // hint nor the orphan sweep would ever offer the batch to anyone.
+  const codex: DiscoveredSession = {
+    syntheticId: "sess-codex",
+    agent: "codex",
+    name: "other",
+    nameSource: "tmux",
+    cwd: "/repo/app",
+    gitBranch: "main",
+    gitRoot: null,
+    nomistakesGated: false,
+    pid: 4243,
+    tty: "ttys004",
+    wezterm: null,
+    tmux: { session: "other", window: "w", windowIndex: 0, paneId: "%4" },
+    startedAt: 0,
+  };
+  registry.applyDiscovery([codex]);
+
+  const res = await app.request("/api/sessions/sess-codex/queue", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ intent: "never going to run" }),
+  });
+  assert.equal(res.status, 409, "the session exists, so this is a refusal - not a 404");
+  assert.match(((await res.json()) as { error: string }).error, /Claude-only/);
+
+  const read = await app.request("/api/sessions/sess-codex/queue", { headers: LOOPBACK });
+  assert.equal(await read.json(), null, "and no empty queue row is left stranded on it");
+});
+
+test("an item-scoped route refuses a session that doesn't own the item", async () => {
+  // `:id` was decoration: every item route addressed the item globally, so an
+  // unknown session - or a DIFFERENT one - could drive any item in the fleet. Item
+  // ids survive a re-attach, so a tab holding a pre-re-attach list (SSE dropped, or
+  // backgrounded, so no refresh fired) would click Remove under session A and delete
+  // the item out of session B's live queue.
+  seedSession();
+  const item = await addItem("belongs to sess-1");
+
+  const routes: Array<[string, string, unknown]> = [
+    [`/api/sessions/nope/queue/${item.id}`, "PATCH", { intent: "x", revision: item.revision }],
+    [`/api/sessions/nope/queue/${item.id}`, "DELETE", null],
+    [`/api/sessions/nope/queue/${item.id}/approve`, "POST", null],
+    [`/api/sessions/nope/queue/${item.id}/state`, "PUT", { state: "cancelled" }],
+    [`/api/sessions/nope/queue/${item.id}/sent`, "POST", { baseSha: "abc1234" }],
+    [`/api/sessions/nope/queue/${item.id}/recover`, "POST", null],
+  ];
+  for (const [path, method, body] of routes) {
+    const res = await app.request(path, {
+      method,
+      headers: body ? jsonHeaders : LOOPBACK,
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    assert.equal(res.status, 404, `${method} ${path} must not address an item globally`);
+  }
+
+  // And the item is untouched by any of it.
+  const read = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  const q = (await read.json()) as { items: Array<{ intent: string; state: string }> };
+  assert.equal(q.items.length, 1);
+  assert.equal(q.items[0]?.state, "queued");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
+test("the orphan sweep's by-key route drives an item whose session is gone", async () => {
+  // The session-scoped routes now insist the session resolves - and the sweep's whole
+  // subject is a queue whose session does NOT. It used to borrow the session route by
+  // passing the note key as the session id, which worked only because that route
+  // ignored the segment: the sweep was relying on the bug above.
+  seedSession();
+  await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, sessionId: "sweep-me", cwd: "/repo/app" }),
+  });
+  const item = await addItem("in flight when the session vanished");
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "in_progress" }),
+  });
+
+  const wrongKey = await app.request(`/api/queues/not-this-queue/items/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "escalated" }),
+  });
+  assert.equal(wrongKey.status, 404, "ownership is checked against the key the caller named");
+
+  const res = await app.request(`/api/queues/sweep-me/items/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "escalated", escalationReason: "the session vanished" }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(((await res.json()) as { state: string }).state, "escalated");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
+test("/sent and /reattach validate their bodies instead of hand-checking them", async () => {
+  // A negative `transcriptAnchor` doesn't reach `readSync` - the transcript route
+  // guards `since >= 0` - it falls through to the default head+tail window, so the
+  // verify scope silently degrades from "this item's turns" to "the last 48 turns".
+  // A verifier judging work it was never scoped to invents gaps, which is exactly the
+  // quiet fail-open the evidence-first design exists to avoid.
+  seedSession();
+  const item = await addItem("check the anchor");
+
+  const negative = await app.request(`/api/sessions/sess-1/queue/${item.id}/sent`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ baseSha: "abc1234", transcriptAnchor: -1 }),
+  });
+  assert.equal(negative.status, 400);
+
+  const ok = await app.request(`/api/sessions/sess-1/queue/${item.id}/sent`, {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ baseSha: "abc1234", transcriptAnchor: 0 }),
+  });
+  assert.equal(ok.status, 200, "0 is a real anchor - an empty transcript at delivery");
+  assert.equal(((await ok.json()) as { transcriptAnchor: number }).transcriptAnchor, 0);
+
+  const noKey = await app.request("/api/sessions/sess-1/queue/reattach", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({}),
+  });
+  assert.equal(noKey.status, 400);
+
+  const hugeKey = await app.request("/api/sessions/sess-1/queue/reattach", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ noteKey: "k".repeat(5000) }),
+  });
+  assert.equal(hugeKey.status, 400, "an unbounded key reaches a SQL lookup and a Set probe");
+
+  await app.request(`/api/sessions/sess-1/queue/${item.id}/state`, {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ state: "cancelled" }),
+  });
+  await app.request(`/api/sessions/sess-1/queue/${item.id}`, { method: "DELETE", headers: LOOPBACK });
+});
+
 test("/api/sessions/:id/inject validates its body and 404s an unknown session", async () => {
   seedSession();
   const empty = await app.request("/api/sessions/sess-1/inject", {

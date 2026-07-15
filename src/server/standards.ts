@@ -23,6 +23,22 @@ const MAX_TOTAL_BYTES = 64 * 1024;
  * invents gaps, which is the one outcome worse than saying "some docs are missing".
  */
 const MAX_CHANGED_PATHS = 1000;
+/**
+ * Cap on how many distinct directories the climb will collect, across ALL paths.
+ *
+ * MAX_CHANGED_PATHS bounds how many paths are walked and REQUEST_PATH_MAX bounds how
+ * deep any ONE of them goes, but the climb's real cost is the PRODUCT, which neither
+ * touches: 1000 paths x ~512 levels is ~512k iterations pushing ~1M candidates, each
+ * of which then costs a `readDoc` with a `realpathSync` syscall - on the daemon's one
+ * synchronous handle, the same one serving SQLite, SSE and hook ingest.
+ *
+ * Real changes are nowhere near this: paths collapse to a handful of unique
+ * directories (that's what `seenDirs` is for), and a deep monorepo tree is maybe 15
+ * levels. Like MAX_CHANGED_PATHS, exceeding it is REPORTED through `truncated` rather
+ * than swallowed - a verifier that judges against a contract it silently didn't read
+ * invents gaps, which is worse than admitting a doc is missing.
+ */
+const MAX_WALKED_DIRS = 4000;
 /** Nested docs to collect from directories the item's diff touched. */
 const NESTED_NAMES = ["CLAUDE.md", "AGENTS.md"];
 /** Repo-root docs that always apply. */
@@ -81,13 +97,23 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
   // Walk each changed file's directory chain up to the root, so a doc governing
   // an ancestor directory (not just the file's own) is included.
   const seenDirs = new Set<string>();
+  let droppedDirs = false;
   for (const p of walk) {
     let dir = dirname(resolve(root, p));
     while (dir.startsWith(root) && dir.length >= root.length) {
-      if (!seenDirs.has(dir)) {
-        seenDirs.add(dir);
-        if (dir !== root) for (const name of NESTED_NAMES) wanted.push(join(dir, name));
+      // Already seen means its WHOLE ancestor chain was already walked to the root -
+      // that's what this loop does on the way past - so there is provably nothing
+      // above it left to collect. Climbing on anyway re-walked the identical chain
+      // once per changed file, which is the exact redundancy `seenDirs` exists to
+      // remove: the common shape (many files under one deep tree) paid for it every
+      // time.
+      if (seenDirs.has(dir)) break;
+      if (seenDirs.size >= MAX_WALKED_DIRS) {
+        droppedDirs = true;
+        break;
       }
+      seenDirs.add(dir);
+      if (dir !== root) for (const name of NESTED_NAMES) wanted.push(join(dir, name));
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -110,7 +136,7 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
     total += doc.text.length;
     docs.push(doc);
   }
-  return { docs, truncated: truncated || droppedPaths };
+  return { docs, truncated: truncated || droppedPaths || droppedDirs };
 }
 
 /** True when `abs` is at or under `root` (defeats a `..` escape in a diff path). */

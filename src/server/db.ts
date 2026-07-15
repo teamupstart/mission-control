@@ -181,6 +181,15 @@ function migrate(d: DatabaseSync): void {
   // rather than showing a card with nothing under it.
   addColumn(d, "foreman_queue_items", "proposed_payload", "TEXT");
 
+  // `recovered_at`: whether this item was adopted mid-send after a restart, which is
+  // what stops it from ever resending. Same exposure and same reason as the ALTER
+  // above - both were added to the CREATE TABLE after it had already shipped, and
+  // `CREATE TABLE IF NOT EXISTS` will not add a column to a table that exists, so a
+  // db created between the two would fail EVERY queue-item write. Nullable with no
+  // default, so an existing row reads as "never crash-recovered" - which is the
+  // truthful answer for a row written before the daemon could recover one.
+  addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
+
   rebuildInFlightIndexIfStale(d);
 }
 

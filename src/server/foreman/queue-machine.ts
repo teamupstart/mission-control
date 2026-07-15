@@ -328,10 +328,10 @@ function decideInFlight(
       // going back through `queued`) would be adopted here as a phantom crash and
       // escalate ~45s later having typed nothing. See planFromVerify.
       //
-      // Adopt it (sentAt := updatedAt, recoveredAt stamped) and let the pickup
-      // detector adjudicate on evidence - if the agent ingested it, lastActivity
-      // moved and we verify normally. It deliberately never auto-RESENDS: see the
-      // recoveredAt branch below.
+      // Adopt it (carrying the `sending` write's own sentAt, recoveredAt stamped)
+      // and let the pickup detector adjudicate on evidence - if the agent ingested
+      // it, lastActivity moved and we verify normally. It deliberately never
+      // auto-RESENDS: see the recoveredAt branch below.
       return { kind: "recover-send", item };
 
     case "awaiting_pickup": {

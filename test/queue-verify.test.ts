@@ -106,3 +106,72 @@ test("a verdict that genuinely doesn't parse is still rejected", () => {
     "an empty detail carries no information for the agent to act on",
   );
 });
+
+test("two gaps that collide on one id are BOTH kept, under distinct ids", () => {
+  // The prompt asks for "a stable slug for this problem" and never says it must be
+  // unique within one verdict, so two blocking gaps about two different files both
+  // slugged `untested` is an ordinary answer. Round 0 has no prior gaps to reconcile
+  // against, so duplicates land as-is and everything keyed on the id then speaks
+  // about the wrong one: the panel renders `<li key={g.id}>` and React folds both
+  // rows onto one slot, so the human sees ONE gap while the fix prompt (which lists
+  // by index) tells the agent to fix TWO.
+  const v = parseOk(
+    {
+      complete: false,
+      summary: "two files, one slug",
+      gaps: [
+        gap({ id: "untested", severity: "blocking", path: "src/a.ts", detail: "a has no test" }),
+        gap({ id: "untested", severity: "blocking", path: "src/b.ts", detail: "b has no test" }),
+      ],
+    },
+    "a colliding slug is a naming problem, not a reason to discard the verdict",
+  );
+  assert.equal(v.gaps.length, 2, "neither gap may be dropped - they are about different files");
+  assert.equal(new Set(v.gaps.map((g) => g.id)).size, 2, "and they must be distinguishable");
+  assert.equal(gapAt(v, 0).id, "untested", "the first keeps the slug the model chose");
+  assert.equal(gapAt(v, 0).path, "src/a.ts");
+  assert.equal(gapAt(v, 1).path, "src/b.ts", "the reminted one keeps its own content");
+});
+
+test("a reminted id still respects the id cap it was reminted under", () => {
+  // `clampTo` can itself CREATE the collision, by truncating two long distinct ids to
+  // the same 120 chars. Suffixing without re-clamping would then push the survivor
+  // back over the bound the cap exists to hold.
+  const long = "x".repeat(200);
+  const v = parseOk(
+    {
+      complete: false,
+      summary: "two long ids that clamp to the same thing",
+      gaps: [
+        gap({ id: `${long}-a`, severity: "blocking", detail: "first" }),
+        gap({ id: `${long}-b`, severity: "blocking", detail: "second" }),
+      ],
+    },
+    "ids clamped into a collision are still two real gaps",
+  );
+  assert.equal(new Set(v.gaps.map((g) => g.id)).size, 2);
+  for (const g of v.gaps) assert.ok(g.id.length <= 120, `id stayed within the cap: ${g.id.length}`);
+});
+
+test("uniqueness is applied AFTER the trim, so a dropped gap can't remint a survivor", () => {
+  // The cap keeps the 3 most severe. A collision with a gap that didn't survive is
+  // not a collision at all, and reminting over it would rename a gap the agent is
+  // being asked to fix - resetting its strikes for no reason.
+  const v = parseOk(
+    {
+      complete: false,
+      summary: "one blocking, three advisory nits sharing its slug",
+      gaps: [
+        gap({ id: "dupe", severity: "advisory", detail: "nit one" }),
+        gap({ id: "dupe", severity: "blocking", detail: "the real problem" }),
+        gap({ id: "dupe", severity: "advisory", detail: "nit two" }),
+        gap({ id: "dupe", severity: "advisory", detail: "nit three" }),
+      ],
+    },
+    "a 4th gap is not worth discarding a verdict over",
+  );
+  assert.equal(v.gaps.length, 3);
+  assert.equal(gapAt(v, 0).id, "dupe", "the blocking gap sorts first and keeps the slug");
+  assert.equal(gapAt(v, 0).detail, "the real problem");
+  assert.equal(new Set(v.gaps.map((g) => g.id)).size, 3);
+});

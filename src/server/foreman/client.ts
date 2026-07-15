@@ -161,6 +161,21 @@ export class ForemanClient implements ForemanActions {
   }
 
   /**
+   * The same write addressed by QUEUE KEY - for a queue whose session is gone, which
+   * is the only state the orphan sweep acts in. The session-scoped route insists the
+   * session resolves, and here by definition it cannot.
+   */
+  async setItemStateByKey(
+    noteKey: string,
+    itemId: string,
+    patch: SetWorkItemState,
+  ): Promise<WorkItem> {
+    const res = await send("PUT", `/api/queues/${enc(noteKey)}/items/${enc(itemId)}/state`, patch);
+    if (!res.ok) throw new Error(`setItemStateByKey ${itemId} -> ${res.status}`);
+    return (await res.json()) as WorkItem;
+  }
+
+  /**
    * Deliver a whole prompt as ONE bracketed-paste submission. Throws on failure,
    * which is what lets the caller stamp `awaiting_pickup` only after it resolves.
    *

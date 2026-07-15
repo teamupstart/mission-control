@@ -181,3 +181,44 @@ test("the standards request still accepts the paths a real diff produces", () =>
   assert.equal(r.success, true);
   assert.equal(r.success && r.data.paths.length, 3);
 });
+
+test("many files under one tree still collect every ancestor doc exactly once", () => {
+  // The climb now BREAKS at the first already-seen directory rather than walking
+  // past it, because any dir in `seenDirs` had its whole chain walked to the root
+  // when it was added - so there is provably nothing above it left to collect. This
+  // is the guard on that "provably": stopping early must not lose an ancestor doc.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# root");
+  writeFileSync(join(root, "packages", "app", "CLAUDE.md"), "# app rules");
+  writeFileSync(join(root, "packages", "app", "src", "AGENTS.md"), "# src rules");
+
+  // 50 files under one tree: without the break this walks the same chain 50 times.
+  const many = Array.from({ length: 50 }, (_, i) => `packages/app/src/f${i}.ts`);
+  const out = readStandards(root, many);
+  assert.deepEqual(paths(out), ["AGENTS.md", "packages/app/CLAUDE.md", "packages/app/src/AGENTS.md"]);
+  assert.equal(out.truncated, false, "nothing was dropped - this is an ordinary change");
+});
+
+test("a pathological path set is bounded, and SAYS it was truncated", () => {
+  // REQUEST_PATH_MAX bounds one path's depth and MAX_CHANGED_PATHS bounds how many
+  // are walked; neither bounds the PRODUCT, which is what the climb actually costs.
+  // The docs governing the dropped directories are then missed, so the bundle has to
+  // say so - a verifier judging against a contract it silently didn't read invents
+  // gaps, which is worse than admitting a doc is missing.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# root");
+
+  // 1000 disjoint chains, each ~40 deep: ~40k distinct directories, well past the cap.
+  const deep = Array.from({ length: 1000 }, (_, i) => {
+    const chain = Array.from({ length: 40 }, (_, d) => `d${i}_${d}`).join("/");
+    return `${chain}/file.ts`;
+  });
+  const started = Date.now();
+  const out = readStandards(root, deep);
+  assert.ok(
+    Date.now() - started < 5000,
+    "the daemon's one synchronous handle also serves SQLite, SSE and hook ingest",
+  );
+  assert.equal(out.truncated, true, "docs governing the dropped directories are missed");
+  assert.deepEqual(paths(out), ["AGENTS.md"], "the root contract still loads");
+});

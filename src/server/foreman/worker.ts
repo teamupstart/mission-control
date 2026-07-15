@@ -236,10 +236,11 @@ async function sweepOrphanedQueues(client: ForemanClient): Promise<void> {
   for (const q of orphans) {
     const flight = inFlightItem(q.items);
     if (!flight) continue;
-    // The item's own session is gone, so address the write by the item id via any
-    // session id - the daemon resolves items by id, not by the path's session.
+    // The item's own session is gone - that IS the finding - so this addresses the
+    // write by queue key. The session-scoped route can't serve it: there is no
+    // session left for it to resolve.
     await client
-      .setItemState(q.noteKey, flight.id, {
+      .setItemStateByKey(q.noteKey, flight.id, {
         state: "escalated",
         escalationReason: "the session vanished while this item was in flight",
       })
@@ -262,34 +263,28 @@ async function processTarget(
   session: Session,
   reviews: ReviewItem[],
 ): Promise<boolean> {
-  // The FULL queue: Session.queue is only the compact card summary, while the
-  // machine needs gaps, baseSha, transcriptAnchor, round, revision and strikes.
-  // One extra loopback round-trip per target per tick - noise next to a claude -p.
-  const queue = await client.queue(session.id).catch(() => null);
-
-  if (!queue || queue.items.length === 0) {
-    // No queue: this session is here because it needs you.
-    if (reportBucket(session, [session]) === "needs-you" || session.state === "awaiting_input") {
-      return await processSession(client, cfg, session, reviews);
-    }
-    return false;
-  }
-
-  const qcfg = queueConfig(cfg);
-
-  // Re-resolve the target against a FRESH fleet before deciding anything, through
-  // the same `resolveLiveSession` the send guard uses, for the same reason: a pass
-  // walks its targets serially and any one of them can block on a `claude -p` for up
-  // to 240s, so the snapshot this target was selected with can be minutes old.
-  // Deciding from it reads a long-dead `state: "idle"` against a fresh `now`, which
-  // makes `settledIdle` trivially true and fires a verify at an agent that went back
-  // to work - and unlike a send, a verify has no guard of its own to catch it.
+  // Re-resolve the target against a FRESH fleet before deciding ANYTHING - including
+  // whether this session is here because it needs you - through the same
+  // `resolveLiveSession` the send guard uses, for the same reason: a pass walks its
+  // targets serially and any one of them can block on a `claude -p` for up to 240s,
+  // so the snapshot this target was selected with can be minutes old. Deciding from
+  // it reads a long-dead `state: "idle"` against a fresh `now`, which makes
+  // `settledIdle` trivially true and fires a verify at an agent that went back to
+  // work - and unlike a send, a verify has no guard of its own to catch it.
   //
   // A FAILED read is not evidence of anything, so it decides nothing: skip the
-  // target and re-decide next tick. Falling back to the stale `session` here would
+  // target and re-decide next tick. Falling back to the stale `session` would
   // reintroduce the exact bug this re-resolve exists to close, and a one-element
-  // fallback would also lie to `reportBucket` below, which needs the real fleet to
-  // tell a gate this agent is driving from one that needs you.
+  // fallback would also lie to `reportBucket`, which needs the real fleet to tell a
+  // gate this agent is driving from one that needs you.
+  //
+  // This read sits ABOVE the no-queue branch because that branch needs both answers
+  // just as much: it called `reportBucket(session, [session])`, and a one-element
+  // fleet cannot see that a SIBLING session is driving the same no-mistakes run, so
+  // a gate nobody needs to answer read as "needs-you" and spawned a full `claude -p`
+  // triage from a possibly minutes-old snapshot. In dry-run that never reaches
+  // `sendStillValid` (the one guard that does re-read the fleet), so it landed as a
+  // spurious escalation note nagging the human about a gate that was already handled.
   const fleet = await client.sessions().catch(() => null);
   if (!fleet) return false;
   // A successful read that no longer lists this session (or lists it as exited) says
@@ -298,6 +293,21 @@ async function processTarget(
   // sweep waits out the exit linger before calling anything orphaned.
   const fresh = resolveLiveSession(fleet, noteKeyOf(session));
   if (!fresh) return false;
+
+  // The FULL queue: Session.queue is only the compact card summary, while the
+  // machine needs gaps, baseSha, transcriptAnchor, round, revision and strikes.
+  // One extra loopback round-trip per target per tick - noise next to a claude -p.
+  const queue = await client.queue(fresh.id).catch(() => null);
+
+  if (!queue || queue.items.length === 0) {
+    // No queue: this session is here because it needs you.
+    if (reportBucket(fresh, fleet) === "needs-you" || fresh.state === "awaiting_input") {
+      return await processSession(client, cfg, fresh, reviews);
+    }
+    return false;
+  }
+
+  const qcfg = queueConfig(cfg);
 
   const action = decideQueueTick({
     session: fresh,

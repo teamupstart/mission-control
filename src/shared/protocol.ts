@@ -319,10 +319,21 @@ export const StandardsRequestSchema = z.object({
    * down with it. The routes are loopback-only so this is hardening rather than a
    * live exploit, but an unbounded array of unbounded strings is out of step with
    * every sibling schema here, and no real path notices the bound.
+   *
+   * They bound one path's depth and the number of paths; they do NOT bound the
+   * PRODUCT, which is what the climb actually costs. `readStandards` owns that with
+   * MAX_WALKED_DIRS - the bound has to live where the walking happens.
    */
   paths: z.array(z.string().max(REQUEST_PATH_MAX)).max(MAX_REQUEST_PATHS),
 });
 export type StandardsRequest = z.infer<typeof StandardsRequestSchema>;
+
+/**
+ * Cap on a recorded base sha. A full sha is 40 hex chars and the worker sources this
+ * from `rev-parse`, so this is pure headroom - it exists so the two routes that write
+ * the identical field bound it identically.
+ */
+const BASE_SHA_MAX = 64;
 
 /**
  * The worker's durable state write for one item. Everything the machine decides
@@ -350,7 +361,7 @@ export const SetWorkItemStateSchema = z
       ])
       .optional(),
     round: z.number().int().min(0).optional(),
-    baseSha: z.string().nullable().optional(),
+    baseSha: z.string().max(BASE_SHA_MAX).nullable().optional(),
     transcriptAnchor: z.number().int().min(0).nullable().optional(),
     gaps: z
       .array(
@@ -374,6 +385,37 @@ export const SetWorkItemStateSchema = z
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty item update" });
 export type SetWorkItemState = z.infer<typeof SetWorkItemStateSchema>;
+
+/**
+ * Cap on a note key in a request. A key is `agentSessionId ?? syntheticId` - a UUID
+ * or a short synthetic token - so this is orders of magnitude of headroom, and it
+ * keeps an unbounded string out of a SQL lookup + a `Set` probe on the daemon's one
+ * synchronous handle.
+ */
+const NOTE_KEY_MAX = 256;
+
+/**
+ * Stamp an item as delivered, with the evidence scope it was sent at.
+ *
+ * Schema'd rather than hand-checked because `transcriptAnchor` is a BOUND, not a
+ * shape: an unvalidated negative anchor doesn't reach `readSync` (the transcript
+ * route guards `since >= 0`) - it falls through to the default head+tail window, so
+ * the verify scope silently degrades from "this item's turns" to "the last 48
+ * turns". A verifier judging cumulative work it was never scoped to invents gaps,
+ * which is exactly the quiet fail-open the evidence-first design exists to avoid.
+ * `SetWorkItemStateSchema` already validates this identical field this identical way.
+ */
+export const MarkItemSentSchema = z.object({
+  baseSha: z.string().max(BASE_SHA_MAX).nullable().default(null),
+  transcriptAnchor: z.number().int().min(0).nullable().default(null),
+});
+export type MarkItemSent = z.infer<typeof MarkItemSentSchema>;
+
+/** Re-attach an orphaned queue onto a live session: the key to move off. */
+export const ReattachQueueSchema = z.object({
+  noteKey: z.string().min(1).max(NOTE_KEY_MAX),
+});
+export type ReattachQueue = z.infer<typeof ReattachQueueSchema>;
 
 /** Record the human's answer to the drain-time wrap-up ask. */
 export const WrapupSchema = z.object({

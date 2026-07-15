@@ -287,9 +287,13 @@ function taskOf(r: InstanceType<typeof Registry>, id = "t1"): Task | undefined {
   return r.snapshot().tasks.find((t) => t.id === id);
 }
 
+// A dispatched agent runs inside its own worktree, so its card's cwd is the
+// task's worktreePath - the join that binds the two.
+const dispatched = disco({ cwd: "/wt/work" });
+
 test("renameSession moves a dispatched task's tmuxSession binding with the name", () => {
   const r = new Registry();
-  r.applyDiscovery([disco()]);
+  r.applyDiscovery([dispatched]);
   r.upsertTask(mkTask());
 
   r.renameSession("s1", "renamed");
@@ -301,7 +305,7 @@ test("renameSession moves a dispatched task's tmuxSession binding with the name"
 
 test("renameSession leaves a task bound to a different tmux session untouched", () => {
   const r = new Registry();
-  r.applyDiscovery([disco()]);
+  r.applyDiscovery([dispatched]);
   r.upsertTask(mkTask({ id: "other", tmuxSession: "unrelated", worktreePath: "/wt/other" }));
 
   r.renameSession("s1", "renamed");
@@ -309,10 +313,39 @@ test("renameSession leaves a task bound to a different tmux session untouched", 
   assert.equal(taskOf(r, "other")?.tmuxSession, "unrelated");
 });
 
+test("renameSession ignores a dead task that recorded a since-reused tmux name", () => {
+  const r = new Registry();
+  r.applyDiscovery([dispatched]);
+  // A finished task keeps both fields until its worktree is reclaimed, and tmux
+  // frees a dead session's name at once - so a later dispatch can be handed the
+  // same bare slug. Only the task holding THIS session's worktree may follow the
+  // rename; re-pointing the stale one would aim its teardown at a live agent.
+  r.upsertTask(mkTask({ id: "stale", status: "done", worktreePath: "/wt/old" }));
+  r.upsertTask(mkTask());
+
+  r.renameSession("s1", "renamed");
+
+  assert.equal(taskOf(r, "stale")?.tmuxSession, "work");
+  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+});
+
+test("renameSession follows the rename for a worktree-holding task that already failed", () => {
+  const r = new Registry();
+  r.applyDiscovery([dispatched]);
+  // The dispatcher only sets sessionId on the success path, so a failed-but-alive
+  // task has none - yet it still holds the worktree that teardown targets.
+  r.upsertTask(mkTask({ status: "failed", sessionId: null }));
+
+  r.renameSession("s1", "renamed");
+
+  assert.equal(taskOf(r)?.tmuxSession, "renamed");
+});
+
 test("renameSession touches no task binding when the session has no tmux handle", () => {
   const r = new Registry();
   r.applyDiscovery([
     disco({
+      cwd: "/wt/work",
       tmux: null,
       nameSource: "wezterm",
       wezterm: { paneId: 12, tabId: 4, windowId: 1, tabTitle: "work", isActive: true },
@@ -323,4 +356,43 @@ test("renameSession touches no task binding when the session has no tmux handle"
   r.renameSession("s1", "renamed");
 
   assert.equal(taskOf(r)?.tmuxSession, "work");
+});
+
+// ---- Registry.renameSession (cards sharing one tmux session) ----
+
+test("renameSession re-points every card hosted on the renamed tmux session", () => {
+  const r = new Registry();
+  // Two agents in two windows of one tmux session: correlate groups by tty, so
+  // they are two cards sharing a tmux.session.
+  r.applyDiscovery([
+    disco(),
+    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, tmux: { ...PANE, window: "1", windowIndex: 1, paneId: "%9" } }),
+  ]);
+
+  const emitted: string[] = [];
+  r.subscribe((e) => {
+    if (e.type === "session_upsert") emitted.push(e.session.id);
+  });
+
+  r.renameSession("s1", "renamed");
+
+  // Focus/Kill target tmux.session by name, so a sibling left on the old name
+  // would attach to a session that no longer resolves.
+  assert.equal(sessionOf(r, "s2")?.tmux?.session, "renamed");
+  // Its title IS the tmux session name (nameSource: tmux), so it moves too.
+  assert.equal(sessionOf(r, "s2")?.name, "renamed");
+  assert.deepEqual(emitted, ["s1", "s2"], "both cards re-render immediately");
+});
+
+test("renameSession leaves a card on an unrelated tmux session alone", () => {
+  const r = new Registry();
+  r.applyDiscovery([
+    disco(),
+    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, name: "other", tmux: { ...PANE, session: "other" } }),
+  ]);
+
+  r.renameSession("s1", "renamed");
+
+  assert.equal(sessionOf(r, "s2")?.tmux?.session, "other");
+  assert.equal(sessionOf(r, "s2")?.name, "other");
 });

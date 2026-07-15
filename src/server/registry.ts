@@ -367,12 +367,26 @@ export class Registry extends EventEmitter {
    * was renamed), so there's nothing to reconcile - a stale in-flight sweep that
    * started before the rename can briefly show the old name, then self-heals.
    *
+   * Renaming a tmux session renames it for every card hosted on it: `correlate`
+   * groups agents by tty, so two agents in two windows of one tmux session are two
+   * cards sharing a `tmux.session`. All of them are re-pointed, or a sibling's Focus
+   * would attach by a name that no longer resolves until the next sweep. A sibling
+   * named after tmux (`nameSource`) takes the new display name too - its title just
+   * IS the tmux session name.
+   *
    * A dispatched task holds its own persisted copy of the tmux name, and that copy
    * drives destructive teardown: `reconcileOnStartup` reads `tmuxSession` back after
    * a restart and reclaims the worktree when the name no longer resolves. Left
    * stale, a renamed agent's tree would be force-removed out from under it, so the
-   * binding moves with the rename here (names are unique, so matching the old one
-   * is exact) and is persisted through `upsertTask` to reach SQLite.
+   * binding moves with the rename here, persisted through `upsertTask` to reach
+   * SQLite. The old name alone is too weak a key: it is unique only among LIVE
+   * sessions, while `tmuxSession` is a historical record and tmux frees a dead
+   * session's name for immediate reuse. So the task must also hold the worktree of
+   * a session actually on this tmux session (the `cwd` join `activeTaskForCwd`
+   * uses) - otherwise a long-dead task that merely recorded a since-reused name
+   * would be re-pointed onto a live session and later kill it. `sessionId` can't be
+   * the key: the dispatcher only sets it on the success path, so a failed-but-alive
+   * task - which still holds a worktree and must still follow - has none.
    */
   renameSession(sessionId: string, name: string): void {
     const s = this.sessions.get(sessionId);
@@ -387,10 +401,27 @@ export class Registry extends EventEmitter {
     this.sessions.set(sessionId, next);
     this.emitSession(next);
     if (!priorTmux || priorTmux === name) return;
+
+    const hostedCwds = new Set<string>();
+    if (s.cwd) hostedCwds.add(s.cwd);
+    for (const [id, other] of [...this.sessions]) {
+      if (id === sessionId) continue;
+      const pane = other.tmux;
+      if (!pane || pane.session !== priorTmux) continue;
+      if (other.cwd) hostedCwds.add(other.cwd);
+      const renamed: Session = {
+        ...other,
+        name: other.nameSource === "tmux" ? name : other.name,
+        tmux: { ...pane, session: name },
+      };
+      this.sessions.set(id, renamed);
+      this.emitSession(renamed);
+    }
+
     for (const t of this.listTasks()) {
-      if (t.tmuxSession === priorTmux) {
-        this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
-      }
+      if (t.tmuxSession !== priorTmux) continue;
+      if (!t.worktreePath || !hostedCwds.has(t.worktreePath)) continue;
+      this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
     }
   }
 

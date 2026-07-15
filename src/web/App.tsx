@@ -142,13 +142,21 @@ export function App(): React.JSX.Element {
 
   // Drop selection / collapse / close the diff if the session disappears
   // (exited + reaped, etc.).
+  //
+  // The rename editor lives inside a card, so it reconciles against `visible` -
+  // the list the grid actually renders - rather than every known session. A card
+  // that leaves the filter (its status label is part of the haystack, so an agent
+  // going idle is enough) unmounts its editor without an unmount-time onBlur, and
+  // nothing else would ever clear `renamingId`; the stand-down guard below would
+  // then swallow every grid shortcut for good. The overlay ids stay on `sessions`
+  // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) setDiffSessionId(null);
     if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
-    if (renamingId && !sessions.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, selectedId, expandedId, diffSessionId, resetSessionId, renamingId]);
+    if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
+  }, [sessions, visible, selectedId, expandedId, diffSessionId, resetSessionId, renamingId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {

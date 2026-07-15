@@ -82,6 +82,22 @@ test("pickGateReply: finding ids separate two rounds of the SAME (run, step)", (
   assert.equal(hit?.text, "apply both");
 });
 
+/**
+ * The other half of the id scheme, and the one recency alone gets WRONG: round 2 was
+ * answered by the agent driving its own gate via the `/no-mistakes` skill, which
+ * nothing witnessed, so round 1's foreman reply is the only candidate left. Ids we
+ * read on both sides that share nothing say "different round" - they do not say
+ * "no idea, take the newest".
+ */
+test("pickGateReply: a reply whose ids share nothing with the round is not its cause", () => {
+  const round1 = reply({ ts: 1000, findingIds: ["f1"], text: "nudged about the first one" });
+  assert.equal(pickGateReply([round1], ["f9"], 3000), null);
+  // But ids missing from the CANDIDATE are "we cannot tell", not a disagreement,
+  // so that one still falls back to recency.
+  const idless = reply({ ts: 1000, findingIds: [], text: "ids we could not read" });
+  assert.equal(pickGateReply([idless], ["f9"], 3000)?.text, "ids we could not read");
+});
+
 test("pickGateReply: with no ids to match on, the newest surviving reply wins", () => {
   // A findings_json we couldn't read leaves no ids, so the fallback is "who spoke
   // last before this landed" - never the one that came after.
@@ -151,6 +167,22 @@ test("gate replies are scoped to their own (run, step)", () => {
   });
   assert.deepEqual(gateRepliesFor("run-a", "review").map((r) => r.text), ["a"]);
   assert.deepEqual(gateRepliesFor("run-a", "document").map((r) => r.text), ["b"]);
+});
+
+/**
+ * These rows outlive the daemon that wrote them (90 days), so a source a NEWER
+ * daemon minted, read back by an older one, is a real upgrade-window state. An
+ * author we can't name must read as no author - never as the loudest thing the log
+ * can say, which is that a bot changed your branch.
+ */
+test("a source we do not recognise is dropped, not read as the foreman", () => {
+  openDb()
+    .prepare(
+      `INSERT INTO gate_replies (session_id, ts, source, run_id, step, finding_ids, text)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run("sx", SAFELY_RECENT, "some-future-actor", "run-unknown", "review", "[]", "hi");
+  assert.deepEqual(gateRepliesFor("run-unknown", "review"), []);
 });
 
 /**
@@ -422,6 +454,52 @@ test("a fix with no recorded reply is replied-by-nobody, not mis-attributed", as
   assert.equal(detail.reply, "Apply all four.");
   assert.equal(detail.attribution, null);
   assert.equal(log.summaries[0]!.repliedBy, null);
+});
+
+/**
+ * Two REPLIED rounds of one (run, step), only the first of which we witnessed - the
+ * agent answered round 2's gate itself through the `/no-mistakes` skill. Round 1's
+ * nudge is the only candidate round 2's fix has, and it must still name nobody:
+ * a byline the foreman didn't earn is the exact claim this feature exists to avoid.
+ */
+test("an unrelated round's nudge does not sign the next round's fix", async () => {
+  const repo = mkRepo();
+  const db = mkNmDb(repo, "main");
+  db.prepare("INSERT INTO step_results (id, run_id, step_name) VALUES (?, ?, ?)").run(
+    "sr1", "run1", "review",
+  );
+  const round = (id: string, n: number, ids: string, summary: string | null, at: number) =>
+    db.prepare(
+      `INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json,
+         user_findings_json, selected_finding_ids, selection_source, fix_summary, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id, "sr1", n, "initial", findings({ id: ids, desc: `round ${n}` }),
+      findings({ id: ids, desc: `round ${n}`, instructions: `apply ${ids}` }),
+      JSON.stringify([ids]), "user", summary, at,
+    );
+  round("rd1", 1, "f1", null, 100); // the foreman nudged this one...
+  round("rd2", 2, "f9", "fix one", 200); // ...and it produced "fix one"
+  round("rd3", 3, "f13", "fix two", 300); // round 2 produced "fix two", unwitnessed
+  db.close();
+  commit(repo, "d.ts", "no-mistakes(review): fix one");
+  commit(repo, "e.ts", "no-mistakes(review): fix two");
+
+  const log = await readFixLog(repo, () => [
+    {
+      sessionId: "s", ts: 1, source: "foreman", runId: "run1", step: "review",
+      findingIds: ["f1"], text: "Go ahead and fix f1.",
+    },
+  ]);
+
+  const two = log.summaries.find((s) => s.summary === "fix two")!;
+  assert.equal(log.details.get(two.sha)!.decision, "replied");
+  assert.equal(two.repliedBy, null, "round 1's nudge is not round 2's author");
+  assert.equal(log.details.get(two.sha)!.attribution, null);
+  // ...while the fix the nudge DID cause still carries it.
+  const one = log.summaries.find((s) => s.summary === "fix one")!;
+  assert.equal(one.repliedBy, "foreman");
+  assert.equal(log.details.get(one.sha)!.attribution?.text, "Go ahead and fix f1.");
 });
 
 /**

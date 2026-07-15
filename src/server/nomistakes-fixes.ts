@@ -234,9 +234,10 @@ const COMMIT_SECOND_MS = 1000;
  * Three rules, in order:
  *  1. CAUSALITY. A reply filed after the fix landed cannot have caused it. This
  *     runs first so it constrains the other two rather than being their tiebreak.
- *  2. OVERLAP. Prefer the reply whose finding ids overlap this round's most. This
- *     is what separates round 1 from round 2 of the same step - they share a run
- *     and a step, so ids are the only thing telling them apart. Ids, never
+ *  2. OVERLAP. Prefer the reply whose finding ids overlap this round's most, and
+ *     REJECT one that shares none when both sides had ids to compare. This is what
+ *     separates round 1 from round 2 of the same step - they share a run and a
+ *     step, so ids are the only thing telling them apart. Ids, never
  *     `findingsDigest`: descriptions arrive TRUNCATED by `axi status` (600 runes
  *     plus a "… (truncated, %d chars total)" suffix) and a digest of them would
  *     bind this join to another tool's display constants, failing silently and
@@ -261,6 +262,12 @@ export function pickGateReply(
   let bestOverlap = -1;
   for (const r of caused) {
     const overlap = round.size === 0 ? 0 : r.findingIds.filter((id) => round.has(id)).length;
+    // Sharing NOTHING when both sides had ids to compare is positive evidence of a
+    // different round, not an absence of evidence - we read this round's ids, we
+    // read the candidate's, and they disagree - so it disqualifies the candidate
+    // outright rather than falling through to recency. Ids missing from EITHER side
+    // are the genuine "we cannot tell" that rule 3 exists for, and still fall back.
+    if (round.size > 0 && r.findingIds.length > 0 && overlap === 0) continue;
     // `>=` on a tie, over a list already sorted oldest-first: the later reply wins,
     // which is rule 3. A strict `>` would keep the earliest instead and explain a
     // fix with a superseded decision.

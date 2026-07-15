@@ -397,6 +397,13 @@ export function logGateReply(r: GateReplyRow): void {
  *
  * Bounded by the index on (run_id, step): a run works a step in a handful of
  * rounds, so this returns a handful of rows however long the daemon has run.
+ *
+ * A row whose `source` we don't recognise is DROPPED, not coerced. These rows live
+ * for 90 days and outlive the daemon that wrote them, so a third source minted by a
+ * newer daemon and read back by an older one is a real upgrade-window state rather
+ * than a can't-happen. Coercing it would resolve "I don't know who did this" into
+ * the most alarming claim the log can make - that a bot changed your branch. The
+ * byline underclaims everywhere else; an unknown author is no byline.
  */
 export function gateRepliesFor(runId: string, step: string): GateReplyRow[] {
   const rows = openDb()
@@ -405,15 +412,21 @@ export function gateRepliesFor(runId: string, step: string): GateReplyRow[] {
          FROM gate_replies WHERE run_id = ? AND step = ? ORDER BY ts ASC`,
     )
     .all(runId, step) as unknown as Array<Record<string, unknown>>;
-  return rows.map((row) => ({
-    sessionId: String(row.session_id ?? ""),
-    ts: Number(row.ts ?? 0),
-    source: row.source === "you" ? "you" : "foreman",
-    runId: String(row.run_id ?? ""),
-    step: String(row.step ?? ""),
-    findingIds: parseIdList(row.finding_ids),
-    text: typeof row.text === "string" ? row.text : null,
-  }));
+  return rows.flatMap((row) => {
+    const source = row.source;
+    if (source !== "you" && source !== "foreman") return [];
+    return [
+      {
+        sessionId: String(row.session_id ?? ""),
+        ts: Number(row.ts ?? 0),
+        source,
+        runId: String(row.run_id ?? ""),
+        step: String(row.step ?? ""),
+        findingIds: parseIdList(row.finding_ids),
+        text: typeof row.text === "string" ? row.text : null,
+      },
+    ];
+  });
 }
 
 /** A `finding_ids` JSON array back to a string[]; a bad blob costs precision, not the read. */
@@ -444,13 +457,7 @@ function parseIdList(raw: unknown): string[] {
  * this a slow-growing table, so the window can afford to be generous.
  */
 export function pruneGateReplies(cutoff: number): number {
-  const db = openDb();
-  const before = db.prepare(`SELECT COUNT(*) AS n FROM gate_replies WHERE ts < ?`).get(cutoff) as
-    | { n: number }
-    | undefined;
-  if (!before?.n) return 0;
-  db.prepare(`DELETE FROM gate_replies WHERE ts < ?`).run(cutoff);
-  return before.n;
+  return Number(openDb().prepare(`DELETE FROM gate_replies WHERE ts < ?`).run(cutoff).changes);
 }
 
 /**

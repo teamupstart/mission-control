@@ -293,7 +293,7 @@ export interface Task {
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while queued. */
   worktreePath: string | null;
-  /** Worktree branch, once known (carried here since gitInfo can't read linked-worktree .git). */
+  /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
   /** How the worktree was provisioned, so teardown returns a treehouse lease vs `git worktree remove`. */
   provider: WorktreeProvider | null;

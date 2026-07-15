@@ -59,9 +59,9 @@ export function ReportPanel({
   const recent = useMemo(() => finishedTasks(tasks).slice(0, RECENT_TASKS_CAP), [tasks]);
   const taskById = useMemo(() => new Map(tasks.map((t) => [t.id, t])), [tasks]);
 
-  // gitInfo can't read a linked-worktree's .git, so a dispatched agent's
-  // session has gitBranch === null; fall back to the task's branch (matching the
-  // server's markdown digest, so the panel and the copied text agree).
+  // gitBranch is null when the checkout's .git or HEAD can't be read; fall back to
+  // the task's branch (matching the server's markdown digest, so the panel and the
+  // copied text agree).
   const branchOf = (s: Session): string | null =>
     s.gitBranch ?? (s.task ? taskById.get(s.task.id)?.branch ?? null : null);
 

@@ -61,6 +61,14 @@ const OVERLAY_TTL_MS = 30 * 60 * 1000;
  * allowed to take over so an idle card doesn't freeze on a stale exact figure.
  */
 const STATUSLINE_TTL_MS = 3 * 60 * 1000;
+/**
+ * Caps on remembered no-mistakes dismissals (see `nmDismissed`): how many
+ * checkouts we keep at all, and how many retired runs per checkout. Only a reset
+ * ever adds one, so these sit far above any real session's worth of resets; they
+ * exist so the map can't grow with a long-lived daemon's uptime.
+ */
+const NM_DISMISSED_CHECKOUTS = 200;
+const NM_DISMISSED_RUNS_PER_CHECKOUT = 8;
 
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
@@ -101,15 +109,27 @@ export class Registry extends EventEmitter {
    */
   private nmBindings = new Map<string, Map<string, { branch: string | null; updatedAt: number }>>();
   /**
-   * Runs retired from a session's card: sessionId -> run ids. A reset moves the
-   * branch pointer but not the branch *name*, and `axi status` goes on reporting
-   * a finished run for that branch indefinitely - so clearing the decoration
-   * alone doesn't hold, the next poll just re-attaches it. Remembering the run is
-   * what makes the clear stick. Keyed on run id, not branch, so a *new* run on
-   * the same branch still decorates the card; kept per session so a sibling
-   * driving the same run from an untouched worktree is unaffected (see
-   * `dismissNomistakes` for which sessions a reset retires it for). Dropped with
-   * the session (see `remove`); at most a handful of ids each.
+   * Runs retired from a checkout: `checkoutKey` (worktree root + branch) -> run
+   * ids. A reset moves the branch pointer but not the branch *name*, and `axi
+   * status` goes on reporting a finished run for that branch indefinitely - so
+   * clearing the decoration alone doesn't hold, the next poll just re-attaches
+   * it. Remembering the run is what makes the clear stick.
+   *
+   * Keyed on the *checkout*, because that is what a reset acts on: `reset --hard`
+   * wipes one worktree, so the run stops describing anything real for whoever
+   * stands in that worktree on that branch - a property of the checkout, not of
+   * the session that happened to click the button. Keying on the session id
+   * instead would drop the dismissal on the next agent restart (a new pid mints a
+   * new synthetic id), and the strip would come back on a card the user already
+   * cleared. Keyed on run id within the checkout, so a *new* run on the same
+   * branch still decorates the card.
+   *
+   * Bounded by eviction rather than reaped on the run disappearing from `axi
+   * status`: the active-run set only covers worktrees we polled, and those come
+   * from live sessions (`nomistakesPollCwds`), so "the run is gone" and "nobody
+   * asked about it this tick" are indistinguishable - reaping on absence would be
+   * session-presence reaping in disguise, reopening the very bug. Entries are
+   * tiny and only a reset creates one, so the caps are far above real use.
    */
   private nmDismissed = new Map<string, Set<string>>();
 
@@ -436,7 +456,9 @@ export class Registry extends EventEmitter {
    */
   private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
     const run = this.matchRun(id, s, byBranch);
-    return run && this.nmDismissed.get(id)?.has(run.id) ? null : run;
+    if (!run) return null;
+    const key = checkoutKey(s.gitRoot, s.gitBranch);
+    return key && this.nmDismissed.get(key)?.has(run.id) ? null : run;
   }
 
   /** The run attributable to this session, before dismissals are applied. */
@@ -452,36 +474,50 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Retire `run` from the cards of every session the reset of `root` actually
-   * wiped, for good. A reset throws away the very work the run validated, so the
-   * run - finished or not - no longer describes that checkout, and the strip
+   * Retire `run` from the checkout a reset just wiped - `root`, standing on
+   * `branch` - for good. A reset throws away the very work the run validated, so
+   * the run - finished or not - no longer describes that checkout, and the strip
    * would otherwise sit there forever (see `nmDismissed`).
    *
-   * Scoped to the checkout that was reset, on the run's own branch: `reset --hard`
-   * only touches one worktree, so a run is retired exactly for sessions standing
-   * in that worktree on the branch whose work just went away. That covers a
-   * sibling sharing the checkout (its strip describes the same dead work), while
-   * a run driven from a worktree the reset never touched keeps its strip - and
-   * with it the approve/fix/skip buttons that are the only way to answer a gate.
+   * Scoped to that one checkout: `reset --hard` only touches one worktree, so the
+   * run is retired exactly for whoever stands in that worktree on the branch whose
+   * work just went away - now or after a restart. That covers a sibling sharing
+   * the checkout (its strip describes the same dead work), while a same-branch
+   * twin in an independent worktree keeps its strip, its work being still on disk.
+   *
+   * A run on a *different* branch than the reset checkout lives in a different
+   * worktree that the reset never touched (git won't check one branch out twice),
+   * so it is never retired - keeping the approve/fix/skip buttons that are the
+   * only way to answer a parked gate.
    *
    * The caller passes the run it saw before the reset, rather than us re-reading
    * it after: a fetch can take ~30s, and the poller may have swapped or cleared
    * the run in that window. We retire the run the user was actually looking at.
    */
-  dismissNomistakes(run: NmRunSummary, root: string | null): void {
+  dismissNomistakes(run: NmRunSummary, root: string | null, branch: string | null): void {
     // No id means we can't name the run, and dismissing "" would gag every
     // id-less run on the card for good. Leave the strip rather than over-suppress.
-    if (!run.id || !root) return;
+    if (!run.id || branch !== run.branch) return;
+    const key = checkoutKey(root, branch);
+    if (!key) return;
+    this.rememberDismissal(key, run.id);
     for (const [id, s] of this.sessions) {
-      if (s.gitRoot !== root || s.gitBranch !== run.branch) continue;
-      let dismissed = this.nmDismissed.get(id);
-      if (!dismissed) this.nmDismissed.set(id, (dismissed = new Set()));
-      dismissed.add(run.id);
-      if (s.nomistakes?.id !== run.id) continue;
+      if (checkoutKey(s.gitRoot, s.gitBranch) !== key || s.nomistakes?.id !== run.id) continue;
       const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
       this.sessions.set(id, next);
       this.emitSession(next);
     }
+  }
+
+  /** Record a retired run against its checkout, evicting the oldest past the caps. */
+  private rememberDismissal(key: string, runId: string): void {
+    let ids = this.nmDismissed.get(key);
+    if (!ids) this.nmDismissed.set(key, (ids = new Set()));
+    ids.add(runId);
+    // `axi status` reports the latest run for a branch, so once newer runs have
+    // been retired on this checkout the older ids can no longer suppress anything.
+    evictOldest(ids, NM_DISMISSED_RUNS_PER_CHECKOUT);
+    evictOldest(this.nmDismissed, NM_DISMISSED_CHECKOUTS);
   }
 
   /**
@@ -625,7 +661,6 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
-    this.nmDismissed.delete(id);
     if (this.sessions.delete(id)) this.emitEvent({ type: "session_remove", id });
   }
 
@@ -845,6 +880,26 @@ export class Registry extends EventEmitter {
 }
 
 // ---- pure helpers ----
+
+/**
+ * Identity of a checkout: the worktree root plus the branch standing in it. Two
+ * sessions share a key exactly when they share a working tree, which is the unit
+ * `git reset --hard` acts on. Null when either half is unknown, so an
+ * unreadable checkout never collides with another under a partial key. Encoded
+ * rather than concatenated, so no root/branch pair can spell another's key.
+ */
+function checkoutKey(root: string | null, branch: string | null): string | null {
+  return root && branch ? JSON.stringify([root, branch]) : null;
+}
+
+/** Drop oldest-inserted entries until `m` is within `cap`. */
+function evictOldest(m: Pick<Map<string, unknown>, "size" | "keys" | "delete">, cap: number): void {
+  while (m.size > cap) {
+    const oldest = m.keys().next();
+    if (oldest.done) return;
+    m.delete(oldest.value);
+  }
+}
 
 /** A task in a terminal state has no further lifecycle - safe to evict from memory. */
 function isTerminalTask(status: Task["status"]): boolean {

@@ -245,6 +245,81 @@ test("a run we cannot name is left alone rather than gagging every id-less run",
   assert.equal((await card("idless")).nomistakes?.outcome, "passed", "an id-less run is never gagged");
 });
 
+test("a dismissal outlives the session that made it", async () => {
+  const branch = "mancej/restart";
+  const clone = mkClone(branch);
+  seedSession("proc:ttys003:100:1", clone, branch);
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_RESTART")]);
+
+  const res = await app.request("/api/sessions/proc:ttys003:100:1/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await card("proc:ttys003:100:1")).nomistakes, null);
+
+  // Quitting the agent and relaunching in the same pane is the natural companion
+  // to "reset and start fresh" - and it mints a new synthetic id (tty+pid+start)
+  // for what is, to the user, the same card in the same checkout on the same
+  // branch. `axi status` still reports the merged run, so a dismissal that died
+  // with the old session id would let the next poll re-decorate the new card.
+  registry.applyDiscovery([]); // the old process is gone
+  seedSession("proc:ttys003:200:2", clone, branch); // relaunched in the same pane
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_RESTART")]);
+  assert.equal(
+    (await card("proc:ttys003:200:2")).nomistakes,
+    null,
+    "a restart must not resurrect the strip",
+  );
+});
+
+test("a transient poll failure does not resurrect a dismissed strip", async () => {
+  const branch = "mancej/flaky";
+  const clone = mkClone(branch);
+  seedSession("flaky", clone, branch);
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_FLAKY")]);
+
+  const res = await app.request("/api/sessions/flaky/reset", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ clear: false }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await card("flaky")).nomistakes, null);
+
+  // `axi status` timing out (or the binary going missing) reconciles an EMPTY run
+  // set. That observes nothing - it must not be read as "the run is gone" and
+  // forget the dismissal, or the next good poll brings the strip straight back.
+  registry.reconcileNomistakes([]);
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_FLAKY")]);
+  assert.equal((await card("flaky")).nomistakes, null, "a failed poll must not un-retire the run");
+});
+
+test("repeated resets on one checkout evict the oldest run, never the newest", async () => {
+  const branch = "mancej/churn";
+  const clone = mkClone(branch);
+  seedSession("churn", clone, branch);
+
+  // Far more resets on one checkout than the per-checkout cap keeps run ids for.
+  // Eviction is what bounds the map, so it must drop the runs that can no longer
+  // be reported (`axi status` only reports a branch's latest run) and never the
+  // one the user just retired.
+  for (let i = 0; i < 12; i++) {
+    registry.reconcileNomistakes([finishedRun(branch, `01RUN_CHURN_${i}`)]);
+    const res = await app.request("/api/sessions/churn/reset", {
+      method: "POST",
+      headers: authed,
+      body: JSON.stringify({ clear: false }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await card("churn")).nomistakes, null, `reset ${i} clears the strip`);
+  }
+
+  registry.reconcileNomistakes([finishedRun(branch, "01RUN_CHURN_11")]);
+  assert.equal((await card("churn")).nomistakes, null, "the newest retired run stays retired");
+});
+
 test("a failed reset leaves the strip alone", async () => {
   const branch = "mancej/third";
   const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-reset-nm-norepo-")));

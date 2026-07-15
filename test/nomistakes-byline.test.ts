@@ -39,13 +39,15 @@ process.env.NM_HOME = tmp("nm-home-");
 process.env.FLEET_HOME = tmp("fleet-byline-");
 
 const { readFixLog, pickGateReply } = await import("../src/server/nomistakes-fixes.ts");
-const { logGateReply, gateRepliesFor, pruneGateReplies, hooksEverSeen, openDb } = await import(
-  "../src/server/db.ts"
-);
+const { logGateReply, dropGateReply, gateRepliesFor, pruneGateReplies, hooksEverSeen, openDb } =
+  await import("../src/server/db.ts");
 const { classifyPending } = await import("../src/server/foreman/pending.ts");
 const { applyVerdict, planFromVerdict } = await import("../src/server/foreman/verdict.ts");
+const { respond, isResponding } = await import("../src/server/nomistakes.ts");
+import { gateParked } from "@shared/session.ts";
 import type { GateReplyRow } from "../src/server/db.ts";
 import type { ForemanActions, ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
+import type { Registry } from "../src/server/registry.ts";
 import type { NmFinding, NmRunSummary, Session } from "@shared/types.ts";
 
 openDb();
@@ -186,6 +188,29 @@ test("a source we do not recognise is dropped, not read as the foreman", () => {
 });
 
 /**
+ * The retraction half of the "you" lane. A byline has to be staked before its decision
+ * is known to have landed - `ts` is what the causality filter reads, so a row written
+ * once the outcome is in would postdate the fix it explains and be discarded - which
+ * makes the write a claim, and this the way to take a false one back.
+ */
+test("a staked byline can be taken back by its row id, and only that row", () => {
+  const id = logGateReply({
+    sessionId: "su", ts: SAFELY_RECENT, source: "you", runId: "run-undo",
+    step: "review", findingIds: ["f1"], text: "never delivered",
+  });
+  logGateReply({
+    sessionId: "su", ts: SAFELY_RECENT, source: "you", runId: "run-undo",
+    step: "review", findingIds: ["f2"], text: "this one landed",
+  });
+  dropGateReply(id);
+  assert.deepEqual(gateRepliesFor("run-undo", "review").map((r) => r.text), ["this one landed"]);
+  // Retracting a byline that isn't there is the same outcome as retracting one that is,
+  // so the caller never has to know whether its optimistic write actually happened.
+  dropGateReply(id);
+  assert.equal(gateRepliesFor("run-undo", "review").length, 1);
+});
+
+/**
  * `hooksEverSeen` reads ANY session_events row as "hooks reached us from this
  * session" - it does not filter by kind. That's why the byline got its own table
  * instead of a session_events kind, and this is the tripwire: a future move back
@@ -211,6 +236,71 @@ test("pruneGateReplies drops only what is older than the cutoff", () => {
   });
   assert.equal(pruneGateReplies(1_000), 1);
   assert.deepEqual(gateRepliesFor("run-prune", "review").map((r) => r.text), ["recent"]);
+});
+
+// ---- the "you" lane: a decision the gate never received has no author ----
+
+/**
+ * A fake `no-mistakes` that fails only where a `respond-fails` marker sits, so one
+ * binary drives both outcomes: `respond` resolves the binary once and caches it for
+ * the process, and the cwd is the only thing left that varies per call.
+ */
+function fakeAxi(): string {
+  const bin = join(tmp("fake-axi-"), "no-mistakes");
+  writeFileSync(
+    bin,
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "no-mistakes 0.0-fake"; exit 0; fi
+if [ -f ./respond-fails ]; then exit 1; fi
+exit 0
+`,
+    { mode: 0o755 },
+  );
+  return bin;
+}
+process.env.NOMISTAKES_BIN = fakeAxi();
+
+/** A registry with nothing to poll: `respond`'s reconciles then cost no subprocesses. */
+const noFleet = {
+  nomistakesPollCwds: () => [],
+  reconcileNomistakes: () => {},
+} as unknown as Registry;
+
+/** Wait for the background `respond` to settle - `isResponding` clears last. */
+async function settled(cwd: string): Promise<void> {
+  for (let i = 0; i < 500 && isResponding(cwd); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.equal(isResponding(cwd), false, "the respond never settled");
+}
+
+/**
+ * The bug this closes: the Fix box acts on a POLLED status, so the gate you answered
+ * may be one the run has already moved past. `axi respond` then exits non-zero having
+ * said nothing - but `respond()` returned ok long before that, because the command
+ * blocks server-side until the run reaches its next gate or an outcome. A byline left
+ * behind would go on to sign whatever the agent then decided for ITSELF through the
+ * `/no-mistakes` skill: an autonomous fix reading "by you, in the dashboard", which is
+ * this feature's own distinction inverted, in its worst direction.
+ */
+test("a respond the gate never received reports itself undelivered", async () => {
+  const cwd = tmp("respond-fail-");
+  writeFileSync(join(cwd, "respond-fails"), "");
+  const undo: string[] = [];
+  const r = await respond(noFleet, cwd, "fix", { onUndelivered: () => undo.push("retracted") });
+  // Accepted only means SPAWNED. Delivery isn't known yet - that's the whole problem.
+  assert.equal(r.ok, true);
+  await settled(cwd);
+  assert.deepEqual(undo, ["retracted"]);
+});
+
+test("a delivered respond keeps its byline", async () => {
+  const cwd = tmp("respond-ok-");
+  let retracted = false;
+  const r = await respond(noFleet, cwd, "fix", { onUndelivered: () => (retracted = true) });
+  assert.equal(r.ok, true);
+  await settled(cwd);
+  assert.equal(retracted, false, "a delivered decision keeps its author");
 });
 
 // ---- the foreman side: classify -> plan -> apply ----
@@ -260,6 +350,32 @@ test("classifyPending carries no gate when the step is unknown", () => {
   const p = classifyPending(gatedSession({ nomistakes: nmRun({ gateStep: null }) }), []);
   assert.equal(p.situation, "gate-parked");
   assert.equal(p.gate, undefined);
+});
+
+/**
+ * Where the foreman's byline STOPS, pinned so it stays a decision rather than a
+ * side effect of how `classifyPending` happens to be ordered.
+ *
+ * A session can be parked at a gate AND sitting on a live prompt at once (the gate parks,
+ * then the agent puts the finding up as a question). The prompt wins - it's the thing
+ * actually blocked - and it carries no gate, so a send that answers it is filed against
+ * nothing and its fix reads `replied` with no author. That is the intended half of the
+ * trade: what the agent put up may be about anything, so crediting our answer to the gate
+ * would claim a reply was about the gate when nothing establishes it - the overclaim this
+ * feature exists to prevent. A byline we miss is the safe side of the same trade.
+ */
+test("a live prompt in front of a parked gate carries no gate, so nothing is filed", async () => {
+  const s = gatedSession({ state: "awaiting_input", activity: "Which of these should I fix?" });
+  assert.equal(gateParked(s), true, "the gate really is parked behind the prompt");
+  const p = classifyPending(s, []);
+  assert.equal(p.situation, "terminal-pane");
+  assert.equal(p.gate, undefined);
+
+  // ...and that absence is what reaches applyVerdict, which then names nobody.
+  const calls: string[] = [];
+  const live = ctx({ gate: p.gate ?? null });
+  await applyVerdict(actions(calls), live, planFromVerdict(ANSWER, live, true));
+  assert.deepEqual(calls, ["sendText", "putNote"]);
 });
 
 const ANSWER: Verdict = {

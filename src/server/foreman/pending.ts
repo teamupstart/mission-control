@@ -182,6 +182,15 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   // agent puts the finding up as a live prompt), and the live prompt is the precise thing
   // blocked right now - answering it is what unblocks the run. The gate behind it is context,
   // and the reviewer reads it off the transcript either way.
+  //
+  // That ordering decides the BYLINE too, and deliberately so: `gate` below is set on this
+  // branch and nowhere else, so a send that answers a live prompt is filed against no gate
+  // and its fix is credited to nobody. The ref attaches only when the gate IS the live
+  // question. A prompt that's up may be about anything - the agent may be asking something
+  // the gate never raised - so filing our answer to it against the gate would claim the reply
+  // was about the gate when nothing establishes that. That's an OVERCLAIM, and it's the
+  // direction this byline keeps having to close; a missing byline is the safe side of the
+  // same trade. So the foreman is named only where it stopped a gate that stayed a gate.
   if (gateParked(s) && s.nomistakes) {
     return {
       situation: "gate-parked",

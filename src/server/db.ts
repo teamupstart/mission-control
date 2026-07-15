@@ -371,7 +371,8 @@ export interface GateReplyRow {
 }
 
 /**
- * Record who answered a no-mistakes gate.
+ * Record who answered a no-mistakes gate. Returns the row's id, so a caller that
+ * wrote optimistically can take it back (see `dropGateReply`).
  *
  * Keyed by (runId, step) + the finding ids up at the gate, which is what the fix
  * log joins on. NOT by `findingsDigest`: that hashes finding DESCRIPTIONS as
@@ -381,15 +382,30 @@ export interface GateReplyRow {
  * forever, with nothing failing loudly when they changed. Ids are short, stable,
  * never truncated, and identify a round at least as precisely.
  */
-export function logGateReply(r: GateReplyRow): void {
+export function logGateReply(r: GateReplyRow): number {
   const ids = r.findingIds.filter((i) => typeof i === "string" && i).slice(0, MAX_GATE_REPLY_IDS);
   const text = r.text?.trim() ? r.text.trim().slice(0, MAX_GATE_REPLY_TEXT) : null;
-  openDb()
+  const res = openDb()
     .prepare(
       `INSERT INTO gate_replies (session_id, ts, source, run_id, step, finding_ids, text)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(r.sessionId, r.ts, r.source, r.runId, r.step, JSON.stringify(ids), text);
+  return Number(res.lastInsertRowid);
+}
+
+/**
+ * Take back a recorded reply - the compensating half of an optimistic write.
+ *
+ * Exists because a byline has to be stamped BEFORE we know the decision was
+ * delivered: its `ts` is what the fix log's causality filter reads, so a row
+ * written once the outcome is known would date from after the fix it explains and
+ * be discarded (see the respond route). So the write is a claim, and this retracts
+ * it when the claim turns out false. An unmatched id is a no-op: retracting a
+ * byline that was never written is the same outcome as retracting one that was.
+ */
+export function dropGateReply(id: number): void {
+  openDb().prepare(`DELETE FROM gate_replies WHERE id = ?`).run(id);
 }
 
 /**

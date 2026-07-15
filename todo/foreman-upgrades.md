@@ -113,7 +113,7 @@ phone without opening the dashboard. (The Slack MCP is already available.)
 
 ## Suggested sequencing
 
-1. **#1 (cheap watcher)** — the enabler that keeps everything else affordable. Shipped: the
+1. **#1 (cheap watcher)** - the enabler that keeps everything else affordable. Shipped: the
    1-minute debounce, then Tiers 0 + 1 (`docs/plans/foreman-watcher/plan.md`), now running in
    `shadow` until the divergence data earns `triage: 'on'`.
 2. **#2 (AFK digest)** and **#3 (learning loop)** — immediate felt value.

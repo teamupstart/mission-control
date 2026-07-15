@@ -117,6 +117,17 @@ const DEFAULT_REAP_MS = 300_000;
 const MIN_REAP_MS = 30_000;
 
 /**
+ * The ceiling, which guards the SAME hot loop as the floor, reached from the far
+ * end: `setTimeout`'s delay is a 32-bit signed int, so anything past 2^31-1 ms
+ * (~24.8 days) silently becomes a 1ms tick rather than a long wait. Someone
+ * disabling the sweep with `FLEET_POOL_REAP_MS=99999999999` would get the
+ * busiest reaper possible. An hour is far past any useful leak-collection
+ * cadence and nowhere near the overflow, so clamp to it rather than tracking
+ * node's limit; `0` stays the one real off switch.
+ */
+const MAX_REAP_MS = 3_600_000;
+
+/**
  * The sweep interval, or null when the sweep is switched OFF.
  *
  * `FLEET_POOL_REAP_MS=0` is how anyone would try to disable a periodic job, and
@@ -135,7 +146,7 @@ export function reapIntervalMs(): number | null {
   const ms = Number(raw);
   if (!Number.isFinite(ms)) return DEFAULT_REAP_MS;
   if (ms <= 0) return null;
-  return Math.max(ms, MIN_REAP_MS);
+  return Math.min(Math.max(ms, MIN_REAP_MS), MAX_REAP_MS);
 }
 
 /** A repo opts into the pool by committing a `treehouse.toml` at its root. */
@@ -516,8 +527,9 @@ async function verdict(tree: PoolTree, pins: CanonicalPins): Promise<string | nu
  * `pins` is everything the harness is already holding - live sessions' cwds and
  * task-held worktrees - so a tree it knows is in use is spared even when treehouse
  * can see no processes under it. It is read as a CALLBACK, not a snapshot: this
- * function blocks on a fetch, and only a reading taken at the reap can see a tree
- * that was claimed while we waited.
+ * function blocks on a fetch and then on every return before a given candidate's,
+ * and only a reading taken at that candidate's own reap can see a tree that was
+ * claimed while we waited.
  */
 export async function reapPool(
   repoRoot: string,
@@ -567,11 +579,14 @@ export async function reapPool(
   // The git rungs are deliberately NOT re-read, and that is a tradeoff rather
   // than a free pass. Staleness is only conservative in the skip direction - a
   // tree already judged dirty or unmerged stays skipped, since work only ever
-  // appears. A reap acts on the other direction: a stale CLEAN reading, taken
-  // before a fetch that may have run 30s, and `return --force` would clean away
-  // anything written since. What makes that acceptable is that dirtying a tree
-  // takes a WRITER, and no writer gets in without a process, a session, or a task
-  // record - every one of which is re-read below, fresh.
+  // appears. A reap acts on the other direction: a stale CLEAN reading, and
+  // `return --force` would clean away anything written since. Be honest about how
+  // stale: `planReapWith` runs ONCE above, so the last candidate's clean/merged
+  // answer predates the fetch AND every forced return before it - the same
+  // minutes the paragraph above describes, not the fetch's 30s. What makes that
+  // acceptable is that dirtying a tree takes a WRITER, and no writer gets in
+  // without a process, a session, or a task record - every one of which IS re-read
+  // below, per candidate, fresh.
   for (const tree of candidates) {
     const fresh = await deps.status(repoRoot);
     // Fail closed, and only for this tree: a re-check we couldn't take is not a

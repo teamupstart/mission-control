@@ -628,6 +628,11 @@ test("reapIntervalMs disables on 0 and refuses to hand setTimeout a hot loop", a
   // returns and fetches - the opposite of what either value was asking for.
   await withReapEnv("nope", () => assert.equal(reapIntervalMs(), 300_000, "a typo is not an instruction"));
   await withReapEnv("5", () => assert.equal(reapIntervalMs(), 30_000, "a tiny value is clamped"));
+  // The far end of the same trap: past setTimeout's 32-bit range an "effectively
+  // off" value fires every ~1ms, so a huge interval must clamp, not overflow.
+  await withReapEnv("99999999999", () =>
+    assert.equal(reapIntervalMs(), 3_600_000, "a huge value is clamped, not handed to setTimeout"),
+  );
 });
 
 test("FLEET_POOL_REAP_MS=0 schedules no sweep at all", async () => {

@@ -287,6 +287,19 @@ export const ReorderQueueSchema = z.object({
 export type ReorderQueue = z.infer<typeof ReorderQueueSchema>;
 
 /**
+ * The repo-relative paths an item's diff touched - which standards docs apply.
+ *
+ * A body rather than `path=` query params because the list is derived from a patch
+ * capped at 1.2MB and so has no small bound: encoded into a URL, a large refactor's
+ * paths overrun Node's default 16KB header limit and the request never arrives.
+ * `readStandards` bounds how many it will actually walk, and reports the drop.
+ */
+export const StandardsRequestSchema = z.object({
+  paths: z.array(z.string()),
+});
+export type StandardsRequest = z.infer<typeof StandardsRequestSchema>;
+
+/**
  * The worker's durable state write for one item. Everything the machine decides
  * lands through here, so the daemon stays the only writer of the DB.
  *

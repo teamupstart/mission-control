@@ -122,6 +122,27 @@ test("an oversized doc is capped, and says so", () => {
   assert.equal(out.docs[0]!.text.length, 24 * 1024);
 });
 
+test("past the changed-path cap the bundle SAYS docs may be missing", () => {
+  // The path list is derived from a patch capped at 1.2MB, so it has no small bound
+  // of its own. Whatever we drop, the verifier has to be told: judging an item
+  // against the repo's contract while silently having read less of it than it thinks
+  // is how a verifier invents `standards` gaps against a doc it never opened.
+  const root = mkRepo();
+  writeFileSync(join(root, "AGENTS.md"), "# the root contract");
+  mkdirSync(join(root, "packages", "late"), { recursive: true });
+  writeFileSync(join(root, "packages", "late", "CLAUDE.md"), "# governs the tail");
+
+  const many = Array.from({ length: 1000 }, (_, i) => `packages/app/src/a${i}.ts`);
+  const out = readStandards(root, [...many, "packages/late/x.ts"]);
+
+  assert.deepEqual(paths(out), ["AGENTS.md"], "the tail's doc was past the cap");
+  assert.equal(out.truncated, true, "and the prompt must print its omitted-docs line");
+
+  // Exactly at the cap nothing was dropped, so nothing may claim it was.
+  const atCap = readStandards(root, many);
+  assert.equal(atCap.truncated, false);
+});
+
 test("a missing root, or a root that isn't there, is simply no standards", () => {
   assert.deepEqual(readStandards(null, ["a.ts"]), { docs: [], truncated: false });
   assert.deepEqual(readStandards("/nope/not/here", ["a.ts"]), { docs: [], truncated: false });

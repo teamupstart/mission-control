@@ -44,7 +44,9 @@ import {
   loadRecentTerminalTasks,
   loadSessionNotes,
   hooksEverSeen,
+  lastAgentBinding,
   logEvent,
+  recordAgentBinding,
   rekeyQueue,
   reorderQueueItems,
   upsertQueue,
@@ -148,6 +150,8 @@ export class Registry extends EventEmitter {
    * tiny and only a reset creates one, so the caps are far above real use.
    */
   private nmDismissed = new Map<string, Set<string>>();
+  /** Whether a discovery sweep has ever completed - see `fleetObserved`. */
+  private sweptFleet = false;
 
   constructor() {
     super();
@@ -190,6 +194,9 @@ export class Registry extends EventEmitter {
   applyDiscovery(discovered: DiscoveredSession[]): void {
     const now = Date.now();
     const seen = new Set<string>();
+    // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
+    // so this is the moment the session map starts meaning anything. See `fleetObserved`.
+    this.sweptFleet = true;
 
     for (const d of discovered) {
       seen.add(d.syntheticId);
@@ -221,6 +228,10 @@ export class Registry extends EventEmitter {
     d: DiscoveredSession,
     now: number,
   ): Session {
+    // Read the stored binding ONCE, on first sight. After that the in-memory value
+    // is the freshest truth - every rebinding goes through this process first - so
+    // re-reading each sweep could only ever return what we already have.
+    const known = prev ? prev.agentSessionId : lastAgentBinding(d.syntheticId);
     const base: Session = {
       id: d.syntheticId,
       agent: d.agent,
@@ -239,7 +250,12 @@ export class Registry extends EventEmitter {
       permissionMode: d.permissionMode ?? prev?.permissionMode ?? null,
       wezterm: d.wezterm,
       tmux: d.tmux,
-      agentSessionId: prev?.agentSessionId ?? null,
+      // Seeded from the DB for the same reason `hooksSeen` below is: only a live
+      // hook/statusLine reports it, so on a daemon restart a quiet-but-healthy
+      // session would rebuild with a null binding - and `noteKeyFor` would hand its
+      // note and its WORK QUEUE to the synthetic id instead, making every stored
+      // queue in the fleet look orphaned. See `recordAgentBinding`.
+      agentSessionId: known,
       transcriptPath: prev?.transcriptPath ?? null,
       instrumented: false,
       // Sticky, and seeded from the DB the first time we see a session so it
@@ -277,6 +293,13 @@ export class Registry extends EventEmitter {
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
     }
+    // The overlay may have just supplied a binding nothing has persisted yet, and
+    // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
+    // been discovered yet has no live session to apply to, so it only ever reaches
+    // a Session here. Left to `applyHook` alone the binding would then never be
+    // written at all - its live-session branch writes on CHANGE, and by the time it
+    // runs the overlay has already put the same id on the card.
+    this.rememberAgentSession(base, known);
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
@@ -346,6 +369,7 @@ export class Registry extends EventEmitter {
       next.note = this.noteSummaryFor(next);
       next.queue = this.queueSummaryFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
+      this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
       if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
@@ -700,8 +724,21 @@ export class Registry extends EventEmitter {
       lastActivity: Date.now(),
       agentSessionId: agentSessionId ?? s.agentSessionId,
     };
+    this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(next.id, next);
     this.emitSession(next);
+  }
+
+  /**
+   * Persist a session's agent binding the moment it changes, so the note/queue key
+   * it decides outlives this process. Written only on a CHANGE because every hook
+   * event reaches here: on a restart the row is what seeded `agentSessionId` in the
+   * first place, so a hook merely restating it has nothing to record.
+   */
+  private rememberAgentSession(s: Session, prev: string | null): void {
+    if (s.agentSessionId && s.agentSessionId !== prev) {
+      recordAgentBinding(s.id, s.agentSessionId, Date.now());
+    }
   }
 
   // ---- runtime metadata (model / thinking level / context %) ----
@@ -724,6 +761,7 @@ export class Registry extends EventEmitter {
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
     const changed = !metaDisplayEqual(s.meta, meta) || s.agentSessionId !== agentSessionId;
     const next: Session = { ...s, meta, agentSessionId };
+    this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
     if (changed) this.emitSession(next);
   }
@@ -1094,6 +1132,24 @@ export class Registry extends EventEmitter {
       if (s.state !== "exited" || this.exitTimers.has(id)) keys.add(noteKeyFor(s));
     }
     return keys;
+  }
+
+  /**
+   * Whether the session map has ever been reconciled against the OS - i.e. whether
+   * "no live session holds this key" is a FINDING or merely a fact about a map
+   * nobody has filled in yet.
+   *
+   * The daemon serves `/api/*` the instant it binds its port, while the first
+   * discovery sweep is an async `ps` scan that lands some time after. Anything
+   * reading `liveNoteKeys` in that window sees an empty set and concludes the whole
+   * fleet is gone - and the orphan sweep polls several times a second, so it will be
+   * in that window. Same rule as the exit linger just above, and the same reason:
+   * escalation is terminal and has no undo, so it must not turn on an absence of
+   * evidence. A sweep that completes and genuinely finds nothing DOES flip this -
+   * that's a fleet we looked at, so a queue with no session really is orphaned.
+   */
+  fleetObserved(): boolean {
+    return this.sweptFleet;
   }
 
   /**

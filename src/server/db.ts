@@ -56,6 +56,12 @@ export function openDb(): DatabaseSync {
     );
     CREATE INDEX IF NOT EXISTS idx_events_session ON session_events(session_id, ts);
 
+    CREATE TABLE IF NOT EXISTS session_agent_bindings (
+      session_id       TEXT PRIMARY KEY,  -- the synthetic id (tty+pid+start)
+      agent_session_id TEXT NOT NULL,     -- what the agent calls itself: the note/queue key
+      updated_at       INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS tasks (
       id            TEXT PRIMARY KEY,
       title         TEXT NOT NULL,
@@ -311,6 +317,40 @@ export function hooksEverSeen(sessionId: string): boolean {
     .prepare(`SELECT 1 AS hit FROM session_events WHERE session_id = ? LIMIT 1`)
     .get(sessionId) as { hit: number } | undefined;
   return row !== undefined;
+}
+
+/**
+ * Remember which agent session a discovered session is running - the durable half
+ * of `Session.agentSessionId`, and the same shape as `hooksEverSeen` above.
+ *
+ * The binding is not decoration: `noteKeyFor` is `agentSessionId ?? syntheticId`,
+ * so it is the identity a session's note and WORK QUEUE are stored under. Only a
+ * live hook/statusLine reports it, so without this a daemon restart rebuilds every
+ * session under its synthetic id, no stored queue matches a live key, and the
+ * orphan sweep terminally escalates the in-flight item of every healthy session in
+ * the fleet. The synthetic id is tty+pid+start, so it's stable across a restart for
+ * the same agent process and mints fresh for a genuinely new one; a `/clear` mints
+ * a new agent session id on the same pane and overwrites the row, which is exactly
+ * right - the queue it just left behind SHOULD orphan.
+ */
+export function recordAgentBinding(sessionId: string, agentSessionId: string, now: number): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_agent_bindings (session_id, agent_session_id, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         agent_session_id = excluded.agent_session_id,
+         updated_at       = excluded.updated_at`,
+    )
+    .run(sessionId, agentSessionId, now);
+}
+
+/** The last agent session id bound to this session, or null if none ever was. */
+export function lastAgentBinding(sessionId: string): string | null {
+  const row = openDb()
+    .prepare(`SELECT agent_session_id AS id FROM session_agent_bindings WHERE session_id = ?`)
+    .get(sessionId) as { id: string } | undefined;
+  return row?.id ?? null;
 }
 
 // ---- tasks ----
@@ -756,7 +796,12 @@ export function reorderQueueItems(noteKey: string, ids: string[], now: number): 
     order.forEach((id, i) => upd.run(i, now, id, noteKey));
     d.exec("COMMIT");
   } catch (err) {
-    d.exec("ROLLBACK");
+    // Guarded like rekeyQueue's: if the BEGIN itself never took there is no
+    // transaction to roll back, and an unguarded ROLLBACK throws over the original
+    // error - which is the one the caller needs to see.
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
     throw err;
   }
 }

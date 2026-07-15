@@ -119,10 +119,22 @@ export class ForemanClient implements ForemanActions {
     return get<SessionDiff>(`/api/sessions/${enc(id)}/diff${q}`);
   }
 
-  /** The repo standards that apply to the files a diff touched. */
-  standards(id: string, paths: string[]): Promise<StandardsBundle> {
-    const q = paths.map((p) => `path=${enc(p)}`).join("&");
-    return get<StandardsBundle>(`/api/sessions/${enc(id)}/standards${q ? `?${q}` : ""}`);
+  /**
+   * The repo standards that apply to the files a diff touched.
+   *
+   * POSTed rather than GET-with-`path=`-params, because the path list is derived
+   * from a patch capped at 1.2MB and is otherwise UNBOUNDED: a few hundred
+   * URL-encoded source paths (every `/` becomes `%2F`) overflow Node's 16KB default
+   * `maxHeaderSize`, the daemon rejects the request line, and the caller's `.catch`
+   * turns that into an empty bundle reporting `truncated: false` - so the verifier
+   * judges the item against the repo's contract having read none of it, and nothing
+   * says so. A body has no such limit, so the request cannot outgrow its input.
+   * This is a read; it's a POST only because the query doesn't fit in a URL.
+   */
+  async standards(id: string, paths: string[]): Promise<StandardsBundle> {
+    const res = await send("POST", `/api/sessions/${enc(id)}/standards`, { paths });
+    if (!res.ok) throw new Error(`standards ${id} -> ${res.status}`);
+    return (await res.json()) as StandardsBundle;
   }
 
   // ---- work queues ----

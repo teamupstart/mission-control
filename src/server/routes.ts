@@ -20,6 +20,7 @@ import {
   SetNoteSchema,
   SetPermissionModeSchema,
   SetWorkItemStateSchema,
+  StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
   WrapupSchema,
@@ -171,12 +172,19 @@ export function buildApp(
   // standards at all. Worse, `truncated` would be false, so the prompt wouldn't even
   // print its "some standards docs were omitted" line - the verifier would judge
   // against the repo's main contract without it, and nothing would say so.
-  app.get("/api/sessions/:id/standards", async (c) => {
+  //
+  // A POST carrying the paths in its body, though it is a pure read: the list comes
+  // from a patch capped at 1.2MB, so as `path=` query params a large refactor's few
+  // hundred encoded paths overrun Node's 16KB default `maxHeaderSize` and the request
+  // never arrives. The caller degrades that to an empty bundle, which is the exact
+  // silent failure the paragraph above is about.
+  app.post("/api/sessions/:id/standards", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const paths = c.req.queries("path") ?? [];
+    const parsed = await parseBody(c, StandardsRequestSchema);
+    if (!parsed.ok) return parsed.res;
     const root = await repoRootOf(session.cwd);
-    return c.json(readStandards(root, paths));
+    return c.json(readStandards(root, parsed.data.paths));
   });
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {

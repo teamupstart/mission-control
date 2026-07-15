@@ -34,8 +34,19 @@ export class QueueManager {
     return this.registry.listQueues();
   }
 
-  /** Queues whose note key matches no live session: nothing drives their tick. */
+  /**
+   * Queues whose note key matches no live session: nothing drives their tick.
+   *
+   * The caller escalates what it finds here, terminally, so this answers only from
+   * POSITIVE evidence: until a discovery sweep has actually reconciled the session
+   * map against the OS, "no live session holds this key" is a statement about an
+   * empty map rather than about the fleet. The daemon answers this route from the
+   * moment it binds its port, and the worker polls it several times a second, so
+   * that window is reached on every single restart - and without this guard it
+   * escalates the in-flight item of every healthy session in the fleet.
+   */
   orphaned(): SessionQueue[] {
+    if (!this.registry.fleetObserved()) return [];
     const live = this.registry.liveNoteKeys();
     return this.registry.listQueues().filter((q) => !live.has(q.noteKey));
   }

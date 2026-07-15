@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
@@ -978,16 +978,71 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
     },
   ]);
 
-  const r = await app.request(
-    "/api/sessions/sess-nested/standards?path=packages/app/src/a.ts",
-    { headers: LOOPBACK },
-  );
+  const r = await app.request("/api/sessions/sess-nested/standards", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ paths: ["packages/app/src/a.ts"] }),
+  });
   assert.equal(r.status, 200);
   const bundle = (await r.json()) as { docs: Array<{ path: string; text: string }> };
   const paths = bundle.docs.map((d) => d.path).sort();
 
   assert.ok(paths.includes("AGENTS.md"), "the repo's main contract must reach the verifier");
   assert.ok(paths.includes("packages/app/CLAUDE.md"), "and so must the package's own");
+});
+
+test("the standards request carries its paths in a BODY, so a big refactor still arrives", async () => {
+  // The list comes from a patch capped at 1.2MB. As `path=` query params, a few
+  // hundred URL-encoded source paths overrun Node's 16KB default maxHeaderSize: the
+  // daemon rejects the request line, the worker's `.catch` turns that into an empty
+  // bundle, and `truncated: false` means the prompt doesn't even print its "some
+  // standards docs were omitted" line - so the verifier judges the item against the
+  // repo's contract having read NONE of it, and nothing says so.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "fleet-standards-big-")));
+  execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "pipe" });
+  writeFileSync(join(repo, "AGENTS.md"), "# the repo's contract");
+
+  registry.applyDiscovery([
+    {
+      syntheticId: "sess-big",
+      agent: "claude",
+      name: "big",
+      nameSource: "tmux",
+      cwd: repo,
+      gitBranch: "main",
+      nomistakesGated: false,
+      pid: 4444,
+      tty: "ttys010",
+      wezterm: null,
+      tmux: { session: "work", window: "w", windowIndex: 2, paneId: "%10" },
+      startedAt: 0,
+    },
+  ]);
+
+  // 400 deep paths - comfortably past 16KB once every `/` becomes `%2F`.
+  const many = Array.from(
+    { length: 400 },
+    (_, i) => `src/server/foreman/deeply/nested/module-${i}/implementation-file-${i}.ts`,
+  );
+  assert.ok(
+    many.map((p) => `path=${encodeURIComponent(p)}`).join("&").length > 16_384,
+    "the fixture must actually be past the header limit, or this test proves nothing",
+  );
+
+  const r = await app.request("/api/sessions/sess-big/standards", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ paths: many }),
+  });
+  assert.equal(r.status, 200);
+  const bundle = (await r.json()) as { docs: Array<{ path: string }>; truncated: boolean };
+  assert.ok(
+    bundle.docs.some((d) => d.path === "AGENTS.md"),
+    "the repo's contract reaches the verifier however many files the item touched",
+  );
+  assert.equal(bundle.truncated, false, "nothing was dropped, so nothing may claim it was");
+
+  rmSync(repo, { recursive: true, force: true });
 });
 
 test("a reorder moves the queue's change token, so a second tab learns about it", async () => {

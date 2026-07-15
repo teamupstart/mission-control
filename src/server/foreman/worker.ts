@@ -276,13 +276,30 @@ async function processTarget(
   }
 
   const qcfg = queueConfig(cfg);
-  const sessions = await client.sessions().catch(() => [session]);
+
+  // Re-resolve the target against a FRESH fleet before deciding anything, the same
+  // way `queueSendStillValid` re-resolves before typing and for the same reason: a
+  // pass walks its targets serially and any one of them can block on a `claude -p`
+  // for up to 240s, so the snapshot this target was selected with can be minutes
+  // old. Deciding from it reads a long-dead `state: "idle"` against a fresh `now`,
+  // which makes `settledIdle` trivially true and fires a verify at an agent that
+  // went back to work - and unlike a send, a verify has no guard of its own to
+  // catch it. Resolve by NOTE KEY, never by `session.id`: the id churns with
+  // pid/tty, while the key is the identity the queue is stored under.
+  const fleet = await client.sessions().catch(() => null);
+  const sessions = fleet ?? [session];
+  const fresh = sessions.find((s) => noteKeyOf(s) === noteKeyOf(session));
+  // A successful read that no longer lists this session says the fleet moved on
+  // under us. Say nothing about it from a stale snapshot: if it's really gone the
+  // orphan sweep owns its in-flight item, and if it isn't, the next pass sees it.
+  if (!fresh) return false;
+
   const action = decideQueueTick({
-    session,
-    bucket: reportBucket(session, sessions),
+    session: fresh,
+    bucket: reportBucket(fresh, sessions),
     queue,
     cfg: qcfg,
-    mayActLive: foremanMayActLive(cfg, session.cwd),
+    mayActLive: foremanMayActLive(cfg, fresh.cwd),
     now: Date.now(),
   });
 
@@ -292,26 +309,26 @@ async function processTarget(
     // "no, don't do that" to a question about the very item Foreman commissioned,
     // or escalate something it could have answered trivially had it known.
     const flight = inFlightItem(queue.items);
-    return await processSession(client, cfg, session, reviews, queueItemContext(flight));
+    return await processSession(client, cfg, fresh, reviews, queueItemContext(flight));
   }
 
   if (action.kind === "verify") {
-    await runVerify(client, cfg, session, action.item, queue, qcfg);
+    await runVerify(client, cfg, fresh, action.item, queue, qcfg);
     return true;
   }
 
   const outcome = await applyQueueAction(
     queueActions(client, cfg),
-    session,
+    fresh,
     action,
     qcfg,
     Date.now(),
   );
-  if (outcome.kind === "sent") log(`${session.name}: sent item "${oneLine(outcome.item.intent)}"`);
+  if (outcome.kind === "sent") log(`${fresh.name}: sent item "${oneLine(outcome.item.intent)}"`);
   else if (outcome.kind === "proposed")
-    log(`${session.name}: drafted item "${oneLine(outcome.item.intent)}" (awaiting Approve)`);
-  else if (outcome.kind === "aborted") log(`${session.name}: held off - ${outcome.why}`);
-  else if (outcome.kind === "done") log(`${session.name}: ${outcome.what}`);
+    log(`${fresh.name}: drafted item "${oneLine(outcome.item.intent)}" (awaiting Approve)`);
+  else if (outcome.kind === "aborted") log(`${fresh.name}: held off - ${outcome.why}`);
+  else if (outcome.kind === "done") log(`${fresh.name}: ${outcome.what}`);
   return outcome.kind !== "noop";
 }
 

@@ -12,6 +12,17 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 const MAX_FILE_BYTES = 24 * 1024;
 /** Cap on the whole bundle - the verify prompt also carries a diff + transcript. */
 const MAX_TOTAL_BYTES = 64 * 1024;
+/**
+ * Cap on how many changed paths we'll walk for nested docs. The list comes from a
+ * patch capped at 1.2MB, so it has no small bound of its own; this one is generous
+ * enough that no real change reaches it (paths collapse to a handful of unique
+ * directories long before this), and exists so a pathological diff can't make the
+ * daemon walk a directory chain per file. Exceeding it is REPORTED through the
+ * bundle's `truncated` flag, never swallowed: a verifier that judges an item
+ * against the repo's contract having silently read less of it than it thinks
+ * invents gaps, which is the one outcome worse than saying "some docs are missing".
+ */
+const MAX_CHANGED_PATHS = 1000;
 /** Nested docs to collect from directories the item's diff touched. */
 const NESTED_NAMES = ["CLAUDE.md", "AGENTS.md"];
 /** Repo-root docs that always apply. */
@@ -27,7 +38,11 @@ export interface StandardsDoc {
 
 export interface StandardsBundle {
   docs: StandardsDoc[];
-  /** True when whole docs were dropped at the total cap (the prompt says so). */
+  /**
+   * True when whole docs may be missing - dropped at the total cap, or governing a
+   * changed path past `MAX_CHANGED_PATHS`. The prompt says so when this is set, so
+   * the verifier never judges against a contract it silently didn't read.
+   */
   truncated: boolean;
 }
 
@@ -57,10 +72,16 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
 
   for (const name of ROOT_NAMES) wanted.push(join(root, name));
 
+  // Over the cap, the docs governing the dropped paths' directories are missed, so
+  // the bundle must say so - the root docs still load, and `truncated` is what tells
+  // the prompt to print its "some standards docs were omitted" line.
+  const walk = changedPaths.slice(0, MAX_CHANGED_PATHS);
+  const droppedPaths = changedPaths.length > MAX_CHANGED_PATHS;
+
   // Walk each changed file's directory chain up to the root, so a doc governing
   // an ancestor directory (not just the file's own) is included.
   const seenDirs = new Set<string>();
-  for (const p of changedPaths) {
+  for (const p of walk) {
     let dir = dirname(resolve(root, p));
     while (dir.startsWith(root) && dir.length >= root.length) {
       if (!seenDirs.has(dir)) {
@@ -89,7 +110,7 @@ export function readStandards(repoRoot: string | null, changedPaths: string[]): 
     total += doc.text.length;
     docs.push(doc);
   }
-  return { docs, truncated };
+  return { docs, truncated: truncated || droppedPaths };
 }
 
 /** True when `abs` is at or under `root` (defeats a `..` escape in a diff path). */

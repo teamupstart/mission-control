@@ -304,8 +304,19 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // `question` is only a generic notification line and never names the command itself.
   // The window is taken whole (rather than a pre-flattened string) so that "scanned and
   // clean" stays distinguishable from "there was nothing to scan" - see backstop 3.
+  //
+  // We scan what the child SAID and DID, never text we synthesized ourselves. A `gate-parked`
+  // question is the one that isn't the child's: `gateQuestion` writes it from the run summary and
+  // quotes the pipeline's finding prose verbatim, so word-level patterns match findings that merely
+  // DISCUSS a risk ("New --force flag bypasses the confirm prompt" trips /--force\b/i) rather than
+  // asks that ARE one. Since backstop 1 fires above backstop 4, that escalated the gate at Tier 1
+  // and kept it from the only tier taught to judge one - and code-review findings routinely discuss
+  // force-pushes, secrets, and deletes, so it was the common case, not the tail. The window scan
+  // below stays fully in force for a gate: those turns are the child's own utterance, which is
+  // exactly what this exists to read. Every other situation's question is the child's too, and is
+  // scanned unchanged.
   const risky =
-    isDestructive(pending.question) ||
+    (pending.situation === "gate-parked" ? false : isDestructive(pending.question)) ||
     isDestructive(riskContextFrom(scan.messages)) ||
     (report.answer ? isDestructive(report.answer.text) : false);
 

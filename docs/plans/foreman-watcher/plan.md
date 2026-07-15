@@ -93,11 +93,18 @@ the ask, not solve it:
 - `needs-judgment` (implementation trade-offs, anything Haiku isn't confident on) ⇒ route **up**
   to Tier 2.
 
-Two hard backstops in *code*, applied after Haiku, that Haiku cannot override:
+Four hard backstops in *code*, applied after Haiku, that Haiku cannot override:
 1. The destructive denylist the `POLICY` already enumerates (`rm -rf`, force-push, drop/delete
    data, prod changes, secrets, exfiltration, disabling safety checks) — if it matches, force
-   `escalate` regardless of Haiku.
+   `escalate` regardless of Haiku. Scanned over what the child said and did (the pending ask, the
+   recent window, Haiku's own reply), never over a question Foreman synthesized itself.
 2. Low-confidence default is route-up, never skip-answerable.
+3. An unscannable window withholds the auto-answer — the only outcome that acts. No prose for the
+   denylist to have read (`hasProse`), or turns that can't be placed in the session
+   (`boundaryUnknown`), means "unknown" rather than "safe", so it routes up.
+4. A parked no-mistakes gate is never Tier 1's to answer or skip. The router is only ever taught
+   permission prompts, so it has no notion of what a gate is; a gate may only be escalated (cheap,
+   safe, in front of the human) or routed up to the tier that was taught.
 
 ### Tier 2 — full review (unchanged)
 The existing `reviewSession` + full `POLICY` + 48-turn window. Fires only for sessions Tier 1

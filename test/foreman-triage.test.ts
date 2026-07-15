@@ -345,6 +345,45 @@ test("mapTriage: a gate-parked run is never auto-answered, even on a clean prose
   if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
 });
 
+test("mapTriage: a gate whose FINDING TEXT trips the denylist still reaches Tier 2", () => {
+  // Backstop 1 fires above backstop 4, so scanning the synthesized question escalated exactly the
+  // gates that most want judging: `gateQuestion` quotes the pipeline's finding prose verbatim, and
+  // a finding that merely DISCUSSES a risk reads as an ask that IS one. This fixture is the gate
+  // question built from the real one in foreman-pending.test.ts - "--force" is being reported as a
+  // bug, not requested - and it used to match /--force\b/i and dispose as an escalate at Tier 1.
+  const out = mapTriage(
+    report(),
+    pend({
+      situation: "gate-parked",
+      question:
+        'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.\n\n' +
+        "Findings no-mistakes routed to the user's judgment rather than fixing itself:\n" +
+        "- r2 [warning] src/cli.ts: New --force flag bypasses the confirm prompt",
+    }),
+    { messages: [msg("Relaying the finding as the pipeline wrote it - your call.")] },
+  );
+  assert.equal(out.kind, "route-up", "a gate must reach the tier taught to judge one, not stop at Haiku");
+  if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
+});
+
+test("mapTriage: a gate-parked window whose CHILD PROSE is destructive still escalates", () => {
+  // The other half of the same decision: only the question we wrote ourselves is exempt. The window
+  // is the child's own utterance, so backstop 1 stays fully in force over it - and it outranks
+  // backstop 4, because a destructive window is worth telling the human about now rather than
+  // spending an Opus call to reach the same place.
+  const out = mapTriage(
+    report(),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("I'll force-push over main to clear the history first.")] },
+  );
+  assert.equal(out.kind, "dispose");
+  if (out.kind !== "dispose") return;
+  assert.equal(out.verdict.action, "escalate");
+});
+
 test("mapTriage: a prose-free gate-parked window reports the scan failure, not the gate", () => {
   // Both backstops route a gate up; 3(a) fires first so the log names the sharper diagnosis -
   // this window was never scanned at all, which is true of it beyond its being a gate.

@@ -1000,13 +1000,74 @@ export class Registry extends EventEmitter {
 
   /**
    * Resolve a session running in a given worktree, once discovery has bound one.
-   * Used by the dispatcher to know the agent's pane is up before injecting the
-   * first prompt. Resolves immediately if already present, else waits for the
-   * next matching `session_upsert`, else null on timeout.
+   * Resolves immediately if already present, else waits for the next matching
+   * `session_upsert`, else null on timeout.
+   *
+   * This proves a PROCESS exists at `cwd`. It does NOT prove the agent can read
+   * input, and the difference is not academic: discovery is a `ps` sweep, so this
+   * fires the moment the binary is exec'd - seconds before a TUI is up. Injecting
+   * on this signal types into a pty nobody is reading yet, and tmux reports that
+   * write as a success. Callers about to type want `waitForReadySessionAtCwd`.
    */
   waitForSessionAtCwd(cwd: string, timeoutMs: number): Promise<Session | null> {
+    return this.waitForSessionAtCwdMatching(cwd, timeoutMs, () => true);
+  }
+
+  /**
+   * Resolve a session at `cwd` that has proven it can read input, or null on timeout.
+   *
+   * The proof is `hooksSeen`: a hook fired, which means the agent booted far enough to
+   * run one - so its input loop exists. Nothing weaker works. Discovery only sees a
+   * process, and a fixed post-discovery sleep is a guess about boot time that a cold
+   * cache or a loaded machine invalidates (a 2s guess lost to a ~4s boot is how a
+   * dispatched task's opening prompt was silently swallowed; the task sat `running`
+   * against an empty session).
+   *
+   * Null does NOT mean "not ready" - it means "no evidence either way", which is the
+   * honest answer for an agent with no hooks installed. The caller decides what to do
+   * with that; don't upgrade it to a claim here.
+   */
+  waitForReadySessionAtCwd(cwd: string, timeoutMs: number): Promise<Session | null> {
+    return this.waitForSessionAtCwdMatching(cwd, timeoutMs, (s) => s.hooksSeen);
+  }
+
+  /**
+   * Resolve true on POSITIVE evidence that an agent at `cwd` ingested a prompt: a
+   * hook-driven transition into `working`, which only `UserPromptSubmit` produces.
+   *
+   * False means "no evidence", never "it definitely didn't land" - an uninstrumented
+   * session can't produce this signal at all. Callers must not treat a false as proof
+   * of non-delivery unless they know hooks are live (see the dispatcher).
+   *
+   * Subscribe BEFORE typing, then await this after: the hook can beat the caller's next
+   * line, and a check-after-the-fact would miss it and re-type over a live prompt.
+   */
+  waitForPromptAcceptedAtCwd(cwd: string, timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const timer = unref(
+        setTimeout(() => {
+          unsub();
+          resolve(false);
+        }, timeoutMs),
+      );
+      const unsub = this.subscribe((e) => {
+        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state === "working") {
+          clearTimeout(timer);
+          unsub();
+          resolve(true);
+        }
+      });
+    });
+  }
+
+  /** Shared wait: an existing match short-circuits, else the next `session_upsert` that fits. */
+  private waitForSessionAtCwdMatching(
+    cwd: string,
+    timeoutMs: number,
+    ready: (s: Session) => boolean,
+  ): Promise<Session | null> {
     const existing = this.firstSessionAtCwd(cwd);
-    if (existing) return Promise.resolve(existing);
+    if (existing && ready(existing)) return Promise.resolve(existing);
     return new Promise<Session | null>((resolve) => {
       const timer = unref(
         setTimeout(() => {
@@ -1015,7 +1076,12 @@ export class Registry extends EventEmitter {
         }, timeoutMs),
       );
       const unsub = this.subscribe((e) => {
-        if (e.type === "session_upsert" && e.session.cwd === cwd && e.session.state !== "exited") {
+        if (
+          e.type === "session_upsert" &&
+          e.session.cwd === cwd &&
+          e.session.state !== "exited" &&
+          ready(e.session)
+        ) {
           clearTimeout(timer);
           unsub();
           resolve(e.session);

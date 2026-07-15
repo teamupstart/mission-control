@@ -325,6 +325,34 @@ test("mapTriage: a benign tool input is not made risky by carrying it", () => {
   if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
 });
 
+test("mapTriage: a gate-parked run is never auto-answered, even on a clean prose window", () => {
+  // The common half of this, and the one the prose gate can't catch: the skill relays the
+  // ask-user finding AS prose before it stops, so `hasProse` is true and the window is clean -
+  // an ask-user finding need not name anything the denylist knows ("this hardcoded value should
+  // be configurable"). Everything lines up for the auto-answer, and Tier 1 must still route up:
+  // Haiku's ROUTER only describes permission prompts, so its `routine-access` bucket here is a
+  // guess at a shape it was never taught, and under `triage: on` that guess would type an
+  // approval into the pane for a finding the pipeline said only a human can call.
+  const out = mapTriage(
+    report(),
+    pend({
+      situation: "gate-parked",
+      question: 'The no-mistakes run on feat/x is parked at the "review" gate and the agent driving it has stopped.',
+    }),
+    { messages: [msg("The pipeline says this hardcoded value should be configurable - your call.")] },
+  );
+  assert.equal(out.kind, "route-up", "must NOT approve a gate on Haiku's say-so");
+  if (out.kind === "route-up") assert.equal(out.reason, "gate-needs-review");
+});
+
+test("mapTriage: a prose-free gate-parked window reports the scan failure, not the gate", () => {
+  // Both backstops route a gate up; 3(a) fires first so the log names the sharper diagnosis -
+  // this window was never scanned at all, which is true of it beyond its being a gate.
+  const out = mapTriage(report(), pend({ situation: "gate-parked" }), { messages: [msg("", ["Bash"])] });
+  assert.equal(out.kind, "route-up");
+  if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
+});
+
 test("mapTriage: an empty window still allows the safe directions (skip + escalate)", () => {
   const esc = mapTriage(report({ bucket: "human-only", disposition: "escalate", answer: undefined }), pend(), { messages: [] });
   assert.equal(esc.kind, "dispose");

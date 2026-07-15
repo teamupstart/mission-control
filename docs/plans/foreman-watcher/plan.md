@@ -219,3 +219,19 @@ action.
   requires *prose*, though a tool input is scannable too. That only ever routes up, so it is safe,
   but it means a prose-free window still buys an Opus call Tier 1 could now have answered.
   Widening it loosens a safety gate, so it wants its own change and its own measurement.
+- Carrying tool *inputs* into `riskContextFrom` widened what the denylist sees from prose + tool
+  names to file paths and file bodies, and the DESTRUCTIVE patterns are word-level, not
+  command-level - so a payload that merely *discusses* a dangerous word now escalates. Measured
+  over 205 real 12-turn scan windows from this machine's transcripts: escalation 22.9% before vs
+  36.1% after (+13.2 points), leaving 63.9% still disposable by Tier 1 - so the feared "Tier 1's
+  only substantive disposal collapses toward zero" does not hold. The new escalations come from
+  `Bash` (25), `StructuredOutput` (5), `Write` (1); the hypothesised `Read`/`.env.example` and
+  `Grep`/`api_key` trips did not occur at all in real data. The `Bash` trips are overwhelmingly
+  benign scratch cleanup (`rm -f /tmp/...`) - backstop 1 over-matching exactly as its own comment
+  says it is designed to, now meeting real commands for the first time; one genuine catch observed
+  was `vercel deploy --prod`. The real noise is `StructuredOutput`/`Write` payloads discussing
+  dangerous words (~2.9% of windows). *Accepted deliberately: the direction is safe (it can only
+  route up), and `shadow`'s `cheap-over-eager` divergence is the instrument. Note for anyone
+  tempted by the obvious fix - scoping the input scan to command-bearing tools would recover only
+  ~6 of the 27 new escalations, because the bulk IS `Bash`. This is the data to weigh before
+  flipping `triage` to `on`.*

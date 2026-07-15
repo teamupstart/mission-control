@@ -5,6 +5,7 @@ import { run } from "./util/exec.ts";
 import { envVar } from "./config.ts";
 import { unref } from "./util/timers.ts";
 import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
+import { fixSummaries } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 
@@ -143,6 +144,25 @@ export async function pollAndReconcile(registry: Registry): Promise<void> {
 }
 
 /**
+ * Refresh each gated session's fix log. Read from git, not from `axi`, so this
+ * deliberately does NOT depend on the no-mistakes binary resolving or on a run
+ * being active: the log's whole job is to outlive the run. Cheap when nothing
+ * changed - `fixSummaries` is keyed on HEAD, so a still branch costs one
+ * `rev-parse` per session per tick.
+ */
+export async function pollFixLogs(registry: Registry): Promise<void> {
+  await Promise.all(
+    registry.nomistakesFixTargets().map(async ({ id, cwd }) => {
+      try {
+        registry.applyNomistakesFixes(id, await fixSummaries(cwd));
+      } catch (err) {
+        console.error("[nomistakes] fix log failed:", err);
+      }
+    }),
+  );
+}
+
+/**
  * Drive no-mistakes reconciliation on an interval. A no-op (no subprocesses)
  * when no session is in a no-mistakes repo, or when no-mistakes isn't installed.
  */
@@ -154,6 +174,7 @@ export function startNomistakesPoller(registry: Registry): () => void {
     if (stopped) return;
     try {
       await pollAndReconcile(registry);
+      await pollFixLogs(registry);
       // For sessions with an *active* run, surface what the skill is doing right
       // now from its Claude transcript (a bounded tail read, no subprocess). A
       // run that has reached an outcome is finished, so its narration is cleared.
@@ -355,6 +376,7 @@ function assignGateScalar(gate: NonNullable<NmRun["gate"]>, line: string): void 
 function summarize(run: NmRun | null): NmRunSummary | null {
   if (!run) return null;
   return {
+    id: run.id,
     status: run.status,
     branch: run.branch,
     awaitingAgent: run.awaitingAgent,

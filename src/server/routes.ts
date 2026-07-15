@@ -26,7 +26,8 @@ import {
   recordForemanHeartbeat,
   setForemanConfig,
 } from "./foreman/config.ts";
-import { computeSessionDiff } from "./diff.ts";
+import { computeCommitDiff, computeSessionDiff } from "./diff.ts";
+import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
 import { cyclePermissionMode, focus, kill, resetPreview, resetToOrigin, sendText } from "./actions.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
@@ -110,8 +111,25 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    // `commit` isolates ONE commit (`<sha>^..<sha>`) - what a single no-mistakes
+    // fix changed. Distinct from `base`, which diffs from the merge-base and so
+    // would answer with everything *since* that sha.
+    const commit = c.req.query("commit");
+    if (commit) return c.json(await computeCommitDiff(session.cwd, commit));
     const source = c.req.query("base") || undefined;
     return c.json(await computeSessionDiff(session.cwd, source));
+  });
+
+  // The context behind one no-mistakes fix: the findings that justified it and
+  // the reply that authorized it. Fetched per fix rather than denormalized onto
+  // the card - a 22-finding fix carries ~20KB of description text.
+  app.get("/api/sessions/:id/nomistakes/fixes/:sha", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
+    const detail = await fixDetail(session.cwd, c.req.param("sha"));
+    if (!detail) return c.json({ error: "no such fix on this branch" }, 404);
+    return c.json(detail);
   });
 
   const authed = (c: { req: { header: (k: string) => string | undefined } }) =>
@@ -226,6 +244,17 @@ export function buildApp(registry: Registry, reviews: ReviewManager, tasks: Task
     const parsed = await parseBody(c, ResetSchema);
     if (!parsed.ok) return parsed.res;
     const r = await resetToOrigin(session, parsed.data.clear);
+    // The reset threw away whatever the run validated, so its strip no longer
+    // describes this checkout - retire it with the rest of the card's state.
+    // Only on success: a failed reset left the work (and its run) in place.
+    if (r.ok) {
+      registry.dismissNomistakes(session.id);
+      // The reset destroyed the fix commits themselves, so the log is empty by
+      // construction - no dismissal needed. But drop the cached read first: it's
+      // keyed on HEAD, and reset moves HEAD, so a stale entry can't be served.
+      if (session.cwd) forgetFixLog(session.cwd);
+      registry.clearNomistakesFixes(session.id);
+    }
     return c.json(r, r.ok ? 200 : 500);
   });
 

@@ -39,6 +39,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastActivity: null,
     pendingReviews: 0,
     nomistakes: null,
+    nomistakesFixes: [],
     task: null,
     prUrl: null,
     prNumber: null,
@@ -101,6 +102,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   assert.equal(r[0]?.body, "2 to review");
 
   const gate: NmRunSummary = {
+    id: "run-gate",
     status: "running",
     branch: "x",
     awaitingAgent: "parked 1m",

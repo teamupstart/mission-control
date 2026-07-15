@@ -1,4 +1,4 @@
-import type { ForemanStatus, ResetPreview, SessionDiff } from "@shared/types.ts";
+import type { ForemanStatus, NmFixDetail, ResetPreview, SessionDiff } from "@shared/types.ts";
 import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
 
 export interface ActionResult {
@@ -38,14 +38,18 @@ export async function fetchResetPreview(id: string): Promise<ResetPreview> {
   }
 }
 
-/** Fetch a session's diff vs its source branch. Never throws - maps failures into the shape. */
-export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
+/**
+ * Fetch a session's diff vs its source branch, or - with `commit` - the diff of
+ * that one commit alone. Never throws - maps failures into the shape.
+ */
+export async function fetchSessionDiff(id: string, commit?: string): Promise<SessionDiff> {
   const fail = (error: string): SessionDiff => ({
     ok: false, error, base: null, baseSha: null, headSha: null, branch: null,
     filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
   });
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/diff`);
+    const q = commit ? `?commit=${encodeURIComponent(commit)}` : "";
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/diff${q}`);
     if (!res.ok) {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       return fail(data.error ?? `HTTP ${res.status}`);
@@ -55,6 +59,12 @@ export async function fetchSessionDiff(id: string): Promise<SessionDiff> {
     return fail(err instanceof Error ? err.message : String(err));
   }
 }
+
+/** The context behind one no-mistakes fix. Null when it can't be loaded. */
+export const fetchNomistakesFix = (id: string, sha: string): Promise<NmFixDetail | null> =>
+  fetchJson<NmFixDetail>(
+    `/api/sessions/${encodeURIComponent(id)}/nomistakes/fixes/${encodeURIComponent(sha)}`,
+  );
 
 /** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
 export async function fetchRepos(): Promise<string[]> {

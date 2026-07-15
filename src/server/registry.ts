@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type {
   MetaSource,
+  NmFixSummary,
   NmRunSummary,
   PermissionMode,
   PrChecks,
@@ -100,6 +101,15 @@ export class Registry extends EventEmitter {
    * driver process is momentarily gone), and dropped by TTL or on session exit.
    */
   private nmBindings = new Map<string, Map<string, { branch: string | null; updatedAt: number }>>();
+  /**
+   * Runs a session has retired from its card: sessionId -> run ids. `axi status`
+   * keeps reporting a run for its branch long after the run has finished and its
+   * PR has merged, so clearing the decoration alone doesn't hold - the next poll
+   * would re-attach it. A dismissal is what makes the clear stick, and it's keyed
+   * on the run id so a *new* run on the same branch still decorates the card.
+   * Dropped with the session (see `remove`); at most a handful of ids per session.
+   */
+  private nmDismissed = new Map<string, Set<string>>();
 
   constructor() {
     super();
@@ -197,6 +207,7 @@ export class Registry extends EventEmitter {
       lastActivity: prev?.lastActivity ?? null,
       pendingReviews: this.countPending(d.syntheticId),
       nomistakes: prev?.nomistakes ?? null,
+      nomistakesFixes: prev?.nomistakesFixes ?? [],
       task: this.taskSummaryForCwd(d.cwd),
       nomistakesNarration: prev?.nomistakesNarration ?? null,
       prUrl: prev?.prUrl ?? null,
@@ -389,6 +400,44 @@ export class Registry extends EventEmitter {
   }
 
   /**
+   * Gated sessions that can carry a fix log, with their checkout. Unlike
+   * `nomistakesPollCwds` this is per-session, not a deduped cwd set: the log is
+   * denormalized onto each card, and two sessions sharing a checkout each get it.
+   * Not conditional on an active run - the log outliving the run is the point.
+   */
+  nomistakesFixTargets(): Array<{ id: string; cwd: string }> {
+    const out: Array<{ id: string; cwd: string }> = [];
+    for (const [id, s] of this.sessions) {
+      if (s.nomistakesGated && s.cwd && s.state !== "exited") out.push({ id, cwd: s.cwd });
+    }
+    return out;
+  }
+
+  /** Set a session's fix log. No-op when unchanged, so it doesn't churn the stream. */
+  applyNomistakesFixes(sessionId: string, fixes: NmFixSummary[]): void {
+    const s = this.sessions.get(sessionId);
+    if (!s) return;
+    if (JSON.stringify(s.nomistakesFixes) === JSON.stringify(fixes)) return;
+    const next: Session = { ...s, nomistakesFixes: fixes };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  /**
+   * Drop the session's fix log. Called on reset, which discards the very commits
+   * the log is derived from - so unlike `dismissNomistakes` there's no dismissal
+   * to remember: the next poll re-reads git and agrees the log is empty. This
+   * just makes the card clean the moment the reset returns instead of a poll later.
+   */
+  clearNomistakesFixes(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s || s.nomistakesFixes.length === 0) return;
+    const next: Session = { ...s, nomistakesFixes: [] };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  /**
    * Set each session's no-mistakes run from the full set of active runs (keyed by
    * branch). A session owns a run when it is literally checked out on the run's
    * branch (exact worktree owner), or when it launched that run in a worktree it
@@ -416,8 +465,19 @@ export class Registry extends EventEmitter {
     }
   }
 
-  /** The active run this session owns, by exact branch or a launcher binding. */
+  /**
+   * The active run this session owns, by exact branch or a launcher binding.
+   * A run this session has dismissed is not owned - it stays off the card for
+   * good, however long `axi status` goes on reporting it.
+   */
   private ownedRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
+    const run = this.matchRun(id, s, byBranch);
+    if (run && this.nmDismissed.get(id)?.has(run.id)) return null;
+    return run;
+  }
+
+  /** The run attributable to this session, before dismissals are applied. */
+  private matchRun(id: string, s: Session, byBranch: Map<string, NmRunSummary>): NmRunSummary | null {
     if (s.gitBranch && byBranch.has(s.gitBranch)) return byBranch.get(s.gitBranch)!;
     const map = this.nmBindings.get(id);
     if (map) {
@@ -426,6 +486,26 @@ export class Registry extends EventEmitter {
       }
     }
     return null;
+  }
+
+  /**
+   * Retire the session's current no-mistakes run from its card. Called when the
+   * session is reset to origin: that discards the work the run validated, so the
+   * run - finished or not - no longer describes this checkout, and the strip
+   * would otherwise sit there indefinitely (see `nmDismissed`).
+   *
+   * A no-op when no run is showing. Deliberately narrow: it retires only the run
+   * on THIS session, so a sibling driving the same run keeps its own decoration.
+   */
+  dismissNomistakes(sessionId: string): void {
+    const s = this.sessions.get(sessionId);
+    if (!s?.nomistakes) return;
+    let dismissed = this.nmDismissed.get(sessionId);
+    if (!dismissed) this.nmDismissed.set(sessionId, (dismissed = new Set()));
+    dismissed.add(s.nomistakes.id);
+    const next: Session = { ...s, nomistakes: null, nomistakesNarration: null };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
   }
 
   /**
@@ -569,6 +649,7 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
+    this.nmDismissed.delete(id);
     if (this.sessions.delete(id)) this.emitEvent({ type: "session_remove", id });
   }
 
@@ -970,6 +1051,7 @@ function sessionEqual(a: Session, b: Session): boolean {
     a.prChecks === b.prChecks &&
     metaDisplayEqual(a.meta, b.meta) &&
     JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
+    JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&
     JSON.stringify(a.note) === JSON.stringify(b.note)
   );

@@ -47,6 +47,8 @@ export function App(): React.JSX.Element {
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
+  /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
+  const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
@@ -142,7 +144,10 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
-    if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) setDiffSessionId(null);
+    if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) {
+      setDiffSessionId(null);
+      setDiffCommit(null);
+    }
     if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
   }, [sessions, selectedId, expandedId, diffSessionId, resetSessionId]);
 
@@ -296,6 +301,7 @@ export function App(): React.JSX.Element {
       if (chord === bindings.diff) {
         if (!selectedId) return;
         e.preventDefault();
+        setDiffCommit(null); // the shortcut means the whole branch, not a stale fix
         setDiffSessionId(selectedId);
         return;
       }
@@ -426,7 +432,10 @@ export function App(): React.JSX.Element {
             expanded={expandedId === s.id}
             onToggleExpand={() => toggleExpand(s.id)}
             onOpenReviews={() => setReviewSessionId(s.id)}
-            onOpenDiff={() => setDiffSessionId(s.id)}
+            onOpenDiff={(commit) => {
+              setDiffCommit(commit ?? null);
+              setDiffSessionId(s.id);
+            }}
             onReset={() => setResetSessionId(s.id)}
             registerEl={registerEl}
             registerActions={registerActions}
@@ -460,7 +469,14 @@ export function App(): React.JSX.Element {
       )}
 
       {diffSession && (
-        <DiffViewer session={diffSession} onClose={() => setDiffSessionId(null)} />
+        <DiffViewer
+          session={diffSession}
+          commit={diffCommit}
+          onClose={() => {
+            setDiffSessionId(null);
+            setDiffCommit(null);
+          }}
+        />
       )}
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
@@ -499,7 +515,10 @@ export function App(): React.JSX.Element {
           expanded={expandedId === selected.id}
           onToggleExpand={() => toggleExpand(selected.id)}
           onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
-          onDiff={() => setDiffSessionId(selected.id)}
+          onDiff={() => {
+            setDiffCommit(null);
+            setDiffSessionId(selected.id);
+          }}
           onReset={() => setResetSessionId(selected.id)}
           onDeselect={() => setSelectedId(null)}
         />

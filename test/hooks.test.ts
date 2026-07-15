@@ -34,6 +34,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     lastActivity: null,
     pendingReviews: 0,
     nomistakes: null,
+    nomistakesFixes: [],
     task: null,
     nomistakesNarration: null,
     prUrl: null,

@@ -11,9 +11,72 @@ import type { SessionDiff } from "@shared/types.ts";
 const MAX_PATCH_BYTES = 1_200_000;
 /** Don't generate new-file diffs for an unbounded pile of untracked files. */
 const MAX_UNTRACKED = 100;
+/** git's empty tree, so a root commit (no parent) still diffs as "all added". */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 function git(cwd: string, args: string[]): ReturnType<typeof run> {
   return run("git", ["-C", cwd, ...args], { timeoutMs: 15000 });
+}
+
+/**
+ * The diff of ONE commit - what that commit alone changed, `<sha>^..<sha>`.
+ *
+ * Deliberately not a mode of `computeSessionDiff`: that one diffs from
+ * `merge-base(HEAD, ref)`, so handing it a sha answers with everything *since*
+ * that commit, which for a fix log would silently show the wrong (much larger)
+ * diff under the right label. A root commit has no `^`, so it diffs against the
+ * empty tree and reads as all-added rather than erroring.
+ */
+export async function computeCommitDiff(cwd: string | null, sha: string): Promise<SessionDiff> {
+  const base0: SessionDiff = {
+    ok: false, error: null, base: null, baseSha: null, headSha: null, branch: null,
+    filesChanged: 0, insertions: 0, deletions: 0, patch: "", truncated: false,
+  };
+  if (!cwd) return { ...base0, error: "session has no working directory" };
+
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) return { ...base0, error: "not a git repository" };
+
+  // Resolve and type-check in one step: `^{commit}` fails for a tag/tree/missing
+  // object, so a caller can't get a confusing empty diff out of a valid-looking ref.
+  const resolved = await git(cwd, ["rev-parse", "--verify", "--quiet", `${sha}^{commit}`]);
+  if (resolved.code !== 0 || !resolved.stdout.trim()) {
+    return { ...base0, error: `commit ${sha} is not reachable (rebased, amended, or garbage-collected?)` };
+  }
+  const full = resolved.stdout.trim();
+  const headSha = full.slice(0, 12);
+
+  const branchRes = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = branchRes.code === 0 && branchRes.stdout.trim() ? branchRes.stdout.trim() : null;
+
+  const parentRes = await git(cwd, ["rev-parse", "--verify", "--quiet", `${full}^`]);
+  const parent = parentRes.code === 0 && parentRes.stdout.trim() ? parentRes.stdout.trim() : EMPTY_TREE;
+
+  let filesChanged = 0;
+  let insertions = 0;
+  let deletions = 0;
+  const numstat = await git(cwd, ["diff", "--numstat", parent, full]);
+  for (const line of numstat.stdout.split("\n")) {
+    const m = line.match(/^(\d+|-)\t(\d+|-)\t/);
+    if (!m) continue;
+    filesChanged++;
+    if (m[1] !== "-") insertions += Number(m[1]);
+    if (m[2] !== "-") deletions += Number(m[2]);
+  }
+
+  let patch = (await git(cwd, ["diff", parent, full])).stdout;
+  let truncated = false;
+  if (patch.length > MAX_PATCH_BYTES) {
+    patch = patch.slice(0, MAX_PATCH_BYTES);
+    truncated = true;
+  }
+
+  return {
+    ok: true, error: null,
+    base: parent === EMPTY_TREE ? null : parent.slice(0, 12),
+    baseSha: parent === EMPTY_TREE ? null : parent.slice(0, 12),
+    headSha, branch, filesChanged, insertions, deletions, patch, truncated,
+  };
 }
 
 /**
@@ -22,7 +85,7 @@ function git(cwd: string, args: string[]): ReturnType<typeof run> {
  * remote-tracking ref is preferred so the diff reflects what this branch changed
  * against the *current* mainline, not a possibly-stale local branch.
  */
-async function sourceRef(cwd: string): Promise<string | null> {
+export async function sourceRef(cwd: string): Promise<string | null> {
   const head = await git(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   if (head.code === 0 && head.stdout.trim()) return head.stdout.trim(); // e.g. "origin/main"
   for (const ref of ["origin/main", "origin/master", "main", "master"]) {

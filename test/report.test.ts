@@ -29,6 +29,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     lastActivity: null,
     pendingReviews: 0,
     nomistakes: null,
+    nomistakesFixes: [],
     nomistakesNarration: null,
     task: null,
     prUrl: null,
@@ -157,6 +158,7 @@ test("reportBucket: working is confirmed-running, idle is everything else that's
 
 function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
   return {
+    id: "run-parked",
     status: "running",
     branch: "feature/x",
     awaitingAgent: "parked 0s",

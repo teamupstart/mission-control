@@ -11,6 +11,7 @@ import {
 } from "../lib/format.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
+import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
@@ -48,7 +49,8 @@ export function SessionCard({
   /** True when this session's parked no-mistakes gate needs you (computed fleet-wide in App). */
   gateNeedsYou?: boolean;
   onOpenReviews?: () => void;
-  onOpenDiff?: () => void;
+  /** Opens the diff viewer: the whole branch, or one commit when given a sha. */
+  onOpenDiff?: (commit?: string) => void;
   onReset?: () => void;
   selected?: boolean;
   onSelect?: () => void;
@@ -229,6 +231,14 @@ export function SessionCard({
           nm={session.nomistakes}
           needsYou={gateNeedsYou}
           narration={session.nomistakesNarration}
+        />
+      )}
+
+      {session.nomistakesFixes.length > 0 && (
+        <NomistakesFixLog
+          sessionId={session.id}
+          fixes={session.nomistakesFixes}
+          onOpenDiff={(sha) => onOpenDiff?.(sha)}
         />
       )}
 

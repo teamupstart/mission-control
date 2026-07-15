@@ -12,7 +12,7 @@ and get your decision back.
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
 - **Names** each session by its **tmux session name**, else its **wezterm tab
-  title**, else the repo folder. Click a card's title (or press <kbd>O</kbd>) to
+  title**, else the repo folder. Click a card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to
   rename it - it renames the underlying tmux session / wezterm tab, which the next
   sweep reads straight back onto the card. Only a live session with a tmux or wezterm
   pane can be renamed - a session found in neither, or one that has exited, has
@@ -405,14 +405,17 @@ without reaching for the mouse:
 | <kbd>s</kbd> | Send a message to the selected session | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
-| <kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
+| <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
 | <kbd>⌃</kbd><kbd>r</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
 **Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
 Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
-(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd>). Bindings persist per machine,
+(optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
+<kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
+plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
+(<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
 them) to its default. The arrow keys and <kbd>Esc</kbd> drive grid navigation and can't be
 reassigned.

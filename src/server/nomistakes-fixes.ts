@@ -225,6 +225,22 @@ interface RoundContext {
 const COMMIT_SECOND_MS = 1000;
 
 /**
+ * Whether a reply filed at `ts` could have caused a fix committed at `committedAt`.
+ *
+ * The boundary is exclusive, and load-bearing rather than a style choice. `%ct`
+ * floors the commit, so the true commit time is somewhere in [committedAt,
+ * committedAt + 1000) - never at the top of that range. A reply landing at exactly
+ * +1000ms is therefore after the fix however the flooring fell, and is the NEXT
+ * round's, not this one's.
+ *
+ * Factored out because the byline asks this twice: once about the fix it is
+ * explaining, and once - negated - about the fix before it.
+ */
+function couldHaveCaused(ts: number, committedAt: number): boolean {
+  return ts < committedAt + COMMIT_SECOND_MS;
+}
+
+/**
  * The reply that best explains a fix, out of every reply filed against its gate.
  *
  * Pure, and exported for tests: the cases that matter (two rounds of one step, a
@@ -232,8 +248,10 @@ const COMMIT_SECOND_MS = 1000;
  * are all about which candidate wins, which is invisible from the outside.
  *
  * Three rules, in order:
- *  1. CAUSALITY. A reply filed after the fix landed cannot have caused it. This
- *     runs first so it constrains the other two rather than being their tiebreak.
+ *  1. CAUSALITY. A reply filed after the fix landed cannot have caused it, and
+ *     neither can one the PREVIOUS fix on this gate already consumed (see
+ *     `previousFixOnGate`). This runs first so it constrains the other two rather
+ *     than being their tiebreak.
  *  2. OVERLAP. Prefer the reply whose finding ids overlap this round's most, and
  *     REJECT one that shares none when both sides had ids to compare. This is what
  *     separates round 1 from round 2 of the same step - they share a run and a
@@ -244,18 +262,25 @@ const COMMIT_SECOND_MS = 1000;
  *     invisibly the day either changed. Ids are short, stable and never truncated.
  *  3. RECENCY. Ties, and rounds we could read no ids for, fall back to the newest
  *     surviving candidate - the plain "who spoke last before this landed".
+ *
+ * `previousFixAt` is the lower bound of rule 1, and null when this is the first fix
+ * on its gate - which is the ordinary case and carries no bound at all.
  */
 export function pickGateReply(
   replies: GateReplyRow[],
   roundFindingIds: string[],
   committedAt: number,
+  previousFixAt: number | null = null,
 ): GateReplyRow | null {
-  // Exclusive, and the boundary is load-bearing rather than a style choice. `%ct`
-  // floors the commit, so the true commit time is somewhere in [committedAt,
-  // committedAt + 1000) - never at the top of that range. A reply landing at
-  // exactly +1000ms is therefore after the fix however the flooring fell, and is
-  // the NEXT round's, not this one's.
-  const caused = replies.filter((r) => r.ts < committedAt + COMMIT_SECOND_MS);
+  // Both halves of causality, stated with the same predicate on purpose: the
+  // replies this fix may draw from are exactly the ones that could have caused it
+  // and could NOT have caused the fix before it. So two consecutive fixes on one
+  // gate can never be signed by the same reply, whichever way `%ct` floored either.
+  const caused = replies.filter(
+    (r) =>
+      couldHaveCaused(r.ts, committedAt) &&
+      (previousFixAt === null || !couldHaveCaused(r.ts, previousFixAt)),
+  );
   if (caused.length === 0) return null;
   const round = new Set(roundFindingIds);
   let best: GateReplyRow | null = null;
@@ -301,6 +326,43 @@ export function lastRoundsRead(): number {
 /** Join key. A summary is unique per (branch, step) in practice; scope covers the rest. */
 function key(step: string, summary: string): string {
   return `${step}\x00${summary}`;
+}
+
+/**
+ * When the fix BEFORE `fix` on the same (runId, step) landed, or null when there
+ * isn't one. `pickGateReply`'s lower bound.
+ *
+ * Overlap is a weaker discriminator than it looks, and weakest exactly where it is
+ * needed most. no-mistakes' finding ids are semantic slugs, not per-round handles
+ * ("zero-overlap-misattribution", "prune-redundant-count"), so a finding that
+ * SURVIVES a fix is re-reported under the SAME id by the re-review that follows it.
+ * Two rounds of one (run, step) - the case ids exist to separate - are therefore the
+ * likeliest of all to share one, and a single shared id is enough to readmit round
+ * 1's reply as round 2's author. Time is the independent evidence: round 1's reply
+ * was already spent explaining round 1's fix, so it cannot also explain round 2's.
+ *
+ * This is a lower bound and not a containment test on ids for a reason: the Fix box
+ * legitimately answers a SUBSET of what the gate showed, so demanding the reply's
+ * ids contain the round's would drop those bylines instead.
+ *
+ * Keyed by (runId, step), never step alone: successive runs share a branch and a
+ * step name, so a step-only bound would let one run's fix bound another run's.
+ */
+function previousFixOnGate(
+  commits: FixCommit[],
+  context: Map<string, RoundContext>,
+  runId: string,
+  fix: FixCommit,
+): number | null {
+  let prev: number | null = null;
+  for (const c of commits) {
+    // Strictly earlier, so two fixes `%ct` floored into the SAME second bound
+    // neither - we cannot order them, and guessing is what this whole file avoids.
+    if (c.step !== fix.step || c.committedAt >= fix.committedAt) continue;
+    if (context.get(key(c.step, c.summary))?.runId !== runId) continue;
+    if (prev === null || c.committedAt > prev) prev = c.committedAt;
+  }
+  return prev;
 }
 
 function clamp(s: string, max: number): string {
@@ -682,7 +744,9 @@ export async function readFixLog(
   const details = new Map<string, NmFixDetail>();
   for (const c of commits) {
     const ctx = context.get(key(c.step, c.summary)) ?? null;
-    const attribution = ctx ? attribute(ctx, c, replies) : null;
+    const attribution = ctx
+      ? attribute(ctx, c, replies, previousFixOnGate(commits, context, ctx.runId, c))
+      : null;
     summaries.push({
       sha: c.sha,
       step: c.step,
@@ -735,10 +799,16 @@ function attribute(
   ctx: RoundContext,
   c: FixCommit,
   replies: GateReplyReader,
+  previousAt: number | null,
 ): NmFixAttribution | null {
   if (ctx.decision !== "replied" || !ctx.runId) return null;
   try {
-    const hit = pickGateReply(replies(ctx.runId, c.step), ctx.roundFindingIds, c.committedAt);
+    const hit = pickGateReply(
+      replies(ctx.runId, c.step),
+      ctx.roundFindingIds,
+      c.committedAt,
+      previousAt,
+    );
     if (!hit) return null;
     return {
       source: hit.source,

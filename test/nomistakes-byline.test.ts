@@ -100,6 +100,27 @@ test("pickGateReply: a reply whose ids share nothing with the round is not its c
   assert.equal(pickGateReply([idless], ["f9"], 3000)?.text, "ids we could not read");
 });
 
+/**
+ * Where the ids run out, and why the join needs a clock as well as a set.
+ *
+ * no-mistakes' finding ids are semantic slugs, so a finding that SURVIVES a fix comes
+ * back under the SAME id in the next round's re-review. Two rounds of one (run, step)
+ * are therefore the likeliest of all to share one - the case the ids exist to separate
+ * is the case they separate worst - and one shared id is all it takes for overlap to
+ * readmit round 1's reply as round 2's author. What settles it is that round 1's reply
+ * was already spent: it explained round 1's fix, so it cannot explain round 2's too.
+ */
+test("pickGateReply: a reply the PREVIOUS fix already consumed cannot sign this one", () => {
+  // Round 1's gate showed [f1, f2] and the Fix box answered it. f1 outlived the fix
+  // and came back at round 2 beside a new f3, so overlap is 1 - not 0 - and the
+  // zero-overlap guard never fires.
+  const round1 = reply({ ts: 1000, source: "you", findingIds: ["f1", "f2"], text: "fix both" });
+  assert.equal(pickGateReply([round1], ["f1", "f3"], 9000, 5000), null);
+  // ...and the bound is doing that work, not the ids: with no earlier fix on this
+  // gate there is nothing to say the reply was spent, and it stands as the cause.
+  assert.equal(pickGateReply([round1], ["f1", "f3"], 9000)?.text, "fix both");
+});
+
 test("pickGateReply: with no ids to match on, the newest surviving reply wins", () => {
   // A findings_json we couldn't read leaves no ids, so the fallback is "who spoke
   // last before this landed" - never the one that came after.
@@ -430,6 +451,25 @@ test("applyVerdict records nothing for a draft that was never sent", async () =>
 });
 
 /**
+ * The OTHER way a reply goes undelivered, which the draft above does not reach: that one
+ * plans no send at all, while this one sends and stops short of Enter. `submit` is the
+ * model's to choose, so `submit: false` types the text and leaves it sitting unsubmitted
+ * in the pane - the state queue-machine.ts already names - with the gate still parked and
+ * the agent none the wiser. The send SUCCEEDS, so nothing throws and nothing else notices.
+ *
+ * Built from a fresh verdict rather than from ANSWER, which hardcodes `submit: true`:
+ * reuse it and the test passes whether or not the guard is there.
+ */
+test("applyVerdict records nothing for text typed but never submitted", async () => {
+  const calls: string[] = [];
+  const typed: Verdict = { ...ANSWER, answer: { text: "Apply all of them.", submit: false } };
+  const plan = planFromVerdict(typed, ctx(), true);
+  assert.equal(plan.send?.submit, false, "the plan really did keep Enter unpressed");
+  await applyVerdict(actions(calls), ctx(), plan);
+  assert.deepEqual(calls, ["sendText", "putNote"]);
+});
+
+/**
  * The reply is already delivered by the time this is recorded, so a failure here
  * must cost the byline and nothing else. Throwing would skip the note below it,
  * leaving a delivered send unstamped - which the worker's idempotency check would
@@ -492,10 +532,18 @@ function mkRepo(): string {
   return clone;
 }
 
-function commit(cwd: string, file: string, subject: string): void {
+/**
+ * `at` pins the COMMITTER date (epoch seconds) - the one `%ct` reports and the byline
+ * reads. Left off, git uses the wall clock, which lands consecutive commits in the same
+ * second as often as not; any test about the ORDER of two fixes has to say so itself.
+ */
+function commit(cwd: string, file: string, subject: string, at?: number): void {
   writeFileSync(join(cwd, file), `${file}\n`);
   execFileSync("git", ["-C", cwd, "add", "-A"], { stdio: "pipe" });
-  execFileSync("git", ["-C", cwd, "commit", "-qm", subject], { stdio: "pipe" });
+  execFileSync("git", ["-C", cwd, "commit", "-qm", subject], {
+    stdio: "pipe",
+    env: at === undefined ? process.env : { ...process.env, GIT_COMMITTER_DATE: `@${at} +0000` },
+  });
 }
 
 /** A `replied` fix caused by round 1, with round 1's decision recorded by us. */
@@ -616,6 +664,63 @@ test("an unrelated round's nudge does not sign the next round's fix", async () =
   const one = log.summaries.find((s) => s.summary === "fix one")!;
   assert.equal(one.repliedBy, "foreman");
   assert.equal(log.details.get(one.sha)!.attribution?.text, "Go ahead and fix f1.");
+});
+
+/**
+ * The same misattribution as above, but through the gap ids alone cannot close - and
+ * pointing the other way, at the user.
+ *
+ * Round 1's gate showed [f1, f2] and the Fix box answered it with the box's default,
+ * every finding selected. f1 was only partly addressed, so the re-review reports it
+ * AGAIN - ids are semantic slugs, a surviving finding keeps its name - beside a new f3.
+ * Round 2's own reply is the agent's, through the `/no-mistakes` skill, and unwitnessed.
+ * So round 1's "you" row is the only candidate fix 2 has, and it shares f1 with round 2:
+ * overlap is 1, and the zero-overlap guard sails right past it. Left there, the card
+ * signs an autonomous fix "by you, in the dashboard" and prints the AGENT's words under
+ * the user's name - this feature's distinction inverted, in its worst direction.
+ */
+test("a reply the previous fix already used does not sign the next one", async () => {
+  const repo = mkRepo();
+  const db = mkNmDb(repo, "main");
+  db.prepare("INSERT INTO step_results (id, run_id, step_name) VALUES (?, ?, ?)").run(
+    "sr1", "run1", "review",
+  );
+  const round = (id: string, n: number, ids: string[], summary: string | null, at: number) =>
+    db.prepare(
+      `INSERT INTO step_rounds (id, step_result_id, round, trigger_type, findings_json,
+         user_findings_json, selected_finding_ids, selection_source, fix_summary, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id, "sr1", n, "initial", findings(...ids.map((i) => ({ id: i, desc: `round ${n}` }))),
+      findings(...ids.map((i) => ({ id: i, desc: `round ${n}`, instructions: `apply ${ids.join()}` }))),
+      JSON.stringify(ids), "user", summary, at,
+    );
+  round("rd1", 1, ["f1", "f2"], null, 100); // the Fix box answered this one...
+  round("rd2", 2, ["f1", "f3"], "fix one", 200); // ...producing "fix one"; f1 survived it
+  round("rd3", 3, ["f13"], "fix two", 300); // round 2 produced "fix two", unwitnessed
+  db.close();
+  // Explicit seconds: which fix came FIRST is the whole question here, and git's wall
+  // clock would happily stamp both with the same one.
+  const FIX_ONE_AT = 1_700_000_000;
+  const FIX_TWO_AT = 1_700_000_100;
+  commit(repo, "d.ts", "no-mistakes(review): fix one", FIX_ONE_AT);
+  commit(repo, "e.ts", "no-mistakes(review): fix two", FIX_TWO_AT);
+
+  const log = await readFixLog(repo, () => [
+    {
+      sessionId: "s", ts: (FIX_ONE_AT - 10) * 1000, source: "you", runId: "run1",
+      step: "review", findingIds: ["f1", "f2"], text: "Fix both of them.",
+    },
+  ]);
+
+  const two = log.summaries.find((s) => s.summary === "fix two")!;
+  assert.equal(log.details.get(two.sha)!.decision, "replied");
+  assert.equal(two.repliedBy, null, "a reply spent on fix one is not fix two's author");
+  assert.equal(log.details.get(two.sha)!.attribution, null);
+  // ...while the fix that reply DID authorize still carries it, f1 and all.
+  const one = log.summaries.find((s) => s.summary === "fix one")!;
+  assert.equal(one.repliedBy, "you");
+  assert.equal(log.details.get(one.sha)!.attribution?.text, "Fix both of them.");
 });
 
 /**

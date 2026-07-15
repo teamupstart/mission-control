@@ -402,8 +402,19 @@ test("poolRepos sweeps a treehouse repo the workspace scan alone can name", asyn
   // (`listRepos` caches its scan, so this is the file's only poolRepos test.)
   const ws = mkdtempSync(join(tmpdir(), "harness-pool-ws-"));
   const pooled = join(ws, "pooled");
-  mkdirSync(join(pooled, ".git"), { recursive: true });
+  mkdirSync(pooled, { recursive: true });
+  gitIn(pooled, "init", "-q");
+  gitIn(pooled, "config", "user.email", "t@test");
+  gitIn(pooled, "config", "user.name", "t");
   writeFileSync(join(pooled, "treehouse.toml"), "max_trees = 16\n");
+  gitIn(pooled, "add", "-A");
+  gitIn(pooled, "commit", "-qm", "opt into the pool");
+  // A linked worktree of that same repo, which the scan cannot tell apart from a
+  // pool owner: its `.git` is a FILE, but the scan matches the ENTRY, and
+  // `treehouse.toml` rides along because it is committed. Only walking back to the
+  // owning repo collapses the two - otherwise one pool is swept once per checkout,
+  // each pass paying its own `treehouse status` and fetch.
+  mkLinkedWorktree(pooled, "feature", join(ws, "feature"));
   // A repo that never opted into the pool has nothing for treehouse to sweep.
   mkdirSync(join(ws, "plain", ".git"), { recursive: true });
 

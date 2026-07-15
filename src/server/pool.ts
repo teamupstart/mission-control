@@ -149,9 +149,7 @@ export function poolPins(registry: Registry): PoolPins {
  * The pools worth sweeping, from three sources that each name what the others
  * miss, keeping only the repos that opted into treehouse:
  *
- *  - live sessions - where agents actually are. A session standing in a POOLED
- *    tree reports that tree as its cwd, not the repo that owns the pool, so we
- *    walk each one back to its main root before asking treehouse about it.
+ *  - live sessions - where agents actually are.
  *  - tracked tasks - repos the harness has dispatched into. These outlive their
  *    sessions, since the task list is rehydrated across a restart.
  *  - the workspace scan - the only source that can name a FULLY leaked pool.
@@ -161,6 +159,16 @@ export function poolPins(registry: Registry): PoolPins {
  *    starting a session there, because `treehouse get` is what fails when the
  *    pool is dry. This is also where the leak actually comes from - `make
  *    session` / `make claude` lease directly and never go through a task at all.
+ *
+ * Both path-shaped sources get walked back to their main root, because treehouse
+ * keys a pool off the OWNING repo: a session standing in a POOLED tree reports
+ * that TREE as its cwd, and the scan collects linked worktrees as readily as
+ * clones - it matches a `.git` ENTRY, dir or file alike, and `treehouse.toml` is
+ * committed, so a plain `git worktree add` under the workspace is indistinguishable
+ * from a pool owner. The walk-back is also what makes the dedupe real: without it
+ * one pool is swept once per checkout of it, each pass paying its own `treehouse
+ * status` and its own 30s-capable fetch. A path we can't walk back names no pool
+ * we could sweep, so it is dropped rather than guessed at.
  *
  * The scan walks the disk, so it is best-effort: a failure degrades to "sweep
  * the repos we already knew about" rather than costing the whole tick.
@@ -172,7 +180,10 @@ export async function poolRepos(registry: Registry): Promise<string[]> {
     if (root) roots.add(root);
   }
   for (const task of registry.listTasks()) roots.add(task.repoRoot);
-  for (const repo of await listRepos().catch(() => [])) roots.add(repo);
+  for (const repo of await listRepos().catch(() => [])) {
+    const root = mainRepoRoot(repo);
+    if (root) roots.add(root);
+  }
   return [...roots].filter(isTreehouseRepo);
 }
 
@@ -435,8 +446,16 @@ export async function reapPool(
   // that hasn't recorded its worktree yet - which at the instant we looked had no
   // processes, no session (discovery only polls every ~1.5s), and no task record,
   // and so read as a leak. Re-derive the liveness rungs against a reading taken
-  // NOW, immediately before acting. The git rungs stand: work only ever appears,
-  // so an older dirty/unmerged answer is the conservative one.
+  // NOW, immediately before acting.
+  //
+  // The git rungs are deliberately NOT re-read, and that is a tradeoff rather
+  // than a free pass. Staleness is only conservative in the skip direction - a
+  // tree already judged dirty or unmerged stays skipped, since work only ever
+  // appears. A reap acts on the other direction: a stale CLEAN reading, taken
+  // before a fetch that may have run 30s, and `return --force` would clean away
+  // anything written since. What makes that acceptable is that dirtying a tree
+  // takes a WRITER, and no writer gets in without a process, a session, or a task
+  // record - every one of which is re-read below, fresh.
   const fresh = await deps.status(repoRoot);
   // Fail closed: a re-check we couldn't take is not a re-check that passed.
   if (fresh.code !== 0) {
@@ -452,9 +471,15 @@ export async function reapPool(
   const nowPins = canonicalPins(pins());
 
   for (const tree of candidates) {
-    // Same tree, same holder, or it is not the lease we judged: one returned and
-    // re-leased in the window is someone else's now, and no rung below would
-    // notice, because a just-leased tree looks exactly like a leaked one.
+    // Re-confirm the slot is still leased and still looks like the lease we
+    // judged. Same path, same holder is ALL the identity `treehouse status`
+    // affords - it prints no lease id and no timestamp - so be clear about what
+    // this cannot do: a return plus a re-lease inside the window reads identical
+    // to an untouched lease, since both lease paths hold as `fleet-control`
+    // (the dispatcher's `--lease-holder`, and new-session.mjs's default). That
+    // window is covered instead by the rung below, re-derived from the fresh
+    // status: a re-leased tree with an agent running in it reads busy. The
+    // uncovered sliver is a re-lease whose agent has yet to start a process.
     const still = now.find((t) => t.path === tree.path && t.holder === tree.holder);
     const changed = still ? cheapVerdict(still, nowPins) : "its lease changed while we looked";
     if (changed) {

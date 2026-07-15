@@ -13,6 +13,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     state: "working" as SessionState,
     cwd: null,
     gitBranch: null,
+    gitRoot: null,
     nomistakesGated: false,
     pid: 4242,
     tty: null,

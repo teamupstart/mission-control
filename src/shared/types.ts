@@ -101,6 +101,12 @@ export interface Session {
   state: SessionState;
   cwd: string | null;
   gitBranch: string | null;
+  /**
+   * The root of the checkout `cwd` sits in, resolved through symlinks. Null when
+   * the session isn't in a repo. Distinguishes sessions sharing one worktree from
+   * sessions that merely share a branch name across different worktrees.
+   */
+  gitRoot: string | null;
   /** True when this session's repo is gated by no-mistakes. */
   nomistakesGated: boolean;
   /** The leaf agent process pid (what we act on / kill). */
@@ -287,7 +293,7 @@ export interface Task {
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while queued. */
   worktreePath: string | null;
-  /** Worktree branch, once known (carried here since gitInfo can't read linked-worktree .git). */
+  /** Worktree branch, once known - remembered so teardown can drop a throwaway `harness/*` branch by name. */
   branch: string | null;
   /** How the worktree was provisioned, so teardown returns a treehouse lease vs `git worktree remove`. */
   provider: WorktreeProvider | null;
@@ -335,6 +341,12 @@ export interface NmFinding {
 
 /** Compact view of a no-mistakes run, as surfaced on a session card. */
 export interface NmRunSummary {
+  /**
+   * The run's own id (a ULID from `axi status`). Identifies a run independently
+   * of its branch, which successive runs share - so retiring one run from a card
+   * never gags the next one on the same branch.
+   */
+  id: string;
   status: string; // running | completed | failed
   branch: string;
   /** e.g. "parked 1m30s" while awaiting an agent decision, else null. */
@@ -499,6 +511,12 @@ export interface ResetPreview {
 export interface ResetResult {
   ok: boolean;
   error: string | null;
+  /**
+   * The worktree root the reset actually ran in (git's own `--show-toplevel`),
+   * or null when we never got that far. Identifies which checkout was wiped, so
+   * callers can act on the sessions sharing it without re-resolving it.
+   */
+  root: string | null;
   /** True when `/clear` was sent to the agent after the git reset landed. */
   cleared: boolean;
 }

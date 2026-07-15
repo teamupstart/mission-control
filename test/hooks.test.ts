@@ -18,6 +18,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     state: "working",
     cwd: null,
     gitBranch: null,
+    gitRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",

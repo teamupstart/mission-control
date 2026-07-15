@@ -13,6 +13,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     state: "working" as SessionState,
     cwd: null,
     gitBranch: null,
+    gitRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: null,
@@ -157,6 +158,7 @@ test("reportBucket: working is confirmed-running, idle is everything else that's
 
 function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
   return {
+    id: "01RUN_PARKED",
     status: "running",
     branch: "feature/x",
     awaitingAgent: "parked 0s",
@@ -236,6 +238,7 @@ test("a parked gate defers to a same-worktree sibling still driving the run", ()
 /** A run mid-step: executing, not parked at a gate (no awaitingAgent/gateStep). */
 function runningMidStep(over: Partial<NmRunSummary> = {}): NmRunSummary {
   return {
+    id: "01RUN_MIDSTEP",
     status: "running",
     branch: "feature/x",
     awaitingAgent: null,

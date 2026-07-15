@@ -351,10 +351,15 @@ function assignGateScalar(gate: NonNullable<NmRun["gate"]>, line: string): void 
   if (risk !== null) return void (gate.risk = risk);
 }
 
-/** Reduce a parsed run to the compact summary the UI shows. */
-function summarize(run: NmRun | null): NmRunSummary | null {
+/**
+ * Reduce a parsed run to the compact summary the UI shows. Exported alongside
+ * `parseAxiStatus` so tests can pin the whole status -> card path, notably that
+ * the run id survives it: a dropped id silently un-retires a dismissed run.
+ */
+export function summarize(run: NmRun | null): NmRunSummary | null {
   if (!run) return null;
   return {
+    id: run.id,
     status: run.status,
     branch: run.branch,
     awaitingAgent: run.awaitingAgent,

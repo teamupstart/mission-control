@@ -412,29 +412,36 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
  * pane just reports `cleared: false` rather than failing the whole operation.
  */
 export async function resetToOrigin(session: Session, clear: boolean): Promise<ResetResult> {
-  if (!session.cwd) return { ok: false, error: "session has no working directory", cleared: false };
+  if (!session.cwd) return { ok: false, error: "session has no working directory", root: null, cleared: false };
   // Run at the worktree top so `reset` and `clean` cover the same (whole) tree -
   // `clean` is relative to its cwd, so a nested pane cwd would leave stray
   // untracked files behind, defeating "make the worktree match origin".
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) {
-    return { ok: false, error: "not a git repository", cleared: false };
+    return { ok: false, error: "not a git repository", root: null, cleared: false };
   }
   const root = top.stdout.trim();
 
   const fetched = await git(root, ["fetch", "origin"], 30000);
   if (fetched.code !== 0) {
-    return { ok: false, error: `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}`, cleared: false };
+    const error = `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}`;
+    return { ok: false, error, root, cleared: false };
   }
   const target = await remoteDefaultRef(root);
-  if (!target) return { ok: false, error: "no origin/main (or origin/master) to reset to", cleared: false };
+  if (!target) {
+    return { ok: false, error: "no origin/main (or origin/master) to reset to", root, cleared: false };
+  }
 
   const reset = await git(root, ["reset", "--hard", target]);
-  if (reset.code !== 0) return { ok: false, error: reset.stderr.trim() || "git reset failed", cleared: false };
+  if (reset.code !== 0) {
+    return { ok: false, error: reset.stderr.trim() || "git reset failed", root, cleared: false };
+  }
   const cleaned = await git(root, ["clean", "-fd"]);
-  if (cleaned.code !== 0) return { ok: false, error: cleaned.stderr.trim() || "git clean failed", cleared: false };
+  if (cleaned.code !== 0) {
+    return { ok: false, error: cleaned.stderr.trim() || "git clean failed", root, cleared: false };
+  }
 
-  if (!clear) return { ok: true, error: null, cleared: false };
+  if (!clear) return { ok: true, error: null, root, cleared: false };
   const sent = await sendText(session, "/clear", true);
-  return { ok: true, error: null, cleared: sent.ok };
+  return { ok: true, error: null, root, cleared: sent.ok };
 }

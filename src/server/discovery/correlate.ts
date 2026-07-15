@@ -27,6 +27,8 @@ export interface DiscoveredSession {
   nameSource: NameSource;
   cwd: string | null;
   gitBranch: string | null;
+  /** Root of the checkout `cwd` sits in, resolved through symlinks. */
+  gitRoot: string | null;
   nomistakesGated: boolean;
   pid: number;
   tty: string | null;
@@ -205,6 +207,7 @@ export function correlate(
       nameSource,
       cwd,
       gitBranch: git.branch,
+      gitRoot: git.root,
       nomistakesGated: git.nomistakesGated,
       pid: root.pid,
       tty,

@@ -22,6 +22,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     state: "working" as SessionState,
     cwd: null,
     gitBranch: null,
+    gitRoot: null,
     nomistakesGated: false,
     nomistakesNarration: null,
     pid: 1,
@@ -101,6 +102,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   assert.equal(r[0]?.body, "2 to review");
 
   const gate: NmRunSummary = {
+    id: "01RUN_GATE",
     status: "running",
     branch: "x",
     awaitingAgent: "parked 1m",
@@ -169,6 +171,7 @@ test("backgrounding a no-mistakes run is not 'went idle'", () => {
   // you - the run is still going and will re-invoke it. Alerting here trains you
   // to ignore the alert that matters.
   const running: NmRunSummary = {
+    id: "01RUN_BACKGROUNDED",
     status: "running",
     branch: "feature/x",
     awaitingAgent: null,

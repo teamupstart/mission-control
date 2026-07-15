@@ -21,6 +21,7 @@ function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     nameSource: "tmux",
     cwd: "/repo/app",
     gitBranch: "main",
+    gitRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",

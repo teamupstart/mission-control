@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAxiStatus } from "../src/server/nomistakes.ts";
+import { parseAxiStatus, summarize } from "../src/server/nomistakes.ts";
 
 // Fixtures are verbatim `no-mistakes axi status` output captured from the real
 // binary / the project's recorded evidence.
@@ -55,6 +55,7 @@ help[1]: Run \`no-mistakes init\` to set up the gate in this repository`;
 test("parses a run parked at the review gate", () => {
   const run = parseAxiStatus(REVIEW_GATE);
   assert.ok(run);
+  assert.equal(run.id, "01KW1AW3NR19DV8EXM8DNPASGK");
   assert.equal(run.status, "running");
   assert.equal(run.branch, "feature/park-evidence");
   assert.equal(run.awaitingAgent, "parked 0s");
@@ -77,11 +78,21 @@ test("parses a run parked at the review gate", () => {
 test("parses a completed run with an outcome", () => {
   const run = parseAxiStatus(COMPLETED);
   assert.ok(run);
+  assert.equal(run.id, "01KW1AW3NR19DV8EXM8DNPASGK");
   assert.equal(run.status, "completed");
   assert.equal(run.outcome, "passed");
   assert.equal(run.gate, null);
   assert.equal(run.steps.filter((s) => s.status === "completed").length, 7);
   assert.equal(run.steps.filter((s) => s.status === "skipped").length, 2);
+});
+
+// The id is what a reset keys a dismissal on, so it has to survive all the way to
+// the card - summarize() dropping it would silently resurrect retired strips.
+test("the run id survives the whole status -> card path", () => {
+  for (const out of [REVIEW_GATE, COMPLETED]) {
+    assert.equal(summarize(parseAxiStatus(out))?.id, "01KW1AW3NR19DV8EXM8DNPASGK");
+  }
+  assert.equal(summarize(parseAxiStatus(ERROR)), null);
 });
 
 test("returns null for the error / not-initialized case", () => {

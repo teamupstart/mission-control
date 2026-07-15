@@ -1,46 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetPreview, resetToOrigin } from "../src/server/actions.ts";
+import { gitIn, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 
-/** Run git in `dir`, returning trimmed stdout. */
-function gitIn(dir: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", dir, ...args], { stdio: "pipe" }).toString().trim();
-}
-
-/**
- * Build a real "origin" repo (with a `main` branch and a base commit) plus a
- * clone of it whose `origin/main` tracks that base. Returns both dirs so a test
- * can advance origin, diverge the clone, and exercise a real fetch/reset/clean.
- */
-function mkOriginAndClone(): { origin: string; clone: string } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "harness-reset-")));
-  const origin = join(root, "origin");
-  execFileSync("git", ["init", "-q", origin]);
-  const og = (...a: string[]) => gitIn(origin, ...a);
-  og("branch", "-M", "main");
-  og("config", "user.email", "t@test");
-  og("config", "user.name", "t");
-  writeFileSync(join(origin, "keep.txt"), "base\n");
-  og("add", "-A");
-  og("commit", "-qm", "base");
-
-  const clone = join(root, "clone");
-  execFileSync("git", ["clone", "-q", origin, clone]);
-  gitIn(clone, "config", "user.email", "t@test");
-  gitIn(clone, "config", "user.name", "t");
-  return { origin, clone };
-}
+const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("harness-reset-");
 
 /** A minimal Session over `cwd`, with no pane (so `/clear` is a no-op we can assert). */
 function sess(cwd: string | null, branch: string | null = "main"): Session {
   return {
     id: "s1", agent: "claude", name: "work", nameSource: "process", state: "idle",
-    cwd, gitBranch: branch, nomistakesGated: false, pid: 1, tty: null,
+    cwd, gitBranch: branch, gitRoot: null, nomistakesGated: false, pid: 1, tty: null,
     permissionMode: null, wezterm: null, tmux: null, agentSessionId: null, transcriptPath: null,
     instrumented: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, nomistakes: null, task: null,
@@ -107,7 +80,7 @@ test("reset anchors at the worktree top even when the session cwd is a nested su
   // the repo root and inside the subdir - a clean run from the subdir alone would
   // miss the root one, so this proves we anchor at the toplevel.
   const sub = join(clone, "packages", "app");
-  execFileSync("mkdir", ["-p", sub]);
+  mkdirSync(sub, { recursive: true });
   writeFileSync(join(sub, "index.ts"), "export {};\n");
   gitIn(clone, "add", "-A");
   gitIn(clone, "commit", "-qm", "add nested package");
@@ -123,6 +96,9 @@ test("reset anchors at the worktree top even when the session cwd is a nested su
 
   const r = await resetToOrigin(sess(sub), false);
   assert.equal(r.ok, true);
+  // The reported root is the worktree top, not the nested cwd - callers key off it
+  // to find which sessions this reset actually wiped.
+  assert.equal(r.root, clone);
   assert.equal(gitIn(clone, "rev-parse", "HEAD"), gitIn(clone, "rev-parse", "origin/main"));
   assert.notEqual(gitIn(clone, "rev-parse", "HEAD"), rootHead); // the ahead commit is gone
   assert.equal(existsSync(join(clone, "root-untracked.txt")), false); // cleaned from the top

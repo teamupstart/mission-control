@@ -42,6 +42,7 @@ const CFG: QueueConfig = {
   maxFixRounds: 10,
   settleMs: 10_000,
   pickupTimeoutMs: 45_000,
+  wrapup: "ask",
 };
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -490,6 +491,84 @@ test("5. a drained queue asks about wrapping up exactly once", () => {
 
 test("5. an empty queue asks nothing", () => {
   assert.equal(tick({ items: [] }).kind, "none");
+});
+
+// Step 5's `wrapup` branch. The gates are the interesting part, not the happy path:
+// what this types PUSHES (`/no-mistakes` opens a PR at the end of its pipeline), so
+// every "don't" below is load-bearing.
+
+const DRAINED = () => [mkItem({ state: "verified" })];
+
+test("5. wrapup=ask is the original behaviour - Foreman asks and types nothing", () => {
+  assert.equal(tick({ items: DRAINED(), cfg: { wrapup: "ask" } }).kind, "ask-wrapup");
+});
+
+test("5. wrapup=no-mistakes types it when live, instrumented, settled and paned", () => {
+  const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" } });
+  assert.equal(a.kind, "auto-wrapup");
+  assert.equal(a.kind === "auto-wrapup" && a.payload, "/no-mistakes");
+});
+
+test("5. wrapup=pr types the PR instruction instead", () => {
+  const a = tick({ items: DRAINED(), cfg: { wrapup: "pr" } });
+  assert.equal(a.kind, "auto-wrapup");
+  assert.match(a.kind === "auto-wrapup" ? a.payload : "", /open a PR/);
+});
+
+test("5. dry-run NEVER types the wrap-up, however it is configured", () => {
+  // The instruction pushes, so a dry-run that typed it would be a dry-run that
+  // shipped. It degrades to the ask - the card IS the proposal for this action.
+  for (const w of ["no-mistakes", "pr"] as const) {
+    assert.equal(tick({ items: DRAINED(), cfg: { wrapup: w }, mayActLive: false }).kind, "ask-wrapup");
+  }
+});
+
+test("5. an agent still working WAITS - it must not fall back to the ask", () => {
+  // The regression this pins: `ask-wrapup` stamps `wrapupAskedAt`, which is step 5's
+  // once-only guard. Asking here would retire the auto path permanently over a moment
+  // of drain-time noise, and the feature would silently never fire for the busy
+  // sessions it exists for. `none` costs one poll.
+  const a = tick({ items: DRAINED(), cfg: { wrapup: "no-mistakes" }, session: { state: "working" } });
+  assert.equal(a.kind, "none");
+});
+
+test("5. an un-settled but idle agent waits too - settleMs is not yet satisfied", () => {
+  const a = tick({
+    items: DRAINED(),
+    cfg: { wrapup: "no-mistakes" },
+    session: { lastActivity: NOW - 1 },
+  });
+  assert.equal(a.kind, "none");
+});
+
+test("5. a stale overlay asks rather than typing on 30-minute-old evidence", () => {
+  // `!instrumented` is "no recent signal", not "busy" - waiting on a signal that
+  // stopped coming would stall the wrap-up forever, so this one DOES degrade to the
+  // ask. The two false-y halves of settledIdle genuinely want opposite answers.
+  const a = tick({
+    items: DRAINED(),
+    cfg: { wrapup: "no-mistakes" },
+    session: { instrumented: false },
+  });
+  assert.equal(a.kind, "ask-wrapup");
+});
+
+test("5. nowhere to type: ask", () => {
+  const a = tick({
+    items: DRAINED(),
+    cfg: { wrapup: "no-mistakes" },
+    session: { tmux: null, wezterm: null },
+  });
+  assert.equal(a.kind, "ask-wrapup");
+});
+
+test("5. the auto wrap-up fires exactly once, exactly like the ask", () => {
+  const a = tick({
+    items: DRAINED(),
+    cfg: { wrapup: "no-mistakes" },
+    queue: { wrapupAskedAt: NOW - 5 },
+  });
+  assert.equal(a.kind, "none");
 });
 
 test("6. an unsettled session is never interrupted", () => {

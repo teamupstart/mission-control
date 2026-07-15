@@ -264,6 +264,17 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }
 
+  /**
+   * Record the wrap-up answer. This is the same endpoint the card uses when a human
+   * clicks Send: an auto-wrapup is that same event with Foreman as the author, so it
+   * must land in the same durable field. Anything else and the card would re-offer an
+   * instruction the agent already has.
+   */
+  async setWrapupAnswer(sessionId: string, answer: string): Promise<void> {
+    const res = await send("PUT", `/api/sessions/${enc(sessionId)}/queue/wrapup`, { answer });
+    if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
+  }
+
   note(id: string): Promise<SessionNote | null> {
     return get<SessionNote | null>(`/api/sessions/${enc(id)}/note`);
   }

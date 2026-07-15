@@ -33,6 +33,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     triage: "off",
     maxFixAttempts: 3,
     maxFixRounds: 10,
+    wrapup: "ask",
     ...over,
   };
 }

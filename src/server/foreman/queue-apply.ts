@@ -45,6 +45,7 @@ export interface QueueActions {
   ): Promise<unknown>;
   recoverItem(sessionId: string, itemId: string): Promise<unknown>;
   markWrapupAsked(sessionId: string): Promise<unknown>;
+  setWrapupAnswer(sessionId: string, answer: string): Promise<unknown>;
   /** HEAD sha + transcript byte size to record as this item's scope at delivery. */
   captureScope(
     session: Session,
@@ -272,6 +273,53 @@ export async function applyQueueAction(
     case "ask-wrapup":
       await actions.markWrapupAsked(session.id);
       return { kind: "done", what: "the queue drained - asked about wrapping up" };
+
+    case "auto-wrapup": {
+      // Mark FIRST, then type, then record the answer. The order is the entire safety
+      // argument here, and it is the opposite of the send path's - deliberately.
+      //
+      // A queue item is idempotent-ish under a double delivery: the agent re-reads an
+      // instruction it already has. This is not. `/no-mistakes` PUSHES and opens a PR,
+      // so typing it twice is two pipelines racing on one branch - the exact harm the
+      // card's `wrapupSent` latch was added for after a remount did it once.
+      //
+      // So the write that RETIRES this action lands before the irreversible act:
+      //   - `markWrapupAsked` stamps `wrapupAskedAt`, which is step 5's once-only guard.
+      //     From here on no tick can re-decide `auto-wrapup`, crash or no crash.
+      //   - then we type.
+      //   - then `setWrapupAnswer` records what we sent, which is what retires the CARD.
+      //
+      // Each failure degrades to the human rather than to a double-push:
+      //   - crash after mark, before inject -> answer stays null -> the card renders with
+      //     this exact text prefilled, one click away. Which is precisely `ask` mode.
+      //   - inject throws -> same, and we say why.
+      //   - inject lands, `setWrapupAnswer` fails -> the card re-offers an instruction the
+      //     agent already has. Bad, but a human is looking at it and the text is visibly
+      //     already in the pane; a silent second push has nobody looking. Report it.
+      //
+      // Note this deliberately does NOT reuse `queueSendStillValid`: every one of its 9
+      // checks is about an ITEM (round caps, base sha drift, pickup windows) and there is
+      // no item here. Step 5 gates this one - live + allowlisted + fresh + settled + pane.
+      await actions.markWrapupAsked(session.id);
+      try {
+        await actions.inject(session.id, action.payload);
+      } catch (err) {
+        // `mayHaveLanded` can't help here: with no item there is no state to demote and
+        // nothing to re-decide - step 5 is already retired either way. The card is the
+        // recovery, so just say what happened. Never retry: a retry IS the double-push.
+        const why = err instanceof Error ? err.message : String(err);
+        return { kind: "aborted", why: `could not send the wrap-up (${why}) - asking instead` };
+      }
+      try {
+        await actions.setWrapupAnswer(session.id, action.payload);
+      } catch (err) {
+        // Sent but unrecorded. Don't let this throw: the instruction is IN the pane, and
+        // an exception here reads to the loop like the send never happened.
+        const why = err instanceof Error ? err.message : String(err);
+        return { kind: "done", what: `sent the wrap-up but could not record it (${why})` };
+      }
+      return { kind: "done", what: `the queue drained - sent "${action.payload}"` };
+    }
 
     case "propose":
       // Dry-run drafts, and NEVER types. The payload is stored as the item's

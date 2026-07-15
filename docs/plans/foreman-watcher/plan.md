@@ -59,9 +59,12 @@ the note, and the `classifyPending` surface). Disposes without any model call wh
 structurally determined:
 
 - Marker already handled ⇒ skip. *(Exists today via `handledMarker`.)*
-- Surface is a non-`input` review (plan / diff / gate) ⇒ structurally human-only ⇒ `skip`. Today
-  this still spends a full review just to write the Purpose; Tier 0 short-circuits the judgment
-  and hands only the Purpose down to Tier 1.
+- Surface is a non-`input` review (plan / diff / gate) ⇒ structurally human-only ⇒ `skip`. This
+  previously spent a full review just to write the Purpose; Tier 0 disposes it outright, naming
+  the Purpose straight from the review's own kind and title. *(This resolves the third open
+  question below in the cheap direction: the Purpose here is written by pure code, not handed
+  down to Haiku - "this is a plan review for you" is all Foreman has to add, and it needs no
+  model to say it.)*
 - Answerable surface but no delivery channel (a terminal prompt with no tmux/wezterm pane) ⇒ would
   escalate regardless ⇒ route **up**. *(This bullet originally read "escalate directly when the
   question is short and self-contained, else route up". Implementation found the premise doesn't
@@ -105,17 +108,39 @@ snapshot, so the mid-review safety net still applies.
 
 ## Where it hooks in
 
-- New `src/server/foreman/triage.ts`: `triageSession(surface, snapshot, note, config) →
-  { disposed: verdict } | { routeUp: true }`. Tiers 0 and 1 live here.
-- `worker.ts`: `processSession` calls the Tier 0 checks, then `triageSession` when an answerable
-  surface exists, and only reaches `reviewSession` when triage returns `routeUp`.
+- New `src/server/foreman/triage.ts`: `triageSession(deps, pending, session, config) →
+  TriageOutcome`, where an outcome is `{ kind: 'dispose'; tier: 0 | 1; verdict; reason }` or
+  `{ kind: 'route-up'; reason }`. Tiers 0 (`tier0`, pure) and 1 (`mapTriage` over the router's
+  report, also pure) both live here; `deps` injects the only two I/O edges (the transcript read
+  and the router subprocess) so the whole safety contract is unit-testable without either.
+  `src/server/foreman/triage-prompt.ts` holds the bucketing prompt, mirroring `prompt.ts`.
+- New `src/server/foreman/pending.ts`: `classifyPending`, lifted out of `worker.ts` (which runs a
+  top-level loop on import, so `triage.ts` could not have imported it there) and given a richer
+  `situation` discriminant - `input-review` / `non-input-review` / `terminal-pane` /
+  `terminal-no-pane` / `no-question` - which is exactly what Tier 0 switches on.
+- `worker.ts`: `processSession` delegates to `decide`, which switches over the posture and returns
+  `{ verdict, tier }` - `fullReviewOnly` (off), `shadowBoth` (shadow), or `cheapTierDecides` (on).
+  `reviewSession` is reached only when the cheap tier routes up, or on every session under `off` /
+  `shadow`. Shadow runs the two concurrently (`Promise.all`), so the cheap call adds no serial
+  latency to the already-serial queue.
+- `review.ts`: `runClaude` → exported `runClaudeText(prompt, { model, timeoutMs })` and
+  `extractVerdict` → generic `parseModelJson(raw, schema)`, so Tier 1 reuses the same tool-less,
+  injection-isolated subprocess and the same envelope-unwrapping parser, only with a cheaper model
+  and its own (30s) budget.
 - `src/server/foreman/debounce.ts` (Step 0, shipped): the per-session evaluation cooldown, applied
   before any tier so a flapping marker can't burn work every loop.
 - Config additions on `ForemanConfigSchema` (`src/shared/protocol.ts`): `triage: 'off' | 'shadow'
   | 'on'` (default `shadow` on first ship) and an optional `triageModel`. Env
-  `FOREMAN_TRIAGE_MODEL` to override the model.
-- Telemetry: stamp each session's note/audit with which tier disposed it and why, so hit rate and
-  cost are measurable, and shadow-mode divergences are auditable.
+  `FOREMAN_TRIAGE_MODEL` overrides the model, `FOREMAN_TRIAGE_TIMEOUT_MS` the router's budget.
+  `ForemanClient.getConfig` now *parses* the daemon's response through the schema rather than
+  casting it, so a daemon too old to serve `triage` yields the schema's own `shadow` default and a
+  value outside the enum is rejected before it can reach the tier dispatch.
+- Telemetry: **structured worker log lines**, not a note/audit stamp - `[tier N]` on every acted
+  session, `tier N disposed -> action (reason)` / `routed up to full review (reason)` under `on`,
+  and `shadow <divergence> (cheap=… opus=…)` under `shadow`. *(The plan originally proposed
+  stamping the note. The log is the audit surface instead: a tier + reason is rollout telemetry
+  with a natural half-life, and threading it onto the note would mean a schema column and card UI
+  for a field that stops being interesting the moment `on` is trusted.)*
 
 ## Step 0 (shipped in this PR): per-session evaluation debounce
 
@@ -151,9 +176,11 @@ short-circuits anything.
 
 If a busy fleet is ~40% human-only reviews (Tier 0/1, near-zero cost), ~20% routine access (Tier 1
 Haiku), and ~40% real judgment (Tier 2), Opus reviews drop ~60%, replaced by far cheaper Haiku
-calls on smaller transcripts — and the remaining Tier 2 reviews can start from Tier 1's trimmed
-context. All failure modes are fail-safe: a cheap-tier miss costs a wasted Opus call or a hand-back
-to you, never a wrong action.
+calls on smaller transcripts. A routed-up session costs one extra Haiku call on top of the Opus one
+it would have cost anyway: Tier 2 deliberately re-fetches its own 48-turn window rather than
+inheriting Tier 1's trimmed context, which is what keeps it literally unchanged. All failure modes
+are fail-safe: a cheap-tier miss costs a wasted Opus call or a hand-back to you, never a wrong
+action.
 
 ## Non-goals
 
@@ -172,5 +199,14 @@ to you, never a wrong action.
   default regardless.)
 - Tier 1 model + prompt: is a single Haiku routing prompt reliable enough on `routine-access`
   classification, or does the destructive-denylist backstop need to carry most of the weight?
-- Should Tier 0's "human-only" Purpose be written by Haiku (a summary) or skipped entirely when
-  Foreman has nothing to add beyond "this is a plan review for you"?
+  *(Still open by design - this is precisely what the default `shadow` posture is there to
+  measure. The `cheap-over-eager` divergence rate is the number that answers it.)*
+- ~~Should Tier 0's "human-only" Purpose be written by Haiku (a summary) or skipped entirely?~~
+  **Resolved:** neither - Tier 0 writes a structural Purpose in pure code, naming the review's kind
+  and title, for zero tokens. See the Tier 0 bullet above.
+- The denylist can only read what a `TranscriptMessage` carries, and that is tool *names* without
+  tool *inputs* (`toMessage` in `src/server/transcript.ts` drops the arguments). A command that
+  appears only as a tool input and is never spoken about in prose is therefore invisible to
+  backstop 1, leaving the router's own bucketing as the only thing in front of it. Closing this
+  properly means carrying tool inputs through `TranscriptMessage` - worth doing before `on` is
+  trusted on the terminal surface.

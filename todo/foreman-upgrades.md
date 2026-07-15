@@ -35,7 +35,7 @@ Foreman's engineering rigor.
 | Interaction model | Chat with one supervisor | Watch a board + a background bot |
 | Dispatch new work | Core (`fm-spawn.sh`, worktree per task, ship/scout types) | No — only reacts to already-running sessions (dashboard has dispatch, Foreman doesn't drive it) |
 | Triage blocked sessions | Via watcher + protocol | Its whole job (answer/escalate/skip) |
-| Cost of supervision | Zero-token bash watcher absorbs benign wakes | Full `claude -p` review per new blocked marker |
+| Cost of supervision | Zero-token bash watcher absorbs benign wakes | Tiered gate (#1, shipped): zero-token Tier 0, cheap Haiku Tier 1, full `claude -p` only for real judgment - in `shadow` until measured |
 | Away mode | `/afk` daemon: batches, defers, flushes on return | One-by-one browser alerts, no batching |
 | Knowledge capture / learning | `/stow` routes durable facts to canonical homes | Notes are ephemeral triage aids; no feedback loop |
 | Turn-end safety | Backstop blocks blind exit while work in flight | No notion of "session died with work unfinished" |
@@ -51,15 +51,18 @@ firstmate's supervision is largely prompt/protocol; Foreman's is code with tests
 ## Ranked opportunities
 
 ### 1. Cheap "watcher tier" before the expensive review — cost + latency
-**Planned in detail in `docs/plans/foreman-watcher/plan.md`.** firstmate's watcher absorbs routine
+**Shipped (Tiers 0 + 1), in `shadow` mode by default - see `docs/plans/foreman-watcher/plan.md`.**
+What remains of this item is the rollout, not the build: shadow logs every divergence between the
+cheap tier and the full review, and `triage: 'on'` gets flipped only once `cheap-over-eager` is
+near zero. The original case, for the record: firstmate's watcher absorbs routine
 wakes in pure bash for zero tokens; Foreman spends a full model review on *every* new blocked
 marker, including obvious repeats and structurally-human-only surfaces. Add a tiered gate: (Tier
 0) pure-code disposal of structurally-known cases in `worker.ts` before any model call, (Tier 1)
 a cheap Haiku triage on a trimmed transcript that routes down to skip/escalate or a bounded
 routine-access answer, and (Tier 2) the existing full Opus review only for what genuinely needs
 judgment. Asymmetric by design: the cheap tier may only *reduce* risk (skip/escalate/defer up),
-never invent a substantive answer. Roll out in shadow mode first. **The 1-minute per-session
-evaluation debounce shipped alongside this doc is the first concrete step of this item.**
+never invent a substantive answer. Roll out in shadow mode first. *(The 1-minute per-session
+evaluation debounce was the first concrete step; the tiers landed on top of it.)*
 
 ### 2. AFK mode with a batched flush digest — biggest UX win
 Mirror `/afk`. When you flag yourself away, Foreman raises autonomy within its existing safety
@@ -110,8 +113,9 @@ phone without opening the dashboard. (The Slack MCP is already available.)
 
 ## Suggested sequencing
 
-1. **#1 (cheap watcher)** — the enabler that keeps everything else affordable. First step (the
-   1-minute debounce) shipped; the tiered gate follows in `docs/plans/foreman-watcher/plan.md`.
+1. **#1 (cheap watcher)** — the enabler that keeps everything else affordable. Shipped: the
+   1-minute debounce, then Tiers 0 + 1 (`docs/plans/foreman-watcher/plan.md`), now running in
+   `shadow` until the divergence data earns `triage: 'on'`.
 2. **#2 (AFK digest)** and **#3 (learning loop)** — immediate felt value.
 3. **#4 (dispatch)** — the strategic leap that makes Foreman a real supervisor, not a triager.
 4. **#5 (Codex)** and **#6 (wedged recovery)** — coverage + reliability once the core is richer.

@@ -14,9 +14,14 @@ import type { Registry } from "../registry.ts";
 
 const CONFIG_KEY = "foreman";
 /**
- * A worker heartbeat older than this means "not running". It must comfortably
- * exceed one review-with-retry (2 * REVIEW_TIMEOUT_MS) since the worker beats
- * once per session and then blocks on a `claude -p` for the whole review.
+ * A worker heartbeat older than this means "not running". The worker beats once per
+ * session and then blocks on `claude -p` for the whole review, so this must comfortably
+ * exceed the longest gap between two beats. Under `triage: 'on'` that gap is the cheap
+ * router AND the full review, run SERIALLY on a route-up: TRIAGE_TIMEOUT_MS +
+ * 2 * REVIEW_TIMEOUT_MS = 30s + 240s = 270s against this 300s TTL. (`shadow` runs the two
+ * concurrently, so it stays at 240s.) Both budgets are env-tunable
+ * (`FOREMAN_TRIAGE_TIMEOUT_MS`, `FOREMAN_REVIEW_TIMEOUT_MS`) - raise either far and this
+ * TTL has to move with it, or the dashboard reads "not running" mid-drain.
  */
 const HEARTBEAT_TTL_MS = 300_000;
 

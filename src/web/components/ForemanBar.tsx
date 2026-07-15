@@ -4,7 +4,8 @@ import type { ForemanState } from "../useForeman.ts";
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
 // worker is running; the popover flips the mode, the repo allowlist for live
-// sends, and the access-approval switch. Mirrors AlertBar's popover pattern.
+// sends, the access-approval switch, and the cheap-tier posture (off / shadow /
+// on - see docs/plans/foreman-watcher/plan.md). Mirrors AlertBar's popover pattern.
 
 const MODE_LABEL: Record<string, string> = {
   "dry-run": "dry-run",

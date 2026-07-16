@@ -777,6 +777,9 @@ async function fullReview(
       gitBranch: session.gitBranch,
       state: session.state,
       activity: session.activity,
+      // Read, never re-derived: the daemon refreshes this on every prompt, while a review
+      // only happens when the session is STUCK.
+      goal: session.goal?.text ?? null,
     },
     surface: pending.surface,
     question: pending.question,

@@ -16,6 +16,7 @@ import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPrPoller } from "./pr.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startGoalRefiner } from "./goal/refiner.ts";
+import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 
 openDb();
@@ -29,6 +30,7 @@ const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
+const stopHeadlessPruner = startHeadlessPruner();
 
 const app = buildApp(registry, reviews, tasks, queues);
 
@@ -61,6 +63,7 @@ function shutdown(): void {
   stopPrPoller();
   stopRuntimeMeta();
   stopGoalRefiner();
+  stopHeadlessPruner();
   // Stopping the refiner only stops it STARTING runs; one already in flight is a detached
   // process that outlives us and would go on burning tokens for a card nobody is watching.
   // `claude-cli.ts` hooks `process.exit` for the same reason, but this path calls it

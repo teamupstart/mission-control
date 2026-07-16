@@ -45,6 +45,21 @@ const DEFAULT_TIMEOUT_MS = Number(
  */
 export type StructuredResult<T> = { kind: "ok"; value: T } | { kind: "failed"; reason: string };
 
+/**
+ * The cwd every headless run spawns in.
+ *
+ * Exported because it is not just where the process runs: Claude derives the directory it
+ * writes a run's transcript to from the spawner's cwd, so this value alone decides where they
+ * all pile up. The pruner (`goal/prune.ts`) derives that directory from THIS constant rather
+ * than re-deriving `tmpdir()` itself - the two must never disagree, or the sweep silently
+ * cleans an empty directory while the real one grows forever.
+ *
+ * Note this is per-process: it follows TMPDIR, so a daemon started from a shell and one
+ * started by launchd can write to different directories. Each prunes its own, which is right -
+ * neither can know the other's.
+ */
+export const HEADLESS_CWD = tmpdir();
+
 /** Children we spawned, so a process exit doesn't leave them burning tokens. */
 const live = new Set<ReturnType<typeof spawn>>();
 
@@ -208,7 +223,7 @@ export function runClaudeText(
     const args = ["-p", "--output-format", "json", "--tools", ""];
     if (opts.model) args.push("--model", opts.model);
     const child = spawn(CLAUDE_BIN, args, {
-      cwd: tmpdir(),
+      cwd: HEADLESS_CWD,
       stdio: ["pipe", "pipe", "pipe"],
       env: headlessEnv(),
       detached: true,

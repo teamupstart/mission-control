@@ -467,8 +467,6 @@ interface TriageWindow {
 /** The daemon reads the cheap tier needs: a trimmed transcript, the child's screen, and the router subprocess. */
 export interface TriageDeps {
   transcript(id: string, turns: number): Promise<TriageWindow>;
-  /** The child's rendered screen - see `ReviewInput.pane`. Null when there is none to read. */
-  pane(id: string): Promise<string | null>;
   runModel(prompt: string, model: string): Promise<string>;
 }
 
@@ -545,24 +543,23 @@ export async function triageSession(
   pending: Pending,
   session: Session,
   cfg: ForemanConfig,
+  /**
+   * The child's screen, captured ONCE per session by the caller (see `paneFor`) and passed to
+   * whichever tier reviews. Not captured here: the worker checks what this tier answers against
+   * its own copy of the screen, so a second capture would be a second screen, and the router
+   * would be judged against rows it was never shown - the exact disagreement the menu fix
+   * exists to design out. Null when the surface has no screen to read.
+   */
+  pane: string | null,
 ): Promise<TriageOutcome> {
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 
-  // Both reads at once: the pane capture is a subprocess on the daemon's side, and Tier 1
-  // exists to be cheap, so it must not pay for it serially.
-  //
-  // The screen is fetched for the `terminal` surface only - an `input-review` already carries
-  // its whole body as the question (see `paneFor`) - and a failure reads back as no screen,
-  // which lands on exactly the pre-existing behaviour rather than failing the tier.
-  const [window, pane] = await Promise.all([
-    deps.transcript(session.id, TIER1_TURNS).catch((): TriageWindow => {
-      // A failed fetch is an absent window, not an absent transcript file - the two stay
-      // distinguishable in the log, so `unavailable` is deliberately left false here.
-      return { messages: [], truncated: false };
-    }),
-    pending.surface === "terminal" ? deps.pane(session.id).catch(() => null) : Promise.resolve(null),
-  ]);
+  const window = await deps.transcript(session.id, TIER1_TURNS).catch((): TriageWindow => {
+    // A failed fetch is an absent window, not an absent transcript file - the two stay
+    // distinguishable in the log, so `unavailable` is deliberately left false here.
+    return { messages: [], truncated: false };
+  });
   // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
   // here - see `recentTurns`. The router's prompt gets `recent` plus the opening turns; see
   // `promptWindow` for why the two windows differ. Eliding the middle is itself a truncation,

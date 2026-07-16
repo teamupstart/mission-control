@@ -1,6 +1,7 @@
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
 import { resolveWeztermBin } from "./config.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
+import { optionRowMiss, readPaneDialog, type OptionRowMiss, type PaneDialog } from "./discovery/pane-dialog.ts";
 import { listTmuxClients } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
@@ -333,6 +334,129 @@ async function walkToMode(session: Session, target: PermissionMode): Promise<Mod
 const CANNOT_SEE_MODE =
   "can't see Claude's mode line - a dialog or menu is probably open in this session";
 const SWALLOWED = "Claude ignored Shift+Tab - a dialog may have opened in this session";
+
+/** The row a caller wants selected: the number Claude printed, and the label it read there. */
+export interface OptionTarget {
+  number: number;
+  /** The row's label as the caller read it, re-checked against the screen before any Enter. */
+  label: string;
+}
+
+/** How many arrow presses one selection may spend. A menu's rows are few; this is a backstop. */
+const MAX_ARROW_STEPS = 12;
+
+/** Send one arrow key to a pane. tmux takes the key name; wezterm takes the raw CSI sequence. */
+async function injectArrow(session: Session, dir: "Up" | "Down"): Promise<ActionResult> {
+  if (session.tmux) {
+    // No -l: `Up`/`Down` are tmux key names, not literal text to type.
+    return step("tmux", ["send-keys", "-t", session.tmux.paneId, dir], `tmux send-keys ${dir} failed`);
+  }
+  if (session.wezterm) {
+    const bin = resolveWeztermBin();
+    const seq = dir === "Down" ? "\x1b[B" : "\x1b[A";
+    const args = ["cli", "send-text", "--pane-id", String(session.wezterm.paneId), "--no-paste", seq];
+    return step(bin, args, `wezterm send-text (${dir}) failed`);
+  }
+  return { ok: false, error: NO_HANDLE };
+}
+
+/** Wait for the menu's cursor to leave `from`, or null if it never does. */
+async function awaitCursorMove(session: Session, from: number): Promise<PaneDialog | null> {
+  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  for (;;) {
+    const d = await readPaneDialog(session);
+    if (d && d.highlighted !== from) return d;
+    if (Date.now() >= deadline) return null;
+    await sleep(REPAINT_POLL_MS);
+  }
+}
+
+/**
+ * Answer an option dialog the way a human does: walk the cursor onto a row, then press
+ * Enter. This is the ONLY correct way to answer one - see `pane-dialog.ts` for what typing
+ * prose at a menu actually does (it is swallowed, and the Enter confirms the default).
+ *
+ * Every step is verified against the screen rather than counted out, because a menu is not
+ * ours: the cursor may not start at row 1, an arrow may be swallowed, and the child may
+ * repaint or close the dialog between our reading it and our answering it. So the rule this
+ * holds to is that Enter is pressed ONLY while the pane is showing the intended row
+ * selected, confirmed by a read taken after the last keystroke.
+ *
+ * That makes every failure here a no-op by construction. Arrows alone commit nothing - a
+ * menu with the cursor moved is a menu still waiting - so returning `ok: false` at any point
+ * before the Enter leaves the child exactly as it was found, still parked on its question,
+ * for the caller to escalate to the human. The one thing this must never do is confirm a
+ * row it did not verify, which is the bug it exists to close.
+ */
+export async function selectPaneOption(session: Session, target: OptionTarget): Promise<ActionResult> {
+  if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  // Shares the mode-walk's lock: both drive the same pane with bare keystrokes, and
+  // interleaving them would land arrows in a dialog the other opened. It has to be the
+  // SAME lock, keyed the same way (on the pane, not the session), or the exclusion is
+  // nil in both directions - a concurrent `sendText`'s trailing Enter would confirm
+  // whatever row this walk is passing through.
+  return withPaneLock<ActionResult>(
+    session,
+    () => ({ ok: false, error: PANE_BUSY }),
+    () => selectOptionLocked(session, target),
+  );
+}
+
+async function selectOptionLocked(session: Session, target: OptionTarget): Promise<ActionResult> {
+  let dialog = await readPaneDialog(session);
+  if (!dialog) return { ok: false, error: NO_MENU };
+  // The number alone is a position; the label is what makes it an ANSWER. If the screen
+  // doesn't read as the row we were told to answer, the menu on it isn't that menu, and
+  // pressing Enter would confirm whatever replaced it.
+  const miss = optionRowMiss(dialog, target);
+  if (miss) return { ok: false, error: describeMiss(miss, dialog, target) };
+
+  for (let i = 0; dialog.highlighted !== target.number; i++) {
+    if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
+    const dir = target.number > dialog.highlighted ? "Down" : "Up";
+    const sent = await injectArrow(session, dir);
+    if (!sent.ok) return sent;
+    const moved = await awaitCursorMove(session, dialog.highlighted);
+    // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
+    // way we no longer know what Enter would confirm, so we don't press it.
+    if (!moved) return { ok: false, error: "Claude ignored the arrow key - the menu may have closed" };
+    dialog = moved;
+  }
+
+  // Read once more rather than trusting the walk: this is the last look before the only
+  // irreversible keystroke in the function.
+  const final = await readPaneDialog(session);
+  if (!final || final.highlighted !== target.number || optionRowMiss(final, target)) {
+    return { ok: false, error: "the menu changed before the selection could be confirmed" };
+  }
+  return injectEnter(session);
+}
+
+/** Say which way the screen failed to be the menu we were told to answer. */
+function describeMiss(miss: OptionRowMiss, dialog: PaneDialog, target: OptionTarget): string {
+  switch (miss) {
+    case "no-such-row":
+      return `this menu has no option ${target.number}`;
+    case "label-differs": {
+      const row = dialog.options.find((o) => o.number === target.number);
+      return `option ${target.number} now reads "${row?.label}" - the screen changed`;
+    }
+    case "label-ambiguous":
+      return `"${target.label}" reads the same as another row on this menu`;
+  }
+}
+
+const NO_MENU = "no option menu is on this session's screen";
+
+/** Press Enter, with no text before it - the confirm half of a menu selection. */
+async function injectEnter(session: Session): Promise<ActionResult> {
+  if (session.tmux) {
+    return step("tmux", ["send-keys", "-t", session.tmux.paneId, "Enter"], "tmux Enter failed");
+  }
+  const bin = resolveWeztermBin();
+  const id = String(session.wezterm!.paneId);
+  return step(bin, ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"], "wezterm Enter failed");
+}
 
 /** Explain an unreachable target, naming the flag that would put it in the cycle. */
 function notInCycle(target: PermissionMode): string {

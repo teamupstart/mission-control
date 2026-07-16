@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { ForemanConfig, SetNote } from "@shared/protocol.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
+import { optionRowMiss } from "../discovery/pane-dialog.ts";
+import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import type { GateRef } from "./pending.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
@@ -33,6 +35,20 @@ const AnswerField = z.preprocess(
     .object({
       text: z.string().min(1),
       submit: z.boolean().optional().default(true),
+      /**
+       * The menu row to select, when the child is showing one. Required to answer a menu at
+       * all - `text` is prose, and prose is not an answer to a menu (see `pane-dialog.ts`);
+       * on this surface it is recorded as the rationale and never typed.
+       *
+       * Both halves are carried because they check each other: the number says where to
+       * navigate, and the label says what that position must still read when we get there.
+       */
+      option: z
+        .object({
+          number: z.number().int().min(1).max(99),
+          label: z.string().min(1),
+        })
+        .optional(),
     })
     .optional(),
 );
@@ -94,6 +110,15 @@ export interface ReviewContext {
    * recorded against the round it answered. Null for every other situation.
    */
   gate?: GateRef | null;
+  /**
+   * The option menu the child's pane was showing when the reviewer read it, if any.
+   *
+   * Present, it changes what an answer even IS on this surface: not text to type but a row
+   * to select. It is also what makes a prose-only answer detectable as unanswerable here,
+   * which is the whole of the fix - the old path could not tell a menu from a prompt, so it
+   * typed at both and the menu confirmed its default.
+   */
+  menu?: PaneDialog | null;
 }
 
 /** A resolved send instruction the worker will execute (or null: nothing to send). */
@@ -102,6 +127,12 @@ export interface SendPlan {
   text: string;
   reviewId?: string;
   submit: boolean;
+  /**
+   * Set only for a menu: the row to select instead of typing `text`. The worker delivers
+   * this with arrow keys and an Enter (`selectPaneOption`); `text` rides along as the
+   * rationale for the note and the gate byline, and is never typed.
+   */
+  option?: { number: number; label: string };
 }
 
 /** The concrete outcome of a verdict: the note to write + an optional reply. */
@@ -197,20 +228,46 @@ export function planFromVerdict(
     };
   }
 
+  // A menu on the pane is answered by selecting a row, so an answer that names no row (or
+  // names one the screen doesn't have) cannot be delivered here. Escalating rather than
+  // falling back to typing is the fix itself: the fallback is what silently confirmed the
+  // default and signed the human's name to it. The reviewer's reasoning is kept as the
+  // recommendation, so its judgment reaches the human even though it couldn't reach the child.
+  const menuMiss = chan.channel === "send" ? menuMismatch(ctx.menu, answer.option) : null;
+  if (menuMiss) {
+    return {
+      note: {
+        ...base,
+        disposition: "escalated",
+        brief: v.brief ?? null,
+        recommendation: answer.text,
+        lastAction: `escalated (${menuMiss})`,
+      },
+      send: null,
+    };
+  }
+
   if (mayActLive) {
+    // Only a menu send carries the option: `pickChannel` can route to an `input-review`
+    // (answered over the API, no pane involved) while a menu happens to be on the screen,
+    // and an option there would be a row nothing navigates.
+    const option = ctx.menu && chan.channel === "send" ? answer.option : undefined;
     return {
       note: {
         ...base,
         disposition: "answered",
         brief: null,
         recommendation: null,
-        lastAction: `answered: ${oneLine(answer.text)}`,
+        lastAction: option
+          ? `answered: option ${option.number}. ${oneLine(option.label, 60)}`
+          : `answered: ${oneLine(answer.text)}`,
       },
       send: {
         channel: chan.channel,
         text: answer.text,
         reviewId: chan.reviewId,
         submit: answer.submit ?? true,
+        ...(option ? { option } : {}),
       },
     };
   }
@@ -278,6 +335,12 @@ export class ReviewFailureTracker {
 export interface ForemanActions {
   putNote(sessionId: string, patch: SetNote): Promise<unknown>;
   sendText(sessionId: string, text: string, submit: boolean): Promise<unknown>;
+  /**
+   * Select a row of the menu the child is showing. Separate from `sendText` because it is
+   * a different act, not a different payload: no text is typed, and the daemon verifies the
+   * row against the live screen before confirming it (see `selectPaneOption`).
+   */
+  selectOption(sessionId: string, option: { number: number; label: string }): Promise<unknown>;
   resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown>;
   /**
    * Record what we just said to a no-mistakes gate, for the fix log's byline.
@@ -300,13 +363,19 @@ export interface ForemanActions {
  *
  * A send that answered a no-mistakes gate is also recorded against that gate, so
  * the fix log can put a byline on whatever reply it produces. Only a DELIVERED
- * send is logged: words the agent never saw caused nothing, and claiming
- * otherwise on the card would be a fabricated byline. Undelivered has TWO shapes
- * here, and they are easy to mistake for one:
+ * send is logged, and only the words actually delivered: words the agent never saw
+ * caused nothing, and claiming otherwise on the card would be a fabricated byline.
+ * Undelivered has TWO shapes here, and they are easy to mistake for one:
  *   - no send at all (dry-run / semi-auto / off-allowlist), which returns above;
  *   - `submit: false`, which types the text and never presses Enter, leaving it
  *     sitting unsubmitted in the pane (queue-machine.ts names the same state) with
  *     the gate still parked. The send SUCCEEDS, so nothing else here notices.
+ *
+ * A menu send is a third shape, and it inverts both halves. `text` is the rationale
+ * and is NEVER typed - the row's label is the whole of what the child received - so
+ * the byline has to quote the label. And `submit` is not a delivery question there:
+ * `selectOption` always presses the Enter, so gating the log on it would drop the
+ * byline for a reply that did land.
  */
 export async function applyVerdict(
   actions: ForemanActions,
@@ -320,6 +389,11 @@ export async function applyVerdict(
   try {
     if (plan.send.channel === "review" && plan.send.reviewId) {
       await actions.resolveReview(plan.send.reviewId, "answer", plan.send.text);
+    } else if (plan.send.option) {
+      // A menu: select the row. This THROWS when the daemon can't confirm the row is the
+      // one on screen, which lands in the catch below and leaves the session queued with a
+      // `skipped` note - the child untouched, still parked, for the next sweep or a human.
+      await actions.selectOption(ctx.sessionId, plan.send.option);
     } else {
       await actions.sendText(ctx.sessionId, plan.send.text, plan.send.submit);
     }
@@ -342,12 +416,64 @@ export async function applyVerdict(
   // byline - the card reads `replied` with no author, exactly as it did before this
   // existed. Letting it throw would instead skip the note below and leave a
   // delivered send unstamped, which the worker's idempotency check would re-send.
-  if (ctx.gate && plan.send.submit) {
+  const delivered = plan.send.option ? plan.send.option.label : plan.send.submit ? plan.send.text : null;
+  if (ctx.gate && delivered !== null) {
     await actions
-      .logGateReply(ctx.sessionId, ctx.gate, plan.send.text)
+      .logGateReply(ctx.sessionId, ctx.gate, delivered)
       .catch((err) => console.error("[foreman] could not record the gate reply:", err));
   }
   await actions.putNote(ctx.sessionId, plan.note);
+}
+
+/**
+ * Why an answer can't be delivered to the menu on screen, or null when it can.
+ *
+ * Deliberately says nothing when there is NO menu: an ordinary prompt is answered with
+ * prose, which is the majority path (a parked no-mistakes gate, a plain question), and an
+ * `option` volunteered against no menu is simply ignored rather than treated as an error.
+ *
+ * The label is re-checked against the row and not taken on trust because the number alone
+ * is a position on a screen the reviewer read seconds ago. A reviewer that miscounts rows -
+ * or reads the number off a menu that has since repainted - produces a well-formed verdict
+ * pointing at the wrong row, which is indistinguishable from a correct one downstream. The
+ * label is the only field that can catch that, and catching it here means it becomes an
+ * escalation rather than a wrong answer typed under the human's name.
+ */
+function menuMismatch(
+  menu: PaneDialog | null | undefined,
+  option: { number: number; label: string } | undefined,
+): string | null {
+  if (!menu) return null;
+  if (!option) return "a menu is open and the reviewer named no option to select";
+  const miss = optionRowMiss(menu, option);
+  if (!miss) return null;
+  const chose = `the reviewer's option ${option.number} ("${oneLine(option.label, 40)}")`;
+  switch (miss) {
+    case "no-such-row":
+      return `the reviewer chose option ${option.number}, which this menu doesn't have`;
+    case "label-differs":
+      return `${chose} isn't what that row says`;
+    case "label-ambiguous":
+      return `${chose} reads the same as another row, so it can't say which was meant`;
+  }
+}
+
+/**
+ * Whether the menu on screen would block this verdict's answer from reaching the child.
+ *
+ * The tier ladder's question, not the planner's: a verdict that names no row can't be
+ * DELIVERED to a menu, but the cheap tier's inability to name one says nothing about whether
+ * a human is needed - only that this reviewer can't answer this surface. The Tier 1 router's
+ * schema has no `option` field at all, so on a permission prompt (which is a menu) every one
+ * of its answers is blocked here. Routing up hands the same ask to the full reviewer, which
+ * can name a row; escalating instead would put a human in front of every routine approval on
+ * an `on` fleet, having already spent the cheap call to learn nothing.
+ */
+export function menuBlocksAnswer(v: Verdict, ctx: ReviewContext): boolean {
+  if (v.action !== "answer") return false;
+  const chan = pickChannel(ctx);
+  if (chan?.channel !== "send") return false;
+  return menuMismatch(ctx.menu, v.answer?.option) !== null;
 }
 
 /** Collapse whitespace and cap a string to one short line for the audit field. */

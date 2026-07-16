@@ -427,6 +427,7 @@ function actions(log: string[], over: Partial<ForemanActions> = {}): ForemanActi
   return {
     putNote: async () => (log.push("putNote"), {}),
     sendText: async () => (log.push("sendText"), {}),
+    selectOption: async () => (log.push("selectOption"), {}),
     resolveReview: async () => (log.push("resolveReview"), {}),
     logGateReply: async () => (log.push("logGateReply"), {}),
     ...over,

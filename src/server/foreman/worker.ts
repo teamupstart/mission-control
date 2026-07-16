@@ -7,8 +7,9 @@ import { reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
+import { parsePaneDialog } from "../discovery/pane-dialog.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { applyVerdict, foremanMayActLive, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
+import { applyVerdict, foremanMayActLive, menuBlocksAnswer, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
 import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
@@ -614,6 +615,13 @@ async function processSession(
   // for the first time is due at once, so genuinely new work is never delayed.
   if (!evaluations.claim(session.id)) return false;
 
+  // ONE read of the child's screen, shared by the reviewer's prompt and by the check on
+  // what it answers. Captured here rather than inside the review so those two cannot
+  // disagree: the model must be judged against the same rows it was shown, or a menu that
+  // repainted between two captures would have us validating an answer to a question the
+  // model never saw. It also has to precede `decide`, because the CHEAP tier can answer an
+  // access prompt too, and a menu it answered in prose must be caught by the same gate.
+  const pane = await paneFor(client, session, pending);
   const ctx: ReviewContext = {
     sessionId: session.id,
     promptMarker: pending.marker,
@@ -623,13 +631,15 @@ async function processSession(
     // would be answering the same question from the same object, and the one that
     // drifted would file replies against the wrong gate.
     gate: pending.gate ?? null,
+    // What "answering" means on this surface: a menu is selected, not typed at.
+    menu: parsePaneDialog(pane),
   };
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means
   // the outcome was already handled - a transient review failure that will retry, or a
   // give-up note that was already written - so there's nothing left to apply. That still
   // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
-  const decision = await decide(client, cfg, session, pending, ctx, queueItem);
+  const decision = await decide(client, cfg, session, pending, ctx, pane, queueItem);
   if (!decision) return true;
   const { verdict, tier } = decision;
 
@@ -700,15 +710,17 @@ async function decide(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
+  /** The child's screen, captured once by the caller - see `processSession`. */
+  pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
   switch (triagePosture(cfg.triage)) {
     case "off":
-      return fullReviewOnly(client, session, pending, ctx, queueItem);
+      return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
     case "shadow":
-      return shadowBoth(client, cfg, session, pending, ctx, queueItem);
+      return shadowBoth(client, cfg, session, pending, ctx, pane, queueItem);
     case "on":
-      return cheapTierDecides(client, cfg, session, pending, ctx, queueItem);
+      return cheapTierDecides(client, cfg, session, pending, ctx, pane, queueItem);
   }
 }
 
@@ -718,9 +730,11 @@ async function fullReviewOnly(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
+  /** The child's screen, captured once by the caller - see `processSession`. */
+  pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
-  const r = await fullReview(client, session, pending, ctx, queueItem);
+  const r = await fullReview(client, session, pending, ctx, pane, queueItem);
   return r && { verdict: r.verdict, tier: 2 };
 }
 
@@ -734,11 +748,13 @@ async function shadowBoth(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
+  /** The child's screen, captured once by the caller - see `processSession`. */
+  pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
   const [cheap, r] = await Promise.all([
-    triageSession(triageDeps(client), pending, session, cfg),
-    fullReview(client, session, pending, ctx, queueItem),
+    triageSession(triageDeps(client), pending, session, cfg, pane),
+    fullReview(client, session, pending, ctx, pane, queueItem),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
   log(
@@ -755,15 +771,24 @@ async function cheapTierDecides(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
+  /** The child's screen, captured once by the caller - see `processSession`. */
+  pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
-  const cheap = await triageSession(triageDeps(client), pending, session, cfg);
-  if (cheap.kind === "dispose") {
+  const cheap = await triageSession(triageDeps(client), pending, session, cfg, pane);
+  if (cheap.kind === "dispose" && !menuBlocksAnswer(cheap.verdict, ctx)) {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
     return { verdict: cheap.verdict, tier: cheap.tier };
   }
-  log(`${session.name}: routed up to full review (${cheap.reason})`);
-  return fullReviewOnly(client, session, pending, ctx, queueItem);
+  // A dispose this tier can't DELIVER is not a decision, it's a route-up. The router names no
+  // row (its schema has no field for one), so on a menu every answer it reaches lands here -
+  // and a menu is what a permission prompt is. Handing it to the full reviewer, which can name
+  // a row, keeps the ask automated; treating it as final would escalate every routine approval
+  // on an `on` fleet to a human. If the full review can't name a row either, `planFromVerdict`
+  // escalates it there - the fallback stays, it just stops being the first stop.
+  const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
+  log(`${session.name}: routed up to full review (${why})`);
+  return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
 }
 
 /**
@@ -777,15 +802,13 @@ async function fullReview(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
+  /** The child's screen, captured once by the caller - see `processSession`. */
+  pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<{ verdict: Verdict } | null> {
-  // Fetched concurrently: the pane capture is a subprocess on the daemon's side, and this
-  // runs per session per review, so it rides alongside the transcript read rather than
-  // adding its latency to the queue's serial path.
-  const [window, pane] = await Promise.all([
-    client.transcript(session.id).catch(() => ({ messages: [], truncated: false })),
-    paneFor(client, session, pending),
-  ]);
+  const window = await client
+    .transcript(session.id)
+    .catch(() => ({ messages: [], truncated: false }));
   const input: ReviewInput = {
     session: {
       name: session.name,
@@ -833,7 +856,6 @@ async function fullReview(
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
-    pane: (id) => client.pane(id),
     runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
   };
 }
@@ -846,6 +868,13 @@ function triageDeps(client: ForemanClient): TriageDeps {
  * it would spend a subprocess to learn nothing. A terminal session with no pane simply reads
  * back null (`capturePaneText` has no handle to use), so `terminal-no-pane` needs no case of
  * its own here.
+ *
+ * Called ONCE per session, by `processSession`, and the result is threaded down to whichever
+ * tier ends up reviewing. It used to be captured inside the review, concurrently with the
+ * transcript; that concurrency is gone on purpose, because the screen now decides how an
+ * answer is DELIVERED (a menu is selected, not typed at) and not merely what the model reads.
+ * Two captures would be two different screens, and the reviewer would be judged against rows
+ * it was never shown.
  */
 function paneFor(
   client: ForemanClient,

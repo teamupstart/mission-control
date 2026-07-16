@@ -29,7 +29,7 @@ export type DraftKind =
   | "queue"
   /** The expanded card's transcript reply box. */
   | "reply"
-  /** The collapsed card's ActionBar send box. */
+  /** The ActionBar send box, which opens on a collapsed OR an expanded card. */
   | "send";
 
 const drafts = new Map<string, string>();

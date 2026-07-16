@@ -7,9 +7,9 @@
 # asar is OFF on purpose: Claude Code launches the satellite scripts
 # (dist/satellites/hook.mjs, dist/mcp/server.mjs) with an EXTERNAL node that
 # can't read inside an asar archive, so they must be plain files on disk.
-appId: com.fleet-control.app
-productName: Agent Wrangler
-copyright: Agent Wrangler
+appId: com.mission-control.app
+productName: Mission Control
+copyright: Mission Control
 
 asar: false
 
@@ -51,4 +51,4 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
 
 dmg:
-  title: Agent Wrangler
+  title: Mission Control

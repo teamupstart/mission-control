@@ -639,7 +639,7 @@ body {
    Primary text, unlike the muted `.activity` ticker below it: the goal is why you are
    looking at the card, the ticker is trivia. Two lines maximum - the server already bounds
    the sentence, so this only bites on a long Tier 1 prompt, and a card that can grow
-   unboundedly tall pushes the rest of the fleet off screen. */
+   unboundedly tall pushes the rest of the grid off screen. */
 .goal {
   margin: 0;
   font-size: 13px;
@@ -1022,7 +1022,7 @@ body {
 .nm-scroll {
   max-height: 208px;
   overflow-y: auto;
-  /* Don't chain to the fleet grid when the list bottoms out - on a page that's
+  /* Don't chain to the session grid when the list bottoms out - on a page that's
      nothing but cards, scroll chaining reads as the page lurching. */
   overscroll-behavior: contain;
   border-top: 1px solid var(--border-soft);
@@ -2137,17 +2137,68 @@ kbd {
   height: calc(100dvh - var(--topbar-h, 88px) - var(--cmdbar-clearance, 64px) - 28px);
   min-height: 440px;
   scroll-margin-top: calc(var(--topbar-h, 88px) + 16px);
+  /* Last resort, and normally inert. The card's height is fixed, so on a window short
+     enough that `min-height` wins, the sections' own minimums can still add up to more
+     than there is - and the base `.card` clips (`overflow: hidden`), which deleted the
+     reply box off the bottom rather than letting anyone reach it. Scrolling is a poor
+     answer next to a card that fits; it is a much better one than a control that isn't
+     there. On any window tall enough for the minimums, nothing overflows and no
+     scrollbar ever appears. */
+  overflow-y: auto;
 }
 /* Let the conversation flex to fill the tall card; the log scrolls internally so
-   the reply box stays pinned at the bottom and tail-follow keeps working. */
+   the reply box stays pinned at the bottom and tail-follow keeps working.
+
+   The min-height is what keeps the reply box ON the card. A focus-mode card is a
+   fixed-height box with `overflow: hidden`, so every section competes for the same
+   pixels - and the work queue grows without limit as items are added. At 12 items it
+   took 695 of the card's 901px, squeezing this to 11px: the log collapsed to zero and
+   the reply box, overflowing a parent shorter than itself, fell outside the card's
+   clip and off screen. A session with a full queue was the one you couldn't read or
+   reply to.
+
+   Sized to the compose box plus a sliver of log, NOT to a comfortable conversation.
+   It's a last line of defence, and a floor big enough to be comfortable would be big
+   enough to overflow a SHORT card (min-height: 440px) that renders fine today - which
+   would cause this very bug on a window that doesn't have it. Room to read comes from
+   capping the queue below; this only guarantees you can always reply. */
 .card.expanded .transcript {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 96px;
 }
 .card.expanded .transcript-log {
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
+}
+/* The queue is a list, so it scrolls internally rather than growing the card it
+   lives in. Only `.wq-items` gives ground: everything else here (the add box, the
+   hints, the wrap-up) is a control or a sentence, and a flex child shrinks by
+   default - without this the shrink would be shared out and squash the add box's
+   textarea along with the list. */
+/* A share of the card, not a pixel count: the queue is a list, and a list gets a
+   bounded window and scrolls. A third leaves the conversation the larger half, which
+   is the right split for a surface you expanded in order to read. Under the cap a
+   short queue keeps its natural height, so nothing pads out to meet this. */
+.card.expanded .work-queue {
+  flex: 0 1 auto;
+  max-height: 33%;
+}
+/* Only `.wq-items` gives ground. Everything else here (the add box, the hints, the
+   wrap-up) is a control or a sentence, and a flex child shrinks by default - without
+   this the shrink would be shared out and squash the add box's textarea too. */
+.card.expanded .work-queue > :not(.wq-items) {
+  flex: none;
+}
+/* `min-height: 0` is what lets this absorb the cap. Left at the default (`auto` =
+   min-content = every item), the list refuses to shrink and its siblings spill out
+   through the panel's border and onto the transcript - the panel doesn't clip. Zeroed,
+   the list takes the squeeze and scrolls, which is what a bounded list should do. */
+.card.expanded .wq-items {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .transcript {
@@ -2206,6 +2257,10 @@ kbd {
   gap: 5px;
 }
 .tool-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
   font: 500 11px/1 var(--mono);
   color: var(--muted);
   background: color-mix(in oklab, var(--neutral) 12%, transparent);
@@ -2213,7 +2268,32 @@ kbd {
   border-radius: 6px;
   padding: 3px 6px;
 }
+/* The tool name recedes; what it acted on is the thing being read. */
+.tool-chip-name {
+  color: var(--dim);
+}
+.tool-chip-detail {
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+/* A folded run is one line of the conversation, so it sits tight against its label
+   instead of wearing a full turn's worth of vertical frame. */
+.turn-toolrun {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+}
+.turn-toolrun .turn-role {
+  flex: none;
+  padding-top: 1px;
+}
+.turn-toolrun .turn-tools {
+  min-width: 0;
+}
+/* Never shrinks. It's the one control that has to survive whatever else is on the
+   card - a squeezed reply box is a session you can't talk to. */
 .transcript-compose {
+  flex: none;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -2772,7 +2852,7 @@ kbd {
   color: var(--fg);
 }
 
-/* ---- fleet report (right slide-over) ---- */
+/* ---- roundup report (right slide-over) ---- */
 .modal-backdrop:has(.report-panel) {
   justify-content: flex-end;
   align-items: stretch;
@@ -4045,13 +4125,23 @@ kbd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Column so the attachment strip sits above the compose row, and relative so the
+   drop veil covers the whole box (strip included) - same shape as .transcript-compose,
+   which is the box this one is meant to behave like. */
 .wq-add {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wq-add-row {
   display: flex;
   align-items: flex-start;
   gap: 6px;
 }
 .wq-add .field-input {
   flex: 1;
+  min-width: 0;
   resize: vertical;
 }
 .wq-hint,

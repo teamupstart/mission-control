@@ -305,7 +305,7 @@ export interface SessionNote {
  * A goal-only write would have had to invent a disposition (defaulting to "pending", which
  * means "Foreman drafted a reply it hasn't sent" - untrue for every session that merely has
  * a goal) and would bump the timestamp `foremanStatus` reports as `lastActionAt`. On a live
- * fleet that reads as N phantom drafts in ForemanBar and a Foreman that claims to have just
+ * state that reads as N phantom drafts in ForemanBar and a Foreman that claims to have just
  * acted on every keystroke. Same key, same lifecycle, different record.
  */
 export interface SessionGoal {
@@ -891,9 +891,9 @@ export interface ReviewItem {
   resolvedAt: number | null;
 }
 
-// ---- fleet report (/bearings) ----
+// ---- roundup report (/bearings) ----
 
-/** One line in a fleet report - a live session (with its intent) or a task. */
+/** One line in a roundup report - a live session (with its intent) or a task. */
 export interface ReportItem {
   sessionId: string | null;
   name: string;
@@ -907,8 +907,8 @@ export interface ReportItem {
   outcomeUrl: string | null;
 }
 
-/** A point-in-time snapshot of the whole fleet, for the report panel + markdown digest. */
-export interface FleetReport {
+/** A point-in-time snapshot of every session, for the report panel + markdown digest. */
+export interface MissionReport {
   generatedAt: number;
   counts: {
     sessions: number;

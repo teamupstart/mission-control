@@ -1,4 +1,4 @@
-// Agent Wrangler - macOS desktop shell.
+// Mission Control - macOS desktop shell.
 //
 // Wraps the existing loopback daemon + React UI in a native app: it supervises
 // the daemon (adopting one that's already running), shows the dashboard in a
@@ -17,7 +17,7 @@ import { createTray, destroyTray } from "./tray.ts";
 import { installIntegrations, removeIntegrations } from "./integrations.ts";
 import { setQuitting } from "./lifecycle.ts";
 
-app.setName("Agent Wrangler");
+app.setName("Mission Control");
 
 // One app instance only; a second launch just reveals the running window (see the
 // "second-instance" handler). Quitting before `ready` fires means whenReady()
@@ -48,19 +48,19 @@ function openSettings(): void {
   showWindow(paths.preload);
   const wc = getMainWindow()?.webContents;
   if (!wc) return;
-  if (wc.isLoading()) wc.once("did-finish-load", () => wc.send("fleet:open-settings"));
-  else wc.send("fleet:open-settings");
+  if (wc.isLoading()) wc.once("did-finish-load", () => wc.send("mission:open-settings"));
+  else wc.send("mission:open-settings");
 }
 
 function registerIpc(): void {
-  ipcMain.handle("fleet:version", () => app.getVersion());
-  ipcMain.handle("fleet:open-external", (_e, url: string) => shell.openExternal(url));
-  ipcMain.handle("fleet:install-integrations", () => {
+  ipcMain.handle("mission:version", () => app.getVersion());
+  ipcMain.handle("mission:open-external", (_e, url: string) => shell.openExternal(url));
+  ipcMain.handle("mission:install-integrations", () => {
     const r = installIntegrations();
     showIntegrationResult(r.ok ? "Integrations installed" : "Install failed", r.message);
     return r;
   });
-  ipcMain.handle("fleet:remove-integrations", () => {
+  ipcMain.handle("mission:remove-integrations", () => {
     const r = removeIntegrations();
     showIntegrationResult("Integrations", r.message);
     return r;
@@ -89,7 +89,7 @@ app.whenReady().then(async () => {
 
   // Auto-grant the Notification permission for the daemon/Vite origin so the
   // dashboard's "Enable desktop alerts" resolves to `granted` (OS-level delivery
-  // is still governed by System Settings → Notifications → Agent Wrangler).
+  // is still governed by System Settings → Notifications → Mission Control).
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
     cb(permission === "notifications");
   });
@@ -97,14 +97,14 @@ app.whenReady().then(async () => {
   daemon = await startDaemon({
     serverEntry: paths.serverEntry,
     webDir: paths.webDir,
-    // Log alongside the daemon's own state (honors FLEET_HOME), matching where
+    // Log alongside the daemon's own state (honors MISSION_HOME), matching where
     // it keeps its db + token.
     logPath: join(stateDir(), "daemon.log"),
   });
 
   // Give the daemon a moment to bind before the window loads its origin (the
   // window also retries, so this is just to avoid a visible "connecting" flash).
-  if (!process.env.FLEET_DEV_SERVER_URL) await waitForHealthy(15000);
+  if (!process.env.MISSION_DEV_SERVER_URL) await waitForHealthy(15000);
 
   createWindow(paths.preload);
   installAppMenu({ onOpenSettings: openSettings });

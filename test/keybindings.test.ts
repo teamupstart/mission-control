@@ -36,7 +36,7 @@ function defaults(): Record<ActionId, string> {
 
 /** The overrides the store persists per machine (defaults are never written). */
 function stored(): Partial<Record<ActionId, string>> {
-  return JSON.parse(store.get("fleet-control.keybindings") ?? "{}");
+  return JSON.parse(store.get("mission-control.keybindings") ?? "{}");
 }
 
 // chordFromEvent only reads key + the modifier flags, so a literal is a complete

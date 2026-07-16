@@ -16,7 +16,7 @@ import type { GateRef } from "./pending.ts";
  *
  * The prompt hands the model the whole object shape, so a reviewer with nothing to send fills
  * the field in regardless: `"answer": {"text": ""}` next to `"action": "skip"` is what a real
- * reviewer actually returns, measured against the live fleet. A bare `text: z.string().min(1)`
+ * reviewer actually returns, measured against the live sessions. A bare `text: z.string().min(1)`
  * failed the WHOLE object on it, `runStructured` retried, and after three strikes the worker
  * gave up and wrote `skipped (reviewer failed 3x)` - discarding a well-formed judgment, purpose
  * and recommendation and all, over an empty field that the action it names never reads. The

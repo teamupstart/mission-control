@@ -9,9 +9,9 @@ import { fileURLToPath, URL } from "node:url";
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
 // This is what proves the DRY refactor's single-source-of-truth runtime module:
 // the token the daemon checks (config.ts -> shared/harness-runtime.mjs) must be
-// the same one a client reads from the same FLEET_HOME. If those two drifted,
+// the same one a client reads from the same MISSION_HOME. If those two drifted,
 // every write below would 401.
-process.env.FLEET_HOME = mkdtempSync(join(tmpdir(), "fleet-http-"));
+process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-http-"));
 
 const { openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -86,7 +86,7 @@ test("/api/health surfaces the shared runtime identity + package version", async
   assert.equal(res.status, 200);
   const body = (await res.json()) as { ok: boolean; service: string; version: string };
   assert.equal(body.ok, true);
-  assert.equal(body.service, "fleet-control");
+  assert.equal(body.service, "mission-control");
   assert.equal(body.version, pkgVersion);
 });
 
@@ -566,8 +566,8 @@ test("a queue is not orphaned while its session is still inside the exit linger"
   // back. Reading the state as "gone" ignores the very guard the linger provides.
   //
   // The cost of getting this wrong is unrecoverable: one hiccuping `ps` sweep marks
-  // the whole fleet exited, and the worker's orphan sweep - which runs several times
-  // a second - escalates every in-flight item in the fleet. The next poll un-marks
+  // every session exited, and the worker's orphan sweep - which runs several times
+  // a second - escalates every in-flight item across the sessions. The next poll un-marks
   // the sessions, but escalation is terminal and has no undo.
   //
   // This drives /api/queues?orphaned=1, which IS what the worker's sweep calls.
@@ -977,7 +977,7 @@ test("adding to a NON-claude session is refused, with a reason that isn't a lie"
 
 test("an item-scoped route refuses a session that doesn't own the item", async () => {
   // `:id` was decoration: every item route addressed the item globally, so an
-  // unknown session - or a DIFFERENT one - could drive any item in the fleet. Item
+  // unknown session - or a DIFFERENT one - could drive any item across the sessions. Item
   // ids survive a re-attach, so a tab holding a pre-re-attach list (SSE dropped, or
   // backgrounded, so no refresh fired) would click Remove under session A and delete
   // the item out of session B's live queue.
@@ -1136,7 +1136,7 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
   // package (the ordinary case) used to look for the root AGENTS.md one level down,
   // find nothing, and hand the verifier an empty bundle with `truncated: false`.
   // Nothing said so: it judged against the repo's main contract without it.
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "fleet-standards-")));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-standards-")));
   const git = (...a: string[]) => execFileSync("git", ["-C", repo, ...a], { stdio: "pipe" });
   git("init", "-q");
   mkdirSync(join(repo, "packages", "app", "src"), { recursive: true });
@@ -1183,7 +1183,7 @@ test("the standards request carries its paths in a BODY, so a big refactor still
   // bundle, and `truncated: false` means the prompt doesn't even print its "some
   // standards docs were omitted" line - so the verifier judges the item against the
   // repo's contract having read NONE of it, and nothing says so.
-  const repo = realpathSync(mkdtempSync(join(tmpdir(), "fleet-standards-big-")));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-standards-big-")));
   execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "pipe" });
   writeFileSync(join(repo, "AGENTS.md"), "# the repo's contract");
 

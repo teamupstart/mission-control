@@ -49,10 +49,10 @@ test("an escalate with an empty answer keeps its recommendation", () => {
     action: "escalate",
     classification: "design-fork",
     brief: "## Which holder policy?",
-    recommendation: "Option 1 - reap only fleet-control leases.",
+    recommendation: "Option 1 - reap only mission-control leases.",
   });
   assert.ok(r.success);
-  if (r.success) assert.equal(r.data.recommendation, "Option 1 - reap only fleet-control leases.");
+  if (r.success) assert.equal(r.data.recommendation, "Option 1 - reap only mission-control leases.");
 });
 
 test("an ANSWER action with no text to send is still rejected", () => {

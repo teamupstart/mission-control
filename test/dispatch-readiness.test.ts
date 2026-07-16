@@ -18,8 +18,8 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // These pin the two signals that replace the guesswork: the first hook (proof the
 // agent can read) and the `working` transition (proof it actually did).
 
-const home = mkdtempSync(join(tmpdir(), "fleet-dispatch-readiness-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-dispatch-readiness-"));
+process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

@@ -1,4 +1,4 @@
-// The alert engine: turn fleet state transitions into notifications. Pure and
+// The alert engine: turn session state transitions into notifications. Pure and
 // unit-tested - the hook (useNotifier) just delivers what this produces. Reuses
 // the shared bucketing so "who needs you" matches the report exactly.
 
@@ -33,7 +33,7 @@ export interface AlertSettings {
   digestMinutes: number;
 }
 
-export interface Fleet {
+export interface AlertScope {
   sessions: Session[];
   tasks: Task[];
 }
@@ -49,7 +49,7 @@ function sessionLabel(s: Session): string {
  * awaiting input still alerts, and the alert kind can't drift from wording changes.
  * In AFK mode it also reports sessions going idle and tasks finishing.
  */
-export function detectAlerts(prev: Fleet, next: Fleet, settings: AlertSettings): Alert[] {
+export function detectAlerts(prev: AlertScope, next: AlertScope, settings: AlertSettings): Alert[] {
   const alerts: Alert[] = [];
   const prevSessions = new Map(prev.sessions.map((s) => [s.id, s]));
 
@@ -191,24 +191,24 @@ export function batchSeverity(alerts: Alert[]): AlertSeverity {
   return alerts.some((a) => a.severity === "attention") ? "attention" : "info";
 }
 
-/** Whether the fleet has anything worth reporting, so a quiet digest can be skipped. */
-export function hasReportable(fleet: Fleet): boolean {
-  for (const s of fleet.sessions) if (reportBucket(s) !== "exited") return true;
-  return fleet.tasks.some((t) => t.status === "backlog");
+/** Whether anything is worth reporting, so a quiet digest can be skipped. */
+export function hasReportable(scope: AlertScope): boolean {
+  for (const s of scope.sessions) if (reportBucket(s) !== "exited") return true;
+  return scope.tasks.some((t) => t.status === "backlog");
 }
 
-/** Compact fleet digest, e.g. "2 need you · 3 working · 1 idle · 1 in backlog". */
-export function digestLine(fleet: Fleet): string {
+/** Compact scope digest, e.g. "2 need you · 3 working · 1 idle · 1 in backlog". */
+export function digestLine(scope: AlertScope): string {
   let needsYou = 0;
   let working = 0;
   let idle = 0;
-  for (const s of fleet.sessions) {
+  for (const s of scope.sessions) {
     const b = reportBucket(s);
     if (b === "needs-you") needsYou++;
     else if (b === "working") working++;
     else if (b === "idle") idle++;
   }
-  const backlog = fleet.tasks.filter((t) => t.status === "backlog").length;
+  const backlog = scope.tasks.filter((t) => t.status === "backlog").length;
   const parts = [`${needsYou} need you`, `${working} working`, `${idle} idle`];
   if (backlog > 0) parts.push(`${backlog} in backlog`);
   return parts.join(" · ");

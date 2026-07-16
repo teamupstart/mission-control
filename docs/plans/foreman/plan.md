@@ -1,18 +1,18 @@
 # Plan: Foreman — an auto-responder that triages the "needs you" queue
 
 Status: proposed
-Owner: ai-harness (Agent Wrangler)
+Owner: ai-harness (Mission Control)
 Related: realizes the "auto-supervisor / secondmate" that both `docs/plans/auto-pilot/plan.md`
 and `docs/plans/dispatch/plan.md` explicitly deferred ("Auto-approving reviews / gates by
 policy — deliberately deferred to keep a human in the loop").
 
-> Naming: I'm calling it **Foreman** (fits the ranch theme: Agent Wrangler → the Foreman
+> Naming: I'm calling it **Foreman** (fits the ranch theme: Mission Control → the Foreman
 > makes routine calls for the boss and escalates the big ones). Easy to rename; the external
 > inspiration calls this a "First Mate."
 
 ## Context
 
-Agent Wrangler already tells you *who needs you* (the `needs-you` bucket) and lets you answer
+Mission Control already tells you *who needs you* (the `needs-you` bucket) and lets you answer
 by hand from the dashboard. But when several sessions block at once, most of what they're
 asking is routine: "should I do A, B, C, or D?" (implementation trade-offs) or "can I run
 this / touch this?" (access/approval). You end up hand-triaging a queue of questions you'd
@@ -225,7 +225,7 @@ re-answering the same terminal prompt.
 - Foreman **never** *sends* for a session off the allowlist, and never re-acts on a prompt already
   covered by `handled_marker`. Its own worker is a plain Node process (not a discovered `claude`
   session), so it never appears in the queue. Dispatched agents are **intentionally in scope** -
-  draining the fleet's needs-you queue is the whole point - with their live sends still gated by
+  draining the queue's needs-you queue is the whole point - with their live sends still gated by
   the same repo allowlist.
 - Destructive/risky access ⇒ escalate; duplicative implementation ⇒ ask for one abstraction.
 - **Never confirm a row we did not verify.** A menu answer names a row, and that row is re-read off

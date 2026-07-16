@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Idempotently wire the Fleet Control hook into Claude Code's settings.json.
+// Idempotently wire the Mission Control hook into Claude Code's settings.json.
 //
 // Adds one command hook per event that runs harness-hook.mjs. Re-running updates
 // the path in place (matched by the "harness-hook.mjs" marker) without touching
@@ -232,8 +232,8 @@ const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "mcp
 if (text === original) {
   console.log(
     uninstall
-      ? `No Fleet Control hooks found in ${settingsPath} - nothing to remove.`
-      : `Fleet Control hooks already up to date in ${settingsPath} (left unchanged).`,
+      ? `No Mission Control hooks found in ${settingsPath} - nothing to remove.`
+      : `Mission Control hooks already up to date in ${settingsPath} (left unchanged).`,
   );
   reportSkills();
   process.exit(0);
@@ -243,13 +243,20 @@ mkdirSync(dirname(settingsPath), { recursive: true });
 writeFileSync(settingsPath, text);
 
 if (uninstall) {
-  console.log(`Removed Fleet Control hooks from ${settingsPath} (your other settings were left intact)`);
+  console.log(`Removed Mission Control hooks from ${settingsPath} (your other settings were left intact)`);
   if (statuslineAction === "restored") console.log(`  restored your original status line command.`);
-  else if (statuslineAction === "removed") console.log(`  removed the Fleet Control status line wrapper.`);
+  else if (statuslineAction === "removed") console.log(`  removed the Mission Control status line wrapper.`);
   reportSkills();
-  console.log(`\nTo remove the review-channel MCP server:\n  claude mcp remove -s user fleet-control`);
+  // Names it was registered under before the renames, too: the MCP server is added by
+  // hand with `claude mcp add <name>`, so an install from an older version is still
+  // registered under whatever name it was added with, and a hint that only names the
+  // current one leaves that registration behind pointing at a script we just removed.
+  console.log(
+    `\nTo remove the review-channel MCP server:\n  claude mcp remove -s user mission-control` +
+      `\n  (installed before the rename? try: fleet-control, ai-harness)`,
+  );
 } else {
-  console.log(`Wired Fleet Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);
+  console.log(`Wired Mission Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);
   console.log(`  events: ${EVENTS.join(", ")}`);
   console.log(`  script: ${scriptPath}`);
   if (statuslineAction === "wrapped" || statuslineAction === "updated") {
@@ -259,11 +266,11 @@ if (uninstall) {
     console.log(`\nOptional: also surface model / thinking level / context % on the cards:`);
     console.log(`  npm run install-statusline   (wraps your status line; reversible via --uninstall)`);
   }
-  console.log(`\nStart a new Claude Code session; it will report live status to Fleet Control.`);
+  console.log(`\nStart a new Claude Code session; it will report live status to Mission Control.`);
 
   console.log(`\nTo enable the review channel (agents push diffs/plans for you to review),`);
   console.log(`register the MCP server once (needs \`npm run build\` first):\n`);
-  console.log(`  claude mcp add -s user fleet-control -- "${process.execPath}" "${mcpPath}"\n`);
+  console.log(`  claude mcp add -s user mission-control -- "${process.execPath}" "${mcpPath}"\n`);
   if (!existsSync(mcpPath)) {
     console.log(`  (not built yet - run \`npm run build\`, or \`npm run setup\` to do both)`);
   }

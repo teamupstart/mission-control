@@ -4,7 +4,7 @@ Status: SHIPPED. Kept for the reasoning, not as work - the design below is the t
 produced it, and three parts of it turned out to be wrong on contact with the code (see
 "What actually shipped"). The durable summary lives in `docs/plans/no-mistakes-log/plan.md`;
 this file can be deleted whenever its history stops being useful.
-Owner: ai-harness (Agent Wrangler)
+Owner: ai-harness (Mission Control)
 Related: `docs/plans/no-mistakes-log/plan.md` (the fix log, which this completes - it defers
 this as "phase 3"), PR #48 `mancej/foreman-sees-nomistakes-gates` (the integration this was
 blocked on; now merged).
@@ -64,7 +64,7 @@ complete: the reply text is shown, but the card can only say **that** someone re
 foreman said this*, *the pipeline decided alone* - and by surfacing the foreman's own words
 next to the reply they caused.
 
-That matters because the foreman is an autonomous actor in this fleet. It answers blocked
+That matters because the foreman is an autonomous actor in this dashboard. It answers blocked
 sessions on your behalf, and once it can answer no-mistakes gates (PR #48), it can cause code
 to change on your branch without you in the loop. The fix log is where you'd find that out. A
 lane that says `replied` for both *"you decided this"* and *"a bot decided this while you were

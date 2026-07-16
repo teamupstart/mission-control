@@ -39,7 +39,7 @@ further input.
 ### Purpose already does a third of this job, at the wrong moment, invisibly
 
 `session_notes.purpose` is real, populated, and current. Measured against the live daemon
-(`127.0.0.1:7317`) and `~/.fleet-control/harness.db` while writing this: **19 stored notes,
+(`127.0.0.1:7317`) and `~/.mission-control/harness.db` while writing this: **19 stored notes,
 all with a purpose; 4 of 7 live cards carrying one.** Foreman was `enabled: true`,
 `mode: "live"`, `triage: "off"`.
 
@@ -78,7 +78,7 @@ in `evt.prompt` (`HookIngestSchema`, `protocol.ts:17`; route `routes.ts:259`;
 |---|---|---|
 | Live cards carrying a Purpose | 4 of 7 | `GET 127.0.0.1:7317/api/sessions` |
 | Of those, visible without expanding | 0 | `SessionCard.tsx:346` gate + `:191` chip conditions |
-| Stored notes, all with a purpose | 19 | `session_notes` in `~/.fleet-control/harness.db` |
+| Stored notes, all with a purpose | 19 | `session_notes` in `~/.mission-control/harness.db` |
 | Transcripts opening with clean human prose | 26 of 250 | classified first user-role message, 14-day window |
 | Transcripts opening with `<local-command-caveat>` | 66 of 250 | of those, **44 contain no human prose at all** |
 | Transcripts that are Foreman's own headless calls | 153 of 250 | not discovered as sessions (no tty), but they dominate the dir |
@@ -97,7 +97,7 @@ in `evt.prompt` (`HookIngestSchema`, `protocol.ts:17`; route `routes.ts:259`;
 
 **Cost model.** Our prompt is negligible. Cost is Claude Code's ~6.8k-token system prompt:
 written to cache at 2x on a cold call ($0.0151), read at 0.1x when warm ($0.0023), with a
-**1h cache TTL**. So cadence governs spend, and a fleet that refreshes at least hourly stays
+**1h cache TTL**. So cadence governs spend, and a set of sessions that refreshes at least hourly stays
 warm and cheap.
 
 **Probe command** (reproduce with):
@@ -319,7 +319,7 @@ blank. Rejected cwd-keying: it would wrongly fuse two different sessions sharing
 ### Phase 0 - fix the README overclaim - **DONE** (`ac32f71`)
 
 `README:39` claimed Foreman "writes a one-line Purpose on **every card**". On a live 7-session
-fleet that was 4 of 7, none visible without expanding. Now reads "every session it inspects",
+sessions that was 4 of 7, none visible without expanding. Now reads "every session it inspects",
 agreeing with `README:330`, which was always correct.
 
 ### Phase 1 - lift the `claude -p` runner out of `foreman/` - **DONE** (`bc0b21d`)
@@ -336,7 +336,7 @@ What that module's comments protect (**do not "simplify" any of these away**):
 - `--tools ""` - the prompt embeds untrusted transcript text; a compromised transcript must
   not be able to steer the model into invoking tools.
 - `detached: true` - the child becomes its own process-group leader with no controlling tty,
-  so the fleet poller never discovers the headless run as a **phantom session**.
+  so the session poller never discovers the headless run as a **phantom session**.
 - `setEncoding("utf8")` on the streams - `claude -p` streams, so multi-byte chars land across
   chunk boundaries; per-chunk coercion silently corrupts the JSON parse.
 - `child.stdin.on("error", () => {})` - an unhandled stdin EPIPE **throws** and takes the
@@ -350,8 +350,8 @@ Changes made in the move:
   it exports `createLimiter(n)` for each caller to build its own. The `while` (not `if`) in
   the limiter is deliberate: a released waiter re-checks the count, so two waiters resumed in
   the same tick cannot both claim one slot.
-- **Env compat kept:** reads `FLEET_CLAUDE_BIN || FOREMAN_CLAUDE_BIN || "claude"` and
-  `FLEET_CLAUDE_TIMEOUT_MS || FOREMAN_REVIEW_TIMEOUT_MS || 120_000`. The `FOREMAN_*` names
+- **Env compat kept:** reads `MISSION_CLAUDE_BIN || FOREMAN_CLAUDE_BIN || "claude"` and
+  `MISSION_CLAUDE_TIMEOUT_MS || FOREMAN_REVIEW_TIMEOUT_MS || 120_000`. The `FOREMAN_*` names
   predate the move and may be set in an existing environment; dropping them would break those
   silently. `test/foreman-review.test.ts` pins `FOREMAN_CLAUDE_BIN` at module load.
 - `killLiveReviewers` → `killLiveClaudeRuns` (the daemon's refresher is not a reviewer).
@@ -382,7 +382,7 @@ for the mechanism and the measured damage (3 of 12 live bindings poisoned).
 Two independent layers, because neither can be assumed:
 
 - **`headlessEnv()` in `claude-cli.ts`** drops `TMUX_PANE`/`WEZTERM_PANE` (the only keys
-  `overlayKeyFromEnv` matches) and sets `FLEET_HEADLESS=1`. This is what protects a hook
+  `overlayKeyFromEnv` matches) and sets `MISSION_HEADLESS=1`. This is what protects a hook
   script installed globally from a checkout that lags this code - the installed hook points
   at `~/workspace/ai-harness/hooks/`, not at this worktree.
 - **Both forwarders decline to report a run carrying the marker**, so there is no POST at
@@ -434,7 +434,7 @@ restart, orphans on `/clear` per Q2), and `session_goals` is keyed identically o
 `disposition` and one `updated_at`, both meaning *"what Foreman decided, and when"*. A
 goal-only write would have to invent a disposition - defaulting to `"pending"`, i.e.
 *"Foreman drafted a reply it hasn't sent"* - and bump the stamp `foremanStatus` reports as
-`lastActionAt`. On a live fleet that is **N phantom drafts in ForemanBar** and a Foreman
+`lastActionAt`. On a live sessions that is **N phantom drafts in ForemanBar** and a Foreman
 claiming to have acted on every keystroke. `QueueManager` (`queue.ts:14-18`) already declined
 to build on `SessionNote` for this exact reason and says so; this follows that precedent.
 Bonus: a new table needs **no migration**, so no pre-existing row has to be reasoned about.
@@ -471,7 +471,7 @@ the real route. The filter was also run over the whole real corpus: **397 events
 waiting on one.
 
 - **`goalLine`** (`shared/goal.ts`) bounds a goal at **180 chars**, cutting on a word
-  boundary. Prompts run to a 5,515-char p90; unbounded, one card would push the fleet off
+  boundary. Prompts run to a 5,515-char p90; unbounded, one card would push the rest off
   screen. Shared with Tier 2 (`GoalSchema` clamps through the same function), so both tiers
   are bounded identically no matter which wrote last.
 - **Rendered outside the `expanded` gate** (Q4=A), as a full-width line under the header -
@@ -593,9 +593,9 @@ write to, because a real session's cwd is a repo. `HEADLESS_CWD` is exported fro
 
 - **Codex extraction is unverified.** Needs one real rollout file to inspect. Until then the
   seam exists (`GOAL_UNSUPPORTED` + `goal/source.ts`) and the reader does not.
-- **Cold-cost exposure.** At $0.0151 a cold call, a fleet that goes quiet for >1h pays cold
+- **Cold-cost exposure.** At $0.0151 a cold call, a set of sessions that goes quiet for >1h pays cold
   on the next prompt per session. Not addressed; watch it before optimising.
-- **Nothing has run against a live fleet yet.** Every phase is verified by tests, a real
+- **Nothing has run against a live sessions yet.** Every phase is verified by tests, a real
   `claude -p`, and a static render of real cards - but the daemon has not been restarted onto
   this branch, so no goal has appeared on the operator's actual dashboard.
 - **Old stored purposes still say "what this session is for".** Written before Phase 5, so
@@ -616,7 +616,7 @@ write to, because a real session's cwd is a repo. `HEADLESS_CWD` is exported fro
 ## 8. Provenance
 
 Verified against: the live daemon at `127.0.0.1:7317` (7 sessions, all Claude);
-`~/.fleet-control/harness.db` (19 notes; Foreman `enabled: true`, `mode: "live"`,
+`~/.mission-control/harness.db` (19 notes; Foreman `enabled: true`, `mode: "live"`,
 `triage: "off"`); two real `claude -p --model claude-haiku-4-5` probes (exit 0; $0.0151 cold,
 $0.0023 warm); 250 transcripts under `~/.claude/projects` modified within 14 days. Line
 numbers verified at `bc0b21d`.

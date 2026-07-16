@@ -1,7 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
-import { LEASE_HOLDER } from "../shared/harness-runtime.mjs";
+import { LEASE_HOLDER, LEASE_HOLDERS } from "../shared/harness-runtime.mjs";
 import { remoteDefaultRef } from "./actions.ts";
 import { envVar } from "./config.ts";
 import type { Registry } from "./registry.ts";
@@ -32,7 +32,7 @@ import { unref } from "./util/timers.ts";
  * because a lease means something. treehouse's contract is that one survives "even
  * with no process running inside it, until you release it", so an idle lease is a
  * deliberate reservation, not litter, and someone may be relying on finding their
- * tree tomorrow. Reaping a `fleet-control` lease is defensible only because this
+ * tree tomorrow. Reaping a `mission-control` lease is defensible only because this
  * harness is what took it and can tell when its holder is gone; it can say nothing
  * about anyone else's - which is what makes the rung load-bearing now that the
  * sweep reaches every pool under the workspace, not just the ones we dispatch into.
@@ -53,7 +53,7 @@ import { unref } from "./util/timers.ts";
  * dispatcher's `--lease-holder` keep reading it from one place; see the constant
  * itself for why drift here is silent in both directions.
  */
-export { LEASE_HOLDER };
+export { LEASE_HOLDER, LEASE_HOLDERS };
 
 /** A worktree in the pool, as `treehouse status` reports it. */
 export interface PoolTree {
@@ -113,7 +113,7 @@ const DEFAULT_REAP_MS = 300_000;
 /**
  * The floor under a configured sweep interval. A sweep shells out to `treehouse
  * status` per pool and can reach the network, so a fat-fingered
- * `FLEET_POOL_REAP_MS=5` would hammer treehouse and origin forever. Nobody wants
+ * `MISSION_POOL_REAP_MS=5` would hammer treehouse and origin forever. Nobody wants
  * a five-millisecond leak collector; clamp rather than obey.
  */
 const MIN_REAP_MS = 30_000;
@@ -122,7 +122,7 @@ const MIN_REAP_MS = 30_000;
  * The ceiling, which guards the SAME hot loop as the floor, reached from the far
  * end: `setTimeout`'s delay is a 32-bit signed int, so anything past 2^31-1 ms
  * (~24.8 days) silently becomes a 1ms tick rather than a long wait. Someone
- * disabling the sweep with `FLEET_POOL_REAP_MS=99999999999` would get the
+ * disabling the sweep with `MISSION_POOL_REAP_MS=99999999999` would get the
  * busiest reaper possible.
  *
  * This exists ONLY to stay clear of that overflow, not to have an opinion about
@@ -135,7 +135,7 @@ const MAX_REAP_MS = 604_800_000;
 /**
  * The sweep interval, or null when the sweep is switched OFF.
  *
- * `FLEET_POOL_REAP_MS=0` is how anyone would try to disable a periodic job, and
+ * `MISSION_POOL_REAP_MS=0` is how anyone would try to disable a periodic job, and
  * it has to actually disable it: handed to `setTimeout`, 0 is a ~1ms tick, which
  * turns the off switch into a hot loop of `treehouse status`, `git fetch`, and
  * forced returns - the opposite of what was asked for. Same for any negative
@@ -256,7 +256,7 @@ export async function poolRepos(registry: Registry): Promise<string[]> {
  * leaked lease is a resource leak, not an emergency. Reaping is idempotent, so a
  * missed tick costs nothing.
  *
- * `FLEET_POOL_REAP_MS=0` switches the sweep off entirely - nothing is scheduled.
+ * `MISSION_POOL_REAP_MS=0` switches the sweep off entirely - nothing is scheduled.
  * The dispatch-time reap stays on either way: that one is on-demand, and its
  * alternative is abandoning the pool for a throwaway worktree.
  */
@@ -274,7 +274,7 @@ export function startPoolReaper(registry: Registry): () => void {
         const { reaped } = await reapPool(repoRoot, () => poolPins(registry));
         if (reaped.length > 0) {
           console.log(
-            `[fleet-control] returned ${reaped.length} leaked lease(s) to the pool in ` +
+            `[mission-control] returned ${reaped.length} leaked lease(s) to the pool in ` +
               `${repoRoot}: ${reaped.map((t) => t.name).join(", ")}`,
           );
         }
@@ -296,8 +296,8 @@ export function startPoolReaper(registry: Registry): () => void {
  * Parse `treehouse status`. Its output is one line per tree, optionally followed
  * by INDENTED lines listing the processes running under the tree above them:
  *
- *   1     leased       ~/.treehouse/repo-abc/1/repo  (held by fleet-control)
- *   8     leased       ~/.treehouse/repo-abc/8/repo  (held by fleet-control)
+ *   1     leased       ~/.treehouse/repo-abc/1/repo  (held by mission-control)
+ *   8     leased       ~/.treehouse/repo-abc/8/repo  (held by mission-control)
  *                      claude (74975), node (75244)
  *   13    dirty        ~/.treehouse/repo-abc/13/repo
  *   15    in-use       ~/.treehouse/repo-abc/15/repo
@@ -485,14 +485,18 @@ function cheapVerdict(tree: PoolTree, pins: CanonicalPins): string | null {
   // fully covered. An unrecorded holder is not proof of ownership, so it skips like
   // every other uncertainty here.
   //
-  // The reason names the holder and stops there, rather than calling it someone
-  // else's: this repo renamed itself, and leases taken by `make session` before
-  // that still read `ai-harness`, so "not this harness" would be a lie about the
-  // one label that once WAS us. Those predate the rename and are left for a manual
-  // `treehouse return` - a one-time migration, deliberately not encoded here.
-  if (tree.holder !== LEASE_HOLDER) {
+  // Matched against EVERY name this app has stamped, not just the current one. A lease
+  // records its holder forever and is never restamped, so a gate that knew only the
+  // current name would refuse every lease taken before a rename - silently, permanently,
+  // and precisely for the leases the sweep exists to collect. That is not theoretical:
+  // this comment used to explain that leases reading `ai-harness` predated a rename and
+  // were "left for a manual `treehouse return`", and one such worktree is still sitting
+  // in the pool uncollected. The `mission-control` rename would have stranded six more.
+  // These names were all us, so answering the gate's real question - did WE take it? -
+  // means asking about all of them. A stranger's lease is still refused.
+  if (!LEASE_HOLDERS.includes(tree.holder ?? "")) {
     return tree.holder
-      ? `it is leased to ${tree.holder}; we only return ${LEASE_HOLDER} leases`
+      ? `it is leased to ${tree.holder}; we only return our own leases (${LEASE_HOLDERS.join(", ")})`
       : "its lease records no holder";
   }
   if (tree.busy) return "processes are still running in it";
@@ -607,7 +611,7 @@ export async function reapPool(
     // judged. Same path, same holder is ALL the identity `treehouse status`
     // affords - it prints no lease id and no timestamp - so be clear about what
     // this cannot do: a return plus a re-lease inside the window reads identical
-    // to an untouched lease, since both lease paths hold as `fleet-control`
+    // to an untouched lease, since both lease paths hold as `mission-control`
     // (the dispatcher's `--lease-holder`, and new-session.mjs's default). That
     // window is covered instead by the rung below, re-derived from the fresh
     // status: a re-leased tree with an agent running in it reads busy. The

@@ -1,6 +1,6 @@
 # Codex session instrumentation
 
-Make Codex sessions first-class in the fleet dashboard, on par with Claude.
+Make Codex sessions first-class across the sessions dashboard, on par with Claude.
 Parked pending the spike below (blocked on Codex being logged in).
 
 ## Problem
@@ -73,10 +73,10 @@ agent-agnostic and reusable**:
    **iff** a codex hook can report session id + rollout path + cwd + lifecycle
    events. This is exactly what the spike decides.
 2. **Launch wrapper** (generalize `scripts/new-session.mjs`). Register the
-   session with the daemon at launch (fleet id, pane, cwd, branch) and capture
+   session with the daemon at launch (session id, pane, cwd, branch) and capture
    the rollout path by watching the rollout dir for the file created after launch
    time `T` in this cwd. Most deterministic and agent-agnostic, but heavier and
-   only covers fleet-launched sessions. Fallback if hooks are insufficient.
+   only covers sessions this app launched. Fallback if hooks are insufficient.
 3. **Rollout-file indexer** (file-based, no DB). Watch the rollout dir, read the
    self-describing rollout JSONL. Mostly a way to *learn the path* if there's no
    hook/wrapper; redundant for Claude now.

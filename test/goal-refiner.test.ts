@@ -9,9 +9,9 @@ import type { HookIngest } from "../src/shared/protocol.ts";
 // Drives the REAL refiner loop against a fake `claude` binary: a real spawn, a real envelope,
 // the real parse ladder, the real registry write. Everything is pinned before importing the
 // modules that read it at load time.
-const home = mkdtempSync(join(tmpdir(), "fleet-refiner-"));
+const home = mkdtempSync(join(tmpdir(), "mission-refiner-"));
 process.env.HARNESS_HOME = home;
-process.env.FLEET_HOME = home;
+process.env.MISSION_HOME = home;
 
 // ONE fake bin whose behaviour is data, not code. `claude-cli.ts` resolves CLAUDE_BIN at
 // module load (deliberately - see foreman-review.test.ts), so a test cannot swap binaries
@@ -47,9 +47,9 @@ chmodSync(fake, 0o755);
 const setMode = (m: "good" | "broken" | "crash" | "blank"): void => writeFileSync(modeFile, m);
 setMode("good");
 
-process.env.FLEET_CLAUDE_BIN = fake;
-process.env.FLEET_GOAL_POLL_MS = "20";
-process.env.FLEET_GOAL_TIMEOUT_MS = "5000";
+process.env.MISSION_CLAUDE_BIN = fake;
+process.env.MISSION_GOAL_POLL_MS = "20";
+process.env.MISSION_GOAL_TIMEOUT_MS = "5000";
 /**
  * The per-session floor, scaled down from its 60s default so the tests below can cross it
  * without waiting a minute. Real time, not a fake clock: the refiner builds its own
@@ -58,7 +58,7 @@ process.env.FLEET_GOAL_TIMEOUT_MS = "5000";
  * so "inside the window" and "past the window" can't be confused for a slow tick.
  */
 const FLOOR_MS = 300;
-process.env.FLEET_GOAL_REFRESH_MS = String(FLOOR_MS);
+process.env.MISSION_GOAL_REFRESH_MS = String(FLOOR_MS);
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -139,7 +139,7 @@ test("the refiner upgrades a Tier 1 goal to a model sentence", async () => {
 
 test("a refined goal is not re-refined until a new prompt arrives", async () => {
   // `source` IS the queue. If a refined goal stayed due, every tick would spawn a subprocess
-  // for a session that has not changed - the whole fleet, forever.
+  // for a session that has not changed - every session, forever.
   const { r, s, env } = withSession("r2", "%32");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "first ask" }));
   const stop = startGoalRefiner(r);

@@ -198,7 +198,7 @@ test("foremanMayActLive: only enabled + live + allowlisted (prefix) cwd sends", 
 
 /**
  * The bug this covers: live mode kept asking for confirmation on every session in the
- * fleet. Every real checkout is a WORKTREE parked outside the repo (`~/.treehouse/...`,
+ * dashboard. Every real checkout is a WORKTREE parked outside the repo (`~/.treehouse/...`,
  * the daemon's worktrees dir), so a cwd-prefix allowlist said "no" about the very repo
  * the human had allowlisted - and Foreman drafted, forever, everywhere.
  */

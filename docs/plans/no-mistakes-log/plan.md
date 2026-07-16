@@ -203,7 +203,7 @@ The fix log is **not** gated on an active run - that is the entire point.
 - **Rollup row** (collapsed default): `◇ fixed by no-mistakes · review 5 · document 3` and
   a count. This is the whole footprint at rest.
 - **Scroll region** (open): `max-height: 208px`, `overscroll-behavior: contain` so hitting
-  the end does not scroll the fleet grid behind it. The card's height is a constant.
+  the end does not scroll the sessions grid behind it. The card's height is a constant.
 - **Per-fix detail**, opened in place, one at a time, fetched on first open and cached:
   - `no-mistakes found · N findings` - severity chip, `file:line`, description clamped to
     3 lines (the clamp `.nm-findings` already uses, for the same 900-char reason).

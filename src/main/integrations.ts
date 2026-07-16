@@ -184,7 +184,7 @@ function claudeMcp(add: boolean, runtime: Runtime, mcp: string): string {
   const claude = "claude";
   try {
     if (!add) {
-      execFileSync(claude, ["mcp", "remove", "-s", "user", "fleet-control"], {
+      execFileSync(claude, ["mcp", "remove", "-s", "user", "mission-control"], {
         stdio: "ignore",
         timeout: 15000,
         env: { ...process.env, PATH: process.env.PATH },
@@ -193,7 +193,7 @@ function claudeMcp(add: boolean, runtime: Runtime, mcp: string): string {
     }
     const { env, argv } = runtime.mcpArgs(mcp);
     const envFlags = env.flatMap((e) => ["-e", e]);
-    execFileSync(claude, ["mcp", "add", "-s", "user", "fleet-control", ...envFlags, "--", ...argv], {
+    execFileSync(claude, ["mcp", "add", "-s", "user", "mission-control", ...envFlags, "--", ...argv], {
       stdio: "ignore",
       timeout: 15000,
     });

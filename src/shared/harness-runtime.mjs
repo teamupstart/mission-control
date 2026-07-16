@@ -12,17 +12,28 @@
 // from ever matching), which is exactly why these must live in one place. A .d.mts
 // alongside gives the TS side types.
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Read a config env var by its `FLEET_` name, falling back to the legacy
- * `HARNESS_` name so an existing install's environment keeps working after the
- * Fleet Control rename. Prefer setting the `FLEET_` names going forward.
+ * Read a config env var by its `MISSION_` name, falling back to the names this app
+ * used before - `FLEET_` (Fleet Control), then `HARNESS_` (ai-harness) - so an
+ * existing install's environment keeps working across both renames. Prefer setting
+ * the `MISSION_` names going forward.
+ *
+ * Oldest-last, and every one kept: these are read by the Claude hook and the MCP
+ * bridge, which are installed into `~/.claude/settings.json` ONCE and keep running
+ * with whatever environment they were installed with. Dropping a prefix wouldn't
+ * fail loudly - the hook swallows its fetch errors - it would just quietly stop
+ * reporting until someone reinstalled it.
  */
 export function envVar(suffix) {
-  return process.env[`FLEET_${suffix}`] ?? process.env[`HARNESS_${suffix}`];
+  return (
+    process.env[`MISSION_${suffix}`] ??
+    process.env[`FLEET_${suffix}`] ??
+    process.env[`HARNESS_${suffix}`]
+  );
 }
 
 /** Port the daemon binds on (loopback only). */
@@ -35,8 +46,7 @@ export const HOST = "127.0.0.1";
 export const BASE_URL = `http://${HOST}:${PORT}`;
 
 /**
- * The holder this harness records on every treehouse lease it takes, and the only
- * one its leak sweep will ever hand back.
+ * The holder this app records on every treehouse lease it takes.
  *
  * It lives here, on the shared surface, because the code that TAKES a lease spans
  * the build boundary - `scripts/new-session.mjs` runs under bare `node`, the
@@ -47,20 +57,87 @@ export const BASE_URL = `http://${HOST}:${PORT}`;
  * sweep exists to collect become permanently uncollectable with no error; a gate
  * that drifts points at leases we never took. One import, no drift.
  */
-export const LEASE_HOLDER = "fleet-control";
+export const LEASE_HOLDER = "mission-control";
 
 /**
- * Where the daemon keeps its state (db, token, logs). Defaults to `~/.fleet-control`,
- * but an existing `~/.ai-harness` (token + db already there) is kept in place so an
- * in-place upgrade never orphans a running install; fresh installs get the new dir.
+ * Every holder name this app has ever stamped, newest first - what the reap gate
+ * matches against, and the reason a rename doesn't strand a pool.
+ *
+ * A lease records the holder that took it, forever; it is not restamped when the app
+ * is renamed. So a gate that only ever matched the CURRENT name would refuse to
+ * return every lease taken before the rename, silently and permanently. That isn't a
+ * hypothesis: the `ai-harness` -> `fleet-control` rename did exactly this, and the
+ * scar is still in the pool - a worktree held by `ai-harness` that no sweep can
+ * collect, which the old gate comment wrote off as "a one-time migration, deliberately
+ * not encoded here". This is that migration, encoded. At the `fleet-control` ->
+ * `mission-control` rename there were six live leases that would have been stranded
+ * the same way.
+ *
+ * Safe because it is exactly the gate's real question. The gate asks "did WE take this
+ * lease?", and these names all WERE us - the old comment conceded as much, calling
+ * `ai-harness` "the one label that once WAS us". It never widens to a stranger's lease:
+ * anything outside this list is still refused.
+ *
+ * Append here on any future rename; never remove.
+ */
+export const LEASE_HOLDERS = [LEASE_HOLDER, "fleet-control", "ai-harness"];
+
+/** State dirs this app has used, newest first. See `stateDir` / `migrateStateDir`. */
+const STATE_DIRS = [".mission-control", ".fleet-control", ".ai-harness"];
+
+/**
+ * Where the daemon keeps its state (db, token, logs). `~/.mission-control` for a fresh
+ * install, but an existing dir from an older name (token + db already there) is used
+ * where it lies, so merely READING this never orphans a running install. `migrateStateDir`
+ * is what actually moves an old dir onto the new name, once, under the daemon's control.
+ *
+ * Resolution is newest-first and never creates anything: this is called by the hook and
+ * the MCP bridge as well as the daemon, and a path resolver that had side effects would
+ * have several processes racing to invent a state dir.
  */
 export function stateDir() {
   const override = envVar("HOME");
   if (override) return override;
-  const preferred = join(homedir(), ".fleet-control");
-  const legacy = join(homedir(), ".ai-harness");
-  if (!existsSync(preferred) && existsSync(legacy)) return legacy;
-  return preferred;
+  for (const name of STATE_DIRS) {
+    const p = join(homedir(), name);
+    if (existsSync(p)) return p;
+  }
+  return join(homedir(), STATE_DIRS[0]);
+}
+
+/**
+ * Move a state dir left behind by an older name onto the current one. Returns the
+ * `{ from, to }` it moved, or null when there was nothing to do.
+ *
+ * Called once at daemon startup, BEFORE the db is opened - which is the only safe
+ * moment for it. Doing it here rather than in `stateDir` is deliberate: `stateDir` is
+ * a resolver that the hook and MCP bridge call constantly, and a rename racing an open
+ * sqlite handle is how a database gets lost.
+ *
+ * Moves the newest old dir that exists - the same one `stateDir` would have resolved to,
+ * i.e. the live install - and leaves any older ones untouched (this machine has both a
+ * `.fleet-control` and a stale `.ai-harness`). Never runs when the new dir already
+ * exists, so it can't merge two installs' state or overwrite a real dir.
+ *
+ * `renameSync` is atomic within a filesystem, so this either moves or it doesn't - and
+ * the daemon carries on either way, because a state dir under its old name still works
+ * (see `stateDir`). Tidiness, not a dependency.
+ */
+export function migrateStateDir() {
+  if (envVar("HOME")) return null; // an explicit override owns its own path
+  const to = join(homedir(), STATE_DIRS[0]);
+  if (existsSync(to)) return null;
+  for (const name of STATE_DIRS.slice(1)) {
+    const from = join(homedir(), name);
+    if (!existsSync(from)) continue;
+    try {
+      renameSync(from, to);
+      return { from, to };
+    } catch {
+      return null; // in use, cross-device, permissions - the old dir still works
+    }
+  }
+  return null;
 }
 
 /** Path to the shared auth token the daemon writes and clients present. */

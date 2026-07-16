@@ -8,7 +8,7 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { GOAL_MAX_CHARS } from "../src/shared/goal.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
-const home = mkdtempSync(join(tmpdir(), "fleet-goals-"));
+const home = mkdtempSync(join(tmpdir(), "mission-goals-"));
 process.env.HARNESS_HOME = home;
 const { openDb, getSessionGoal, loadSessionGoals, upsertSessionGoal, pruneSessionGoals } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -132,7 +132,7 @@ test("a prompt puts a goal on the card immediately, with no model involved", () 
 });
 
 test("a long prompt is shortened to one line for the card", () => {
-  // Prompts run to a 5,515-char p90. Unbounded, one card would push the fleet off screen.
+  // Prompts run to a 5,515-char p90. Unbounded, one card would push the rest off screen.
   const { r, s, env } = withSession("g11", "%21");
   const long = `refactor the registry so that ${"the note key stays stable across a restart ".repeat(20)}`;
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: long }));
@@ -196,7 +196,7 @@ test("having a goal does not make a session look like a Foreman draft", () => {
   // The reason goals are their own row rather than columns on session_notes. Sharing it
   // would force a goal-only write to invent a `disposition` (defaulting to "pending" =
   // "Foreman drafted a reply it hasn't sent") and to bump the `updatedAt` that
-  // foremanStatus reports as `lastActionAt` - so a fleet of goal-carrying sessions would
+  // foremanStatus reports as `lastActionAt` - so a dashboard of goal-carrying sessions would
   // report N phantom drafts in ForemanBar and a Foreman that just acted on every keystroke.
   const { r, s, env } = withSession("g8", "%18");
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "a real human ask" }));
@@ -245,7 +245,7 @@ test("the prune clears the registry's in-memory goals too, not just the table", 
   upsertSessionGoal({ noteKey: "orphan-mem", text: "stranded", source: "model", prompt: "p", updatedAt: 100 });
 
   // A fresh Registry loads every row into the Map, which is what a restart does - and the
-  // discovery comes FIRST, because the sweep refuses to judge a key until the fleet is known.
+  // discovery comes FIRST, because the sweep refuses to judge a key until the sessions is known.
   const r2 = new Registry();
   r2.applyDiscovery([mkDiscovered({ syntheticId: "g14", cwd: "/wt/g14", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%24" } })]);
   assert.ok(loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "precondition: the row is on disk");
@@ -259,7 +259,7 @@ test("the prune clears the registry's in-memory goals too, not just the table", 
 });
 
 test("a sweep before the first discovery deletes nothing", () => {
-  // The boot race, and the reason the sweep is gated on `fleetObserved`. The constructor
+  // The boot race, and the reason the sweep is gated on `sessionsObserved`. The constructor
   // loads the whole goal table while `sessions` is still empty, and the refiner ticks
   // synchronously while the poller's first sweep is still awaiting I/O - so an ungated sweep
   // reads "no session holds this key" off a map nobody has filled in yet and deletes every
@@ -270,11 +270,11 @@ test("a sweep before the first discovery deletes nothing", () => {
   upsertSessionGoal({ noteKey: "boot-orphan", text: "old but unjudged", source: "model", prompt: "p", updatedAt: 500_000 });
 
   const r2 = new Registry();
-  assert.equal(r2.fleetObserved(), false, "precondition: no sweep has happened yet");
-  assert.equal(r2.pruneGoals(600_000), 0, "the boot sweep judged keys before the fleet was known");
+  assert.equal(r2.sessionsObserved(), false, "precondition: no sweep has happened yet");
+  assert.equal(r2.pruneGoals(600_000), 0, "the boot sweep judged keys before the sessions was known");
   assert.ok(getSessionGoal("boot-orphan"), "a goal was deleted before a single session was discovered");
 
-  // And once the fleet IS known, the same row is fair game - the guard delays the sweep, it
+  // And once the sessions ARE known, the same row is fair game - the guard delays the sweep, it
   // does not disable it. Asserted on the key rather than a count: this cutoff is above every
   // band in the file, so it reaches the rows the tests above left behind too.
   r2.applyDiscovery([mkDiscovered({ syntheticId: "g15", cwd: "/wt/g15", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%25" } })]);

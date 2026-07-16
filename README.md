@@ -1,4 +1,4 @@
-# Fleet Control
+# Mission Control
 
 A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
 across your **wezterm tabs** and **tmux sessions**. See every agent at a glance,
@@ -28,12 +28,12 @@ and get your decision back.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + detached tmux session (or shelves it in a
   backlog for later).
-- **Rounds up** the whole fleet: who needs you, who's working, what's idle,
+- **Rounds up** every session: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
-- **Alerts** you when the fleet needs you: a desktop notification + sound the
+- **Alerts** you when a session needs you: a desktop notification + sound the
   moment a session needs input, a review lands, a no-mistakes gate parks, or a
   dispatched task fails - with an **AFK mode** that also pings on idle sessions and
-  finished tasks and sends periodic fleet digests.
+  finished tasks and sends periodic session digests.
 - **Says what each session is for**: every card carries a one-sentence **Goal** - what
   that session is currently trying to solve - derived from your own prompts and
   refreshed as you steer it. No API key: it runs the local `claude` CLI.
@@ -41,7 +41,7 @@ and get your decision back.
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
-- **Equips** the fleet with [skills](#skills-fleet-wide-no-restarts): switch a Claude
+- **Equips** every session with [skills](#skills-every-session-no-restarts): switch a Claude
   Code skill on in Settings and it applies to **every** Claude session on the machine -
   including ones this app never launched - without restarting any of them. Claude only.
 
@@ -84,13 +84,13 @@ npm run install-service -- --uninstall
 
 ## Desktop app (macOS)
 
-Prefer a real menu-bar app over a browser tab? Agent Wrangler packages into a native
+Prefer a real menu-bar app over a browser tab? Mission Control packages into a native
 macOS app (Apple Silicon) that supervises the daemon, shows the dashboard in a window,
 and - crucially - **delivers alerts even with the window closed** (a browser tab can't).
 
 ```sh
-make app            # build + package → release/Agent Wrangler-<version>-arm64.dmg
-make install-app    # …and copy Agent Wrangler.app into /Applications
+make app            # build + package → release/Mission Control-<version>-arm64.dmg
+make install-app    # …and copy Mission Control.app into /Applications
 ```
 
 The app is self-contained: the daemon runs on Electron's bundled Node (with `node:sqlite`),
@@ -101,7 +101,7 @@ so no system `node` is required to run it. On launch it **adopts** an already-ru
 server at the app's bundled paths) from the tray menu.
 
 Because it's a local, unsigned build, the first launch may need a right-click → **Open**
-(or `xattr -dr com.apple.quarantine "/Applications/Agent Wrangler.app"`).
+(or `xattr -dr com.apple.quarantine "/Applications/Mission Control.app"`).
 
 For desktop development with the same hot-reload loop as the browser:
 
@@ -153,7 +153,7 @@ npm run install-hooks
 Expected output:
 
 ```
-Wired Fleet Control hooks into /Users/you/.claude/settings.json
+Wired Mission Control hooks into /Users/you/.claude/settings.json
   events: SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionEnd
   script: /Users/you/workspace/ai-harness/hooks/harness-hook.mjs
 ```
@@ -217,7 +217,7 @@ every invocation. Paths are absolute (your `node` and this repo):
 ```
 
 Each fired hook POSTs `{ event, sessionId, cwd, env }` to
-`http://127.0.0.1:7317/hooks/<event>` with the `~/.fleet-control/token`. The daemon
+`http://127.0.0.1:7317/hooks/<event>` with the `~/.mission-control/token`. The daemon
 binds it to the right card via the terminal pane env (`TMUX_PANE` /
 `WEZTERM_PANE`) and maps the event to a state (see the table below).
 
@@ -281,7 +281,7 @@ to read.
 
 ```sh
 npm run build                    # builds the MCP server bundle
-claude mcp add -s user fleet-control -- node /ABSOLUTE/PATH/dist/mcp/server.mjs
+claude mcp add -s user mission-control -- node /ABSOLUTE/PATH/dist/mcp/server.mjs
 ```
 
 (`npm run install-hooks` prints the exact command with your paths.)
@@ -312,7 +312,7 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
 3. injects your task as its first prompt once passive discovery binds the session.
 
 The repo picker is a **searchable index of your workspace** - the daemon scans
-`~/workspace` (override with `FLEET_WORKSPACE_DIRS`) for git checkouts, so you select the
+`~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
 
 The new session then shows up on the grid like any other, with an **intent chip** naming
@@ -328,11 +328,11 @@ leaves the form open with your fields intact so you can retry.
 
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
-Set `FLEET_CLAUDE_BIN` / `FLEET_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
+Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
 ## Roundup
 
-Click **Roundup** for a one-look snapshot of the whole fleet, assembled from the same live
+Click **Roundup** for a one-look snapshot of every session, assembled from the same live
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
 gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a backlog task or drop it right from the panel, and **Mark
@@ -342,7 +342,7 @@ markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GE
 
 ## Alerts & AFK mode
 
-So you don't have to watch the grid, the dashboard can **alert you when the fleet
+So you don't have to watch the grid, the dashboard can **alert you when a session
 needs you**. The daemon already streams every attention event over SSE; the browser
 turns those into a **desktop (Chrome) notification + a short sound** the moment a
 session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
@@ -352,7 +352,7 @@ watching - and there's no phone/SMS piece; it's the open dashboard tab that aler
 Open the **🔔 Alerts** control in the top bar to **Enable desktop alerts** (grants the
 browser Notification permission and unlocks the chime), toggle **Sound**, and flip
 **AFK mode**. AFK also alerts on sessions going idle and tasks finishing, and sends a
-periodic **fleet digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
+periodic **session digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
 the browser; the chime is synthesized with the Web Audio API (no asset, no network).
 Alerts fire on the *transition* into attention (once, not every tick) and de-dupe, so
 a waiting session pings you once. Delivery needs the tab open (foreground or
@@ -425,7 +425,7 @@ session carries a `✓ Foreman answered: …` audit line. An escalation also fir
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
 
-Only one worker drives the fleet at a time. `npm run foreman` twice is safe: the second
+Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
@@ -502,7 +502,7 @@ it runs in any mode - you see Foreman's judgment before it ever types. A queue n
 hook-instrumented Claude session (there's no completion signal otherwise), and the panel
 says so rather than letting you queue work that can't run.
 
-## Skills (fleet-wide, no restarts)
+## Skills (every session, no restarts)
 
 Settings (the topbar gear, or ⌘,) has a **Skills** catalog: read what a skill does,
 switch it on, and it applies to **every** Claude session on this machine - including
@@ -547,7 +547,7 @@ its own schedule.
 The gate that makes it safe is not paperwork. `injectPrompt` presses Enter
 unconditionally, and a Claude dialog is a **select list, not a text prompt**: pasted
 text is swallowed and the Enter activates whichever option is highlighted. Fired
-fleet-wide, that's an unattended answer to a permission prompt nobody read, in every
+across every session, that's an unattended answer to a permission prompt nobody read, in every
 pane at once. So a reload requires `settledIdle` (a *reported* idle, not the
 uninstrumented default) **and** a pane read confirming Claude's mode line is on screen,
 which a dialog or menu replaces. If you add a second autonomous writer, it needs the
@@ -556,10 +556,10 @@ guard covers every pane write rather than just permission-mode cycling.
 
 The mutual exclusion is the **port bind**, and it holds for the default port: a second
 `npm start` can't take `:7317`, so there's exactly one reload loop. It does *not* hold
-for `FLEET_PORT=<other>`. A daemon on a spare port is a second, fully autonomous writer
-aimed at the same real panes - discovery finds the same fleet whatever port you serve
-on, and an isolated `FLEET_HOME` makes it *worse*, because its ack table is empty and it
-believes the whole fleet is owed a reload. If you're testing against a spare port, know
+for `MISSION_PORT=<other>`. A daemon on a spare port is a second, fully autonomous writer
+aimed at the same real panes - discovery finds the same sessions whatever port you serve
+on, and an isolated `MISSION_HOME` makes it *worse*, because its ack table is empty and it
+believes every session is owed a reload. If you're testing against a spare port, know
 that its reload loop is live from the moment it boots.
 
 ## Keyboard shortcuts
@@ -584,7 +584,7 @@ without reaching for the mouse:
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
-**Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Agent Wrangler →
+**Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Mission Control →
 Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
 (optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
 <kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
@@ -694,14 +694,14 @@ later `treehouse get` fails - at which point a dispatch falls back to a throwawa
 help: it skips any tree with an owner reservation, and a leaked lease is one.)
 
 So the daemon sweeps every treehouse repo it can name - the ones behind your live
-sessions and tracked tasks, plus every checkout under `FLEET_WORKSPACE_DIRS` -
-each `FLEET_POOL_REAP_MS`, and again whenever a dispatch finds the pool dry. The
+sessions and tracked tasks, plus every checkout under `MISSION_WORKSPACE_DIRS` -
+each `MISSION_POOL_REAP_MS`, and again whenever a dispatch finds the pool dry. The
 workspace scan is what reaches a *fully* leaked repo: once its agents are gone
 there is no live session left to advertise it, and you can't start one to fix
 that, because `treehouse get` is precisely what fails when the pool is dry.
 
 It hands back only the leases it can prove are dead, and only its **own**. A tree
-is returned **only** when it is leased to `fleet-control` (the holder both `make
+is returned **only** when it is leased to `mission-control` (the holder both `make
 session` and dispatch record), treehouse reports no processes under it, no live
 session's cwd is inside it, no task the harness tracks still records it, it has no
 uncommitted changes, and origin's default branch already contains its HEAD.
@@ -713,7 +713,7 @@ The holder check is the harness's own rule, not something treehouse enforces
 survives *"even with no process running inside it, until you release it"* - so a
 tree you reserved with `treehouse get --lease --lease-holder my-label` is idle **on
 purpose**, and the sweep leaves it exactly where you put it, in this repo or any
-other one it walks. Reclaiming a `fleet-control` lease is only fair game because
+other one it walks. Reclaiming a `mission-control` lease is only fair game because
 this harness took it and can tell its holder is gone.
 
 That is also the escape hatch from this side: `make session ARGS="--holder my-label"`
@@ -736,7 +736,7 @@ re-taken immediately before a tree is handed back, so a tree leased while the
 sweep was fetching is never returned on the strength of a reading from before it
 existed.
 
-Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
+Set `MISSION_POOL_REAP_MS=0` to switch the background sweep off entirely; the
 dispatch-time reap stays on, since its only alternative is abandoning the pool
 for a throwaway worktree.
 
@@ -751,33 +751,42 @@ that looks perfectly healthy would help nobody.
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `FLEET_PORT` | `7317` | daemon / dashboard port |
-| `FLEET_HOME` | `~/.fleet-control` | state dir (db, token, logs, dispatch worktrees) |
-| `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
-| `FLEET_POLL_MS` | `1500` | discovery interval |
-| `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
-| `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
-| `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
-| `FLEET_SKILLS_DIR` | app's `skills/` | [skills](#skills-fleet-wide-no-restarts) catalog dir (the symlinks' target) |
-| `FLEET_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
+| `MISSION_PORT` | `7317` | daemon / dashboard port |
+| `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, dispatch worktrees) |
+| `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
+| `MISSION_POLL_MS` | `1500` | discovery interval |
+| `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
+| `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
+| `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
+| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
+| `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
+| `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written. Overridable so tests never touch your real one |
-| `FLEET_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the fleet runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner) |
-| `FLEET_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner) pass it instead |
-| `FLEET_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
+| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner) |
+| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner) pass it instead |
+| `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
-| `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `FLEET_CLAUDE_BIN`, still honored so existing setups keep working; `FLEET_CLAUDE_BIN` wins when both are set |
-| `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `FLEET_CLAUDE_TIMEOUT_MS`, which wins when both are set |
+| `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working; `MISSION_CLAUDE_BIN` wins when both are set |
+| `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
-| `FLEET_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
+| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
 
-> **Upgrading from `HARNESS_*`?** The old `HARNESS_*` env names are still honored as
-> a fallback, and an existing `~/.ai-harness` state dir is kept in place (the new
-> `~/.fleet-control` default only applies to fresh installs), so nothing breaks on
-> an in-place update. Prefer the `FLEET_*` names going forward.
+> **Upgrading from Fleet Control (`FLEET_*`) or ai-harness (`HARNESS_*`)?** Nothing to do.
+> Both older env prefixes are still honored as fallbacks - `MISSION_*` wins where more than
+> one is set - so a hook or MCP server installed under an older name keeps reporting without
+> being reinstalled. On its first start the daemon renames an existing `~/.fleet-control`
+> (or `~/.ai-harness`) state dir to `~/.mission-control`, keeping your db, token, and
+> uploads; if that move can't happen the old dir keeps working exactly as before. Treehouse
+> leases stamped with the old holder names are still recognised as ours, so a renamed
+> install doesn't strand its worktree pool. Prefer the `MISSION_*` names going forward.
+>
+> Two things do need a re-run, because they registered a name with something outside this
+> repo: `npm run install-service` (the launchd label becomes `com.mission-control.daemon`;
+> the installer unloads the old one for you) and, if you use the review channel,
+> re-adding the MCP server under its new name (`claude mcp add -s user mission-control …`).
 
 ## Commands
 
@@ -800,6 +809,6 @@ The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)
 additionally requires a loopback `Host` header so a web page you visit can't reach
 it via DNS-rebinding - a defense that matters now that dispatch can launch agents
 (effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
-and MCP ingress is authenticated with a per-machine token in `~/.fleet-control/token`
+and MCP ingress is authenticated with a per-machine token in `~/.mission-control/token`
 so other local processes can't spoof session or task state. Session and task
 actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.

@@ -33,7 +33,7 @@ function runInstallerHome(settingsPath: string, homeDir: string, args: string[] 
       ...process.env,
       CLAUDE_SETTINGS_PATH: settingsPath,
       CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath),
-      FLEET_HOME: homeDir,
+      MISSION_HOME: homeDir,
     },
     stdio: "ignore",
   });

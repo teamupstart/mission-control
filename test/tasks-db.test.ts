@@ -7,10 +7,10 @@ import type { Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 // Point the daemon's state dir at a throwaway home BEFORE anything reads config,
-// so this test never touches the real ~/.fleet-control db. config.ts resolves the
+// so this test never touches the real ~/.mission-control db. config.ts resolves the
 // state dir at module load, so db/registry must be imported dynamically after.
 // (Setting the legacy HARNESS_HOME also exercises the backward-compat env path.)
-const home = mkdtempSync(join(tmpdir(), "fleet-db-"));
+const home = mkdtempSync(join(tmpdir(), "mission-db-"));
 process.env.HARNESS_HOME = home;
 const { openDb, upsertTask, getTask, listTasks, loadActiveTasks, loadRecentTerminalTasks, deleteTask } =
   await import("../src/server/db.ts");

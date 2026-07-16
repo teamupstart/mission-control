@@ -1,7 +1,7 @@
 # Foreman upgrades — opportunities to expand the auto-responder
 
 Status: backlog / ideas
-Owner: ai-harness (Agent Wrangler)
+Owner: ai-harness (Mission Control)
 Related: `docs/plans/foreman/plan.md` (the shipped design), `docs/plans/foreman-watcher/plan.md`
 (the cheap-watcher token optimization — first item below, planned in detail).
 
@@ -88,7 +88,7 @@ distinction so escalation policy differs by deliverable type (PR/merge vs report
 
 ### 5. Codex support — closes a known gap
 The shipped plan flags this: Foreman excludes Codex because there's no transcript endpoint. A
-transcript adapter for Codex unlocks the whole fleet — the rest of the pipeline is agent-agnostic.
+transcript adapter for Codex unlocks every session — the rest of the pipeline is agent-agnostic.
 
 ### 6. Turn-end / wedged-session recovery — reliability
 firstmate refuses to let a session exit blind while work is in flight. Foreman only looks at

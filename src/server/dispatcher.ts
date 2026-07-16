@@ -286,7 +286,7 @@ export async function provisionWorktree(
       const { reaped } = await reapPool(repoRoot, pins);
       if (reaped.length > 0) {
         console.log(
-          `[fleet-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped
+          `[mission-control] pool was dry; returned ${reaped.length} leaked lease(s): ${reaped
             .map((t) => t.name)
             .join(", ")}`,
         );
@@ -311,7 +311,7 @@ export async function provisionWorktree(
     // failure names itself and treehouse's own words ride along verbatim.
     const { what, stderr } = lease.failure;
     console.warn(
-      `[fleet-control] treehouse pool in ${repoRoot} could not hand over a worktree: ${what}` +
+      `[mission-control] treehouse pool in ${repoRoot} could not hand over a worktree: ${what}` +
         (stderr ? ` - treehouse said: ${stderr}` : "") +
         ` - falling back to a throwaway git worktree. Inspect the pool with: treehouse status`,
     );

@@ -9,8 +9,8 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // machine. Everything here is about a clock or a guard that only the write boundary
 // can enforce, so a machine-level test cannot reach any of it.
 
-const home = mkdtempSync(join(tmpdir(), "fleet-queue-manager-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-queue-manager-"));
+process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -164,7 +164,7 @@ test("a reorder cannot move an in-flight item's recorded send time", () => {
 test("add refuses a non-claude session rather than stranding the batch", () => {
   // Every tick filters to `agent === "claude"`, so a queue on a Codex session never
   // advances - and because the session is LIVE its key is live, so neither the
-  // re-attach hint nor the fleet orphan sweep will ever offer the batch to anyone.
+  // re-attach hint nor the orphan sweep will ever offer the batch to anyone.
   // `reattachQueue` already refuses this for the identical reason.
   const registry = new Registry();
   const queues = new QueueManager(registry);
@@ -251,7 +251,7 @@ test("re-attach still moves a genuinely orphaned queue, and heals BOTH cards", (
   );
 });
 
-test("re-attach is refused before the fleet has ever been observed", () => {
+test("re-attach is refused before the sessions has ever been observed", () => {
   // "No live session holds this key" read off a map nobody has filled in is not a
   // finding. The daemon answers routes the instant it binds its port, so a tab that
   // survives a restart can land a click in exactly that window.
@@ -273,7 +273,7 @@ test("re-attach is refused before the fleet has ever been observed", () => {
     env: { tmuxPane: registry.getSession("s-target")!.tmux!.paneId },
   });
 
-  assert.ok(registry.fleetObserved(), "applyDiscovery is what marks the fleet observed");
+  assert.ok(registry.sessionsObserved(), "applyDiscovery is what marks the sessions observed");
 
   // ...and a registry that has NOT swept refuses outright.
   const unswept = new Registry();
@@ -285,6 +285,6 @@ test("re-attach is refused before the fleet has ever been observed", () => {
     transcriptPath: null,
     env: {},
   });
-  assert.equal(unswept.fleetObserved(), false);
+  assert.equal(unswept.sessionsObserved(), false);
   assert.equal(unsweptQueues.reattach("agent-seed", "s-target").ok, false);
 });

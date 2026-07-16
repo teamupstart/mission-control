@@ -13,8 +13,8 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 // as `instrumented: false`. Anything that reads that as "the integrations aren't
 // installed" fires on the most ordinary state the work queue has.
 
-const home = mkdtempSync(join(tmpdir(), "fleet-hooks-seen-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-hooks-seen-"));
+process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

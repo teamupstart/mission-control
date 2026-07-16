@@ -19,14 +19,14 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 //    matched anything live.
 //  - The daemon answers /api/queues the moment it binds its port, while the first
 //    discovery sweep is an async `ps` scan landing later. In that window the session
-//    map is empty - not because the fleet is gone, but because nobody has looked.
+//    map is empty - not because the sessions are gone, but because nobody has looked.
 //
 // Every queue here is therefore keyed on an `agentSessionId`, the way a real
 // hook-instrumented session's queue is. Keying on the synthetic id is the ONE case
 // where neither bug can show, which is exactly why they survived their first tests.
 
-const home = mkdtempSync(join(tmpdir(), "fleet-orphan-sweep-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-orphan-sweep-"));
+process.env.MISSION_HOME = home;
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -122,7 +122,7 @@ test("a queue is not orphaned before the first discovery sweep has even run", ()
   // No applyDiscovery: the poller's first tick hasn't finished.
   assert.ok(
     !orphanKeys(queues).includes(key),
-    "nobody has looked at the fleet yet - the sweep must not escalate off that",
+    "nobody has looked at the sessions yet - the sweep must not escalate off that",
   );
 
   // And the moment a sweep confirms the session is there, it's still not orphaned.
@@ -132,14 +132,14 @@ test("a queue is not orphaned before the first discovery sweep has even run", ()
 
 test("a session that is GENUINELY gone still hands its queue to the sweep", () => {
   // The other half of the contract. Both guards above are about not escalating from
-  // a fleet we can't vouch for - neither may become "never escalate", or an item
+  // a session list we can't vouch for - neither may become "never escalate", or an item
   // stranded mid-cycle by a real exit would hold the single-flight index forever and
   // block the queue behind a phantom.
   const key = seedQueue("gone-1", "agent-gone-1", "%3");
 
   const restarted = new Registry();
   const queues = new QueueManager(restarted);
-  // A sweep that COMPLETED and found this session nowhere. That's a fleet we looked
+  // A sweep that COMPLETED and found this session nowhere. That's a session list we looked
   // at, so the absence is a finding.
   restarted.applyDiscovery([]);
 

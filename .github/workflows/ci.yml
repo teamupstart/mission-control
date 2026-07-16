@@ -80,5 +80,5 @@ jobs:
       - name: Upload dmg
         uses: actions/upload-artifact@v4
         with:
-          name: agent-wrangler-dmg
+          name: mission-control-dmg
           path: release/*.dmg

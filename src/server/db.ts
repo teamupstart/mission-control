@@ -1220,7 +1220,7 @@ export function getAppConfig<T>(key: string): T | undefined {
  * Every session's acked generation, as one map.
  *
  * Read whole rather than per-session because the reload loop's selector is a pure
- * function over the fleet and wants no I/O inside it - the same discipline
+ * function over the sessions and wants no I/O inside it - the same discipline
  * `decideQueueTick` holds. The table is one row per session ever seen, integers
  * only, so reading it on a 1.5s tick is noise.
  */

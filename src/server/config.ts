@@ -30,7 +30,7 @@ export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
  * directory (unpredictable when Electron spawns it).
  *
  * `../../skills` lands on the repo root under `tsx src/server/index.ts` AND on the app
- * root under `node dist/server/index.mjs`, exactly like index.ts's `FLEET_WEB_DIR`
+ * root under `node dist/server/index.mjs`, exactly like index.ts's `MISSION_WEB_DIR`
  * fallback and for the same reason: both entry points sit two levels down.
  *
  * WHICH IS WHY THIS LIVES HERE and not beside its callers in skills/. esbuild bundles

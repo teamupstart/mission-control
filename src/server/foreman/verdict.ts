@@ -466,8 +466,8 @@ function menuMismatch(
  * a human is needed - only that this reviewer can't answer this surface. The Tier 1 router's
  * schema has no `option` field at all, so on a permission prompt (which is a menu) every one
  * of its answers is blocked here. Routing up hands the same ask to the full reviewer, which
- * can name a row; escalating instead would put a human in front of every routine approval on
- * an `on` fleet, having already spent the cheap call to learn nothing.
+ * can name a row; escalating instead would put a human in front of every routine approval
+ * when the tier is `on`, having already spent the cheap call to learn nothing.
  */
 export function menuBlocksAnswer(v: Verdict, ctx: ReviewContext): boolean {
   if (v.action !== "answer") return false;

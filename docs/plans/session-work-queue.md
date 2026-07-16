@@ -545,7 +545,7 @@ into a session that has moved on. All must hold; any failure of the re-check its
 1. **Re-resolve `noteKey` -> live session.** Never cache `session.id` across a multi-minute verify -
    it churns with pid/tty, and `/send` and `/diff` both resolve by it (`routes.ts:110,178`). This is
    what `noteKeyFor` exists for; a cached id 404s or, worse, hits a different session.
-2. `reportBucket(fresh, freshMission) !== 'needs-you'`.
+2. `reportBucket(fresh, sessions) !== 'needs-you'`.
 3. **`fresh.lastActivity === observed.lastActivity`** - the strongest guard, and the one that
    catches **a human typing in the pane**. Bucket-checking is insufficient: a human turn can start
    *and finish* inside a 2-minute verify and land back at `idle` with an identical bucket -

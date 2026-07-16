@@ -110,7 +110,7 @@ Five hard backstops in *code*, applied after Haiku, that Haiku cannot override:
    is answered by selecting a row, and the router's schema has no field to name one - so on a menu,
    which is what a permission prompt is, every answer it reaches is handed to the reviewer that can
    name a row. Route-up rather than escalate on purpose: escalating would put a human in front of
-   every routine approval on an `on` fleet, having spent the cheap call to learn nothing. Falling
+   every routine approval when the tier is `on`, having spent the cheap call to learn nothing. Falling
    back to typing the prose is the bug this exists to make unreachable - see the "never confirm a
    row we did not verify" invariant in `docs/plans/foreman/plan.md`.
 

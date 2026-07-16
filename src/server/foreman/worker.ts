@@ -784,7 +784,7 @@ async function cheapTierDecides(
   // row (its schema has no field for one), so on a menu every answer it reaches lands here -
   // and a menu is what a permission prompt is. Handing it to the full reviewer, which can name
   // a row, keeps the ask automated; treating it as final would escalate every routine approval
-  // on an `on` fleet to a human. If the full review can't name a row either, `planFromVerdict`
+  // to a human when the tier is `on`. If the full review can't name a row either, `planFromVerdict`
   // escalates it there - the fallback stays, it just stops being the first stop.
   const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
   log(`${session.name}: routed up to full review (${why})`);

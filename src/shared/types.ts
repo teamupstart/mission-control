@@ -965,7 +965,7 @@ export interface TranscriptMessage {
   role: "user" | "assistant";
   /** Prose the human/agent wrote. May be empty on a pure tool-call turn. */
   text: string;
-  /** Tools invoked in this turn. The card chips their names; Foreman reads their inputs. */
+  /** Tools invoked in this turn. The card chips name + target (web/lib/tools.ts); Foreman reads the inputs. */
   tools: ToolCall[];
   /** epoch ms of the turn, 0 when the record had no timestamp. */
   ts: number;

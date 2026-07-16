@@ -571,7 +571,7 @@ without reaching for the mouse:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection around the grid | Anywhere |
-| <kbd>Esc</kbd> | Peel back a layer - collapse an expanded card, then deselect | Anywhere |
+| <kbd>Esc</kbd> | Peel back a layer - leave a focused text box, then collapse an expanded card, then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box | Anywhere |

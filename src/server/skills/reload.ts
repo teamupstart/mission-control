@@ -39,7 +39,7 @@ const DEFAULT_SETTLE_MS = 10_000;
  * Validated rather than `Number(envVar(...) ?? default)`, which is the pattern its
  * siblings use and which is wrong HERE for a reason they don't share: this knob gates
  * typing into a live pane. `envVar` returns the raw string, so an exported-but-empty
- * `FLEET_SKILLS_SETTLE_MS=` is `""`, and `Number("")` is **0** - a settle window of
+ * `MISSION_SKILLS_SETTLE_MS=` is `""`, and `Number("")` is **0** - a settle window of
  * nothing, which types into a session the instant it reports idle, i.e. straight into
  * the gap between a Stop and the PostToolUse that lands after it. A typo'd value gives
  * `NaN`, and every comparison against NaN is false, which silently disables the whole

@@ -94,7 +94,7 @@ the ask, not solve it:
 - `needs-judgment` (implementation trade-offs, anything Haiku isn't confident on) ⇒ route **up**
   to Tier 2.
 
-Four hard backstops in *code*, applied after Haiku, that Haiku cannot override:
+Five hard backstops in *code*, applied after Haiku, that Haiku cannot override:
 1. The destructive denylist the `POLICY` already enumerates (`rm -rf`, force-push, drop/delete
    data, prod changes, secrets, exfiltration, disabling safety checks) — if it matches, force
    `escalate` regardless of Haiku. Scanned over what the child said and did (the pending ask, the
@@ -106,6 +106,13 @@ Four hard backstops in *code*, applied after Haiku, that Haiku cannot override:
 4. A parked no-mistakes gate is never Tier 1's to answer or skip. The router is only ever taught
    permission prompts, so it has no notion of what a gate is; a gate may only be escalated (cheap,
    safe, in front of the human) or routed up to the tier that was taught.
+5. An answer this tier cannot *deliver* is a route-up, not a decision (`menuBlocksAnswer`). A menu
+   is answered by selecting a row, and the router's schema has no field to name one - so on a menu,
+   which is what a permission prompt is, every answer it reaches is handed to the reviewer that can
+   name a row. Route-up rather than escalate on purpose: escalating would put a human in front of
+   every routine approval on an `on` fleet, having spent the cheap call to learn nothing. Falling
+   back to typing the prose is the bug this exists to make unreachable - see the "never confirm a
+   row we did not verify" invariant in `docs/plans/foreman/plan.md`.
 
 ### Tier 2 — full review (unchanged)
 The existing `reviewSession` + full `POLICY` + 48-turn window. Fires only for sessions Tier 1
@@ -116,11 +123,13 @@ snapshot, so the mid-review safety net still applies.
 
 ## Where it hooks in
 
-- New `src/server/foreman/triage.ts`: `triageSession(deps, pending, session, config) →
+- New `src/server/foreman/triage.ts`: `triageSession(deps, pending, session, config, pane) →
   TriageOutcome`, where an outcome is `{ kind: 'dispose'; tier: 0 | 1; verdict; reason }` or
   `{ kind: 'route-up'; reason }`. Tiers 0 (`tier0`, pure) and 1 (`mapTriage` over the router's
   report, also pure) both live here; `deps` injects the only two I/O edges (the transcript read
-  and the router subprocess) so the whole safety contract is unit-testable without either.
+  and the router subprocess) so the whole safety contract is unit-testable without either. The
+  child's screen is a *parameter*, not a dep: `processSession` captures it once and passes it to
+  whichever tier reviews, so this tier's answer is checked against the same rows it was shown.
   `src/server/foreman/triage-prompt.ts` holds the bucketing prompt, mirroring `prompt.ts`.
 - New `src/server/foreman/pending.ts`: `classifyPending`, lifted out of `worker.ts` (which runs a
   top-level loop on import, so `triage.ts` could not have imported it there) and given a richer

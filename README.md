@@ -381,6 +381,13 @@ permission dialog - isn't written to the transcript until it returns, so the tra
 routinely ends **before** the very question Foreman is there to answer. Reading the pane is
 what lets it answer the ask rather than hand it back to you having only read the history.
 
+The screen is also *how* a menu gets answered. A dialog isn't a text box: it discards typed
+characters, and the Enter that follows them confirms whichever row was already highlighted -
+the default, not the reply. So Foreman answers a menu the way you would, by walking the
+cursor onto the row it picked and pressing Enter only while the pane still shows that row
+selected. An answer it can't pin to a row on screen is **escalated to you** - with its
+reasoning kept as the recommendation - rather than typed at a menu that would discard it.
+
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it
 only *drafts* answers onto the card until you trust it. Start the worker - a plain agent in
@@ -436,11 +443,13 @@ The tier is **asymmetric on purpose**. It may hand a session back to you (skip) 
 (escalate) freely, but it may auto-answer only one tightly bounded category - routine,
 non-destructive access - and that answer flows through the *same* mode + allowlist +
 auto-approve gate the full reviewer's answers do, so it can never send under a looser config
-than Opus would. Four code backstops the router cannot override sit behind it: the destructive
+than Opus would. Five code backstops the router cannot override sit behind it: the destructive
 denylist above forces an escalation, low confidence routes up, a window with nothing to scan
 counts as *unknown* rather than safe and routes up, and a parked no-mistakes gate is never the
 cheap tier's to answer - it may only escalate (cheap, and puts the gate in front of you) or
-route up to the reviewer that was taught to judge one.
+route up to the reviewer that was taught to judge one. The fifth is delivery: the router never
+names a menu row, so its answer to a permission prompt (which is a menu) routes up to the full
+reviewer that can name one, rather than putting every routine approval in front of you.
 
 Pick the posture with the **Cheap tier** control in the popover:
 

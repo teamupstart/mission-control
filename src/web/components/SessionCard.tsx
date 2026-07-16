@@ -159,6 +159,11 @@ export function SessionCard({
   // box that's already there instead of opening a second one (null while collapsed,
   // which is exactly when this card's own send box is the right answer).
   const transcriptRef = useRef<TranscriptHandle>(null);
+  // Whether that reply box is actually on screen right now - the panel's own report,
+  // not `expanded`. An expanded card can be carrying an unavailable transcript with no
+  // reply row at all, and can grow one later when the stream reconnects; the bar has to
+  // hear about both or it ends up as the second send box on the card.
+  const [hasReply, setHasReply] = useState(false);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -339,22 +344,33 @@ export function SessionCard({
       {/* The teaser for a queue you can't see. Once the drawer is open it is the same
           count, verbatim, one row above the panel that states it - and on an expanded
           card that row is a section's worth of the height the panel needs. So it stands
-          down and lets the real thing speak: the drawer is open; you're looking at it. */}
-      {session.queue && session.queue.openCount > 0 && !queueOpen && (
+          down and lets the real thing speak: the drawer is open; you're looking at it.
+
+          Gated on the queue having a HISTORY, not on work still waiting in it. An
+          exited session has no ActionBar and therefore no Queue button, so this chip is
+          the only way back to what its batch did - and a finished batch is exactly what
+          you want to read on a session that has stopped. The label follows the count
+          rather than the gate: nothing is "queued" once it has all run. */}
+      {session.queue && session.queue.totalCount > 0 && !queueOpen && (
         <button
           className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
-          aria-expanded={queueOpen}
           title={
             session.queue.inFlightIntent
               ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
-              : "Work queued for this session - click to see it"
+              : session.queue.openCount > 0
+                ? "Work queued for this session - click to see it"
+                : "This session's queued work has all finished - click to read it"
           }
           onClick={(e) => {
             e.stopPropagation();
             setQueueOpen(true);
           }}
         >
-          <span className="qc-count">{session.queue.openCount} queued</span>
+          <span className="qc-count">
+            {session.queue.openCount > 0
+              ? `${session.queue.openCount} queued`
+              : `${session.queue.totalCount} finished`}
+          </span>
           {session.queue.inFlightIntent && (
             <span className="qc-intent">{session.queue.inFlightIntent}</span>
           )}
@@ -405,7 +421,7 @@ export function SessionCard({
       {session.state !== "exited" && (
         <ActionBar
           session={session}
-          expanded={expanded}
+          hasReply={hasReply}
           queueOpen={queueOpen}
           onToggleQueue={() => setQueueOpen((v) => !v)}
           onFocusReply={() => transcriptRef.current?.focusReply() ?? false}
@@ -449,6 +465,7 @@ export function SessionCard({
               sessionId={session.id}
               agent={session.agent}
               canSend={canSend}
+              onReplyBox={setHasReply}
             />
           )}
         </div>

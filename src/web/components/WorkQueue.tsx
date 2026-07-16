@@ -413,8 +413,17 @@ export function WorkQueue({
                   value={editText}
                   onChange={(e) => setEditText(e.target.value)}
                   onKeyDown={(e) => {
+                    // The panel has ONE Enter rule. This box and the add box below it are
+                    // the same textarea to look at, so they cannot disagree about what
+                    // Enter does: Enter saves, Shift+Enter breaks the line. ⌘/Ctrl+Enter
+                    // still saves - it types no newline, so the old chord costs nothing.
+                    // The IME guard is the same one the add box needs: the Enter that
+                    // commits a Japanese/Chinese/Korean candidate must not save over it.
                     if (e.key === "Escape") setEditing(null);
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void saveEdit(item);
+                    else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      void saveEdit(item);
+                    }
                   }}
                 />
                 <div className="wq-actions">
@@ -746,7 +755,10 @@ export function AddBox({
             // ⌘/Ctrl+Enter still adds (it doesn't type a newline, so nothing is lost by
             // letting the old chord through) and `preventDefault` keeps the submitting
             // Enter from leaving a stray newline in a box that's about to be reused.
-            if (e.key === "Enter" && !e.shiftKey) {
+            // `isComposing` keeps the Enter that commits a Japanese/Chinese/Korean IME
+            // candidate from queueing the half-composed intent instead of finishing the
+            // word - harmless while the chord was ⌘+Enter, reachable now that it isn't.
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               onAdd();
             }

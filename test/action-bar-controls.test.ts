@@ -48,8 +48,10 @@ function render(props: Record<string, unknown>): string {
 
 test("an expanded card keeps every control a collapsed one has", () => {
   // The regression in one line. Expanding is for reading a conversation; it is not a
-  // reason to take away the buttons.
-  const html = render({ expanded: true });
+  // reason to take away the buttons. `hasReply` is what an expanded card reports once
+  // its transcript is carrying the reply box - the state the old `!expanded` gate used
+  // to blank this row on.
+  const html = render({ hasReply: true });
   for (const label of ["Send", "Focus", "Queue", "Reset", "Kill"]) {
     assert.match(html, new RegExp(`>${label}`), `expanded card lost ${label}: ${html}`);
   }
@@ -58,8 +60,8 @@ test("an expanded card keeps every control a collapsed one has", () => {
 test("neither card starts with a compose box open", () => {
   // Both send surfaces are opened deliberately - by Send or the shortcut. A bar that
   // rendered its input unbidden would be the second box on an expanded card.
-  assert.ok(!render({ expanded: false }).includes("compose-input"));
-  assert.ok(!render({ expanded: true }).includes("compose-input"));
+  assert.ok(!render({ hasReply: false }).includes("compose-input"));
+  assert.ok(!render({ hasReply: true }).includes("compose-input"));
 });
 
 test("the queue button is a disclosure that reports whether the drawer is open", () => {

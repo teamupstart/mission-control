@@ -28,7 +28,7 @@ export interface ActionBarHandle {
  */
 export function ActionBar({
   session,
-  expanded = false,
+  hasReply = false,
   queueOpen = false,
   onToggleQueue,
   onFocusReply,
@@ -36,8 +36,13 @@ export function ActionBar({
   onReset,
 }: {
   session: Session;
-  /** Whether this card is focus-expanded (the transcript's reply box is on screen). */
-  expanded?: boolean;
+  /**
+   * Whether the card is currently carrying the transcript's reply box - the live
+   * answer to "is there already a compose box here?", reported by the panel itself.
+   * Deliberately NOT `expanded`: an expanded card whose transcript is unavailable
+   * renders no reply row, and one that recovers mounts it without expanding again.
+   */
+  hasReply?: boolean;
   /** Whether the work-queue panel is currently showing, so Queue can read as pressed. */
   queueOpen?: boolean;
   /** Show / hide this card's work-queue panel. */
@@ -103,12 +108,14 @@ export function ActionBar({
     setComposing(true);
   }
 
-  // The transcript's reply box arrives with the expansion, so a compose box open here
-  // when the card expands would be the second one on the card. Close it - the text is
-  // in the draft map, so reopening Send on the collapsed card brings it straight back.
+  // A card has at most ONE send input, and the transcript's reply box wins whenever it
+  // exists: this box may only be open while there is genuinely no other. So close it
+  // the moment a reply box appears - whether that's the card expanding, or a transcript
+  // that was `unavailable` reconnecting and mounting its reply row under a box already
+  // open here. The text is in the draft map, so reopening Send brings it straight back.
   useEffect(() => {
-    if (expanded) setComposing(false);
-  }, [expanded]);
+    if (hasReply) setComposing(false);
+  }, [hasReply]);
 
   function focusPane() {
     void run("focus", () => api.focus(session.id));

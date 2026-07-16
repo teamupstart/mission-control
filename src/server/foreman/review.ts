@@ -1,7 +1,7 @@
 import type { z } from "zod";
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { runStructured } from "./structured.ts";
+import { runStructured } from "../claude-cli.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 

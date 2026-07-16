@@ -24,7 +24,7 @@ import type { QueueConfig } from "./queue-machine.ts";
 import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import { verifyItem } from "./queue-verify.ts";
-import { killLiveReviewers, runClaudeText } from "./structured.ts";
+import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
 // the fleet's needs-you queue AND feeds each session's work queue, one session at
@@ -127,7 +127,7 @@ function installShutdown(client: ForemanClient): void {
       if (closing) process.exit(1); // a second Ctrl-C means "now"
       closing = true;
       log("shutting down…");
-      killLiveReviewers();
+      killLiveClaudeRuns();
       void client.releaseLease(WORKER_ID).finally(() => process.exit(0));
     });
   }

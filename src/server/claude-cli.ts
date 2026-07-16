@@ -2,20 +2,37 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { ZodTypeAny, TypeOf } from "zod";
 
-// Runs ONE structured judgment in a fresh `claude -p` process, so every session
-// Foreman looks at starts from a clean context (the "auto-clears between reviews"
-// guarantee). Extracted from review.ts so the queue verifier inherits exactly the
-// same spawn discipline - the tool-less flag, the detached process group, the
-// timeout cap, and the parse-miss retry - rather than growing a second, subtly
-// different copy of it.
+// Runs ONE headless `claude -p` and hands back its output, so every caller starts
+// from a clean context. Two very different callers share it, which is why it lives
+// here rather than under `foreman/`:
+//
+//   - the Foreman worker, for a full review / queue verify / Tier 1 triage route;
+//   - the daemon, for the per-session Goal one-liner.
+//
+// They run in SEPARATE PROCESSES (the worker is `npm run foreman`), so this module
+// deliberately owns no global concurrency state: a shared module cannot enforce a
+// shared cap across process boundaries, and pretending otherwise would be a lie.
+// Each caller builds its own `createLimiter` instead - Foreman is near-sequential
+// already, and the daemon caps its goal runs so a busy fleet can't fork a subprocess
+// per card.
 
-/** The claude binary; overridable so a test/E2E can point at a fake. */
-const CLAUDE_BIN = process.env.FOREMAN_CLAUDE_BIN || "claude";
 /**
- * Default cap on a single run so a hung reviewer can't stall the queue. Sized for the
- * full reviewer; a cheaper caller (the Tier 1 router) passes its own `timeoutMs`.
+ * The claude binary; overridable so a test/E2E can point at a fake.
+ *
+ * `FOREMAN_CLAUDE_BIN` is still read: it predates this module's move out of
+ * `foreman/` and may be set in an existing environment, so dropping it would break
+ * those silently rather than loudly.
  */
-const REVIEW_TIMEOUT_MS = Number(process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000);
+const CLAUDE_BIN = process.env.FLEET_CLAUDE_BIN || process.env.FOREMAN_CLAUDE_BIN || "claude";
+/**
+ * Default cap on a single run so a hung child can't stall its caller. Sized for the
+ * full reviewer (Opus reading 48 turns with the whole POLICY), which is the most
+ * expensive thing that runs through here; every cheaper caller - the Tier 1 router,
+ * the goal refiner - passes its own `timeoutMs` rather than inheriting this.
+ */
+const DEFAULT_TIMEOUT_MS = Number(
+  process.env.FLEET_CLAUDE_TIMEOUT_MS || process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000,
+);
 
 /**
  * The result of one structured run: either a model-produced, schema-valid value
@@ -28,18 +45,18 @@ const REVIEW_TIMEOUT_MS = Number(process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_00
  */
 export type StructuredResult<T> = { kind: "ok"; value: T } | { kind: "failed"; reason: string };
 
-/** Children we spawned, so a worker exit doesn't leave them burning tokens. */
+/** Children we spawned, so a process exit doesn't leave them burning tokens. */
 const live = new Set<ReturnType<typeof spawn>>();
 
 /**
- * Kill every reviewer we started.
+ * Kill every headless run we started.
  *
- * Reviewers spawn `detached: true` (so the fleet poller never discovers them as
- * phantom sessions), which also means they SURVIVE the worker's death and keep
- * burning tokens to nowhere. A SIGKILL of the worker still leaks them - nothing
+ * Children spawn `detached: true` (so the fleet poller never discovers them as
+ * phantom sessions), which also means they SURVIVE their parent's death and keep
+ * burning tokens to nowhere. A SIGKILL of the parent still leaks them - nothing
  * can be done about that from in here - but every ordinary exit path is covered.
  */
-export function killLiveReviewers(): void {
+export function killLiveClaudeRuns(): void {
   for (const child of live) killTree(child);
   live.clear();
 }
@@ -48,13 +65,41 @@ let exitHooked = false;
 function hookExitOnce(): void {
   if (exitHooked) return;
   exitHooked = true;
-  process.on("exit", killLiveReviewers);
+  process.on("exit", killLiveClaudeRuns);
+}
+
+/**
+ * A per-caller concurrency gate: `limit(fn)` runs `fn` once a slot is free.
+ *
+ * Scoped to the caller, never module-global, because the two callers want opposite
+ * things - Foreman wants its serial review queue left alone, while the daemon wants
+ * a hard ceiling on goal refreshes so a 20-card fleet answering prompts at once
+ * can't fork 20 subprocesses. The loop (not an `if`) is what makes it correct: a
+ * released waiter re-checks the count instead of trusting that the slot it was woken
+ * for is still free, so two waiters resumed in the same tick can't both take one slot.
+ */
+export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async function limit<T>(fn: () => Promise<T>): Promise<T> {
+    while (active >= concurrency) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    }
+    active++;
+    try {
+      return await fn();
+    } finally {
+      active--;
+      waiting.shift()?.();
+    }
+  };
 }
 
 /**
  * Ask a fresh tool-less `claude -p` for a value matching `schema`, retrying once
  * on a parse miss with a stricter reminder (the model occasionally editorializes
- * in prose instead of emitting the raw object). Never throws.
+ * in prose instead of emitting the raw object, or wraps it in a markdown fence
+ * despite being told not to - both observed). Never throws.
  *
  * `extract` turns raw stdout into a candidate value; pass the caller's own ladder
  * so an existing extractor (with its envelope/fence handling) stays the single
@@ -63,7 +108,8 @@ function hookExitOnce(): void {
 export async function runStructured<S extends ZodTypeAny>(
   prompt: string,
   extract: (raw: string) => TypeOf<S> | null,
-  label = "Foreman",
+  label = "The model",
+  opts: { model?: string; timeoutMs?: number } = {},
 ): Promise<StructuredResult<TypeOf<S>>> {
   const attempts = [
     prompt,
@@ -72,23 +118,24 @@ export async function runStructured<S extends ZodTypeAny>(
   for (const p of attempts) {
     let raw: string;
     try {
-      raw = await runClaudeText(p);
+      raw = await runClaudeText(p, opts);
     } catch (err) {
       return { kind: "failed", reason: `${label} failed: ${String(err)}` };
     }
     const value = extract(raw);
     if (value) return { kind: "ok", value };
   }
-  return { kind: "failed", reason: `${label} could not parse a valid reply from the reviewer.` };
+  return { kind: "failed", reason: `${label} could not parse a valid reply from the model.` };
 }
 
 /**
- * Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. Exported so the
- * cheap Tier 1 triage reuses the exact same headless, tool-less, injection-isolated
- * subprocess machinery - only with a different (cheaper) model. `opts.model` maps to
- * `--model`; omit it for the default (full-reviewer) model. `opts.timeoutMs` defaults to
- * the full review's budget, which is sized for Opus reading 48 turns with the whole POLICY -
- * a cheaper caller should pass its own (see the worker's Tier 1 router).
+ * Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. `opts.model` maps
+ * to `--model`; omit it to inherit the CLI's own default, which is the most expensive
+ * and least predictable choice - every cheap caller should name a model. `opts.timeoutMs`
+ * defaults to the full review's budget, so a cheaper caller should pass its own.
+ *
+ * Note this runs through the local `claude` CLI, NOT the Anthropic API: there is no
+ * API key in this path, and usage bills through whatever the CLI is logged in as.
  */
 export function runClaudeText(
   prompt: string,
@@ -99,11 +146,11 @@ export function runClaudeText(
     // empty value) that sets the available-tool list to empty, disabling every
     // built-in tool. The prompt embeds untrusted child-session transcript text (and,
     // for the queue verifier, untrusted repo content from the diff), and the
-    // reviewer only ever needs to emit JSON - so a crafted/compromised transcript
+    // model only ever needs to emit JSON - so a crafted/compromised transcript
     // must not be able to steer it into invoking tools (a prompt-injection surface).
     // `detached: true` makes the child its own session/process-group leader with no
     // controlling terminal, so the fleet poller (which groups agents by tty and
-    // skips tty-less ones) never discovers this headless reviewer as a phantom
+    // skips tty-less ones) never discovers this headless run as a phantom
     // session.
     const args = ["-p", "--output-format", "json", "--tools", ""];
     if (opts.model) args.push("--model", opts.model);
@@ -124,8 +171,8 @@ export function runClaudeText(
     const timer = setTimeout(() => {
       killTree(child);
       done();
-      reject(new Error("review timed out"));
-    }, opts.timeoutMs ?? REVIEW_TIMEOUT_MS);
+      reject(new Error("claude -p timed out"));
+    }, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     timer.unref?.();
     // Decode ONCE, as a stream, rather than coercing each Buffer chunk to a string
     // independently. `claude -p` streams its response, so a multi-byte character
@@ -149,8 +196,8 @@ export function runClaudeText(
       else reject(new Error(`claude exited ${code}: ${err.slice(0, 300)}`));
     });
     // `child.on("error")` above is the ChildProcess's (spawn failures); stdin is a
-    // separate Writable, and an unhandled `error` on it THROWS - taking the worker
-    // down rather than failing this one verify. Nothing catches that: it isn't a
+    // separate Writable, and an unhandled `error` on it THROWS - taking the caller's
+    // process down rather than failing this one run. Nothing catches that: it isn't a
     // promise rejection, so `main().catch()` never sees it.
     //
     // The write is what raises it. A verify prompt carries a diff, a transcript
@@ -159,7 +206,7 @@ export function runClaudeText(
     // auth or rate-limit fast-fail, or a build that rejects `--tools ""`), the pending
     // write gets EPIPE. Swallowing it is right because it isn't the diagnosis: the
     // `close` handler already reports the real exit code and stderr, which is what
-    // failVerify should retry-then-escalate on.
+    // the caller should retry-then-escalate on.
     child.stdin.on("error", () => {});
     child.stdin.write(prompt);
     child.stdin.end();
@@ -167,7 +214,7 @@ export function runClaudeText(
 }
 
 /**
- * Terminate a detached reviewer. Because it's spawned `detached`, the child is its
+ * Terminate a detached child. Because it's spawned `detached`, the child is its
  * own process-group leader, so signalling the negative pid kills it plus any
  * grandchildren it spawned; fall back to a direct kill if the group signal fails.
  */

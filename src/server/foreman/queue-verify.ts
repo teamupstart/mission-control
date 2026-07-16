@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
-import { runStructured } from "./structured.ts";
+import { runStructured } from "../claude-cli.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
 // Runs ONE work-item verification in a fresh tool-less `claude -p`, mirroring

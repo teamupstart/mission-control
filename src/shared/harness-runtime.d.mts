@@ -6,6 +6,7 @@ export function envVar(suffix: string): string | undefined;
 export const PORT: number;
 export const HOST: string;
 export const BASE_URL: string;
+export const LEASE_HOLDER: string;
 
 export function stateDir(): string;
 export function tokenPath(): string;

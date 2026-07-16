@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
+import { composeWrapup } from "@shared/queue.ts";
 import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
 import { api, fetchQueue } from "../lib/api.ts";
@@ -771,16 +772,11 @@ function Wrapup({
   );
 }
 
-/**
- * The composed wrap-up instruction. A guess, which is exactly why the textarea is
- * editable. Both ticked prefills `/no-mistakes` alone, because that pipeline
- * pushes and opens the PR itself - asking for both would double up.
- */
-function composeWrapup(pr: boolean, nm: boolean): string {
-  if (nm) return "/no-mistakes";
-  if (pr) return "Please commit this work, push the branch, and open a PR.";
-  return "";
-}
+// `composeWrapup` moved to @shared/queue.ts: Foreman can now compose this same
+// instruction itself (the `wrapup` config), and the card and the worker MUST send
+// identical bytes. "Both ticked prefills `/no-mistakes` alone, because that pipeline
+// pushes and opens the PR itself" is a rule that has to hold on both paths, so it is
+// spelled once - same argument as IN_FLIGHT_ITEM_STATES.
 
 /** The re-attach affordance for a queue left behind by a previous session here. */
 function ReattachHint({

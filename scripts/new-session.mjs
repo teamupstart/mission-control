@@ -9,7 +9,8 @@
 // Usage: node scripts/new-session.mjs [--holder <label>] [-- <command…>]
 //   (no command)     open your $SHELL in the worktree
 //   -- claude        launch an agent directly in the worktree
-//   --holder <label> record who holds the lease (default: fleet-control)
+//   --holder <label> record who holds the lease (default: this harness - the only
+//                    holder its leak sweep reclaims; pass your own to park a tree)
 //
 // The lease is durable: the worktree stays yours after you exit, so a
 // backgrounded agent keeps its tree. Release it later with:
@@ -18,13 +19,19 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
+import { LEASE_HOLDER } from "../src/shared/harness-runtime.mjs";
 import { have } from "./lib.mjs";
 
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // --- args -------------------------------------------------------------------
 const args = process.argv.slice(2);
-let holder = "fleet-control";
+// The default is the harness's own lease identity, imported so this script and the
+// daemon's leak sweep (src/server/pool.ts) can never disagree about it: that label is
+// the only one the sweep reclaims, so a literal here that drifted from the gate's
+// would silently strand every lease this script takes. A lease recorded under any
+// other label is yours until you `treehouse return` it - which is what --holder is for.
+let holder = LEASE_HOLDER;
 let command = [];
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--") {

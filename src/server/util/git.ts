@@ -75,6 +75,32 @@ function mainRootFromCommonDir(common: string): string {
 }
 
 /**
+ * The MAIN repo root behind a working dir - i.e. the checkout that owns the
+ * shared git dir, not the linked worktree the caller happens to stand in.
+ *
+ * A pooled worktree's cwd resolves to itself under `gitInfo().root`; treehouse
+ * (and `git worktree`) instead key a pool off the repo that owns it, so the pool
+ * reaper has to walk from any tree back to that owner. The commondir pointer is
+ * exactly that link: `<main-root>/.git`, so the main root is its parent.
+ *
+ * Returns null for a bare repo and for a dir outside a repo. That null is where
+ * this parts ways with `gitInfo().repoRoot`, which names the bare repo itself so
+ * an allowlist can still match it: naming a pool owner we can't hand a worktree
+ * back to would be a guess, and this feeds a destructive return. Pure filesystem,
+ * like the rest of this module - no subprocess.
+ */
+export function mainRepoRoot(cwd: string | null): string | null {
+  if (!cwd) return null;
+  const found = resolveGitDir(cwd);
+  if (!found) return null;
+  const common = commonDir(found.gitDir);
+  // A normal clone's common dir is `<root>/.git`; anything else (a bare repo, a
+  // relocated git dir) has no worktree we can name, so don't guess one.
+  if (basename(common) !== ".git") return null;
+  return realPath(dirname(common));
+}
+
+/**
  * Resolve the git directory (where HEAD lives) and the worktree root that holds
  * it, by walking up from a working dir. A normal checkout has a `.git`
  * DIRECTORY; a linked worktree or submodule has a `.git` FILE whose `gitdir:`

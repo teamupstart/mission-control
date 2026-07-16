@@ -8,7 +8,8 @@ import type {
 } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { ReportBucket } from "@shared/session.ts";
-import { inFlightItem, isTerminalState } from "@shared/queue.ts";
+import { autoWrapupPayload, inFlightItem, isTerminalState } from "@shared/queue.ts";
+import type { WrapupMode } from "@shared/queue.ts";
 
 // The lifecycle predicates are defined in @shared/queue.ts, not here: the DB's
 // partial unique index is built from the same constant, so the set of in-flight
@@ -36,6 +37,8 @@ export interface QueueConfig {
   settleMs: number;
   /** How long to wait for the agent to ingest a delivered prompt before resending. */
   pickupTimeoutMs: number;
+  /** What to do when the queue drains: ask the human, or type the instruction ourselves. */
+  wrapup: WrapupMode;
 }
 
 /** What the worker should do for one session this tick. Every branch is explicit. */
@@ -57,7 +60,13 @@ export type QueueAction =
   | { kind: "verify"; item: WorkItem }
   | { kind: "escalate"; item: WorkItem; reason: string }
   /** Every item is terminal and the drain ask hasn't fired yet. */
-  | { kind: "ask-wrapup"; queue: SessionQueue };
+  | { kind: "ask-wrapup"; queue: SessionQueue }
+  /**
+   * Same drain, but `wrapup` says type it rather than ask. Carries the payload so
+   * the apply step holds no policy - and so the decision about WHAT to send is made
+   * in the same pure, table-tested place as the decision about whether to send.
+   */
+  | { kind: "auto-wrapup"; queue: SessionQueue; payload: string };
 
 export interface QueueTickInput {
   session: Session;
@@ -276,11 +285,44 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   const flight = inFlightItem(items);
   if (flight) return decideInFlight(flight, session, cfg, now);
 
-  // 5. Nothing open. Ask about wrapping up, once.
+  // 5. Nothing open. Wrap up, once - by asking, or by typing it if `wrapup` says so.
   const head = nextSendable(items);
   if (!head) {
-    if (queueDrained(items) && queue.wrapupAskedAt === null) return { kind: "ask-wrapup", queue };
-    return { kind: "none" };
+    if (!queueDrained(items) || queue.wrapupAskedAt !== null) return { kind: "none" };
+
+    const payload = autoWrapupPayload(cfg.wrapup);
+
+    // Nothing to automate (`ask`), or Foreman may not type here at all. `mayActLive` is
+    // the same gate a queue send passes, and it binds harder here: the instruction
+    // PUSHES - `/no-mistakes` opens a PR at the end of its pipeline - so a dry-run that
+    // typed it would be a dry-run that shipped. Dry-run degrades to the ask rather than
+    // to a `propose`, because the Wrapup card already IS the proposal: it prefills this
+    // exact text (same `composeWrapup`) and puts it one click away.
+    if (!payload || !mayActLive || !hasPane(session)) return { kind: "ask-wrapup", queue };
+
+    // Automation is on and allowed. It needs a FRESH idle signal, and `settledIdle`
+    // folds two very different failures into one `false`. Split them - they want
+    // opposite answers:
+    //
+    //  - stale overlay (`!instrumented`): no recent signal at all, e.g. Foreman was
+    //    disabled while this drained. We cannot confirm the agent is idle, and typing
+    //    an instruction that pushes into a session we know nothing current about is
+    //    precisely the unattended hazard this gate exists for. Hand it to the human.
+    //  - fresh signal that says "moving": just wait, the agent is mid-thought.
+    //
+    // Collapsing them breaks one case or the other: treat stale as "wait" and the ask
+    // stalls forever on a signal that stopped coming; treat moving as "ask" and see below.
+    if (!session.instrumented) return { kind: "ask-wrapup", queue };
+
+    // Not settled: wait, and DO NOT fall back to the ask. `ask-wrapup` stamps
+    // `wrapupAskedAt` - the once-only guard at the top of this block - so asking here
+    // would retire the auto path permanently over a few hundred milliseconds of
+    // drain-time noise, and the feature would silently never fire for exactly the busy
+    // sessions it exists for. `none` costs one poll; the loop comes straight back
+    // (`queueWantsATick` stays true while drained and unasked).
+    if (!settledIdle(session, now, cfg.settleMs)) return { kind: "none" };
+
+    return { kind: "auto-wrapup", queue, payload };
   }
 
   // 6. The agent is still busy (or hasn't settled): don't interrupt it.

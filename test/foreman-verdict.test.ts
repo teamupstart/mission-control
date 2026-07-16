@@ -32,6 +32,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     triage: "off",
     maxFixAttempts: 3,
     maxFixRounds: 10,
+    wrapup: "ask",
     ...over,
   };
 }
@@ -228,6 +229,7 @@ test("applyVerdict: live answer sends first, then records the answered note", as
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
+    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await applyVerdict(actions, ctx(), plan);
@@ -242,6 +244,7 @@ test("applyVerdict: a failed send records purpose only (no marker) and rethrows"
       throw new Error("pane gone");
     },
     resolveReview: async () => ({}),
+    logGateReply: async () => ({}),
   };
   const plan = planFromVerdict(ANSWER, ctx(), true);
   await assert.rejects(applyVerdict(actions, ctx(), plan), /pane gone/);
@@ -257,6 +260,7 @@ test("applyVerdict: dry-run draft writes the note and sends nothing", async () =
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
+    logGateReply: async () => (calls.push("logGateReply"), {}),
   };
   await applyVerdict(actions, ctx(), planFromVerdict(ANSWER, ctx(), false));
   assert.deepEqual(calls, ["putNote"]);

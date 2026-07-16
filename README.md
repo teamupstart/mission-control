@@ -531,6 +531,7 @@ managing worktrees"): each session gets its own isolated tree, and dependencies
 ```sh
 make session                      # lease a worktree, warm it, gate it, drop you in a subshell
 make session ARGS="-- claude"     # …or launch an agent in it directly
+make session ARGS="--holder mine" # …under your own lease label (see below)
 node scripts/new-session.mjs -- claude   # equivalent, without make
 ```
 
@@ -555,15 +556,79 @@ safety, the warm+gate step is run by `make session` itself. To make **every**
 `treehouse get` (not just `make session`) warm and gate automatically, add a
 `post_create` hook to your user config - see the comments in `treehouse.toml`.
 
+### Leaked leases are reclaimed for you
+
+A durable lease is what lets a backgrounded agent survive a restart, but it also
+means nothing frees a tree when its agent simply goes away. Left alone those
+leases pile up until the pool hits `max_trees` with **zero available**, and every
+later `treehouse get` fails - at which point a dispatch falls back to a throwaway
+`git worktree` and the pool stops being reused at all. (`treehouse prune` can't
+help: it skips any tree with an owner reservation, and a leaked lease is one.)
+
+So the daemon sweeps every treehouse repo it can name - the ones behind your live
+sessions and tracked tasks, plus every checkout under `FLEET_WORKSPACE_DIRS` -
+each `FLEET_POOL_REAP_MS`, and again whenever a dispatch finds the pool dry. The
+workspace scan is what reaches a *fully* leaked repo: once its agents are gone
+there is no live session left to advertise it, and you can't start one to fix
+that, because `treehouse get` is precisely what fails when the pool is dry.
+
+It hands back only the leases it can prove are dead, and only its **own**. A tree
+is returned **only** when it is leased to `fleet-control` (the holder both `make
+session` and dispatch record), treehouse reports no processes under it, no live
+session's cwd is inside it, no task the harness tracks still records it, it has no
+uncommitted changes, and origin's default branch already contains its HEAD.
+Anything else - including any uncertainty - leaves the lease alone: a leaked lease
+costs a slot, a wrong reap costs your work.
+
+The holder check is the harness's own rule, not something treehouse enforces
+(`treehouse return` takes a path and checks no holder). It matters because a lease
+survives *"even with no process running inside it, until you release it"* - so a
+tree you reserved with `treehouse get --lease --lease-holder my-label` is idle **on
+purpose**, and the sweep leaves it exactly where you put it, in this repo or any
+other one it walks. Reclaiming a `fleet-control` lease is only fair game because
+this harness took it and can tell its holder is gone.
+
+That is also the escape hatch from this side: `make session ARGS="--holder my-label"`
+(or `node scripts/new-session.mjs --holder my-label`) still warms and gates the tree
+the usual way, but records the lease under **your** label instead, so the sweep will
+never collect it - park a tree that way and it is yours until you
+`treehouse return` it yourself.
+
+The flip side is that the sweep only knows the label it records *today*. A lease
+`make session` took under this project's old `ai-harness` name is skipped like any
+other holder's, since nothing tells it apart from a reservation someone made under
+that label on purpose. If `treehouse status` shows an old idle lease the sweep
+never collects, hand it back yourself: `treehouse return <path>`.
+
+Note that a *live* agent's tree is often clean and merged (right after a push), so
+it's the liveness checks, not the git ones, that keep it yours - and a task's tree
+stays its own even after the agent exits, which is what lets **Mark done** keep
+your work. Because those liveness checks are the load-bearing ones, they're
+re-taken immediately before a tree is handed back, so a tree leased while the
+sweep was fetching is never returned on the strength of a reading from before it
+existed.
+
+Set `FLEET_POOL_REAP_MS=0` to switch the background sweep off entirely; the
+dispatch-time reap stays on, since its only alternative is abandoning the pool
+for a throwaway worktree.
+
+That last-resort fallback is no longer silent, which is how a pool could sit full
+without anyone noticing: a dispatch that still can't get a tree warns in the daemon
+log and points you at `treehouse status`. It reports what it actually observed and
+quotes treehouse's own words rather than blaming a full pool - `get` fails the same
+way for an unresolvable pool or a bad config, and sending you to a `treehouse status`
+that looks perfectly healthy would help nobody.
+
 ## Configuration
 
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `FLEET_PORT` | `7317` | daemon / dashboard port |
 | `FLEET_HOME` | `~/.fleet-control` | state dir (db, token, logs, dispatch worktrees) |
-| `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker |
+| `FLEET_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
 | `FLEET_POLL_MS` | `1500` | discovery interval |
 | `FLEET_NM_POLL_MS` | `5000` | no-mistakes status interval |
+| `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
 | `FLEET_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |

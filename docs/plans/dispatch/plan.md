@@ -167,11 +167,22 @@ Mirrors `ReviewManager`: owns lifecycle, persists via db, publishes via `registr
 `dispatch(task)` runs the provisioning pipeline (async, best-effort, always resolves; on
 error sets the task `failed` with a reason):
 
-1. **Provision an isolated worktree** via `provisionWorktree(repoRoot, taskId, slug, shortId)`:
+1. **Provision an isolated worktree** via
+   `provisionWorktree(repoRoot, taskId, slug, shortId, pins)`, where `pins` reads the
+   worktrees the harness is already holding (live session cwds + task-held trees) so a
+   reap here cannot evict a tree someone is standing in:
    - Fast path: if the repo opted into treehouse (a `treehouse.toml` at its root),
-     `treehouse get --lease --lease-holder ai-harness` (cwd = repoRoot) - a pre-warmed
-     pooled tree.
-   - Always-available fallback: `git -C <repoRoot> worktree add <HARNESS_HOME>/worktrees/<taskId> -b harness/<slug>-<shortId> HEAD`.
+     `treehouse get --lease --lease-holder <LEASE_HOLDER>` (cwd = repoRoot) - a pre-warmed
+     pooled tree. The holder label comes from the `LEASE_HOLDER` constant in
+     `src/shared/harness-runtime.mjs` (currently `fleet-control`), never a literal: it is
+     the mark the reaper matches on, so a lease taken under any other label can never be
+     reclaimed.
+   - If the pool hands back nothing it is usually **leaked**, not empty - leases are
+     durable, so agents that went away still hold slots. Reap them (`reapPool(repoRoot,
+     pins)`) and ask once more before giving up on the pool.
+   - Always-available fallback: `git -C <repoRoot> worktree add <FLEET_HOME>/worktrees/<taskId> -b harness/<slug>-<shortId> HEAD`,
+     with a warning naming what the pool actually reported - the fallback is a throwaway
+     checkout with none of the pool's pre-warming, so it must never be silent.
    - Returns `{ path (realpath), branch, provider }`. The path is stored as a **realpath**
      so it matches a pane's reported `cwd` exactly (macOS `/tmp`->`/private/tmp`).
    - Isolation is the harness's whole reason to exist, so a task **always** gets its own

@@ -120,11 +120,15 @@ export async function readPaneDialog(session: Pick<Session, "tmux" | "wezterm">)
  * on a mismatch is to send nothing, so this would read as Foreman going quiet.
  */
 export function sameOptionLabel(rendered: string, wanted: string): boolean {
-  const norm = (s: string): string => s.replace(/[’‘]/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
   const a = norm(rendered);
   const b = norm(wanted);
   if (!a || !b) return false;
   return a.startsWith(b) || b.startsWith(a);
+}
+
+/** Fold a label to the form the compares below use: ASCII apostrophes, one space, no case. */
+function norm(s: string): string {
+  return s.replace(/[’‘]/g, "'").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 /** Why a target row is not the row the menu is showing, in the caller's own words. */
@@ -145,16 +149,25 @@ export type OptionRowMiss =
  * in one place and not the other - and the half that drifts loose is the half that confirms a
  * row nobody chose.
  *
- * A label matching MORE THAN ONE row is refused. The prefix compare in `sameOptionLabel` is
- * there for wrapping, but a real permission prompt offers exactly this pair:
+ * An INEXACT label matching more than one row is refused. The prefix compare in
+ * `sameOptionLabel` is there for wrapping, but a real permission prompt offers exactly this
+ * pair:
  *
  *     1. Yes
  *     2. Yes, and don't ask again for: curl -s https://...
  *
  * so a caller that miscounts between those two rows has its label AGREE with the wrong one -
- * precisely the miscount the label is carried to catch. When the label cannot tell the rows
- * apart it has confirmed nothing, and nothing is not enough to answer with. Refusing is the
- * quiet failure (the menu stays up for a human); confirming would be the wrong one.
+ * precisely the miscount the label is carried to catch. When a partial label cannot tell the
+ * rows apart it has confirmed nothing, and nothing is not enough to answer with. Refusing is
+ * the quiet failure (the menu stays up for a human); confirming would be the wrong one.
+ *
+ * An EXACT match is unambiguous by construction, and is let through before that count is even
+ * taken. The prefix compare exists ONLY to tolerate a wrap, so a label that needed no
+ * tolerance was read whole off the row it names: a caller meaning row 2 above cannot quote
+ * row 1's label exactly, because row 2's rendered text is not "Yes". Without this the two
+ * rows that pair is FOR - the approve rows - are both unanswerable, which is every Bash
+ * permission prompt on the fleet: quiet on an ambiguous miscount is the trade this makes,
+ * quiet on an exact, correct answer would be Foreman unable to approve anything at all.
  */
 export function optionRowMiss(
   menu: PaneDialog,
@@ -163,6 +176,7 @@ export function optionRowMiss(
   const row = menu.options.find((o) => o.number === target.number);
   if (!row) return "no-such-row";
   if (!sameOptionLabel(row.label, target.label)) return "label-differs";
+  if (norm(row.label) === norm(target.label)) return null;
   if (menu.options.filter((o) => sameOptionLabel(o.label, target.label)).length > 1) {
     return "label-ambiguous";
   }

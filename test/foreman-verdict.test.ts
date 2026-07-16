@@ -385,6 +385,29 @@ test("a hard-wrapped label still matches the row it names", () => {
   assert.equal(planFromVerdict(v, ctx({ menu }), true).send?.option?.number, 2);
 });
 
+test("a routine approval on the real permission prompt still SENDS", () => {
+  // The menu Foreman meets most, and the direction it exists to automate. The rows are a
+  // prefix pair, so every guard on this path runs against them - and a guard that overshoots
+  // here doesn't degrade the feature, it deletes it: an `on` fleet would spend a Haiku call,
+  // route up, spend an Opus call, and hand a human every routine approval.
+  const menu = {
+    options: [
+      { number: 1, label: "Yes" },
+      { number: 2, label: "Yes, and don’t ask again for: curl -s https://example.com" },
+      { number: 3, label: "No" },
+    ],
+    highlighted: 1,
+  };
+  const v: Verdict = {
+    ...ACCESS_ANSWER,
+    answer: { text: "Approve - fetching a page is routine.", submit: true, option: { number: 1, label: "Yes" } },
+  };
+  const plan = planFromVerdict(v, ctx({ menu }), true);
+  assert.equal(plan.send?.option?.number, 1, "the approve row must be deliverable");
+  assert.equal(plan.note.disposition, "answered");
+  assert.equal(menuBlocksAnswer(v, ctx({ menu })), false, "and the tier ladder must not route it up");
+});
+
 test("a wrapped label that fits two rows is refused - the wrap can't be told from a miscount", () => {
   // The permission prompt's rows are a prefix pair ("Yes" / "Yes, and don't ask again for: X"),
   // so "the pane cut row 1 short" and "the reviewer miscounted onto row 2" are the SAME string

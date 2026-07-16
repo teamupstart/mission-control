@@ -218,11 +218,32 @@ test("a row the target's label can't be told apart from is refused, not confirme
   );
 });
 
-test("an unambiguous row on the same menu still confirms", () => {
-  // The tightening above must not go quiet on the rows the ambiguity doesn't touch, or a
-  // permission prompt could never be answered at all.
+test("every row of the real permission prompt is answerable by its own exact label", () => {
+  // The whole menu, row by row, because the prefix pair is the shape Foreman meets most and
+  // an ambiguity rule that overshoots here takes the APPROVE direction with it - the one it
+  // exists to deliver. Asserting only the row the ambiguity can't touch ("No") is what let a
+  // build ship in which Foreman could refuse a permission prompt and never approve one.
   const menu = parsePaneDialog(PERMISSION)!;
-  assert.equal(optionRowMiss(menu, { number: 3, label: "No" }), null);
+  assert.equal(optionRowMiss(menu, { number: 1, label: "Yes" }), null, "approve once");
+  assert.equal(
+    optionRowMiss(menu, { number: 2, label: "Yes, and don’t ask again for: curl -s https://example.com" }),
+    null,
+    "the persistent grant, quoted whole",
+  );
+  assert.equal(optionRowMiss(menu, { number: 3, label: "No" }), null, "deny");
+});
+
+test("an exact label is confirmed even where a partial one would be ambiguous", () => {
+  // Row 1's label is a prefix of row 2's, so the >1-row count sees both - but a caller meaning
+  // row 2 cannot quote "Yes" exactly, because row 2 does not read "Yes". Reading the row whole
+  // is itself the disambiguation, so the count must not run at all on an exact match.
+  const menu = parsePaneDialog(PERMISSION)!;
+  assert.equal(optionRowMiss(menu, { number: 1, label: "  yes  " }), null, "normalized, still exact");
+  assert.equal(
+    optionRowMiss(menu, { number: 2, label: "Yes, and don't ask again for: curl -s https://example.com" }),
+    null,
+    "an ASCII apostrophe against the pane's typographic one is still exact",
+  );
 });
 
 test("a wrapped label still confirms its row - the ambiguity check doesn't cost the wrap handling", () => {

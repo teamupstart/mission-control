@@ -3,6 +3,7 @@ import type { ReviewItem, Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
+import { DecisionForm } from "./PlanDecisions.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -69,17 +70,26 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
   return (
     <section className={`review review-${review.kind}`}>
       <div className="review-head">
-        <span className={`kind-tag kind-${review.kind}`}>{review.kind}</span>
+        <span className={`kind-tag kind-${review.kind}`}>
+          {review.kind === "plan-decisions" ? "decisions" : review.kind}
+        </span>
         <h3>{review.title}</h3>
       </div>
 
       <div className="review-content">
         {review.kind === "diff" && <DiffView diff={review.body} />}
         {review.kind === "plan" && <PlanView markdown={review.body} />}
+        {review.kind === "plan-decisions" && <PlanView markdown={review.body} />}
         {review.kind === "input" && <p className="question">{review.body}</p>}
       </div>
 
-      {review.kind === "input" ? (
+      {review.kind === "plan-decisions" ? (
+        <DecisionForm
+          decisions={review.decisions ?? []}
+          busy={busy}
+          onSubmit={(response) => void resolve("answer", response)}
+        />
+      ) : review.kind === "input" ? (
         <div className="review-actions">
           <textarea
             className="answer-box"

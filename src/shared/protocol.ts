@@ -106,14 +106,34 @@ export const RenameSchema = z.object({
 });
 export type Rename = z.infer<typeof RenameSchema>;
 
+/** One selectable choice within a `PlanDecision`. */
+export const PlanDecisionOptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  detail: z.string().optional(),
+  recommended: z.boolean().optional(),
+});
+
+/** One question the human answers when resolving a `plan-decisions` review. */
+export const PlanDecisionSchema = z.object({
+  id: z.string().min(1),
+  question: z.string().min(1),
+  options: z.array(PlanDecisionOptionSchema).min(1),
+  multiSelect: z.boolean().optional(),
+  allowOther: z.boolean().optional(),
+});
+export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
+
 /** An MCP-driven agent creating a review item bound to its session's pane. */
 export const CreateReviewSchema = z.object({
   env: EnvSchema,
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
-  kind: z.enum(["plan", "diff", "input"]),
+  kind: z.enum(["plan", "diff", "input", "plan-decisions"]),
   title: z.string().min(1),
   body: z.string(),
+  // Present only for kind `plan-decisions`; the questions the human answers.
+  decisions: z.array(PlanDecisionSchema).optional(),
 });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;
 

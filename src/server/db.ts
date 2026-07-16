@@ -5,6 +5,7 @@ import { DB_PATH } from "./config.ts";
 import type {
   NmFixReplySource,
   NoteDisposition,
+  PlanDecision,
   ReviewItem,
   ReviewKind,
   ReviewStatus,
@@ -242,6 +243,12 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
+  // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
+  // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
+  // this ALTER. Nullable with no default: every existing review, and every review of
+  // another kind, reads as "no decisions" - which is exactly what they are.
+  addColumn(d, "reviews", "decisions", "TEXT");
+
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
   // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
   // goals until its sessions take their next prompt, which is the truthful answer for a
@@ -321,6 +328,7 @@ interface ReviewRow {
   body: string;
   status: string;
   response: string | null;
+  decisions: string | null;
   created_at: number;
   resolved_at: number | null;
 }
@@ -334,18 +342,45 @@ function rowToReview(r: ReviewRow): ReviewItem {
     body: r.body,
     status: r.status as ReviewStatus,
     response: r.response,
+    decisions: parseDecisions(r.decisions),
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
   };
 }
 
+/**
+ * Decode the `decisions` column. A malformed blob returns null rather than throwing:
+ * one corrupt row must not take down `loadPendingReviews` and every review with it, and
+ * "no decisions" is the safe degradation - the card renders as a plain plan.
+ */
+function parseDecisions(raw: string | null): PlanDecision[] | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? (parsed as PlanDecision[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function insertReview(r: ReviewItem): void {
   openDb()
     .prepare(
-      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO reviews (id, session_id, kind, title, body, status, response, decisions, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(r.id, r.sessionId, r.kind, r.title, r.body, r.status, r.response, r.createdAt, r.resolvedAt);
+    .run(
+      r.id,
+      r.sessionId,
+      r.kind,
+      r.title,
+      r.body,
+      r.status,
+      r.response,
+      r.decisions && r.decisions.length ? JSON.stringify(r.decisions) : null,
+      r.createdAt,
+      r.resolvedAt,
+    );
 }
 
 export function updateReviewStatus(

@@ -874,19 +874,45 @@ export interface NmFixDetail {
   removed: number;
 }
 
-export type ReviewKind = "plan" | "diff" | "input";
+export type ReviewKind = "plan" | "diff" | "input" | "plan-decisions";
 export type ReviewStatus = "pending" | "approved" | "rejected" | "answered";
+
+/** One selectable choice within a `PlanDecision`. */
+export interface PlanDecisionOption {
+  /** Stable id, echoed back in the human's selection. */
+  id: string;
+  /** What the human reads on the control. */
+  label: string;
+  /** Optional one-line elaboration shown under the label. */
+  detail?: string;
+  /** Renders a "recommended" hint; does not preselect. */
+  recommended?: boolean;
+}
+
+/** One question the human answers when resolving a `plan-decisions` review. */
+export interface PlanDecision {
+  /** Stable id for this question. */
+  id: string;
+  question: string;
+  options: PlanDecisionOption[];
+  /** Checkboxes (many) when true, radios (one) when false/absent. */
+  multiSelect?: boolean;
+  /** Adds a free-text "Other" field the human can fill instead of / alongside options. */
+  allowOther?: boolean;
+}
 
 export interface ReviewItem {
   id: string;
   sessionId: string;
   kind: ReviewKind;
   title: string;
-  /** Markdown for `plan`, a unified diff for `diff`, a question for `input`. */
+  /** Markdown for `plan`/`plan-decisions`, a unified diff for `diff`, a question for `input`. */
   body: string;
   status: ReviewStatus;
   /** Human's textual response (for `input`) or optional comment on approve/reject. */
   response: string | null;
+  /** The decision points to answer; present only for kind `plan-decisions`. */
+  decisions?: PlanDecision[] | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ReviewItem, ReviewKind, ReviewStatus } from "@shared/types.ts";
+import type { PlanDecision, ReviewItem, ReviewKind, ReviewStatus } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { insertReview, updateReviewStatus } from "./db.ts";
 import { unref } from "./util/timers.ts";
@@ -19,7 +19,13 @@ export class ReviewManager {
 
   constructor(private registry: Registry) {}
 
-  create(sessionId: string, kind: ReviewKind, title: string, body: string): ReviewItem {
+  create(
+    sessionId: string,
+    kind: ReviewKind,
+    title: string,
+    body: string,
+    decisions: PlanDecision[] | null = null,
+  ): ReviewItem {
     const review: ReviewItem = {
       id: randomUUID(),
       sessionId,
@@ -28,6 +34,7 @@ export class ReviewManager {
       body,
       status: "pending",
       response: null,
+      decisions,
       createdAt: Date.now(),
       resolvedAt: null,
     };

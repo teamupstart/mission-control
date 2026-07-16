@@ -7,7 +7,7 @@ import { unref } from "./util/timers.ts";
 import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
 import { fixSummaries, retainFixLogs } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
-import type { NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
+import type { NmActiveStep, NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 
 /** How often to refresh no-mistakes status for gated repos (ms). */
 const NM_POLL_MS = Number(envVar("NM_POLL_MS") ?? 5000);
@@ -272,6 +272,7 @@ interface NmRun {
   awaitingAgent: string | null;
   findingsSummary: string | null;
   steps: NmStep[];
+  activeSteps: NmActiveStep[];
   gate: {
     step: string;
     status: string;
@@ -305,6 +306,7 @@ export function parseAxiStatus(out: string): NmRun | null {
     awaitingAgent: null,
     findingsSummary: null,
     steps: [],
+    activeSteps: [],
     gate: null,
     outcome: null,
   };
@@ -340,6 +342,18 @@ export function parseAxiStatus(out: string): NmRun | null {
             step: cols.step ?? "",
             status: cols.status ?? "",
             findings: Number(cols.findings ?? 0) || 0,
+          }),
+        );
+        continue;
+      }
+      const activeHeader = line.match(/^active_steps\[\d+\]\{([^}]*)\}:$/);
+      if (activeHeader) {
+        i = readRows(lines, i + 1, indentOf(raw), activeHeader[1]!, (cols) =>
+          run.activeSteps.push({
+            step: cols.step ?? "",
+            status: cols.status ?? "",
+            activeFor: cols.active_for ?? "",
+            lastActivity: cols.last_activity ?? "",
           }),
         );
         continue;
@@ -387,22 +401,55 @@ function readRows(
   return i - 1; // caller's loop will i++ to the dedented line
 }
 
-/** Split a TOON row into N cells, keeping commas inside the final free-text cell. */
+/**
+ * Split a TOON row into N cells, keeping commas inside a free-text cell.
+ *
+ * Two shapes of free text to protect. The final cell takes whatever is left, which
+ * covers an unquoted trailing `description`. And a QUOTED cell runs to its closing
+ * quote wherever it sits in the row - `active_steps` puts `last_activity` in the
+ * middle and quotes it, so whatever a step logged (commas and all) would otherwise
+ * shift every later cell along by one.
+ */
 function splitRow(line: string, n: number): string[] {
   const cells: string[] = [];
-  let rest = line;
+  let rest = line.trim();
   for (let k = 0; k < n - 1; k++) {
-    const comma = rest.indexOf(",");
+    const comma = cellEnd(rest);
     if (comma === -1) {
       cells.push(rest);
       rest = "";
     } else {
       cells.push(rest.slice(0, comma));
-      rest = rest.slice(comma + 1);
+      rest = rest.slice(comma + 1).trim();
     }
   }
   cells.push(rest);
   return cells.map((c) => c.trim().replace(/^"|"$/g, ""));
+}
+
+/** Index of the comma ending `row`'s first cell, or -1 when nothing follows it. */
+function cellEnd(row: string): number {
+  if (row.startsWith('"')) {
+    const close = closingQuote(row);
+    if (close !== -1) return row.indexOf(",", close + 1);
+  }
+  return row.indexOf(",");
+}
+
+/**
+ * Index of the quote closing the cell that opens `row`: the next `"` with the row's
+ * end or its next comma behind it. Quotes inside the text (`he said "no", loudly`)
+ * don't close it, so the cell survives them. -1 when the quote never closes, and
+ * the caller falls back to splitting on the comma - a malformed row degrades to the
+ * old behaviour instead of swallowing the rest of the line.
+ */
+function closingQuote(row: string): number {
+  for (let i = 1; i < row.length; i++) {
+    if (row[i] !== '"') continue;
+    const after = row.slice(i + 1).trimStart();
+    if (after === "" || after.startsWith(",")) return i;
+  }
+  return -1;
 }
 
 function scalar(line: string, key: string): string | null {
@@ -475,6 +522,7 @@ export function summarize(run: NmRun | null): NmRunSummary | null {
     gateSummary: run.gate?.summary ?? null,
     gateRisk: run.gate?.risk ?? null,
     steps: run.steps,
+    activeSteps: run.activeSteps,
     findings: run.gate?.findings ?? [],
     outcome: run.outcome,
   };

@@ -144,6 +144,7 @@ function mkGateParked(over: Partial<Session> = {}): Session {
       gateSummary: null,
       gateRisk: null,
       steps: [],
+      activeSteps: [],
       findings: [
         { id: "r1", severity: "warning", file: "a.go", action: "auto-fix", description: "Ignored error" },
         {

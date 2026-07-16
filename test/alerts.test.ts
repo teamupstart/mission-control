@@ -124,6 +124,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
     gateSummary: null,
     gateRisk: null,
     steps: [],
+    activeSteps: [],
     findings: [],
     outcome: null,
   };
@@ -195,6 +196,7 @@ test("backgrounding a no-mistakes run is not 'went idle'", () => {
     gateSummary: null,
     gateRisk: null,
     steps: [{ step: "review", status: "running", findings: 0 }],
+    activeSteps: [],
     findings: [],
     outcome: null,
   };

@@ -668,6 +668,35 @@ export interface NmStep {
   findings: number;
 }
 
+/**
+ * A step `axi status` reports as active right now, from its `active_steps` block.
+ *
+ * Why this exists: `steps[]` gives a step nothing but a status, and "running" covers
+ * both a step mid-work and a `ci` step that finished its checks hours ago and is
+ * simply watching an open PR. That collapse is what makes a green, pushed, PR-opened
+ * run look stuck - the dots say "running" and cannot say why. This block carries the
+ * why, in no-mistakes' own words.
+ *
+ * Only the columns the card uses are kept; the block carries a couple more, and
+ * ignoring them costs nothing (rows are read by column name). Deliberately NOT kept:
+ * `agent_pid`. It is empty for a perfectly healthy `ci` monitor, so reading it as
+ * "nothing is driving this" marks live steps dead - measured, not assumed.
+ */
+export interface NmActiveStep {
+  step: string;
+  status: string;
+  /** How long the step has been active, e.g. "2h26m". */
+  activeFor: string;
+  /**
+   * What the step last did, in no-mistakes' words, e.g. `2m43s ago: log: all CI
+   * checks passed - still monitoring until merged or closed`. It may lead with
+   * `quiet …` when the gap grows - which is idling, NOT a stall: a `ci` monitor
+   * legitimately sits quiet for hours between polls, then completes the moment the
+   * PR merges. Surfaced verbatim; nothing here infers health from it.
+   */
+  lastActivity: string;
+}
+
 export interface NmFinding {
   id: string;
   severity: string; // error | warning | info
@@ -706,6 +735,12 @@ export interface NmRunSummary {
   gateSummary: string | null;
   gateRisk: string | null;
   steps: NmStep[];
+  /**
+   * The steps no-mistakes reports as active, saying what each is actually doing.
+   * Empty when the block is absent - an older no-mistakes, or a run with nothing
+   * active - which costs the card an explanation, never a wrong one.
+   */
+  activeSteps: NmActiveStep[];
   findings: NmFinding[];
   outcome: string | null; // "passed" once complete
 }

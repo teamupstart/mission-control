@@ -51,6 +51,35 @@ const COMPLETED = `run:
     ci,skipped,0,0
 outcome: passed`;
 
+// A run that pushed, opened its PR, and is now just watching it. Verbatim from the
+// binary (run 01KXNAB6G2H92SN09FBYX1Z13A, PR #56), and the whole reason
+// `active_steps` is parsed: `steps[]` calls `ci` "running" - the same word it uses
+// for a step mid-work - so the card looked stuck on a run that was doing exactly
+// what it should. The `active_steps` row is the only thing that says why.
+//
+// Note `last_activity` is quoted and sits MID-row, with two more columns behind it:
+// a splitter that only guards the last cell shifts `agent_pid` and `round` along by
+// one and hands back garbage.
+const WATCHING_CI = `run:
+  id: "01KXNAB6G2H92SN09FBYX1Z13A"
+  branch: mancej/custom-skills
+  status: running
+  head: 7218c2b2
+  pr: "https://github.com/mancej/ai-harness/pull/56"
+  findings: none
+  steps[9]{step,status,findings,duration_ms}:
+    intent,completed,0,0
+    rebase,completed,0,1587
+    review,completed,0,1679722
+    test,completed,0,826931
+    document,completed,0,145493
+    lint,completed,0,14
+    push,completed,0,2379
+    pr,completed,0,38251
+    ci,running,0,0
+  active_steps[1]{step,status,active_for,last_activity,agent_pid,round}:
+    ci,running,1h19m,"quiet 1h17m ago: log: all CI checks passed - still monitoring until merged or closed","",starting`;
+
 const ERROR = `error: repo not initialized (run 'no-mistakes init' first)
 help[1]: Run \`no-mistakes init\` to set up the gate in this repository`;
 
@@ -86,6 +115,50 @@ test("parses a completed run with an outcome", () => {
   assert.equal(run.gate, null);
   assert.equal(run.steps.filter((s) => s.status === "completed").length, 7);
   assert.equal(run.steps.filter((s) => s.status === "skipped").length, 2);
+});
+
+// ---- active steps ----
+
+test("parses the active_steps block of a run watching its open PR", () => {
+  const run = parseAxiStatus(WATCHING_CI);
+  assert.ok(run);
+  // steps[] says only this much, which is why the card looked stuck...
+  assert.deepEqual(run.steps[8], { step: "ci", status: "running", findings: 0 });
+  // ...and this is the part that explains it.
+  assert.equal(run.activeSteps.length, 1);
+  assert.deepEqual(run.activeSteps[0], {
+    step: "ci",
+    status: "running",
+    activeFor: "1h19m",
+    lastActivity:
+      "quiet 1h17m ago: log: all CI checks passed - still monitoring until merged or closed",
+  });
+});
+
+// The quoted free text sits mid-row with two columns behind it, so a splitter that
+// only protects the LAST cell shifts them along by one - which is how a log line
+// containing a comma silently turns into a wrong `active_for`.
+test("a quoted mid-row cell keeps its commas without shifting later columns", () => {
+  const out = WATCHING_CI.replace(
+    "quiet 1h17m ago: log: all CI checks passed - still monitoring until merged or closed",
+    "log: tests failed, retrying, then passed",
+  );
+  const active = parseAxiStatus(out)!.activeSteps[0]!;
+  assert.equal(active.lastActivity, "log: tests failed, retrying, then passed");
+  assert.equal(active.activeFor, "1h19m");
+  assert.equal(active.step, "ci");
+});
+
+test("a run with no active_steps block parses to no active steps", () => {
+  // An older no-mistakes prints no such block; the card just loses the explanation.
+  assert.deepEqual(parseAxiStatus(COMPLETED)!.activeSteps, []);
+  assert.deepEqual(parseAxiStatus(REVIEW_GATE)!.activeSteps, []);
+});
+
+test("active steps survive the status -> card path", () => {
+  const card = summarize(parseAxiStatus(WATCHING_CI));
+  assert.equal(card?.activeSteps.length, 1);
+  assert.match(card!.activeSteps[0]!.lastActivity, /still monitoring until merged or closed/);
 });
 
 // The id is what a reset keys a dismissal on, so it has to survive all the way to
@@ -137,6 +210,7 @@ function run(over: Partial<NmRunSummary> = {}): NmRunSummary {
     gateSummary: null,
     gateRisk: null,
     steps: [],
+    activeSteps: [],
     findings: [],
     outcome: null,
     ...over,

@@ -151,13 +151,14 @@ export function runClaudeText(
     // `detached: true` makes the child its own session/process-group leader with no
     // controlling terminal, so the fleet poller (which groups agents by tty and
     // skips tty-less ones) never discovers this headless run as a phantom
-    // session.
+    // session. That covers discovery; `headlessEnv()` covers the other way in - the
+    // hooks this run fires - which would otherwise bind it to a real card.
     const args = ["-p", "--output-format", "json", "--tools", ""];
     if (opts.model) args.push("--model", opts.model);
     const child = spawn(CLAUDE_BIN, args, {
       cwd: tmpdir(),
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+      env: headlessEnv(),
       detached: true,
     });
     hookExitOnce();
@@ -211,6 +212,43 @@ export function runClaudeText(
     child.stdin.write(prompt);
     child.stdin.end();
   });
+}
+
+/**
+ * The env a headless run gets: the parent's, minus the terminal identity, plus a
+ * marker saying what this process is.
+ *
+ * A headless `claude -p` is Claude Code, so it fires the SAME hooks a human's session
+ * does. `hooks/harness-hook.mjs` binds an event to a card using `captureTerminalEnv()`,
+ * which reads TMUX_PANE / WEZTERM_PANE out of its own process - and the hook is a child
+ * of `claude`, which is a child of US. So inheriting the spawner's pane env makes every
+ * headless run impersonate whichever card sits in the pane the daemon or `npm run
+ * foreman` was launched from.
+ *
+ * That is not a hypothetical: it had poisoned 3 of the 12 rows in this machine's live
+ * `session_agent_bindings`, with two DIFFERENT real cards fused onto one headless run's
+ * uuid. `applyHook` writes `agentSessionId: evt.sessionId ?? target.agentSessionId`, so
+ * the headless uuid becomes the card's - rotating `noteKeyFor` and orphaning the Foreman
+ * note and work queue keyed on the real one, repointing `transcriptPath` at the headless
+ * run's own transcript, and overwriting `activity` with our prompt.
+ *
+ * Only the pane ids are dropped: `overlayKeyFromEnv` keys on those two alone, and they
+ * are the terminal identity a headless run has no business claiming. TERM_PROGRAM is
+ * captured by the hook but identifies a terminal *type*, not a card, so it stays.
+ *
+ * `FLEET_HEADLESS` is the second, independent layer: it lets the hook decline to report
+ * the run at all rather than merely failing to bind it. Both are kept because neither can
+ * be assumed - the hook script is installed globally from a checkout that may lag this
+ * code, and stripping the env is what protects a stale install.
+ */
+function headlessEnv(): NodeJS.ProcessEnv {
+  // Annotated, not inferred: spreading `process.env` drops its index signature, so an
+  // inferred type is the literal `{ FLEET_HEADLESS: string }` and the deletes below stop
+  // compiling.
+  const env: NodeJS.ProcessEnv = { ...process.env, FLEET_HEADLESS: "1" };
+  delete env.TMUX_PANE;
+  delete env.WEZTERM_PANE;
+  return env;
 }
 
 /**

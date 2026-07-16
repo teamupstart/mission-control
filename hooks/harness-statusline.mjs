@@ -149,9 +149,20 @@ async function main() {
   } catch {
     payload = {};
   }
+  // Same rule as harness-hook.mjs: a headless `claude -p` we spawned is our own machinery,
+  // not a session on a card. `applyStatusLine` binds by pane and rebinds agentSessionId
+  // exactly as `applyHook` does, so a report from a headless run would rotate a real card's
+  // note key. A non-interactive run has no status line to render today, which makes this
+  // insurance rather than a fix - but it is the same guard and the failure it prevents is
+  // silent.
+  //
+  // Only the REPORT is suppressed, never the delegation: rendering the line is this script's
+  // other job and a user-visible one, so a stray marker in an interactive env must not be
+  // able to blank someone's status line. This half is ours to skip; that half is theirs.
+  const headless = Boolean(process.env.FLEET_HEADLESS);
   // Delegate (renders the terminal line) and report, in parallel; wait for both so
   // Claude has the inner command's full output and the POST had time to land.
-  await Promise.all([runInner(raw), post(toBody(payload))]);
+  await Promise.all([runInner(raw), headless ? Promise.resolve() : post(toBody(payload))]);
 }
 
 main().finally(() => process.exit(0));

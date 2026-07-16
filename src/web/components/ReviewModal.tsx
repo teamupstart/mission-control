@@ -7,8 +7,9 @@ import { DecisionForm } from "./PlanDecisions.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
- * sent back with a note; a question is answered. Each resolution unblocks the
- * agent that is waiting on it (for diff/input) via the MCP long-poll.
+ * sent back with a note; a question is answered; a `plan-decisions` plan is answered
+ * by submitting its selections. Each resolution unblocks the agent that is waiting on
+ * it (for diff/input/plan-decisions) via the MCP long-poll.
  */
 export function ReviewModal({
   session,

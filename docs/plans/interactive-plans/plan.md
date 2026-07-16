@@ -1,6 +1,6 @@
 # Plan: Interactive plans (option-select decisions, answered from the dashboard)
 
-Status: **proposed.**
+Status: **implemented.**
 
 ## Goal
 
@@ -127,6 +127,9 @@ optional `decisions` payload on the POST.
 - **render** - `react-dom/server` render of `ReviewModal` with a `plan-decisions` review
   shows the questions, options, and a disabled-until-answered Submit (matching the
   existing `*-render.test.ts` convention; the SSE stream blocks browser automation here).
+- **http** - the full round-trip over the real daemon: `POST /mcp/reviews` creates the
+  review, `POST /api/reviews/:id/resolve` submits the selections, and the blocked
+  `/mcp/reviews/:id/wait` returns them to the caller.
 
 ## Out of scope
 

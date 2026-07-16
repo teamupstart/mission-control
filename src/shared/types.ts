@@ -909,7 +909,10 @@ export interface ReviewItem {
   /** Markdown for `plan`/`plan-decisions`, a unified diff for `diff`, a question for `input`. */
   body: string;
   status: ReviewStatus;
-  /** Human's textual response (for `input`) or optional comment on approve/reject. */
+  /**
+   * Human's textual response (for `input`), their formatted selections (for
+   * `plan-decisions`), or an optional comment on approve/reject.
+   */
   response: string | null;
   /** The decision points to answer; present only for kind `plan-decisions`. */
   decisions?: PlanDecision[] | null;

@@ -37,7 +37,7 @@ and get your decision back.
 - **Triages** the needs-you queue for you: **Foreman** is an optional auto-responder
   that reads each blocked session's transcript, auto-answers the routine calls,
   escalates the genuine forks as a decision brief, and writes a one-line Purpose on
-  every card - shipping OFF and drafting its answers before it ever sends.
+  every session it inspects - shipping OFF and drafting its answers before it ever sends.
 
 ## Quick start
 

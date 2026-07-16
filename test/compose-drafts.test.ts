@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   clearDraft,
-  pruneDrafts,
+  dropSessionDrafts,
   readDraft,
   resetDrafts,
   writeDraft,
@@ -76,17 +76,12 @@ test("a session id containing a colon still keys its own drafts", () => {
   // silently hand it to whichever session that prefix happened to name.
   writeDraft("host:1234:abc", "reply", "mine");
   assert.equal(readDraft("host:1234:abc", "reply"), "mine");
-  pruneDrafts(["host:1234:abc"]);
-  assert.equal(readDraft("host:1234:abc", "reply"), "mine");
 });
 
 test("emptying a box forgets the draft rather than remembering a blank", () => {
   writeDraft("s1", "queue", "typed");
   writeDraft("s1", "queue", "");
-  assert.equal(readDraft("s1", "queue"), "");
-  // Not merely blank - gone, so a prune has nothing to collect and a re-mount has
-  // nothing to restore.
-  pruneDrafts(["s1"]);
+  // Not merely blank - gone, so a re-mount has nothing to restore.
   assert.equal(readDraft("s1", "queue"), "");
 });
 
@@ -98,24 +93,36 @@ test("only a send forgets a draft - collapsing and cancelling do not", () => {
   assert.equal(readDraft("s1", "send"), "");
 });
 
-test("a prune drops a departed session's drafts and keeps every live one", () => {
+test("an evicted session's drafts are dropped, every other session's are untouched", () => {
+  // Collection is keyed to `session_remove`, which names ONE id: a departed session's
+  // drafts are the one thing no mount would ever collect, but a neighbour's text is
+  // none of its business.
   writeDraft("gone", "reply", "orphan");
   writeDraft("gone", "queue", "orphan too");
+  writeDraft("gone", "send", "orphan as well");
   writeDraft("alive", "reply", "keep me");
-  pruneDrafts(["alive"]);
+  dropSessionDrafts("gone");
   assert.equal(readDraft("gone", "reply"), "");
   assert.equal(readDraft("gone", "queue"), "");
+  assert.equal(readDraft("gone", "send"), "");
   assert.equal(readDraft("alive", "reply"), "keep me");
 });
 
-test("a prune against an empty list wipes the page - which is why App gates it", () => {
-  // Not a wish, a warning. The pre-snapshot session list is empty and NOT
-  // authoritative; pruning against it would delete every draft on screen. This pins
-  // the behaviour that makes App's `hasSnapshot` guard load-bearing rather than
-  // decorative, so removing that guard has to break a test.
-  writeDraft("s1", "reply", "would be lost");
-  pruneDrafts([]);
-  assert.equal(readDraft("s1", "reply"), "");
+test("dropping one session leaves a session whose id merely shares its prefix alone", () => {
+  // Keys are `${id}:${kind}` and ids can contain colons, so a prefix match would take
+  // "host:1234" to mean the whole of "host:1234:abc" - deleting a live card's draft.
+  writeDraft("host:1234", "reply", "the evicted one");
+  writeDraft("host:1234:abc", "reply", "a different, living session");
+  dropSessionDrafts("host:1234");
+  assert.equal(readDraft("host:1234", "reply"), "");
+  assert.equal(readDraft("host:1234:abc", "reply"), "a different, living session");
+});
+
+test("dropping a session nobody typed into is a no-op, not a wipe", () => {
+  // `session_remove` fires for every session that ever exits, and most carry no draft.
+  writeDraft("s1", "reply", "keep me");
+  dropSessionDrafts("never-typed-in");
+  assert.equal(readDraft("s1", "reply"), "keep me");
 });
 
 // ---- the boxes, re-mounting ----

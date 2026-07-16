@@ -15,7 +15,6 @@ import { ForemanBar } from "./components/ForemanBar.tsx";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
-import { pruneDrafts } from "./lib/drafts.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
@@ -159,20 +158,6 @@ export function App(): React.JSX.Element {
   // then swallow every grid shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
-    // A draft outlives every card that renders it (that's the point of the map), so
-    // a departed session's is the one thing that would never be collected.
-    //
-    // An EMPTY list is never authority to prune. `hasSnapshot` only means a snapshot
-    // MESSAGE arrived, not that the daemon has observed the fleet: the server writes
-    // `registry.snapshot()` on connect ungated, and a just-restarted daemon's registry
-    // is empty until its first discovery sweep lands. So a daemon restart under an open
-    // tab delivers a perfectly valid `sessions: []` and would wipe every draft on the
-    // page - the exact loss this map exists to prevent. Requiring a non-empty list
-    // costs a leak in the other direction: when a fleet legitimately empties, its
-    // drafts linger until the next non-empty snapshot collects them. That is a few
-    // small strings against silently destroying unsent typing, so prefer the leak -
-    // deleting nothing is always the safe failure here.
-    if (hasSnapshot && sessions.length > 0) pruneDrafts(sessions.map((s) => s.id));
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) {
@@ -181,16 +166,7 @@ export function App(): React.JSX.Element {
     }
     if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [
-    sessions,
-    visible,
-    selectedId,
-    expandedId,
-    diffSessionId,
-    resetSessionId,
-    renamingId,
-    hasSnapshot,
-  ]);
+  }, [sessions, visible, selectedId, expandedId, diffSessionId, resetSessionId, renamingId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {

@@ -63,21 +63,29 @@ export function clearDraft(sessionId: string, kind: DraftKind): void {
 }
 
 /**
- * Drop drafts belonging to sessions that no longer exist.
+ * Forget every box on one session, because that session is gone for good.
  *
- * Without this the map is a slow leak in a tab left open for days, and worse, a draft
- * could outlive its session and be re-hydrated into a reused id.
+ * Without some collection the map is a slow leak in a tab left open for days, and
+ * worse, a draft could outlive its session and be re-hydrated into a reused id.
  *
- * This is a dumb primitive and the caller owns the guard: it prunes against whatever
- * it is handed, so handed an empty list it cheerfully deletes every draft on the page.
- * Callers must only pass a list they KNOW is complete, which means a snapshot having
- * arrived is NOT enough - an empty session list is indistinguishable from a daemon that
- * simply hasn't swept yet, so App additionally refuses to prune against one.
+ * Collection must be driven by a positive "this one is gone" signal, and
+ * `session_remove` is that signal: Registry emits it only from its eviction timer,
+ * after a COMPLETED sweep confirmed the session missing. It names exactly one id and
+ * cannot mean anything else.
+ *
+ * Do not replace this with a prune that diffs the map against the list of live
+ * sessions. That infers "gone" from ABSENCE, and the client's session list is
+ * authoritative only at snapshot time. A sweep emits one upsert per session and each
+ * arrives as its own EventSource task, so a fleet rebuilding after a daemon restart
+ * renders as a list of 1, then 2, then 3 - and every draft not yet re-added looks
+ * departed. Guarding on "the list is non-empty" only moves the wipe from a list of 0
+ * to a list of 1. Absence is not evidence here, and deleting nothing is the safe
+ * failure: these are short, tab-scoped strings, so leaking one costs far less than
+ * destroying typing the user still wanted.
  */
-export function pruneDrafts(liveSessionIds: Iterable<string>): void {
-  const live = new Set(liveSessionIds);
+export function dropSessionDrafts(sessionId: string): void {
   for (const k of [...drafts.keys()]) {
-    if (!live.has(k.slice(0, k.lastIndexOf(":")))) drafts.delete(k);
+    if (k.slice(0, k.lastIndexOf(":")) === sessionId) drafts.delete(k);
   }
 }
 

@@ -1,0 +1,288 @@
+# Plan: Custom Skills (fleet-wide skill toggles)
+
+Status: decided, not built.
+Companion doc: the options analysis and the evidence behind every claim here live in the
+review artifact; this file is the buildable version.
+
+## Goal
+
+Let an operator review a catalog of skills in the dashboard, read a short description, and
+toggle one on. Enabling it must apply to **every** Claude session on the machine, including
+sessions the harness never launched, and **running sessions must pick it up without being
+terminated or recreated**. They may wait for a natural break, but a restart is not an
+acceptable cost.
+
+Skills are ordinary Claude Code skills. We use Claude's own skill loading rather than
+reimplementing it.
+
+## Why it fits this codebase (reuse, not rebuild)
+
+Almost nothing here is new mechanism. The pieces already exist and are load-bearing elsewhere:
+
+- `app_config` (`src/server/db.ts:129`) is a JSON-blob KV with `getAppConfig`/`setAppConfig`
+  (`:1091`). A new key needs **no migration**.
+- `src/server/foreman/config.ts:44` is the exact template for a schema-validated,
+  server-persisted config bag.
+- `settledIdle` (`src/server/foreman/queue-machine.ts:103`) already encodes "safe to type into
+  this pane". We import it. We do not re-derive it.
+- `injectPrompt` (`src/server/actions.ts:98`) already types into panes, and
+  `autoWrapupPayload` (`src/shared/queue.ts:91`) already types a slash command
+  (`/no-mistakes`) into a live session. `/reload-skills` is the same move, and a safer one:
+  it does not push, does not commit, and is idempotent.
+- `hooks/install.mjs` is the house discipline for touching global config: marker-matched,
+  idempotent, preserves the user's formatting byte-for-byte. The skills reconciler copies it.
+- `discovery/pane-mode.ts` already reads panes with `tmux capture-pane`.
+- UI: `.kb-row` (`src/web/styles.css:3161`) is a label+description+control row already.
+  `ForemanBar.tsx:122` has the master-toggle + `fieldset disabled` cascade. `useForeman.ts:70`
+  has optimistic-update-with-revert.
+
+The one genuinely new thing is **the daemon typing into panes unprompted**. See Edge cases.
+
+## Verified behaviour (tested, not assumed)
+
+Tested end-to-end against `claude 2.1.211` in a real tmux pane, using `injectPrompt`'s exact
+`set-buffer` / `paste-buffer -p` / `send-keys Enter` sequence. A session was booted **without**
+the skill, the symlink added **after** it reached its prompt, then `/reload-skills` injected:
+
+```
+❯ /reload-skills
+  ⎿  Reloaded skills: 52 skills available (no changes)   ← before, symlink absent
+# symlink created here, mid-session, no restart
+❯ /reload-skills
+  ⎿  Reloaded skills: 53 skills available (1 added)      ← picked up
+```
+
+Established by that test and its controls:
+
+1. **`/reload-skills` picks up a newly symlinked directory mid-session.** The requirement is
+   satisfiable. Command def: `name: "reload-skills"`, `supportsNonInteractive: true`,
+   `thinClientDispatch: "post-text"`.
+2. **Symlinks are followed.** Targets under both `/private/tmp` and `~/workspace` loaded.
+3. **The `fleet-` directory prefix is safe.** Directory name and frontmatter `name` are
+   independent: `fleet-html-plans/` containing `name: html-plans` loads and presents as
+   `/html-plans`. Omitting `name` defaults it to the directory name. This is the ideal split:
+   the harness owns the directory namespace, the user sees a clean skill name.
+4. **`disable-model-invocation: true` excludes a skill from the "N available" count** and from
+   model reach entirely. Almost never what a fleet skill wants. Do not set it in the catalog.
+5. **Do not parse the response.** On removal the count correctly dropped (skill unloaded) but
+   the label still read `(no changes)` instead of `(1 removed)`. The unload is real; the
+   message is not trustworthy. Treat injection as fire-and-forget.
+6. **Nothing auto-reloads.** No watcher on the skills directory. The existence of a command
+   described as "Pick up skills added or changed on disk during this session" is itself the
+   proof. The reload must be triggered.
+
+## Decisions
+
+| Decision | Choice | Consequence |
+| --- | --- | --- |
+| Delivery | Skill files symlinked into `~/.claude/skills/` | Native loading, covers hand-started sessions |
+| Reload loop home | The daemon | Always works; port bind is the mutex, no lease |
+| Reload gate | `settledIdle` **plus** a `capture-pane` check | Strictest; see Edge cases for why |
+| Scope | Global, v1 | **Removes the hook layer entirely from v1** |
+| Blast radius | Global is the point | Accepted; does not relax marker discipline |
+| Codex | Label rows claude-only, ship | Needs an agent badge and an honest count |
+| Catalog | Baked into the repo | Sharpens the asar question below |
+| UI home | A section in `SettingsModal` | Gains that modal's first async error path |
+
+Global scope is the most valuable answer: per-repo scoping was the only justification for a
+`SessionStart` `additionalContext` layer, so v1 needs **no** change to `harness-hook.mjs`, and
+the hook's "write NOTHING to stdout" contract (`harness-hook.mjs:9`) survives intact. The
+`/hooks/:event` route keeps returning `204`.
+
+## The catalog (`skills/<id>/SKILL.md`, new)
+
+Baked into the repo, versioned and reviewable with the app. Standard Claude frontmatter plus a
+`fleet` block for catalog display:
+
+```yaml
+---
+name: html-plans           # what the user sees; may differ from the directory
+description: ...           # preloaded into context; drives model invocation
+metadata:
+  fleet:
+    category: planning
+    enforcement: opportunistic | triggered | intercepted | always-on
+---
+```
+
+`enforcement` is not decoration. Native skills are **model-invoked**: enabling one does not
+guarantee behaviour. The UI must show which rung a skill sits on so
+"Claude will use this when relevant" never masquerades as a guarantee. `/reload-skills` fixes
+*delivery*, not *activation*. A reloaded skill is loaded, not obeyed.
+
+## Data model (`src/shared/protocol.ts`)
+
+Beside `ForemanConfigSchema:220`, same partial-patch shape:
+
+```ts
+export const SkillsConfigSchema = z.object({
+  enabled: z.boolean().default(false),          // master switch
+  skills: z.record(z.boolean()).default({}),    // id -> enabled
+  generation: z.number().int().default(0),      // bumped ONLY when the symlink set changes
+});
+```
+
+`generation` is the whole coalescing story. A session never needs more than one reload to
+become current no matter how many skills were flipped, so this is a **watermark, not a queue**.
+Flip five skills in ten seconds and the generation lands at 5; a session that reloads once
+reads the current directory and is done. A queue would have typed five commands into every
+pane.
+
+Bump the generation **only when the reconciler actually changed the symlink set**, never on
+any config write. Otherwise touching an unrelated setting reloads the whole fleet.
+
+Per-session ack: a new `skills_ack` column or row keyed by `noteKeyFor(s)` (`registry.ts:1688`)
+holding the last generation that session acknowledged.
+
+## Backend changes
+
+### `src/server/skills/catalog.ts` (new)
+Scan `skills/`, parse frontmatter, return `{ id, name, description, category, enforcement }[]`.
+
+### `src/server/skills/config.ts` (new)
+Mirror of `foreman/config.ts:44`. `getSkillsConfig` / `setSkillsConfig` over `app_config` key
+`"skills"`. No migration.
+
+### `src/server/skills/reconcile.ts` (new)
+Sync `~/.claude/skills/fleet-<id>` against the enabled set.
+
+- Marker: the `fleet-` prefix. **Only ever touch entries matching it.** The operator's
+  `cyc-prod-build`, `no-mistakes`, `fix-bugs`, `implement-plan`, `phase-plan` must be
+  untouchable by construction, not by care.
+- Idempotent. Re-running is a no-op.
+- Returns whether anything changed, so the caller knows whether to bump the generation.
+- Uninstall removes every `fleet-*` and nothing else.
+
+### `src/server/skills/reload.ts` (new) - the broadcast loop
+Hangs off the **existing 1500ms discovery tick** (`config.ts:25`) rather than keeping its own
+timer. The poller already re-reads the whole fleet each pass, which is exactly the freshness
+this needs: a fan-out that snapshots once and injects N times reintroduces precisely the
+staleness the per-target re-read at `worker.ts:288` exists to prevent. Riding the poller makes
+the correct behaviour the lazy one.
+
+Per tick, in this order (cheapest filter first):
+
+1. `agent === "claude"` and `state !== "exited"`. Codex has no `/reload-skills`.
+2. `ack < generation`. Skips everything already current.
+3. `settledIdle(s, now, settleMs)` - imported from `queue-machine.ts:103`, not copied.
+4. **Only now** spawn `capture-pane` and confirm a normal prompt. It is the last gate, not a
+   filter: a subprocess per session per tick would be a real cost.
+5. Mark the ack **before** injecting. Never retry.
+
+Step 5's ordering is copied deliberately from the auto-wrapup path (`queue-apply.ts:277`),
+whose comment stands: *"Never retry: a retry IS the double-push."* A reload is far more
+forgiving than a wrap-up, but the ordering costs nothing and removes a class of double
+delivery.
+
+The `/reload-skills` literal lives in `src/shared/queue.ts` beside `autoWrapupPayload`, for the
+reason that file already gives: the worker and the card must send the same bytes.
+
+### `src/server/actions.ts:178`
+Generalize the `driving` set from permission-mode cycling to **any pane write**. Nothing today
+stops a reload broadcast from interleaving keystrokes with a Foreman auto-wrapup into the same
+pane; a fleet-wide broadcast is the first feature that makes that collision likely.
+
+### `src/server/routes.ts` (~:780, beside the foreman routes)
+- `GET /api/skills` - catalog plus enabled state plus a stale count.
+- `PUT /api/skills/config` - patch, reconcile, bump generation if changed.
+
+## Frontend changes
+
+### `src/web/useSkills.ts` (new)
+Clone `useForeman.ts`: 4s poll, optimistic update with revert. Skills config is coarse
+dashboard chrome, not worth an SSE channel (that file's comment explains why). A rejected patch
+must not leave its value on screen.
+
+### `src/web/components/SkillsPanel.tsx` (new)
+Rows on the `.kb-row` shape. Master toggle plus `fieldset disabled` cascade from
+`ForemanBar.tsx:113-122`. Each row shows name, description, an **enforcement badge**, and a
+**claude-only badge**. Where useful: "N sessions will pick this up when they next go idle",
+excluding codex sessions or the count lies on a mixed fleet.
+
+### `src/web/components/SettingsModal.tsx:30`
+A second `<section className="settings-section">`. Note this modal has only ever persisted to
+localStorage, so it gains its first async error path; `:104` already renders a
+`.settings-error`, so wire `config.error` into it.
+
+### `src/web/styles.css:3161`
+`.skill-row` derived from the existing `.kb-row` block, plus badge styles.
+
+### `README` / architecture notes
+Record that **the daemon is no longer strictly reactive**. See below.
+
+## Edge cases & safety
+
+**The Enter key is the whole problem.** `injectPrompt` sends `Enter` unconditionally
+(`actions.ts:114`). A permission dialog is a **select list, not a text prompt**: the pasted
+text is swallowed and `Enter` activates whichever option is highlighted. That is an unattended
+answer to a permission prompt nobody read, delivered to every session at once.
+
+This is not hypothetical. It happened on the first attempt at the test above. A freshly spawned
+`claude` in an unfamiliar directory does not open at its prompt, it opens on:
+
+```
+Quick safety check: Is this a project you created or one you trust?
+❯ 1. Yes, I trust this folder
+  2. No, exit
+```
+
+The probe pasted `/reload-skills` and would have sent `Enter` into that list, answering "Yes, I
+trust this folder". It only escaped because the readiness check did not match, so it timed out
+instead of injecting. A broadcast that assumes "the session is up, therefore it is at a prompt"
+would press that button in every pane. **The gate is not paperwork.** This is why the decision
+was `settledIdle` *plus* `capture-pane`.
+
+Note `reportBucket(s) === "idle"` is **not** a safe substitute for `settledIdle`: idle is that
+function's catch-all fallthrough (`session.ts:135`), so it is true for uninstrumented sessions
+where idleness is a default rather than a report.
+
+**The daemon stops being reactive.** Until now it typed into a pane only downstream of a route
+call, which meant downstream of a person; autonomous typing was quarantined in Foreman's
+separate leased opt-in process. This ends that invariant. The risk is not v1, it is v2, when
+someone reasons from the old rule. Write it down where the next reader hits it.
+
+**Global blast radius.** `~/.claude/skills` affects every claude on the machine, including
+sessions the fleet has nothing to do with. Accepted deliberately. `install.mjs` set the
+precedent, but hooks only changed telemetry; skills change what the model does. Marker
+discipline and a real uninstall are therefore not optional.
+
+**Transcript cost.** Each reload writes a command and its response into the session's context.
+Cheap once, not free across twenty sessions times every toggle. The generation watermark is the
+mitigation; the misuse to avoid is bumping it on any config write.
+
+**Packaged Electron (open, decide at build time).** A repo-baked catalog plus a symlink means
+`~/.claude/skills/fleet-x -> <appRoot>/skills/x`. Fine from the repo. In a packaged build the
+resources may live inside an `.asar`, which is not a real directory, so `claude` could not read
+through the symlink. The mechanism is proven sound (symlinks are followed, `/private/tmp`
+targets load); the only question is whether `appRoot` is a readable path when packaged. If not,
+the reconciler copies instead and compares a content hash to detect drift.
+
+**Codex.** No `/reload-skills`, no `~/.claude/skills`. Rows are labelled claude-only and the
+loop filters `agent === "claude"`. A toggle that silently no-ops on half the grid is the same
+failure that disqualified launch flags.
+
+## Testing
+
+- `reconcile`: creates/removes only `fleet-*`; leaves a fixture "user skill" untouched;
+  idempotent across repeated runs; reports changed/unchanged correctly.
+- `generation`: bumps only when the symlink set changes; N rapid toggles produce one reload per
+  session (watermark, not queue).
+- `reload` selector: excludes codex, excludes exited, excludes `ack >= generation`, excludes
+  `!settledIdle`. Assert an `awaiting_input` session is **never** selected. This is the test
+  that matters.
+- `reload` ordering: ack is written before inject; a failed inject does not retry.
+- E2E (manual, documented): the tmux probe above. Boot a session, symlink mid-session, inject,
+  assert `(1 added)`.
+- UI: render tests via `react-dom/server` (the SSE stream blocks browser automation on this
+  dashboard).
+
+## Out of scope (future)
+
+- Per-repo scoping via `SessionStart` `additionalContext`. Only if global proves wrong.
+- User-authored skills and an editor.
+- Adopting the operator's existing `~/.claude/skills` as read-only catalog rows.
+- Plugin packaging for skills that need hooks, output styles, or MCP bundled with them.
+  `/reload-plugins` exists as the sibling, but is `supportsNonInteractive: false` and dispatches
+  as a `control-request`; the skills path is the better-supported one.
+- Always-on enforcement above the "intercepted" rung (output styles, `--append-system-prompt`).
+- Codex parity via `AGENTS.md`.

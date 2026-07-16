@@ -895,7 +895,7 @@ export function buildApp(
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
       // failed STARTUP reconcile from being invisible: its problems had no PUT to answer,
       // so they went to a console nobody reads, and every toggle would render on while
-      // the fleet had none of them.
+      // the sessions had none of them.
       problems: [...catalog.problems, ...skillDrift(cfg, catalog)],
     };
   };
@@ -907,8 +907,8 @@ export function buildApp(
    * do one without the other.
    *
    * The patch schema accepts only `enabled` and `skills`. The generation is the
-   * server's watermark, and a client that could set it could either silence the whole
-   * fleet's reload (set it back) or type into every pane on the machine at will (set
+   * server's watermark, and a client that could set it could either silence every
+   * session's reload (set it back) or type into every pane on the machine at will (set
    * it forward). Excluding it at the boundary beats trusting the route.
    *
    * 409 on `refused` and NOT on `problems`, which is the difference between "your

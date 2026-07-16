@@ -15,7 +15,7 @@ const GOOD = skillMd(
   `name: html-plans
 description: Renders a plan as a page.
 metadata:
-  fleet:
+  mission:
     category: planning
     enforcement: triggered`,
 );
@@ -33,7 +33,7 @@ test("parses a well-formed skill", () => {
 });
 
 test("the directory name and the frontmatter name are independent", () => {
-  // This is the whole reason the fleet- prefix costs nothing legible: the harness owns
+  // This is the whole reason our directory prefix costs nothing legible: the harness owns
   // the directory namespace in ~/.claude/skills, and the user still sees /html-plans.
   const r = parseSkill("html-plans", GOOD);
   assert.equal(r.ok && r.skill.id, "html-plans");
@@ -45,7 +45,7 @@ test("a description with a colon in it survives", () => {
     `name: x
 description: Use when: the user asks for a page.
 metadata:
-  fleet:
+  mission:
     category: c
     enforcement: triggered`,
   ));
@@ -57,7 +57,7 @@ test("a quoted scalar is unquoted", () => {
     `name: "x"
 description: 'quoted'
 metadata:
-  fleet:
+  mission:
     category: c
     enforcement: always-on`,
   ));
@@ -74,7 +74,7 @@ test("a missing enforcement is an error, never a default", () => {
     `name: x
 description: d
 metadata:
-  fleet:
+  mission:
     category: c`,
   ));
   assert.equal(r.ok, false);
@@ -86,7 +86,7 @@ test("an unknown enforcement rung is refused", () => {
     `name: x
 description: d
 metadata:
-  fleet:
+  mission:
     category: c
     enforcement: mandatory`,
   ));
@@ -94,16 +94,16 @@ metadata:
   assert.match(!r.ok ? r.problem : "", /unknown enforcement 'mandatory'/);
 });
 
-test("a missing name is an error - it must not default to the fleet- directory", () => {
+test("a missing name is an error - it must not default to the prefixed directory", () => {
   // Claude defaults `name` to the DIRECTORY name when it's omitted, which is exactly
-  // what the prefix would poison: the user would be told to type /fleet-html-plans.
-  const r = parseSkill("html-plans", skillMd(`description: d\nmetadata:\n  fleet:\n    category: c\n    enforcement: triggered`));
+  // what the prefix would poison: the user would be told to type /mission-html-plans.
+  const r = parseSkill("html-plans", skillMd(`description: d\nmetadata:\n  mission:\n    category: c\n    enforcement: triggered`));
   assert.equal(r.ok, false);
   assert.match(!r.ok ? r.problem : "", /no 'name'/);
 });
 
 test("a missing description is an error - it's what decides if the model ever reaches for it", () => {
-  const r = parseSkill("x", skillMd(`name: x\nmetadata:\n  fleet:\n    category: c\n    enforcement: triggered`));
+  const r = parseSkill("x", skillMd(`name: x\nmetadata:\n  mission:\n    category: c\n    enforcement: triggered`));
   assert.equal(r.ok, false);
   assert.match(!r.ok ? r.problem : "", /no 'description'/);
 });
@@ -116,7 +116,7 @@ test("disable-model-invocation is refused - it would load but never fire", () =>
 description: d
 disable-model-invocation: true
 metadata:
-  fleet:
+  mission:
     category: c
     enforcement: triggered`,
   ));
@@ -136,7 +136,7 @@ description: ${marker}
   a long description
   wrapped over lines
 metadata:
-  fleet:
+  mission:
     category: c
     enforcement: triggered`,
     ));
@@ -150,7 +150,7 @@ test("a description that merely STARTS with a > is still a description", () => {
     `name: x
 description: "> use this when rendering"
 metadata:
-  fleet:
+  mission:
     category: c
     enforcement: triggered`,
   ));
@@ -178,7 +178,7 @@ test("the real catalog is readable, and every directory in it is present", () =>
   const c = readCatalog();
   assert.equal(c.readable, true);
   // `present` is what the reconciler keys on, so a parsed skill missing from it would
-  // be unlinked from the whole fleet.
+  // be unlinked from every session.
   for (const s of c.skills) assert.ok(c.present.has(s.id), `${s.id} should be present`);
 });
 
@@ -207,8 +207,8 @@ test("comments and blank lines are ignored", () => {
 });
 
 test("nesting is scoped by indent - a sibling key doesn't fall into the block above", () => {
-  const fm = parseFrontmatter("metadata:\n  fleet:\n    category: c\nname: x\n");
-  assert.equal(fm.get("name"), "x", "name is top-level, not inside metadata.fleet");
+  const fm = parseFrontmatter("metadata:\n  mission:\n    category: c\nname: x\n");
+  assert.equal(fm.get("name"), "x", "name is top-level, not inside metadata.mission");
   const meta = fm.get("metadata");
   assert.equal(meta instanceof Map, true);
 });

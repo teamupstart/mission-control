@@ -310,11 +310,11 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
 );
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
 
-// ---- Custom skills (fleet-wide skill toggles) ----
+// ---- Custom skills (dashboard-wide skill toggles) ----
 
 /**
- * Which catalog skills are symlinked into `~/.claude/skills`, and how far the fleet
- * has been told about it. Same partial-patch shape as ForemanConfig, over the same
+ * Which catalog skills are symlinked into `~/.claude/skills`, and how far the sessions
+ * have been told about it. Same partial-patch shape as ForemanConfig, over the same
  * `app_config` KV, so a new key needs no migration.
  *
  * Ships with the master switch OFF and nothing enabled: this writes into the
@@ -337,7 +337,7 @@ export const SkillsConfigSchema = z.object({
    * every pane.
    *
    * Bumped ONLY when the reconciler actually changed the symlink set - never on any
-   * config write. Bumping it on an unrelated write would reload the whole fleet, and
+   * config write. Bumping it on an unrelated write would reload every session, and
    * each reload writes a command and its response into a session's context.
    */
   generation: z.number().int().default(0),

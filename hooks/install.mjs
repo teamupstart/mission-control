@@ -5,12 +5,12 @@
 // the path in place (matched by the "harness-hook.mjs" marker) without touching
 // any of the user's other hooks. `--uninstall` removes only our entries.
 //
-// Uninstall also clears the `fleet-*` skill symlinks out of ~/.claude/skills - as
-// TEARDOWN, not as the off-switch. They are the most invasive thing the harness puts in
-// a home directory (Claude loads them into every session on the machine), so a checkout
-// being abandoned should not leave them pointing at it. Delegated to the reconciler
-// rather than re-walked here, so the "only ever our own symlinks, never a real
-// directory" rule keeps its single implementation.
+// Uninstall also clears our `mission-*` and `fleet-*` skill symlinks out of
+// ~/.claude/skills - as TEARDOWN, not as the off-switch. They are the most invasive
+// thing the harness puts in a home directory (Claude loads them into every session on
+// the machine), so a checkout being abandoned should not leave them pointing at it.
+// Delegated to the reconciler rather than re-walked here, so the "only ever our own
+// symlinks, never a real directory" rule keeps its single implementation.
 //
 // It does NOT turn the feature off, and must not be described as though it does: the
 // config still says the skills are on, and the daemon reconciles against that config on
@@ -206,7 +206,7 @@ if (uninstall) {
 // New files get a trailing newline; existing files keep their own byte layout.
 if (!existed && !text.endsWith(formattingOptions.eol)) text += formattingOptions.eol;
 
-// --- fleet skill symlinks (uninstall only) ----------------------------------
+// --- skill symlinks (uninstall only) ----------------------------------
 // Ahead of the write, and reported on BOTH exits below, because whether settings.json
 // still holds a hook of ours says nothing about whether the skills directory holds a
 // link of ours. Hooks already stripped by an earlier run would otherwise take the

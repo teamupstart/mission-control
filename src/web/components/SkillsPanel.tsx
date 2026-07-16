@@ -127,9 +127,9 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       )}
 
       {/*
-        Excludes codex, or the number lies on a mixed fleet. Phrased as a promise about
-        WHEN, not whether: the daemon waits for a session to be genuinely at its prompt
-        before typing, so a busy session is behind rather than missed.
+        Excludes codex, or the number lies on a mixed set of sessions. Phrased as a
+        promise about WHEN, not whether: the daemon waits for a session to be genuinely
+        at its prompt before typing, so a busy session is behind rather than missed.
       */}
       {view && view.pending > 0 && (
         <p className="settings-hint">

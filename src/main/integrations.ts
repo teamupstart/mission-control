@@ -17,7 +17,7 @@
 // durable off-switch because it persists `enabled: false`. Removing links from here
 // could not be durable: this process supervises the daemon, whose startup reconcile
 // reads a config still saying `enabled: true` and would put every link straight back,
-// re-broadcasting a reload to the fleet. A removal the next launch silently undoes is
+// re-broadcasting a reload to every session. A removal the next launch silently undoes is
 // worse than one that never claimed to happen.
 
 import { app } from "electron";

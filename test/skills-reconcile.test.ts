@@ -129,8 +129,8 @@ test("re-running against a correct directory writes nothing and reports unchange
 
   const again = reconcileSkillLinks(cfg, CATALOG, claudeSkills);
 
-  // This is what lets the daemon reconcile on every startup without reloading the
-  // fleet: `changed: false` is what withholds the generation bump.
+  // This is what lets the daemon reconcile on every startup without reloading every
+  // session: `changed: false` is what withholds the generation bump.
   assert.equal(again.changed, false);
   assert.deepEqual(again.linked, []);
   assert.deepEqual(again.unlinked, []);
@@ -183,9 +183,9 @@ test("a REAL directory wearing our prefix is refused, not deleted", () => {
   assert.equal(readFileSync(join(theirs, "SKILL.md"), "utf8"), "hand-written\n");
 });
 
-test("a DANGLING link is re-pointed, and that IS a change the fleet needs", () => {
+test("a DANGLING link is re-pointed, and that IS a change every session needs", () => {
   // The link resolves to nothing, so claude loaded no skill at all. Fixing it changes
-  // what the fleet has.
+  // what every session has.
   symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "mission-alpha"), "dir");
 
   const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
@@ -195,7 +195,7 @@ test("a DANGLING link is re-pointed, and that IS a change the fleet needs", () =
   assert.equal(readlinkSync(join(claudeSkills, "mission-alpha")), join(catalogDir, "alpha"));
 });
 
-test("a RESOLVING link re-pointed at the same skill is not a change - no fleet reload", () => {
+test("a RESOLVING link re-pointed at the same skill is not a change - no reload", () => {
   // The app was rebuilt somewhere else, so the target path differs. Claude reads THROUGH
   // the link, so it loaded the skill before and loads the same skill after: nothing it
   // can see moved. Bumping here would type /reload-skills into every idle claude on the
@@ -250,7 +250,7 @@ test("the master switch off unlinks everything, whatever the rows say", () => {
   const r = reconcileSkillLinks(mkCfg({ enabled: false, skills: { alpha: true, beta: true } }), CATALOG, claudeSkills);
 
   // Off has to reach the DISK. A master switch that only stopped new links would leave
-  // the fleet running skills the panel says are off.
+  // every session running skills the panel says are off.
   assert.equal(r.changed, true);
   assert.deepEqual(r.unlinked, ["alpha", "beta"]);
   assert.deepEqual(entries(), []);
@@ -288,7 +288,7 @@ test("THE regression: an UNREADABLE catalog changes nothing at all", () => {
   // An unreadable skills/ is a fact about us, not about the operator's skills. Every id
   // would look deleted, and this function's answer to a deleted id is to unlink - so a
   // worktree without skills/, or one permissions hiccup, would uninstall every skill on
-  // the machine and broadcast a reload telling the fleet to drop them.
+  // the machine and broadcast a reload telling every session to drop them.
   const cfg = mkCfg({ skills: { alpha: true, beta: true } });
   reconcileSkillLinks(cfg, CATALOG, claudeSkills);
 
@@ -316,7 +316,7 @@ test("an enabled skill that really IS gone is unlinked, and the panel is told", 
 test("a skills dir we CAN'T READ is not an empty one - nothing is reported as done", () => {
   // ENOENT and "we aren't allowed to look" must not give the same answer. Read as
   // "empty, so nothing to unlink", switching a skill off would report a clean success
-  // while the symlink sat there and the whole fleet kept using it.
+  // while the symlink sat there and every session kept using it.
   reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
   chmodSync(claudeSkills, 0o200); // write-only: readdir fails with EACCES
   try {

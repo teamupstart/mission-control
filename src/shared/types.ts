@@ -577,7 +577,7 @@ export interface SkillsView {
    *
    * Codex sessions are excluded, and not as a detail: codex has no
    * `/reload-skills` and no `~/.claude/skills`, so counting them would leave a
-   * number that can never reach zero on a mixed fleet.
+   * number that can never reach zero on a mixed set of sessions.
    */
   pending: number;
   /** Anything the reconciler could not do, in the operator's words. Usually empty. */

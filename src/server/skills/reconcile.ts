@@ -32,8 +32,8 @@ export function claudeSkillsDir(): string {
 export interface ReconcileResult {
   /**
    * Whether the symlink SET actually moved, as Claude would see it. The generation
-   * bump hangs off this and nothing else: bumping on any config write would reload the
-   * whole fleet because someone toggled the master switch twice.
+   * bump hangs off this and nothing else: bumping on any config write would reload
+   * every session because someone toggled the master switch twice.
    */
   changed: boolean;
   linked: string[];
@@ -64,7 +64,7 @@ export interface ReconcileResult {
  * as an empty desired set and takes the ordinary removal path. That is what makes
  * disabling propagate: the set changes, the generation bumps, and every session is told
  * to drop the skills. A master switch that skipped the reconciler instead would leave
- * the symlinks on disk and the fleet still using skills the panel says are off.
+ * the symlinks on disk and every session still using skills the panel says are off.
  */
 export function desiredSkillIds(cfg: SkillsConfig, present: ReadonlySet<string>): Set<string> {
   if (!cfg.enabled) return new Set();
@@ -99,8 +99,8 @@ function classify(path: string): Entry {
  *
  * Idempotent: re-running against an already-correct directory writes nothing and
  * reports `changed: false`. That is what lets the daemon call it on every startup
- * (to heal a hand-deleted link, or an app that moved on disk) without reloading the
- * fleet for no reason.
+ * (to heal a hand-deleted link, or an app that moved on disk) without reloading every
+ * session for no reason.
  */
 export function reconcileSkillLinks(
   cfg: SkillsConfig,
@@ -112,7 +112,7 @@ export function reconcileSkillLinks(
   // An unreadable catalog is not an empty one. Every id would look deleted, and this
   // function's answer to a deleted id is to unlink it - so a transient read failure
   // (a worktree without `skills/`, a permissions hiccup, a packaged path that resolved
-  // wrong) would uninstall every skill on the machine and tell the whole fleet to drop
+  // wrong) would uninstall every skill on the machine and tell every session to drop
   // them. We know nothing, so we change nothing.
   //
   // `cfg.enabled &&` is the whole guard, not decoration: with the master switch OFF the
@@ -144,7 +144,7 @@ export function reconcileSkillLinks(
     // gives them the same one. An EACCES here would read as "the directory is empty, so
     // there is nothing to unlink" and report a clean, changed:false success - so
     // switching a skill off would tell the operator it worked while the symlink sat
-    // there and the whole fleet kept using it. Same rule as the catalog above: we know
+    // there and every session kept using it. Same rule as the catalog above: we know
     // nothing, so we change nothing, and we say so.
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       out.problems.push(`couldn't read ${dir}: ${msg(err)}`);
@@ -195,7 +195,7 @@ export function reconcileSkillLinks(
     // an identical file and nothing it loaded moved. Bumping there would type
     // /reload-skills into every idle claude on the machine because the app was rebuilt
     // somewhere else. A DANGLING link, though, meant the skill wasn't loaded at all, and
-    // fixing it is a real change the fleet needs to hear about.
+    // fixing it is a real change every session needs to hear about.
     if (entry.target !== skillSourceDir(id)) {
       const wasLoaded = existsSync(path);
       if (!remove(path, out)) {
@@ -336,7 +336,7 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
  * The panel needs this because the reconciler's `problems` are the memory of ONE pass:
  * they reach the operator on the PUT that produced them and nowhere else. A reconcile
  * that fails at STARTUP has no PUT to answer, so its problems went to a console nobody
- * is reading, and the panel would render every toggle happily on while the fleet had
+ * is reading, and the panel would render every toggle happily on while the sessions had
  * none of them. That is the exact "claims a skill is live in twenty sessions" lie the
  * rest of this feature is built to avoid, arriving through the one door left open.
  *
@@ -388,7 +388,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
  * It touches the disk and nothing else, while the config goes on saying the skills are
  * on - and `reconcileSkills` re-reads that config on every daemon start, so a removal
  * this alone performed is re-created at the next launch, complete with a reload
- * broadcast to the whole fleet. The durable off-switch is the master switch
+ * broadcast to every session. The durable off-switch is the master switch
  * (`applySkillsConfig({enabled: false})`), which records the intent and takes this same
  * removal path to carry it out.
  *

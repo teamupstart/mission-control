@@ -3509,7 +3509,7 @@ kbd {
   color: var(--dim);
 }
 
-/* ---- skills (the fleet-wide skill catalog) ----
+/* ---- skills (the dashboard-wide skill catalog) ----
    Rows are `.kb-row` with a switch instead of a key capture - same label +
    description + control shape, so only the differences live here. */
 .settings-section + .settings-section {

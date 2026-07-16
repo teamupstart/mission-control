@@ -232,7 +232,7 @@ test("--uninstall clears the links even when no hooks are left to strip", () => 
     const dir = seedSkills(path);
     // Never installed, so settings.json has nothing of ours and the run takes the
     // "nothing to remove" exit. Whether a hook survives says nothing about whether a
-    // link does, and an early exit that skipped these would leave the fleet loading
+    // link does, and an early exit that skipped these would leave every session loading
     // skills from an app that has been uninstalled.
     runInstaller(path, ["--uninstall"]);
 
@@ -247,7 +247,7 @@ test("an install leaves the skills directory exactly as it found it", () => {
     runInstaller(path);
     // Installing is not a reconcile. Which skills are on is the operator's decision in
     // the panel, applied from the config by the daemon - an installer that added links
-    // would switch skills on fleet-wide because someone wired up hooks, and one that
+    // would switch skills on across every session because someone wired up hooks, and one that
     // removed them would switch them off for the same reason.
     assert.deepEqual(readdirSync(dir).sort(), ["fleet-alpha", "fleet-handmade", "no-mistakes"]);
   });

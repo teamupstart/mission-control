@@ -31,7 +31,7 @@ function writeSkill(id: string): void {
   mkdirSync(join(catalogDir, id), { recursive: true });
   writeFileSync(
     join(catalogDir, id, "SKILL.md"),
-    `---\nname: ${id}\ndescription: does ${id} things\nmetadata:\n  fleet:\n    category: test\n    enforcement: triggered\n---\nbody\n`,
+    `---\nname: ${id}\ndescription: does ${id} things\nmetadata:\n  mission:\n    category: test\n    enforcement: triggered\n---\nbody\n`,
   );
 }
 
@@ -96,12 +96,12 @@ test("a patch merges per skill - one toggle never clears another", () => {
   applySkillsConfig({ skills: { beta: true } }, NOW + 1);
 
   // A replacing patch would make the second click mean "beta on, alpha off", so two
-  // open dashboards would silently switch each other's skills off across the fleet.
+  // open dashboards would silently switch each other's skills off across every session.
   assert.deepEqual(links(), ["mission-alpha", "mission-beta"]);
   assert.deepEqual(getSkillsConfig().skills, { alpha: true, beta: true });
 });
 
-test("the master switch off unlinks everything and bumps, so the fleet drops them", () => {
+test("the master switch off unlinks everything and bumps, so every session drops them", () => {
   applySkillsConfig({ enabled: true, skills: { alpha: true, beta: true } }, NOW);
 
   const off = applySkillsConfig({ enabled: false }, NOW + 1);
@@ -146,7 +146,7 @@ test("one blocked skill does NOT wedge every other toggle in the panel", () => {
   assert.deepEqual(r.refused, [], "alpha's toggle was not refused over beta's problem");
   assert.equal(getSkillsConfig().skills.alpha, true, "alpha's toggle stuck");
   assert.ok(links().includes("mission-alpha"), "and alpha is really on disk");
-  assert.equal(r.config.generation, 2, "alpha's arrival is a real change the fleet needs");
+  assert.equal(r.config.generation, 2, "alpha's arrival is a real change every session needs");
 });
 
 test("a skill deleted from the catalog does not wedge the master switch", () => {
@@ -234,7 +234,7 @@ test("an unreadable catalog never unlinks a live skill", () => {
   assert.equal(getSkillsConfig().generation, gen, "and nobody is told to drop it");
 });
 
-test("startup reconcile heals a link deleted by hand, and tells the fleet", () => {
+test("startup reconcile heals a link deleted by hand, and tells every session", () => {
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
   rmSync(join(claudeSkills, "mission-alpha"));
 
@@ -250,7 +250,7 @@ test("startup reconcile on a healthy install writes nothing and reloads nobody",
   const again = reconcileSkills(NOW + 1);
 
   // Idempotence is what makes it safe to run on every daemon start. A bump here would
-  // reload the whole fleet every time the app restarts.
+  // reload every session every time the app restarts.
   assert.equal(again.changed, false);
   assert.equal(again.config.generation, 1);
   assert.equal(again.config.generationAt, NOW);
@@ -259,7 +259,7 @@ test("startup reconcile on a healthy install writes nothing and reloads nobody",
 test("drift is reported on every read, so a failed startup reconcile isn't invisible", () => {
   // The reconciler's problems are the memory of ONE pass and reach the operator on the
   // PUT that produced them. A startup reconcile has no PUT to answer, so without a fresh
-  // look at the disk the panel would render the toggle on while the fleet had nothing.
+  // look at the disk the panel would render the toggle on while the sessions had nothing.
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
   assert.deepEqual(skillDrift(getSkillsConfig(), readCatalog()), [], "healthy: nothing to say");
 

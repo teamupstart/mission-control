@@ -67,7 +67,7 @@ const SETTLE_MS = resolveSettleMs();
  * Deliberately NOT gated on `cfg.enabled`. The master switch governs what is
  * SYMLINKED, not who gets told: turning it off empties the desired set, which changes
  * the disk, which bumps the generation - and those sessions need a reload to DROP the
- * skills. A loop that went quiet when the switch went off would leave the fleet using
+ * skills. A loop that went quiet when the switch went off would leave every session using
  * skills the panel says are off, which is the worst state this feature can be in.
  */
 export function reloadTargets(
@@ -194,8 +194,9 @@ const defaultReloadDeps: ReloadDeps = {
  *
  * THE ENTER KEY IS THE WHOLE PROBLEM. `injectPrompt` sends Enter unconditionally, and
  * a Claude dialog is a SELECT LIST, not a text prompt: the pasted text is swallowed
- * and the Enter activates whichever option is highlighted. Fired fleet-wide, that is
- * an unattended answer to a permission prompt nobody read, in every pane at once.
+ * and the Enter activates whichever option is highlighted. Fired across every
+ * session, that is an unattended answer to a permission prompt nobody read, in every
+ * pane at once.
  *
  * This is not hypothetical. It happened on the first attempt at the probe that proved
  * this feature works. A freshly spawned claude in an unfamiliar directory does not
@@ -277,7 +278,7 @@ export function startSkillsReloader(registry: Registry): () => void {
 
       // Concurrent, like `annotatePermissionModes` - which already spawns a
       // capture-pane per claude session on every 1.5s discovery tick, so this is a
-      // shape the fleet is known to tolerate. Serially, one unreachable pane's 1s
+      // shape the dashboard is known to tolerate. Serially, one unreachable pane's 1s
       // capture timeout would delay every session behind it.
       await Promise.all(
         targets.map(async (t) => {

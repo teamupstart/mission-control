@@ -9,7 +9,7 @@ import { skillsDir } from "../config.ts";
 //
 // These are ORDINARY Claude Code skills - standard frontmatter, standard body - so
 // enabling one is native loading, not a reimplementation of it. The only addition
-// is a `metadata.fleet` block the catalog display reads and Claude ignores.
+// is a `metadata.mission` block the catalog display reads and Claude ignores.
 
 /** The path a catalog id's skill directory sits at - the symlink's target. */
 export function skillSourceDir(id: string): string {
@@ -21,7 +21,7 @@ export function skillSourceDir(id: string): string {
  *
  * Deliberately NOT a YAML parser. A skill's frontmatter is authored in this repo and
  * reviewed with it, so the shape is known: `key: scalar` lines plus one level of
- * nesting for `metadata.fleet`. A general parser would be a dependency and a much
+ * nesting for `metadata.mission`. A general parser would be a dependency and a much
  * larger promise than "read four fields out of a file we wrote ourselves".
  *
  * The narrowness is the safety: anything this can't read is REPORTED, never guessed
@@ -146,7 +146,7 @@ export type ParsedSkill =
  * skill, not a nameless one.
  *
  * `name` defaults to the DIRECTORY name in Claude when omitted, which is exactly
- * what the `fleet-` prefix would poison, so the catalog insists on it explicitly.
+ * what our directory prefix would poison, so the catalog insists on it explicitly.
  */
 export function parseSkill(id: string, text: string): ParsedSkill {
   const fail = (problem: string): ParsedSkill => ({ ok: false, id, problem });
@@ -168,17 +168,17 @@ export function parseSkill(id: string, text: string): ParsedSkill {
   if (!name) return fail(`skills/${id}/SKILL.md has no 'name'`);
   if (!description) return fail(`skills/${id}/SKILL.md has no 'description'`);
 
-  const fleet = block(block(fm, "metadata"), "fleet");
-  const category = str(fleet, "category");
-  const enforcement = str(fleet, "enforcement");
-  if (!category) return fail(`skills/${id}/SKILL.md has no 'metadata.fleet.category'`);
-  if (!enforcement) return fail(`skills/${id}/SKILL.md has no 'metadata.fleet.enforcement'`);
+  const mission = block(block(fm, "metadata"), "mission");
+  const category = str(mission, "category");
+  const enforcement = str(mission, "enforcement");
+  if (!category) return fail(`skills/${id}/SKILL.md has no 'metadata.mission.category'`);
+  if (!enforcement) return fail(`skills/${id}/SKILL.md has no 'metadata.mission.enforcement'`);
   if (!isEnforcement(enforcement)) {
     return fail(`skills/${id}/SKILL.md has an unknown enforcement '${enforcement}'`);
   }
 
   // `disable-model-invocation: true` takes a skill out of the "N available" count and
-  // out of the model's reach entirely - which is almost never what a fleet skill
+  // out of the model's reach entirely - which is almost never what an enabled skill
   // wants, since the whole point of enabling one is that the model can use it. Say so
   // rather than shipping a row whose toggle does nothing an operator can observe.
   if (str(fm, "disable-model-invocation") === "true") {

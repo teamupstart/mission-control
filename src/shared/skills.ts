@@ -45,12 +45,12 @@ export function missionSkillDirName(id: string): string {
   return `${SKILL_DIR_PREFIX}${id}`;
 }
 
-/** True when a `~/.claude/skills` entry is one of ours - i.e. ours to remove. */
-export function isMissionSkillDir(name: string): boolean {
-  return SKILL_DIR_PREFIXES.some((prefix) => name.startsWith(prefix));
-}
-
-/** The catalog id behind one of our directory names, or null when it isn't ours. */
+/**
+ * The catalog id behind one of our directory names, or null when it isn't ours -
+ * which doubles as the answer to "is this ours to remove?", and is the ONLY place the
+ * prefix list is matched against a name. One encoding: a second one could drift from
+ * this on the next rename, which is the very thing the list above exists to prevent.
+ */
 export function skillIdFromDirName(name: string): string | null {
   const prefix = SKILL_DIR_PREFIXES.find((p) => name.startsWith(p));
   return prefix ? name.slice(prefix.length) : null;

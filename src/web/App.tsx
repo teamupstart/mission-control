@@ -57,7 +57,7 @@ export function App(): React.JSX.Element {
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
-  useEffect(() => window.fleetDesktop?.onOpenSettings(() => setSettingsOpen(true)), []);
+  useEffect(() => window.missionDesktop?.onOpenSettings(() => setSettingsOpen(true)), []);
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -365,7 +365,7 @@ export function App(): React.JSX.Element {
       <header className="topbar" ref={topbarRef}>
         <div className="brand">
           <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
-          <h1>Agent Wrangler</h1>
+          <h1>Mission Control</h1>
         </div>
         <div className="filter-box">
           <span className="filter-icon" aria-hidden>

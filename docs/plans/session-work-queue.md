@@ -1,7 +1,7 @@
 # Plan: session work queues - Foreman drains a batch and validates each item
 
 Status: **implemented** (§0a + §0b landed in #36; §0c-§4 landed after)
-Owner: ai-harness (Agent Wrangler)
+Owner: ai-harness (Mission Control)
 Related: extends `docs/plans/foreman/plan.md` (the auto-responder), which deliberately scoped
 itself to *reacting* to the needs-you queue. This is the proactive half. Distinct from
 `docs/plans/dispatch/plan.md`'s task backlog, which provisions a **new** worktree + agent per
@@ -35,7 +35,7 @@ The outcome: you load up a session's work and walk away, and Foreman keeps it mo
 - **Vocabulary**: "queue" means only a session's work queue. `DispatchSchema.queue: true` becomes
   `backlog: true`; `TaskStatus "queued"` becomes `"backlog"`.
 - **Items are user-authored**, editable, drag-reorderable, and removable while waiting.
-- **The idle-Notification hook is fixed fleet-wide** (§0a), accepting the prose-question tradeoff.
+- **The idle-Notification hook is fixed cross-session** (§0a), accepting the prose-question tradeoff.
 
 ## What a design review changed
 
@@ -283,12 +283,12 @@ An orphaned queue matches **no** live session, so `note_key`-only denormalizatio
   `Session.orphanedQueue = { noteKey, itemCount, branch }`. The card renders "N queued items from a
   previous session here - re-attach?" That is a *hint on a live card*, not a rebind; re-attach is an
   explicit click that rewrites `note_key` to the new session's. Queues with no live session at their
-  cwd at all are still reachable via `GET /api/queues?orphaned=1` (a small fleet-level list), so
+  cwd at all are still reachable via `GET /api/queues?orphaned=1` (a small cross-session list), so
   nothing is stranded with no surface whatsoever.
 - **Terminalizing (an orphan sweep).** The `exited -> escalate` row needs a live session with that
   key to drive it, so once the session is evicted from the snapshot an item stuck in
   `sending`/`awaiting_pickup`/`in_progress`/`verifying` would strand forever. Each tick the worker
-  enumerates queues with no live session (the same `orphaned=1` query that backs the fleet list -
+  enumerates queues with no live session (the same `orphaned=1` query that backs the session list -
   by definition they are not in `targets`, which is built from live sessions) and escalates **only
   the in-flight item** with `reason: 'session-gone'`. Single-flight guarantees there is at most one,
   and it is the only item whose outcome is genuinely ambiguous: it was mid-work when the session
@@ -322,7 +322,7 @@ on the critical path, not a detail. Replace the bare heartbeat with a leased one
 > detect a second worker - it just gets beaten twice.
 
 **Renewal runs on a background `setInterval`, not from the loop.** This is the difference between a
-lease that works and one that hands the fleet to two workers mid-verify. The existing loop
+lease that works and one that hands the sessions to two workers mid-verify. The existing loop
 heartbeats *per session* and then blocks on `claude -p` for the whole review - which is exactly
 why `HEARTBEAT_TTL_MS` is 300s and says so in its comment (`config.ts:16-24`): one
 review-with-retry is `2 * REVIEW_TIMEOUT_MS` = **240s**, and since the cheap triage tier shipped a
@@ -545,7 +545,7 @@ into a session that has moved on. All must hold; any failure of the re-check its
 1. **Re-resolve `noteKey` -> live session.** Never cache `session.id` across a multi-minute verify -
    it churns with pid/tty, and `/send` and `/diff` both resolve by it (`routes.ts:110,178`). This is
    what `noteKeyFor` exists for; a cached id 404s or, worse, hits a different session.
-2. `reportBucket(fresh, freshFleet) !== 'needs-you'`.
+2. `reportBucket(fresh, sessions) !== 'needs-you'`.
 3. **`fresh.lastActivity === observed.lastActivity`** - the strongest guard, and the one that
    catches **a human typing in the pane**. Bucket-checking is insufficient: a human turn can start
    *and finish* inside a 2-minute verify and land back at `idle` with an identical bucket -

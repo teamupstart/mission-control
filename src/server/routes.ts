@@ -226,14 +226,14 @@ export function buildApp(
   app.use("/events", requireLoopback);
 
   app.get("/api/health", (c) =>
-    c.json({ ok: true, service: "fleet-control", version: VERSION, pid: process.pid }),
+    c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
   app.get("/api/reviews", (c) => c.json(registry.snapshot().reviews));
   app.get("/api/tasks", (c) => c.json(tasks.list()));
   // Git repos under the workspace roots - the pickable bases for a new dispatch.
   app.get("/api/repos", async (c) => c.json(await listRepos()));
-  // Fleet report (/bearings): a projection of the live snapshot, as JSON or a
+  // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
   app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));
   app.get("/api/report.md", (c) => c.text(renderReportMarkdown(buildReport(registry.snapshot()))));
@@ -813,7 +813,7 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 409);
   });
 
-  // Fleet-level: queues with no live session at all, so nothing is stranded with
+  // Cross-session: queues with no live session at all, so nothing is stranded with
   // no surface whatsoever (the cwd-match hint only covers a queue whose cwd still
   // has a live session on it).
   app.get("/api/queues", (c) =>
@@ -858,7 +858,7 @@ export function buildApp(
   // A LEASED heartbeat: acquires when free/expired, renews when already ours, and
   // reports leader:false otherwise. The old bare heartbeat was one module-global
   // timestamp that couldn't detect a second worker at all - it just got beaten
-  // twice, and both workers would drain the fleet.
+  // twice, and both workers would draacross the sessions.
   app.post("/api/foreman/heartbeat", async (c) => {
     const parsed = await parseBody(c, ForemanHeartbeatSchema);
     if (!parsed.ok) return parsed.res;
@@ -895,7 +895,7 @@ export function buildApp(
       // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
       // failed STARTUP reconcile from being invisible: its problems had no PUT to answer,
       // so they went to a console nobody reads, and every toggle would render on while
-      // the fleet had none of them.
+      // the sessions had none of them.
       problems: [...catalog.problems, ...skillDrift(cfg, catalog)],
     };
   };
@@ -907,8 +907,8 @@ export function buildApp(
    * do one without the other.
    *
    * The patch schema accepts only `enabled` and `skills`. The generation is the
-   * server's watermark, and a client that could set it could either silence the whole
-   * fleet's reload (set it back) or type into every pane on the machine at will (set
+   * server's watermark, and a client that could set it could either silence every
+   * session's reload (set it back) or type into every pane on the machine at will (set
    * it forward). Excluding it at the boundary beats trusting the route.
    *
    * 409 on `refused` and NOT on `problems`, which is the difference between "your

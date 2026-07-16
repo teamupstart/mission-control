@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentType, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
+import type { AgentType, ToolCall, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
+import { toolChip, transcriptRows } from "../lib/tools.ts";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -127,7 +128,13 @@ export function TranscriptPanel({
         ) : messages.length === 0 ? (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         ) : (
-          messages.map((m) => <Turn key={m.id} m={m} agentLabel={AGENT_LABEL[agent]} />)
+          transcriptRows(messages).map((row) =>
+            row.kind === "tools" ? (
+              <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_LABEL[agent]} />
+            ) : (
+              <Turn key={row.id} m={row.message} agentLabel={AGENT_LABEL[agent]} />
+            ),
+          )
         )}
       </div>
 
@@ -177,17 +184,39 @@ function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): 
     <div className={`turn turn-${m.role}`}>
       <div className="turn-role">{m.role === "assistant" ? agentLabel : "you"}</div>
       {m.text && <div className="turn-text">{m.text}</div>}
-      {m.tools.length > 0 && (
-        <div className="turn-tools">
-          {m.tools.map((t, i) => (
-            // The chip stays the bare name - the card is a glance, not an audit. `t.input`
-            // rides along for Foreman's reviewer and is deliberately not rendered here.
-            <span key={`${t.name}-${i}`} className="tool-chip">
-              {t.name}
-            </span>
-          ))}
-        </div>
-      )}
+      {m.tools.length > 0 && <ToolChips tools={m.tools} />}
+    </div>
+  );
+}
+
+/**
+ * A run of back-to-back tool-only turns, on one line. Reads as a single sentence -
+ * "claude executed  bash ls  bash wc" - because to the person watching, that's what
+ * it was: one stretch of the agent working, not a dozen turns worth a header each.
+ */
+function ToolRun({ tools, agentLabel }: { tools: ToolCall[]; agentLabel: string }): React.JSX.Element {
+  return (
+    <div className="turn turn-assistant turn-toolrun">
+      <div className="turn-role">{agentLabel} executed</div>
+      <ToolChips tools={tools} />
+    </div>
+  );
+}
+
+function ToolChips({ tools }: { tools: ToolCall[] }): React.JSX.Element {
+  return (
+    <div className="turn-tools">
+      {tools.map((t, i) => {
+        // The name alone ("Bash", nine times over) is frame without content; the chip
+        // carries what the call actually touched, and the title the literal input.
+        const chip = toolChip(t);
+        return (
+          <span key={`${t.name}-${i}`} className="tool-chip" title={chip.title}>
+            <span className="tool-chip-name">{chip.name}</span>
+            {chip.detail && <span className="tool-chip-detail">{chip.detail}</span>}
+          </span>
+        );
+      })}
     </div>
   );
 }

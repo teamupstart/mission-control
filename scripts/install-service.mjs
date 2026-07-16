@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Install (or remove) the Fleet Control daemon as a macOS LaunchAgent so it starts
+// Install (or remove) the Mission Control daemon as a macOS LaunchAgent so it starts
 // at login and stays running. Opt-in: the user runs `npm run install-service`.
 
 import { writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
@@ -14,10 +14,12 @@ if (platform() !== "darwin") {
   process.exit(1);
 }
 
-const LABEL = "com.fleet-control.daemon";
+const LABEL = "com.mission-control.daemon";
 // Prior label(s) we may still need to unload/remove on an in-place upgrade so a
 // stale daemon under the old label doesn't linger (or double-bind the port).
-const LEGACY_LABELS = ["com.ai-harness.daemon"];
+// Every name this app has gone by, oldest included: an install from any of them is
+// still out there running, and a leftover would double-bind the port.
+const LEGACY_LABELS = ["com.fleet-control.daemon", "com.ai-harness.daemon"];
 const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 const node = process.execPath;
 const tsx = join(repo, "node_modules", "tsx", "dist", "cli.mjs");
@@ -103,5 +105,5 @@ console.log(`Stop/remove with:  npm run install-service -- --uninstall`);
 // daemon rather than double-binding the port, so the two coexist safely - but pick
 // one to avoid two "start at login" mechanisms. This LaunchAgent is best for a
 // headless daemon (no app window).
-console.log(`\nNote: if you also run the Agent Wrangler desktop app, it will ADOPT this`);
+console.log(`\nNote: if you also run the Mission Control desktop app, it will ADOPT this`);
 console.log(`daemon (no double-bind). Use one "start at login" mechanism to avoid confusion.`);

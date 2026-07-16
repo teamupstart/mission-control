@@ -59,7 +59,7 @@ test("the pane is read BEFORE anything else - it is the gate, not a formality", 
 test("no mode line means no keystroke, and no ack", async () => {
   // THE case. A dialog or menu replaces Claude's footer entirely, and a dialog is a
   // SELECT LIST: the pasted text is swallowed and the Enter answers whichever option
-  // is highlighted. This is what stops a fleet-wide broadcast pressing "Yes, I trust
+  // is highlighted. This is what stops a dashboard-wide broadcast pressing "Yes, I trust
   // this folder" in every pane at once. No ack either - the session is still behind.
   const { deps, log } = spy({ readModeLine: async () => null });
   const sent = await reloadOne(mkSession(), GEN, PRIOR, deps);

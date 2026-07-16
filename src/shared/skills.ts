@@ -8,39 +8,52 @@
 // links or reach for someone else's.
 
 /**
- * The prefix on every directory the reconciler creates in `~/.claude/skills`, and
- * the ONLY thing it will ever remove.
+ * Every prefix the reconciler has ever created a `~/.claude/skills` directory under,
+ * newest first: the head is what it WRITES today, and the whole list is what it
+ * RECOGNISES as ours - i.e. the only things it will ever remove.
  *
  * That directory is the operator's, not ours - `no-mistakes`, `implement-plan` and
  * friends live there and are hand-authored. The prefix makes them untouchable by
  * construction rather than by care.
  *
  * It costs almost nothing legible: a skill's directory name and its frontmatter `name`
- * are independent, so `fleet-html-plans/` containing `name: html-plans` presents in
+ * are independent, so `mission-html-plans/` containing `name: html-plans` presents in
  * the slash menu as `/html-plans`. The harness owns the namespace; the user types a
  * clean name.
  *
+ * A LIST rather than one string, for the same reason `LEASE_HOLDERS` is: a directory
+ * name outlives a rename. The `fleet-<id>` dirs are still sitting in `~/.claude/skills`
+ * on every machine that enabled a skill before the rename, and they are still the links
+ * Claude loads. A recogniser that knew only the current prefix would stop seeing them as
+ * ours - never reconciled, never removed by the master switch, and a `mission-` duplicate
+ * installed beside each one. They were us; answering the real question ("did WE put this
+ * here?") means asking about all of them. Append on any future rename; never remove.
+ *
  * One caveat, observed rather than assumed (claude 2.1.211): the MODEL's own skill
- * registry uses the DIRECTORY name, so it sees `fleet-html-plans` where the human sees
+ * registry uses the DIRECTORY name, so it sees `mission-html-plans` where the human sees
  * `/html-plans`. Harmless - the description is what decides whether it reaches for the
  * skill, and that is untouched - but it means the prefix is not quite invisible, and
  * anything that ever matches on a skill's model-facing name has to expect it.
  */
-export const SKILL_DIR_PREFIX = "fleet-";
+export const SKILL_DIR_PREFIXES = ["mission-", "fleet-"] as const;
 
-/** The directory name a catalog id gets in `~/.claude/skills`. */
-export function fleetSkillDirName(id: string): string {
+/** The prefix new directories are created under - the head of `SKILL_DIR_PREFIXES`. */
+export const SKILL_DIR_PREFIX = SKILL_DIR_PREFIXES[0];
+
+/** The directory name a catalog id gets when we install it fresh. */
+export function missionSkillDirName(id: string): string {
   return `${SKILL_DIR_PREFIX}${id}`;
 }
 
-/** True when a `~/.claude/skills` entry is one of ours - i.e. ours to remove. */
-export function isFleetSkillDir(name: string): boolean {
-  return name.startsWith(SKILL_DIR_PREFIX);
-}
-
-/** The catalog id behind one of our directory names, or null when it isn't ours. */
+/**
+ * The catalog id behind one of our directory names, or null when it isn't ours -
+ * which doubles as the answer to "is this ours to remove?", and is the ONLY place the
+ * prefix list is matched against a name. One encoding: a second one could drift from
+ * this on the next rename, which is the very thing the list above exists to prevent.
+ */
 export function skillIdFromDirName(name: string): string | null {
-  return isFleetSkillDir(name) ? name.slice(SKILL_DIR_PREFIX.length) : null;
+  const prefix = SKILL_DIR_PREFIXES.find((p) => name.startsWith(p));
+  return prefix ? name.slice(prefix.length) : null;
 }
 
 /**

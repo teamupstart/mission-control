@@ -7,10 +7,10 @@ import { join } from "node:path";
 import type { WorkItem, WorkItemState } from "../src/shared/types.ts";
 
 // Point the daemon's state dir at a throwaway home BEFORE anything reads config,
-// so this never touches the real ~/.fleet-control db (config.ts resolves the
+// so this never touches the real ~/.mission-control db (config.ts resolves the
 // state dir at module load, so db must be imported dynamically after).
-const home = mkdtempSync(join(tmpdir(), "fleet-queue-db-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-queue-db-"));
+process.env.MISSION_HOME = home;
 
 const {
   openDb,
@@ -313,10 +313,10 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
   //
   // Across two PROCESSES on one db file, because that's the only way the repair can
   // actually happen: openDb caches its handle, so migrate runs once per start.
-  const drifted = mkdtempSync(join(tmpdir(), "fleet-drift-"));
+  const drifted = mkdtempSync(join(tmpdir(), "mission-drift-"));
   const run = (src: string): string =>
     execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], {
-      env: { ...process.env, FLEET_HOME: drifted },
+      env: { ...process.env, MISSION_HOME: drifted },
       encoding: "utf8",
       cwd: process.cwd(),
     }).trim();
@@ -366,10 +366,10 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
   //
   // Hence THREE starts: the bug is invisible on the start that drops the index and
   // only bites on the one after it.
-  const stuck = mkdtempSync(join(tmpdir(), "fleet-stuck-"));
+  const stuck = mkdtempSync(join(tmpdir(), "mission-stuck-"));
   const run = (src: string): string =>
     execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", src], {
-      env: { ...process.env, FLEET_HOME: stuck },
+      env: { ...process.env, MISSION_HOME: stuck },
       encoding: "utf8",
       cwd: process.cwd(),
     }).trim();

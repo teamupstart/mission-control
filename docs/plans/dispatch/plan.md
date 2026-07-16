@@ -1,9 +1,9 @@
 # Plan: Dispatch (agent launch)
 
 Status: proposed
-Owner: fleet-control
+Owner: mission-control
 Related: [First Mate](https://github.com/kunchenguid/firstmate) idea #1; shares its
-task/backlog data model with [`../fleet-report/plan.md`](../fleet-report/plan.md) (idea #4).
+task/backlog data model with [`../mission-report/plan.md`](../mission-report/plan.md) (idea #4).
 
 ## Goal
 
@@ -41,7 +41,7 @@ The one new capability is **spawning** a session; everything else is composition
 ## The shared task data model (spine for #1 and #4)
 
 A task is a durable unit of intent that a session executes. Defined here because Dispatch
-writes it; the fleet-report plan reads and extends it.
+writes it; the mission-report plan reads and extends it.
 
 ### Type (`src/shared/types.ts`)
 
@@ -174,13 +174,13 @@ error sets the task `failed` with a reason):
    - Fast path: if the repo opted into treehouse (a `treehouse.toml` at its root),
      `treehouse get --lease --lease-holder <LEASE_HOLDER>` (cwd = repoRoot) - a pre-warmed
      pooled tree. The holder label comes from the `LEASE_HOLDER` constant in
-     `src/shared/harness-runtime.mjs` (currently `fleet-control`), never a literal: it is
+     `src/shared/harness-runtime.mjs` (currently `mission-control`), never a literal: it is
      the mark the reaper matches on, so a lease taken under any other label can never be
      reclaimed.
    - If the pool hands back nothing it is usually **leaked**, not empty - leases are
      durable, so agents that went away still hold slots. Reap them (`reapPool(repoRoot,
      pins)`) and ask once more before giving up on the pool.
-   - Always-available fallback: `git -C <repoRoot> worktree add <FLEET_HOME>/worktrees/<taskId> -b harness/<slug>-<shortId> HEAD`,
+   - Always-available fallback: `git -C <repoRoot> worktree add <MISSION_HOME>/worktrees/<taskId> -b harness/<slug>-<shortId> HEAD`,
      with a warning naming what the pool actually reported - the fallback is a throwaway
      checkout with none of the pool's pre-warming, so it must never be silent.
    - Returns `{ path (realpath), branch, provider }`. The path is stored as a **realpath**
@@ -246,7 +246,7 @@ Instantiate `TaskManager` + `Dispatcher`, pass into `buildApp`.
 - `src/web/lib/api.ts`: `dispatchTask`, `queueTask`, `listTasks`, `dispatchQueued(id)`,
   `cancelTask(id)`, `completeTask(id, outcome)`, `deleteTask(id)`.
 - `src/web/useEventStream.ts`: maintain a `tasks` Map from `snapshot` + `task_upsert` /
-  `task_remove`; expose `tasks` on `FleetState`.
+  `task_remove`; expose `tasks` on `MissionState`.
 - `src/web/App.tsx`: a **`+ Dispatch`** button in the topbar opens `DispatchModal`.
 - `src/web/components/DispatchModal.tsx` (new): repo (datalist of repos the daemon already
   sees - distinct repo roots of live sessions - plus free text), agent, kind (ship/scout),

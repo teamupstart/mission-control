@@ -92,9 +92,9 @@ build: ## Build everything (web UI, daemon, Electron main, MCP + hook satellites
 app: ## Build and package the macOS app (.app + .dmg) into release/
 	npm run package
 
-install-app: app ## Build, package, and copy Agent Wrangler.app into /Applications
-	@rm -rf "/Applications/Agent Wrangler.app"
-	@cp -R "release/mac-arm64/Agent Wrangler.app" /Applications/ && echo "installed to /Applications/Agent Wrangler.app"
+install-app: app ## Build, package, and copy Mission Control.app into /Applications
+	@rm -rf "/Applications/Mission Control.app"
+	@cp -R "release/mac-arm64/Mission Control.app" /Applications/ && echo "installed to /Applications/Mission Control.app"
 
 icons: ## Regenerate the app icon + tray images from build/*.svg (needs rsvg-convert)
 	node scripts/gen-icons.mjs

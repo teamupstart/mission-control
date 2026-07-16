@@ -116,7 +116,7 @@ export async function respond(
   // Optimistic: reflect the acted-on gate immediately, before the blocking respond returns.
   void pollAndReconcile(registry);
 
-  // Background: run to completion, then reconcile the resulting fleet-wide state.
+  // Background: run to completion, then reconcile the resulting cross-session state.
   run(bin, args, { cwd, timeoutMs: 10 * 60 * 1000 })
     .then(async (res) => {
       if (res.code !== 0) {
@@ -211,8 +211,8 @@ export function timeRun(run: NmRunSummary, now = Date.now()): NmRunSummary {
 export async function pollFixLogs(registry: Registry): Promise<void> {
   const targets = registry.nomistakesFixTargets();
   // This set IS what "still worth remembering" means, and it's already computed
-  // here each tick - so the cache is bounded by the live fleet rather than by how
-  // long the daemon has been up. A checkout that leaves the fleet takes its log
+  // here each tick - so the cache is bounded by the live sessions rather than by how
+  // long the daemon has been up. A checkout that leaves the dashboard takes its log
   // with it; one that comes back pays a re-read.
   retainFixLogs(targets.map((t) => t.cwd));
   await Promise.all(

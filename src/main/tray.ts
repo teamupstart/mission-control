@@ -1,4 +1,4 @@
-// Menu-bar presence. The tray shows a live one-line fleet summary and a menu of
+// Menu-bar presence. The tray shows a live one-line session summary and a menu of
 // app-level actions. Counts come from polling the daemon's /api/report (the same
 // projection the Roundup panel uses) - simple and robust; sub-second latency
 // isn't needed for a status glance.
@@ -44,12 +44,12 @@ function summary(c: ReportCounts): string {
 function render(handlers: TrayHandlers): void {
   if (!tray) return;
   const c = last;
-  tray.setToolTip(`Agent Wrangler — ${summary(c)}`);
+  tray.setToolTip(`Mission Control - ${summary(c)}`);
   // A short title next to the icon draws the eye when something needs you.
   tray.setTitle(c.needsYou > 0 ? ` ${c.needsYou}` : "");
 
   const template: MenuItemConstructorOptions[] = [
-    { label: `Agent Wrangler`, enabled: false },
+    { label: `Mission Control`, enabled: false },
     { label: summary(c), enabled: false },
     { type: "separator" },
     { label: "Open Dashboard", click: () => handlers.onOpen() },
@@ -63,7 +63,7 @@ function render(handlers: TrayHandlers): void {
     { label: "Install Claude integrations…", click: () => handlers.onInstallIntegrations() },
     { label: "Remove Claude integrations", click: () => handlers.onRemoveIntegrations() },
     { type: "separator" },
-    { label: "Quit Agent Wrangler", click: () => handlers.onQuit() },
+    { label: "Quit Mission Control", click: () => handlers.onQuit() },
   ];
   tray.setContextMenu(Menu.buildFromTemplate(template));
 }

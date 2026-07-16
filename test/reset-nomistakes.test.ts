@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { gitIn, mkCloneOnBranch, mkLinkedWorktree } from "./helpers/git-fixture.ts";
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
-process.env.FLEET_HOME = mkdtempSync(join(tmpdir(), "fleet-reset-nm-"));
+process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-reset-nm-"));
 
 const { openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");

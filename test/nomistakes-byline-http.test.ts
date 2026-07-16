@@ -31,7 +31,7 @@ function tmp(prefix: string): string {
   return dir;
 }
 
-process.env.FLEET_HOME = tmp("fleet-byline-http-");
+process.env.MISSION_HOME = tmp("mission-byline-http-");
 process.env.NM_HOME = tmp("nm-byline-http-");
 
 const { openDb } = await import("../src/server/db.ts");

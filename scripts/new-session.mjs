@@ -72,7 +72,7 @@ if (!worktree) {
 spawnSync(process.execPath, [join(repo, "scripts", "worktree-setup.mjs"), worktree], { stdio: "inherit" });
 
 // --- hand it over -----------------------------------------------------------
-const env = { ...process.env, FLEET_WORKTREE: worktree, TREEHOUSE_LEASE_HOLDER: holder };
+const env = { ...process.env, MISSION_WORKTREE: worktree, TREEHOUSE_LEASE_HOLDER: holder };
 const [cmd, ...rest] = command.length > 0 ? command : [process.env.SHELL || "/bin/bash"];
 console.error(`\n🌳 session ready in ${worktree}\n   (lease held by "${holder}"; return it later with: treehouse return ${worktree})\n`);
 

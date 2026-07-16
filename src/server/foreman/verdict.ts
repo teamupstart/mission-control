@@ -16,7 +16,7 @@ import type { GateRef } from "./pending.ts";
  *
  * The prompt hands the model the whole object shape, so a reviewer with nothing to send fills
  * the field in regardless: `"answer": {"text": ""}` next to `"action": "skip"` is what a real
- * reviewer actually returns, measured against the live fleet. A bare `text: z.string().min(1)`
+ * reviewer actually returns, measured against the live sessions. A bare `text: z.string().min(1)`
  * failed the WHOLE object on it, `runStructured` retried, and after three strikes the worker
  * gave up and wrote `skipped (reviewer failed 3x)` - discarding a well-formed judgment, purpose
  * and recommendation and all, over an empty field that the action it names never reads. The
@@ -466,8 +466,8 @@ function menuMismatch(
  * a human is needed - only that this reviewer can't answer this surface. The Tier 1 router's
  * schema has no `option` field at all, so on a permission prompt (which is a menu) every one
  * of its answers is blocked here. Routing up hands the same ask to the full reviewer, which
- * can name a row; escalating instead would put a human in front of every routine approval on
- * an `on` fleet, having already spent the cheap call to learn nothing.
+ * can name a row; escalating instead would put a human in front of every routine approval
+ * when the tier is `on`, having already spent the cheap call to learn nothing.
  */
 export function menuBlocksAnswer(v: Verdict, ctx: ReviewContext): boolean {
   if (v.action !== "answer") return false;

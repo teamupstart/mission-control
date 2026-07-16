@@ -50,7 +50,7 @@ export interface QueueActions {
   captureScope(
     session: Session,
   ): Promise<{ baseSha: string | null; transcriptAnchor: number | null }>;
-  /** True while this worker still holds the fleet lease. */
+  /** True while this worker still holds the worker lease. */
   holdsLease(): boolean;
 }
 
@@ -70,7 +70,7 @@ export function noteKeyOf(s: Session): string {
 }
 
 /**
- * Find the live session holding `noteKey` in a FRESH fleet read, or null.
+ * Find the live session holding `noteKey` in a FRESH session read, or null.
  *
  * Defined once because two callers must agree on it - `queueSendStillValid` before
  * typing, and the worker's per-target re-resolve before deciding anything - and

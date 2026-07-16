@@ -7,7 +7,7 @@ import type { SessionNote } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
-const home = mkdtempSync(join(tmpdir(), "fleet-fstatus-"));
+const home = mkdtempSync(join(tmpdir(), "mission-fstatus-"));
 process.env.HARNESS_HOME = home;
 const { openDb, upsertSessionNote } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

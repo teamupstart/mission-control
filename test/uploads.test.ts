@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Isolate the state dir before uploads.ts reads config for UPLOADS_DIR.
-process.env.FLEET_HOME = mkdtempSync(join(tmpdir(), "fleet-uploads-"));
+process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-uploads-"));
 const { UPLOADS_DIR, detectImageExt, saveImageUpload, sweepUploads, uploadFileName } = await import(
   "../src/server/uploads.ts"
 );
@@ -137,7 +137,7 @@ test("withAttachments: leaves a plain message untouched", () => {
 test("formatAttachmentPath: quotes a path only when it would otherwise split", () => {
   // The stored basename is always safe, but the state dir hangs off the user's home
   // - and "/Users/first last/..." would paste as two half-paths.
-  assert.equal(formatAttachmentPath("/Users/ada/.fleet-control/uploads/a-1.png"), "/Users/ada/.fleet-control/uploads/a-1.png");
+  assert.equal(formatAttachmentPath("/Users/ada/.mission-control/uploads/a-1.png"), "/Users/ada/.mission-control/uploads/a-1.png");
   assert.equal(formatAttachmentPath("/Users/first last/uploads/a-1.png"), '"/Users/first last/uploads/a-1.png"');
   assert.equal(formatAttachmentPath('/tmp/we"ird/a.png'), '"/tmp/we\\"ird/a.png"');
 });
@@ -155,5 +155,5 @@ test("uploads land inside the state dir, not wherever the caller fancied", () =>
   const saved = saveImageUpload(PNG, "x.png");
   assert.ok(saved.path.startsWith(UPLOADS_DIR + "/"), saved.path);
   // And the dir is the daemon's own, alongside the db - not a world-writable temp.
-  assert.ok(UPLOADS_DIR.startsWith(process.env.FLEET_HOME!), UPLOADS_DIR);
+  assert.ok(UPLOADS_DIR.startsWith(process.env.MISSION_HOME!), UPLOADS_DIR);
 });

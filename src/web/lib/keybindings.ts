@@ -38,7 +38,7 @@ export const ACTIONS: readonly ActionDef[] = [
   {
     id: "roundup",
     label: "Toggle Roundup",
-    description: "Open or close the fleet report.",
+    description: "Open or close the roundup report.",
     defaultBinding: "r",
     group: "global",
   },
@@ -219,7 +219,7 @@ export function isReservedChord(chord: string): boolean {
 
 // ---- store ----------------------------------------------------------------
 
-const STORAGE_KEY = "fleet-control.keybindings";
+const STORAGE_KEY = "mission-control.keybindings";
 type Overrides = Partial<Record<ActionId, string>>;
 
 function loadOverrides(): Overrides {

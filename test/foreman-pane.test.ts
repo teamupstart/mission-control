@@ -11,7 +11,7 @@ import type { Session, SessionState, TranscriptMessage } from "../src/shared/typ
 
 // The child's screen as an input to Foreman's reviewers (see `ReviewInput.pane`).
 //
-// The bug these lock down was measured on the live fleet, not imagined: a session sat at an
+// The bug these lock down was measured on the live sessions, not imagined: a session sat at an
 // `AskUserQuestion` menu while Foreman recorded `disposition: skipped` with the reason "the
 // pending item's content is not visible in the transcript" - and it was right. Claude appends an
 // assistant turn when it COMPLETES, so a tool call blocked on the user is absent from the
@@ -27,8 +27,8 @@ const REAL_MENU = `
 Review finding \`pool-reaps-any-holders-lease-workspace-wide\` (src/server/pool.ts, ask-user):
 The reap gate never looks at \`tree.holder\`. Which holder policy do you want?
 
-  1. Only reap fleet-control leases (Recommended)
-     Reap only leases whose recorded holder is 'fleet-control'.
+  1. Only reap mission-control leases (Recommended)
+     Reap only leases whose recorded holder is 'mission-control'.
   2. Reap any holder, but only repos we know
      Keep reaping regardless of holder, but drop the workspace-wide scan.
 ❯ 3. Keep as-is (any holder, workspace-wide)
@@ -71,7 +71,7 @@ test("the review prompt carries the ask the transcript cannot hold", () => {
 
   const seeing = buildReviewPrompt(input({ pane: REAL_MENU }));
   assert.ok(seeing.includes("Holder policy"), "the reviewer can now read the question");
-  assert.ok(seeing.includes("Only reap fleet-control leases"), "...and the options it must choose between");
+  assert.ok(seeing.includes("Only reap mission-control leases"), "...and the options it must choose between");
 });
 
 test("the review prompt stops telling the reviewer to infer a missing question from the transcript", () => {
@@ -83,7 +83,7 @@ test("the review prompt stops telling the reviewer to infer a missing question f
 });
 
 test("the POLICY names the empty transcript tail as normal rather than a reason to skip", () => {
-  // The skip clause is what fired on the live fleet, so the fix is not just supplying the pane -
+  // The skip clause is what fired on the live sessions, so the fix is not just supplying the pane -
   // it is retiring the reading that made an absent ask look like an unanswerable one.
   //
   // Asserted against the prompt with whitespace collapsed: the POLICY is hand-wrapped prose, so

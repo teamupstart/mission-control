@@ -1,11 +1,11 @@
 // Shape of the preload bridge (src/preload/index.ts) as seen from the renderer.
 // Present only when running inside the Electron shell; the plain browser build
-// leaves `window.fleetDesktop` undefined, so every caller must guard on it.
+// leaves `window.missionDesktop` undefined, so every caller must guard on it.
 
 export {};
 
 declare global {
-  interface FleetDesktop {
+  interface MissionDesktop {
     isDesktop: boolean;
     version(): Promise<string>;
     openExternal(url: string): Promise<void>;
@@ -16,6 +16,6 @@ declare global {
   }
 
   interface Window {
-    fleetDesktop?: FleetDesktop;
+    missionDesktop?: MissionDesktop;
   }
 }

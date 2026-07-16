@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Claude Code statusLine forwarder -> Fleet Control bridge.
+// Claude Code statusLine forwarder -> Mission Control bridge.
 //
 // Claude runs the configured statusLine command on every render and pipes a rich
 // JSON payload on stdin (model, context window, reasoning effort, thinking). This
@@ -49,7 +49,7 @@ function readStdin() {
  * ccstatusline. Read fresh each render so uninstalling/re-pointing takes effect.
  */
 function innerCommand() {
-  const override = process.env.FLEET_STATUSLINE_INNER;
+  const override = process.env.MISSION_STATUSLINE_INNER;
   if (override && override.trim()) return override.trim();
   try {
     const recorded = readFileSync(join(stateDir(), "statusline-inner"), "utf8").trim();
@@ -159,7 +159,7 @@ async function main() {
   // Only the REPORT is suppressed, never the delegation: rendering the line is this script's
   // other job and a user-visible one, so a stray marker in an interactive env must not be
   // able to blank someone's status line. This half is ours to skip; that half is theirs.
-  const headless = Boolean(process.env.FLEET_HEADLESS);
+  const headless = Boolean(process.env.MISSION_HEADLESS);
   // Delegate (renders the terminal line) and report, in parallel; wait for both so
   // Claude has the inner command's full output and the POST had time to land.
   await Promise.all([runInner(raw), headless ? Promise.resolve() : post(toBody(payload))]);

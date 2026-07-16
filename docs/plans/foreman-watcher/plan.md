@@ -3,7 +3,7 @@
 Status: Tiers 0 + 1 shipped (Step 0 previously shipped - see "Step 0" below). Ships in `shadow`
 mode by default: the cheap tier runs alongside the full review and every divergence is logged, so
 its accuracy is measured before `triage: 'on'` is ever flipped.
-Owner: ai-harness (Agent Wrangler)
+Owner: ai-harness (Mission Control)
 Related: `docs/plans/foreman/plan.md` (the shipped auto-responder), `todo/foreman-upgrades.md`
 (item #1). Inspiration: [`firstmate`](https://github.com/kunchenguid/firstmate)'s
 "zero-token supervision" bash watcher.
@@ -54,7 +54,7 @@ handled (lost automation, never a wrong action).
 ## The tiers
 
 ### Tier 0 — structural gate (zero model, pure code)
-Runs inside `processSession` using data already in hand (the fleet snapshot, the reviews list,
+Runs inside `processSession` using data already in hand (the session snapshot, the reviews list,
 the note, and the `classifyPending` surface). Disposes without any model call when the outcome is
 structurally determined:
 
@@ -110,7 +110,7 @@ Five hard backstops in *code*, applied after Haiku, that Haiku cannot override:
    is answered by selecting a row, and the router's schema has no field to name one - so on a menu,
    which is what a permission prompt is, every answer it reaches is handed to the reviewer that can
    name a row. Route-up rather than escalate on purpose: escalating would put a human in front of
-   every routine approval on an `on` fleet, having spent the cheap call to learn nothing. Falling
+   every routine approval when the tier is `on`, having spent the cheap call to learn nothing. Falling
    back to typing the prose is the bug this exists to make unreachable - see the "never confirm a
    row we did not verify" invariant in `docs/plans/foreman/plan.md`.
 
@@ -191,7 +191,7 @@ short-circuits anything.
 
 ## Expected savings
 
-If a busy fleet is ~40% human-only reviews (Tier 0/1, near-zero cost), ~20% routine access (Tier 1
+If a busy set of sessions is ~40% human-only reviews (Tier 0/1, near-zero cost), ~20% routine access (Tier 1
 Haiku), and ~40% real judgment (Tier 2), Opus reviews drop ~60%, replaced by far cheaper Haiku
 calls on smaller transcripts. A routed-up session costs one extra Haiku call on top of the Opus one
 it would have cost anyway: Tier 2 deliberately re-fetches its own 48-turn window rather than

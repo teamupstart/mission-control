@@ -305,7 +305,7 @@ export interface SessionNote {
  * A goal-only write would have had to invent a disposition (defaulting to "pending", which
  * means "Foreman drafted a reply it hasn't sent" - untrue for every session that merely has
  * a goal) and would bump the timestamp `foremanStatus` reports as `lastActionAt`. On a live
- * fleet that reads as N phantom drafts in ForemanBar and a Foreman that claims to have just
+ * state that reads as N phantom drafts in ForemanBar and a Foreman that claims to have just
  * acted on every keystroke. Same key, same lifecycle, different record.
  */
 export interface SessionGoal {
@@ -551,7 +551,7 @@ export interface ForemanStatus {
 
 /** One catalog skill, as parsed from `skills/<id>/SKILL.md`'s frontmatter. */
 export interface SkillCatalogEntry {
-  /** The directory under `skills/`. Owns the `fleet-<id>` namespace in ~/.claude/skills. */
+  /** The directory under `skills/`. Owns the `mission-<id>` namespace in ~/.claude/skills. */
   id: string;
   /** The frontmatter `name` - what the user types and what the panel shows. */
   name: string;
@@ -577,7 +577,7 @@ export interface SkillsView {
    *
    * Codex sessions are excluded, and not as a detail: codex has no
    * `/reload-skills` and no `~/.claude/skills`, so counting them would leave a
-   * number that can never reach zero on a mixed fleet.
+   * number that can never reach zero on a mixed set of sessions.
    */
   pending: number;
   /** Anything the reconciler could not do, in the operator's words. Usually empty. */
@@ -891,9 +891,9 @@ export interface ReviewItem {
   resolvedAt: number | null;
 }
 
-// ---- fleet report (/bearings) ----
+// ---- roundup report (/bearings) ----
 
-/** One line in a fleet report - a live session (with its intent) or a task. */
+/** One line in a roundup report - a live session (with its intent) or a task. */
 export interface ReportItem {
   sessionId: string | null;
   name: string;
@@ -907,8 +907,8 @@ export interface ReportItem {
   outcomeUrl: string | null;
 }
 
-/** A point-in-time snapshot of the whole fleet, for the report panel + markdown digest. */
-export interface FleetReport {
+/** A point-in-time snapshot of every session, for the report panel + markdown digest. */
+export interface MissionReport {
   generatedAt: number;
   counts: {
     sessions: number;
@@ -965,7 +965,7 @@ export interface TranscriptMessage {
   role: "user" | "assistant";
   /** Prose the human/agent wrote. May be empty on a pure tool-call turn. */
   text: string;
-  /** Tools invoked in this turn. The card chips their names; Foreman reads their inputs. */
+  /** Tools invoked in this turn. The card chips name + target (web/lib/tools.ts); Foreman reads the inputs. */
   tools: ToolCall[];
   /** epoch ms of the turn, 0 when the record had no timestamp. */
   ts: number;

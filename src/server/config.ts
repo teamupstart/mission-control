@@ -3,12 +3,20 @@ import { existsSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
 
-/** Runtime coordinates and the `FLEET_`/legacy env resolution live in the shared
+/** Runtime coordinates and the `MISSION_`/legacy env resolution live in the shared
  * runtime module so the daemon, the MCP bridge, and the hook can never disagree.
- * Re-exported here so the rest of the server keeps importing them from config. */
+ * Re-exported them here so the rest of the server keeps importing them from config. */
 export { HOST, PORT, envVar };
 
-/** Where the daemon keeps its state (db, token, logs). */
+
+/**
+ * Where the daemon keeps its state (db, token, logs).
+ *
+ * Resolved at module load, which is why the state-dir rename can't live here: this file
+ * is imported by most of src/server and therefore by the test suite, so a rename in this
+ * body would fire on `npm test` against the developer's real home. It lives in
+ * `./migrate-state.ts`, which only the daemon's entry point imports - above this one.
+ */
 export const STATE_DIR = stateDir();
 // The db filename stays "harness.db" so an upgraded install keeps its tasks/reviews.
 export const DB_PATH = join(STATE_DIR, "harness.db");
@@ -22,7 +30,7 @@ export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
  * directory (unpredictable when Electron spawns it).
  *
  * `../../skills` lands on the repo root under `tsx src/server/index.ts` AND on the app
- * root under `node dist/server/index.mjs`, exactly like index.ts's `FLEET_WEB_DIR`
+ * root under `node dist/server/index.mjs`, exactly like index.ts's `MISSION_WEB_DIR`
  * fallback and for the same reason: both entry points sit two levels down.
  *
  * WHICH IS WHY THIS LIVES HERE and not beside its callers in skills/. esbuild bundles

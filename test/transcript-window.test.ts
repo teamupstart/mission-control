@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readTranscriptWindow } from "../src/server/transcript.ts";
 
-const dir = mkdtempSync(join(tmpdir(), "fleet-window-"));
+const dir = mkdtempSync(join(tmpdir(), "mission-window-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 /** One JSONL transcript record for a user/assistant text turn. */

@@ -150,13 +150,13 @@ test("reportBucket: working is confirmed-running, idle is everything else that's
   assert.equal(reportBucket(mkSession({ state: "awaiting_review", instrumented: true })), "needs-you");
   assert.equal(reportBucket(mkSession({ state: "idle", pendingReviews: 1 })), "needs-you");
 
-  // A fleet of uninstrumented sessions must produce a non-empty Idle section.
-  const fleet = [
+  // A set of uninstrumented sessions must produce a non-empty Idle section.
+  const sessions = [
     mkSession({ id: "a", state: "working", instrumented: false }),
     mkSession({ id: "b", state: "working", instrumented: false }),
     mkSession({ id: "c", state: "working", instrumented: true }), // the only confirmed-running one
   ];
-  const r = buildReport({ sessions: fleet, tasks: [] }, 0);
+  const r = buildReport({ sessions: sessions, tasks: [] }, 0);
   assert.deepEqual(r.idle.map((i) => i.sessionId).sort(), ["a", "b"]);
   assert.deepEqual(r.working.map((i) => i.sessionId), ["c"]);
 });
@@ -224,13 +224,13 @@ test("a parked gate defers to a same-worktree sibling still driving the run", ()
   const driver = mkSession({ id: "ai1", cwd: "/repo", gitBranch: "main", state: "working", nomistakes: run });
   const idleA = mkSession({ id: "ai2", cwd: "/repo", gitBranch: "main", state: "idle", nomistakes: run });
   const idleB = mkSession({ id: "ai3", cwd: "/repo", gitBranch: "main", state: "idle", nomistakes: run });
-  const fleet = [driver, idleA, idleB];
+  const sessions = [driver, idleA, idleB];
 
   // The working sibling drives the gate, so no one - not even the idle ones - is nagged.
-  assert.equal(gateParked(idleA, fleet), false);
-  assert.equal(gateParked(idleB, fleet), false);
-  assert.equal(gateParked(driver, fleet), false);
-  assert.equal(buildReport({ sessions: fleet, tasks: [] }, 0).counts.needsYou, 0);
+  assert.equal(gateParked(idleA, sessions), false);
+  assert.equal(gateParked(idleB, sessions), false);
+  assert.equal(gateParked(driver, sessions), false);
+  assert.equal(buildReport({ sessions: sessions, tasks: [] }, 0).counts.needsYou, 0);
 
   // A busy session on a *different* branch is a different run - it must not
   // suppress the parked gate on main.
@@ -337,7 +337,7 @@ test("renderReportMarkdown reflects sections, counts, and outcomes", () => {
     1_700_000_000_000,
   );
   const md = renderReportMarkdown(r);
-  assert.match(md, /# Fleet bearings - \d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+  assert.match(md, /# Mission bearings - \d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
   assert.match(md, /Needs you \(1\)/);
   assert.match(md, /- "?auth"? - needs input/);
   assert.match(md, /Recent outcomes \(1\)/);

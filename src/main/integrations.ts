@@ -17,7 +17,7 @@
 // durable off-switch because it persists `enabled: false`. Removing links from here
 // could not be durable: this process supervises the daemon, whose startup reconcile
 // reads a config still saying `enabled: true` and would put every link straight back,
-// re-broadcasting a reload to the fleet. A removal the next launch silently undoes is
+// re-broadcasting a reload to every session. A removal the next launch silently undoes is
 // worse than one that never claimed to happen.
 
 import { app } from "electron";
@@ -184,7 +184,7 @@ function claudeMcp(add: boolean, runtime: Runtime, mcp: string): string {
   const claude = "claude";
   try {
     if (!add) {
-      execFileSync(claude, ["mcp", "remove", "-s", "user", "fleet-control"], {
+      execFileSync(claude, ["mcp", "remove", "-s", "user", "mission-control"], {
         stdio: "ignore",
         timeout: 15000,
         env: { ...process.env, PATH: process.env.PATH },
@@ -193,7 +193,7 @@ function claudeMcp(add: boolean, runtime: Runtime, mcp: string): string {
     }
     const { env, argv } = runtime.mcpArgs(mcp);
     const envFlags = env.flatMap((e) => ["-e", e]);
-    execFileSync(claude, ["mcp", "add", "-s", "user", "fleet-control", ...envFlags, "--", ...argv], {
+    execFileSync(claude, ["mcp", "add", "-s", "user", "mission-control", ...envFlags, "--", ...argv], {
       stdio: "ignore",
       timeout: 15000,
     });

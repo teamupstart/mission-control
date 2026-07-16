@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Isolate the daemon's state dir (db, token, uploads) before config is read.
-process.env.FLEET_HOME = mkdtempSync(join(tmpdir(), "fleet-upload-http-"));
+process.env.MISSION_HOME = mkdtempSync(join(tmpdir(), "mission-upload-http-"));
 
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");

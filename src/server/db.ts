@@ -243,7 +243,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
-  // creates it on an upgraded db exactly as on a fresh one. An existing fleet simply has no
+  // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
   // goals until its sessions take their next prompt, which is the truthful answer for a
   // session whose prompts were all seen before goals existed. (This is the payoff of a
   // separate table over columns on `session_notes`: no ALTER, and no row written before
@@ -545,7 +545,7 @@ export function hooksEverSeen(sessionId: string): boolean {
  * live hook/statusLine reports it, so without this a daemon restart rebuilds every
  * session under its synthetic id, no stored queue matches a live key, and the
  * orphan sweep terminally escalates the in-flight item of every healthy session in
- * the fleet. The synthetic id is tty+pid+start, so it's stable across a restart for
+ * the sessions. The synthetic id is tty+pid+start, so it's stable across a restart for
  * the same agent process and mints fresh for a genuinely new one; a `/clear` mints
  * a new agent session id on the same pane and overwrites the row, which is exactly
  * right - the queue it just left behind SHOULD orphan.
@@ -670,7 +670,7 @@ export function loadActiveTasks(): Task[] {
 }
 
 /**
- * The most recent terminal tasks (done/failed/cancelled), so the fleet report's
+ * The most recent terminal tasks (done/failed/cancelled), so the roundup report's
  * "recent outcomes" survives a daemon restart instead of vanishing even though
  * the row is still stored. Bounded so a long-lived history doesn't bloat memory.
  */
@@ -824,7 +824,7 @@ export function loadSessionGoals(): SessionGoal[] {
  * this into `WHERE updated_at < ?`, which is precisely the query the paragraph above says must
  * never run - and every caller is one await away from that state, because a daemon holds a
  * full goal table from `loadSessionGoals` before it has discovered a single session. Refusing
- * here costs one sweep on a genuinely empty fleet (there is nothing to strand anyway, and the
+ * here costs one sweep on genuinely no sessions (there is nothing to strand anyway, and the
  * next hour retries); reading it as a fact costs a parked session its goal, permanently, since
  * only a new prompt rebuilds one.
  */
@@ -938,7 +938,7 @@ export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | unde
   };
 }
 
-/** Every stored queue (without items) - for the orphan sweep + the fleet list. */
+/** Every stored queue (without items) - for the orphan sweep + the session list. */
 export function listQueueRows(): Omit<SessionQueue, "items">[] {
   const rows = openDb()
     .prepare(`SELECT * FROM foreman_queues ORDER BY updated_at DESC`)
@@ -1220,7 +1220,7 @@ export function getAppConfig<T>(key: string): T | undefined {
  * Every session's acked generation, as one map.
  *
  * Read whole rather than per-session because the reload loop's selector is a pure
- * function over the fleet and wants no I/O inside it - the same discipline
+ * function over the sessions and wants no I/O inside it - the same discipline
  * `decideQueueTick` holds. The table is one row per session ever seen, integers
  * only, so reading it on a 1.5s tick is noise.
  */

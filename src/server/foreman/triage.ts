@@ -3,7 +3,7 @@ import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { parseModelJson } from "./review.ts";
+import { parseModelJson } from "../claude-cli.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";

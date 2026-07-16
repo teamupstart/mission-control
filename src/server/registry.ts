@@ -25,6 +25,7 @@ import type {
 } from "@shared/types.ts";
 import type { HookIngest, SetGoal, SetNote, StatusLineIngest } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
+import { goalLine } from "@shared/goal.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -1158,12 +1159,22 @@ export class Registry extends EventEmitter {
    * `substantivePrompt` returning null is the COMMON path, not an error one. Storing
    * nothing then is what keeps a goal describing the last thing a human actually asked for,
    * rather than being overwritten by machinery every time a task finishes.
+   *
+   * Writes BOTH the stored prompt (the refiner's input) and Tier 1's provisional goal: the
+   * human's own words, shortened to a line. Rough, but instant, free, and true - and it means
+   * a card is never blank while waiting on a model. `source: "heuristic"` is also the
+   * refiner's queue: it says "this prompt has not been summarised yet", so re-stamping it on
+   * every new prompt is what makes the goal refresh at all.
    */
   private captureGoalPrompt(s: Session, evt: HookIngest, now: number): void {
     if (evt.event !== "UserPromptSubmit") return;
     const prompt = substantivePrompt(evt.prompt);
     if (!prompt) return;
-    this.upsertGoal(s.id, { prompt: clampPrompt(prompt) }, now);
+    this.upsertGoal(
+      s.id,
+      { prompt: clampPrompt(prompt), text: goalLine(prompt), source: "heuristic" },
+      now,
+    );
   }
 
   /** The compact goal view denormalized onto a session card. */

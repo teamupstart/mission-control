@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { GOAL_MAX_CHARS } from "../src/shared/goal.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "fleet-goals-"));
@@ -119,12 +120,34 @@ test("a goal is denormalized onto its card, without the prompt behind it", () =>
   assert.equal(JSON.stringify(card.goal).includes("xxx"), false, "the prompt leaked onto the card");
 });
 
-test("a captured prompt alone is not yet a goal on the card", () => {
-  // Phase 2 stores the raw material; the sentence comes later. A row with no sentence must
-  // not render as an empty goal line.
+test("a prompt puts a goal on the card immediately, with no model involved", () => {
+  // Tier 1. The card is never blank waiting on a model: the human's own words go up at once,
+  // and `source: "heuristic"` is what tells the refiner to come back and improve them.
   const { r, s, env } = withSession("g7", "%17");
-  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "do the thing" }));
-  assert.equal(r.getGoal(s.id)?.prompt, "do the thing", "the prompt was not captured");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "fix the worktree cleanup on Reset" }));
+  const card = r.snapshot().sessions.find((x) => x.id === s.id)!;
+  assert.equal(card.goal?.text, "fix the worktree cleanup on Reset");
+  assert.equal(card.goal?.source, "heuristic");
+});
+
+test("a long prompt is shortened to one line for the card", () => {
+  // Prompts run to a 5,515-char p90. Unbounded, one card would push the fleet off screen.
+  const { r, s, env } = withSession("g11", "%21");
+  const long = `refactor the registry so that ${"the note key stays stable across a restart ".repeat(20)}`;
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: long }));
+  const card = r.snapshot().sessions.find((x) => x.id === s.id)!;
+  assert.ok(card.goal!.text!.length <= GOAL_MAX_CHARS, `goal was ${card.goal!.text!.length} chars`);
+  assert.ok(card.goal!.text!.startsWith("refactor the registry"), "lost the front of the ask");
+  assert.ok(card.goal!.text!.endsWith("…"), "truncation is not marked");
+  // The refiner still gets the whole thing - the card's bound is a display concern.
+  assert.ok(r.getGoal(s.id)!.prompt!.length > GOAL_MAX_CHARS, "the stored prompt was truncated too");
+});
+
+test("a goal row carrying only a prompt reports no goal", () => {
+  // The refiner writes {text, source} and the hook writes {prompt}; a row that somehow has
+  // only the latter must render nothing rather than an empty line.
+  const { r, s } = withSession("g12", "%22");
+  r.upsertGoal(s.id, { prompt: "raw material only" });
   assert.equal(r.snapshot().sessions.find((x) => x.id === s.id)!.goal, null);
 });
 

@@ -129,6 +129,58 @@ export async function runStructured<S extends ZodTypeAny>(
 }
 
 /**
+ * Pull a schema-valid object out of a `claude -p` run's raw stdout. Handles the JSON
+ * envelope (`{ result: "<text>" }`), markdown-fenced JSON, or a bare object, trying each
+ * candidate against the schema. Returns null when none validate.
+ *
+ * Lives here rather than with any one caller because the envelope is a property of the
+ * `--output-format json` flag THIS module sets - a caller that parses it is undoing what
+ * `runClaudeText` asked for. It had already been copied verbatim into two callers (the
+ * reviewer and the queue verifier) before a third (the goal refiner) needed it.
+ *
+ * The fence branch is not defensive padding: a model returns ```json … ``` despite being
+ * told not to, observed on a real probe.
+ */
+export function parseModelJson<S extends ZodTypeAny>(raw: string, schema: S): TypeOf<S> | null {
+  for (const candidate of jsonCandidates(resultText(raw))) {
+    let obj: unknown;
+    try {
+      obj = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    const r = schema.safeParse(obj);
+    if (r.success) return r.data;
+  }
+  return null;
+}
+
+/** Unwrap the `claude -p --output-format json` envelope to its `result` text. */
+function resultText(raw: string): string {
+  const trimmed = raw.trim();
+  try {
+    const env = JSON.parse(trimmed) as { result?: unknown };
+    if (env && typeof env === "object" && typeof env.result === "string") return env.result;
+  } catch {
+    // not an envelope - the raw output is the text
+  }
+  return trimmed;
+}
+
+/** Candidate JSON strings to try, most-specific first. */
+function jsonCandidates(text: string): string[] {
+  const out: string[] = [];
+  const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(text))) out.push(m[1]!.trim());
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first >= 0 && last > first) out.push(text.slice(first, last + 1));
+  out.push(text.trim());
+  return out;
+}
+
+/**
  * Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. `opts.model` maps
  * to `--model`; omit it to inherit the CLI's own default, which is the most expensive
  * and least predictable choice - every cheap caller should name a model. `opts.timeoutMs`

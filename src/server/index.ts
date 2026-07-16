@@ -7,6 +7,7 @@ import { HOST, PORT } from "./config.ts";
 import { openDb } from "./db.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
+import { killLiveClaudeRuns } from "./claude-cli.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
@@ -14,6 +15,7 @@ import { startPoller } from "./discovery/poller.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPrPoller } from "./pr.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
+import { startGoalRefiner } from "./goal/refiner.ts";
 import { buildApp } from "./routes.ts";
 
 openDb();
@@ -26,6 +28,7 @@ const stopPoller = startPoller(registry);
 const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
+const stopGoalRefiner = startGoalRefiner(registry);
 
 const app = buildApp(registry, reviews, tasks, queues);
 
@@ -57,6 +60,12 @@ function shutdown(): void {
   stopNomistakes();
   stopPrPoller();
   stopRuntimeMeta();
+  stopGoalRefiner();
+  // Stopping the refiner only stops it STARTING runs; one already in flight is a detached
+  // process that outlives us and would go on burning tokens for a card nobody is watching.
+  // `claude-cli.ts` hooks `process.exit` for the same reason, but this path calls it
+  // explicitly rather than relying on that ordering.
+  killLiveClaudeRuns();
   server.close();
   process.exit(0);
 }

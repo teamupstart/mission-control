@@ -1,10 +1,17 @@
-// Rate-limits how often Foreman runs a full (expensive `claude -p`) evaluation of
-// the SAME session. The worker's marker idempotency check already skips an UNCHANGED
-// waiting episode for free; this adds a wall-clock floor so a session whose marker
-// *flaps* - e.g. a terminal surface keyed on a moving `lastActivity` timestamp -
-// can't spawn a fresh review on every loop. A session seen for the first time is due
-// immediately, so genuinely new work is never delayed; only re-evaluations inside the
-// window are held off until it elapses.
+// A per-session wall-clock floor on how often something expensive (a `claude -p` run) may
+// happen for the SAME session. A session seen for the first time is due immediately, so
+// genuinely new work is never delayed; only re-evaluations inside the window are held off.
+//
+// Two callers, which is why this sits in util/ rather than under foreman/ where it began:
+//
+//   - the Foreman worker, whose marker idempotency check already skips an UNCHANGED waiting
+//     episode for free; this adds the floor so a session whose marker *flaps* (e.g. a
+//     terminal surface keyed on a moving `lastActivity`) can't spawn a review every loop.
+//   - the daemon's goal refiner, which must not re-summarise a session that is answering
+//     prompts in quick succession.
+//
+// Foreman is optional and runs as a separate process, so the daemon importing a timer from
+// under `foreman/` would have made the Goal feature depend on a module that may not run.
 
 /**
  * Per-session minimum interval between full evaluations. In-memory and per-session:

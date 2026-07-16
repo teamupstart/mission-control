@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
-import { runStructured } from "../claude-cli.ts";
+import { parseModelJson, runStructured } from "../claude-cli.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
 // Runs ONE work-item verification in a fresh tool-less `claude -p`, mirroring
@@ -170,40 +170,5 @@ export async function verifyItem(input: VerifyInput): Promise<QueueVerifyResult>
  * validate. Pure, exported for tests.
  */
 export function extractQueueVerdict(raw: string): QueueVerdict | null {
-  for (const candidate of jsonCandidates(resultText(raw))) {
-    let obj: unknown;
-    try {
-      obj = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    const r = QueueVerdictSchema.safeParse(obj);
-    if (r.success) return r.data as QueueVerdict;
-  }
-  return null;
-}
-
-/** Unwrap the `claude -p --output-format json` envelope to its `result` text. */
-function resultText(raw: string): string {
-  const trimmed = raw.trim();
-  try {
-    const env = JSON.parse(trimmed) as { result?: unknown };
-    if (env && typeof env === "object" && typeof env.result === "string") return env.result;
-  } catch {
-    // not an envelope - the raw output is the text
-  }
-  return trimmed;
-}
-
-/** Candidate JSON strings to try, most-specific first. */
-function jsonCandidates(text: string): string[] {
-  const out: string[] = [];
-  const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
-  let m: RegExpExecArray | null;
-  while ((m = fence.exec(text))) out.push(m[1]!.trim());
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first >= 0 && last > first) out.push(text.slice(first, last + 1));
-  out.push(text.trim());
-  return out;
+  return parseModelJson(raw, QueueVerdictSchema) as QueueVerdict | null;
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
 import { cwdAllowlisted } from "@shared/foreman.ts";
+import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import {
   canRenameSession,
   compactTokens,
@@ -32,6 +33,51 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
   claude: "Claude Code",
   codex: "Codex",
 };
+
+/**
+ * What this session is trying to solve, under the title.
+ *
+ * Sits OUTSIDE the `expanded` gate on purpose - that gate is the entire reason Foreman's
+ * Purpose failed at this job. A sentence you have to click to read is not a status line, and
+ * on a live 7-session fleet none of the four cards carrying a purpose showed it without a
+ * click.
+ *
+ * A full-width line under the header rather than a third row inside `.card-title`, because
+ * the header is a flex row that the badges, PR chip and diff button compete for: a goal
+ * squeezed in there would be ellipsised to nothing on exactly the busy cards that most need
+ * one.
+ *
+ * Distinct from `.activity` below it, which is the ticker ("running Bash"). These are
+ * orthogonal facts - what it is FOR versus what it is doing this second - so the goal reads
+ * as primary text and the ticker stays muted.
+ */
+function GoalLine({ session }: { session: Session }): React.JSX.Element | null {
+  const unsupported = GOAL_UNSUPPORTED[session.agent];
+  if (unsupported) {
+    // Honest rather than blank: a Codex card explains itself instead of looking broken next
+    // to Claude cards that all carry a goal.
+    return (
+      <p className="goal goal-none" title={`Goal is derived from a session's prompts. ${unsupported}`}>
+        No goal · {unsupported}
+      </p>
+    );
+  }
+  // No goal yet is a real, common, momentary state (a session discovered before its first
+  // prompt). Render nothing rather than a placeholder that flashes on every new card.
+  if (!session.goal?.text) return null;
+  return (
+    <p
+      className={`goal goal-${session.goal.source ?? "heuristic"}`}
+      title={
+        session.goal.source === "heuristic"
+          ? `${session.goal.text}\n\n(your prompt, verbatim - being summarised)`
+          : session.goal.text
+      }
+    >
+      {session.goal.text}
+    </p>
+  );
+}
 
 /**
  * Whether Foreman may send live in this session's cwd - the SAME predicate the
@@ -229,6 +275,8 @@ export function SessionCard({
           </button>
         </Tooltip>
       </header>
+
+      <GoalLine session={session} />
 
       <dl className="card-meta">
         <div>

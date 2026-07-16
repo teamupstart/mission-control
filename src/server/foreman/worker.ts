@@ -4,7 +4,7 @@ import type { ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
 import { reviewSession } from "./review.ts";
-import { EvaluationDebounce } from "./debounce.ts";
+import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import type { ReviewInput } from "./prompt.ts";

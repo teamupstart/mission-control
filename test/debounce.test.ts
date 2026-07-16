@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { EvaluationDebounce } from "../src/server/foreman/debounce.ts";
+import { EvaluationDebounce } from "../src/server/util/debounce.ts";
 
 /** A hand-cranked clock so debounce timing is deterministic - no real waiting. */
 function fakeClock(start = 1000) {

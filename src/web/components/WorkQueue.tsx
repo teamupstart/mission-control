@@ -4,6 +4,7 @@ import { composeWrapup } from "@shared/queue.ts";
 import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
 import { api, fetchQueue } from "../lib/api.ts";
+import { useSessionDraft } from "../lib/drafts.ts";
 import { relativeTime } from "../lib/format.ts";
 
 // The work-queue panel inside an expanded card: the batch of work queued for this
@@ -29,7 +30,9 @@ export function WorkQueue({
   allowlisted: boolean;
 }): React.JSX.Element | null {
   const [queue, setQueue] = useState<SessionQueue | null>(null);
-  const [adding, setAdding] = useState("");
+  // Survives this mount: collapsing the card (which expanding ANY other card does)
+  // unmounts the panel, and a half-written item must not go with it.
+  const [adding, setAdding] = useSessionDraft(session.id, "queue");
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [error, setError] = useState<string | null>(null);

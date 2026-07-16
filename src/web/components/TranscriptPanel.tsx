@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AgentType, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
+import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -39,10 +40,19 @@ export function TranscriptPanel({
   const atBottom = useRef(true);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
 
-  // The reply's attachments are the panel's own: nothing outlives a collapsed card,
-  // so their thumbnails are ours to release. Read through a ref because the cleanup
-  // runs once, at unmount, and must see the list as it ended - not as it was on the
-  // render that armed it.
+  // The reply's attachments are the panel's own, and unlike the TEXT beside them they
+  // do not survive a collapse - so their thumbnails are ours to release. Read through
+  // a ref because the cleanup runs once, at unmount, and must see the list as it ended
+  // - not as it was on the render that armed it.
+  //
+  // The asymmetry is deliberate, not an oversight to tidy up later. Parking these in
+  // the draft map would strand any drop still uploading when the card closed: the
+  // upload's callback patches its row through THIS mount's `setAttachments`, so the
+  // path would land nowhere and the chip would re-hydrate stuck on "uploading"
+  // forever, wedging the Send button that waits on it. Persisting them means hoisting
+  // the uploads out of this component first (what DispatchLayer does for its draft).
+  // Losing a chip is at least visible: the strip is plainly empty, which is a far
+  // better failure than a prompt that cites an image the agent never got.
   const attachRef = useRef(attachments);
   attachRef.current = attachments;
   useEffect(() => () => revokeAttachments(attachRef.current), []);
@@ -109,6 +119,9 @@ export function TranscriptPanel({
     const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
     setSending(false);
     if (r.ok) {
+      // Delivered - so this is the one path that forgets the draft. A failed send
+      // leaves it be: the text is all the human has, and it's about to be retried.
+      clearDraft(sessionId, "reply");
       if (inputRef.current) inputRef.current.value = "";
       revokeAttachments(attachments);
       setAttachments([]);
@@ -145,6 +158,13 @@ export function TranscriptPanel({
               }
               rows={2}
               disabled={!canSend}
+              // Stays uncontrolled - that's why typing here has never re-rendered the
+              // log above it, and a reply written against a streaming transcript can't
+              // afford to start. `defaultValue` re-hydrates whatever the last mount was
+              // holding when the card collapsed; `onChange` keeps that copy current at
+              // the cost of a Map set per keystroke.
+              defaultValue={readDraft(sessionId, "reply")}
+              onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
               onPaste={drop.onPaste}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {

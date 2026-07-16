@@ -15,6 +15,7 @@ import { ForemanBar } from "./components/ForemanBar.tsx";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
+import { pruneDrafts } from "./lib/drafts.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
@@ -158,6 +159,11 @@ export function App(): React.JSX.Element {
   // then swallow every grid shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
+    // A draft outlives every card that renders it (that's the point of the map), so
+    // a departed session's is the one thing that would never be collected. Gated on
+    // `hasSnapshot` because the pre-snapshot list is empty, not authoritative - and
+    // pruning against it would wipe every draft on the page.
+    if (hasSnapshot) pruneDrafts(sessions.map((s) => s.id));
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) {
@@ -166,7 +172,16 @@ export function App(): React.JSX.Element {
     }
     if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, expandedId, diffSessionId, resetSessionId, renamingId]);
+  }, [
+    sessions,
+    visible,
+    selectedId,
+    expandedId,
+    diffSessionId,
+    resetSessionId,
+    renamingId,
+    hasSnapshot,
+  ]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {

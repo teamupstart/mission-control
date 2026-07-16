@@ -1325,8 +1325,16 @@ export class Registry extends EventEmitter {
    * `sessions` - not `liveSessions()` - is the protected set on purpose. An exited card is
    * still on screen with its goal showing, and it keeps that goal until the session is
    * evicted; pruning by liveness would blank a card a human is still reading.
+   *
+   * Gated on `sweptFleet` for the same reason `orphaned` and `reattachQueue` are: "no live
+   * session holds this key" is a claim about the session map, and before the first sweep that
+   * map is empty because nobody has filled it in - not because the fleet is empty. The
+   * constructor loads the whole goal table while `sessions` is still empty, so an ungated
+   * sweep at boot would read every goal as stranded and delete each one past the window. See
+   * `fleetObserved`.
    */
   pruneGoals(olderThan: number): number {
+    if (!this.sweptFleet) return 0;
     const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
     const removed = pruneSessionGoals(liveKeys, olderThan);
     if (!removed) return 0;

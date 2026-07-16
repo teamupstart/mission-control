@@ -10,7 +10,7 @@ import { GOAL_MAX_CHARS } from "../src/shared/goal.ts";
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "fleet-goals-"));
 process.env.HARNESS_HOME = home;
-const { openDb, getSessionGoal, loadSessionGoals, upsertSessionGoal } = await import("../src/server/db.ts");
+const { openDb, getSessionGoal, loadSessionGoals, upsertSessionGoal, pruneSessionGoals } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { foremanStatus } = await import("../src/server/foreman/config.ts");
 
@@ -240,19 +240,58 @@ test("the prune clears the registry's in-memory goals too, not just the table", 
   // leave growing for the daemon's whole life - and `upsertGoal` reads it before the db, so
   // a stale entry would outlive the row and quietly rewrite it.
   //
-  // A band below even the test above, for the same shared-db reason: this registry has no
-  // sessions at all, so nothing is protected and the cutoff is the only thing bounding it.
+  // A band below the test above, for the same shared-db reason: one db, so a wider cutoff
+  // would reach the neighbours' rows and the count would be measuring them.
   upsertSessionGoal({ noteKey: "orphan-mem", text: "stranded", source: "model", prompt: "p", updatedAt: 100 });
 
-  // A fresh Registry loads every row into the Map, which is what a restart does.
+  // A fresh Registry loads every row into the Map, which is what a restart does - and the
+  // discovery comes FIRST, because the sweep refuses to judge a key until the fleet is known.
   const r2 = new Registry();
+  r2.applyDiscovery([mkDiscovered({ syntheticId: "g14", cwd: "/wt/g14", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%24" } })]);
   assert.ok(loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "precondition: the row is on disk");
   assert.equal(r2.pruneGoals(200), 1, "the sweep reached past its own orphan");
   assert.ok(!loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "the row survived the sweep");
 
   // The Map is private, so read it the way the daemon would: a session that adopts the swept
   // key must see no goal. A table-only sweep answers "stranded" here, from memory alone.
-  r2.applyDiscovery([mkDiscovered({ syntheticId: "g14", cwd: "/wt/g14", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%24" } })]);
   r2.applyHook(evt({ event: "Stop", env: { tmuxPane: "%24" }, sessionId: "orphan-mem" }));
   assert.equal(r2.getGoal("g14"), null, "the swept goal outlived its row in memory");
+});
+
+test("a sweep before the first discovery deletes nothing", () => {
+  // The boot race, and the reason the sweep is gated on `fleetObserved`. The constructor
+  // loads the whole goal table while `sessions` is still empty, and the refiner ticks
+  // synchronously while the poller's first sweep is still awaiting I/O - so an ungated sweep
+  // reads "no session holds this key" off a map nobody has filled in yet and deletes every
+  // goal past the window, live sessions included. A parked session never rebuilds one: only a
+  // new prompt does, and a parked session is parked.
+  //
+  // A band above every other cutoff in this file so no neighbour's sweep can reach this row.
+  upsertSessionGoal({ noteKey: "boot-orphan", text: "old but unjudged", source: "model", prompt: "p", updatedAt: 500_000 });
+
+  const r2 = new Registry();
+  assert.equal(r2.fleetObserved(), false, "precondition: no sweep has happened yet");
+  assert.equal(r2.pruneGoals(600_000), 0, "the boot sweep judged keys before the fleet was known");
+  assert.ok(getSessionGoal("boot-orphan"), "a goal was deleted before a single session was discovered");
+
+  // And once the fleet IS known, the same row is fair game - the guard delays the sweep, it
+  // does not disable it. Asserted on the key rather than a count: this cutoff is above every
+  // band in the file, so it reaches the rows the tests above left behind too.
+  r2.applyDiscovery([mkDiscovered({ syntheticId: "g15", cwd: "/wt/g15", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%25" } })]);
+  r2.pruneGoals(600_000);
+  assert.equal(getSessionGoal("boot-orphan"), undefined, "the sweep never ran even after discovery");
+});
+
+test("an empty live-key set means liveness unknown, not nothing is live", () => {
+  // Defense in depth beneath pruneGoals' guard: the helper is one await away from an empty
+  // set at every callsite, so it must refuse rather than read the absence of keys as a fact.
+  // A caller that forgets the guard should get a no-op, not a table wipe.
+  upsertSessionGoal({ noteKey: "db-orphan", text: "old", source: "model", prompt: "p", updatedAt: 10 });
+
+  assert.equal(pruneSessionGoals([], 20), 0, "an empty live set was read as 'nothing is live'");
+  assert.ok(getSessionGoal("db-orphan"), "a row was deleted with no liveness information at all");
+
+  // A real set still prunes: the refusal is about the empty case, not the helper.
+  assert.equal(pruneSessionGoals(["some-other-session"], 20), 1, "a real live set stopped pruning");
+  assert.equal(getSessionGoal("db-orphan"), undefined);
 });

@@ -63,9 +63,9 @@ export function startGoalRefiner(registry: Registry): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Rides the existing 5s poll rather than owning a timer, so it inherits the tick's
-   * stop/restart and error handling. `0` means "never swept": the first tick prunes, which is
-   * also the sweep that matters, since a daemon that has just restarted is holding every
-   * orphan the table ever accumulated.
+   * stop/restart and error handling. `0` means "never swept", so the first tick past
+   * `fleetObserved` prunes - the sweep that matters, since a daemon that has just restarted is
+   * holding every orphan the table ever accumulated.
    */
   let lastPrune = 0;
   const limit = createLimiter(GOAL_CONCURRENCY);
@@ -99,7 +99,10 @@ export function startGoalRefiner(registry: Registry): () => void {
       const liveIds = new Set(live.map((x) => x.id));
       for (const id of failedFor.keys()) if (!liveIds.has(id)) failedFor.delete(id);
       const now = Date.now();
-      if (now - lastPrune >= GOAL_PRUNE_INTERVAL_MS) {
+      // `fleetObserved` before the window, not inside it: this tick runs before the poller's
+      // first sweep has returned, and claiming the hour on a sweep the registry is going to
+      // refuse would push the boot prune - the one that matters - a full hour out.
+      if (registry.fleetObserved() && now - lastPrune >= GOAL_PRUNE_INTERVAL_MS) {
         lastPrune = now;
         const n = registry.pruneGoals(now - GOAL_PRUNE_AGE_MS);
         if (n > 0) console.log(`[goal] pruned ${n} orphaned goal(s)`);

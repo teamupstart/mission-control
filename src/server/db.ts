@@ -807,17 +807,25 @@ export function loadSessionGoals(): SessionGoal[] {
  * BOTH conditions are load-bearing, and the live-key one is the safety property: a row whose
  * key still belongs to a session is never touched no matter how old it is, so a long-running
  * card cannot have the sentence deleted out from under it. Age alone would do exactly that.
- * `liveKeys` is `noteKeyFor` over the registry's live sessions - pass the real set or nothing
- * is protected.
+ * `liveKeys` is `noteKeyFor` over the registry's live sessions.
+ *
+ * An EMPTY `liveKeys` means "liveness unknown", never "nothing is live", and so deletes
+ * nothing. The distinction is the whole safety of the call: an empty set read as a fact turns
+ * this into `WHERE updated_at < ?`, which is precisely the query the paragraph above says must
+ * never run - and every caller is one await away from that state, because a daemon holds a
+ * full goal table from `loadSessionGoals` before it has discovered a single session. Refusing
+ * here costs one sweep on a genuinely empty fleet (there is nothing to strand anyway, and the
+ * next hour retries); reading it as a fact costs a parked session its goal, permanently, since
+ * only a new prompt rebuilds one.
  */
 export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number): number {
   const keys = [...new Set(liveKeys)];
+  if (!keys.length) return 0;
   const placeholders = keys.map(() => "?").join(",");
-  const where = keys.length
-    ? `updated_at < ? AND note_key NOT IN (${placeholders})`
-    : `updated_at < ?`;
   const r = openDb()
-    .prepare(`DELETE FROM session_goals WHERE ${where}`)
+    .prepare(
+      `DELETE FROM session_goals WHERE updated_at < ? AND note_key NOT IN (${placeholders})`,
+    )
     .run(olderThan, ...keys);
   return Number(r.changes);
 }

@@ -146,6 +146,25 @@ export class ForemanClient implements ForemanActions {
     return r.size;
   }
 
+  /**
+   * The child's rendered screen, or null when there is none to read - no pane, a failed
+   * capture, or a daemon too old to serve the route (the worker is started separately, so a
+   * version skew between them is an ordinary upgrade-window state).
+   *
+   * Null-on-failure rather than a throw, because every caller's fallback is the same and is
+   * safe: without the screen the reviewer reads the transcript alone and skips honestly,
+   * which is exactly the behaviour this replaced. Failing the whole review over an
+   * unreadable pane would turn a lost improvement into a lost review.
+   */
+  async pane(id: string): Promise<string | null> {
+    try {
+      const r = await get<{ text: string | null }>(`/api/sessions/${enc(id)}/pane`);
+      return typeof r.text === "string" ? r.text : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** The transcript from a byte offset forward - one work item's turns, exactly. */
   transcriptSince(id: string, offset: number): Promise<TranscriptWindowResponse> {
     return get<TranscriptWindowResponse>(`/api/sessions/${enc(id)}/transcript?since=${offset}`);

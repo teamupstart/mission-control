@@ -4,7 +4,7 @@ import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "./review.ts";
-import { VerdictSchema } from "./verdict.ts";
+import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
 
@@ -55,8 +55,18 @@ export const TriageReportSchema = z.object({
   bucket: z.enum(["human-only", "routine-access", "needs-judgment"]),
   /** For human-only: escalate (needs you) or skip (can't tell what's asked). */
   disposition: z.enum(["escalate", "skip"]).optional(),
-  /** For routine-access: the one-line approval reply to deliver. */
-  answer: z.object({ text: z.string().min(1) }).optional(),
+  /**
+   * For routine-access: the one-line approval reply to deliver. A textless answer reads as
+   * absent for the reason it does on the full verdict (see `AnswerField`) - the router is
+   * handed the same shape and fills it in the same way, so `{"text": ""}` beside a
+   * `human-only` bucket failed the WHOLE report and threw away a perfectly good bucketing as
+   * `tier1-unparseable`. Safe (a route-up), but it spent the Opus call the cheap tier exists
+   * to avoid, on the very cases it was best placed to dispose.
+   */
+  answer: z.preprocess(
+    (v) => (textlessAnswer(v) ? undefined : v),
+    z.object({ text: z.string().min(1) }).optional(),
+  ),
   /** Optional short decision-brief markdown for a human-only escalation. */
   brief: z.string().optional(),
   /** Optional suggested answer for a human-only escalation. */
@@ -288,6 +298,21 @@ export interface ScanWindow {
   unavailable?: boolean;
   /** The caller could not place these turns in the session at all - see `recentTurns`. */
   boundaryUnknown?: boolean;
+  /**
+   * The child's rendered screen (see `ReviewInput.pane`), scanned by backstop 1 alongside the
+   * turns. On a permission prompt this is the first time the denylist has ever seen the
+   * COMMAND being approved: the dialog names it, while `question` is the generic notification
+   * line and the tool call is not in the transcript until it returns. The backstop's whole
+   * subject was previously visible only if the child happened to narrate it in prose.
+   *
+   * Deliberately NOT fed to `hasProse`/backstop 3, which still keys on the turns alone. The
+   * screen makes "a prose-free window means the ask went unread" false, so that gate could now
+   * be relaxed - but relaxing it LOOSENS a safety gate and would let a Tier 1 auto-answer
+   * through where one is refused today. Per the precedent in `hasProse`, that belongs in its
+   * own change with its own shadow-mode measurement, not smuggled in alongside the one that
+   * made it possible. Here the screen can only ever ADD a reason to escalate.
+   */
+  pane?: string | null;
 }
 
 /**
@@ -315,9 +340,15 @@ export function mapTriage(report: TriageReport, pending: Pending, scan: ScanWind
   // below stays fully in force for a gate: those turns are the child's own utterance, which is
   // exactly what this exists to read. Every other situation's question is the child's too, and is
   // scanned unchanged.
+  //
+  // The SCREEN is scanned on the same terms and for the same reason - it is the child's own
+  // rendering, never text Foreman synthesized - and it is what finally puts the actual command
+  // in front of this backstop: a permission dialog names the `rm -rf` it is asking about, where
+  // the turns only ever caught a child that happened to narrate it first.
   const risky =
     (pending.situation === "gate-parked" ? false : isDestructive(pending.question)) ||
     isDestructive(riskContextFrom(scan.messages)) ||
+    isDestructive(scan.pane ?? "") ||
     (report.answer ? isDestructive(report.answer.text) : false);
 
   // needs-judgment always routes up: Tier 1 never invents a substantive answer.
@@ -433,9 +464,11 @@ interface TriageWindow {
   unavailable?: boolean;
 }
 
-/** The daemon reads the cheap tier needs: a trimmed transcript + the router subprocess. */
+/** The daemon reads the cheap tier needs: a trimmed transcript, the child's screen, and the router subprocess. */
 export interface TriageDeps {
   transcript(id: string, turns: number): Promise<TriageWindow>;
+  /** The child's rendered screen - see `ReviewInput.pane`. Null when there is none to read. */
+  pane(id: string): Promise<string | null>;
   runModel(prompt: string, model: string): Promise<string>;
 }
 
@@ -516,14 +549,20 @@ export async function triageSession(
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 
-  let window: TriageWindow;
-  try {
-    // A failed fetch is an absent window, not an absent transcript file - the two stay
-    // distinguishable in the log, so `unavailable` is deliberately left false here.
-    window = await deps.transcript(session.id, TIER1_TURNS);
-  } catch {
-    window = { messages: [], truncated: false };
-  }
+  // Both reads at once: the pane capture is a subprocess on the daemon's side, and Tier 1
+  // exists to be cheap, so it must not pay for it serially.
+  //
+  // The screen is fetched for the `terminal` surface only - an `input-review` already carries
+  // its whole body as the question (see `paneFor`) - and a failure reads back as no screen,
+  // which lands on exactly the pre-existing behaviour rather than failing the tier.
+  const [window, pane] = await Promise.all([
+    deps.transcript(session.id, TIER1_TURNS).catch((): TriageWindow => {
+      // A failed fetch is an absent window, not an absent transcript file - the two stay
+      // distinguishable in the log, so `unavailable` is deliberately left false here.
+      return { messages: [], truncated: false };
+    }),
+    pending.surface === "terminal" ? deps.pane(session.id).catch(() => null) : Promise.resolve(null),
+  ]);
   // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
   // here - see `recentTurns`. The router's prompt gets `recent` plus the opening turns; see
   // `promptWindow` for why the two windows differ. Eliding the middle is itself a truncation,
@@ -544,6 +583,7 @@ export async function triageSession(
     question: pending.question,
     transcript: messages,
     truncated,
+    pane,
   };
 
   let raw: string;
@@ -556,6 +596,7 @@ export async function triageSession(
   if (!report) return { kind: "route-up", reason: "tier1-unparseable" };
   return mapTriage(report, pending, {
     messages: recent.messages,
+    pane,
     unavailable: window.unavailable,
     boundaryUnknown: recent.boundaryUnknown,
   });

@@ -41,6 +41,9 @@ and get your decision back.
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
+- **Equips** the fleet with [skills](#skills-fleet-wide-no-restarts): switch a Claude
+  Code skill on in Settings and it applies to **every** Claude session on the machine -
+  including ones this app never launched - without restarting any of them. Claude only.
 
 ## Quick start
 
@@ -762,7 +765,7 @@ npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman, skills)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

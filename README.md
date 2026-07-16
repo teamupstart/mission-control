@@ -526,9 +526,23 @@ runs no-mistakes as a **component**.
 If `no-mistakes` is installed and a session's repo is gated, the card surfaces
 the live run: a `◇ gated` chip plus a strip showing the pipeline
 (intent → review → test → … → ci as status dots), the active stage it's on
-(e.g. `review · step 3 of 9 · 1 finding so far`), a running findings summary in
+(e.g. `review · step 3 of 9 · 1 finding so far`), what that stage last did in
+no-mistakes' own words (`↳ 2m43s ago: log: all CI checks passed - still
+monitoring until merged or closed`), a running findings summary in
 the header, the gate it's parked at, and the findings - all polled via
-`no-mistakes axi status` (its TOON agent interface). A separate live narration
+`no-mistakes axi status` (its TOON agent interface).
+
+That last-activity line is there because a dot only carries a *status*, and
+"running" is the same word for a step mid-work and a `ci` step that went green an
+hour ago and is now just watching an open PR. A run that has pushed, opened its PR
+and passed CI sits on a blue `ci` dot until the PR is **merged or closed** - which
+is correct, and looks broken. The step says as much itself; the strip quotes it
+rather than guessing. It quotes and nothing more: a step reported quiet is idling
+between polls, not stuck (`ci` naps for hours, then completes the moment the PR
+merges), and `agent_pid` is empty even for a healthy monitor - so neither is read
+as a verdict on a run's health.
+
+A separate live narration
 line echoes what the skill is doing right now, read from the in-progress to-do in
 the session's Claude transcript. The active-stage, summary, and narration lines
 step aside while a run is parked, where the gate line already conveys that state.

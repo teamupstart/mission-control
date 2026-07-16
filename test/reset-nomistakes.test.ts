@@ -83,6 +83,7 @@ function finishedRun(branch: string, id = "01RUN_FINISHED"): NmRunSummary {
     gateSummary: null,
     gateRisk: null,
     steps: [{ step: "review", status: "completed", findings: 0 }],
+    activeSteps: [],
     findings: [],
     outcome: "passed",
   };

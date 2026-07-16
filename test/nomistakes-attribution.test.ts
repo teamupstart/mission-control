@@ -43,6 +43,7 @@ function runOn(branch: string): NmRunSummary {
     gateSummary: null,
     gateRisk: null,
     steps: [],
+    activeSteps: [],
     findings: [],
     outcome: null,
   };

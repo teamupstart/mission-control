@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { NmFinding, NmRunSummary } from "@shared/types.ts";
+import type { NmActiveStep, NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { duration } from "../lib/format.ts";
 
@@ -13,12 +13,18 @@ const STEP_TONE: Record<string, string> = {
   failed: "nm-fail",
 };
 
+/** The active-step record for `step`, or null when no-mistakes doesn't claim it's active. */
+function activeFor(nm: NmRunSummary, step: NmStep | null): NmActiveStep | null {
+  if (!step) return null;
+  return nm.activeSteps.find((a) => a.step === step.step) ?? null;
+}
+
 /**
  * Compact surface of a no-mistakes run for a gated repo: the pipeline as status
- * dots, the active stage and findings summary while it runs, a live narration of
- * what the skill is doing now (from the session's transcript), the gate it's
- * parked at, and the findings. The active-stage, summary, and narration lines
- * hide while parked.
+ * dots, the active stage and findings summary while it runs, what that stage last
+ * did in no-mistakes' own words, a live narration of what the skill is doing now
+ * (from the session's transcript), the gate it's parked at, and the findings. The
+ * active-stage, summary, and narration lines hide while parked.
  *
  * A parked gate is `awaiting_agent` - the run is waiting on the agent's
  * `axi respond`, which the `/no-mistakes` skill issues autonomously. So we only
@@ -44,6 +50,10 @@ export function NomistakesStrip({
   // run isn't parked at a gate - that gets its own line below).
   const runningIdx = nm.steps.findIndex((s) => s.status === "running");
   const running = runningIdx >= 0 ? nm.steps[runningIdx]! : null;
+  // What no-mistakes says that step is actually doing. The dots only carry a status,
+  // and "running" is the same word for a step mid-work and a `ci` step that has been
+  // watching an open PR for three hours - this line is what tells them apart.
+  const active = activeFor(nm, running);
   return (
     <div className="nm-strip">
       <div className="nm-head">
@@ -74,6 +84,19 @@ export function NomistakesStrip({
         </div>
       )}
 
+      {/* What that step last did, in no-mistakes' own words. This is the whole
+          answer to "the PR is up and green, so why is this still blue?" - the `ci`
+          step says it outright: "all CI checks passed - still monitoring until
+          merged or closed". A dot can't say that; this line can. */}
+      {active?.lastActivity && (
+        <div
+          className="nm-lastact"
+          title={`${active.step} · active ${active.activeFor} · ${active.lastActivity}`}
+        >
+          ↳ {active.lastActivity}
+        </div>
+      )}
+
       {nm.steps.length > 0 && (
         <div className="nm-pipe" role="list">
           {nm.steps.map((s, i) => (
@@ -81,7 +104,7 @@ export function NomistakesStrip({
               key={i}
               role="listitem"
               className={`nm-dot ${STEP_TONE[s.status] ?? "nm-pending"}`}
-              title={`${s.step}: ${s.status}${s.findings ? ` · ${s.findings} finding${s.findings > 1 ? "s" : ""}` : ""}`}
+              title={`${s.step}: ${s.status}${s.findings ? ` · ${s.findings} finding${s.findings > 1 ? "s" : ""}` : ""}${s.step === active?.step ? ` · ${active.lastActivity}` : ""}`}
             />
           ))}
         </div>

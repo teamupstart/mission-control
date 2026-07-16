@@ -344,6 +344,7 @@ function nmRun(over: Partial<NmRunSummary> = {}): NmRunSummary {
     gateSummary: null,
     gateRisk: null,
     steps: [],
+    activeSteps: [],
     findings: [
       { id: "f1", severity: "error", file: "a.ts", action: "ask-user", description: "why" },
     ] as NmFinding[],

@@ -471,9 +471,13 @@ is the proactive half: queue a batch of work for one specific session, and Forem
 in one item at a time, in the order you authored, checking each one before releasing the
 next.
 
-Open a card and use the **Work queue** panel: type an intent, **Add**, repeat. Items are
-drag-reorderable, editable, and removable while they wait. Then walk away. For each item
-Foreman:
+Open a card and use the **Work queue** panel: type an intent, **Add**, repeat. The box also
+takes **dropped or pasted images**: the upload starts on drop, and what's queued is the
+uploaded file's *path*, so the agent reads it with its own file tools whenever the item is
+finally delivered. **Add** stays disabled while an upload is in flight, and an image with no
+words is a valid item. The same gesture works on the card's transcript reply box and the
+dispatch form. Items are drag-reorderable, editable, and removable while they wait. Then
+walk away. For each item Foreman:
 
 1. waits for the session to actually go **idle and settle** (not just look idle);
 2. **delivers** the intent as a single bracketed paste (so a multi-line prompt doesn't

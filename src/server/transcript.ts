@@ -224,6 +224,30 @@ const LEADING_MACHINE_TAG_RE = new RegExp(`^\\s*<(${DROP_TAGS.join("|")})>`, "i"
 const ECHO_RE = /^(?:\[Request interrupted[^\]]*\]|Set (?:effort level|model) to\b.*)$/is;
 
 /**
+ * Built-in commands that act on the SESSION rather than state any work. A human typed them,
+ * so they pass every other test here, but neither is ever an answer to "what is this session
+ * trying to solve".
+ *
+ * Neither reaches the hook path today - measured: 0 of 403 real `UserPromptSubmit` events
+ * were `/clear` or `/compact`, though 198 transcripts contain a `/clear`; Claude Code handles
+ * built-ins locally and reports them as SessionEnd/SessionStart/PreCompact lifecycle events
+ * instead (only custom commands like `/no-mistakes` fire the prompt hook). This exists for
+ * the TRANSCRIPT path, where it matters a lot: a `/clear` mints a new session, and that new
+ * session's transcript OPENS with the clear echo - 169 of 198 sampled files have it in their
+ * first 5% - so a reader taking the first substantive turn of a freshly cleared session gets
+ * "/clear" as its goal.
+ *
+ * Deliberately narrow: exactly the two commands ruled on, not every built-in. `/tui` and
+ * `/exit` are equally un-goal-like but nobody has decided that, and a filter that quietly
+ * grows past what was decided is how a real ask eventually gets eaten.
+ *
+ * The terminator is whitespace-or-end, NOT `\b`: command names contain hyphens, and `\b`
+ * matches between "clear" and "-", so `\b` silently swallowed `/clear-cache the stale build`.
+ * The command token has to end for this to be that command.
+ */
+const META_COMMAND_RE = /^\/(?:clear|compact)(?:\s|$)/i;
+
+/**
  * The human's own words in a user turn, with Claude Code's scaffolding removed, or null
  * when the turn contains none of them.
  *
@@ -249,7 +273,7 @@ export function substantivePrompt(raw: string | null | undefined): string | null
     .replace(UNWRAP_RE, (_m, _tag, inner: string) => ` ${inner} `)
     .replace(/\s+/g, " ")
     .trim();
-  if (!text || ECHO_RE.test(text)) return null;
+  if (!text || ECHO_RE.test(text) || META_COMMAND_RE.test(text)) return null;
   return text;
 }
 

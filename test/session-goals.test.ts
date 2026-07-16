@@ -128,6 +128,46 @@ test("a captured prompt alone is not yet a goal on the card", () => {
   assert.equal(r.snapshot().sessions.find((x) => x.id === s.id)!.goal, null);
 });
 
+// `/clear` and `/compact` are decided behaviour: a clear wipes the goal, a compact must not
+// touch it. Neither fires UserPromptSubmit (0 of 403 real events, though 198 transcripts hold
+// a /clear) - Claude Code reports built-ins as lifecycle events instead. So the outcome rides
+// entirely on whether the AGENT SESSION ID rotates, which is what these pin.
+
+test("/clear wipes the goal", () => {
+  const { r, s, env } = withSession("g9", "%19");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, sessionId: "agent-before", prompt: "the old ask" }));
+  r.upsertGoal(s.id, { text: "The old goal.", source: "model" });
+  assert.equal(
+    r.snapshot().sessions.find((x) => x.id === s.id)!.goal?.text,
+    "The old goal.",
+    "precondition: the goal is on the card",
+  );
+
+  // A /clear ends the session and starts a fresh one carrying a NEW agent session id. That
+  // rotates noteKeyFor, so the goal orphans with the note and queue - no wipe code, which is
+  // exactly why this test exists: nothing in the goal path says "clear", and a change to
+  // how ids rotate would silently resurrect a stale goal on a cleared card.
+  r.applyHook(evt({ event: "SessionEnd", env, sessionId: "agent-before", reason: "clear" }));
+  r.applyHook(evt({ event: "SessionStart", env, sessionId: "agent-after", source: "clear" }));
+  assert.equal(r.snapshot().sessions.find((x) => x.id === s.id)!.goal, null, "the goal survived a /clear");
+});
+
+test("/compact leaves the goal alone", () => {
+  const { r, s, env } = withSession("g10", "%20");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, sessionId: "agent-c", prompt: "the ask" }));
+  r.upsertGoal(s.id, { text: "Ship the Goal feature.", source: "model" });
+
+  // A compact fires PreCompact and then SessionStart(source=compact) - but with the SAME
+  // session id, verified directly: this repo's own compacted session kept one transcript file
+  // holding both the /compact and everything after it. Same id, same key, same goal.
+  r.applyHook(evt({ event: "PreCompact", env, sessionId: "agent-c" }));
+  r.applyHook(evt({ event: "SessionStart", env, sessionId: "agent-c", source: "compact" }));
+
+  const card = r.snapshot().sessions.find((x) => x.id === s.id)!;
+  assert.equal(card.goal?.text, "Ship the Goal feature.", "a /compact wiped the goal");
+  assert.equal(r.getGoal(s.id)?.prompt, "the ask", "a /compact clobbered the refiner's input");
+});
+
 test("having a goal does not make a session look like a Foreman draft", () => {
   // The reason goals are their own row rather than columns on session_notes. Sharing it
   // would force a goal-only write to invent a `disposition` (defaulting to "pending" =

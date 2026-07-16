@@ -224,6 +224,7 @@ All 13 were put to the operator and answered. **Do not relitigate without new in
 | Q5 | Do we run Codex | **C** - not now, but will |
 | Q6 | Headless transcript pollution | **B** - prune the dir on a schedule |
 | P0 | Fix the README overclaim | **A** - fix now, separate commit |
+| Q7 | `/clear` and `/compact` | **`/clear` wipes the goal; `/compact` leaves it untouched** |
 
 ### D1 - relationship to Purpose
 
@@ -276,6 +277,33 @@ No config flag; refinement always runs. **The silent fallback stays regardless**
 error handling, not configuration: if `claude` is missing, logged out, or times out, the goal
 quietly remains the tier-1 heuristic and the card never breaks. What was given up is a
 deliberate off switch, so **cost is governed by cadence alone**.
+
+### Q7 - `/clear` and `/compact`
+
+Operator ruling: **a `/clear` wipes the goal; a `/compact` has no impact on it.** Both already
+hold, and the measurement that establishes that is worth keeping:
+
+**Neither command fires `UserPromptSubmit`** - 0 of 403 real events, though 198 transcripts
+contain a `/clear`. Claude Code handles built-ins locally and reports them as lifecycle
+events (`SessionEnd(reason=clear)`, `SessionStart(source=clear|compact)`, `PreCompact`). Only
+*custom* commands like `/no-mistakes` reach the prompt hook. So the outcome rides entirely on
+whether the **agent session id rotates**, not on anything in the goal path:
+
+- **`/clear` rotates it** → `noteKeyFor` rotates → the goal orphans exactly as the note and
+  queue already do (this is Q2, and the `orphanedQueue` re-attach hint exists *because* of
+  it). Evidence: of 198 transcripts holding a `/clear`, **169 have it in their first 5%** -
+  the signature of a *new* session's file opening with the clear echo - and **none** have one
+  mid-file with work following.
+- **`/compact` does NOT rotate it** → same key, same goal. Evidence: this repo's own compacted
+  session kept **one** transcript file holding both the `/compact` and every turn after it.
+
+Both are pinned in `test/session-goals.test.ts`, deliberately: nothing in the goal code says
+"clear", so the wipe is an emergent property of id rotation and would break silently.
+
+One real gap this ruling did close: a `/clear` mints a new session whose transcript **opens
+with the clear echo**, so a Tier 2 reader taking the first substantive turn of a freshly
+cleared session would read `/clear` as its goal. `substantivePrompt` now drops `/clear` and
+`/compact` (`META_COMMAND_RE`), narrowly - the list is exactly the two commands ruled on.
 
 ### Q2 - `/clear` wipes the goal
 
@@ -446,11 +474,9 @@ the real route. The filter was also run over the whole real corpus: **397 events
   display length), `source = 'heuristic'`. Instant, free, no model.
 - **A card renders a goal only once `text` is set** - `goalSummaryFor` already reports a
   prompt-only row as `null`, so nothing is shown until this phase writes a sentence.
-- **Open question this phase must answer:** whether a bare meta-command (`/clear`,
-  `/compact`, `/exit`) should become a goal. The filter deliberately does not judge - it
-  returns the human's words, and `/clear` is a real thing they typed. But "/clear" is not a
-  goal, and deciding that is display policy, not noise filtering. (`/clear` also rotates the
-  note key per Q2, so its own goal orphans immediately - the case may be self-solving.)
+- Meta-commands are **already settled** - see [Q7](#q7---clear-and-compact) - and need no
+  work here. `substantivePrompt` drops `/clear` and `/compact`, and the two lifecycle
+  outcomes are pinned by tests in `test/session-goals.test.ts`.
 - **Render as a second line under the card title** (Q4=A). The activity ticker keeps its own
   slot - the two are different facts. This is *not* behind `expanded`; that is the entire
   point of the feature.
@@ -535,8 +561,9 @@ calls could silently fail to authenticate.
   seam exists and the reader does not.
 - **Cold-cost exposure.** At $0.0151 a cold call, a fleet that goes quiet for >1h pays cold
   on the next prompt per session. Not addressed; watch it before optimising.
-- **Meta-commands as goals.** `/clear` and `/compact` survive the filter (they are words a
-  human typed) but are not goals. Phase 3 owns the call - see its note.
+- **Meta-commands beyond the two ruled on.** `/tui`, `/exit` and friends are equally
+  un-goal-like, but only `/clear` and `/compact` were decided, so only those are filtered
+  (see [Q7](#q7---clear-and-compact)). Revisit if one shows up on a card.
 - **The installed hook lags this repo.** `~/.claude/settings.json` runs
   `~/workspace/ai-harness/hooks/harness-hook.mjs`, not this worktree's copy, so the
   Phase 1.5 marker guard only takes effect once that checkout has these commits. The

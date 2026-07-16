@@ -31,14 +31,38 @@ test("a slash command survives as the words the human typed", () => {
 });
 
 test("the transcript and the hook agree on what a slash command asked", () => {
-  // The same `/clear` reaches Tier 1 as a flat string and Tier 2 wrapped in tags. If these
-  // disagreed, a goal would change meaning purely by which tier last wrote it.
+  // The same command reaches Tier 1 as the flat string the human typed and Tier 2 wrapped in
+  // tags. If these disagreed, a goal would change meaning purely by which tier last wrote it.
   const viaTranscript = substantivePrompt(
     "<local-command-caveat>Caveat: ...</local-command-caveat>\n" +
-      "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n" +
-      "<command-args></command-args>",
+      "<command-name>/no-mistakes</command-name>\n<command-message>no-mistakes</command-message>\n" +
+      "<command-args>fix the arrow keys</command-args>",
   );
-  assert.equal(viaTranscript, substantivePrompt("/clear"));
+  assert.equal(viaTranscript, "/no-mistakes fix the arrow keys");
+  assert.equal(viaTranscript, substantivePrompt("/no-mistakes fix the arrow keys"));
+});
+
+test("a session-control command is never a goal", () => {
+  // `/clear` and `/compact` act on the session, not on the work. They pass every other test
+  // here - a human really did type them - so they need naming explicitly.
+  //
+  // This matters for the transcript path, not the hook path: a /clear mints a new session
+  // whose transcript OPENS with the clear echo (169 of 198 sampled files), so a reader taking
+  // the first substantive turn of a freshly cleared session would otherwise read "/clear".
+  for (const raw of ["/clear", "/compact", "/compact focus on the tests"]) {
+    assert.equal(substantivePrompt(raw), null, `${raw} became a goal`);
+  }
+  const viaTranscript =
+    "<local-command-caveat>Caveat: ...</local-command-caveat>\n" +
+    "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n" +
+    "<command-args></command-args>";
+  assert.equal(substantivePrompt(viaTranscript), null, "/clear became a goal via the transcript");
+});
+
+test("a work command that merely starts like a meta one is still a goal", () => {
+  // The rule is anchored and word-bounded, so it can't eat a real command or real prose.
+  assert.equal(substantivePrompt("/clear-cache the stale build"), "/clear-cache the stale build");
+  assert.equal(substantivePrompt("clear the goal when a session is cleared"), "clear the goal when a session is cleared");
 });
 
 test("prose wrapped in scaffolding keeps only the prose", () => {

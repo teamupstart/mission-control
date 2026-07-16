@@ -83,13 +83,13 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
         {review.kind === "input" && <p className="question">{review.body}</p>}
       </div>
 
-      {review.kind === "plan-decisions" ? (
+      {review.kind === "plan-decisions" && review.decisions?.length ? (
         <DecisionForm
-          decisions={review.decisions ?? []}
+          decisions={review.decisions}
           busy={busy}
           onSubmit={(response) => void resolve("answer", response)}
         />
-      ) : review.kind === "input" ? (
+      ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (
         <div className="review-actions">
           <textarea
             className="answer-box"

@@ -7,7 +7,8 @@ type Answers = Record<string, { selected: string[]; other: string }>;
 /**
  * A decision is answered once it has a selected option, or free text when the
  * decision allows it. Submit stays disabled until every decision clears this bar,
- * so the agent never unblocks on a half-filled form.
+ * and an empty decision set is "nothing to submit" rather than vacuously complete,
+ * so the agent never unblocks on a half-filled or content-free form.
  */
 function isAnswered(d: PlanDecision, a: { selected: string[]; other: string } | undefined): boolean {
   if (!a) return false;
@@ -69,10 +70,13 @@ export function DecisionForm({
   }
 
   function setOther(id: string, other: string): void {
-    setAnswers((prev) => ({ ...prev, [id]: { ...get(id), other } }));
+    setAnswers((prev) => ({
+      ...prev,
+      [id]: { ...(prev[id] ?? { selected: [], other: "" }), other },
+    }));
   }
 
-  const complete = decisions.every((d) => isAnswered(d, answers[d.id]));
+  const complete = decisions.length > 0 && decisions.every((d) => isAnswered(d, answers[d.id]));
 
   return (
     <div className="decisions">

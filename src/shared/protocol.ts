@@ -124,17 +124,28 @@ export const PlanDecisionSchema = z.object({
 });
 export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
 
-/** An MCP-driven agent creating a review item bound to its session's pane. */
-export const CreateReviewSchema = z.object({
-  env: EnvSchema,
-  sessionId: z.string().nullable().optional().default(null),
-  cwd: z.string().nullable().optional().default(null),
-  kind: z.enum(["plan", "diff", "input", "plan-decisions"]),
-  title: z.string().min(1),
-  body: z.string(),
-  // Present only for kind `plan-decisions`; the questions the human answers.
-  decisions: z.array(PlanDecisionSchema).optional(),
-});
+/**
+ * An MCP-driven agent creating a review item bound to its session's pane.
+ *
+ * A `plan-decisions` review must carry at least one decision: the whole point of the
+ * kind is that the human answers something, and a decision-less one would reach the
+ * dashboard as a form that can only resolve the review on an empty response.
+ */
+export const CreateReviewSchema = z
+  .object({
+    env: EnvSchema,
+    sessionId: z.string().nullable().optional().default(null),
+    cwd: z.string().nullable().optional().default(null),
+    kind: z.enum(["plan", "diff", "input", "plan-decisions"]),
+    title: z.string().min(1),
+    body: z.string(),
+    // Present only for kind `plan-decisions`; the questions the human answers.
+    decisions: z.array(PlanDecisionSchema).optional(),
+  })
+  .refine((r) => r.kind !== "plan-decisions" || (r.decisions?.length ?? 0) > 0, {
+    message: "kind 'plan-decisions' requires at least one decision",
+    path: ["decisions"],
+  });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;
 
 /** The human's decision on a review, from the dashboard. */

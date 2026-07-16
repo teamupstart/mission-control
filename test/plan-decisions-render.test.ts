@@ -70,3 +70,10 @@ test("Submit starts disabled so the agent can't unblock on an empty form", () =>
   const html = render();
   assert.match(html, /<button[^>]*disabled[^>]*>Submit<\/button>/);
 });
+
+test("zero decisions leave Submit disabled rather than vacuously complete", () => {
+  // A degraded `decisions` blob reaches the form as an empty list; "every decision is
+  // answered" is trivially true for none of them, so Submit must be gated on having
+  // something to submit or the agent unblocks on a content-free response.
+  assert.match(render([]), /<button[^>]*disabled[^>]*>Submit<\/button>/);
+});

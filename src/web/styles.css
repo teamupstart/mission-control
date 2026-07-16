@@ -1772,10 +1772,7 @@ body {
   color: var(--idle);
   background: color-mix(in oklab, var(--idle) 15%, transparent);
 }
-.kind-input {
-  color: var(--attention);
-  background: color-mix(in oklab, var(--attention) 15%, transparent);
-}
+.kind-input,
 .kind-plan-decisions {
   color: var(--attention);
   background: color-mix(in oklab, var(--attention) 15%, transparent);

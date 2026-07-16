@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
+import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 
 /**
  * Imperative surface an ActionBar registers with the App so keyboard shortcuts
@@ -60,6 +61,9 @@ export function ActionBar({
     if (!text) return;
     const r = await run("send", () => api.sendText(session.id, text));
     if (r.ok) {
+      // Sent, so the draft is spent. On failure it stays: `run` has already put the
+      // reason on screen next to the text it's about.
+      clearDraft(session.id, "send");
       setComposing(false);
       if (inputRef.current) inputRef.current.value = "";
     }
@@ -127,6 +131,11 @@ export function ActionBar({
             className="compose-input"
             placeholder="Message to send…"
             autoFocus
+            // Cancel and Escape only close this box - they unmount the input, so
+            // without these the text died with it and reopening Send showed a blank.
+            // Neither gesture is a human deleting anything.
+            defaultValue={readDraft(session.id, "send")}
+            onChange={(e) => writeDraft(session.id, "send", e.currentTarget.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void submitMessage();
               if (e.key === "Escape") setComposing(false);

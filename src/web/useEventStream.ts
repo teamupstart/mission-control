@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
+import { dropSessionDrafts } from "./lib/drafts.ts";
 
 export interface MissionState {
   sessions: Session[];
@@ -57,6 +58,10 @@ export function useEventStream(): MissionState {
           setSessions((prev) => new Map(prev).set(msg.session.id, msg.session));
           break;
         case "session_remove":
+          // The one signal that positively means a session is gone, rather than not
+          // yet re-added: the daemon evicted it after a completed sweep. That makes
+          // this the only safe place to collect its half-written compose text.
+          dropSessionDrafts(msg.id);
           setSessions((prev) => {
             const next = new Map(prev);
             next.delete(msg.id);

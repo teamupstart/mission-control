@@ -79,6 +79,22 @@ export const SendTextSchema = z.object({
 export type SendText = z.infer<typeof SendTextSchema>;
 
 /**
+ * Select a row of the option menu a session is showing (a permission prompt, an
+ * `AskUserQuestion` menu). Its own endpoint rather than a flag on `SendTextSchema`, because
+ * it is not a message: nothing is typed, and the daemon re-reads the pane and refuses unless
+ * the row still reads as `label` before it confirms anything (see `selectPaneOption`).
+ *
+ * `label` is required for exactly that check. Without it the payload would be a bare
+ * position on a screen that may have repainted since the caller looked - which is how a
+ * confident, well-formed request confirms the wrong row.
+ */
+export const SelectOptionSchema = z.object({
+  number: z.number().int().min(1).max(99),
+  label: z.string().min(1),
+});
+export type SelectOption = z.infer<typeof SelectOptionSchema>;
+
+/**
  * Rename a session from the dashboard - renames the underlying tmux session or
  * wezterm tab, which the next discovery sweep reads back as the card's name. The
  * length cap keeps a stray paste from becoming an unwieldy tmux session name; the

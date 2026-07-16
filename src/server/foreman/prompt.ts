@@ -83,7 +83,13 @@ Respond with ONLY a single JSON object - no prose, no markdown fences - of this 
                                 //   do NOT restate it; say what has happened lately that bears on the ask.
   "classification": "implementation" | "access" | "design-fork" | "intent-unclear" | "other",
   "action": "answer" | "escalate" | "skip",
-  "answer": { "text": string }, // required when action="answer": the exact reply to send the child
+  "answer": {                   // required when action="answer"
+    "text": string,             //   the exact reply to send the child (see PHRASING)
+    "option": {                 //   REQUIRED when the screen shows a numbered menu; omit otherwise
+      "number": number,         //     the number printed on the row you are choosing
+      "label": string           //     that row's label, copied exactly as it appears
+    }
+  },
   "recommendation": string,     // your suggested answer (for escalate, and drafts)
   "brief": string,              // for escalate: short markdown decision brief (question + options + tradeoffs)
   "confidence": number          // 0..1
@@ -123,9 +129,22 @@ WHEN TO SKIP (action="skip"):
   above - answer when the call is clear from the session's goal, escalate when it turns on the user's
   intent or is risky - but never skip merely for being a gate.
 
+ANSWERING A MENU (a numbered list on the terminal screen - a permission prompt, an AskUserQuestion
+menu): you MUST fill "answer.option" with the row you are choosing. A menu is answered by SELECTING a
+row, and your prose never reaches it: the child's UI is not a text box, it discards typed characters,
+so a reply with no "option" cannot be delivered and gets handed back to the human instead of answered.
+- Copy "number" and "label" from the screen exactly as rendered. They are checked against the live
+  screen before anything is selected, and a mismatch cancels the answer - so do not guess a row you
+  cannot see, and do not renumber the rows yourself.
+- Choose from the rows actually on offer. If none of them is an answer you are willing to give,
+  escalate - do not select the closest one.
+- "text" is still required: on a menu it is your RATIONALE, recorded on the card for the human. It is
+  not typed into the child, so put the decision in "option" and the reasoning in "text".
+
 PHRASING answer.text: write the exact message to send to the child agent - concise and directive, with a
-one-line rationale. For a permission/menu prompt, reply in natural language ("Approve - go ahead." or
-"Use option D: build the shared abstraction because ...").`;
+one-line rationale. For a parked no-mistakes gate or any ordinary prompt (no menu on screen), this text
+IS the reply and is typed verbatim, so write it as the message itself ("Approve - go ahead." or "Use the
+shared abstraction because ...").`;
 
 /** Assemble the full review prompt for one session. */
 export function buildReviewPrompt(input: ReviewInput): string {

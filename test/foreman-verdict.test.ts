@@ -228,6 +228,7 @@ test("applyVerdict: live answer sends first, then records the answered note", as
   const actions: ForemanActions = {
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
+    selectOption: async () => (calls.push("selectOption"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
     logGateReply: async () => (calls.push("logGateReply"), {}),
   };
@@ -243,6 +244,7 @@ test("applyVerdict: a failed send records purpose only (no marker) and rethrows"
     sendText: async () => {
       throw new Error("pane gone");
     },
+    selectOption: async () => ({}),
     resolveReview: async () => ({}),
     logGateReply: async () => ({}),
   };
@@ -259,6 +261,7 @@ test("applyVerdict: dry-run draft writes the note and sends nothing", async () =
   const actions: ForemanActions = {
     putNote: async () => (calls.push("putNote"), {}),
     sendText: async () => (calls.push("sendText"), {}),
+    selectOption: async () => (calls.push("selectOption"), {}),
     resolveReview: async () => (calls.push("resolveReview"), {}),
     logGateReply: async () => (calls.push("logGateReply"), {}),
   };
@@ -285,4 +288,156 @@ test("extractVerdict handles a bare object and rejects invalid output", () => {
   assert.equal(extractVerdict("not json at all"), null);
   // action=answer without answer.text must fail the schema refine.
   assert.equal(extractVerdict('{"purpose":"p","classification":"other","action":"answer"}'), null);
+});
+
+// --- Answering a menu -------------------------------------------------------------
+//
+// The production failure this locks down, in one line: the reviewer said "Use option 2:
+// make the tray uninstall durable", the child recorded "Revert it; rely on master switch"
+// (row 1, the default), and shipped the revert. Nothing was broken - the model judged, the
+// send succeeded, the note said "answered". The reply was simply typed at a widget that
+// does not read text, and the Enter took whatever was highlighted. So the rule here is that
+// a menu is answered by naming a ROW, and anything less is handed back to the human.
+
+/** The menu from the session that produced the bug, as its pane rendered it. */
+const TRAY_MENU = {
+  options: [
+    { number: 1, label: "Revert it; rely on master switch (recommended)" },
+    { number: 2, label: "Make the tray uninstall durable" },
+    { number: 3, label: "Keep links, disable config only" },
+  ],
+  highlighted: 1,
+};
+
+/** The verdict the reviewer actually returned that day, now naming the row it meant. */
+const MENU_ANSWER: Verdict = {
+  purpose: "Custom-skills branch parked at the review gate over the tray's uninstall scope.",
+  classification: "implementation",
+  action: "answer",
+  answer: {
+    text: "Use option 2: the tray's uninstall should be durable, via the daemon's config API.",
+    submit: true,
+    option: { number: 2, label: "Make the tray uninstall durable" },
+  },
+};
+
+test("a menu answer sends the chosen row, not the reviewer's prose", () => {
+  const plan = planFromVerdict(MENU_ANSWER, ctx({ menu: TRAY_MENU }), true);
+  assert.equal(plan.send?.option?.number, 2);
+  assert.equal(plan.note.disposition, "answered");
+  // The rationale still rides along for the byline, but the DECISION is the row.
+  assert.match(plan.send?.text ?? "", /durable/);
+});
+
+test("the card names the row, so the audit trail is the decision and not the prose", () => {
+  const plan = planFromVerdict(MENU_ANSWER, ctx({ menu: TRAY_MENU }), true);
+  assert.equal(plan.note.lastAction, "answered: option 2. Make the tray uninstall durable");
+});
+
+test("prose with no row is escalated rather than typed at a menu", () => {
+  // THE REGRESSION TEST. `ANSWER` carries no `option`; with a menu up, the old path typed
+  // it and the menu confirmed row 1. Nothing may be sent here.
+  const plan = planFromVerdict(ANSWER, ctx({ menu: TRAY_MENU }), true);
+  assert.equal(plan.send, null);
+  assert.equal(plan.note.disposition, "escalated");
+  // The judgment is not thrown away - it reaches the human as the recommendation.
+  assert.equal(plan.note.recommendation, ANSWER.answer?.text);
+});
+
+test("a row the menu doesn't have is escalated, never approximated", () => {
+  const v = {
+    ...MENU_ANSWER,
+    answer: { ...MENU_ANSWER.answer!, option: { number: 9, label: "Something else" } },
+  };
+  const plan = planFromVerdict(v, ctx({ menu: TRAY_MENU }), true);
+  assert.equal(plan.send, null);
+  assert.match(plan.note.lastAction ?? "", /doesn't have/);
+});
+
+test("a row whose label disagrees with the screen is escalated", () => {
+  // The number is right but the label is another row's: the reviewer miscounted, or read a
+  // menu that has since repainted. Delivering row 2 anyway would answer a question nobody
+  // asked - which is the exact shape of the original bug, just arrived at differently.
+  const v = {
+    ...MENU_ANSWER,
+    answer: { ...MENU_ANSWER.answer!, option: { number: 2, label: "Keep links, disable config only" } },
+  };
+  const plan = planFromVerdict(v, ctx({ menu: TRAY_MENU }), true);
+  assert.equal(plan.send, null);
+  assert.match(plan.note.lastAction ?? "", /isn't what that row says/);
+});
+
+test("a hard-wrapped label still matches the row it names", () => {
+  // The pane cut the row at the terminal's width; the reviewer copied what it could see.
+  const menu = {
+    options: [{ number: 1, label: "Yes" }, { number: 2, label: "Yes, and don’t ask again for: npm test" }],
+    highlighted: 1,
+  };
+  const v = {
+    ...MENU_ANSWER,
+    classification: "access" as const,
+    answer: { text: "Approve - running tests is routine.", submit: true, option: { number: 2, label: "Yes, and don't ask again" } },
+  };
+  assert.equal(planFromVerdict(v, ctx({ menu }), true).send?.option?.number, 2);
+});
+
+test("with no menu on screen, prose is still typed as it always was", () => {
+  // The majority path - a parked no-mistakes gate, an ordinary question - must not regress
+  // into escalating for want of an option that has nothing to select.
+  const plan = planFromVerdict(ANSWER, ctx({ menu: null }), true);
+  assert.equal(plan.send?.text, ANSWER.answer?.text);
+  assert.equal(plan.send?.option, undefined);
+  assert.equal(plan.note.disposition, "answered");
+});
+
+test("an option volunteered against no menu is ignored, not sent", () => {
+  const plan = planFromVerdict(MENU_ANSWER, ctx({ menu: null }), true);
+  assert.equal(plan.send?.option, undefined);
+  assert.equal(plan.send?.text, MENU_ANSWER.answer?.text);
+});
+
+test("an input review is answered over the API even while a menu is on the pane", () => {
+  // `pickChannel` routes to the review, which no keystroke reaches - so the menu is not
+  // this answer's surface and must not gate it.
+  const plan = planFromVerdict(ANSWER, ctx({ menu: TRAY_MENU, inputReviewId: "r1" }), true);
+  assert.equal(plan.send?.channel, "review");
+  assert.equal(plan.send?.option, undefined);
+});
+
+test("a menu answer in dry-run drafts and selects nothing", () => {
+  const plan = planFromVerdict(MENU_ANSWER, ctx({ menu: TRAY_MENU }), false);
+  assert.equal(plan.send, null);
+  assert.equal(plan.note.disposition, "pending");
+});
+
+test("applyVerdict selects the row and never types at a menu", async () => {
+  const calls: string[] = [];
+  const actions: ForemanActions = {
+    putNote: async () => (calls.push("putNote"), {}),
+    sendText: async () => (calls.push("sendText"), {}),
+    selectOption: async () => (calls.push("selectOption"), {}),
+    resolveReview: async () => (calls.push("resolveReview"), {}),
+    logGateReply: async () => (calls.push("logGateReply"), {}),
+  };
+  const c = ctx({ menu: TRAY_MENU });
+  await applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true));
+  assert.deepEqual(calls, ["selectOption", "putNote"]);
+});
+
+test("a refused selection leaves the session unanswered and retryable", async () => {
+  // The daemon refuses when it can't confirm the row against the live screen. Nothing was
+  // confirmed, so this must NOT stamp an answered note - the child is still parked.
+  const notes: SetNote[] = [];
+  const actions: ForemanActions = {
+    putNote: async (_id, patch) => (notes.push(patch), {}),
+    sendText: async () => ({}),
+    selectOption: async () => {
+      throw new Error("the menu changed before the selection could be confirmed");
+    },
+    resolveReview: async () => ({}),
+    logGateReply: async () => ({}),
+  };
+  const c = ctx({ menu: TRAY_MENU });
+  await assert.rejects(applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true)), /menu changed/);
+  assert.deepEqual(notes, [{ purpose: MENU_ANSWER.purpose, disposition: "skipped" }]);
 });

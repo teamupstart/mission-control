@@ -311,6 +311,17 @@ export class ForemanClient implements ForemanActions {
     return res.json();
   }
 
+  /**
+   * Select a row of the menu a child is showing. Throws on a refusal, which is the point:
+   * the daemon refuses whenever it can't confirm the row against the live screen, and
+   * `applyVerdict` turns that throw into "not answered" rather than a false byline.
+   */
+  async selectOption(id: string, option: { number: number; label: string }): Promise<unknown> {
+    const res = await send("POST", `/api/sessions/${enc(id)}/select-option`, option);
+    if (!res.ok) throw new Error(`selectOption ${id} -> ${res.status}`);
+    return res.json();
+  }
+
   async resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown> {
     const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, { action, response });
     if (!res.ok) throw new Error(`resolveReview ${reviewId} -> ${res.status}`);

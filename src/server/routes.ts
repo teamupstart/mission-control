@@ -20,6 +20,7 @@ import {
   ReorderQueueSchema,
   ResetSchema,
   ResolveReviewSchema,
+  SelectOptionSchema,
   SendTextSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
@@ -70,6 +71,7 @@ import {
   rename,
   resetPreview,
   resetToOrigin,
+  selectPaneOption,
   sendText,
   setPermissionMode,
   validateSessionName,
@@ -401,6 +403,22 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const r = await sendText(session, parsed.data.text, parsed.data.submit);
     return c.json(r, r.ok ? 200 : 500);
+  });
+
+  // Answer the option menu a session is showing by selecting a row.
+  //
+  // A refusal is a 409, not a 500: every way this fails is the pane declining to confirm
+  // (no menu on screen, the row moved, the dialog closed under us), which is a state
+  // conflict rather than a server fault - and, because the Enter is never pressed, the
+  // child is left exactly as it was found. Foreman's client throws on it either way; the
+  // distinction is for the human reading the log, who should not be hunting a crash.
+  app.post("/api/sessions/:id/select-option", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, SelectOptionSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await selectPaneOption(session, parsed.data);
+    return c.json(r, r.ok ? 200 : 409);
   });
 
   // Rename the session's tmux session / wezterm tab; discovery reads the new name

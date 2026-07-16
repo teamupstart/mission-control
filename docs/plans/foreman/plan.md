@@ -206,7 +206,12 @@ re-answering the same terminal prompt.
 
 - `reportBucket` / `needsYouReason` — `src/shared/session.ts` — the queue definition.
 - `readTail` / `parseLines` / `toMessage` — `src/server/transcript.ts` — the JSON transcript endpoint.
-- `sendText` (`src/server/actions.ts`) + `ReviewManager.resolve` (`src/server/reviews.ts`) — answering.
+- `sendText` / `selectPaneOption` (`src/server/actions.ts`) + `ReviewManager.resolve`
+  (`src/server/reviews.ts`) — answering. Which one is not a style choice: a session sitting on a
+  MENU (a permission prompt, an `AskUserQuestion`) cannot be answered with `sendText`, because the
+  dialog discards typed characters and the trailing Enter then confirms whatever row was already
+  highlighted. Menus are answered by `selectPaneOption` (read the rows off the pane, walk the
+  cursor, verify, Enter); prose is for a parked gate or an ordinary prompt.
 - `ReviewManager` / `TaskManager` shape (`src/server/reviews.ts`, `tasks.ts`) — a `NotesManager`.
 - Registry denormalization pattern (`taskSummaryForCwd`, `syncSessionsForWorktree`,
   `refreshPendingCount`) — `noteSummaryFor` / `upsertNote`.
@@ -223,6 +228,11 @@ re-answering the same terminal prompt.
   draining the fleet's needs-you queue is the whole point - with their live sends still gated by
   the same repo allowlist.
 - Destructive/risky access ⇒ escalate; duplicative implementation ⇒ ask for one abstraction.
+- **Never confirm a row we did not verify.** A menu answer names a row, and that row is re-read off
+  the live pane and matched by label before the Enter — so a repaint, a closed dialog or a reviewer
+  that miscounted cancels the answer instead of confirming the wrong one. A verdict that names no
+  row at all is escalated, never typed: typing at a menu is not a degraded answer, it is a
+  different one delivered under the human's name.
 - Full audit trail: every action in `session_events` + `note.last_action` + the card's
   "Foreman answered" attribution, so nothing it does is silent.
 - Cost control: only (re)review a session on a **new** pending prompt (`handled_marker`), with a

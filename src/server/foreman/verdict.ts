@@ -8,6 +8,51 @@ import { foremanAllowlisted } from "@shared/foreman.ts";
 // decides, given the operating mode and what reply channel actually exists,
 // exactly which note is written and whether a reply is sent.
 
+/**
+ * An `answer` field that reads a TEXTLESS answer as absent rather than as a malformed reply.
+ *
+ * The prompt hands the model the whole object shape, so a reviewer with nothing to send fills
+ * the field in regardless: `"answer": {"text": ""}` next to `"action": "skip"` is what a real
+ * reviewer actually returns, measured against the live fleet. A bare `text: z.string().min(1)`
+ * failed the WHOLE object on it, `runStructured` retried, and after three strikes the worker
+ * gave up and wrote `skipped (reviewer failed 3x)` - discarding a well-formed judgment, purpose
+ * and recommendation and all, over an empty field that the action it names never reads. The
+ * symptom reached the human as Foreman going quiet on a session, which is indistinguishable
+ * from the reviewer having nothing to say. Three Opus calls bought that silence, every time.
+ *
+ * Normalized to `undefined` rather than relaxing `min(1)`, so the invariant the rest of this
+ * file leans on holds unchanged: an `answer` that is PRESENT has text worth sending (see
+ * `planFromVerdict`'s `v.answer!`). The refine below still rejects `action: "answer"` carrying
+ * nothing to send - an empty answer is only ever tolerated for an action that ignores it, and
+ * that case must keep failing rather than send an empty line into someone's terminal.
+ */
+const AnswerField = z.preprocess(
+  (v) => (textlessAnswer(v) ? undefined : v),
+  z
+    .object({
+      text: z.string().min(1),
+      submit: z.boolean().optional().default(true),
+    })
+    .optional(),
+);
+
+/**
+ * Whether an `answer` carries no text to send: absent, null, or text that is empty/whitespace.
+ *
+ * A non-string `text` is deliberately NOT swallowed - that is a reply we genuinely can't read,
+ * so it must fail validation and retry rather than be silently rewritten to "no answer".
+ *
+ * Exported for the Tier 1 report schema, which is handed the same shape by the same kind of
+ * model and so grew the same defect independently. One predicate, so a fix to what counts as
+ * "no answer" can't land on one tier and not the other.
+ */
+export function textlessAnswer(v: unknown): boolean {
+  if (v == null) return true;
+  if (typeof v !== "object") return false;
+  const { text } = v as { text?: unknown };
+  return text === undefined || (typeof text === "string" && text.trim() === "");
+}
+
 /** The structured judgment a fresh `claude -p` reviewer must return. */
 export const VerdictSchema = z
   .object({
@@ -21,13 +66,8 @@ export const VerdictSchema = z
       "other",
     ]),
     action: z.enum(["answer", "escalate", "skip"]),
-    /** The reply to deliver, when action === "answer". */
-    answer: z
-      .object({
-        text: z.string().min(1),
-        submit: z.boolean().optional().default(true),
-      })
-      .optional(),
+    /** The reply to deliver, when action === "answer". Textless reads as absent - see `AnswerField`. */
+    answer: AnswerField,
     /** Foreman's recommended answer, shown for escalate + dry-run drafts. */
     recommendation: z.string().optional(),
     /** Decision-brief markdown for an escalation (the question + the options). */

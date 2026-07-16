@@ -585,6 +585,9 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
     // A real (clean) window by default: an empty one is a gated case in its own right, so
     // defaulting to it would quietly turn every case below into a no-transcript route-up.
     transcript: async () => ({ messages: cleanWindow().messages, truncated: false }),
+    // No screen by default, so the cases below keep measuring exactly what they did before
+    // the pane existed. The pane's own effects are asserted by the tests that opt into one.
+    pane: async () => null,
     runModel: async () => JSON.stringify(report()),
     ...over,
   };

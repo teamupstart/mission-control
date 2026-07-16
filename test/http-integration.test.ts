@@ -1310,3 +1310,21 @@ test("a /clear orphans the queue, and re-attaching it is offered where it can su
     await app.request(`/api/sessions/sess-1/queue/${i.id}`, { method: "DELETE", headers: LOOPBACK });
   }
 });
+
+test("/api/sessions/:id/pane serves the child's screen, and 404s an unknown session", async () => {
+  // The route Foreman's reviewer reads the pending ask from (see `ReviewInput.pane`): an ask
+  // that is BLOCKING on the user is not in the transcript until it returns, so this is the only
+  // place it exists.
+  seedSession();
+
+  const miss = await app.request("/api/sessions/nope/pane", { headers: LOOPBACK });
+  assert.equal(miss.status, 404, "an unknown session is not a null pane - say so");
+
+  // The seeded session names a tmux pane that isn't there, which is exactly how a real capture
+  // fails (the pane died, tmux is gone). It must read back as "no screen" rather than a 500:
+  // every caller's fallback is the transcript alone, which is the pre-existing behaviour and a
+  // safe one - failing the request would turn a lost improvement into a lost review.
+  const res = await app.request("/api/sessions/sess-1/pane", { headers: LOOPBACK });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { text: null });
+});

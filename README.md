@@ -318,7 +318,8 @@ background); a closed tab can't receive one.
 
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
-Claude session, reads the transcript to understand the goal, then:
+Claude session, reads the transcript to understand the goal **and the session's terminal
+screen to see the ask itself**, then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;
@@ -329,6 +330,11 @@ Claude session, reads the transcript to understand the goal, then:
   the call is clear from that goal, and escalates when it turns on your intent;
 - writes a 1-2 sentence **Purpose** on every session it inspects, shown in the expanded
   card so you can re-orient at a glance.
+
+The screen matters more than it sounds: a prompt that is *waiting on you* - a menu, a
+permission dialog - isn't written to the transcript until it returns, so the transcript
+routinely ends **before** the very question Foreman is there to answer. Reading the pane is
+what lets it answer the ask rather than hand it back to you having only read the history.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it

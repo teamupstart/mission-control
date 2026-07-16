@@ -773,7 +773,13 @@ async function fullReview(
   ctx: ReviewContext,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<{ verdict: Verdict } | null> {
-  const window = await client.transcript(session.id).catch(() => ({ messages: [], truncated: false }));
+  // Fetched concurrently: the pane capture is a subprocess on the daemon's side, and this
+  // runs per session per review, so it rides alongside the transcript read rather than
+  // adding its latency to the queue's serial path.
+  const [window, pane] = await Promise.all([
+    client.transcript(session.id).catch(() => ({ messages: [], truncated: false })),
+    paneFor(client, session, pending),
+  ]);
   const input: ReviewInput = {
     session: {
       name: session.name,
@@ -786,6 +792,8 @@ async function fullReview(
     question: pending.question,
     transcript: window.messages,
     truncated: window.truncated,
+    // The section the reviewer reads the actual ask from - see `ReviewInput.pane`.
+    pane,
     // Without this the two subsystems actively fight: the reviewer can answer "no,
     // don't do that" to a question about the very item Foreman commissioned, or
     // escalate something it could have answered trivially had it known the intent.
@@ -816,8 +824,26 @@ async function fullReview(
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
+    pane: (id) => client.pane(id),
     runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
   };
+}
+
+/**
+ * The child's screen for a review, or null when the surface can't have one.
+ *
+ * Scoped to the `terminal` surface because an `input-review` already carries its full body as
+ * `Pending.question` - there is nothing on the screen the reviewer doesn't have, so capturing
+ * it would spend a subprocess to learn nothing. A terminal session with no pane simply reads
+ * back null (`capturePaneText` has no handle to use), so `terminal-no-pane` needs no case of
+ * its own here.
+ */
+function paneFor(
+  client: ForemanClient,
+  session: Session,
+  pending: Pending,
+): Promise<string | null> {
+  return pending.surface === "terminal" ? client.pane(session.id) : Promise.resolve(null);
 }
 
 /**

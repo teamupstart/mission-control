@@ -27,6 +27,7 @@ import {
   StatusSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
+import { capturePaneText } from "./discovery/pane-mode.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
@@ -192,6 +193,22 @@ export function buildApp(
     const turns = Number(c.req.query("turns"));
     const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
     return c.json(readTranscriptWindow(path, 12, tail));
+  });
+
+  // The child's rendered screen - the only place an ask that is BLOCKING on the user
+  // exists (see `ReviewInput.pane`). Foreman's reviewer reads it alongside the transcript.
+  //
+  // Captured on demand rather than served off the poll's snapshot, even though
+  // `annotatePermissionModes` already captures every pane each tick and throws the text
+  // away. A review fires after a settle debounce, so a snapshot would be up to a tick stale
+  // - and "stale by one tick" here is not a slightly-old screen, it is the wrong question:
+  // the menu the reviewer is about to answer may have replaced the one the poll saw. The
+  // cost is one `tmux capture-pane` per review, which is noise beside the `claude -p` it
+  // feeds.
+  app.get("/api/sessions/:id/pane", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json({ text: await capturePaneText(session) });
   });
 
   // The transcript's current byte size - the anchor a work item records when it's

@@ -19,6 +19,8 @@ import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startGoalRefiner } from "./goal/refiner.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
+import { reconcileSkills } from "./skills/config.ts";
+import { startSkillsReloader } from "./skills/reload.ts";
 import { sweepUploads } from "./uploads.ts";
 
 openDb();
@@ -27,6 +29,16 @@ ensureToken();
 // outlives its send on purpose (the agent reads the path on its own schedule), so
 // a clock is the only thing that can retire one.
 sweepUploads();
+// Heal any drift between the enabled skills and `~/.claude/skills` while nothing is
+// mid-flight: a link deleted by hand, an app bundle that moved on disk, a DB restored
+// onto a fresh machine. Idempotent, so the healthy case writes nothing and reloads
+// nobody. Best-effort - it touches the operator's home directory, and a daemon that
+// refused to start because of it would be worse than one running without a skill.
+try {
+  reconcileSkills();
+} catch (err) {
+  console.error("[skills] could not reconcile ~/.claude/skills:", err);
+}
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
@@ -38,6 +50,7 @@ const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
 const stopHeadlessPruner = startHeadlessPruner();
 const stopPoolReaper = startPoolReaper(registry);
+const stopSkillsReloader = startSkillsReloader(registry);
 
 const app = buildApp(registry, reviews, tasks, queues);
 
@@ -77,6 +90,7 @@ function shutdown(): void {
   // explicitly rather than relying on that ordering.
   killLiveClaudeRuns();
   stopPoolReaper();
+  stopSkillsReloader();
   server.close();
   process.exit(0);
 }

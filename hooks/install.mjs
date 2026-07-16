@@ -5,6 +5,19 @@
 // the path in place (matched by the "harness-hook.mjs" marker) without touching
 // any of the user's other hooks. `--uninstall` removes only our entries.
 //
+// Uninstall also clears the `fleet-*` skill symlinks out of ~/.claude/skills - as
+// TEARDOWN, not as the off-switch. They are the most invasive thing the harness puts in
+// a home directory (Claude loads them into every session on the machine), so a checkout
+// being abandoned should not leave them pointing at it. Delegated to the reconciler
+// rather than re-walked here, so the "only ever our own symlinks, never a real
+// directory" rule keeps its single implementation.
+//
+// It does NOT turn the feature off, and must not be described as though it does: the
+// config still says the skills are on, and the daemon reconciles against that config on
+// every start, so a daemon run from this checkout again re-creates them. The durable
+// off-switch is the panel's master switch, which records the intent. This is for the
+// case where there is no panel left to click.
+//
 // The edit is surgical: we parse settings.json with jsonc-parser and rewrite
 // ONLY the hook arrays we actually change, so the rest of the file - your other
 // keys, your comments, and its formatting - is left byte-for-byte intact. If
@@ -17,6 +30,10 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, modify, applyEdits } from "jsonc-parser";
 import { stateDir } from "../src/shared/harness-runtime.mjs";
+// TypeScript, and reachable because this script's entry point is `tsx hooks/install.mjs`
+// (see package.json) - unlike harness-hook.mjs, which bare `node` runs at hook time and
+// which is why the runtime module above is .mjs at all.
+import { claudeSkillsDir, uninstallSkillLinks } from "../src/server/skills/reconcile.ts";
 
 const MARKER = "harness-hook.mjs";
 /** Marker identifying our statusLine wrapper command in settings.json. */
@@ -189,6 +206,26 @@ if (uninstall) {
 // New files get a trailing newline; existing files keep their own byte layout.
 if (!existed && !text.endsWith(formattingOptions.eol)) text += formattingOptions.eol;
 
+// --- fleet skill symlinks (uninstall only) ----------------------------------
+// Ahead of the write, and reported on BOTH exits below, because whether settings.json
+// still holds a hook of ours says nothing about whether the skills directory holds a
+// link of ours. Hooks already stripped by an earlier run would otherwise take the
+// "nothing to remove" exit and leave the links installed - exactly the state this is
+// here to end. Never on install: the daemon reconciles from the config, and creating
+// links from here would enable skills nobody switched on.
+const skills = uninstall ? uninstallSkillLinks() : null;
+
+function reportSkills() {
+  if (!skills) return;
+  if (skills.unlinked.length > 0) {
+    const names = skills.unlinked.sort().join(", ");
+    console.log(`  removed ${skills.unlinked.length} skill link(s) from ${claudeSkillsDir()}: ${names}`);
+  }
+  // Say so rather than exiting 0 over it - a link we couldn't remove is still loaded
+  // by every Claude on the machine, and the operator is the only one who can finish it.
+  for (const problem of skills.problems) console.log(`  ${problem}`);
+}
+
 // --- write only if something changed ----------------------------------------
 const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "mcp", "server.mjs");
 
@@ -198,6 +235,7 @@ if (text === original) {
       ? `No Fleet Control hooks found in ${settingsPath} - nothing to remove.`
       : `Fleet Control hooks already up to date in ${settingsPath} (left unchanged).`,
   );
+  reportSkills();
   process.exit(0);
 }
 
@@ -208,6 +246,7 @@ if (uninstall) {
   console.log(`Removed Fleet Control hooks from ${settingsPath} (your other settings were left intact)`);
   if (statuslineAction === "restored") console.log(`  restored your original status line command.`);
   else if (statuslineAction === "removed") console.log(`  removed the Fleet Control status line wrapper.`);
+  reportSkills();
   console.log(`\nTo remove the review-channel MCP server:\n  claude mcp remove -s user fleet-control`);
 } else {
   console.log(`Wired Fleet Control hooks into ${settingsPath} (merged in place; your other settings untouched)`);

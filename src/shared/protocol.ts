@@ -294,6 +294,57 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
 );
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
 
+// ---- Custom skills (fleet-wide skill toggles) ----
+
+/**
+ * Which catalog skills are symlinked into `~/.claude/skills`, and how far the fleet
+ * has been told about it. Same partial-patch shape as ForemanConfig, over the same
+ * `app_config` KV, so a new key needs no migration.
+ *
+ * Ships with the master switch OFF and nothing enabled: this writes into the
+ * operator's global claude config and changes what the model does in every session
+ * on the machine, including ones the harness never launched. That is the point of
+ * the feature, and it is also why it is never on by default.
+ */
+export const SkillsConfigSchema = z.object({
+  /** Master switch. Off symlinks NOTHING, whatever `skills` says. */
+  enabled: z.boolean().default(false),
+  /** Catalog id -> enabled. Ids absent from the catalog are ignored, not an error. */
+  skills: z.record(z.boolean()).default({}),
+  /**
+   * The reload watermark - the whole coalescing story, and a WATERMARK, NOT A QUEUE.
+   *
+   * A session never needs more than one reload to become current no matter how many
+   * skills were flipped: `/reload-skills` re-reads the directory, so one reload reads
+   * whatever is there NOW. Flip five skills in ten seconds and this lands at 5; a
+   * session that reloads once is done. A queue would have typed five commands into
+   * every pane.
+   *
+   * Bumped ONLY when the reconciler actually changed the symlink set - never on any
+   * config write. Bumping it on an unrelated write would reload the whole fleet, and
+   * each reload writes a command and its response into a session's context.
+   */
+  generation: z.number().int().default(0),
+  /**
+   * When `generation` last moved (epoch ms). Not decoration: it is what stops a
+   * session that booted AFTER the change from being told to pick it up.
+   *
+   * Claude scans `~/.claude/skills` at startup, so a session whose process started
+   * once the symlink was already on disk loaded the current set by construction and
+   * has nothing to reload. Without this, every newly discovered session - forever -
+   * would have an unsolicited `/reload-skills` typed into it the first time it went
+   * idle, because it has no ack row and `0 < generation`.
+   */
+  generationAt: z.number().int().default(0),
+});
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
+
+/** Partial update of the skills config from the dashboard. */
+export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, skills: true })
+  .partial()
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
+
 // ---- Foreman session work queues ----
 
 /**

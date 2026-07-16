@@ -11,6 +11,14 @@
 // The settings.json edit is surgical (jsonc-parser), touching only the hook
 // arrays we own, exactly like hooks/install.mjs - the user's other hooks,
 // comments, and formatting are preserved.
+//
+// Scope: hooks and the MCP server, NOT skills. Skills are the daemon's to install and
+// remove, and the operator's to decide on, via the panel's master switch - which is the
+// durable off-switch because it persists `enabled: false`. Removing links from here
+// could not be durable: this process supervises the daemon, whose startup reconcile
+// reads a config still saying `enabled: true` and would put every link straight back,
+// re-broadcasting a reload to the fleet. A removal the next launch silently undoes is
+// worse than one that never claimed to happen.
 
 import { app } from "electron";
 import { execFileSync } from "node:child_process";

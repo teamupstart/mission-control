@@ -3420,6 +3420,96 @@ kbd {
   color: var(--dim);
 }
 
+/* ---- skills (the fleet-wide skill catalog) ----
+   Rows are `.kb-row` with a switch instead of a key capture - same label +
+   description + control shape, so only the differences live here. */
+.settings-section + .settings-section {
+  margin-top: 26px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border-soft);
+}
+.skills-blurb {
+  margin: 0 0 12px;
+}
+.skills-blurb code {
+  font-size: 10.5px;
+}
+.skills-master {
+  font-weight: 540;
+}
+/* A fieldset is a layout element here, not a box: strip the UA's border/padding so
+   the rows sit exactly where they would without it. */
+.skills-list {
+  border: 0;
+  padding: 0;
+  margin: 8px 0 0;
+  min-width: 0;
+}
+.skills-list:disabled {
+  opacity: 0.42;
+}
+.skill-row .kb-row-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.skill-badge {
+  font-size: 9.5px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg-2);
+  white-space: nowrap;
+  cursor: help;
+}
+/* The rung is a promise about how firmly the skill binds, so it reads as a ramp:
+   the more the skill is merely a suggestion, the quieter its badge. */
+.skill-badge-opportunistic {
+  color: var(--dim);
+}
+.skill-badge-triggered {
+  color: color-mix(in oklab, var(--working) 62%, var(--fg));
+  border-color: color-mix(in oklab, var(--working) 34%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, transparent);
+}
+.skill-badge-intercepted,
+.skill-badge-always-on {
+  color: color-mix(in oklab, var(--idle) 55%, var(--fg));
+  border-color: color-mix(in oklab, var(--idle) 34%, var(--border));
+  background: color-mix(in oklab, var(--idle) 9%, transparent);
+}
+/* True of every row today, so it must not out-shout the enforcement rung beside it -
+   that's the badge that actually varies, and the one worth reading twice. Same fact,
+   quieter: no fill, no border, just a dim word. */
+.skill-badge-agent {
+  color: var(--dim);
+  background: transparent;
+  border-color: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+.skill-switch {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  cursor: pointer;
+}
+.skill-switch input[type="checkbox"] {
+  accent-color: var(--working);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+.skills-list:disabled .skill-switch,
+.skills-list:disabled .skill-switch input {
+  cursor: default;
+}
+
 /* ---- Foreman (auto-responder) ---- */
 .foremanbar {
   position: relative;

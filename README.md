@@ -41,6 +41,9 @@ and get your decision back.
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
+- **Equips** the fleet with [skills](#skills-fleet-wide-no-restarts): switch a Claude
+  Code skill on in Settings and it applies to **every** Claude session on the machine -
+  including ones this app never launched - without restarting any of them. Claude only.
 
 ## Quick start
 
@@ -179,6 +182,12 @@ curl -s http://127.0.0.1:7317/api/sessions | grep -o '"instrumented":[a-z]*'
 ```sh
 npm run install-hooks -- --uninstall
 ```
+
+This also clears any `fleet-*` skill links out of `~/.claude/skills` as a dev-teardown
+convenience, so a checkout you're walking away from leaves nothing loaded in Claude. It
+does not turn the feature off: the config still says the skills are on, so a daemon
+started from this checkout re-creates them. To switch skills off for good, use the
+master switch in Settings → Skills.
 
 <details>
 <summary>What it writes to <code>settings.json</code></summary>
@@ -484,6 +493,66 @@ it runs in any mode - you see Foreman's judgment before it ever types. A queue n
 hook-instrumented Claude session (there's no completion signal otherwise), and the panel
 says so rather than letting you queue work that can't run.
 
+## Skills (fleet-wide, no restarts)
+
+Settings (the topbar gear, or ⌘,) has a **Skills** catalog: read what a skill does,
+switch it on, and it applies to **every** Claude session on this machine - including
+sessions this app never launched - without terminating or recreating any of them.
+
+Skills are ordinary Claude Code skills, living in `skills/<id>/SKILL.md` in this repo
+so they're versioned and reviewed with the app. Enabling one symlinks it into
+`~/.claude/skills/fleet-<id>`, which is Claude's own loading path - the harness never
+reimplements it. Running sessions pick the change up when they next go quiet: the
+daemon types `/reload-skills` into their pane, which is the only thing that makes a
+live session re-read that directory (nothing watches it).
+
+Three things worth knowing before you switch one on:
+
+- **The blast radius is the point, and it's global.** `~/.claude/skills` is your own
+  directory, shared by every Claude on the machine. The harness only ever creates or
+  removes entries under the `fleet-` prefix, and only ones that are symlinks - your
+  `no-mistakes`, `implement-plan` and friends are untouchable by construction, not by
+  care. **Turning the master switch off is the real uninstall**: it's the only control
+  that both removes every link and records that you wanted them gone, so nothing brings
+  them back. Removing the links any other way is temporary - the daemon reconciles
+  `~/.claude/skills` against this config on every start, so a config still saying "on"
+  re-creates them. (The tray's "Remove Claude integrations" is hooks and the MCP server
+  only; it does not touch skills.)
+- **Enabling a skill loads it; it does not oblige Claude to use it.** Native skills
+  are model-invoked, so each row carries an **enforcement badge** saying which rung it
+  sits on. "When relevant" means exactly that.
+- **Claude only.** Codex has no `/reload-skills` and no skills directory, so a toggle
+  does nothing to codex sessions. Every row says so, and the "N sessions will pick this
+  up" count excludes them.
+
+### The daemon is no longer strictly reactive
+
+**Read this before adding another autonomous writer.** Until skills shipped, the daemon
+typed into a pane only downstream of a route call - which meant downstream of a person.
+The only unprompted typing in the system was quarantined in [Foreman](#foreman-auto-responder),
+a separate, leased, opt-in worker process. The skills reload loop
+(`src/server/skills/reload.ts`) ends that invariant: it runs *in* the daemon, holds no
+lease (the port bind is the mutex - two daemons can't both hold `:7317`), and types on
+its own schedule.
+
+The gate that makes it safe is not paperwork. `injectPrompt` presses Enter
+unconditionally, and a Claude dialog is a **select list, not a text prompt**: pasted
+text is swallowed and the Enter activates whichever option is highlighted. Fired
+fleet-wide, that's an unattended answer to a permission prompt nobody read, in every
+pane at once. So a reload requires `settledIdle` (a *reported* idle, not the
+uninstrumented default) **and** a pane read confirming Claude's mode line is on screen,
+which a dialog or menu replaces. If you add a second autonomous writer, it needs the
+same gate, and it needs `withPaneLock` in `actions.ts` - the reload loop is why that
+guard covers every pane write rather than just permission-mode cycling.
+
+The mutual exclusion is the **port bind**, and it holds for the default port: a second
+`npm start` can't take `:7317`, so there's exactly one reload loop. It does *not* hold
+for `FLEET_PORT=<other>`. A daemon on a spare port is a second, fully autonomous writer
+aimed at the same real panes - discovery finds the same fleet whatever port you serve
+on, and an isolated `FLEET_HOME` makes it *worse*, because its ack table is empty and it
+believes the whole fleet is owed a reload. If you're testing against a spare port, know
+that its reload loop is live from the moment it boots.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - select a card with the arrow keys and act on it
@@ -667,6 +736,9 @@ that looks perfectly healthy would help nobody.
 | `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
+| `FLEET_SKILLS_DIR` | app's `skills/` | [skills](#skills-fleet-wide-no-restarts) catalog dir (the symlinks' target) |
+| `FLEET_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
+| `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written. Overridable so tests never touch your real one |
 | `FLEET_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the fleet runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner) |
 | `FLEET_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner) pass it instead |
 | `FLEET_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
@@ -693,7 +765,7 @@ npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman, skills)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

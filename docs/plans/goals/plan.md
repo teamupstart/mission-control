@@ -1,6 +1,6 @@
 # Plan: Goal on every session card
 
-Status: **phases 0-2 landed (plus an unplanned prerequisite, 1.5); phases 3-6 not started**
+Status: **COMPLETE - all phases landed** (0, 1, 1.5 unplanned, 2, 3, 4, 5, 6)
 Branch: `harness/goal-feature-ee517c`
 Owner: ai-harness
 Related: **Foreman's Purpose** (`session_notes.purpose`), which this supersedes in part -
@@ -464,103 +464,147 @@ test that a goal write does not fabricate a Foreman draft), and an end-to-end ca
 the real route. The filter was also run over the whole real corpus: **397 events → 197 goals,
 0 scaffolding surviving**.
 
-### Phase 3 - tier 1 heuristic + render - **NOT STARTED**
+### Phase 3 - tier 1 heuristic + render - **DONE** (`18ad738`)
 
-> Phase 2 landed the storage this builds on. The wiring point is `captureGoalPrompt`
-> (`registry.ts`), which today stores only `prompt`; Phase 3 adds `text` + `source` beside
-> it. `substantivePrompt` has already run at that point - do not filter twice.
+`captureGoalPrompt` (`registry.ts`) writes `text` = `goalLine(prompt)` + `source =
+'heuristic'` alongside the stored prompt. Instant, free, no model - a card is never blank
+waiting on one.
 
-- On a substantive `UserPromptSubmit`, write `text` = filtered prompt (trimmed to a sane
-  display length), `source = 'heuristic'`. Instant, free, no model.
-- **A card renders a goal only once `text` is set** - `goalSummaryFor` already reports a
-  prompt-only row as `null`, so nothing is shown until this phase writes a sentence.
-- Meta-commands are **already settled** - see [Q7](#q7---clear-and-compact) - and need no
-  work here. `substantivePrompt` drops `/clear` and `/compact`, and the two lifecycle
-  outcomes are pinned by tests in `test/session-goals.test.ts`.
-- **Render as a second line under the card title** (Q4=A). The activity ticker keeps its own
-  slot - the two are different facts. This is *not* behind `expanded`; that is the entire
-  point of the feature.
-- **Codex cards:** honest empty state, *"No goal - Codex sessions aren't instrumented."*
-  (D4=B). Implement the goal source as **pluggable per agent type** here (Q5=C), so a Codex
-  reader can be dropped in without restructuring.
-- Note: `~10%` of sessions open with clean prose, so on its own this tier is visibly rough on
-  the rest. That is expected and is why Phase 4 exists.
-- UI verification: per `[[dashboard-resists-browser-automation]]`, the SSE stream blocks
-  Chrome automation - **verify with `react-dom/server` render tests**, not a browser.
+- **`goalLine`** (`shared/goal.ts`) bounds a goal at **180 chars**, cutting on a word
+  boundary. Prompts run to a 5,515-char p90; unbounded, one card would push the fleet off
+  screen. Shared with Tier 2 (`GoalSchema` clamps through the same function), so both tiers
+  are bounded identically no matter which wrote last.
+- **Rendered outside the `expanded` gate** (Q4=A), as a full-width line under the header -
+  NOT a row inside `.card-title`, which is a flex row the badges, PR chip and diff button
+  compete for; a goal in there ellipsises to nothing on exactly the busy cards that most need
+  one. `.activity` keeps its own muted line: orthogonal facts (Trap 1).
+- A Tier 1 goal renders muted (`.goal-heuristic`) so a raw prompt reads as provisional. Note
+  this is also the **permanent** look when `claude` is unavailable - the silent fallback.
+- **Codex:** `GOAL_UNSUPPORTED` (`shared/goal.ts`) is the single source for "can this agent
+  have a goal", read by BOTH the card's empty state and the refiner's skip. The Q5=C seam is
+  that constant plus `goal/source.ts`'s per-agent `readWindow` - adding Codex is implementing
+  one method and flipping one map entry.
+- Meta-commands were settled in [Q7](#q7---clear-and-compact); no work was needed here.
 
-### Phase 4 - tier 2 Haiku refiner - **NOT STARTED**
+Verified with `react-dom/server` render tests per `[[dashboard-resists-browser-automation]]`
+(`test/session-card-goal.test.ts`), **and** by rendering real cards to a static page and
+looking at them - the SSE stream is what blocks browser automation, and a static render has
+none. Checked: a 180-char goal clamps to 2 lines without growing the card; an unbroken URL
+wraps instead of widening it; a busy card (PR + failing checks + badge) still shows its goal.
 
-In the **daemon**, using `src/server/claude-cli.ts`:
+### Phase 4 - tier 2 Haiku refiner - **DONE** (`18ad738`)
 
-```ts
-const limit = createLimiter(2);
-const r = await limit(() => runStructured<typeof GoalSchema>(
-  buildGoalPrompt({ currentGoal, prompt, window }),
-  extractGoal,                       // must handle the ```json fence - see Trap 4
-  "Goal",
-  { model: "claude-haiku-4-5", timeoutMs: 30_000 },
-));
-```
+`goal/refiner.ts`, a poller in the daemon over `claude-cli.ts`.
 
-> **The feedback loop is already closed** - see [Trap 5b](#trap-5b-a-headless-claude--p-also-fires-hooks---and-they-impersonate-a-real-card)
-> and Phase 1.5. This call spawns `claude -p` **from the daemon**, whose hooks would
-> otherwise land back on a card as a prompt. Do not undo `headlessEnv()`, and do not read
-> `prompt` back out of a hook the refiner itself caused. `test/claude-cli-headless-env.test.ts`
-> is what keeps this honest.
+**`source` IS the queue** - the design that made the rest fall out. Tier 1 stamps
+`heuristic` on every new prompt; the refiner stamps `model` when it has summarised one. So
+"already summarised, nothing new since" needs no extra state, a restart resumes correctly
+with nothing to rebuild, and a burst of prompts collapses into one refresh instead of
+queueing a call each.
 
-The stored `prompt` (Phase 2) is the refiner's input - already filtered and clamped, so it
-needs neither again.
+- **Cadence (Q1=A):** `EvaluationDebounce`, 60s floor, first sighting due immediately.
+- **Concurrency 2**, per-caller (`createLimiter`) - the daemon's own ceiling.
+- **Failure (Q3):** remembered **per prompt**, in memory. Without that, `source` stays
+  `heuristic` after a failure and every tick re-offers the session forever - the retry storm.
+  Keyed on the prompt so a new instruction always gets a fresh attempt: what is abandoned is
+  one summary, never the session.
+- **Stale-write guard:** a refine that lands after the human has moved on is dropped, not
+  written. It would stamp `model` on a summary of the *previous* ask and make the newer one
+  look already-done - so the goal would freeze on a stale sentence.
+- The prompt drops tool calls (unlike `formatTranscript`): `Bash(npm test)` says nothing
+  about what a session is FOR, and tool calls are the bulk of a coding transcript's tokens.
 
-- **Cadence (Q1=A):** refresh on **substantive** prompts only (skip "yes" / "continue" by
-  length + pattern), with a **~60s floor**. `EvaluationDebounce` (`foreman/debounce.ts`) is
-  the existing shape to copy - 60s, in-memory, first sighting due immediately.
-- **Pass the current goal into the prompt** so "unchanged" is the cheap, common path. Most
-  follow-ups refine rather than redefine.
-- **Read a small transcript window**, not just the prompt - the 44 prose-less slash-command
-  sessions have no prompt to summarise (Trap 3). `readTranscriptWindow` /
-  `resolveTranscriptPath` (`transcript.ts:44`) are the readers.
-- On success: `source = 'model'`. On any failure: **leave the heuristic goal in place**
-  and do not retry-storm (Q3 - the silent fallback). `upsertGoal` merges, so writing
-  `{ text, source }` alone already preserves the stored `prompt`.
-- Cap concurrency at 2 so a fleet answering prompts at once cannot fork a subprocess per card.
+- **Pass the current goal in** so "unchanged" is available as an answer (Q1). Most follow-ups
+  refine rather than redefine, and a card that rewords itself every minute reads as churn.
+- **Reads a window**, not just the prompt - the 44 prose-less slash-command sessions have no
+  prompt to summarise (Trap 3). Head 6 / tail 12 turns, deliberately smaller than the
+  reviewer's 48: this summarises intent, not "what happened", and it may run once a minute
+  per card.
+- Reuses `runStructured` + `parseModelJson` - **do not hand-roll a parse** (Trap 4). The fake
+  `claude` in `test/goal-refiner.test.ts` fences its JSON precisely because a real one did.
 
-### Phase 5 - Foreman defers to Goal - **NOT STARTED**
+> **The feedback loop is closed by [Phase 1.5](#phase-15---stop-headless-runs-impersonating-a-card---done-8f08364)**
+> - see [Trap 5b](#trap-5b-a-headless-claude--p-also-fires-hooks---and-they-impersonate-a-real-card).
+> This call spawns `claude -p` **from the daemon**, whose hooks would otherwise land back on a
+> card as a prompt. Do not undo `headlessEnv()`, and do not read `prompt` back out of a hook
+> the refiner itself caused. `test/claude-cli-headless-env.test.ts` keeps this honest.
 
-Implements D1=C. Foreman stops writing the "what this session is for" sentence:
+**Testing note that cost a wrong turn:** `claude-cli.ts` resolves `CLAUDE_BIN` at **module
+load**, so a test cannot swap binaries afterwards - reassigning the env mid-test silently
+keeps using the first one, which is how an earlier draft of the refiner tests "passed" its
+failure cases against the GOOD bin. The fake bin's *behaviour* is a file it reads instead.
+
+### Phase 5 - Foreman defers to Goal - **DONE** (`e836ccf`)
+
+Implements D1=C. Foreman stopped writing the "what this session is for" sentence:
 
 - `foreman/prompt.ts:46-93` (POLICY) and `foreman/triage-prompt.ts:10-45` both currently
   demand `"purpose"` in every reply, described as *"what this session is for + the key recent
   context"*. Drop the first half; Purpose becomes the **decision brief only**.
-- Schemas requiring it: `verdict.ts` (`purpose: z.string().min(1)`) and `triage.ts` (same).
-- Tier 0 canned strings live at `triage.ts:215-262`.
-- Foreman should **read** Goal for context instead of re-deriving it. It runs in a separate
-  process, so it reads `Session.goal` off the snapshot its client already fetches - no new
-  route, and no access to `SessionGoal.prompt` (server-side only, by design).
-- `ForemanNote.tsx:114` renders `note.purpose`; the card will now show Goal above the panel,
-  so the panel must not repeat it.
+- Both prompts now receive `goal (what this session is trying to solve): …` in their
+  `## The session` block and are told **not to restate it**. `ReviewInput.session.goal`
+  carries it; `triage.ts` and `worker.ts` fill it from `session.goal?.text`.
+- **Schemas unchanged.** `purpose` stays required and stays a string - what changed is what
+  it MEANS (decision context, not identity). No migration: an old stored purpose simply reads
+  as slightly redundant until Foreman next rewrites it.
+- **Tier 0 canned strings needed no change.** The plan flagged `triage.ts:215-262`, but they
+  already describe what *happened* ("posted a code review for your approval"), not what the
+  session is for. Nothing to drop.
+- **`ForemanNote.tsx` needed no change either.** It renders `note.purpose` unlabelled, which
+  reads correctly as a lead-in to the brief now that purpose IS context.
+- Foreman **reads** Goal rather than re-deriving it. It runs in a separate process and gets
+  `Session.goal` off the snapshot its client already fetches - no new route, and no access to
+  `SessionGoal.prompt` (server-side only, by design).
 
-> Sequencing: Phase 5 only pays off once Phase 4 is live everywhere Foreman looks. Landing it
-> early leaves blocked cards with no "what it's for" sentence at all.
+> Sequencing held: this landed only after Phase 4 was live for every Claude session, so no
+> blocked card was ever left with no "what it's for" sentence at all.
 
-### Phase 6 - prune the headless transcript dir - **NOT STARTED**
+### Phase 6 - prune the headless transcript dir - **DONE** (`e836ccf`)
 
-Implements Q6=B. Every `claude -p` writes `~/.claude/projects/-private-tmp/<uuid>.jsonl`
-(dir derived from the spawn's `cwd: tmpdir()`). Because they all land in **one** cwd-derived
-directory, a periodic sweep of files older than N days is ~10 lines and **cannot** touch a
-real session's transcript. Rejected `CLAUDE_CONFIG_DIR` isolation: it relocates auth too, so
-calls could silently fail to authenticate.
+Implements Q6=B, in `goal/prune.ts`: an hourly sweep of headless transcripts older than 24h
+(long enough to still be there when someone asks "why did it say that?"). Rejected
+`CLAUDE_CONFIG_DIR` isolation: it relocates auth too, so calls could silently fail to
+authenticate.
+
+Safe by construction, not by care: Claude derives a transcript's directory from the spawner's
+cwd, and `runClaudeText` always spawns in `HEADLESS_CWD` - one temp dir no real session can
+write to, because a real session's cwd is a repo. `HEADLESS_CWD` is exported from
+`claude-cli.ts` so the spawn and the sweep cannot drift apart.
+
+> **The plan's directory was wrong, and the first implementation inherited it.** This section
+> said `-private-tmp`, derived from `cwd: tmpdir()`. Two corrections, both found by running a
+> real `claude -p` and looking for the file:
+>
+> 1. **Claude realpaths the cwd before encoding it.** On macOS `os.tmpdir()` is
+>    `/var/folders/…/T`, really `/private/var/folders/…/T`. Deriving from the unresolved path
+>    names a directory that does not exist - the sweep finds nothing, removes nothing, reports
+>    nothing, and **looks like it works**. The unit test passed against the bug because it
+>    asserted the same wrong derivation; it now pins the symlink resolution itself.
+> 2. **The directory follows TMPDIR**, so it is per-process: `-private-tmp` (TMPDIR unset) and
+>    `-private-var-folders-…-T` (TMPDIR set) both exist on this machine. Each daemon prunes
+>    its own, which is right - neither can know the other's.
+>
+> On this machine the fixed version finds **248 transcripts, 139 older than a day**. The
+> broken one found **zero**.
 
 ---
 
 ## 7. Open items
 
-- **Q4 placement is unbuilt.** "Second line under the title" is the decision; the card is
-  already dense (title, state badge, chips, PR link, ticker). Expect to iterate against a
-  real card.
 - **Codex extraction is unverified.** Needs one real rollout file to inspect. Until then the
-  seam exists and the reader does not.
+  seam exists (`GOAL_UNSUPPORTED` + `goal/source.ts`) and the reader does not.
 - **Cold-cost exposure.** At $0.0151 a cold call, a fleet that goes quiet for >1h pays cold
   on the next prompt per session. Not addressed; watch it before optimising.
+- **Nothing has run against a live fleet yet.** Every phase is verified by tests, a real
+  `claude -p`, and a static render of real cards - but the daemon has not been restarted onto
+  this branch, so no goal has appeared on the operator's actual dashboard.
+- **Old stored purposes still say "what this session is for".** Written before Phase 5, so
+  they briefly duplicate the goal above them on a blocked card. Self-healing on Foreman's
+  next write; not worth a migration.
+- **Historical headless transcripts in other TMPDIR directories linger.** The pruner sweeps
+  the dir the CURRENT daemon spawns into; `-private-tmp` holds 3 files from a
+  differently-configured process that nothing will now collect. Harmless, and any fix would
+  have to guess at directories it cannot know are ours.
 - **Meta-commands beyond the two ruled on.** `/tui`, `/exit` and friends are equally
   un-goal-like, but only `/clear` and `/compact` were decided, so only those are filtered
   (see [Q7](#q7---clear-and-compact)). Revisit if one shows up on a card.
@@ -605,3 +649,15 @@ Corrections made **while implementing** (the plan was wrong; the code is right):
 6. **Headless `claude -p` runs fire hooks and impersonate cards** (Trap 5b). Not in the plan
    at all, already poisoning 3 of 12 live bindings, and fatal to a Goal refiner that spawns
    `claude -p` from the daemon. Fixed in Phase 1.5 before anything was built on top of it.
+7. **The headless transcript directory in Phase 6 was wrong.** Claude realpaths the cwd
+   before encoding it, so the plan's `-private-tmp` (and the first implementation's
+   `-var-folders-…`) named directories the current daemon never writes to. The sweep would
+   have been a permanent, silent no-op that reported success. Found by running a real
+   `claude -p` and looking for the file, not by reasoning.
+8. **Three things had to move, all for one reason: the daemon must not depend on Foreman**,
+   which is optional and runs as a separate process. `EvaluationDebounce` foreman/ -> util/;
+   `parseModelJson` + the envelope/fence ladder -> `claude-cli.ts` (where it was already
+   duplicated verbatim in two callers, and where the `--output-format json` flag that
+   produces the envelope actually lives). The goal prompt's transcript formatter was NOT
+   shared with `formatTranscript` - that one includes tool calls, which are noise for
+   summarising intent and the bulk of the tokens.

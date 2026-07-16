@@ -34,10 +34,13 @@ and get your decision back.
   moment a session needs input, a review lands, a no-mistakes gate parks, or a
   dispatched task fails - with an **AFK mode** that also pings on idle sessions and
   finished tasks and sends periodic fleet digests.
+- **Says what each session is for**: every card carries a one-sentence **Goal** - what
+  that session is currently trying to solve - derived from your own prompts and
+  refreshed as you steer it. No API key: it runs the local `claude` CLI.
 - **Triages** the needs-you queue for you: **Foreman** is an optional auto-responder
-  that reads each blocked session's transcript, auto-answers the routine calls,
-  escalates the genuine forks as a decision brief, and writes a one-line Purpose on
-  every session it inspects - shipping OFF and drafting its answers before it ever sends.
+  that reads each blocked session's transcript, auto-answers the routine calls, and
+  escalates the genuine forks as a decision brief - shipping OFF and drafting its
+  answers before it ever sends.
 
 ## Quick start
 
@@ -233,6 +236,38 @@ A Claude card also carries a **permission mode** chip once a hook reports one - 
 sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
 would in the session's own terminal.
 
+### Goal
+
+Every card carries a one-sentence **Goal**: what that session is currently trying to
+solve. It sits under the title, on the collapsed card - you should never have to click
+to remember what a session is for.
+
+It lands in two tiers, both in the daemon:
+
+1. **Instantly, with no model.** The `UserPromptSubmit` hook already carries your prompt,
+   so the moment you send one the card shows your own words, shortened to a line. Free,
+   and the card is never blank waiting on anything.
+2. **Refined, a few seconds later.** A headless `claude -p` on Haiku rewrites it into one
+   sentence, reading your prompt plus a small window of the conversation. This runs
+   through the **local `claude` CLI, not the Anthropic API** - there's no API key, and it
+   bills through whatever your CLI is logged in as.
+
+The goal refreshes as you steer the session, at most once a minute per session. If
+`claude` is missing, logged out, or slow, the card quietly keeps your own words - nothing
+breaks, you just get a rougher sentence.
+
+What it deliberately isn't:
+
+- **Not** what the session is doing this second. That's the activity ticker on its own
+  line - "running Bash" is not a goal.
+- **Not** derived from anything but your prompts. Background task notifications arrive
+  through the same hook and are filtered out; they're actually the majority of it.
+- `/clear` starts a new session, so it wipes the goal; `/compact` keeps the same session
+  and leaves it alone.
+
+Codex sessions say so instead of showing one: they carry no hooks, so there's no prompt
+to read.
+
 ### Review channel (MCP)
 
 ```sh
@@ -327,8 +362,9 @@ Claude session, reads the transcript to understand the goal, then:
 - **stands in for you at a parked [no-mistakes](#no-mistakes) gate** - when a run stops to put
   an `ask-user` finding to you, Foreman reads the finding and the session's goal, answers when
   the call is clear from that goal, and escalates when it turns on your intent;
-- writes a 1-2 sentence **Purpose** on every session it inspects, shown in the expanded
-  card so you can re-orient at a glance.
+- writes a 1-2 sentence **Purpose** on every session it inspects - the recent context
+  bearing on *this* decision, shown in the expanded card. It reads the session's
+  [Goal](#goal) rather than re-deriving it, so the two don't say the same thing twice.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it

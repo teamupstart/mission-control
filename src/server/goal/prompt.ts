@@ -18,9 +18,16 @@ import type { TranscriptWindow } from "../transcript.ts";
  * thrown away, retried against the identical prompt, and then discarded - leaving the card
  * on the raw prompt over a verbose reply. `goalLine` is the same shortener Tier 1 uses, so
  * both tiers are bounded identically no matter which wrote last.
+ *
+ * The emptiness check runs AFTER `goalLine`, not before, and the distinction is the whole
+ * contract: a whitespace-only reply passes a pre-transform `min(1)` and shortens to "", which
+ * `runStructured` would report as a success and stamp `source: "model"` on. That silently
+ * erases the Tier 1 sentence the card already had AND takes the session out of the refiner's
+ * queue, so the prompt is never retried. Failing the parse instead leaves the heuristic goal
+ * standing - a failure must never be stamped as a judgment.
  */
 export const GoalSchema = z.object({
-  goal: z.string().min(1).transform((s) => goalLine(s)),
+  goal: z.string().transform((s) => goalLine(s)).pipe(z.string().min(1)),
 });
 export type GoalReply = z.infer<typeof GoalSchema>;
 

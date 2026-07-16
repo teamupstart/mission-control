@@ -49,6 +49,7 @@ import {
   loadPendingReviews,
   loadRecentTerminalTasks,
   loadSessionGoals,
+  pruneSessionGoals,
   loadSessionNotes,
   hooksEverSeen,
   lastAgentBinding,
@@ -1312,6 +1313,30 @@ export class Registry extends EventEmitter {
     return next;
   }
 
+  /**
+   * Drop goals belonging to no live session and older than `olderThan`. Returns how many.
+   *
+   * Owned here rather than called straight against `db.ts` because the table is only half the
+   * accumulation: `this.goals` holds every row `loadSessionGoals` read at boot plus one per
+   * key seen since, so a sweep that pruned only the table would leave the map to grow for the
+   * daemon's whole life and quietly refill the table on nothing. Both drop together, keyed on
+   * the same live set, or neither does.
+   *
+   * `sessions` - not `liveSessions()` - is the protected set on purpose. An exited card is
+   * still on screen with its goal showing, and it keeps that goal until the session is
+   * evicted; pruning by liveness would blank a card a human is still reading.
+   */
+  pruneGoals(olderThan: number): number {
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneSessionGoals(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, g] of this.goals) {
+      if (liveKeys.has(key) || g.updatedAt >= olderThan) continue;
+      this.goals.delete(key);
+    }
+    return removed;
+  }
+
   private syncSessionsForGoal(key: string): void {
     for (const [id, s] of this.sessions) {
       if (noteKeyFor(s) !== key) continue;
@@ -1908,14 +1933,15 @@ function sessionEqual(a: Session, b: Session): boolean {
     JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&
     JSON.stringify(a.note) === JSON.stringify(b.note) &&
-    // The other two denormalized fields `mergeDiscovered` resolves next to `note`.
+    // The other denormalized fields `mergeDiscovered` resolves next to `note`.
     // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
     // particular depends on OTHER sessions (a queue is orphaned only once its own
     // session is evicted), so the session whose hint changes need not have changed
     // in any way of its own - an idle sibling is equal by every field above, stays
     // quiet, and never surfaces the stranded batch.
     JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
-    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue)
+    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue) &&
+    JSON.stringify(a.goal) === JSON.stringify(b.goal)
   );
 }
 

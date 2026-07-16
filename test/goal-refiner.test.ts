@@ -28,6 +28,10 @@ cat > /dev/null
 case "$(cat ${modeFile} 2>/dev/null)" in
   broken) echo "not json at all" ;;
   crash)  echo "boom" >&2; exit 1 ;;
+  # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
+  # Same fenced shape as the good reply below, so it reaches the schema the same way - a
+  # malformed fixture here would "pass" the test on a parse error instead of the rejection.
+  blank)  printf '{"result":"\`\`\`json\\n{\\"goal\\":\\"   \\"}\\n\`\`\`"}' ;;
   # The model fences its JSON even when told not to (observed on a real probe), so the fake
   # does too - that keeps the parse ladder inside what this test covers rather than mocked.
   *) printf '{"result":"\`\`\`json\\n{\\"goal\\":\\"Ship the Goal feature end to end\\"}\\n\`\`\`"}' ;;
@@ -35,7 +39,7 @@ esac
 `,
 );
 chmodSync(fake, 0o755);
-const setMode = (m: "good" | "broken" | "crash"): void => writeFileSync(modeFile, m);
+const setMode = (m: "good" | "broken" | "crash" | "blank"): void => writeFileSync(modeFile, m);
 setMode("good");
 
 process.env.FLEET_CLAUDE_BIN = fake;
@@ -229,5 +233,30 @@ test("a Codex session is never sent to the model", async () => {
     assert.equal(r.getGoal(s.id)?.source, "heuristic", "a Codex goal was sent to the model");
   } finally {
     stop();
+  }
+});
+
+test("a whitespace-only reply is a failure, not an empty goal", async () => {
+  // The gap a pre-transform `min(1)` leaves: "   " passes it, shortens to "", and rides the
+  // success path - blanking the card AND stamping `source: "model"`, which takes the session
+  // out of the queue so the prompt is never retried. A failure must never be stamped as a
+  // judgment, so the schema has to reject this after the shortener, not before it.
+  setMode("blank");
+  const { r, s, env } = withSession("r6", "%36");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, prompt: "an ask the model answers with air" }));
+  const stop = startGoalRefiner(r);
+  try {
+    await new Promise((res) => setTimeout(res, 400)); // many poll ticks
+    const g = r.getGoal(s.id);
+    assert.equal(g?.source, "heuristic", "an empty sentence was stamped as refined");
+    assert.equal(g?.text, "an ask the model answers with air", "the card lost its Tier 1 goal");
+    assert.equal(
+      r.snapshot().sessions.find((x) => x.id === s.id)!.goal?.text,
+      "an ask the model answers with air",
+      "the card went blank",
+    );
+  } finally {
+    stop();
+    setMode("good");
   }
 });

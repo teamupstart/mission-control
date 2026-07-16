@@ -10,11 +10,17 @@ import { unref } from "../util/timers.ts";
 // transcripts sampled on this machine were already Foreman's, before the goal refiner started
 // adding one per card per refresh.
 //
-// Safe by construction rather than by care: Claude derives a transcript's directory from the
-// spawning process's cwd, and `runClaudeText` always spawns in `tmpdir()`. So every headless
-// run lands in ONE directory that no real session can ever write to - a real session's cwd is
-// a repo. This prunes that directory by age and cannot touch a human's transcript even if the
-// age check were wrong.
+// Claude derives a transcript's directory from the spawning process's cwd, and `runClaudeText`
+// always spawns in `tmpdir()`, so every headless run lands in ONE directory - which this
+// prunes by age.
+//
+// That directory is not exclusively ours, though, and the distinction is worth stating
+// honestly rather than trusting later: a human who runs `claude` interactively from `$TMPDIR`
+// gets a transcript in the same encoded project dir, and this sweep does not distinguish whose
+// a `.jsonl` is. What bounds the risk is circumstance, not construction - `$TMPDIR` is
+// normally unset for an interactive shell, so a real session's cwd is a repo; the sweep only
+// ever touches `*.jsonl`; and the 24h mtime floor means even that human's transcript survives
+// until a day after they last touched it. Deliberately accepted, not overlooked.
 //
 // Rejected: pointing CLAUDE_CONFIG_DIR at a throwaway dir, which would isolate these
 // perfectly. It relocates auth along with everything else, so the runs could silently fail to

@@ -46,10 +46,28 @@ const GOAL_MODEL = envVar("GOAL_MODEL") ?? "claude-haiku-4-5";
  * fork 20 subprocesses.
  */
 const GOAL_CONCURRENCY = 2;
+/**
+ * How often to sweep orphaned goals, and how stale one must be to go.
+ *
+ * Hourly like the transcript pruner, and for the same reason: this is storage hygiene, not a
+ * deadline. A week rather than the transcripts' day because a goal is far cheaper to keep and
+ * an orphan is not always garbage - a `/clear` rotates the note key and strands the old row
+ * while the human is still working in that session, and a daemon restart re-reads the table.
+ * Seven days is comfortably past the point where anything could still want the row back.
+ */
+const GOAL_PRUNE_INTERVAL_MS = Number(envVar("GOAL_PRUNE_INTERVAL_MS") ?? 60 * 60 * 1000);
+const GOAL_PRUNE_AGE_MS = Number(envVar("GOAL_PRUNE_AGE_MS") ?? 7 * 24 * 60 * 60 * 1000);
 
 export function startGoalRefiner(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Rides the existing 5s poll rather than owning a timer, so it inherits the tick's
+   * stop/restart and error handling. `0` means "never swept": the first tick prunes, which is
+   * also the sweep that matters, since a daemon that has just restarted is holding every
+   * orphan the table ever accumulated.
+   */
+  let lastPrune = 0;
   const limit = createLimiter(GOAL_CONCURRENCY);
   const debounce = new EvaluationDebounce(GOAL_REFRESH_MS);
   /**
@@ -80,6 +98,12 @@ export function startGoalRefiner(registry: Registry): () => void {
       }
       const liveIds = new Set(live.map((x) => x.id));
       for (const id of failedFor.keys()) if (!liveIds.has(id)) failedFor.delete(id);
+      const now = Date.now();
+      if (now - lastPrune >= GOAL_PRUNE_INTERVAL_MS) {
+        lastPrune = now;
+        const n = registry.pruneGoals(now - GOAL_PRUNE_AGE_MS);
+        if (n > 0) console.log(`[goal] pruned ${n} orphaned goal(s)`);
+      }
     } catch (err) {
       console.error("[goal] poll failed:", err);
     }

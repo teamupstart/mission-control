@@ -10,7 +10,7 @@ import { GOAL_MAX_CHARS } from "../src/shared/goal.ts";
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "fleet-goals-"));
 process.env.HARNESS_HOME = home;
-const { openDb, getSessionGoal, loadSessionGoals } = await import("../src/server/db.ts");
+const { openDb, getSessionGoal, loadSessionGoals, upsertSessionGoal } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
 const { foremanStatus } = await import("../src/server/foreman/config.ts");
 
@@ -206,4 +206,53 @@ test("having a goal does not make a session look like a Foreman draft", () => {
   const status = foremanStatus(r);
   assert.equal(status.counts.pending, 0, "a goal write invented a pending draft");
   assert.equal(status.lastActionAt, null, "a goal write made Foreman claim it acted");
+});
+
+test("the prune drops orphaned goals and only orphaned goals", () => {
+  // Every /clear rotates noteKeyFor and strands a row for good, and the table is read
+  // wholesale into memory at boot - so without a sweep the daemon's start cost grows with
+  // every /clear ever typed. Both conditions matter: age alone would blank a live card.
+  const { r, s, env } = withSession("g13", "%23");
+  r.applyHook(evt({ event: "UserPromptSubmit", env, sessionId: "agent-live", prompt: "the live ask" }));
+  assert.equal(r.getGoal(s.id)?.prompt, "the live ask", "precondition: the live goal was stored");
+
+  // Explicit low timestamps, and a cutoff below what every other test in this file writes:
+  // they share one db, so a sweep with a realistic cutoff would reach their rows too and the
+  // count below would be measuring its neighbours.
+  const CUTOFF = 2000;
+  // The /clear leftovers: keys no session carries any more.
+  upsertSessionGoal({ noteKey: "orphan-old", text: "an abandoned goal", source: "model", prompt: "old", updatedAt: 1000 });
+  upsertSessionGoal({ noteKey: "orphan-recent", text: "a recent goal", source: "model", prompt: "recent", updatedAt: 9000 });
+  // The live session's own row, aged past the cutoff: a card open longer than the retention.
+  // Written through the registry, not straight at the table, so the Map and the row agree -
+  // which is what makes the getGoal assertion below mean anything.
+  r.upsertGoal(s.id, { text: "the live goal", source: "model" }, 1500);
+
+  assert.equal(r.pruneGoals(CUTOFF), 1, "the prune took something other than the one orphan");
+  assert.equal(getSessionGoal("orphan-old"), undefined, "a stale orphan survived");
+  assert.ok(getSessionGoal("orphan-recent"), "a recent orphan was dropped before its retention ran out");
+  assert.ok(getSessionGoal("agent-live"), "a live session's goal was deleted out from under its card");
+  assert.equal(r.getGoal(s.id)?.text, "the live goal", "the live card lost its goal to the sweep");
+});
+
+test("the prune clears the registry's in-memory goals too, not just the table", () => {
+  // The table is only half the accumulation: `goals` is a Map that a table-only sweep would
+  // leave growing for the daemon's whole life - and `upsertGoal` reads it before the db, so
+  // a stale entry would outlive the row and quietly rewrite it.
+  //
+  // A band below even the test above, for the same shared-db reason: this registry has no
+  // sessions at all, so nothing is protected and the cutoff is the only thing bounding it.
+  upsertSessionGoal({ noteKey: "orphan-mem", text: "stranded", source: "model", prompt: "p", updatedAt: 100 });
+
+  // A fresh Registry loads every row into the Map, which is what a restart does.
+  const r2 = new Registry();
+  assert.ok(loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "precondition: the row is on disk");
+  assert.equal(r2.pruneGoals(200), 1, "the sweep reached past its own orphan");
+  assert.ok(!loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "the row survived the sweep");
+
+  // The Map is private, so read it the way the daemon would: a session that adopts the swept
+  // key must see no goal. A table-only sweep answers "stranded" here, from memory alone.
+  r2.applyDiscovery([mkDiscovered({ syntheticId: "g14", cwd: "/wt/g14", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%24" } })]);
+  r2.applyHook(evt({ event: "Stop", env: { tmuxPane: "%24" }, sessionId: "orphan-mem" }));
+  assert.equal(r2.getGoal("g14"), null, "the swept goal outlived its row in memory");
 });

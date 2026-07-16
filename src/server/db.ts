@@ -795,6 +795,33 @@ export function loadSessionGoals(): SessionGoal[] {
   return rows.map(rowToGoal);
 }
 
+/**
+ * Delete goals that belong to no live session and have gone stale. Returns how many went.
+ *
+ * The table needs this and `session_notes` does not, despite the identical shape: a note is
+ * written only when Foreman inspects a session, whereas a goal row is written for every
+ * instrumented session on every substantive prompt, and `loadSessionGoals` pulls all of them
+ * into memory at boot. Every `/clear` rotates `noteKeyFor` and strands the old row for good,
+ * so the orphans accumulate for as long as the daemon is used.
+ *
+ * BOTH conditions are load-bearing, and the live-key one is the safety property: a row whose
+ * key still belongs to a session is never touched no matter how old it is, so a long-running
+ * card cannot have the sentence deleted out from under it. Age alone would do exactly that.
+ * `liveKeys` is `noteKeyFor` over the registry's live sessions - pass the real set or nothing
+ * is protected.
+ */
+export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number): number {
+  const keys = [...new Set(liveKeys)];
+  const placeholders = keys.map(() => "?").join(",");
+  const where = keys.length
+    ? `updated_at < ? AND note_key NOT IN (${placeholders})`
+    : `updated_at < ?`;
+  const r = openDb()
+    .prepare(`DELETE FROM session_goals WHERE ${where}`)
+    .run(olderThan, ...keys);
+  return Number(r.changes);
+}
+
 // ---- Foreman session work queues ----
 
 interface QueueRow {

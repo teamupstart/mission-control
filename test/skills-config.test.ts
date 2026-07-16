@@ -8,7 +8,7 @@ import { join } from "node:path";
 // invariant under test ("the generation moves only when the DISK moves") spans both,
 // so mocking either would test the mock.
 
-const home = mkdtempSync(join(tmpdir(), "fleet-skills-cfg-"));
+const home = mkdtempSync(join(tmpdir(), "mission-skills-cfg-"));
 const claudeSkills = join(home, "claude-skills");
 const catalogDir = join(home, "catalog");
 // Set before importing anything that resolves the state dir / catalog dir.
@@ -59,7 +59,7 @@ test("enabling a skill links it and bumps the generation once", () => {
   const r = applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
 
   assert.deepEqual(r.problems, []);
-  assert.deepEqual(links(), ["fleet-alpha"]);
+  assert.deepEqual(links(), ["mission-alpha"]);
   assert.equal(r.config.generation, 1);
   assert.equal(r.config.generationAt, NOW);
 });
@@ -88,7 +88,7 @@ test("N rapid toggles land at one generation per real change - one reload each",
   assert.equal(c.config.generation, 3);
   // A session at ack 0 reads generation 3, reloads ONCE, and re-reads the directory as
   // it stands now. The watermark is the whole coalescing story.
-  assert.deepEqual(links(), ["fleet-beta"]);
+  assert.deepEqual(links(), ["mission-beta"]);
 });
 
 test("a patch merges per skill - one toggle never clears another", () => {
@@ -97,7 +97,7 @@ test("a patch merges per skill - one toggle never clears another", () => {
 
   // A replacing patch would make the second click mean "beta on, alpha off", so two
   // open dashboards would silently switch each other's skills off across the fleet.
-  assert.deepEqual(links(), ["fleet-alpha", "fleet-beta"]);
+  assert.deepEqual(links(), ["mission-alpha", "mission-beta"]);
   assert.deepEqual(getSkillsConfig().skills, { alpha: true, beta: true });
 });
 
@@ -111,14 +111,14 @@ test("the master switch off unlinks everything and bumps, so the fleet drops the
   // The rows keep their state, so flipping the master back restores the same set.
   assert.deepEqual(off.config.skills, { alpha: true, beta: true });
   const on = applySkillsConfig({ enabled: true }, NOW + 2);
-  assert.deepEqual(links(), ["fleet-alpha", "fleet-beta"]);
+  assert.deepEqual(links(), ["mission-alpha", "mission-beta"]);
   assert.equal(on.config.generation, 3);
 });
 
 test("a patch that can't work is refused BEFORE anything is written", () => {
   applySkillsConfig({ enabled: true }, NOW);
   // A real directory wearing our prefix: the reconciler will not replace it.
-  mkdirSync(join(claudeSkills, "fleet-beta"), { recursive: true });
+  mkdirSync(join(claudeSkills, "mission-beta"), { recursive: true });
 
   const r = applySkillsConfig({ skills: { alpha: true, beta: true } }, NOW + 1);
 
@@ -129,14 +129,14 @@ test("a patch that can't work is refused BEFORE anything is written", () => {
   // something else on its way past.
   assert.equal(getSkillsConfig().skills.alpha, undefined, "the config never learned the ask");
   assert.equal(getSkillsConfig().generation, 0, "nothing changed, so nobody is owed a reload");
-  assert.deepEqual(links(), ["fleet-beta"], "and alpha was never linked");
+  assert.deepEqual(links(), ["mission-beta"], "and alpha was never linked");
 });
 
 test("one blocked skill does NOT wedge every other toggle in the panel", () => {
   applySkillsConfig({ enabled: true, skills: { beta: true } }, NOW);
   // Someone drops a real directory over beta's link - now permanently blocked.
-  rmSync(join(claudeSkills, "fleet-beta"), { force: true });
-  mkdirSync(join(claudeSkills, "fleet-beta"), { recursive: true });
+  rmSync(join(claudeSkills, "mission-beta"), { force: true });
+  mkdirSync(join(claudeSkills, "mission-beta"), { recursive: true });
 
   // Every later pass reports beta's problem, forever. Scoping the refusal to the ids the
   // patch MOVES is what stops that one stuck row refusing every unrelated toggle - with
@@ -145,7 +145,7 @@ test("one blocked skill does NOT wedge every other toggle in the panel", () => {
 
   assert.deepEqual(r.refused, [], "alpha's toggle was not refused over beta's problem");
   assert.equal(getSkillsConfig().skills.alpha, true, "alpha's toggle stuck");
-  assert.ok(links().includes("fleet-alpha"), "and alpha is really on disk");
+  assert.ok(links().includes("mission-alpha"), "and alpha is really on disk");
   assert.equal(r.config.generation, 2, "alpha's arrival is a real change the fleet needs");
 });
 
@@ -156,7 +156,7 @@ test("a skill deleted from the catalog does not wedge the master switch", () => 
   // skill may come back.
   rmSync(join(catalogDir, "beta"), { recursive: true, force: true });
   reconcileSkills(NOW + 1);
-  assert.deepEqual(links(), ["fleet-alpha"]);
+  assert.deepEqual(links(), ["mission-alpha"]);
 
   // `touchedBy` hands a master flip EVERY enabled id, so the stale `beta: true` rides
   // along on both of these. Refusing over it would wedge the switch permanently: there
@@ -168,7 +168,7 @@ test("a skill deleted from the catalog does not wedge the master switch", () => 
 
   assert.deepEqual(on.refused, [], "a skill nobody can restore must not refuse the switch");
   assert.equal(getSkillsConfig().enabled, true);
-  assert.deepEqual(links(), ["fleet-alpha"], "and the skills that DO exist come back");
+  assert.deepEqual(links(), ["mission-alpha"], "and the skills that DO exist come back");
   // Not silence: it's drift, and the panel says so on every poll.
   assert.match(skillDrift(getSkillsConfig(), readCatalog()).join("; "), /beta is switched on but is no longer/);
 });
@@ -180,11 +180,13 @@ test("a stale enabled flag for a deleted skill doesn't refuse an unrelated toggl
   const r = applySkillsConfig({ skills: { alpha: true } }, NOW + 1);
 
   assert.deepEqual(r.refused, [], "alpha's toggle is not refused over beta's disappearance");
-  assert.ok(links().includes("fleet-alpha"));
+  assert.ok(links().includes("mission-alpha"));
 });
 
 test("a patch IS refused when the skill it names is the blocked one", () => {
   applySkillsConfig({ enabled: true }, NOW);
+  // Under the OLD prefix: a directory that was in our way before the rename is still in
+  // our way after it, and the refusal has to see it rather than link a duplicate past it.
   mkdirSync(join(claudeSkills, "fleet-beta"), { recursive: true });
 
   const r = applySkillsConfig({ skills: { beta: true } }, NOW + 1);
@@ -228,17 +230,17 @@ test("an unreadable catalog never unlinks a live skill", () => {
 
   reconcileSkills(NOW + 1);
 
-  assert.deepEqual(links(), ["fleet-alpha"], "the skill survives a catalog we can't read");
+  assert.deepEqual(links(), ["mission-alpha"], "the skill survives a catalog we can't read");
   assert.equal(getSkillsConfig().generation, gen, "and nobody is told to drop it");
 });
 
 test("startup reconcile heals a link deleted by hand, and tells the fleet", () => {
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
-  rmSync(join(claudeSkills, "fleet-alpha"));
+  rmSync(join(claudeSkills, "mission-alpha"));
 
   const healed = reconcileSkills(NOW + 1);
 
-  assert.deepEqual(links(), ["fleet-alpha"]);
+  assert.deepEqual(links(), ["mission-alpha"]);
   assert.equal(healed.config.generation, 2, "the disk moved, so every session must re-read");
 });
 
@@ -261,7 +263,7 @@ test("drift is reported on every read, so a failed startup reconcile isn't invis
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
   assert.deepEqual(skillDrift(getSkillsConfig(), readCatalog()), [], "healthy: nothing to say");
 
-  rmSync(join(claudeSkills, "fleet-alpha"));
+  rmSync(join(claudeSkills, "mission-alpha"));
 
   const drift = skillDrift(getSkillsConfig(), readCatalog());
   assert.equal(drift.length, 1);
@@ -270,8 +272,8 @@ test("drift is reported on every read, so a failed startup reconcile isn't invis
 
 test("drift tells a MISSING link apart from a foreign one - they need opposite answers", () => {
   applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
-  rmSync(join(claudeSkills, "fleet-alpha"));
-  mkdirSync(join(claudeSkills, "fleet-alpha"), { recursive: true });
+  rmSync(join(claudeSkills, "mission-alpha"));
+  mkdirSync(join(claudeSkills, "mission-alpha"), { recursive: true });
 
   // One is ours to repair, the other is the operator's to move. `classify` folds them
   // together, which is right where it's used and wrong here.

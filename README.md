@@ -183,7 +183,7 @@ curl -s http://127.0.0.1:7317/api/sessions | grep -o '"instrumented":[a-z]*'
 npm run install-hooks -- --uninstall
 ```
 
-This also clears any `fleet-*` skill links out of `~/.claude/skills` as a dev-teardown
+This also clears any `mission-*` and `fleet-*` skill links out of `~/.claude/skills` as a dev-teardown
 convenience, so a checkout you're walking away from leaves nothing loaded in Claude. It
 does not turn the feature off: the config still says the skills are on, so a daemon
 started from this checkout re-creates them. To switch skills off for good, use the
@@ -510,7 +510,7 @@ sessions this app never launched - without terminating or recreating any of them
 
 Skills are ordinary Claude Code skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
-`~/.claude/skills/fleet-<id>`, which is Claude's own loading path - the harness never
+`~/.claude/skills/mission-<id>`, which is Claude's own loading path - the harness never
 reimplements it. Running sessions pick the change up when they next go quiet: the
 daemon types `/reload-skills` into their pane, which is the only thing that makes a
 live session re-read that directory (nothing watches it).
@@ -519,7 +519,8 @@ Three things worth knowing before you switch one on:
 
 - **The blast radius is the point, and it's global.** `~/.claude/skills` is your own
   directory, shared by every Claude on the machine. The harness only ever creates or
-  removes entries under the `fleet-` prefix, and only ones that are symlinks - your
+  removes entries under its own `mission-` prefix (and the `fleet-` one it used
+  before the rename), and only ones that are symlinks - your
   `no-mistakes`, `implement-plan` and friends are untouchable by construction, not by
   care. **Turning the master switch off is the real uninstall**: it's the only control
   that both removes every link and records that you wanted them gone, so nothing brings

@@ -40,10 +40,10 @@ function render(over: Partial<SkillsState> = {}): string {
   return renderToStaticMarkup(createElement(SkillsPanel, { state }));
 }
 
-test("a row shows the skill's user-facing name, not its fleet- directory", () => {
+test("a row shows the skill's user-facing name, not its prefixed directory", () => {
   const html = render();
   assert.match(html, /\/html-plans/);
-  assert.doesNotMatch(html, /fleet-html-plans/);
+  assert.doesNotMatch(html, /mission-html-plans/);
 });
 
 test("every row carries its enforcement rung", () => {

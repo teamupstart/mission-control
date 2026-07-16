@@ -2171,11 +2171,6 @@ kbd {
   min-height: 0;
   max-height: none;
 }
-/* The queue is a list, so it scrolls internally rather than growing the card it
-   lives in. Only `.wq-items` gives ground: everything else here (the add box, the
-   hints, the wrap-up) is a control or a sentence, and a flex child shrinks by
-   default - without this the shrink would be shared out and squash the add box's
-   textarea along with the list. */
 /* A share of the card, not a pixel count: the queue is a list, and a list gets a
    bounded window and scrolls. A third leaves the conversation the larger half, which
    is the right split for a surface you expanded in order to read. Under the cap a

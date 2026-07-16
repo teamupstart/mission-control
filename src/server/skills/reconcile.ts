@@ -2,11 +2,11 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, sy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
-import { fleetSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
+import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
-// Sync `~/.claude/skills/fleet-<id>` against the enabled set.
+// Sync `~/.claude/skills/mission-<id>` against the enabled set.
 //
 // This writes into the operator's GLOBAL claude config - the same discipline
 // hooks/install.mjs holds itself to, and for a stronger reason: install.mjs only
@@ -77,11 +77,11 @@ type Entry = { kind: "ours"; target: string } | { kind: "foreign" };
 /**
  * Classify one entry we hold the marker on.
  *
- * A `fleet-`-prefixed entry that is NOT a symlink was not created by us - nothing
- * here has ever made a real directory - so it is the operator's, prefix or no
- * prefix, and we do not remove it. The marker scopes what we may touch; it does not
- * license deleting a directory of someone's work because the name matched. Marker
- * discipline that only holds when the name is the only evidence is not discipline.
+ * A prefixed entry that is NOT a symlink was not created by us - nothing here has
+ * ever made a real directory - so it is the operator's, prefix or no prefix, and we
+ * do not remove it. The marker scopes what we may touch; it does not license deleting
+ * a directory of someone's work because the name matched. Marker discipline that only
+ * holds when the name is the only evidence is not discipline.
  */
 function classify(path: string): Entry {
   try {
@@ -172,7 +172,7 @@ export function reconcileSkillLinks(
     const entry = classify(path);
 
     if (entry.kind === "foreign") {
-      // Only worth saying when it's in our way. A stray `fleet-*` directory for a
+      // Only worth saying when it's in our way. A stray prefixed directory for a
       // skill nobody enabled is just sitting there.
       if (desired.has(id)) {
         out.problems.push(`${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
@@ -224,8 +224,33 @@ export function reconcileSkillLinks(
   return out;
 }
 
+/**
+ * Where `id` lives, or would live: an entry that already exists under ANY recognised
+ * prefix wins over the name a fresh install would write.
+ *
+ * The read-only checks below both ask "what does the disk say about this skill?", and a
+ * link installed before the rename is the live one - Claude loads it, and `reconcile`
+ * leaves it exactly where it is. Looking only under the current prefix would call every
+ * pre-rename install missing and tell the operator to restart the daemon to repair
+ * something that isn't broken (and that a restart would not move).
+ */
+function skillPath(dir: string, id: string): string {
+  for (const prefix of SKILL_DIR_PREFIXES) {
+    const path = join(dir, `${prefix}${id}`);
+    try {
+      // lstat, not exists: a DANGLING link is still an entry that's there, and telling
+      // the caller about it is the whole point of `skillDrift`.
+      lstatSync(path);
+      return path;
+    } catch {
+      // not here - try the next name we may have written it under
+    }
+  }
+  return join(dir, missionSkillDirName(id));
+}
+
 function link(id: string, dir: string, out: ReconcileResult): boolean {
-  const path = join(dir, fleetSkillDirName(id));
+  const path = join(dir, missionSkillDirName(id));
   try {
     symlinkSync(skillSourceDir(id), path, "dir");
     return true;
@@ -291,7 +316,7 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
 
   for (const id of enabledIds) {
     if (!catalog.present.has(id)) continue;
-    const path = join(dir, fleetSkillDirName(id));
+    const path = skillPath(dir, id);
     try {
       // Ours, or absent, are both fine - we can write either. Only somebody else's
       // directory is a refusal, and only they can clear it.
@@ -323,7 +348,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
   if (!cfg.enabled || !catalog.readable) return [];
   const out: string[] = [];
   for (const id of desiredSkillIds(cfg, catalog.present)) {
-    const path = join(dir, fleetSkillDirName(id));
+    const path = skillPath(dir, id);
     // Its own lstat rather than `classify`, which folds "missing" into "foreign" - a
     // conflation that is right where it's used (both mean "do not touch this") and
     // wrong here, where the two need opposite sentences. A missing link is ours to
@@ -352,7 +377,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
 }
 
 /**
- * Remove every `fleet-*` symlink and nothing else - the WALK, not the decision.
+ * Remove every symlink of ours and nothing else - the WALK, not the decision.
  *
  * Global blast radius is accepted deliberately (that IS the feature), which is exactly
  * why leaving is as supported as arriving. Expressed as a reconcile against a disabled

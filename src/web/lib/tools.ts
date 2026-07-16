@@ -142,6 +142,53 @@ function stripSubstitutions(command: string): string {
 }
 
 /**
+ * Split a shell line on its top-level separators (`||`, `&&`, `;`, `|`, newline),
+ * stepping over quoted spans.
+ *
+ * Quoting is structure, not decoration: a separator inside `'…'` or `"…"` is an
+ * argument's text and splitting on it invents a segment out of the middle of a string,
+ * whose first word then reads as a command. `echo "a|b" | wc -l` named `b"`, and
+ * `echo "hello; world"` named `world"` - and it landed hardest on the `echo "=== … ==="`
+ * habit this heuristic was tuned for, where the quoted text is the most likely place
+ * for a stray `;` or `|` to sit.
+ *
+ * Same shape as `stripSubstitutions`, which runs first, and deliberately no more of a
+ * shell than that: an unterminated quote (the input arrives capped at TOOL_INPUT_CAP)
+ * simply swallows the rest of the line, which is the safe way to be wrong here - it
+ * can only under-split, never name a fragment.
+ */
+function splitSegments(line: string): string[] {
+  const segs: string[] = [];
+  let start = 0;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      // A backslash escapes inside "…" but is a literal inside '…'.
+      if (quote === '"' && c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    const two = line.slice(i, i + 2);
+    const width = two === "||" || two === "&&" ? 2 : c === ";" || c === "|" || c === "\n" ? 1 : 0;
+    if (width === 0) continue;
+    segs.push(line.slice(start, i));
+    i += width - 1;
+    start = i + 1;
+  }
+  segs.push(line.slice(start));
+  return segs;
+}
+
+/**
  * The command name a Bash call is really about: the first non-scaffolding command
  * across the line, so `cd /repo && sqlite3 state.db …` reads `sqlite3` rather than
  * `cd`, and `echo "=== status ==="; git log` reads `git`. Scaffolding is the answer
@@ -150,7 +197,7 @@ function stripSubstitutions(command: string): string {
  */
 export function commandName(command: string): string | null {
   let scaffold: string | null = null;
-  for (const seg of stripSubstitutions(command).split(/\|\||&&|[;|\n]/)) {
+  for (const seg of splitSegments(stripSubstitutions(command))) {
     const name = segmentCommand(seg);
     if (!name) continue;
     if (!SETUP.has(name)) return name;

@@ -44,8 +44,9 @@ import { unref } from "./util/timers.ts";
  */
 
 /**
- * The holder this harness records on every lease it takes, and the only one this
- * gate will ever hand back. Defined on the shared runtime surface rather than here
+ * The holder this harness records on every lease it takes, alongside `LEASE_HOLDERS` -
+ * every name it has ever stamped, which is what the gate below actually matches, since
+ * a lease keeps its original holder forever. Defined on the shared runtime surface rather than here
  * beside the policy that reads it, because the third site that has to agree -
  * `scripts/new-session.mjs`, which is what takes the leases that actually leak -
  * runs under bare `node` with no build step, so the only definition all three can
@@ -403,14 +404,17 @@ function git(cwd: string, args: string[], timeoutMs = 15000): Promise<RunResult>
  *  - not `leased`      - `available` needs nothing; `in-use` is live by definition;
  *    `dirty` treehouse already counts as unavailable; `you're here` describes the
  *    caller, not the tree.
- *  - not recorded under OUR label - the standing rung, and the only one about
+ *  - not recorded under one of OUR labels - the standing rung, and the only one about
  *    ownership rather than liveness: an idle lease is a deliberate reservation, so
  *    being idle is what a reservation LOOKS like, not proof of a leak. We can only
- *    claim to know a holder is gone for the leases we took ourselves. Note "not
- *    ours" is narrower than "someone else's": a lease this repo took under its
- *    pre-rename name reads foreign here too, and is left for a manual return.
- *    Self-imposed either way - see the module docstring; treehouse's own `return`
- *    verifies no holder at all.
+ *    claim to know a holder is gone for the leases we took ourselves. "Ours" is every
+ *    name this app has ever stamped (`LEASE_HOLDERS`: mission-control, fleet-control,
+ *    ai-harness), not just the current one: a lease records its holder forever and is
+ *    never restamped, so matching the current name alone silently stranded every lease
+ *    taken before a rename - the leaks the sweep exists to collect. A former name only
+ *    clears THIS rung; busy/dirty/unmerged/pinned still decide. A stranger's lease is
+ *    still refused. Self-imposed either way - see the module docstring; treehouse's own
+ *    `return` verifies no holder at all.
  *  - treehouse says busy - processes are running under it. This is the check that
  *    saves a live agent, and it is NOT redundant with the git checks below: an
  *    agent that has just pushed sits in a tree that is clean AND merged, so the

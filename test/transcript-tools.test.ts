@@ -33,6 +33,17 @@ const COMMANDS: Array<[string, string | null]> = [
   ['echo "=== status ===" && git log --oneline', "git"],
   ["cd /repo\necho '=== tests ==='\nnpm test", "npm"],
   ["# check the daemon\nps aux | grep node", "ps"],
+  // A separator INSIDE quotes is an argument's text, not structure. Splitting on it
+  // named the fragment after it - `b"`, `world"`, `test"` - and it bit hardest on the
+  // quoted `echo` header this whole heuristic is tuned around.
+  ['echo "a|b" | wc -l', "wc"],
+  ['echo "hello; world"', "echo"],
+  ['echo "phase 1: build && test"', "echo"],
+  ['cd /x; echo "phase 1: build && test"', "cd"],
+  ["grep -c 'a;b' f.txt | wc -l", "grep"],
+  // An unterminated quote is the truncated-input case (TOOL_INPUT_CAP): it swallows the
+  // rest of the line rather than splitting inside it, and still names the command.
+  ['git commit -m "wip; more to come', "git"],
   // ...but scaffolding still beats naming nothing at all.
   ["echo hello", "echo"],
   ["cd /repo", "cd"],

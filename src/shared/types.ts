@@ -551,7 +551,7 @@ export interface ForemanStatus {
 
 /** One catalog skill, as parsed from `skills/<id>/SKILL.md`'s frontmatter. */
 export interface SkillCatalogEntry {
-  /** The directory under `skills/`. Owns the `fleet-<id>` namespace in ~/.claude/skills. */
+  /** The directory under `skills/`. Owns the `mission-<id>` namespace in ~/.claude/skills. */
   id: string;
   /** The frontmatter `name` - what the user types and what the panel shows. */
   name: string;

@@ -24,15 +24,14 @@ import type { SkillsConfig } from "../src/shared/protocol.ts";
 // directory with real symlinks: the whole safety argument is about what lstat says and
 // what rm does, and a mocked fs would assert the mock.
 
-const home = mkdtempSync(join(tmpdir(), "fleet-skills-rec-"));
+const home = mkdtempSync(join(tmpdir(), "mission-skills-rec-"));
 const claudeSkills = join(home, "claude-skills");
 const catalogDir = join(home, "catalog");
 process.env.CLAUDE_SKILLS_DIR = claudeSkills;
 process.env.FLEET_SKILLS_DIR = catalogDir;
 
-const { reconcileSkillLinks, uninstallSkillLinks, desiredSkillIds } = await import(
-  "../src/server/skills/reconcile.ts"
-);
+const { reconcileSkillLinks, uninstallSkillLinks, desiredSkillIds, skillDrift, skillBlockers } =
+  await import("../src/server/skills/reconcile.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -72,15 +71,56 @@ function entries(): string[] {
   return readdirSync(claudeSkills).sort();
 }
 
-test("enabling a skill symlinks it in under the fleet- prefix", () => {
+test("enabling a skill symlinks it in under the mission- prefix", () => {
   const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.linked, ["alpha"]);
-  assert.deepEqual(entries(), ["fleet-alpha"]);
-  assert.equal(lstatSync(join(claudeSkills, "fleet-alpha")).isSymbolicLink(), true);
+  assert.deepEqual(entries(), ["mission-alpha"]);
+  assert.equal(lstatSync(join(claudeSkills, "mission-alpha")).isSymbolicLink(), true);
   // Claude reads the SKILL.md through the link, so the link has to actually resolve.
-  assert.match(readFileSync(join(claudeSkills, "fleet-alpha", "SKILL.md"), "utf8"), /name: alpha/);
+  assert.match(readFileSync(join(claudeSkills, "mission-alpha", "SKILL.md"), "utf8"), /name: alpha/);
+});
+
+test("THE rename regression: a link under the OLD fleet- prefix is still ours", () => {
+  // A directory name outlives a rename. Every machine that enabled a skill before
+  // `fleet-` became `mission-` still has `fleet-<id>` in ~/.claude/skills, and that link
+  // is the one claude is loading. If the recogniser knew only the current prefix the dir
+  // would stop being ours: never reconciled, never removed by the master switch, and a
+  // `mission-` duplicate installed beside it.
+  const cfg = mkCfg({ skills: { alpha: true } });
+  symlinkSync(join(catalogDir, "alpha"), join(claudeSkills, "fleet-alpha"), "dir");
+
+  const r = reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+
+  assert.equal(r.changed, false, "it already points at the right skill - nothing to do");
+  assert.deepEqual(entries(), ["fleet-alpha"], "left where it lies, with no duplicate beside it");
+  // The read-only views have to look where it actually IS, or the panel calls a healthy
+  // pre-rename install missing and tells the operator to restart to "repair" it.
+  assert.deepEqual(skillDrift(cfg, CATALOG, claudeSkills), []);
+  assert.deepEqual([...skillBlockers(cfg, CATALOG, claudeSkills)], []);
+
+  // Switching it off has to reach the disk it's really on.
+  const off = reconcileSkillLinks(mkCfg({ skills: { alpha: false } }), CATALOG, claudeSkills);
+  assert.deepEqual(off.unlinked, ["alpha"]);
+  assert.deepEqual(entries(), []);
+
+  // ...and what we WRITE is always the current name.
+  reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  assert.deepEqual(entries(), ["mission-alpha"]);
+});
+
+test("a stale link under the old prefix is repaired onto the current one", () => {
+  // The app moved, so the pre-rename link is dangling and the skill isn't loaded at all.
+  // Fixing it is a real change, and the fix writes today's name rather than preserving
+  // yesterday's - the old prefix is recognised, not perpetuated.
+  symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "fleet-alpha"), "dir");
+
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+
+  assert.equal(r.changed, true);
+  assert.deepEqual(r.linked, ["alpha"]);
+  assert.deepEqual(entries(), ["mission-alpha"], "and the dangling fleet- link is gone");
 });
 
 test("re-running against a correct directory writes nothing and reports unchanged", () => {
@@ -94,7 +134,7 @@ test("re-running against a correct directory writes nothing and reports unchange
   assert.equal(again.changed, false);
   assert.deepEqual(again.linked, []);
   assert.deepEqual(again.unlinked, []);
-  assert.deepEqual(entries(), ["fleet-alpha"]);
+  assert.deepEqual(entries(), ["mission-alpha"]);
 });
 
 test("disabling a skill removes only its link", () => {
@@ -104,7 +144,7 @@ test("disabling a skill removes only its link", () => {
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.unlinked, ["beta"]);
-  assert.deepEqual(entries(), ["fleet-alpha"]);
+  assert.deepEqual(entries(), ["mission-alpha"]);
 });
 
 test("THE test: a user's own skills are untouched, whatever we do", () => {
@@ -131,7 +171,7 @@ test("a REAL directory wearing our prefix is refused, not deleted", () => {
   // Nothing here ever creates a real directory, so this one is the operator's however
   // its name reads. Marker discipline that deletes on a name match alone isn't
   // discipline - it's the prefix doing the operator's filing for them.
-  const theirs = join(claudeSkills, "fleet-alpha");
+  const theirs = join(claudeSkills, "mission-alpha");
   mkdirSync(theirs, { recursive: true });
   writeFileSync(join(theirs, "SKILL.md"), "hand-written\n");
 
@@ -146,13 +186,13 @@ test("a REAL directory wearing our prefix is refused, not deleted", () => {
 test("a DANGLING link is re-pointed, and that IS a change the fleet needs", () => {
   // The link resolves to nothing, so claude loaded no skill at all. Fixing it changes
   // what the fleet has.
-  symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "fleet-alpha"), "dir");
+  symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "mission-alpha"), "dir");
 
   const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.linked, ["alpha"]);
-  assert.equal(readlinkSync(join(claudeSkills, "fleet-alpha")), join(catalogDir, "alpha"));
+  assert.equal(readlinkSync(join(claudeSkills, "mission-alpha")), join(catalogDir, "alpha"));
 });
 
 test("a RESOLVING link re-pointed at the same skill is not a change - no fleet reload", () => {
@@ -163,12 +203,12 @@ test("a RESOLVING link re-pointed at the same skill is not a change - no fleet r
   const otherCopy = join(home, "other-copy", "alpha");
   mkdirSync(otherCopy, { recursive: true });
   writeFileSync(join(otherCopy, "SKILL.md"), "---\nname: alpha\n---\n");
-  symlinkSync(otherCopy, join(claudeSkills, "fleet-alpha"), "dir");
+  symlinkSync(otherCopy, join(claudeSkills, "mission-alpha"), "dir");
 
   const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
 
   assert.equal(r.changed, false, "the skill was loaded before and is loaded now");
-  assert.equal(readlinkSync(join(claudeSkills, "fleet-alpha")), join(catalogDir, "alpha"), "still re-pointed");
+  assert.equal(readlinkSync(join(claudeSkills, "mission-alpha")), join(catalogDir, "alpha"), "still re-pointed");
 });
 
 test("a link that can't be created is blocked, not silently counted as done", () => {
@@ -191,7 +231,7 @@ test("a re-point we cannot even start is blocked, and nothing claims to have cha
   // The stale link is there but the directory is read-only, so `remove` fails. Nothing
   // moved, so `changed` must stay false - and the id must land in `blocked`, or the
   // operator's toggle would look applied while the skill is still pointing nowhere.
-  symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "fleet-alpha"), "dir");
+  symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "mission-alpha"), "dir");
   chmodSync(claudeSkills, 0o500);
   try {
     const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
@@ -241,7 +281,7 @@ test("THE regression: a skill we can't PARSE is still desired, and stays linked"
   reconcileSkillLinks(cfg, CATALOG, claudeSkills);
   const r = reconcileSkillLinks(cfg, unparsed, claudeSkills);
   assert.equal(r.changed, false, "a parse failure must not move the disk");
-  assert.deepEqual(entries(), ["fleet-alpha"], "the skill is still installed");
+  assert.deepEqual(entries(), ["mission-alpha"], "the skill is still installed");
 });
 
 test("THE regression: an UNREADABLE catalog changes nothing at all", () => {
@@ -255,7 +295,7 @@ test("THE regression: an UNREADABLE catalog changes nothing at all", () => {
   const blind = reconcileSkillLinks(cfg, mkCatalog({ readable: false, skills: [], present: new Set(), problems: ["couldn't read the skills catalog at /nope: ENOENT"] }), claudeSkills);
 
   assert.equal(blind.changed, false, "we know nothing, so we change nothing");
-  assert.deepEqual(entries(), ["fleet-alpha", "fleet-beta"], "both skills survive");
+  assert.deepEqual(entries(), ["mission-alpha", "mission-beta"], "both skills survive");
   assert.deepEqual(blind.blocked.sort(), ["alpha", "beta"]);
   assert.match(blind.problems[0] ?? "", /couldn't read the skills catalog/);
 });
@@ -287,7 +327,7 @@ test("a skills dir we CAN'T READ is not an empty one - nothing is reported as do
   } finally {
     chmodSync(claudeSkills, 0o700);
   }
-  assert.deepEqual(entries(), ["fleet-alpha"], "and the link really is still there");
+  assert.deepEqual(entries(), ["mission-alpha"], "and the link really is still there");
 });
 
 test("an absent ~/.claude/skills is created only when there's something to put in it", () => {
@@ -297,5 +337,5 @@ test("an absent ~/.claude/skills is created only when there's something to put i
   assert.equal(existsSync(claudeSkills), false, "an empty dir we invented is litter");
 
   reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
-  assert.deepEqual(entries(), ["fleet-alpha"]);
+  assert.deepEqual(entries(), ["mission-alpha"]);
 });

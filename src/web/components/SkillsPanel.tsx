@@ -103,7 +103,7 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
           disabled={!view}
           onChange={(e) => void update({ enabled: e.target.checked })}
         />
-        Enable fleet skills
+        Enable Mission Control skills
       </label>
 
       {/* Cascade from the master switch, ForemanBar's pattern: off means nothing is

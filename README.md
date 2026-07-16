@@ -502,6 +502,33 @@ it runs in any mode - you see Foreman's judgment before it ever types. A queue n
 hook-instrumented Claude session (there's no completion signal otherwise), and the panel
 says so rather than letting you queue work that can't run.
 
+## Half-written text is kept
+
+A session card **keeps what you've typed** until it's actually delivered. Three of its
+boxes hold a draft:
+
+- the **Work queue** panel's add box,
+- the **reply** box under the transcript on an expanded card, and
+- the **send** box - opened by <kbd>s</kbd> on the selected session, or by **Send** on the
+  card (the button shows while the card is collapsed; the shortcut works either way).
+
+Each survives everything that isn't you deleting text: **collapsing the card** (opening any
+other card collapses this one - only one is expanded at a time), a **filter** that hides the
+card, and **Cancel** / <kbd>Esc</kbd> on the send box. Glance at the grid mid-sentence and
+come back - your text is still there, exactly as the [dispatch form](#dispatch-an-agent)
+treats a half-written task.
+
+A draft is forgotten only on **successful delivery**: a send that lands for the reply and
+send boxes, an **Add** that lands for the queue box. A send that *fails* deliberately keeps
+your text - it's all you have and you're about to retry it. Drafts are per session and never
+bleed from one card into another.
+
+Two things worth knowing:
+
+- The scope is this **browser tab**. A reload starts over; drafts aren't stored anywhere.
+- **Image attachments on the reply box are the exception** - only the text comes back, so a
+  screenshot dropped before a collapse is gone. Attach yours when you're ready to send.
+
 ## Skills (fleet-wide, no restarts)
 
 Settings (the topbar gear, or ⌘,) has a **Skills** catalog: read what a skill does,

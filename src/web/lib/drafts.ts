@@ -66,9 +66,13 @@ export function clearDraft(sessionId: string, kind: DraftKind): void {
  * Drop drafts belonging to sessions that no longer exist.
  *
  * Without this the map is a slow leak in a tab left open for days, and worse, a draft
- * could outlive its session and be re-hydrated into a reused id. Callers must only
- * pass a list they KNOW is complete (App gates this on `hasSnapshot`) - handed the
- * empty pre-snapshot list, this would cheerfully delete every draft on the page.
+ * could outlive its session and be re-hydrated into a reused id.
+ *
+ * This is a dumb primitive and the caller owns the guard: it prunes against whatever
+ * it is handed, so handed an empty list it cheerfully deletes every draft on the page.
+ * Callers must only pass a list they KNOW is complete, which means a snapshot having
+ * arrived is NOT enough - an empty session list is indistinguishable from a daemon that
+ * simply hasn't swept yet, so App additionally refuses to prune against one.
  */
 export function pruneDrafts(liveSessionIds: Iterable<string>): void {
   const live = new Set(liveSessionIds);

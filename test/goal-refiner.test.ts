@@ -25,16 +25,21 @@ writeFileSync(
   fake,
   `#!/bin/sh
 cat > /dev/null
+# Every reply is printed as a %s ARGUMENT, never as the printf format. A format string
+# processes escapes, and POSIX leaves \\" undefined: bash (macOS /bin/sh) drops the
+# backslash while dash (Ubuntu /bin/sh) keeps it, so a formatted reply is valid JSON on
+# one CI runner and \\"goal\\" - which parses nowhere - on the other. As an argument the
+# payload reaches stdout byte for byte, so the fixture below IS the envelope under test.
 case "$(cat ${modeFile} 2>/dev/null)" in
   broken) echo "not json at all" ;;
   crash)  echo "boom" >&2; exit 1 ;;
   # Well-formed JSON carrying nothing: the shape the schema must reject rather than stamp.
   # Same fenced shape as the good reply below, so it reaches the schema the same way - a
   # malformed fixture here would "pass" the test on a parse error instead of the rejection.
-  blank)  printf '{"result":"\`\`\`json\\n{\\"goal\\":\\"   \\"}\\n\`\`\`"}' ;;
+  blank)  printf %s '{"result":"\`\`\`json\\n{\\"goal\\":\\"   \\"}\\n\`\`\`"}' ;;
   # The model fences its JSON even when told not to (observed on a real probe), so the fake
   # does too - that keeps the parse ladder inside what this test covers rather than mocked.
-  *) printf '{"result":"\`\`\`json\\n{\\"goal\\":\\"Ship the Goal feature end to end\\"}\\n\`\`\`"}' ;;
+  *) printf %s '{"result":"\`\`\`json\\n{\\"goal\\":\\"Ship the Goal feature end to end\\"}\\n\`\`\`"}' ;;
 esac
 `,
 );

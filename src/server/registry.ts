@@ -11,6 +11,8 @@ import type {
   ServerEvent,
   Session,
   SessionMeta,
+  SessionGoal,
+  SessionGoalSummary,
   SessionNote,
   SessionNoteSummary,
   SessionQueue,
@@ -21,8 +23,9 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
-import type { HookIngest, SetNote, StatusLineIngest } from "@shared/protocol.ts";
+import type { HookIngest, SetGoal, SetNote, StatusLineIngest } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
+import { goalLine } from "@shared/goal.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -31,11 +34,13 @@ import {
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
+import { clampPrompt, substantivePrompt } from "./transcript.ts";
 import {
   deleteQueueItem,
   deleteTask as dbDeleteTask,
   getQueueItem,
   getQueueRow,
+  getSessionGoal,
   getSessionNote,
   listQueueItems,
   listQueueRows,
@@ -43,6 +48,8 @@ import {
   loadResourceHoldingTerminalTasks,
   loadPendingReviews,
   loadRecentTerminalTasks,
+  loadSessionGoals,
+  pruneSessionGoals,
   loadSessionNotes,
   hooksEverSeen,
   lastAgentBinding,
@@ -56,6 +63,7 @@ import {
   reorderQueueItems,
   upsertQueue,
   upsertQueueItem,
+  upsertSessionGoal,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
 } from "./db.ts";
@@ -144,6 +152,8 @@ export class Registry extends EventEmitter {
   private tasks = new Map<string, Task>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
+  /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
+  private goals = new Map<string, SessionGoal>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** overlay keyed by pane token ("tmux:%12" | "wez:12"). */
   private overlays = new Map<string, HookOverlay>();
@@ -187,6 +197,7 @@ export class Registry extends EventEmitter {
     super();
     for (const r of loadPendingReviews()) this.reviews.set(r.id, r);
     for (const n of loadSessionNotes()) this.notes.set(n.noteKey, n);
+    for (const g of loadSessionGoals()) this.goals.set(g.noteKey, g);
     for (const t of loadActiveTasks()) this.tasks.set(t.id, t);
     for (const t of loadRecentTerminalTasks(RECENT_TERMINAL_TASKS)) this.tasks.set(t.id, t);
     // Always load terminal tasks that still hold a worktree (done-awaiting-reclaim
@@ -361,6 +372,7 @@ export class Registry extends EventEmitter {
       prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
       note: null,
+      goal: null,
       queue: null,
       orphanedQueue: null,
     };
@@ -386,6 +398,7 @@ export class Registry extends EventEmitter {
     // Resolve the note + queue only after the overlay may have supplied
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
+    base.goal = this.goalSummaryFor(base);
     base.queue = this.queueSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about the whole fleet ("no live session holds that key"), and this
@@ -455,12 +468,18 @@ export class Registry extends EventEmitter {
       // real one sits orphaned and unoffered - stale in the exact moment the human
       // is looking, since a /clear is something they just did.
       next.note = this.noteSummaryFor(next);
+      next.goal = this.goalSummaryFor(next);
       next.queue = this.queueSummaryFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
       if (!sessionEqual(target, next) || target.lastActivity !== ts) this.emitSession(next);
+      // Last, deliberately. `upsertGoal` re-denormalizes and emits through
+      // `syncSessionsForGoal`, so running it before the emit above would leave that emit
+      // shipping the pre-goal object and the card would show the change only on the next
+      // unrelated event.
+      this.captureGoalPrompt(next, evt, now);
     }
     this.pruneOverlays(now);
   }
@@ -1212,6 +1231,131 @@ export class Registry extends EventEmitter {
     return next;
   }
 
+  // ---- goals (what a session is attempting to solve) ----
+
+  /**
+   * Keep the human's ask from a `UserPromptSubmit`, as the raw material for this session's
+   * Goal.
+   *
+   * The full prompt already arrives on every one of these events and is thrown away:
+   * `hookToState` trims it to 120 chars for `activity`, which is the right thing for a
+   * ticker ("what is it doing this second") and the wrong length and lifetime for a goal.
+   * `evt.prompt` is the only place the whole text exists, and only for this tick.
+   *
+   * Most of what arrives here is not a prompt at all - 200 of 396 real events on this
+   * machine were `<task-notification>` blocks from background tasks reporting in - so
+   * `substantivePrompt` returning null is the COMMON path, not an error one. Storing
+   * nothing then is what keeps a goal describing the last thing a human actually asked for,
+   * rather than being overwritten by machinery every time a task finishes.
+   *
+   * Writes BOTH the stored prompt (the refiner's input) and Tier 1's provisional goal: the
+   * human's own words, shortened to a line. Rough, but instant, free, and true - and it means
+   * a card is never blank while waiting on a model. `source: "heuristic"` is also the
+   * refiner's queue: it says "this prompt has not been summarised yet", so re-stamping it on
+   * every new prompt is what makes the goal refresh at all.
+   */
+  private captureGoalPrompt(s: Session, evt: HookIngest, now: number): void {
+    if (evt.event !== "UserPromptSubmit") return;
+    const prompt = substantivePrompt(evt.prompt);
+    if (!prompt) return;
+    this.upsertGoal(
+      s.id,
+      { prompt: clampPrompt(prompt), text: goalLine(prompt), source: "heuristic" },
+      now,
+    );
+  }
+
+  /** The compact goal view denormalized onto a session card. */
+  private goalSummaryFor(s: Session): SessionGoalSummary | null {
+    const g = this.goals.get(noteKeyFor(s));
+    // A row exists as soon as a prompt is captured, which is BEFORE any sentence is derived
+    // from it. Reporting that as a goal would put an empty line on the card, so a goal with
+    // no text is reported as no goal.
+    if (!g || !g.text) return null;
+    return { text: g.text, source: g.source, updatedAt: g.updatedAt };
+  }
+
+  /** A session's full goal record, including the refiner's stored input. */
+  getGoal(id: string): SessionGoal | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    return this.goals.get(noteKeyFor(s)) ?? null;
+  }
+
+  /**
+   * Patch a session's goal (create on first write), merging like `upsertNote` so capturing
+   * a prompt never clears the sentence derived from an earlier one - and so a refinement
+   * never drops the prompt it was derived from.
+   *
+   * `updatedAt` moves only when the SENTENCE changes. A re-derived identical goal is the
+   * common case (most follow-up prompts refine what a session is doing rather than redefine
+   * it), and letting those bump the stamp would make "when did this session last change
+   * course" unanswerable. Capturing a prompt alone never moves it either: that is input,
+   * not a change of goal.
+   */
+  upsertGoal(id: string, patch: SetGoal, now = Date.now()): SessionGoal | null {
+    const s = this.sessions.get(id);
+    if (!s) return null;
+    const key = noteKeyFor(s);
+    const prev = this.goals.get(key) ?? getSessionGoal(key);
+    const text = patch.text !== undefined ? patch.text : prev?.text ?? null;
+    const changed = text !== (prev?.text ?? null);
+    const next: SessionGoal = {
+      noteKey: key,
+      text,
+      source: patch.source !== undefined ? patch.source : prev?.source ?? null,
+      prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt ?? null,
+      updatedAt: changed ? now : prev?.updatedAt ?? now,
+    };
+    this.goals.set(key, next);
+    upsertSessionGoal(next);
+    this.syncSessionsForGoal(key);
+    return next;
+  }
+
+  /**
+   * Drop goals belonging to no live session and older than `olderThan`. Returns how many.
+   *
+   * Owned here rather than called straight against `db.ts` because the table is only half the
+   * accumulation: `this.goals` holds every row `loadSessionGoals` read at boot plus one per
+   * key seen since, so a sweep that pruned only the table would leave the map to grow for the
+   * daemon's whole life and quietly refill the table on nothing. Both drop together, keyed on
+   * the same live set, or neither does.
+   *
+   * `sessions` - not `liveSessions()` - is the protected set on purpose. An exited card is
+   * still on screen with its goal showing, and it keeps that goal until the session is
+   * evicted; pruning by liveness would blank a card a human is still reading.
+   *
+   * Gated on `sweptFleet` for the same reason `orphaned` and `reattachQueue` are: "no live
+   * session holds this key" is a claim about the session map, and before the first sweep that
+   * map is empty because nobody has filled it in - not because the fleet is empty. The
+   * constructor loads the whole goal table while `sessions` is still empty, so an ungated
+   * sweep at boot would read every goal as stranded and delete each one past the window. See
+   * `fleetObserved`.
+   */
+  pruneGoals(olderThan: number): number {
+    if (!this.sweptFleet) return 0;
+    const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
+    const removed = pruneSessionGoals(liveKeys, olderThan);
+    if (!removed) return 0;
+    for (const [key, g] of this.goals) {
+      if (liveKeys.has(key) || g.updatedAt >= olderThan) continue;
+      this.goals.delete(key);
+    }
+    return removed;
+  }
+
+  private syncSessionsForGoal(key: string): void {
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      const summary = this.goalSummaryFor(s);
+      if (JSON.stringify(s.goal) === JSON.stringify(summary)) continue;
+      const next = { ...s, goal: summary };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
   private syncSessionsForNote(key: string): void {
     for (const [id, s] of this.sessions) {
       if (noteKeyFor(s) !== key) continue;
@@ -1797,14 +1941,15 @@ function sessionEqual(a: Session, b: Session): boolean {
     JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
     JSON.stringify(a.task) === JSON.stringify(b.task) &&
     JSON.stringify(a.note) === JSON.stringify(b.note) &&
-    // The other two denormalized fields `mergeDiscovered` resolves next to `note`.
+    // The other denormalized fields `mergeDiscovered` resolves next to `note`.
     // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
     // particular depends on OTHER sessions (a queue is orphaned only once its own
     // session is evicted), so the session whose hint changes need not have changed
     // in any way of its own - an idle sibling is equal by every field above, stays
     // quiet, and never surfaces the stranded batch.
     JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
-    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue)
+    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue) &&
+    JSON.stringify(a.goal) === JSON.stringify(b.goal)
   );
 }
 

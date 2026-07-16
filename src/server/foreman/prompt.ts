@@ -12,6 +12,15 @@ export interface ReviewInput {
     gitBranch: string | null;
     state: string;
     activity: string | null;
+    /**
+     * What the session is trying to solve, already derived by the daemon for the card.
+     *
+     * Given to the reviewer rather than re-derived by it: the daemon refreshes this on every
+     * prompt, while a review only ever happens at the moment a session is STUCK - so asking
+     * the reviewer for it would buy a second, worse answer to a question already answered,
+     * and pay Opus for it. Null for a session that has taken no prompt yet, and for Codex.
+     */
+    goal: string | null;
   };
   /** How Foreman's answer will be delivered, so it phrases the reply right. */
   surface: "input-review" | "terminal";
@@ -64,13 +73,14 @@ const MSG_CAP = 1800;
  */
 const POLICY = `You are Foreman, an autonomous triage agent for the "Agent Wrangler" fleet
 dashboard. Another AI coding agent (a "child" session) has paused and is waiting on its human
-operator. Your job: understand the child's goal from its transcript, then either answer the
-pending question ON THE HUMAN'S BEHALF, or hand it back to the human.
+operator. Your job: judge the pending question against the child's goal (given below), then either
+answer it ON THE HUMAN'S BEHALF, or hand it back to the human.
 
 Respond with ONLY a single JSON object - no prose, no markdown fences - of this shape:
 {
-  "purpose": string,            // ALWAYS: 1-2 sentences on what this session is for + the most
-                                //   relevant recent context for the upcoming decision (shown on the card)
+  "purpose": string,            // ALWAYS: 1-2 sentences of the most relevant recent context for THIS
+                                //   decision. The session's goal is given below and already on the card -
+                                //   do NOT restate it; say what has happened lately that bears on the ask.
   "classification": "implementation" | "access" | "design-fork" | "intent-unclear" | "other",
   "action": "answer" | "escalate" | "skip",
   "answer": { "text": string }, // required when action="answer": the exact reply to send the child
@@ -129,6 +139,11 @@ export function buildReviewPrompt(input: ReviewInput): string {
     `branch: ${session.gitBranch ?? "(none)"}`,
     `state: ${session.state}`,
     `activity: ${session.activity ?? "(none)"}`,
+    // The goal the daemon already derived and the human is already looking at. Handing it
+    // over is what lets `purpose` shrink to decision context: without it the reviewer would
+    // have to reconstruct the same sentence from the transcript, and the card would carry
+    // two near-identical sentences paid for twice.
+    `goal (what this session is trying to solve): ${session.goal ?? "(not known yet)"}`,
     `reply surface: ${surface} (this is how your answer will be delivered to the child)`,
     "",
     ...(queueItem ? queueItemSection(queueItem) : []),

@@ -200,6 +200,33 @@ test("a hook carrying permission_mode surfaces it on the session", async () => {
   assert.equal(s.permissionMode, "acceptEdits");
 });
 
+test("a real hook POST captures the human's ask onto the session's goal", async () => {
+  // End-to-end over the wire the hook actually uses: the body is the exact shape
+  // hooks/harness-hook.mjs builds, through the real route, into the real registry and db.
+  seedSession();
+  const prompt = "add a Goal line to every session card";
+  const res = await app.request("/hooks/UserPromptSubmit", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ env: { tmuxPane: "%3" }, prompt, sessionId: "agent-goal-1" }),
+  });
+  assert.equal(res.status, 204);
+  assert.equal(registry.getGoal("sess-1")?.prompt, prompt);
+
+  // A background task reporting in arrives on this SAME route and must not displace it.
+  const noise = await app.request("/hooks/UserPromptSubmit", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      env: { tmuxPane: "%3" },
+      sessionId: "agent-goal-1",
+      prompt: "<task-notification>\n<task-id>z9</task-id>\n<status>completed</status>\n</task-notification>",
+    }),
+  });
+  assert.equal(noise.status, 204);
+  assert.equal(registry.getGoal("sess-1")?.prompt, prompt, "a task notification overwrote the ask");
+});
+
 test("cycling the permission mode is rejected for a non-Claude session", async () => {
   // Permission modes are a Claude concept; the route refuses Codex before shelling out.
   registry.applyDiscovery([

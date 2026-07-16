@@ -52,6 +52,7 @@ function input(over: Partial<ReviewInput> = {}): ReviewInput {
       gitBranch: "mancej/reap-leaked-worktree-leases",
       state: "awaiting_input",
       activity: HOOK_LINE,
+      goal: "Reap leaked worktree leases",
     },
     surface: "terminal",
     question: HOOK_LINE,
@@ -181,7 +182,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null, transcriptPath: null, instrumented: true, hooksSeen: true, activity: HOOK_LINE,
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [], nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null,
-    prChecks: null, meta: null, note: null, queue: null, orphanedQueue: null,
+    prChecks: null, meta: null, note: null, goal: null, queue: null, orphanedQueue: null,
     ...over,
   };
 }

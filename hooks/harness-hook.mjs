@@ -48,6 +48,14 @@ function readStdin() {
 }
 
 async function main() {
+  // A headless `claude -p` the daemon or Foreman spawned is Claude Code, so it fires
+  // these hooks exactly like a human's session - but it is our own machinery talking to
+  // itself, not a session anyone is watching. Reporting it binds the run to a real card
+  // (see `headlessEnv` in src/server/claude-cli.ts) and, once it can't, still leaves a
+  // trail of phantom prompts in `session_events`. Declining here is the cheaper half of
+  // the fix: no POST at all rather than a POST the daemon has to reject.
+  if (process.env.FLEET_HEADLESS) return;
+
   const event = process.argv[2] || "";
   let payload = {};
   try {

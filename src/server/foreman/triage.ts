@@ -3,7 +3,7 @@ import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { parseModelJson } from "./review.ts";
+import { parseModelJson } from "../claude-cli.ts";
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
@@ -578,6 +578,9 @@ export async function triageSession(
       gitBranch: session.gitBranch,
       state: session.state,
       activity: session.activity,
+      // Read, never re-derived: the daemon refreshes this on every prompt, while a review
+      // only happens when the session is STUCK.
+      goal: session.goal?.text ?? null,
     },
     surface: pending.surface,
     question: pending.question,

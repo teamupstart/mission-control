@@ -34,10 +34,13 @@ and get your decision back.
   moment a session needs input, a review lands, a no-mistakes gate parks, or a
   dispatched task fails - with an **AFK mode** that also pings on idle sessions and
   finished tasks and sends periodic fleet digests.
+- **Says what each session is for**: every card carries a one-sentence **Goal** - what
+  that session is currently trying to solve - derived from your own prompts and
+  refreshed as you steer it. No API key: it runs the local `claude` CLI.
 - **Triages** the needs-you queue for you: **Foreman** is an optional auto-responder
-  that reads each blocked session's transcript, auto-answers the routine calls,
-  escalates the genuine forks as a decision brief, and writes a one-line Purpose on
-  every card - shipping OFF and drafting its answers before it ever sends.
+  that reads each blocked session's transcript, auto-answers the routine calls, and
+  escalates the genuine forks as a decision brief - shipping OFF and drafting its
+  answers before it ever sends.
 
 ## Quick start
 
@@ -233,6 +236,38 @@ A Claude card also carries a **permission mode** chip once a hook reports one - 
 sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
 would in the session's own terminal.
 
+### Goal
+
+Every card carries a one-sentence **Goal**: what that session is currently trying to
+solve. It sits under the title, on the collapsed card - you should never have to click
+to remember what a session is for.
+
+It lands in two tiers, both in the daemon:
+
+1. **Instantly, with no model.** The `UserPromptSubmit` hook already carries your prompt,
+   so the moment you send one the card shows your own words, shortened to a line. Free,
+   and the card is never blank waiting on anything.
+2. **Refined, a few seconds later.** A headless `claude -p` on Haiku rewrites it into one
+   sentence, reading your prompt plus a small window of the conversation. This runs
+   through the **local `claude` CLI, not the Anthropic API** - there's no API key, and it
+   bills through whatever your CLI is logged in as.
+
+The goal refreshes as you steer the session, at most once a minute per session. If
+`claude` is missing, logged out, or slow, the card quietly keeps your own words - nothing
+breaks, you just get a rougher sentence.
+
+What it deliberately isn't:
+
+- **Not** what the session is doing this second. That's the activity ticker on its own
+  line - "running Bash" is not a goal.
+- **Not** derived from anything but your prompts. Background task notifications arrive
+  through the same hook and are filtered out; they're actually the majority of it.
+- `/clear` starts a new session, so it wipes the goal; `/compact` keeps the same session
+  and leaves it alone.
+
+Codex sessions say so instead of showing one: they carry no hooks, so there's no prompt
+to read.
+
 ### Review channel (MCP)
 
 ```sh
@@ -328,8 +363,9 @@ screen to see the ask itself**, then:
 - **stands in for you at a parked [no-mistakes](#no-mistakes) gate** - when a run stops to put
   an `ask-user` finding to you, Foreman reads the finding and the session's goal, answers when
   the call is clear from that goal, and escalates when it turns on your intent;
-- writes a 1-2 sentence **Purpose** on every session it inspects, shown in the expanded
-  card so you can re-orient at a glance.
+- writes a 1-2 sentence **Purpose** on every session it inspects - the recent context
+  bearing on *this* decision, shown in the expanded card. It reads the session's
+  [Goal](#goal) rather than re-deriving it, so the two don't say the same thing twice.
 
 The screen matters more than it sounds: a prompt that is *waiting on you* - a menu, a
 permission dialog - isn't written to the transcript until it returns, so the transcript
@@ -631,15 +667,17 @@ that looks perfectly healthy would help nobody.
 | `FLEET_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `FLEET_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `FLEET_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
-| `FLEET_CLAUDE_BIN` | `claude` | dispatched Claude CLI path override |
+| `FLEET_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the fleet runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner) |
+| `FLEET_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner) pass it instead |
 | `FLEET_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
-| `FOREMAN_CLAUDE_BIN` | `claude` | Foreman reviewer: Claude CLI path override |
-| `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned |
+| `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `FLEET_CLAUDE_BIN`, still honored so existing setups keep working; `FLEET_CLAUDE_BIN` wins when both are set |
+| `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `FLEET_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
+| `FLEET_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
 
 > **Upgrading from `HARNESS_*`?** The old `HARNESS_*` env names are still honored as
 > a fallback, and an existing `~/.ai-harness` state dir is kept in place (the new

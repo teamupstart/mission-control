@@ -635,6 +635,41 @@ body {
   padding-left: 10px;
 }
 
+/* ---- goal (what this session is trying to solve) ----
+   Primary text, unlike the muted `.activity` ticker below it: the goal is why you are
+   looking at the card, the ticker is trivia. Two lines maximum - the server already bounds
+   the sentence, so this only bites on a long Tier 1 prompt, and a card that can grow
+   unboundedly tall pushes the rest of the fleet off screen. */
+.goal {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* Wrap anywhere as a last resort: a Tier 1 goal can be a pasted path or URL with no
+     spaces in it, which would otherwise widen the card and scroll the whole grid. */
+  overflow-wrap: anywhere;
+}
+
+/* A goal still awaiting its model pass: the human's prompt verbatim. Dimmed a touch so a
+   raw prompt reads as provisional next to a refined sentence, without implying anything is
+   wrong - most goals look like this for only a few seconds, and some (a failed refine) keep
+   this look for good. */
+.goal-heuristic {
+  color: var(--muted);
+}
+
+/* Codex: an honest empty state, not a blank gap. Distinctly quieter than a real goal so it
+   never reads as one. */
+.goal-none {
+  color: var(--dim);
+  font-size: 12px;
+  font-style: italic;
+}
+
 /* ---- no-mistakes strip ---- */
 .nm-strip {
   display: flex;

@@ -209,6 +209,23 @@ export const SetNoteSchema = z
 export type SetNote = z.infer<typeof SetNoteSchema>;
 
 /**
+ * Patch a session's Goal. Separate from SetNoteSchema because the two records have
+ * different writers and different lifecycles (see `SessionGoal`); merged the same way, so
+ * capturing a prompt never clears the sentence derived from an earlier one.
+ *
+ * `updatedAt` is NOT accepted from a caller: the server stamps it when the sentence
+ * actually changes, so it cannot drift from the value it describes or be back-dated.
+ */
+export const SetGoalSchema = z
+  .object({
+    text: z.string().nullable().optional(),
+    source: z.enum(["heuristic", "model"]).nullable().optional(),
+    prompt: z.string().nullable().optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty goal update" });
+export type SetGoal = z.infer<typeof SetGoalSchema>;
+
+/**
  * Foreman's operating config. `dry-run` drafts answers without sending; `live`
  * sends on the human's behalf (only for repos on the allowlist); `semi-auto`
  * drafts a one-click-confirmable action. Ships disabled + dry-run.

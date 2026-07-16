@@ -14,7 +14,8 @@ needed. Do NOT try to solve implementation problems here.
 
 Respond with ONLY a single JSON object - no prose, no markdown fences - of this shape:
 {
-  "purpose": string,          // ALWAYS: 1-2 sentences on what this session is for + the key recent context
+  "purpose": string,          // ALWAYS: 1-2 sentences of the key recent context for THIS ask. The
+                              //   session's goal is given below and already on the card - do NOT restate it.
   "bucket": "human-only" | "routine-access" | "needs-judgment",
   "disposition": "escalate" | "skip",  // ONLY for human-only (default "escalate")
   "answer": { "text": string },        // ONLY for routine-access: a short natural-language approval
@@ -55,6 +56,7 @@ export function buildTriagePrompt(input: ReviewInput): string {
     `cwd: ${session.cwd ?? "(unknown)"}`,
     `branch: ${session.gitBranch ?? "(none)"}`,
     `state: ${session.state}`,
+    `goal (what this session is trying to solve): ${session.goal ?? "(not known yet)"}`,
     `reply surface: ${surface}`,
     "",
     "## The pending question",

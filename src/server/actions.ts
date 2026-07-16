@@ -726,6 +726,53 @@ export async function remoteDefaultRef(cwd: string): Promise<string | null> {
 }
 
 /**
+ * The local branch name behind a remote default ref - "origin/main" -> "main".
+ *
+ * `remoteDefaultRef` only ever answers with an `origin/`-qualified ref, so this is
+ * a prefix strip and not a parse: splitting on "/" instead would read a repo whose
+ * default is `release/next` as the branch `release`.
+ */
+function defaultBranchOf(remoteRef: string): string {
+  return remoteRef.startsWith("origin/") ? remoteRef.slice("origin/".length) : remoteRef;
+}
+
+/**
+ * Park a reset checkout on `target`'s commit with no branch checked out, and
+ * report whether it now holds none.
+ *
+ * This is what makes a reset hand back a worktree ready for unrelated work rather
+ * than one still standing on the finished task's branch. A reset alone moves the
+ * branch's TIP to origin but keeps its NAME, and the name is the identity every
+ * layer downstream keys on: `gh pr list --head <branch>` still matches the PR that
+ * branch already has (so the card keeps a chip for work that's over - see
+ * `pollAndReconcilePrs`, which retires it once the session moves off the branch),
+ * and the next task's commits land on top of a branch whose PR is merged, where
+ * no-mistakes sees a non-default branch and validates onto it.
+ *
+ * Detaching, rather than checking the default branch out, is the only option here:
+ * a linked worktree cannot check out `main` while the main checkout holds it, and
+ * git refuses rather than sharing. It is also exactly the state treehouse's pool
+ * hands a fresh worktree out in, so this returns a reused session to the shape a
+ * brand-new one starts in.
+ *
+ * Called AFTER the reset has landed, never before: the tree matches `target` by
+ * then, so this is a pure HEAD move that cannot fail over local edits it would
+ * otherwise have to carry across. The branch ref is left behind (pointing at
+ * `target`, where the reset put it) - the commits it held are already gone by
+ * design, and deleting the name outright would be a loss the confirm dialog never
+ * warned about.
+ */
+async function releaseBranch(root: string, branch: string | null, target: string): Promise<boolean> {
+  // Already standing on a commit - nothing holds the checkout, nothing to release.
+  if (!branch) return true;
+  // The default branch is the main checkout's resting state: no PR is keyed to it,
+  // no-mistakes already forces a feature branch off it, and yanking the user's own
+  // tree into detached HEAD is not a thing a reset should surprise them with.
+  if (branch === defaultBranchOf(target)) return false;
+  return (await git(root, ["checkout", "--detach", target])).code === 0;
+}
+
+/**
  * Fetch origin, then report what a hard reset onto its default branch would
  * permanently discard: uncommitted tracked edits, untracked files (which the
  * follow-up `git clean` removes), and local commits ahead of the target. The
@@ -777,44 +824,65 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
 
 /**
  * Pull latest and hard-reset the session's checkout to origin's default branch,
- * then (optionally) clear the agent's context with `/clear`. Order matters: fetch
- * first so we reset onto the *current* remote; `reset --hard` moves the branch
- * and tracked files; `git clean -fd` drops untracked files/dirs so the worktree
- * matches origin exactly (ignored files - node_modules, .env - are kept). The
- * `/clear` is best-effort: the git reset has already landed, so a session with no
- * pane just reports `cleared: false` rather than failing the whole operation.
+ * release the branch it was holding, then (optionally) clear the agent's context
+ * with `/clear`. Order matters: fetch first so we reset onto the *current* remote;
+ * `reset --hard` moves the branch and tracked files; `git clean -fd` drops
+ * untracked files/dirs so the worktree matches origin exactly (ignored files -
+ * node_modules, .env - are kept); `releaseBranch` last, once the tree is pristine
+ * and the detach is a pure HEAD move.
+ *
+ * Resetting the branch's tip without releasing its name is what left a reused
+ * session holding a finished task's branch - keeping that branch's PR chip on the
+ * card and inviting the next task's commits onto a merged PR's branch. See
+ * `releaseBranch`.
+ *
+ * The last two steps are best-effort: the git reset has already landed by then, so
+ * a session with no pane reports `cleared: false`, and a checkout that couldn't be
+ * detached reports `detached: false`, rather than either failing the whole
+ * operation and telling the caller a reset that DID happen did not.
  */
 export async function resetToOrigin(session: Session, clear: boolean): Promise<ResetResult> {
-  if (!session.cwd) return { ok: false, error: "session has no working directory", root: null, cleared: false };
+  if (!session.cwd) {
+    return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
+  }
   // Run at the worktree top so `reset` and `clean` cover the same (whole) tree -
   // `clean` is relative to its cwd, so a nested pane cwd would leave stray
   // untracked files behind, defeating "make the worktree match origin".
   const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
   if (top.code !== 0 || !top.stdout.trim()) {
-    return { ok: false, error: "not a git repository", root: null, cleared: false };
+    return { ok: false, error: "not a git repository", root: null, cleared: false, detached: false };
   }
   const root = top.stdout.trim();
+
+  // The branch this checkout holds, or null when HEAD already names a commit.
+  // `symbolic-ref` is the exact question, failing precisely when HEAD is detached;
+  // `rev-parse --abbrev-ref HEAD` would answer the string "HEAD" there and read
+  // back as a branch called HEAD. Read before the reset purely because it is free
+  // to - a reset moves the branch's tip, never which branch is checked out.
+  const held = await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = held.code === 0 ? held.stdout.trim() : null;
 
   const fetched = await git(root, ["fetch", "origin"], 30000);
   if (fetched.code !== 0) {
     const error = `could not fetch origin: ${fetched.stderr.trim() || "fetch failed"}`;
-    return { ok: false, error, root, cleared: false };
+    return { ok: false, error, root, cleared: false, detached: false };
   }
   const target = await remoteDefaultRef(root);
   if (!target) {
-    return { ok: false, error: "no origin/main (or origin/master) to reset to", root, cleared: false };
+    return { ok: false, error: "no origin/main (or origin/master) to reset to", root, cleared: false, detached: false };
   }
 
   const reset = await git(root, ["reset", "--hard", target]);
   if (reset.code !== 0) {
-    return { ok: false, error: reset.stderr.trim() || "git reset failed", root, cleared: false };
+    return { ok: false, error: reset.stderr.trim() || "git reset failed", root, cleared: false, detached: false };
   }
   const cleaned = await git(root, ["clean", "-fd"]);
   if (cleaned.code !== 0) {
-    return { ok: false, error: cleaned.stderr.trim() || "git clean failed", root, cleared: false };
+    return { ok: false, error: cleaned.stderr.trim() || "git clean failed", root, cleared: false, detached: false };
   }
+  const detached = await releaseBranch(root, branch, target);
 
-  if (!clear) return { ok: true, error: null, root, cleared: false };
+  if (!clear) return { ok: true, error: null, root, cleared: false, detached };
   const sent = await sendText(session, "/clear", true);
-  return { ok: true, error: null, root, cleared: sent.ok };
+  return { ok: true, error: null, root, cleared: sent.ok, detached };
 }

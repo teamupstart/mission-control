@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, realpa
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetPreview, resetToOrigin } from "../src/server/actions.ts";
-import { gitIn, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
+import { gitIn, mkCloneOnBranch, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 
 const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("harness-reset-");
@@ -118,6 +118,47 @@ test("resetToOrigin pulls newer origin/main and lands the checkout on it", async
   assert.equal(r.ok, true);
   assert.equal(gitIn(clone, "rev-parse", "HEAD"), upstreamHead);
   assert.equal(readFileSync(join(clone, "keep.txt"), "utf8"), "base\nupstream-new\n");
+});
+
+test("resetToOrigin releases the feature branch it was standing on", async () => {
+  const clone = mkCloneOnBranch("harness-reset-branch-", "mancej/feature");
+  const upstream = gitIn(clone, "rev-parse", "origin/main");
+
+  const r = await resetToOrigin(sess(clone, "mancej/feature"), false);
+  assert.equal(r.ok, true);
+  assert.equal(r.detached, true);
+
+  // The checkout holds no branch at all, so nothing keys a finished PR to it: the
+  // chip retires on the next poll and the next task is free to claim its own branch.
+  assert.equal(gitIn(clone, "branch", "--show-current"), "");
+  assert.equal(gitIn(clone, "rev-parse", "HEAD"), upstream);
+  // The branch NAME survives (where the reset left it, at origin/main). Deleting it
+  // would be a loss the confirm dialog never warned about; leaving it costs nothing
+  // because the commits it held are already gone.
+  assert.equal(gitIn(clone, "rev-parse", "mancej/feature"), upstream);
+});
+
+test("resetToOrigin leaves a checkout already on the default branch on it", async () => {
+  const { clone } = mkOriginAndClone();
+
+  // The main checkout's resting state: no PR is keyed to `main`, and detaching the
+  // user's own tree out from under them is not a thing a reset should do.
+  const r = await resetToOrigin(sess(clone), false);
+  assert.equal(r.ok, true);
+  assert.equal(r.detached, false);
+  assert.equal(gitIn(clone, "branch", "--show-current"), "main");
+});
+
+test("resetToOrigin reports an already-detached checkout as detached", async () => {
+  const { clone } = mkOriginAndClone();
+  gitIn(clone, "checkout", "-q", "--detach", "origin/main");
+
+  // Nothing holds this checkout, so there is nothing to release - but `detached`
+  // describes where the checkout ENDS UP, not whether this reset moved it there.
+  const r = await resetToOrigin(sess(clone, null), false);
+  assert.equal(r.ok, true);
+  assert.equal(r.detached, true);
+  assert.equal(gitIn(clone, "branch", "--show-current"), "");
 });
 
 test("resetToOrigin with clear:true reports cleared:false when the session has no pane", async () => {

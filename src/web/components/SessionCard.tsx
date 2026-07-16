@@ -39,7 +39,7 @@ const AGENT_LABEL: Record<Session["agent"], string> = {
  *
  * Sits OUTSIDE the `expanded` gate on purpose - that gate is the entire reason Foreman's
  * Purpose failed at this job. A sentence you have to click to read is not a status line, and
- * on a live 7-session fleet none of the four cards carrying a purpose showed it without a
+ * on a live 7-session dashboard none of the four cards carrying a purpose showed it without a
  * click.
  *
  * A full-width line under the header rather than a third row inside `.card-title`, because
@@ -111,7 +111,7 @@ export function SessionCard({
   pendingReviewIds,
 }: {
   session: Session;
-  /** True when this session's parked no-mistakes gate needs you (computed fleet-wide in App). */
+  /** True when this session's parked no-mistakes gate needs you (computed cross-session in App). */
   gateNeedsYou?: boolean;
   onOpenReviews?: () => void;
   /** Opens the diff viewer: the whole branch, or one commit when given a sha. */

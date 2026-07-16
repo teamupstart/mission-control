@@ -44,7 +44,7 @@ export function cwdAllowlisted(cwd: string | null, allowlist: readonly string[])
  *
  * The second is what makes live mode usable. Every real session runs in a worktree
  * parked outside the repo (`~/.treehouse/...`, the daemon's worktrees dir), so a
- * user who allowlists their repo and switches to live gets a fleet where *nothing*
+ * user who allowlists their repo and switches to live gets a dashboard where *nothing*
  * sends and every item waits on a confirmation they thought they'd turned off - the
  * guardrail firing on the exact repo they cleared.
  *

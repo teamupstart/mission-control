@@ -1,4 +1,4 @@
-import type { FleetReport, ReportItem, Session, Task } from "@shared/types.ts";
+import type { MissionReport, ReportItem, Session, Task } from "@shared/types.ts";
 import {
   RECENT_TASKS_CAP,
   backlogTasks,
@@ -8,7 +8,7 @@ import {
 } from "@shared/session.ts";
 
 /**
- * Project the live registry snapshot into a fleet report - the `/bearings`
+ * Project the live registry snapshot into a roundup report - the `/bearings`
  * analog. Pure over its input (pass `now` for deterministic tests). Buckets
  * sessions with the SAME shared logic the UI uses, joins each to its dispatched
  * task for intent + branch, and folds tasks into a backlog + recent-outcomes list.
@@ -16,7 +16,7 @@ import {
 export function buildReport(
   snap: { sessions: Session[]; tasks: Task[] },
   now: number = Date.now(),
-): FleetReport {
+): MissionReport {
   const taskById = new Map(snap.tasks.map((t) => [t.id, t]));
 
   const toItem = (s: Session, reason = ""): ReportItem => {
@@ -74,9 +74,9 @@ export function buildReport(
 }
 
 /** Render a report as a compact, copy-pasteable markdown digest ("current bearings"). */
-export function renderReportMarkdown(r: FleetReport): string {
+export function renderReportMarkdown(r: MissionReport): string {
   const stamp = new Date(r.generatedAt).toISOString().slice(0, 16).replace("T", " ");
-  const lines: string[] = [`# Fleet bearings - ${stamp}`];
+  const lines: string[] = [`# Mission bearings - ${stamp}`];
 
   const branch = (b: string | null) => (b ? `  [${b}]` : "");
   const kind = (k: ReportItem["kind"]) => (k ? ` (${k})` : "");

@@ -2,11 +2,11 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, sy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
-import { fleetSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
+import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
 
-// Sync `~/.claude/skills/fleet-<id>` against the enabled set.
+// Sync `~/.claude/skills/mission-<id>` against the enabled set.
 //
 // This writes into the operator's GLOBAL claude config - the same discipline
 // hooks/install.mjs holds itself to, and for a stronger reason: install.mjs only
@@ -32,8 +32,8 @@ export function claudeSkillsDir(): string {
 export interface ReconcileResult {
   /**
    * Whether the symlink SET actually moved, as Claude would see it. The generation
-   * bump hangs off this and nothing else: bumping on any config write would reload the
-   * whole fleet because someone toggled the master switch twice.
+   * bump hangs off this and nothing else: bumping on any config write would reload
+   * every session because someone toggled the master switch twice.
    */
   changed: boolean;
   linked: string[];
@@ -64,7 +64,7 @@ export interface ReconcileResult {
  * as an empty desired set and takes the ordinary removal path. That is what makes
  * disabling propagate: the set changes, the generation bumps, and every session is told
  * to drop the skills. A master switch that skipped the reconciler instead would leave
- * the symlinks on disk and the fleet still using skills the panel says are off.
+ * the symlinks on disk and every session still using skills the panel says are off.
  */
 export function desiredSkillIds(cfg: SkillsConfig, present: ReadonlySet<string>): Set<string> {
   if (!cfg.enabled) return new Set();
@@ -77,11 +77,11 @@ type Entry = { kind: "ours"; target: string } | { kind: "foreign" };
 /**
  * Classify one entry we hold the marker on.
  *
- * A `fleet-`-prefixed entry that is NOT a symlink was not created by us - nothing
- * here has ever made a real directory - so it is the operator's, prefix or no
- * prefix, and we do not remove it. The marker scopes what we may touch; it does not
- * license deleting a directory of someone's work because the name matched. Marker
- * discipline that only holds when the name is the only evidence is not discipline.
+ * A prefixed entry that is NOT a symlink was not created by us - nothing here has
+ * ever made a real directory - so it is the operator's, prefix or no prefix, and we
+ * do not remove it. The marker scopes what we may touch; it does not license deleting
+ * a directory of someone's work because the name matched. Marker discipline that only
+ * holds when the name is the only evidence is not discipline.
  */
 function classify(path: string): Entry {
   try {
@@ -99,8 +99,8 @@ function classify(path: string): Entry {
  *
  * Idempotent: re-running against an already-correct directory writes nothing and
  * reports `changed: false`. That is what lets the daemon call it on every startup
- * (to heal a hand-deleted link, or an app that moved on disk) without reloading the
- * fleet for no reason.
+ * (to heal a hand-deleted link, or an app that moved on disk) without reloading every
+ * session for no reason.
  */
 export function reconcileSkillLinks(
   cfg: SkillsConfig,
@@ -112,7 +112,7 @@ export function reconcileSkillLinks(
   // An unreadable catalog is not an empty one. Every id would look deleted, and this
   // function's answer to a deleted id is to unlink it - so a transient read failure
   // (a worktree without `skills/`, a permissions hiccup, a packaged path that resolved
-  // wrong) would uninstall every skill on the machine and tell the whole fleet to drop
+  // wrong) would uninstall every skill on the machine and tell every session to drop
   // them. We know nothing, so we change nothing.
   //
   // `cfg.enabled &&` is the whole guard, not decoration: with the master switch OFF the
@@ -144,7 +144,7 @@ export function reconcileSkillLinks(
     // gives them the same one. An EACCES here would read as "the directory is empty, so
     // there is nothing to unlink" and report a clean, changed:false success - so
     // switching a skill off would tell the operator it worked while the symlink sat
-    // there and the whole fleet kept using it. Same rule as the catalog above: we know
+    // there and every session kept using it. Same rule as the catalog above: we know
     // nothing, so we change nothing, and we say so.
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       out.problems.push(`couldn't read ${dir}: ${msg(err)}`);
@@ -172,7 +172,7 @@ export function reconcileSkillLinks(
     const entry = classify(path);
 
     if (entry.kind === "foreign") {
-      // Only worth saying when it's in our way. A stray `fleet-*` directory for a
+      // Only worth saying when it's in our way. A stray prefixed directory for a
       // skill nobody enabled is just sitting there.
       if (desired.has(id)) {
         out.problems.push(`${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
@@ -195,7 +195,7 @@ export function reconcileSkillLinks(
     // an identical file and nothing it loaded moved. Bumping there would type
     // /reload-skills into every idle claude on the machine because the app was rebuilt
     // somewhere else. A DANGLING link, though, meant the skill wasn't loaded at all, and
-    // fixing it is a real change the fleet needs to hear about.
+    // fixing it is a real change every session needs to hear about.
     if (entry.target !== skillSourceDir(id)) {
       const wasLoaded = existsSync(path);
       if (!remove(path, out)) {
@@ -224,8 +224,33 @@ export function reconcileSkillLinks(
   return out;
 }
 
+/**
+ * Where `id` lives, or would live: an entry that already exists under ANY recognised
+ * prefix wins over the name a fresh install would write.
+ *
+ * The read-only checks below both ask "what does the disk say about this skill?", and a
+ * link installed before the rename is the live one - Claude loads it, and `reconcile`
+ * leaves it exactly where it is. Looking only under the current prefix would call every
+ * pre-rename install missing and tell the operator to restart the daemon to repair
+ * something that isn't broken (and that a restart would not move).
+ */
+function skillPath(dir: string, id: string): string {
+  for (const prefix of SKILL_DIR_PREFIXES) {
+    const path = join(dir, `${prefix}${id}`);
+    try {
+      // lstat, not exists: a DANGLING link is still an entry that's there, and telling
+      // the caller about it is the whole point of `skillDrift`.
+      lstatSync(path);
+      return path;
+    } catch {
+      // not here - try the next name we may have written it under
+    }
+  }
+  return join(dir, missionSkillDirName(id));
+}
+
 function link(id: string, dir: string, out: ReconcileResult): boolean {
-  const path = join(dir, fleetSkillDirName(id));
+  const path = join(dir, missionSkillDirName(id));
   try {
     symlinkSync(skillSourceDir(id), path, "dir");
     return true;
@@ -291,7 +316,7 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
 
   for (const id of enabledIds) {
     if (!catalog.present.has(id)) continue;
-    const path = join(dir, fleetSkillDirName(id));
+    const path = skillPath(dir, id);
     try {
       // Ours, or absent, are both fine - we can write either. Only somebody else's
       // directory is a refusal, and only they can clear it.
@@ -311,7 +336,7 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
  * The panel needs this because the reconciler's `problems` are the memory of ONE pass:
  * they reach the operator on the PUT that produced them and nowhere else. A reconcile
  * that fails at STARTUP has no PUT to answer, so its problems went to a console nobody
- * is reading, and the panel would render every toggle happily on while the fleet had
+ * is reading, and the panel would render every toggle happily on while the sessions had
  * none of them. That is the exact "claims a skill is live in twenty sessions" lie the
  * rest of this feature is built to avoid, arriving through the one door left open.
  *
@@ -323,7 +348,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
   if (!cfg.enabled || !catalog.readable) return [];
   const out: string[] = [];
   for (const id of desiredSkillIds(cfg, catalog.present)) {
-    const path = join(dir, fleetSkillDirName(id));
+    const path = skillPath(dir, id);
     // Its own lstat rather than `classify`, which folds "missing" into "foreign" - a
     // conflation that is right where it's used (both mean "do not touch this") and
     // wrong here, where the two need opposite sentences. A missing link is ours to
@@ -352,7 +377,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
 }
 
 /**
- * Remove every `fleet-*` symlink and nothing else - the WALK, not the decision.
+ * Remove every symlink of ours and nothing else - the WALK, not the decision.
  *
  * Global blast radius is accepted deliberately (that IS the feature), which is exactly
  * why leaving is as supported as arriving. Expressed as a reconcile against a disabled
@@ -363,7 +388,7 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
  * It touches the disk and nothing else, while the config goes on saying the skills are
  * on - and `reconcileSkills` re-reads that config on every daemon start, so a removal
  * this alone performed is re-created at the next launch, complete with a reload
- * broadcast to the whole fleet. The durable off-switch is the master switch
+ * broadcast to every session. The durable off-switch is the master switch
  * (`applySkillsConfig({enabled: false})`), which records the intent and takes this same
  * removal path to carry it out.
  *

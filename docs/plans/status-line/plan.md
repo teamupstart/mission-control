@@ -8,7 +8,7 @@ packaged desktop app auto-wires only the passive path (transcript + Codex rollou
 config); the statusLine wrapper stays **CLI-opt-in** (`npm run install-statusline`) so the
 app never silently rewrites a user's `statusLine` in `~/.claude/settings.json`.
 Related: ccstatusline (the terminal status line we already read these values from);
-[`../fleet-report/plan.md`](../fleet-report/plan.md) (the report can surface the same
+[`../mission-report/plan.md`](../mission-report/plan.md) (the report can surface the same
 fields once they exist on `Session`).
 
 ## Goal
@@ -22,7 +22,7 @@ Claude Code terminal:
 3. **Context used** - the share of the context window consumed, as a percentage with a
    small pressure meter (green -> amber -> red as it fills).
 
-These make the fleet legible at a glance: which agents are on the expensive model, who is
+These make the sessions legible at a glance: which agents are on the expensive model, who is
 running hot on context (about to compact), and who is thinking hard. All three already
 exist somewhere Claude Code / Codex can hand us - this plan is about **sourcing them
 correctly per agent** and threading them onto the card with no new heavyweight machinery.
@@ -290,4 +290,4 @@ is on `Session` to the client (no DTO layer), so no SSE/endpoint change beyond t
 - Cost / `$` and rate-limit gauges (also in the statusLine payload) - a natural follow-up
   once `SessionMeta` exists.
 - Context-over-time sparkline; per-turn token deltas.
-- Surfacing model/thinking/context in the fleet report markdown (trivial once on `Session`).
+- Surfacing model/thinking/context in the roundup report markdown (trivial once on `Session`).

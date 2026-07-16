@@ -34,9 +34,9 @@ function tmp(prefix: string): string {
 
 process.env.NM_HOME = tmp("nm-home-");
 // Both homes, before the imports resolve their paths: NM_HOME for no-mistakes'
-// fixture db, FLEET_HOME for OUR db - which without this would be the
-// developer's live ~/.fleet-control/harness.db.
-process.env.FLEET_HOME = tmp("fleet-byline-");
+// fixture db, MISSION_HOME for OUR db - which without this would be the
+// developer's live ~/.mission-control/harness.db.
+process.env.MISSION_HOME = tmp("mission-byline-");
 
 const { readFixLog, pickGateReply } = await import("../src/server/nomistakes-fixes.ts");
 const { logGateReply, dropGateReply, gateRepliesFor, pruneGateReplies, hooksEverSeen, openDb } =
@@ -287,7 +287,7 @@ exit 0
 process.env.NOMISTAKES_BIN = fakeAxi();
 
 /** A registry with nothing to poll: `respond`'s reconciles then cost no subprocesses. */
-const noFleet = {
+const noSessions = {
   nomistakesPollCwds: () => [],
   reconcileNomistakes: () => {},
 } as unknown as Registry;
@@ -313,7 +313,7 @@ test("a respond the gate never received reports itself undelivered", async () =>
   const cwd = tmp("respond-fail-");
   writeFileSync(join(cwd, "respond-fails"), "");
   const undo: string[] = [];
-  const r = await respond(noFleet, cwd, "fix", { onUndelivered: () => undo.push("retracted") });
+  const r = await respond(noSessions, cwd, "fix", { onUndelivered: () => undo.push("retracted") });
   // Accepted only means SPAWNED. Delivery isn't known yet - that's the whole problem.
   assert.equal(r.ok, true);
   await settled(cwd);
@@ -323,7 +323,7 @@ test("a respond the gate never received reports itself undelivered", async () =>
 test("a delivered respond keeps its byline", async () => {
   const cwd = tmp("respond-ok-");
   let retracted = false;
-  const r = await respond(noFleet, cwd, "fix", { onUndelivered: () => (retracted = true) });
+  const r = await respond(noSessions, cwd, "fix", { onUndelivered: () => (retracted = true) });
   assert.equal(r.ok, true);
   await settled(cwd);
   assert.equal(retracted, false, "a delivered decision keeps its author");

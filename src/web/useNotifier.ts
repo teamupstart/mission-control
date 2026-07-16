@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { AlertSettings, Fleet } from "./lib/alerts.ts";
+import type { AlertSettings, AlertScope } from "./lib/alerts.ts";
 import {
   batchSeverity,
   detectAlerts,
@@ -29,10 +29,10 @@ function notify(title: string, body: string, tag: string): void {
 }
 
 /**
- * Watches the live fleet and, on each transition into an attention state, fires a
+ * Watches the live scope and, on each transition into an attention state, fires a
  * desktop notification + a chime (per settings). The daemon already detects these
  * events and streams them; this just delivers them - zero extra tokens. AFK mode
- * also sends a periodic fleet digest.
+ * also sends a periodic digest of every session.
  *
  * `ready` (the SSE snapshot has landed) gates alerting. `useEventStream` returns
  * empty state on the first render and drops `ready` on disconnect, re-raising it on
@@ -40,11 +40,11 @@ function notify(title: string, body: string, tag: string): void {
  * neither storm (one alert per gap change) nor swallow (miss what happened while
  * away) - we coalesce the attention events missed during the gap into one catch-up.
  */
-export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolean): void {
-  const prevRef = useRef<Fleet | null>(null);
+export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: boolean): void {
+  const prevRef = useRef<AlertScope | null>(null);
   const wasReadyRef = useRef(false);
-  const fleetRef = useRef(fleet);
-  fleetRef.current = fleet;
+  const stateRef = useRef(scope);
+  stateRef.current = scope;
 
   // Sound defaults on, but a fresh page load starts a suspended AudioContext that
   // only a user gesture can resume. Unlock on the first interaction anywhere, so
@@ -74,12 +74,12 @@ export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolea
 
     if (justConnected) {
       const prev = prevRef.current;
-      prevRef.current = fleet;
+      prevRef.current = scope;
       // Initial open: no prior baseline, so nothing was "missed" - seed silently.
       if (!prev) return;
       // Reconnect: summarize the attention-level events that happened during the
       // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
-      const missed = detectAlerts(prev, fleet, settings).filter((a) => a.severity === "attention");
+      const missed = detectAlerts(prev, scope, settings).filter((a) => a.severity === "attention");
       if (missed.length === 0) return;
       if (settings.notifications && canNotify()) {
         notify("While you were away", summarizeAlerts(missed), "reconnect-catchup");
@@ -88,10 +88,10 @@ export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolea
       return;
     }
 
-    const prev = prevRef.current ?? fleet;
-    prevRef.current = fleet;
+    const prev = prevRef.current ?? scope;
+    prevRef.current = scope;
 
-    const alerts = detectAlerts(prev, fleet, settings);
+    const alerts = detectAlerts(prev, scope, settings);
     if (alerts.length === 0) return;
     if (settings.notifications && canNotify()) {
       for (const a of alerts) notify(a.title, a.body, a.id);
@@ -99,15 +99,15 @@ export function useNotifier(fleet: Fleet, settings: AlertSettings, ready: boolea
     // One chime per batch at the most urgent severity, so a same-tick "info" alert
     // can't swallow the "attention" tone via the chime's rate limit.
     if (settings.sound) playChime(batchSeverity(alerts));
-  }, [fleet, settings, ready]);
+  }, [scope, settings, ready]);
 
   useEffect(() => {
     if (!settings.afk || !settings.notifications) return;
     const ms = Math.max(1, settings.digestMinutes) * 60_000;
     const id = setInterval(() => {
-      const f = fleetRef.current;
-      // Skip an all-zero "0 need you · 0 working · 0 idle" digest on a quiet fleet.
-      if (canNotify() && hasReportable(f)) notify("Fleet digest", digestLine(f), "fleet-digest");
+      const f = stateRef.current;
+      // Skip an all-zero "0 need you · 0 working · 0 idle" digest on a quiet scope.
+      if (canNotify() && hasReportable(f)) notify("Session digest", digestLine(f), "session-digest");
     }, ms);
     return () => clearInterval(id);
   }, [settings.afk, settings.notifications, settings.digestMinutes]);

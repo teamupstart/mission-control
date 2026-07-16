@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { LEASE_HOLDERS } from "../src/shared/harness-runtime.mjs";
 import {
   parsePoolStatus,
   planReap,
@@ -50,10 +51,10 @@ test("parsePoolStatus reads slot, state, holder, and expands ~ to an absolute pa
 test("parsePoolStatus attributes an indented process list to the tree above it", () => {
   const trees = parsePoolStatus(
     [
-      "7     leased       ~/t/7/repo  (held by fleet-control)",
-      "8     leased       ~/t/8/repo  (held by fleet-control)",
+      "7     leased       ~/t/7/repo  (held by mission-control)",
+      "8     leased       ~/t/8/repo  (held by mission-control)",
       "                   claude (74975), node (75244), node (75258)",
-      "9     leased       ~/t/9/repo  (held by fleet-control)",
+      "9     leased       ~/t/9/repo  (held by mission-control)",
     ].join("\n"),
   );
   // Only 8 has processes under it - this is what separates a live agent's tree
@@ -83,7 +84,7 @@ test("parsePoolStatus reads every state the treehouse binary can print", () => {
   // plan entirely - neither reaped nor skipped, which `ReapResult` promises not to do.
   const trees = parsePoolStatus(
     [
-      "1     leased       ~/.treehouse/ai-harness-c7356c/1/ai-harness  (held by fleet-control)",
+      "1     leased       ~/.treehouse/ai-harness-c7356c/1/ai-harness  (held by mission-control)",
       "                   2.1.210 (25528), zsh (25545), node (25834)",
       "2     you're here  ~/.treehouse/ai-harness-c7356c/2/ai-harness",
       "3     available    ~/.treehouse/ai-harness-c7356c/3/ai-harness",
@@ -96,7 +97,7 @@ test("parsePoolStatus reads every state the treehouse binary can print", () => {
   assert.deepEqual(
     trees.map((t) => [t.name, t.state, t.holder, t.busy]),
     [
-      ["1", "leased", "fleet-control", true],
+      ["1", "leased", "mission-control", true],
       // The state column, not a suffix: treehouse stamps it on whichever tree the
       // caller stands in, masking that tree's real state. Note the space in it.
       ["2", "you're here", null, false],
@@ -115,7 +116,7 @@ test("parsePoolStatus never hangs an unreadable tree's process list on the tree 
   // on the strength of processes running in 13, a false reason on a real decision.
   const trees = parsePoolStatus(
     [
-      "12    leased       ~/t/12/repo  (held by fleet-control)",
+      "12    leased       ~/t/12/repo  (held by mission-control)",
       "13    quarantined  ~/t/13/repo",
       "                   claude (99001), node (99002)",
     ].join("\n"),
@@ -128,7 +129,7 @@ test("parsePoolStatus never hangs an unreadable tree's process list on the tree 
 
 /** A pool tree record over a real worktree path. */
 function tree(path: string, over: Partial<PoolTree> = {}): PoolTree {
-  return { name: "1", state: "leased", path, holder: "fleet-control", busy: false, ...over };
+  return { name: "1", state: "leased", path, holder: "mission-control", busy: false, ...over };
 }
 
 /** A repo plus a linked worktree that is clean and fully merged into origin/main. */
@@ -202,23 +203,44 @@ test("planReap spares another holder's lease, idle and clean and merged though i
   // a lease "even with no process running inside it, until you release it", so idle
   // is what a reservation IS, not evidence it was abandoned. We can only claim to
   // know a holder is gone for leases we took, and the sweep now walks every pool in
-  // the workspace - including repos this harness has never dispatched into.
+  // the workspace - including repos this app has never dispatched into.
   const { wt } = mkIdleTree("other-holder");
   const [c] = await planReap([tree(wt, { holder: "release-prep" })], pins());
-  assert.equal(c!.skip, "it is leased to release-prep; we only return fleet-control leases");
+  assert.match(c!.skip!, /^it is leased to release-prep; we only return our own leases/);
 });
 
-test("planReap's foreign-holder reason states the policy rather than disowning the label", async () => {
-  // `ai-harness` is what `make session` recorded before this repo renamed itself, so
-  // a lease under it was taken by this very harness. Skipping it is right (we can't
-  // tell a pre-rename lease from a human's reservation under the same label, and
-  // those are a manual `treehouse return`, not code) - but the REASON has to survive
-  // being read by someone who knows that history, so it names the label and the rule
-  // and claims nothing about whose it was.
-  const { wt } = mkIdleTree("legacy-holder");
-  const [c] = await planReap([tree(wt, { holder: "ai-harness" })], pins());
-  assert.equal(c!.skip, "it is leased to ai-harness; we only return fleet-control leases");
+test("planReap's foreign-holder reason names what it WILL return, not just what it won't", async () => {
+  // The gate returns leases under any name this app has used, so a reason claiming it
+  // only returns `mission-control` ones would be a lie to whoever reads the log.
+  const { wt } = mkIdleTree("reason");
+  const [c] = await planReap([tree(wt, { holder: "release-prep" })], pins());
+  for (const name of LEASE_HOLDERS) assert.match(c!.skip!, new RegExp(name));
   assert.doesNotMatch(c!.skip!, /not this harness/);
+});
+
+test("planReap reclaims a lease stamped with a name this app used to go by", async () => {
+  // The rename migration, encoded. A lease records its holder forever and is never
+  // restamped, so every lease taken before a rename reads the old name - and a gate
+  // that knew only the current one refused them all, silently and permanently. That
+  // is not a hypothesis: `ai-harness` leases were written off as "a one-time
+  // migration, deliberately not encoded here" and one is STILL stranded in the live
+  // pool; the rename to `mission-control` would have stranded six `fleet-control`
+  // leases the same way.
+  // These names were us, and the gate's real question is whether we took the lease.
+  for (const holder of ["mission-control", "ai-harness"]) {
+    const { wt } = mkIdleTree(`was-${holder}`);
+    const [c] = await planReap([tree(wt, { holder })], pins());
+    assert.equal(c!.skip, null, `a lease under our old name ${holder} is ours to collect`);
+  }
+});
+
+test("an old name is reclaimable, not exempt from every other check", async () => {
+  // Widening the holder check must not widen anything else: a former name gets a
+  // lease PAST the first gate, no further. `treehouse return` kills processes and
+  // resets the tree, so the protections after the holder still decide.
+  const { wt } = mkIdleTree("old-but-busy");
+  const [c] = await planReap([tree(wt, { holder: "ai-harness", busy: true })], pins());
+  assert.equal(c!.skip, "processes are still running in it");
 });
 
 test("planReap spares a lease with no recorded holder rather than assuming it is ours", async () => {
@@ -290,11 +312,11 @@ test("reapPool returns only the reclaimable leases and leaves live/dirty ones he
 
   const { deps, returned } = fakeDeps(
     [
-      `1     leased       ${idle}  (held by fleet-control)`,
-      `2     leased       ${busy}  (held by fleet-control)`,
+      `1     leased       ${idle}  (held by mission-control)`,
+      `2     leased       ${busy}  (held by mission-control)`,
       "                   claude (999)",
-      `3     leased       ${dirty}  (held by fleet-control)`,
-      `4     leased       ${live}  (held by fleet-control)`,
+      `3     leased       ${dirty}  (held by mission-control)`,
+      `4     leased       ${live}  (held by mission-control)`,
     ].join("\n"),
   );
 
@@ -320,7 +342,7 @@ test("reapPool still reports every tree when none is even plausibly idle", async
   const { deps, returned } = fakeDeps(
     [
       `1     available    ${busy}`,
-      `2     leased       ${busy}  (held by fleet-control)`,
+      `2     leased       ${busy}  (held by mission-control)`,
       "                   claude (999)",
     ].join("\n"),
   );
@@ -341,7 +363,7 @@ test("reapPool leaves a task's worktree leased rather than handing it to the nex
   // path the pool can re-lease, so its later teardown returns someone else's tree.
   const clone = mkPoolRepo("harness-pool-task-");
   const held = mkLinkedWorktree(clone, "held", join(clone, "..", "k-held"));
-  const { deps, returned } = fakeDeps(`1     leased       ${held}  (held by fleet-control)`);
+  const { deps, returned } = fakeDeps(`1     leased       ${held}  (held by mission-control)`);
 
   const r = await reapPool(clone, () => pins({ taskWorktrees: [held] }), deps);
 
@@ -363,7 +385,7 @@ test("reapPool collects its own leases and leaves every other holder's reservati
 
   const { deps, returned } = fakeDeps(
     [
-      `1     leased       ${ours}  (held by fleet-control)`,
+      `1     leased       ${ours}  (held by mission-control)`,
       `2     leased       ${theirs}  (held by release-prep)`,
       `3     leased       ${anon}`,
     ].join("\n"),
@@ -373,13 +395,11 @@ test("reapPool collects its own leases and leaves every other holder's reservati
 
   assert.deepEqual(returned, [ours], "idle, clean and merged all three - only one is ours");
   assert.deepEqual(r.reaped.map((t) => t.name), ["1"]);
-  assert.deepEqual(
-    r.skipped.map((c) => [c.tree.name, c.skip]),
-    [
-      ["2", "it is leased to release-prep; we only return fleet-control leases"],
-      ["3", "its lease records no holder"],
-    ],
-  );
+  // Which slots are skipped and why - matched on the stable half of the reason, since
+  // the holder list it names is `LEASE_HOLDERS` and grows by one on every rename.
+  assert.deepEqual(r.skipped.map((c) => c.tree.name), ["2", "3"]);
+  assert.match(r.skipped[0]!.skip!, /^it is leased to release-prep; we only return our own leases/);
+  assert.equal(r.skipped[1]!.skip, "its lease records no holder");
 });
 
 test("reapPool accounts for a dirty slot instead of dropping it out of the plan", async () => {
@@ -391,7 +411,7 @@ test("reapPool accounts for a dirty slot instead of dropping it out of the plan"
   const grubby = mkLinkedWorktree(clone, "grubby", join(clone, "..", "d-grubby"));
 
   const { deps, returned } = fakeDeps(
-    [`1     leased       ${ours}  (held by fleet-control)`, `2     dirty        ${grubby}`].join(
+    [`1     leased       ${ours}  (held by mission-control)`, `2     dirty        ${grubby}`].join(
       "\n",
     ),
   );
@@ -416,7 +436,7 @@ test("reapPool reports a failed return as a skip instead of claiming the slot is
 
   const deps: PoolDeps = {
     status: async () => ({
-      stdout: `1     leased       ${idle}  (held by fleet-control)`,
+      stdout: `1     leased       ${idle}  (held by mission-control)`,
       stderr: "",
       code: 0,
     }),
@@ -460,7 +480,7 @@ test("reapPool spares a tree that came alive while it was fetching", async () =>
   // re-read at the moment of the return sees that.
   const clone = mkPoolRepo("harness-pool-race-busy-");
   const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-busy"));
-  const leased = `1     leased       ${idle}  (held by fleet-control)`;
+  const leased = `1     leased       ${idle}  (held by mission-control)`;
   const { deps, returned } = scriptedDeps(leased, [leased, "                   claude (999)"].join("\n"));
 
   const r = await reapPool(clone, () => pins(), deps);
@@ -476,7 +496,7 @@ test("reapPool spares a tree a session appeared in while it was fetching", async
   // which is why the pins are a callback and not a snapshot.
   const clone = mkPoolRepo("harness-pool-race-pin-");
   const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-pin"));
-  const { deps, returned } = scriptedDeps(`1     leased       ${idle}  (held by fleet-control)`);
+  const { deps, returned } = scriptedDeps(`1     leased       ${idle}  (held by mission-control)`);
 
   let reads = 0;
   const r = await reapPool(clone, () => (reads++ === 0 ? pins() : pins({ sessionCwds: [idle] })), deps);
@@ -492,7 +512,7 @@ test("reapPool spares a tree that was re-leased to a different holder mid-sweep"
   const clone = mkPoolRepo("harness-pool-race-holder-");
   const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "r-holder"));
   const { deps, returned } = scriptedDeps(
-    `1     leased       ${idle}  (held by fleet-control)`,
+    `1     leased       ${idle}  (held by mission-control)`,
     `1     leased       ${idle}  (held by someone-else)`,
   );
 
@@ -512,7 +532,7 @@ test("reapPool reaps nothing when it cannot re-read the pool before acting", asy
   const deps: PoolDeps = {
     status: async () =>
       call++ === 0
-        ? { stdout: `1     leased       ${idle}  (held by fleet-control)`, stderr: "", code: 0 }
+        ? { stdout: `1     leased       ${idle}  (held by mission-control)`, stderr: "", code: 0 }
         : { stdout: "", stderr: "treehouse: could not read pool state", code: 1 },
     returnTree: async (_root, path) => {
       returned.push(path);
@@ -538,7 +558,7 @@ test("reapPool re-checks between returns instead of trusting one reading for the
   const clone = mkPoolRepo("harness-pool-race-loop-");
   const first = mkLinkedWorktree(clone, "first", join(clone, "..", "l-first"));
   const second = mkLinkedWorktree(clone, "second", join(clone, "..", "l-second"));
-  const leased = (p: string, name: string) => `${name}     leased       ${p}  (held by fleet-control)`;
+  const leased = (p: string, name: string) => `${name}     leased       ${p}  (held by mission-control)`;
   const idle = [leased(first, "1"), leased(second, "2")].join("\n");
 
   const returned: string[] = [];
@@ -593,28 +613,28 @@ test("poolRepos sweeps a treehouse repo the workspace scan alone can name", asyn
     liveSessions: () => [],
     listTasks: () => [{ repoRoot: linked }],
   } as unknown as Registry;
-  const prev = process.env.FLEET_WORKSPACE_DIRS;
-  process.env.FLEET_WORKSPACE_DIRS = ws;
+  const prev = process.env.MISSION_WORKSPACE_DIRS;
+  process.env.MISSION_WORKSPACE_DIRS = ws;
   try {
     assert.deepEqual(await poolRepos(registry), [realpathSync(pooled)]);
   } finally {
-    if (prev === undefined) delete process.env.FLEET_WORKSPACE_DIRS;
-    else process.env.FLEET_WORKSPACE_DIRS = prev;
+    if (prev === undefined) delete process.env.MISSION_WORKSPACE_DIRS;
+    else process.env.MISSION_WORKSPACE_DIRS = prev;
   }
 });
 
 // --- the sweep's interval ---------------------------------------------------
 
-/** Run `body` with `FLEET_POOL_REAP_MS` set to `value` (or unset), then restore it. */
+/** Run `body` with `MISSION_POOL_REAP_MS` set to `value` (or unset), then restore it. */
 async function withReapEnv(value: string | undefined, body: () => void | Promise<void>): Promise<void> {
-  const prev = process.env.FLEET_POOL_REAP_MS;
-  if (value === undefined) delete process.env.FLEET_POOL_REAP_MS;
-  else process.env.FLEET_POOL_REAP_MS = value;
+  const prev = process.env.MISSION_POOL_REAP_MS;
+  if (value === undefined) delete process.env.MISSION_POOL_REAP_MS;
+  else process.env.MISSION_POOL_REAP_MS = value;
   try {
     await body();
   } finally {
-    if (prev === undefined) delete process.env.FLEET_POOL_REAP_MS;
-    else process.env.FLEET_POOL_REAP_MS = prev;
+    if (prev === undefined) delete process.env.MISSION_POOL_REAP_MS;
+    else process.env.MISSION_POOL_REAP_MS = prev;
   }
 }
 
@@ -640,7 +660,7 @@ test("reapIntervalMs disables on 0 and refuses to hand setTimeout a hot loop", a
   );
 });
 
-test("FLEET_POOL_REAP_MS=0 schedules no sweep at all", async () => {
+test("MISSION_POOL_REAP_MS=0 schedules no sweep at all", async () => {
   await withReapEnv("0", async () => {
     let sweeps = 0;
     const registry = {

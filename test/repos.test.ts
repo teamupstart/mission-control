@@ -8,7 +8,7 @@ import { scanRepos, workspaceRoots } from "../src/server/repos.ts";
 
 /** Lay out a throwaway workspace tree and return its (realpath'd) root. */
 function makeWorkspace(build: (root: string) => void): string {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "fleet-repos-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "mission-repos-")));
   build(root);
   return root;
 }
@@ -61,20 +61,20 @@ test("scanRepos skips noise dirs and is depth-bounded", async () => {
 });
 
 test("scanRepos tolerates a missing root", async () => {
-  assert.deepEqual(await scanRepos(["/no/such/path/fleet-test"]), []);
+  assert.deepEqual(await scanRepos(["/no/such/path/mission-test"]), []);
 });
 
-test("workspaceRoots defaults to ~/workspace and honors FLEET_WORKSPACE_DIRS", () => {
-  const prev = process.env.FLEET_WORKSPACE_DIRS;
+test("workspaceRoots defaults to ~/workspace and honors MISSION_WORKSPACE_DIRS", () => {
+  const prev = process.env.MISSION_WORKSPACE_DIRS;
   try {
-    delete process.env.FLEET_WORKSPACE_DIRS;
+    delete process.env.MISSION_WORKSPACE_DIRS;
     assert.equal(workspaceRoots().length, 1);
     assert.ok(workspaceRoots()[0]?.endsWith("/workspace"));
 
-    process.env.FLEET_WORKSPACE_DIRS = "/one:/two";
+    process.env.MISSION_WORKSPACE_DIRS = "/one:/two";
     assert.deepEqual(workspaceRoots(), ["/one", "/two"]);
   } finally {
-    if (prev === undefined) delete process.env.FLEET_WORKSPACE_DIRS;
-    else process.env.FLEET_WORKSPACE_DIRS = prev;
+    if (prev === undefined) delete process.env.MISSION_WORKSPACE_DIRS;
+    else process.env.MISSION_WORKSPACE_DIRS = prev;
   }
 });

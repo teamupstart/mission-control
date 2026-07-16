@@ -310,11 +310,11 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
 );
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
 
-// ---- Custom skills (fleet-wide skill toggles) ----
+// ---- Custom skills (dashboard-wide skill toggles) ----
 
 /**
- * Which catalog skills are symlinked into `~/.claude/skills`, and how far the fleet
- * has been told about it. Same partial-patch shape as ForemanConfig, over the same
+ * Which catalog skills are symlinked into `~/.claude/skills`, and how far the sessions
+ * have been told about it. Same partial-patch shape as ForemanConfig, over the same
  * `app_config` KV, so a new key needs no migration.
  *
  * Ships with the master switch OFF and nothing enabled: this writes into the
@@ -337,7 +337,7 @@ export const SkillsConfigSchema = z.object({
    * every pane.
    *
    * Bumped ONLY when the reconciler actually changed the symlink set - never on any
-   * config write. Bumping it on an unrelated write would reload the whole fleet, and
+   * config write. Bumping it on an unrelated write would reload every session, and
    * each reload writes a command and its response into a session's context.
    */
   generation: z.number().int().default(0),
@@ -367,7 +367,7 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
  * A worker's leased heartbeat. `workerId` identifies the process so the daemon
  * can tell "the leader renewed" from "a second worker is trying to take over" -
  * which the old bare heartbeat (one module-global timestamp) could not do at all:
- * it just got beaten twice, and two workers would both drain the fleet.
+ * it just got beaten twice, and two workers would both draacross the sessions.
  */
 export const ForemanHeartbeatSchema = z.object({
   workerId: z.string().min(1),
@@ -438,7 +438,7 @@ export const StandardsRequestSchema = z.object({
    * entry per level, so its cost is quadratic in a path's DEPTH - and
    * MAX_CHANGED_PATHS bounds only how many paths it walks, never how deep any one of
    * them goes. A single ~16KB path of nested segments blocks the daemon's event loop
-   * for seconds and a slightly longer one exhausts its heap, taking the whole fleet
+   * for seconds and a slightly longer one exhausts its heap, taking every session
    * down with it. The routes are loopback-only so this is hardening rather than a
    * live exploit, but an unbounded array of unbounded strings is out of step with
    * every sibling schema here, and no real path notices the bound.

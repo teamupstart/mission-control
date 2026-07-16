@@ -12,8 +12,8 @@ import type { ServerEvent, Session, WorkItem } from "../src/shared/types.ts";
 // typically hasn't changed in any way of its own, and every "did anything change?"
 // check in the path is happy to say no.
 
-const home = mkdtempSync(join(tmpdir(), "fleet-orphan-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-orphan-"));
+process.env.MISSION_HOME = home;
 
 const { openDb, upsertQueue, upsertQueueItem } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
@@ -153,7 +153,7 @@ test("re-attach REFUSES a session that could never run the queue", () => {
   // session at the orphan's directory - a Codex one included. `tickTargets` filters
   // to claude, so re-keying onto Codex is a one-way trip: the queue never ticks
   // again, and because that session now HOLDS the key, the queue counts as live -
-  // so neither the cwd hint nor the fleet-level orphan sweep will ever offer it
+  // so neither the cwd hint nor the cross-session orphan sweep will ever offer it
   // again. Permanently stranded, with no surface, by a button the panel itself says
   // shouldn't work ("Work queues are Claude-only for now").
   const registry = new Registry();

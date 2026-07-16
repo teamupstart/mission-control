@@ -1,4 +1,4 @@
-# Plan: Custom Skills (fleet-wide skill toggles)
+# Plan: Custom Skills (dashboard-wide skill toggles)
 
 Status: **built.** See "As built" at the foot for what changed on contact with the code,
 and for the answer to the packaged-Electron question this plan left open.
@@ -59,12 +59,12 @@ Established by that test and its controls:
    satisfiable. Command def: `name: "reload-skills"`, `supportsNonInteractive: true`,
    `thinClientDispatch: "post-text"`.
 2. **Symlinks are followed.** Targets under both `/private/tmp` and `~/workspace` loaded.
-3. **The `fleet-` directory prefix is safe.** Directory name and frontmatter `name` are
-   independent: `fleet-html-plans/` containing `name: html-plans` loads and presents as
+3. **The directory prefix is safe.** Directory name and frontmatter `name` are
+   independent: `mission-html-plans/` containing `name: html-plans` loads and presents as
    `/html-plans`. Omitting `name` defaults it to the directory name. This is the ideal split:
    the harness owns the directory namespace, the user sees a clean skill name.
 4. **`disable-model-invocation: true` excludes a skill from the "N available" count** and from
-   model reach entirely. Almost never what a fleet skill wants. Do not set it in the catalog.
+   model reach entirely. Almost never what an enabled skill wants. Do not set it in the catalog.
 5. **Do not parse the response.** On removal the count correctly dropped (skill unloaded) but
    the label still read `(no changes)` instead of `(1 removed)`. The unload is real; the
    message is not trustworthy. Treat injection as fire-and-forget.
@@ -93,14 +93,14 @@ the hook's "write NOTHING to stdout" contract (`harness-hook.mjs:9`) survives in
 ## The catalog (`skills/<id>/SKILL.md`, new)
 
 Baked into the repo, versioned and reviewable with the app. Standard Claude frontmatter plus a
-`fleet` block for catalog display:
+`mission` block for catalog display:
 
 ```yaml
 ---
 name: html-plans           # what the user sees; may differ from the directory
 description: ...           # preloaded into context; drives model invocation
 metadata:
-  fleet:
+  mission:
     category: planning
     enforcement: opportunistic | triggered | intercepted | always-on
 ---
@@ -130,7 +130,7 @@ reads the current directory and is done. A queue would have typed five commands 
 pane.
 
 Bump the generation **only when the reconciler actually changed the symlink set**, never on
-any config write. Otherwise touching an unrelated setting reloads the whole fleet.
+any config write. Otherwise touching an unrelated setting reloads every session.
 
 Per-session ack: a new `skills_ack` column or row keyed by `noteKeyFor(s)` (`registry.ts:1688`)
 holding the last generation that session acknowledged.
@@ -145,18 +145,24 @@ Mirror of `foreman/config.ts:44`. `getSkillsConfig` / `setSkillsConfig` over `ap
 `"skills"`. No migration.
 
 ### `src/server/skills/reconcile.ts` (new)
-Sync `~/.claude/skills/fleet-<id>` against the enabled set.
+Sync `~/.claude/skills/mission-<id>` against the enabled set.
 
-- Marker: the `fleet-` prefix. **Only ever touch entries matching it.** The operator's
+- Marker: the directory prefix. **Only ever touch entries matching it.** The operator's
   `cyc-prod-build`, `no-mistakes`, `fix-bugs`, `implement-plan`, `phase-plan` must be
   untouchable by construction, not by care.
+- The marker is a newest-first LIST (`SKILL_DIR_PREFIXES`): `mission-` is what we WRITE,
+  and the whole list - `mission-` plus the legacy `fleet-` this shipped under before the
+  Mission Control rename - is what we RECOGNISE as ours. A directory name outlives a
+  rename, so a recogniser that knew only the current prefix would orphan every
+  already-installed `fleet-<id>`: never reconciled, never removed, and a `mission-`
+  duplicate installed beside it.
 - Idempotent. Re-running is a no-op.
 - Returns whether anything changed, so the caller knows whether to bump the generation.
-- Uninstall removes every `fleet-*` and nothing else.
+- Uninstall removes every prefixed link of ours and nothing else.
 
 ### `src/server/skills/reload.ts` (new) - the broadcast loop
 Hangs off the **existing 1500ms discovery tick** (`config.ts:25`) rather than keeping its own
-timer. The poller already re-reads the whole fleet each pass, which is exactly the freshness
+timer. The poller already re-reads every session each pass, which is exactly the freshness
 this needs: a fan-out that snapshots once and injects N times reintroduces precisely the
 staleness the per-target re-read at `worker.ts:288` exists to prevent. Riding the poller makes
 the correct behaviour the lazy one.
@@ -181,7 +187,7 @@ reason that file already gives: the worker and the card must send the same bytes
 ### `src/server/actions.ts:178`
 Generalize the `driving` set from permission-mode cycling to **any pane write**. Nothing today
 stops a reload broadcast from interleaving keystrokes with a Foreman auto-wrapup into the same
-pane; a fleet-wide broadcast is the first feature that makes that collision likely.
+pane; a dashboard-wide broadcast is the first feature that makes that collision likely.
 
 ### `src/server/routes.ts` (~:780, beside the foreman routes)
 - `GET /api/skills` - catalog plus enabled state plus a stale count.
@@ -198,7 +204,7 @@ must not leave its value on screen.
 Rows on the `.kb-row` shape. Master toggle plus `fieldset disabled` cascade from
 `ForemanBar.tsx:113-122`. Each row shows name, description, an **enforcement badge**, and a
 **claude-only badge**. Where useful: "N sessions will pick this up when they next go idle",
-excluding codex sessions or the count lies on a mixed fleet.
+excluding codex sessions or the count lies on a mixed set of sessions.
 
 ### `src/web/components/SettingsModal.tsx:30`
 A second `<section className="settings-section">`. Note this modal has only ever persisted to
@@ -243,15 +249,16 @@ separate leased opt-in process. This ends that invariant. The risk is not v1, it
 someone reasons from the old rule. Write it down where the next reader hits it.
 
 **Global blast radius.** `~/.claude/skills` affects every claude on the machine, including
-sessions the fleet has nothing to do with. Accepted deliberately. `install.mjs` set the
+sessions the dashboard has nothing to do with. Accepted deliberately. `install.mjs` set the
 precedent, but hooks only changed telemetry; skills change what the model does. Marker
 discipline and a real uninstall are therefore not optional.
 
 The real uninstall is the **master switch**, and only it: `applySkillsConfig({enabled:
-false})` persists the intent, unlinks every `fleet-*`, and bumps the generation so the
-fleet is told to drop them. That durability is the whole point - the daemon reconciles
-`~/.claude/skills` against the config on every start, so any removal that leaves the
-config saying "on" is undone by the next launch, which would also re-broadcast a reload.
+false})` persists the intent, unlinks every prefixed link of ours, and bumps the
+generation so every session is told to drop them. That durability is the whole point -
+the daemon reconciles `~/.claude/skills` against the config on every start, so any
+removal that leaves the config saying "on" is undone by the next launch, which would
+also re-broadcast a reload.
 `uninstallSkillLinks()` is the walk, not the decision: it is reached from
 `hooks/install.mjs --uninstall` as a dev-teardown convenience (a checkout being abandoned
 has no panel to click), and is deliberately NOT wired into the packaged tray's "Remove
@@ -264,7 +271,7 @@ Cheap once, not free across twenty sessions times every toggle. The generation w
 mitigation; the misuse to avoid is bumping it on any config write.
 
 **Packaged Electron (open, decide at build time).** A repo-baked catalog plus a symlink means
-`~/.claude/skills/fleet-x -> <appRoot>/skills/x`. Fine from the repo. In a packaged build the
+`~/.claude/skills/mission-x -> <appRoot>/skills/x`. Fine from the repo. In a packaged build the
 resources may live inside an `.asar`, which is not a real directory, so `claude` could not read
 through the symlink. The mechanism is proven sound (symlinks are followed, `/private/tmp`
 targets load); the only question is whether `appRoot` is a readable path when packaged. If not,
@@ -276,8 +283,9 @@ failure that disqualified launch flags.
 
 ## Testing
 
-- `reconcile`: creates/removes only `fleet-*`; leaves a fixture "user skill" untouched;
-  idempotent across repeated runs; reports changed/unchanged correctly.
+- `reconcile`: creates/removes only our own prefixed links, under either prefix; leaves a
+  fixture "user skill" untouched; idempotent across repeated runs; reports
+  changed/unchanged correctly.
 - `generation`: bumps only when the symlink set changes; N rapid toggles produce one reload per
   session (watermark, not queue).
 - `reload` selector: excludes codex, excludes exited, excludes `ack >= generation`, excludes
@@ -358,7 +366,7 @@ front has no write to take back.
 enabled skill, not just the ones that moved, so one stuck row (a skill a `git pull`
 deleted) makes `problems` non-empty forever. Scoping only the rollback wasn't enough -
 the route still answered 409 on any problem, which turned a toggle that had fully
-applied (links written, generation bumped, fleet notified) into "nothing changed",
+applied (links written, generation bumped, sessions notified) into "nothing changed",
 reverted the switch, then let the next poll flip it back on. `refused` is therefore its
 own field, separate from `problems`, and the route 409s on that alone.
 
@@ -397,13 +405,13 @@ rendered on. `skillDrift` is a read-only check on each poll.
 
 **The `skills` patch merges per key.** Replacement would make the panel round-trip the
 whole map on every click, so a second open dashboard would silently switch off a skill the
-first just enabled fleet-wide.
+first just enabled across every session.
 
 **"Absence of evidence is not evidence" turned out to be the whole shape of this
 subsystem's bugs**, and it recurred in four places that each looked unrelated: a skill
 missing from the parsed catalog (deleted, or unparseable?), an unreadable `skills/` (no
 skills, or no answer?), an unreadable `~/.claude/skills` (empty, or not allowed to
-look?), and a `fleet-` entry that isn't a symlink (stale, or someone's own work?). Every
+look?), and a prefixed entry that isn't a symlink (stale, or someone's own work?). Every
 one defaulted to the destructive reading, and every one is silent. If you add a branch
 here, the question to ask is which of the two things a null means.
 
@@ -415,7 +423,7 @@ here, the question to ask is which of the two things a null means.
   uninstalled mid-session, an agent wedged without exiting - is counted and never
   reloaded. The alternative is worse: gating the count on `instrumented` makes it blink
   to zero for a session that is merely quiet, which is the single most common state in
-  this fleet, and a zero that means "nobody needs this" when twenty sessions do is a
+  this dashboard, and a zero that means "nobody needs this" when twenty sessions do is a
   worse lie than an N that lingers.
 - **The pane lock makes every write refusable.** `sendText`/`injectPrompt` can now answer
   PANE_BUSY, and existing callers read any failure as a real one - `dispatcher.ts` fails
@@ -432,17 +440,17 @@ session already at its prompt:
 ```
 ❯ /reload-skills
   ⎿  Reloaded skills: 52 skills available (no changes)   ← before the symlink
-# fleet-html-plans symlinked here, mid-session, no restart
+# mission-html-plans symlinked here, mid-session, no restart
 ❯ /reload-skills
   ⎿  Reloaded skills: 53 skills available (1 added)      ← picked up
 ```
 
-- The skill presents in the slash menu as `/html-plans` from a `fleet-html-plans/`
+- The skill presents in the slash menu as `/html-plans` from a `mission-html-plans/`
   directory, with its own description. The prefix split holds.
-- **But the MODEL's skill registry uses the DIRECTORY name** - it sees `fleet-html-plans`.
+- **But the MODEL's skill registry uses the DIRECTORY name** - it sees `mission-html-plans`.
   Harmless (the description is what drives invocation, and it's untouched) but the prefix
   is not quite invisible, and anything matching on a model-facing skill name must expect it.
-- The reconciler linked and later unlinked `fleet-html-plans` while five hand-authored
+- The reconciler linked and later unlinked `mission-html-plans` while five hand-authored
   skills - three of them symlinks - sat beside it untouched, byte for byte.
 - **The gate was tested against two real dialogs, not a fixture.** A fresh claude opened on
   the "Quick safety check: Is this a project you created or one you trust?" list, and later

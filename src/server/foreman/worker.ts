@@ -28,7 +28,7 @@ import { verifyItem } from "./queue-verify.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
-// the fleet's needs-you queue AND feeds each session's work queue, one session at
+// the sessions' needs-you queue AND feeds each session's work queue, one session at
 // a time, reviewing each in a FRESH `claude -p` process so context never bleeds
 // between sessions. It reaches the daemon only over the localhost API - it never
 // touches the DB directly - so it is a plain client that can run in its own
@@ -82,12 +82,12 @@ const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
 /** This process's identity for the lease. New per start, by design. */
 const WORKER_ID = `${process.pid}-${randomUUID().slice(0, 8)}`;
-/** Whether we currently hold the fleet lease. Owned by the renewal timer. */
+/** Whether we currently hold the worker lease. Owned by the renewal timer. */
 let isLeader = false;
 
 /**
  * Renew the lease on a BACKGROUND TIMER, not from the loop. This is the
- * difference between a lease that works and one that hands the fleet to two
+ * difference between a lease that works and one that hands the sessions to two
  * workers mid-verify.
  *
  * The loop blocks on a `claude -p` for up to 2 * REVIEW_TIMEOUT_MS = 240s, so a
@@ -103,7 +103,7 @@ function startLeaseRenewal(client: ForemanClient): void {
     const r = await client.heartbeat(WORKER_ID);
     const was = isLeader;
     // A daemon we cannot reach means we CANNOT claim leadership: assuming it
-    // because the ask failed is exactly how two workers end up draining the fleet.
+    // because the ask failed is exactly how two workers end up draining the queue.
     isLeader = r?.leader ?? false;
     if (was && !isLeader) log("lost the lease - standing by");
     if (!was && isLeader) log("acquired the lease - this worker is the leader");
@@ -114,7 +114,7 @@ function startLeaseRenewal(client: ForemanClient): void {
 
 /**
  * Tear down on an ordinary exit signal. Two things must happen:
- *  - Kill our reviewers. They spawn `detached` (so the fleet poller never sees them
+ *  - Kill our reviewers. They spawn `detached` (so the session poller never sees them
  *    as phantom sessions), which also means they'd SURVIVE us and burn tokens to
  *    nowhere. A SIGKILL of this process still leaks them; nothing can be done about
  *    that from in here, but every ordinary path is covered.
@@ -194,7 +194,7 @@ async function main(): Promise<void> {
     // pickup window. The needs-you half has the same shape once a prompt's marker is
     // handled. So the honest place to notice "nothing here right now" is the outcome,
     // not the selector - a pass that changed nothing has, by definition, nothing to
-    // hurry back for, and IDLE_MS is the same latency an idle fleet already accepts.
+    // hurry back for, and IDLE_MS is the same latency an idle set of sessions already accepts.
     let advanced = false;
 
     for (const session of targets) {
@@ -264,7 +264,7 @@ async function processTarget(
   session: Session,
   reviews: ReviewItem[],
 ): Promise<boolean> {
-  // Re-resolve the target against a FRESH fleet before deciding ANYTHING - including
+  // Re-resolve the target against a FRESH session list before deciding ANYTHING - including
   // whether this session is here because it needs you - through the same
   // `resolveLiveSession` the send guard uses, for the same reason: a pass walks its
   // targets serially and any one of them can block on a `claude -p` for up to 240s,
@@ -276,23 +276,23 @@ async function processTarget(
   // A FAILED read is not evidence of anything, so it decides nothing: skip the
   // target and re-decide next tick. Falling back to the stale `session` would
   // reintroduce the exact bug this re-resolve exists to close, and a one-element
-  // fallback would also lie to `reportBucket`, which needs the real fleet to tell a
+  // fallback would also lie to `reportBucket`, which needs the real session list to tell a
   // gate this agent is driving from one that needs you.
   //
   // This read sits ABOVE the no-queue branch because that branch needs both answers
   // just as much: it called `reportBucket(session, [session])`, and a one-element
-  // fleet cannot see that a SIBLING session is driving the same no-mistakes run, so
+  // list cannot see that a SIBLING session is driving the same no-mistakes run, so
   // a gate nobody needs to answer read as "needs-you" and spawned a full `claude -p`
   // triage from a possibly minutes-old snapshot. In dry-run that never reaches
-  // `sendStillValid` (the one guard that does re-read the fleet), so it landed as a
+  // `sendStillValid` (the one guard that does re-read the sessions), so it landed as a
   // spurious escalation note nagging the human about a gate that was already handled.
-  const fleet = await client.sessions().catch(() => null);
-  if (!fleet) return false;
+  const live = await client.sessions().catch(() => null);
+  if (!live) return false;
   // A successful read that no longer lists this session (or lists it as exited) says
-  // the fleet moved on under us. Say nothing about it from a stale snapshot: if it's
+  // the sessions moved on under us. Say nothing about it from a stale snapshot: if it's
   // really gone the orphan sweep owns its in-flight item - and unlike this path, that
   // sweep waits out the exit linger before calling anything orphaned.
-  const fresh = resolveLiveSession(fleet, noteKeyOf(session));
+  const fresh = resolveLiveSession(live, noteKeyOf(session));
   if (!fresh) return false;
 
   // The FULL queue: Session.queue is only the compact card summary, while the
@@ -302,7 +302,7 @@ async function processTarget(
 
   if (!queue || queue.items.length === 0) {
     // No queue: this session is here because it needs you.
-    if (reportBucket(fresh, fleet) === "needs-you" || fresh.state === "awaiting_input") {
+    if (reportBucket(fresh, live) === "needs-you" || fresh.state === "awaiting_input") {
       return await processSession(client, cfg, fresh, reviews);
     }
     return false;
@@ -312,7 +312,7 @@ async function processTarget(
 
   const action = decideQueueTick({
     session: fresh,
-    bucket: reportBucket(fresh, fleet),
+    bucket: reportBucket(fresh, live),
     queue,
     cfg: qcfg,
     mayActLive: foremanMayActLive(cfg, fresh.cwd, fresh.repoRoot),
@@ -651,8 +651,8 @@ async function processSession(
   );
 
   // The review may have spawned a fresh `claude -p` that ran for up to two minutes, so
-  // both the fleet snapshot and the config are stale by the time we're ready to act.
-  // Before a LIVE send, re-confirm against a fresh fleet that this session still
+  // both the session snapshot and the config are stale by the time we're ready to act.
+  // Before a LIVE send, re-confirm against a fresh session list that this session still
   // needs *this* exact prompt; if the human already handled it (answered, left
   // needs-you, or a newer prompt arrived), skip the send but still record the
   // purpose. Then re-plan from a fresh config so every "toggle stops acting" switch
@@ -784,7 +784,7 @@ async function cheapTierDecides(
   // row (its schema has no field for one), so on a menu every answer it reaches lands here -
   // and a menu is what a permission prompt is. Handing it to the full reviewer, which can name
   // a row, keeps the ask automated; treating it as final would escalate every routine approval
-  // on an `on` fleet to a human. If the full review can't name a row either, `planFromVerdict`
+  // to a human when the tier is `on`. If the full review can't name a row either, `planFromVerdict`
   // escalates it there - the fallback stays, it just stops being the first stop.
   const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
   log(`${session.name}: routed up to full review (${why})`);
@@ -898,7 +898,7 @@ function describeCheap(cheap: TriageOutcome): string {
 
 /**
  * Re-confirm, immediately before a live send, that the session still needs this
- * exact prompt. A fresh fleet + reviews snapshot guards the send against a queue
+ * exact prompt. A fresh session list + reviews snapshot guards the send against a queue
  * that moved while the (slow) review ran. Returns false (skip the send) if the
  * session left needs-you, a newer prompt arrived, the marker is already handled,
  * or the re-check itself failed - reads are cheap, so we only guard the send path.

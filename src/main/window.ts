@@ -1,5 +1,5 @@
 // The main window. It loads the daemon's own origin (http://127.0.0.1:7317) in
-// production, or the Vite dev server when FLEET_DEV_SERVER_URL is set - never
+// production, or the Vite dev server when MISSION_DEV_SERVER_URL is set - never
 // file://, so the SPA's same-origin relative URLs, the SSE stream, and the
 // daemon's loopback-Host security check all keep working unchanged.
 //
@@ -15,13 +15,13 @@ let win: BrowserWindow | null = null;
 export const getMainWindow = (): BrowserWindow | null => win;
 
 function targetUrl(): string {
-  return process.env.FLEET_DEV_SERVER_URL || BASE_URL;
+  return process.env.MISSION_DEV_SERVER_URL || BASE_URL;
 }
 
 /** Origins the window is allowed to navigate to in-place; everything else opens externally. */
 function allowedOrigins(): string[] {
   const origins = [new URL(BASE_URL).origin];
-  const dev = process.env.FLEET_DEV_SERVER_URL;
+  const dev = process.env.MISSION_DEV_SERVER_URL;
   if (dev) origins.push(new URL(dev).origin);
   return origins;
 }
@@ -54,7 +54,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
     minWidth: 720,
     minHeight: 480,
     show: false,
-    title: "Agent Wrangler",
+    title: "Mission Control",
     backgroundColor: "#0e1116",
     webPreferences: {
       preload: preloadPath,

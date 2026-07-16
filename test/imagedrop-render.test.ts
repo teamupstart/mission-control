@@ -8,6 +8,8 @@ import {
   type PendingAttachment,
 } from "../src/web/components/ImageDrop.tsx";
 import { DispatchLayer } from "../src/web/components/DispatchModal.tsx";
+import { AddBox } from "../src/web/components/WorkQueue.tsx";
+import type { ImageDrop } from "../src/web/components/ImageDrop.tsx";
 
 // The compose surfaces, rendered. Static markup rather than a driven browser: the
 // dashboard's pages don't take script injection from the automation extension, and
@@ -85,4 +87,69 @@ test("the dispatch task box advertises that it takes images", () => {
 
 test("a closed dispatch layer renders nothing", () => {
   assert.equal(renderToStaticMarkup(createElement(DispatchLayer, { open: false, onClose: () => {} })), "");
+});
+
+// ---- the work queue's add box ----
+//
+// A queued item is delivered by typing it into a pane later, exactly like a reply -
+// so the same drop gesture has to mean the same thing here. The risk is the same one
+// too, only worse for being deferred: an item that ships without its screenshot isn't
+// noticed until an agent picks it up and asks what image.
+
+function drop(over: Partial<ImageDrop> = {}): ImageDrop {
+  return {
+    dropping: false,
+    uploading: false,
+    addFiles: () => {},
+    remove: () => {},
+    dropProps: { onDragEnter: () => {}, onDragOver: () => {}, onDragLeave: () => {}, onDrop: () => {} },
+    onPaste: () => {},
+    ...over,
+  };
+}
+
+const addBox = (over: { value?: string; attachments?: PendingAttachment[]; drop?: ImageDrop } = {}): string =>
+  renderToStaticMarkup(
+    createElement(AddBox, {
+      value: over.value ?? "",
+      onChange: () => {},
+      onAdd: () => {},
+      disabled: false,
+      placeholder: "Queue more work…  (⌘↵ to add, drop or paste images)",
+      attachments: over.attachments ?? [],
+      drop: over.drop ?? drop(),
+    }),
+  );
+
+test("the queue's add box advertises that it takes images", () => {
+  assert.match(addBox(), /drop or paste images/);
+});
+
+test("an image alone is enough to queue an item", () => {
+  // `withAttachments` makes a bare path a complete message, so requiring words here
+  // would refuse an item the server would have taken - "look at this" with a picture.
+  assert.ok(!addBox({ attachments: [att()] }).includes("disabled"), "Add should be live");
+});
+
+test("an empty add box offers nothing to add", () => {
+  assert.match(addBox(), /disabled/);
+  assert.match(addBox({ value: "   " }), /disabled/);
+});
+
+test("Add stands down while an image is still uploading, and says so", () => {
+  // The deferred version of the send box's guard: queueing now stores an intent whose
+  // image has no path yet, and nothing later goes back to add it.
+  const html = addBox({
+    value: "fix this",
+    attachments: [att({ status: "uploading", upload: undefined })],
+    drop: drop({ uploading: true }),
+  });
+  assert.match(html, /disabled/);
+  assert.match(html, /Uploading…/);
+});
+
+test("the add box shows what's attached, and raises the veil on a drag", () => {
+  assert.match(addBox({ attachments: [att()] }), /screenshot\.png/);
+  assert.ok(!addBox({ attachments: [att()] }).includes("drop-veil"));
+  assert.match(addBox({ drop: drop({ dropping: true }) }), /drop-veil/);
 });

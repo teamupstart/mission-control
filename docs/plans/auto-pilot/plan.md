@@ -3,19 +3,19 @@
 Status: proposed
 Owner: ai-harness
 Related: First Mate idea #2 (the zero-token watcher + `/afk`). Reuses the shared
-bucketing from [`../fleet-report/plan.md`](../fleet-report/plan.md).
+bucketing from [`../mission-report/plan.md`](../mission-report/plan.md).
 Note: per the request, **no SMS / phone push** - alerts are a **browser notification
 + a sound** only.
 
 ## Goal
 
-Stop having to watch the grid. The dashboard actively **alerts you when the fleet
+Stop having to watch the grid. The dashboard actively **alerts you when a session
 needs you** - a desktop (Chrome) notification plus a sound - the moment a session
 goes to `needs-input`, a review lands, a no-mistakes gate parks, or a dispatched
 task finishes. An **AFK mode** escalates (alerts on more, and sends periodic
 digests) so you can step away.
 
-This is First Mate's "a bash watcher sleeps on the fleet and wakes you only when
+This is First Mate's "a bash watcher sleeps on the sessions and wakes you only when
 something needs you" - but the watcher is **the daemon we already run** (it detects
 every one of these events and streams them over SSE), and the browser turns those
 events into alerts. Zero extra tokens, no new agent, no polling.
@@ -28,11 +28,11 @@ events into alerts. Zero extra tokens, no new agent, no polling.
   (`useEventStream`). So the alert layer is a **consumer of the existing stream** -
   no server changes required.
 - "Who needs you" is already defined once in `@shared/session.ts`
-  (`reportBucket` / `needsYouReason`, built for the fleet report). The alert engine
+  (`reportBucket` / `needsYouReason`, built for the roundup report). The alert engine
   reuses it, so alerts and the report agree on what "attention" means.
 - The daemon runs as a login LaunchAgent and the dashboard is meant to be open, so
   a browser Notification from the open tab (foreground or background) is exactly the
-  right delivery for a local, single-user fleet - which is why SMS/phone push isn't
+  right delivery for a local, single-user dashboard - which is why SMS/phone push isn't
   needed here.
 
 ## Architecture
@@ -56,10 +56,10 @@ export interface AlertSettings {
   afk: boolean;
   digestMinutes: number;
 }
-/** Diff the previous vs current fleet snapshot and return only the NEW alerts. */
-export function detectAlerts(prev: Fleet, next: Fleet, s: AlertSettings): Alert[];
+/** Diff the previous vs current session snapshot and return only the NEW alerts. */
+export function detectAlerts(prev: AlertScope, next: AlertScope, s: AlertSettings): Alert[];
 /** Compact "3 need you · 2 working · 1 done" digest line (reuses report bucketing). */
-export function digestLine(next: Fleet): string;
+export function digestLine(next: AlertScope): string;
 ```
 - **What fires when:**
   - Always (watching + AFK): a session entering `awaiting_input`; a new pending
@@ -80,7 +80,7 @@ export function digestLine(next: Fleet): string;
   - **Sound**: a short **Web Audio** chime (no asset file, so no CSP/bundle concern)
     - a two-note tone for `attention`, a single soft note for `info`. Rate-limited
     (≤ one chime / ~1.5s) so a burst doesn't machine-gun.
-- **Digest timer** (AFK only): every `digestMinutes`, a `Fleet digest` notification
+- **Digest timer** (AFK only): every `digestMinutes`, a `Session digest` notification
   with `digestLine(...)`.
 
 ### `src/web/lib/alertSettings.ts` (new) - persistence

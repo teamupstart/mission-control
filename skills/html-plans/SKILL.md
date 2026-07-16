@@ -2,7 +2,7 @@
 name: html-plans
 description: Renders a written plan as a single self-contained HTML page next to the markdown, so a plan can be skimmed in a browser instead of a diff. Use when the user asks to publish, render, or share a plan, or asks for a plan "as a page".
 metadata:
-  fleet:
+  mission:
     category: planning
     enforcement: triggered
 ---

@@ -104,7 +104,7 @@ export class ForemanClient implements ForemanActions {
   /**
    * Acquire/renew the worker lease. Returns null when the daemon is unreachable,
    * which the caller MUST treat as "not the leader" - assuming leadership because
-   * we couldn't ask is exactly how two workers end up draining the fleet.
+   * we couldn't ask is exactly how two workers end up draining the queue.
    */
   async heartbeat(workerId: string): Promise<ForemanLeaseResult | null> {
     try {

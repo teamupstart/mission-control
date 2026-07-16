@@ -1,4 +1,4 @@
-# Migration plan: Fleet Control → native macOS (Electron) app
+# Migration plan: Mission Control → native macOS (Electron) app
 
 **Status:** proposed · **Target:** Apple Silicon macOS only · **Scope:** full one-shot
 migration that preserves 100% of current functionality and keeps a near-identical
@@ -13,7 +13,7 @@ the final cutover, so the migration is safe to land incrementally and revert at 
 ## 1. Goals & non-goals
 
 ### Goals
-- Ship a single double-clickable **Fleet Control.app** that lives in the menu bar and
+- Ship a single double-clickable **Mission Control.app** that lives in the menu bar and
   the Dock.
 - **Deliver alerts (notification + chime) with no browser tab open** - the one thing the
   web version structurally cannot do (README: *"Delivery needs the tab open… a closed tab
@@ -49,7 +49,7 @@ wraps cleanly:
   `no-mistakes` / `treehouse`) from the daemon - works identically from any Node process.
 - **Satellites**: two external processes that Claude Code launches, not us -
   `hooks/harness-hook.mjs` (status bridge) and `dist/mcp/server.mjs` (review channel). Both
-  reach the daemon over loopback HTTP + a shared token in `~/.fleet-control/token`.
+  reach the daemon over loopback HTTP + a shared token in `~/.mission-control/token`.
 
 The migration touches **four** things: (1) the SQLite driver, (2) how the daemon is
 started, (3) where notifications are delivered, and (4) how the two satellites are packaged
@@ -60,13 +60,13 @@ and registered. Everything else is reused unchanged.
 ## 3. Target architecture
 
 ```
-┌──────────────────────────── Fleet Control.app ────────────────────────────┐
+┌──────────────────────────── Mission Control.app ────────────────────────────┐
 │                                                                            │
 │  Electron main process (Node)                                              │
 │   ├─ daemon supervisor ── utilityProcess.fork(dist/server) ──┐            │
 │   │     • adopt if :7317 already healthy, else spawn          │            │
-│   │     • inject login-shell PATH + FLEET_WEB_DIR             │            │
-│   │     • restart w/ backoff; logs → ~/.fleet-control/daemon.log         │
+│   │     • inject login-shell PATH + MISSION_WEB_DIR             │            │
+│   │     • restart w/ backoff; logs → ~/.mission-control/daemon.log         │
 │   ├─ BrowserWindow ── loadURL(http://127.0.0.1:7317) ────────┼──┐        │
 │   │     • close → hide (app stays resident); real quit tears down        │
 │   ├─ Tray ── live "N need you · M working · K idle" (own SSE read)       │
@@ -122,7 +122,7 @@ of `src/server/index.ts` (no `tsx` in production).
   quit, only stop a daemon **we** spawned. This makes the app coexist with the existing
   headless/dev daemon rather than fighting over `:7317`.
 - **Supervision:** restart on unexpected exit with backoff; surface a tray error if it can't
-  bind. Pipe daemon stdout/stderr to `~/.fleet-control/daemon.log`.
+  bind. Pipe daemon stdout/stderr to `~/.mission-control/daemon.log`.
 
 ### D3 — Inject a real `PATH` (critical)
 A GUI app launched from Finder inherits a **minimal** `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`).
@@ -161,7 +161,7 @@ imports) shipped as **`extraResources`** (plain files, not inside the asar). An 
 - **Which runtime runs a satellite?** Prefer a resolved **system `node`** (hooks fire on
   every tool use; bare-node cold start is the lowest-latency option, matching today). If no
   `node` is found, fall back to the app binary in Node mode
-  (`ELECTRON_RUN_AS_NODE=1 "…/Fleet Control" hook.mjs …`) so it still works self-contained,
+  (`ELECTRON_RUN_AS_NODE=1 "…/Mission Control" hook.mjs …`) so it still works self-contained,
   accepting slightly higher per-event overhead. The install action resolves this once and
   writes a concrete command.
 
@@ -188,7 +188,7 @@ src/
     integrations.ts       install/remove Claude hooks + MCP registration (D5)
   preload/
     index.ts            NEW  contextBridge: openExternal, appVersion, quit, install-integrations
-  server/               (unchanged, except db.ts driver swap + FLEET_WEB_DIR support)
+  server/               (unchanged, except db.ts driver swap + MISSION_WEB_DIR support)
   web/                  (unchanged; renderer keeps useNotifier/chime as-is)
   shared/               (unchanged)
   mcp/                  (unchanged source; now also emitted as a satellite bundle)
@@ -229,27 +229,27 @@ project a normal web app that still runs via `npm run dev` / `npm start`.
 untouched. The only requirement is that the esbuild server bundle keeps `node:sqlite`
 external (automatic for `node:` builtins under `--platform=node`).
 - **Acceptance:** the server bundle run under Electron's Node opens
-  `~/.fleet-control/harness.db`, and a dispatch/restart round-trips the backlog/reviews.
+  `~/.mission-control/harness.db`, and a dispatch/restart round-trips the backlog/reviews.
 
 ### Phase 2 — Production server & satellite bundles (esbuild)
 - **`build:server`**: esbuild `src/server/index.ts` → `dist/server/index.mjs`,
   `--platform=node --format=esm --alias:@shared=./src/shared` (`node:sqlite` stays external
   automatically). Ensure `routes.ts`'s version read resolves from the bundle location (ship
   `package.json`, which the app already includes).
-- **`FLEET_WEB_DIR`**: teach `src/server/index.ts` to resolve the static root from
-  `process.env.FLEET_WEB_DIR` (absolute) when set, falling back to the current
+- **`MISSION_WEB_DIR`**: teach `src/server/index.ts` to resolve the static root from
+  `process.env.MISSION_WEB_DIR` (absolute) when set, falling back to the current
   `import.meta.url`-relative `dist/web` for dev. Serve with an **absolute** root, not the
   CWD-relative `"./dist/web"`, so it works regardless of the app's working directory.
 - **`build:hook`**: esbuild `hooks/harness-hook.mjs` → `dist/satellites/hook.mjs`
   (inlines `harness-runtime.mjs`, so the satellite is a single self-contained file).
 - **`build:mcp`** (existing) also copies its output to `dist/satellites/mcp.mjs`.
 - **Acceptance:** `node dist/server/index.mjs` serves the built UI on `:7317` with an
-  explicit `FLEET_WEB_DIR`; `node dist/satellites/hook.mjs SessionStart </dev/null` exits 0
+  explicit `MISSION_WEB_DIR`; `node dist/satellites/hook.mjs SessionStart </dev/null` exits 0
   and (with a running daemon) reports a session.
 
 ### Phase 3 — Electron shell: window + daemon supervisor
 - `src/main/daemon.ts`: adopt-or-spawn (D2) via `utilityProcess.fork(dist/server/index.mjs)`
-  with env `{ ...loginShellEnv, FLEET_WEB_DIR }`; health-poll `/api/health`; restart w/
+  with env `{ ...loginShellEnv, MISSION_WEB_DIR }`; health-poll `/api/health`; restart w/
   backoff; log to `daemon.log`.
 - `src/main/path-env.ts`: resolve login-shell PATH (D3), cached.
 - `src/main/window.ts`: create `BrowserWindow` (hardened webPreferences), **retry
@@ -288,7 +288,7 @@ external (automatic for `node:` builtins under `--platform=node`).
 - `src/main/integrations.ts`: port the logic of `hooks/install.mjs` into the app, but write
   the **packaged** absolute paths (`process.resourcesPath/satellites/hook.mjs`) and the
   resolved runtime (D5: system `node`, else `ELECTRON_RUN_AS_NODE`). Register/unregister the
-  MCP server by shelling `claude mcp add/remove -s user fleet-control -- <runtime> <mcp.mjs>`.
+  MCP server by shelling `claude mcp add/remove -s user mission-control -- <runtime> <mcp.mjs>`.
   Reuse the existing surgical `jsonc-parser` merge so the user's other hooks/comments are
   preserved. Provide **Install** and **Remove** menu items + a first-run prompt.
 - Keep `npm run install-hooks` (repo paths) working for the dev/self-hosted flow.
@@ -298,7 +298,7 @@ external (automatic for `node:` builtins under `--platform=node`).
 
 ### Phase 7 — Packaging (`electron-builder`)
 - `electron-builder.yml`:
-  - `appId: com.fleet-control.app`, `productName: Fleet Control`,
+  - `appId: com.mission-control.app`, `productName: Mission Control`,
     `mac.target: [dmg, dir]`, `mac.category: public.app-category.developer-tools`,
     `mac.arch: arm64`, `icon: build/icon.icns`.
   - `files`: `dist/main`, `dist/preload`, `dist/web`, `dist/server`, `package.json`.
@@ -306,7 +306,7 @@ external (automatic for `node:` builtins under `--platform=node`).
   - `mac.identity: null` (ad-hoc sign) + `build/entitlements.mac.plist`. **No native rebuild
     or `asarUnpack` needed** - there are no native modules (D1).
 - `package.json` script `package`: `electron-builder --mac` (output → `release/`).
-- **Acceptance:** `npm run package` produces `release/Fleet Control.dmg`; installing to
+- **Acceptance:** `npm run package` produces `release/Mission Control.dmg`; installing to
   `/Applications` and launching from Finder yields a working app - **daemon spawns on
   Electron's Node, PATH is injected (tmux/wezterm/no-mistakes resolve), discovery + dispatch
   + reviews + alerts all work** with no terminal and no system `node` required to run.
@@ -378,9 +378,9 @@ desktop: ## Electron shell + daemon + Vite, all auto-reload (Ctrl-C to stop)
 app: ## Build and package the macOS app into release/
 	npm run package
 
-install-app: app ## Build, package, and copy Fleet Control.app into /Applications
-	@rm -rf "/Applications/Fleet Control.app"
-	@cp -R "release/mac-arm64/Fleet Control.app" /Applications/ && echo "installed to /Applications"
+install-app: app ## Build, package, and copy Mission Control.app into /Applications
+	@rm -rf "/Applications/Mission Control.app"
+	@cp -R "release/mac-arm64/Mission Control.app" /Applications/ && echo "installed to /Applications"
 ```
 `make up`/`down` (which `pkill -f src/server/index.ts`) still manage the **dev** daemon; the
 packaged app supervises its own, so they don't collide.
@@ -418,7 +418,7 @@ new bundles. Two adjustments + one new job:
       - run: npm ci
       - run: npm run package            # esbuild bundles + electron-builder (no native rebuild)
       - uses: actions/upload-artifact@v4
-        with: { name: fleet-control-dmg, path: release/*.dmg }
+        with: { name: mission-control-dmg, path: release/*.dmg }
   ```
   This verifies native rebuild + packaging on every release without burdening PR CI.
 
@@ -441,7 +441,7 @@ Verify each in the **packaged** app (launched from Finder, no terminal, no syste
 | Review channel (MCP) | `request_review` shows a diff; decision returns | MCP satellite + token |
 | Dispatch (worktree + detached tmux) | dispatch a task; agent appears with intent chip | daemon PATH + treehouse |
 | no-mistakes strip + approve/fix/skip | gated repo shows pipeline; respond to a gate | daemon PATH |
-| Fleet report / copy-as-markdown | Report panel; clipboard copy works | loopback = secure context |
+| Roundup report / copy-as-markdown | Report panel; clipboard copy works | loopback = secure context |
 | Transcript stream / diff view | expand a card | EventSource over loopback |
 | Persistence across restart | dispatch, quit app, relaunch → backlog intact | node:sqlite (D1) |
 | **Alerts with window hidden** | hide window; trigger needs-input → OS notif + chime | hide-on-close (D4) |
@@ -463,7 +463,7 @@ Verify each in the **packaged** app (launched from Finder, no terminal, no syste
 | Gatekeeper blocks an unsigned app | med | Ad-hoc sign in `electron-builder`; document `xattr -dr com.apple.quarantine` for the local install |
 | Daemon startup race → blank window | low | Retry `loadURL` until `/api/health` passes; show a "Connecting…" state |
 | Double daemon (LaunchAgent + app) | low | Adopt-or-spawn (D2): app adopts a healthy `:7317` and never double-binds |
-| `routes.ts` version read / static root break when bundled | med | esbuild `--define` the version; serve static from an absolute `FLEET_WEB_DIR` (Phase 2) |
+| `routes.ts` version read / static root break when bundled | med | esbuild `--define` the version; serve static from an absolute `MISSION_WEB_DIR` (Phase 2) |
 
 ---
 
@@ -474,7 +474,7 @@ Verify each in the **packaged** app (launched from Finder, no terminal, no syste
   daemon (D1 keeps `node:sqlite`); only new build scripts and bundles are added.
 - Electron (Phases 3–8) is additive - new files under `src/main`, `src/preload`, and new
   scripts. Deleting those and reverting `"main"` returns the repo to the web app.
-- The packaged app and the headless daemon share the same `~/.fleet-control` state dir, port,
+- The packaged app and the headless daemon share the same `~/.mission-control` state dir, port,
   and token, so you can switch between "app" and "browser + LaunchAgent" freely without data
   migration.
 
@@ -486,7 +486,7 @@ Verify each in the **packaged** app (launched from Finder, no terminal, no syste
 |---|---|---|
 | 0 | Tooling, tsconfig split, deps | 0.5 d |
 | 1 | SQLite driver swap | 0.5 d |
-| 2 | Server + satellite bundling, `FLEET_WEB_DIR` | 0.5–1 d |
+| 2 | Server + satellite bundling, `MISSION_WEB_DIR` | 0.5–1 d |
 | 3 | Electron shell + daemon supervisor + PATH | 1.5 d |
 | 4 | Tray / menu bar | 0.5 d |
 | 5 | Alerts-while-hidden + verification | 0.5 d |

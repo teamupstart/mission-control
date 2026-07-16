@@ -36,7 +36,7 @@ export async function daemonHealthy(timeoutMs = 800): Promise<boolean> {
     clearTimeout(t);
     if (!res.ok) return false;
     const j = (await res.json()) as { service?: string };
-    return j.service === "fleet-control";
+    return j.service === "mission-control";
   } catch {
     return false;
   }
@@ -65,7 +65,7 @@ export interface StartDaemonOptions {
  * Adopt a running daemon, or spawn + supervise our own. The spawned daemon is
  * restarted with capped backoff if it exits unexpectedly, and torn down on
  * `stop()`. Its env carries the resolved login-shell PATH (so it can find
- * tmux/wezterm/git/no-mistakes/treehouse) and FLEET_WEB_DIR.
+ * tmux/wezterm/git/no-mistakes/treehouse) and MISSION_WEB_DIR.
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonController> {
   if (await daemonHealthy()) {
@@ -81,12 +81,12 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DaemonContr
   const spawn = (): void => {
     const log = createWriteStream(opts.logPath, { flags: "a" });
     child = utilityProcess.fork(opts.serverEntry, [], {
-      serviceName: "agent-wrangler-daemon",
+      serviceName: "mission-control-daemon",
       stdio: "pipe",
       env: {
         ...process.env,
         PATH: loginShellPath(),
-        FLEET_WEB_DIR: opts.webDir,
+        MISSION_WEB_DIR: opts.webDir,
       },
     });
     child.stdout?.on("data", (d: Buffer) => log.write(d));

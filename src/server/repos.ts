@@ -29,7 +29,7 @@ let cache: { at: number; repos: string[] } | null = null;
 
 /**
  * Roots to scan for repos. Defaults to `~/workspace`; override with
- * `FLEET_WORKSPACE_DIRS` (colon-separated, like PATH) to point at other trees.
+ * `MISSION_WORKSPACE_DIRS` (colon-separated, like PATH) to point at other trees.
  */
 export function workspaceRoots(): string[] {
   const override = envVar("WORKSPACE_DIRS") ?? envVar("WORKSPACE_DIR");

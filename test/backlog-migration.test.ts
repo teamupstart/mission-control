@@ -9,16 +9,16 @@ import { join } from "node:path";
 // before the rename are still persisted as 'queued', and `loadActiveTasks` now
 // only selects 'backlog'. Without the migration in openDb(), every task sitting
 // in a real user's backlog would silently vanish from the dashboard on the first
-// start after upgrading - present in the DB, absent from the fleet.
+// start after upgrading - present in the DB, absent from the dashboard.
 //
 // This seeds a pre-rename database on disk exactly as an upgrading user's would
 // look, then lets db.ts open it for the first time, so the migration runs on the
 // same path production takes rather than on a hand-called helper.
 
-// FLEET_HOME *is* the state dir (harness-runtime's stateDir()), so the db lands
+// MISSION_HOME *is* the state dir (harness-runtime's stateDir()), so the db lands
 // at <home>/harness.db - the same file db.ts will open below.
-const home = mkdtempSync(join(tmpdir(), "fleet-migrate-"));
-process.env.FLEET_HOME = home;
+const home = mkdtempSync(join(tmpdir(), "mission-migrate-"));
+process.env.MISSION_HOME = home;
 
 /** Write a pre-rename tasks row (status='queued') straight to the db file. */
 function seedLegacyDb(): void {
@@ -75,7 +75,7 @@ test("openDb migrates pre-rename 'queued' tasks to 'backlog'", () => {
 
 test("a migrated task is still loaded as active, so a real backlog survives the upgrade", () => {
   // The regression this exists for: loadActiveTasks selects 'backlog', so an
-  // unmigrated 'queued' row would be dropped from the rehydrated fleet entirely.
+  // unmigrated 'queued' row would be dropped from the rehydrated dashboard entirely.
   const ids = loadActiveTasks().map((t) => t.id);
   assert.ok(ids.includes("legacy-1"), "the shelved task must survive the rename");
 });

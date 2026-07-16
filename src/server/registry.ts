@@ -189,8 +189,8 @@ export class Registry extends EventEmitter {
    * tiny and only a reset creates one, so the caps are far above real use.
    */
   private nmDismissed = new Map<string, Set<string>>();
-  /** Whether a discovery sweep has ever completed - see `fleetObserved`. */
-  private sweptFleet = false;
+  /** Whether a discovery sweep has ever completed - see `sessionsObserved`. */
+  private sweptSessions = false;
   private lastQueuePrune = 0;
 
   constructor() {
@@ -236,8 +236,8 @@ export class Registry extends EventEmitter {
     const now = Date.now();
     const seen = new Set<string>();
     // Only a COMPLETED sweep reaches here - the poller logs and skips on failure -
-    // so this is the moment the session map starts meaning anything. See `fleetObserved`.
-    this.sweptFleet = true;
+    // so this is the moment the session map starts meaning anything. See `sessionsObserved`.
+    this.sweptSessions = true;
 
     for (const d of discovered) {
       seen.add(d.syntheticId);
@@ -347,7 +347,7 @@ export class Registry extends EventEmitter {
       // hook/statusLine reports it, so on a daemon restart a quiet-but-healthy
       // session would rebuild with a null binding - and `noteKeyFor` would hand its
       // note and its WORK QUEUE to the synthetic id instead, making every stored
-      // queue in the fleet look orphaned. See `recordAgentBinding`.
+      // queue across the sessions look orphaned. See `recordAgentBinding`.
       agentSessionId: known,
       transcriptPath: prev?.transcriptPath ?? null,
       instrumented: false,
@@ -401,7 +401,7 @@ export class Registry extends EventEmitter {
     base.goal = this.goalSummaryFor(base);
     base.queue = this.queueSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
-    // statement about the whole fleet ("no live session holds that key"), and this
+    // statement about every session ("no live session holds that key"), and this
     // runs per session while `applyDiscovery` is still filling the map. Carry the
     // last known value and let `applyDiscovery` re-resolve every hint once the map is
     // whole. `applyHook` resolves its own inline because by then the map already is.
@@ -1326,15 +1326,15 @@ export class Registry extends EventEmitter {
    * still on screen with its goal showing, and it keeps that goal until the session is
    * evicted; pruning by liveness would blank a card a human is still reading.
    *
-   * Gated on `sweptFleet` for the same reason `orphaned` and `reattachQueue` are: "no live
+   * Gated on `sweptSessions` for the same reason `orphaned` and `reattachQueue` are: "no live
    * session holds this key" is a claim about the session map, and before the first sweep that
-   * map is empty because nobody has filled it in - not because the fleet is empty. The
+   * map is empty because nobody has filled it in - not because there are no sessions. The
    * constructor loads the whole goal table while `sessions` is still empty, so an ungated
    * sweep at boot would read every goal as stranded and delete each one past the window. See
-   * `fleetObserved`.
+   * `sessionsObserved`.
    */
   pruneGoals(olderThan: number): number {
-    if (!this.sweptFleet) return 0;
+    if (!this.sweptSessions) return 0;
     const liveKeys = new Set([...this.sessions.values()].map((s) => noteKeyFor(s)));
     const removed = pruneSessionGoals(liveKeys, olderThan);
     if (!removed) return 0;
@@ -1393,8 +1393,8 @@ export class Registry extends EventEmitter {
     // No sweep yet means no evidence, only an empty map - and "no live session holds
     // that key" read off it is a statement about a map nobody has filled in, not a
     // finding. Same rule as the exit linger, and the same reason: the hint is what
-    // `reattachQueue` relies on to know a queue is really orphaned. See fleetObserved.
-    if (!this.sweptFleet) return null;
+    // `reattachQueue` relies on to know a queue is really orphaned. See sessionsObserved.
+    if (!this.sweptSessions) return null;
     const key = noteKeyFor(s);
     // Every OTHER live session's key, plus this session's CURRENT one. Its stored copy
     // is deliberately excluded: `s` may be in the map under a key it just moved off -
@@ -1448,7 +1448,7 @@ export class Registry extends EventEmitter {
     };
   }
 
-  /** Every stored queue (items included) - the orphan sweep + the fleet-level list. */
+  /** Every stored queue (items included) - the orphan sweep + the cross-session list. */
   listQueues(): SessionQueue[] {
     const out: SessionQueue[] = [];
     for (const row of listQueueRows()) {
@@ -1464,7 +1464,7 @@ export class Registry extends EventEmitter {
    * design: `applyDiscovery` marks any session missing from a single sweep as exited
    * and only evicts it EXIT_LINGER_MS later, cancelling that timer if it reappears.
    * Reading `state === "exited"` as gone ignores the very guard the linger exists to
-   * provide - one hiccuping `ps` sweep would mark the whole fleet exited, and
+   * provide - one hiccuping `ps` sweep would mark every session exited, and
    * `sweepOrphanedQueues` (which runs several times a second) would escalate every
    * in-flight item before the next poll un-marked them. Escalation is terminal and
    * has no undo, so it must not turn on a single missed poll.
@@ -1496,14 +1496,14 @@ export class Registry extends EventEmitter {
    * The daemon serves `/api/*` the instant it binds its port, while the first
    * discovery sweep is an async `ps` scan that lands some time after. Anything
    * reading `liveNoteKeys` in that window sees an empty set and concludes the whole
-   * fleet is gone - and the orphan sweep polls several times a second, so it will be
+   * session list is gone - and the orphan sweep polls several times a second, so it will be
    * in that window. Same rule as the exit linger just above, and the same reason:
    * escalation is terminal and has no undo, so it must not turn on an absence of
    * evidence. A sweep that completes and genuinely finds nothing DOES flip this -
-   * that's a fleet we looked at, so a queue with no session really is orphaned.
+   * that's a session list we looked at, so a queue with no session really is orphaned.
    */
-  fleetObserved(): boolean {
-    return this.sweptFleet;
+  sessionsObserved(): boolean {
+    return this.sweptSessions;
   }
 
   /**
@@ -1515,7 +1515,7 @@ export class Registry extends EventEmitter {
    * API (which the worker is itself a client of) goes straight past it. Every tick
    * filters to `agent === "claude"`, so a queue on a Codex session would never
    * advance; and because that session is LIVE, its key is live, so neither the cwd
-   * re-attach hint nor the fleet orphan sweep would ever offer the batch to anyone.
+   * re-attach hint nor the orphan sweep would ever offer the batch to anyone.
    * That is the same one-way trip to nowhere `reattachQueue` refuses, arriving by a
    * different door.
    */
@@ -1643,9 +1643,9 @@ export class Registry extends EventEmitter {
    * transcriptAnchor are anchored on the session it was sent to), and delete the
    * source row inside the transaction with no undo.
    *
-   * `fleetObserved` is required for the same reason `orphaned()` requires it, in the
+   * `sessionsObserved` is required for the same reason `orphaned()` requires it, in the
    * same direction: "no live session holds this key" read off a map no sweep has
-   * filled in is a statement about the map, not about the fleet. The daemon answers
+   * filled in is a statement about the map, not about the sessions. The daemon answers
    * routes the instant it binds its port, so a tab that outlives a restart can land a
    * click in exactly that window. Refusing costs a re-click; guessing costs the batch.
    */
@@ -1658,7 +1658,7 @@ export class Registry extends EventEmitter {
     // directory - including a Codex one, which `tickTargets` filters out of every
     // tick. Re-keying onto it is a one-way trip to nowhere: the queue never ticks
     // again, and because the target now holds the key, the queue counts as live, so
-    // neither the cwd hint nor the fleet-level orphan sweep will ever offer it
+    // neither the cwd hint nor the cross-session orphan sweep will ever offer it
     // again. Refusing here is what makes the button agree with the panel's own
     // "Claude-only for now" copy instead of silently stranding the batch.
     if (s.agent !== "claude") return false;
@@ -1667,7 +1667,7 @@ export class Registry extends EventEmitter {
     if (toKey === fromKey) return true;
     // The source must really be orphaned - see the note above on why the hint that
     // drew the button cannot be the thing that authorises the write.
-    if (!this.sweptFleet) return false;
+    if (!this.sweptSessions) return false;
     if (this.liveNoteKeys().has(fromKey)) return false;
     // A live queue at the target key would collide on the single-flight index and
     // silently merge two batches of work; refuse rather than guess which wins.
@@ -1701,7 +1701,7 @@ export class Registry extends EventEmitter {
     // `fromKey`, but a session ended by a `SessionEnd` hook is marked exited without
     // an exit timer - so it stops holding its key while staying in the map until a
     // sweep evicts it. Its card would go on rendering a summary of the queue that is
-    // no longer there, and on an idle fleet nothing else would ever heal it.
+    // no longer there, and with no sessions moving nothing else would ever heal it.
     this.syncSessionsForQueue(fromKey);
     this.syncSessionsForQueue(toKey);
     this.syncAllOrphanHints();

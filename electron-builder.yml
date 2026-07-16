@@ -7,9 +7,9 @@
 # asar is OFF on purpose: Claude Code launches the satellite scripts
 # (dist/satellites/hook.mjs, dist/mcp/server.mjs) with an EXTERNAL node that
 # can't read inside an asar archive, so they must be plain files on disk.
-appId: com.fleet-control.app
-productName: Agent Wrangler
-copyright: Agent Wrangler
+appId: com.mission-control.app
+productName: Mission Control
+copyright: Mission Control
 
 asar: false
 
@@ -23,7 +23,7 @@ directories:
 # under node_modules is needed at runtime. This keeps the app ~275MB smaller.
 #
 # `skills/` ships as SOURCE rather than through dist because Claude - not us - is the
-# thing that reads it: the daemon only symlinks `~/.claude/skills/fleet-<id>` at it,
+# thing that reads it: the daemon only symlinks `~/.claude/skills/mission-<id>` at it,
 # and an external claude then reads the SKILL.md through that link. Which is exactly
 # why `asar: false` above is load-bearing for this too, and not only for the
 # satellites: a symlink into an archive resolves to nothing.
@@ -51,4 +51,4 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
 
 dmg:
-  title: Agent Wrangler
+  title: Mission Control

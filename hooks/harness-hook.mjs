@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Claude Code hook -> Fleet Control bridge.
+// Claude Code hook -> Mission Control bridge.
 //
 // Configured to run for every hook event (the event name is passed as argv[2]).
 // It reads the hook JSON on stdin, captures the terminal env that lets the
@@ -54,7 +54,7 @@ async function main() {
   // (see `headlessEnv` in src/server/claude-cli.ts) and, once it can't, still leaves a
   // trail of phantom prompts in `session_events`. Declining here is the cheaper half of
   // the fix: no POST at all rather than a POST the daemon has to reject.
-  if (process.env.FLEET_HEADLESS) return;
+  if (process.env.MISSION_HEADLESS) return;
 
   const event = process.argv[2] || "";
   let payload = {};

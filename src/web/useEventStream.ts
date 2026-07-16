@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 
-export interface FleetState {
+export interface MissionState {
   sessions: Session[];
   reviews: ReviewItem[];
   tasks: Task[];
@@ -19,7 +19,7 @@ export interface FleetState {
  * as `connected` so the header can show link state. This is the entire
  * auto-refresh mechanism - no polling from the client.
  */
-export function useEventStream(): FleetState {
+export function useEventStream(): MissionState {
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());

@@ -51,7 +51,7 @@ function mergePath(primary: string, extra: string[]): string {
 export function loginShellPath(): string {
   if (cached) return cached;
   const shell = process.env.SHELL || "/bin/zsh";
-  const marker = "__FLEET_PATH__";
+  const marker = "__MISSION_PATH__";
   try {
     // `-ilc`: interactive login shell so rc files that set PATH (.zshrc,
     // .zprofile, …) are sourced. The marker lets us pluck PATH out of any rc

@@ -1,11 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { composeWrapup } from "@shared/queue.ts";
+import { withAttachments } from "@shared/attachments.ts";
 import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
 import { api, fetchQueue } from "../lib/api.ts";
 import { useSessionDraft } from "../lib/drafts.ts";
 import { relativeTime } from "../lib/format.ts";
+import {
+  AttachmentStrip,
+  readyAttachments,
+  revokeAttachments,
+  useImageDrop,
+  type ImageDrop,
+  type PendingAttachment,
+} from "./ImageDrop.tsx";
 
 // The work-queue panel inside an expanded card: the batch of work queued for this
 // session, in the order you authored it. Items are drag-reorderable, editable, and
@@ -40,9 +49,20 @@ export function WorkQueue({
   const [busy, setBusy] = useState(false);
   /** Set when the GET itself failed, so an unreadable queue never reads as an empty one. */
   const [loadFailed, setLoadFailed] = useState(false);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
 
   const sessionId = session.id;
   const summary = session.queue;
+  const imageDrop = useImageDrop({ attachments, onChange: setAttachments, disabled: busy });
+
+  // These thumbnails belong to the add box, which dies with the expanded card - so
+  // their object URLs are ours to release. Read through a ref because the cleanup runs
+  // once, at unmount, and must see the list as it ended rather than as it was on the
+  // render that armed it. (The dispatch draft deliberately does NOT do this; it
+  // outlives its modal.)
+  const attachRef = useRef(attachments);
+  attachRef.current = attachments;
+  useEffect(() => () => revokeAttachments(attachRef.current), []);
 
   /**
    * Re-fetch the full queue, discarding a response that has been superseded.
@@ -121,21 +141,38 @@ export function WorkQueue({
           onChange={setAdding}
           disabled={busy}
           onAdd={() => void add()}
-          placeholder="Queue work for this session…"
+          placeholder="Queue work for this session…  (⌘↵ to add, drop or paste images)"
+          attachments={attachments}
+          drop={imageDrop}
         />
         {error && <p className="wq-error">{error}</p>}
       </section>
     );
   }
 
+  /**
+   * Queue the typed intent with any dropped image paths appended.
+   *
+   * An image can't be queued as bytes - the item is delivered by typing it into a pty
+   * later, so what gets stored is the same thing the send box pastes: the daemon's
+   * absolute path, which the agent reads with its own file tools when it picks the
+   * item up. Uploads outlive the queueing by a week (`UPLOAD_TTL_MS`), which is far
+   * longer than an item waits.
+   */
   async function add(): Promise<void> {
-    const intent = adding.trim();
-    if (!intent || busy) return;
+    const ready = readyAttachments(attachments);
+    // An image mid-upload has no path yet, so adding now would quietly leave it out of
+    // the very item it was dropped on. The button says so; ⌘↵ doesn't.
+    if (busy || imageDrop.uploading) return;
+    const intent = withAttachments(adding.trim(), ready);
+    if (!intent) return;
     setBusy(true);
     const r = await api.addWorkItem(sessionId, intent);
     setBusy(false);
     if (!r.ok) return setError(r.error ?? "could not add that item");
     setAdding("");
+    revokeAttachments(attachments);
+    setAttachments([]);
     setError(null);
     await refresh();
   }
@@ -457,7 +494,9 @@ export function WorkQueue({
         onChange={setAdding}
         disabled={busy}
         onAdd={() => void add()}
-        placeholder="Queue more work…"
+        placeholder="Queue more work…  (⌘↵ to add, drop or paste images)"
+        attachments={attachments}
+        drop={imageDrop}
       />
 
       {/*
@@ -609,35 +648,65 @@ function ProposedPayload({ item }: { item: WorkItem }): React.JSX.Element | null
   );
 }
 
-function AddBox({
+/**
+ * The compose box for a new item. Takes dropped/pasted images the way the transcript
+ * reply does - an item is a prompt that gets typed into the agent later, so a
+ * screenshot is worth exactly as much here as it is in a live reply, and it would be
+ * strange for the two boxes on the same card to disagree about that.
+ *
+ * Exported for the render tests, like `DispatchLayer`: what it does or doesn't offer
+ * with an image still uploading is the whole question, and markup answers it.
+ */
+export function AddBox({
   value,
   onChange,
   onAdd,
   disabled,
   placeholder,
+  attachments,
+  drop,
 }: {
   value: string;
   onChange: (v: string) => void;
   onAdd: () => void;
   disabled: boolean;
   placeholder: string;
+  attachments: PendingAttachment[];
+  drop: ImageDrop;
 }): React.JSX.Element {
+  // Images alone are a legitimate item ("look at this") - the paths become the intent.
+  const empty = !value.trim() && readyAttachments(attachments).length === 0;
   return (
-    <div className="wq-add">
-      <textarea
-        className="field-input"
-        rows={2}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          // Cmd/Ctrl+Enter adds, so a multi-line intent can contain newlines.
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onAdd();
-        }}
-      />
-      <button className="btn btn-send" disabled={disabled || !value.trim()} onClick={onAdd}>
-        Add
-      </button>
+    <div className="wq-add" {...drop.dropProps}>
+      <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
+      <div className="wq-add-row">
+        <textarea
+          className="field-input"
+          rows={2}
+          value={value}
+          placeholder={placeholder}
+          onPaste={drop.onPaste}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            // Cmd/Ctrl+Enter adds, so a multi-line intent can contain newlines.
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onAdd();
+            // Blur back to the grid so card keyboard nav (e to collapse) works again -
+            // the same escape the reply box offers. The grid's own Escape stands down
+            // for this press (its guard reads the event's target, which is still this
+            // field), so one press leaves the box and the next collapses the card,
+            // peeling back one layer at a time rather than two at once.
+            else if (e.key === "Escape") e.currentTarget.blur();
+          }}
+        />
+        <button
+          className="btn btn-send"
+          disabled={disabled || drop.uploading || empty}
+          onClick={onAdd}
+        >
+          {drop.uploading ? "Uploading…" : "Add"}
+        </button>
+      </div>
+      {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
     </div>
   );
 }

@@ -25,11 +25,11 @@ writeFileSync(
   `#!/bin/sh
 cat > /dev/null
 printf '{"tmuxPane":"%s","weztermPane":"%s","marker":"%s"}' \\
-  "$TMUX_PANE" "$WEZTERM_PANE" "$FLEET_HEADLESS"
+  "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS"
 `,
 );
 chmodSync(fakeBin, 0o755);
-process.env.FLEET_CLAUDE_BIN = fakeBin;
+process.env.MISSION_CLAUDE_BIN = fakeBin;
 
 const { runClaudeText } = await import("../src/server/claude-cli.ts");
 
@@ -66,5 +66,5 @@ test("a headless run is marked so the hook can decline to report it", async () =
   // POSTing at all. Independent layers on purpose - the hook script is installed globally
   // from a checkout that may lag this code, so neither can be assumed present.
   const seen = await envSeenByHook();
-  assert.equal(seen.marker, "1", "headless run carries no FLEET_HEADLESS marker for the hook to see");
+  assert.equal(seen.marker, "1", "headless run carries no MISSION_HEADLESS marker for the hook to see");
 });

@@ -48,22 +48,14 @@ export function revokeAttachments(list: readonly PendingAttachment[]): void {
 let seq = 0;
 
 /**
- * Wire a compose surface for image drops and pastes.
- *
- * Controlled, not stateful: the caller owns the list because the two callers keep
- * it for different spans - the transcript reply dies with its panel, the dispatch
- * draft survives close/reopen.
+ * A wired compose surface. Named because it's passed down: a compose box is often a
+ * child of the component that owns the attachment list (the work queue's add box is
+ * rendered from two branches of its panel), and the whole bundle travels together.
  */
-export function useImageDrop({
-  attachments,
-  onChange,
-  disabled = false,
-}: {
-  attachments: PendingAttachment[];
-  onChange: (next: PendingAttachment[]) => void;
-  disabled?: boolean;
-}): {
+export interface ImageDrop {
+  /** True while a drag carrying files is over the surface - raise the veil. */
   dropping: boolean;
+  /** True while any attachment is still uploading; sending now would drop it. */
   uploading: boolean;
   addFiles: (files: readonly File[]) => void;
   remove: (id: string) => void;
@@ -74,7 +66,24 @@ export function useImageDrop({
     onDrop: (e: React.DragEvent) => void;
   };
   onPaste: (e: React.ClipboardEvent) => void;
-} {
+}
+
+/**
+ * Wire a compose surface for image drops and pastes.
+ *
+ * Controlled, not stateful: the caller owns the list because the callers keep it for
+ * different spans - the transcript reply and the queue's add box die with the card,
+ * the dispatch draft survives close/reopen.
+ */
+export function useImageDrop({
+  attachments,
+  onChange,
+  disabled = false,
+}: {
+  attachments: PendingAttachment[];
+  onChange: (next: PendingAttachment[]) => void;
+  disabled?: boolean;
+}): ImageDrop {
   const [dropping, setDropping] = useState(false);
   // Dragging over a child fires dragleave on the parent, so a boolean would flicker
   // the overlay off as the cursor crosses the textarea. Count enters against leaves.

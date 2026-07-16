@@ -133,11 +133,11 @@ export const NO_QUESTION_PLACEHOLDER = "(the session needs you, but no explicit 
  * no-mistakes gate are both answerable by typing when a pane exists; anything else
  * is purpose-only. Pure.
  *
- * `gateParked` is called WITHOUT a fleet, which reduces it to "parked, and this agent has
+ * `gateParked` is called WITHOUT a session list, which reduces it to "parked, and this agent has
  * stopped". The cross-session check (is a sibling still driving this run?) is the caller's,
  * via `reportBucket` - a run someone else is driving never reports needs-you, so it never
  * reaches here. This function assumes a needs-you session throughout and re-derives none of
- * that bucketing; passing the fleet would duplicate it and let the two answers drift.
+ * that bucketing; passing the session list would duplicate it and let the two answers drift.
  */
 export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   const pend = reviews.filter((r) => r.sessionId === s.id && r.status === "pending");

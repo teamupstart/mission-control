@@ -90,7 +90,7 @@ test("THE assertion: an awaiting_input session is never selected", () => {
   // This is the one the whole gate exists for. An agent waiting on a human is very
   // often sitting on a permission DIALOG - a select list, not a text prompt - where
   // the pasted text is swallowed and the Enter answers whichever option is
-  // highlighted. Fired fleet-wide that's an unattended "yes" in every pane at once.
+  // highlighted. Fired across every session that is an unattended "yes" in every pane at once.
   assert.deepEqual(picked([mkSession({ state: "awaiting_input" })]), []);
 });
 
@@ -153,13 +153,13 @@ test("generation 0 owes nobody anything", () => {
 test("the master switch being OFF does not stop reloads", () => {
   // Turning it off empties the desired set, which unlinks everything, which bumps the
   // generation - and those sessions need a reload to DROP the skills. A loop that went
-  // quiet with the switch would leave the fleet using skills the panel says are off,
+  // quiet with the switch would leave every session using skills the panel says are off,
   // which is the worst state this feature has.
   assert.deepEqual(picked([mkSession()], acks(), mkCfg({ enabled: false })), ["s1"]);
 });
 
-test("the selector picks only the sessions that are ready, out of a mixed fleet", () => {
-  const fleet = [
+test("the selector picks only the sessions that are ready, out of a mixed set of sessions", () => {
+  const sessions = [
     mkSession({ id: "ready", agentSessionId: "a-ready" }),
     mkSession({ id: "codex", agentSessionId: "a-codex", agent: "codex" }),
     mkSession({ id: "busy", agentSessionId: "a-busy", state: "working" }),
@@ -167,7 +167,7 @@ test("the selector picks only the sessions that are ready, out of a mixed fleet"
     mkSession({ id: "current", agentSessionId: "a-current" }),
     mkSession({ id: "gone", agentSessionId: "a-gone", state: "exited" }),
   ];
-  assert.deepEqual(picked(fleet, acks({ "a-current": 3 })), ["ready"]);
+  assert.deepEqual(picked(sessions, acks({ "a-current": 3 })), ["ready"]);
 });
 
 // ---- the panel's count ----
@@ -175,35 +175,35 @@ test("the selector picks only the sessions that are ready, out of a mixed fleet"
 test("pendingReloads counts who is BEHIND, not who is ready this instant", () => {
   // The count answers "who hasn't picked this up yet". A working session is behind and
   // the human should be told so - it just isn't a target until it settles.
-  const fleet = [
+  const sessions = [
     mkSession({ id: "ready", agentSessionId: "a-ready" }),
     mkSession({ id: "busy", agentSessionId: "a-busy", state: "working" }),
   ];
-  assert.equal(pendingReloads(fleet, acks(), mkCfg()), 2);
-  assert.deepEqual(picked(fleet), ["ready"]);
+  assert.equal(pendingReloads(sessions, acks(), mkCfg()), 2);
+  assert.deepEqual(picked(sessions), ["ready"]);
 });
 
 test("pendingReloads excludes a session with no pane - it can never be reloaded", () => {
   // `capturePaneText` answers null for a handleless session, so the gate refuses it every
   // tick until it exits. Counting it promises a pick-up that cannot happen, and the
   // counter never reaches zero.
-  const fleet = [mkSession({ id: "nopane", agentSessionId: "a-np", tmux: null, wezterm: null })];
-  assert.equal(pendingReloads(fleet, acks(), mkCfg()), 0);
-  assert.deepEqual(picked(fleet), []);
+  const sessions = [mkSession({ id: "nopane", agentSessionId: "a-np", tmux: null, wezterm: null })];
+  assert.equal(pendingReloads(sessions, acks(), mkCfg()), 0);
+  assert.deepEqual(picked(sessions), []);
 });
 
 test("pendingReloads excludes a session that has never had hooks", () => {
   // Nothing will ever report it idle, so `settledIdle` can never be true and no reload
   // can ever fire. `hooksSeen` is the permanent fact; counting on it keeps the number
   // honest without making a merely-quiet session vanish from the count.
-  const fleet = [mkSession({ id: "raw", agentSessionId: "a-raw", hooksSeen: false })];
-  assert.equal(pendingReloads(fleet, acks(), mkCfg()), 0);
-  assert.deepEqual(picked(fleet), []);
+  const sessions = [mkSession({ id: "raw", agentSessionId: "a-raw", hooksSeen: false })];
+  assert.equal(pendingReloads(sessions, acks(), mkCfg()), 0);
+  assert.deepEqual(picked(sessions), []);
 });
 
 test("a session that has simply GONE QUIET is still counted, though it can't be typed into yet", () => {
   // `instrumented` is a 30-minute freshness window, so a healthy idle session flips it to
-  // false just by being left alone - the single most common state in this fleet. It is
+  // false just by being left alone - the single most common state in this dashboard. It is
   // still owed the skill, so the count must keep saying so; it just isn't safe to type
   // into until a hook proves it's really there.
   const quiet = mkSession({ id: "quiet", agentSessionId: "a-quiet", instrumented: false });
@@ -212,14 +212,14 @@ test("a session that has simply GONE QUIET is still counted, though it can't be 
 });
 
 test("pendingReloads excludes codex, or the number can never reach zero", () => {
-  const fleet = [
+  const sessions = [
     mkSession({ id: "c1", agentSessionId: "a-c1" }),
     mkSession({ id: "x1", agentSessionId: "a-x1", agent: "codex" }),
   ];
-  assert.equal(pendingReloads(fleet, acks(), mkCfg()), 1);
+  assert.equal(pendingReloads(sessions, acks(), mkCfg()), 1);
 });
 
 test("pendingReloads reaches zero once everyone has acked", () => {
-  const fleet = [mkSession({ id: "c1", agentSessionId: "a-c1" })];
-  assert.equal(pendingReloads(fleet, acks({ "a-c1": 3 }), mkCfg()), 0);
+  const sessions = [mkSession({ id: "c1", agentSessionId: "a-c1" })];
+  assert.equal(pendingReloads(sessions, acks({ "a-c1": 3 }), mkCfg()), 0);
 });

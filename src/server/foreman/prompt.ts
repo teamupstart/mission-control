@@ -40,7 +40,7 @@ export interface ReviewInput {
    * never names what is being approved (see `classifyPending`). Both of the reviewer's
    * inputs therefore described everything EXCEPT the decision it was convened to make, and
    * it skipped ("can't tell what is being asked") on the sessions it was most needed for.
-   * Measured against the live fleet: 5 of the last 8 dispositions were that skip.
+   * Measured against the live sessions: 5 of the last 8 dispositions were that skip.
    *
    * A COMPLEMENT to the transcript, never a replacement: it is a viewport snapshot, so it is
    * hard-wrapped, holds only what fits on screen, and has no history behind it. The
@@ -71,7 +71,7 @@ const MSG_CAP = 1800;
  * `gateQuestion` is phrased to agree with this clause rather than contradict it - the two
  * strings reach the model together, so they must not argue.
  */
-const POLICY = `You are Foreman, an autonomous triage agent for the "Agent Wrangler" fleet
+const POLICY = `You are Foreman, an autonomous triage agent for the "Mission Control" agent
 dashboard. Another AI coding agent (a "child" session) has paused and is waiting on its human
 operator. Your job: judge the pending question against the child's goal (given below), then either
 answer it ON THE HUMAN'S BEHALF, or hand it back to the human.

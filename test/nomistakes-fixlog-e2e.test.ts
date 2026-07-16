@@ -19,7 +19,7 @@ function tmp(prefix: string): string {
 }
 
 // Isolate the daemon's state dir (token + sqlite) BEFORE anything reads config.
-process.env.FLEET_HOME = tmp("fleet-fixlog-");
+process.env.MISSION_HOME = tmp("mission-fixlog-");
 // Point the no-mistakes DB lookup at an empty dir: these tests are about the git
 // side, and the join must degrade to "log without context" when there's no db.
 process.env.NM_HOME = tmp("nm-home-empty-");
@@ -273,9 +273,9 @@ test("?commit= isolates one fix and doesn't leak the commits after it", async ()
  * that has been up a week holds the log of every worktree it ever polled, each
  * carrying its findings' text. It has to be bounded by the LIVE FLEET rather than
  * by uptime: the checkouts still being polled are exactly the ones worth keeping,
- * and an age-based sweep alone still lets a busy long-lived fleet accumulate.
+ * and an age-based sweep alone still lets a busy long-lived dashboard accumulate.
  */
-test("a checkout that leaves the fleet doesn't keep its cached fix log", async () => {
+test("a checkout that leaves the dashboard doesn't keep its cached fix log", async () => {
   const clone = mkOriginAndClone();
   const registry = new Registry();
   buildApp(registry, new ReviewManager(registry), new TaskManager(registry), new QueueManager(registry));
@@ -296,7 +296,7 @@ test("a checkout that leaves the fleet doesn't keep its cached fix log", async (
   execFileSync("git", ["-C", clone, "update-ref", "refs/remotes/origin/main", "HEAD"]);
   assert.equal((await fixSummaries(clone, t0)).length, 1, "still cached: HEAD hasn't moved");
 
-  // The session leaves the fleet, so its checkout stops being polled.
+  // The session leaves the dashboard, so its checkout stops being polled.
   registry.applyDiscovery([]);
   await pollFixLogs(registry);
 

@@ -1,3 +1,8 @@
+// FIRST, and above every other local import: renames a state dir from an older name
+// onto ~/.mission-control. ES modules evaluate imports in source order, so this runs
+// before ./config.ts resolves STATE_DIR - move it down and the daemon would open its db
+// under a path that is about to be renamed. See migrate-state.ts.
+import "./migrate-state.ts";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { existsSync } from "node:fs";
@@ -59,11 +64,11 @@ const app = buildApp(registry, reviews, tasks, queues);
 //
 // Resolve the web root to an ABSOLUTE path so serving never depends on the
 // daemon's working directory (it's unpredictable when spawned by the Electron
-// app). `FLEET_WEB_DIR` lets the desktop shell point at the built UI inside the
+// app). `MISSION_WEB_DIR` lets the desktop shell point at the built UI inside the
 // app bundle's Resources; otherwise fall back to this module's sibling dist/web,
 // which covers both `tsx src/server/index.ts` (dev) and `node dist/server/index.mjs`.
 const webDir =
-  process.env.FLEET_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
+  process.env.MISSION_WEB_DIR ?? fileURLToPath(new URL("../../dist/web", import.meta.url));
 const hasDist = existsSync(webDir);
 if (hasDist) {
   app.use("/*", serveStatic({ root: webDir }));
@@ -74,7 +79,7 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
   const where = hasDist
     ? `http://${HOST}:${info.port}`
     : `http://${HOST}:5173 (dev) - API on :${info.port}`;
-  console.log(`[fleet-control] listening on ${where}`);
+  console.log(`[mission-control] listening on ${where}`);
 });
 
 function shutdown(): void {

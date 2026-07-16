@@ -34,7 +34,7 @@ const LEASE_KEY = "foreman.lease";
  */
 export const LEASE_TTL_MS = 90_000;
 
-/** The durable lease, in app_config: who owns the fleet right now, and until when. */
+/** The durable lease, in app_config: who owns the sessions right now, and until when. */
 interface ForemanLease {
   workerId: string;
   expiresAt: number;
@@ -53,7 +53,7 @@ export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
 }
 
 /**
- * Acquire or renew the worker lease - the mutual exclusion the fleet had none of.
+ * Acquire or renew the worker lease - the mutual exclusion the sessions had none of.
  *
  * Before this, `npm run foreman` twice gave two loops, and the heartbeat was a
  * single module-global timestamp that could not even *detect* a second worker: it

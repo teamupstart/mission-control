@@ -29,7 +29,7 @@ export function getSkillsConfig(): SkillsConfig {
  * everything else off", so the panel would have to round-trip the whole map on every
  * click. Which sounds survivable until two dashboards are open: the second tab's
  * toggle carries a map from its last 4-second poll, and silently switches off a skill
- * the first tab just enabled across the fleet. A per-key merge makes concurrent
+ * the first tab just enabled across every session. A per-key merge makes concurrent
  * toggles of different skills commute, and there's nothing to lose by it - `false` and
  * absent are the same fact to `desiredSkillIds`, so nothing needs deleting.
  */
@@ -82,7 +82,7 @@ export interface SkillsSyncResult extends ReconcileResult {
    * `problems` is routinely non-empty for reasons that have nothing to do with the
    * caller: one skill deleted from the catalog by a `git pull` makes every pass say so,
    * forever. The route used to answer 409 on any problem, which turned a toggle that had
-   * fully applied - links written, generation bumped, fleet notified - into "nothing
+   * fully applied - links written, generation bumped, sessions notified - into "nothing
    * changed" in the panel, reverted the switch, and then let the next poll flip it back
    * on. Every subsequent toggle wedged the same way. So refusal is its own answer, and
    * `problems` stays what it is: things the operator should know about, none of which
@@ -130,7 +130,7 @@ export function reconcileSkills(now = Date.now()): SkillsSyncResult {
  *
  * **Refusal is scoped to THIS PATCH**, and the scoping is load-bearing at both layers.
  * A reconcile pass reports on every enabled skill, not just the ones that moved, so a
- * single stuck row (a skill a `git pull` deleted, someone's own `fleet-beta` directory)
+ * single stuck row (a skill a `git pull` deleted, someone's own `mission-beta` directory)
  * would otherwise refuse every unrelated toggle in the panel - naming a skill the
  * operator never touched. Which is why `refused` is separate from `problems`: the route
  * answers 409 on the former only. One stuck row must not wedge the whole control.

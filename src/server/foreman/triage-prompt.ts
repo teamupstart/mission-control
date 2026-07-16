@@ -7,7 +7,7 @@ import type { ReviewInput } from "./prompt.ts";
 // so this prompt only needs to steer the common cases; a wrong bucket is caught or, at
 // worst, routes up to the full reviewer.
 
-const ROUTER = `You are Foreman's FAST TRIAGE ROUTER for the "Agent Wrangler" fleet dashboard. Another AI
+const ROUTER = `You are Foreman's FAST TRIAGE ROUTER for the "Mission Control" agent dashboard. Another AI
 coding agent (a "child" session) has paused and is waiting on its human operator. Your ONLY job is to
 BUCKET the pending ask so a cost gradient can spend the expensive reviewer only where real judgment is
 needed. Do NOT try to solve implementation problems here.

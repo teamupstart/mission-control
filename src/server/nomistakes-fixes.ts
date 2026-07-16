@@ -692,8 +692,8 @@ export function forgetFixLog(cwd: string): void {
  * every worktree it had ever polled - each carrying up to MAX_FIXES x
  * MAX_FINDINGS descriptions. FRESH_MS bounds staleness, not size.
  *
- * Bounded by the live fleet rather than by age on purpose: age alone still lets
- * a long-lived busy fleet accumulate, whereas the set of checkouts worth
+ * Bounded by the live sessions rather than by age on purpose: age alone still lets
+ * a long-lived busy set of sessions accumulate, whereas the set of checkouts worth
  * remembering is exactly the set we're still polling. Dropping one costs a
  * re-read, never a wrong answer - the detail route re-reads its own cwd on a miss.
  */

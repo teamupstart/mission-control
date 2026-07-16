@@ -1,4 +1,4 @@
-# Plan: Fleet Report + Backlog (`/bearings` analog)
+# Plan: Mission Report + Backlog (`/bearings` analog)
 
 Status: proposed
 Owner: ai-harness
@@ -8,13 +8,13 @@ Related: First Mate idea #4 (`/bearings` + `/stow` intent/outcome).
 
 ## Goal
 
-Two surfaces that give you the whole fleet at a glance, the way First Mate's `/bearings`
+Two surfaces that give you every session at a glance, the way First Mate's `/bearings`
 does, plus a real **backlog**:
 
 1. **Backlog** - see and manage tasks that are `queued` (created but not dispatched):
    dispatch one when you're ready, or drop it. Dispatch already supports "Add to backlog"
    (the `queue` flag); this plan builds the view and management around it.
-2. **Fleet Report** - one click assembles a structured snapshot: who needs you, who's
+2. **Mission Report** - one click assembles a structured snapshot: who needs you, who's
    working, what's idle, the backlog, and recent outcomes. Available as a UI panel, as
    JSON (`GET /api/report`), and as copyable markdown (`GET /api/report.md`) so you can
    paste "current bearings" into a chat or notes.
@@ -53,7 +53,7 @@ export interface ReportItem {
   outcomeUrl: string | null;
 }
 
-export interface FleetReport {
+export interface MissionReport {
   generatedAt: number;
   counts: { sessions: number; working: number; idle: number; needsYou: number; exited: number; queued: number };
   needsYou: ReportItem[];       // needs-input, pending reviews, parked no-mistakes gates
@@ -67,13 +67,13 @@ export interface FleetReport {
 ## Backend changes
 
 ### `src/server/report.ts` (new) - pure functions
-- `buildReport(snapshot): FleetReport` - buckets sessions using the **same** attention
+- `buildReport(snapshot): MissionReport` - buckets sessions using the **same** attention
   logic as `stateDisplay` (extracted into a shared helper in `src/shared/` or duplicated
   minimally with a comment linking the two, so UI and report never diverge). Joins each
   live session to its `task` summary; pulls parked-gate reasons from `session.nomistakes`.
 - `renderReportMarkdown(report): string` - a compact, copy-pasteable digest:
   ```
-  # Fleet bearings - 2026-07-11 14:03
+  # Mission bearings - 2026-07-11 14:03
   Needs you (2)
   - agent "auth-refactor" (ship) - 2 to review  [feat/auth]
   - "flaky-tests" - gate parked at review
@@ -97,7 +97,7 @@ No new storage or endpoints for the backlog itself: it's `GET /api/tasks` filter
   - a **`Report`** button opening `ReportPanel`.
   - a **`Backlog (n)`** stat/button (n = queued tasks) opening the panel scrolled to the
     backlog section (or a dedicated tab within it).
-- `src/web/components/ReportPanel.tsx` (new): slide-over rendering the `FleetReport`:
+- `src/web/components/ReportPanel.tsx` (new): slide-over rendering the `MissionReport`:
   - **Needs you** (attention-toned rows; each row deep-links: focus the session, or open
     its reviews via the existing `ReviewModal`).
   - **Working** (agent rows with intent chip + activity + branch).

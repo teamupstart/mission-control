@@ -1,22 +1,22 @@
 {
-  "name": "fleet-control",
+  "name": "mission-control",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "author": "Agent Wrangler",
+  "author": "Mission Control",
   "description": "Local, auto-refreshing control plane for Claude Code / Codex sessions across wezterm tabs and tmux sessions",
   "engines": {
     "node": ">=24"
   },
   "bin": {
-    "fleet-control": "src/server/index.ts"
+    "mission-control": "src/server/index.ts"
   },
   "main": "dist/main/index.cjs",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:web": "vite",
-    "dev:electron": "npm run build:main && concurrently -n esbuild,electron -c yellow,green \"npm run build:main -- --watch\" \"FLEET_DEV_SERVER_URL=http://localhost:5173 electronmon .\"",
+    "dev:electron": "npm run build:main && concurrently -n esbuild,electron -c yellow,green \"npm run build:main -- --watch\" \"MISSION_DEV_SERVER_URL=http://localhost:5173 electronmon .\"",
     "dev:foreman": "tsx watch src/server/foreman/worker.ts",
     "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\"",
     "dev:start": "concurrently -n server,web,shell,foreman -c blue,magenta,green,cyan \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\" \"npm:dev:foreman\"",

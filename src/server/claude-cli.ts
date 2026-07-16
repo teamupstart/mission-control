@@ -13,7 +13,7 @@ import type { ZodTypeAny, TypeOf } from "zod";
 // deliberately owns no global concurrency state: a shared module cannot enforce a
 // shared cap across process boundaries, and pretending otherwise would be a lie.
 // Each caller builds its own `createLimiter` instead - Foreman is near-sequential
-// already, and the daemon caps its goal runs so a busy fleet can't fork a subprocess
+// already, and the daemon caps its goal runs so a busy set of sessions can't fork a subprocess
 // per card.
 
 /**
@@ -23,7 +23,7 @@ import type { ZodTypeAny, TypeOf } from "zod";
  * `foreman/` and may be set in an existing environment, so dropping it would break
  * those silently rather than loudly.
  */
-const CLAUDE_BIN = process.env.FLEET_CLAUDE_BIN || process.env.FOREMAN_CLAUDE_BIN || "claude";
+const CLAUDE_BIN = process.env.MISSION_CLAUDE_BIN || process.env.FOREMAN_CLAUDE_BIN || "claude";
 /**
  * Default cap on a single run so a hung child can't stall its caller. Sized for the
  * full reviewer (Opus reading 48 turns with the whole POLICY), which is the most
@@ -31,7 +31,7 @@ const CLAUDE_BIN = process.env.FLEET_CLAUDE_BIN || process.env.FOREMAN_CLAUDE_BI
  * the goal refiner - passes its own `timeoutMs` rather than inheriting this.
  */
 const DEFAULT_TIMEOUT_MS = Number(
-  process.env.FLEET_CLAUDE_TIMEOUT_MS || process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000,
+  process.env.MISSION_CLAUDE_TIMEOUT_MS || process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000,
 );
 
 /**
@@ -66,7 +66,7 @@ const live = new Set<ReturnType<typeof spawn>>();
 /**
  * Kill every headless run we started.
  *
- * Children spawn `detached: true` (so the fleet poller never discovers them as
+ * Children spawn `detached: true` (so the session poller never discovers them as
  * phantom sessions), which also means they SURVIVE their parent's death and keep
  * burning tokens to nowhere. A SIGKILL of the parent still leaks them - nothing
  * can be done about that from in here - but every ordinary exit path is covered.
@@ -88,7 +88,7 @@ function hookExitOnce(): void {
  *
  * Scoped to the caller, never module-global, because the two callers want opposite
  * things - Foreman wants its serial review queue left alone, while the daemon wants
- * a hard ceiling on goal refreshes so a 20-card fleet answering prompts at once
+ * a hard ceiling on goal refreshes so a 20-card dashboard answering prompts at once
  * can't fork 20 subprocesses. The loop (not an `if`) is what makes it correct: a
  * released waiter re-checks the count instead of trusting that the slot it was woken
  * for is still free, so two waiters resumed in the same tick can't both take one slot.
@@ -216,7 +216,7 @@ export function runClaudeText(
     // model only ever needs to emit JSON - so a crafted/compromised transcript
     // must not be able to steer it into invoking tools (a prompt-injection surface).
     // `detached: true` makes the child its own session/process-group leader with no
-    // controlling terminal, so the fleet poller (which groups agents by tty and
+    // controlling terminal, so the session poller (which groups agents by tty and
     // skips tty-less ones) never discovers this headless run as a phantom
     // session. That covers discovery; `headlessEnv()` covers the other way in - the
     // hooks this run fires - which would otherwise bind it to a real card.
@@ -303,16 +303,16 @@ export function runClaudeText(
  * are the terminal identity a headless run has no business claiming. TERM_PROGRAM is
  * captured by the hook but identifies a terminal *type*, not a card, so it stays.
  *
- * `FLEET_HEADLESS` is the second, independent layer: it lets the hook decline to report
+ * `MISSION_HEADLESS` is the second, independent layer: it lets the hook decline to report
  * the run at all rather than merely failing to bind it. Both are kept because neither can
  * be assumed - the hook script is installed globally from a checkout that may lag this
  * code, and stripping the env is what protects a stale install.
  */
 function headlessEnv(): NodeJS.ProcessEnv {
   // Annotated, not inferred: spreading `process.env` drops its index signature, so an
-  // inferred type is the literal `{ FLEET_HEADLESS: string }` and the deletes below stop
+  // inferred type is the literal `{ MISSION_HEADLESS: string }` and the deletes below stop
   // compiling.
-  const env: NodeJS.ProcessEnv = { ...process.env, FLEET_HEADLESS: "1" };
+  const env: NodeJS.ProcessEnv = { ...process.env, MISSION_HEADLESS: "1" };
   delete env.TMUX_PANE;
   delete env.WEZTERM_PANE;
   return env;

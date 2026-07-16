@@ -1,4 +1,4 @@
-// Shared session-bucketing logic, used by BOTH the server's fleet report
+// Shared session-bucketing logic, used by BOTH the server's roundup report
 // (src/server/report.ts) and the client's report panel (src/web) so the two can
 // never disagree about who "needs you". Keep this in sync conceptually with the
 // card's `stateDisplay` in src/web/lib/format.ts (same attention precedence).
@@ -65,13 +65,13 @@ function sameRun(a: Session, b: Session): boolean {
  * agent checked out on its branch - so it's still being driven as long as ANY
  * session carrying that same run (see sameRun) is active; the agent behind that
  * one will answer the gate. Only once they've all stopped does it need you. Pass
- * `fleet` (all live sessions) for that cross-session check; it defaults to `s`
+ * `sessions` (all live sessions) for that cross-session check; it defaults to `s`
  * alone, which reduces to "parked and this agent has stopped".
  */
-export function gateParked(s: Session, fleet: Session[] = [s]): boolean {
+export function gateParked(s: Session, sessions: Session[] = [s]): boolean {
   if (!gatePending(s)) return false;
   if (agentActive(s)) return false; // this agent is driving its own gate
-  for (const o of fleet) {
+  for (const o of sessions) {
     if (o.state !== "exited" && sameRun(o, s) && agentActive(o)) return false; // a sibling is driving it
   }
   return true;
@@ -117,13 +117,13 @@ export function runInFlight(s: Session): boolean {
  *    sessions the agent has parked at idle, plus uninstrumented sessions with no
  *    run in flight behind them.
  *
- * `fleet` lets a parked gate defer to a same-run session that's still driving it
+ * `sessions` lets a parked gate defer to a same-run session that's still driving it
  * (see gateParked).
  */
-export function reportBucket(s: Session, fleet: Session[] = [s]): ReportBucket {
+export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
   if (s.pendingReviews > 0) return "needs-you";
-  if (gateParked(s, fleet)) return "needs-you";
+  if (gateParked(s, sessions)) return "needs-you";
   if (s.instrumented) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
@@ -136,10 +136,10 @@ export function reportBucket(s: Session, fleet: Session[] = [s]): ReportBucket {
 }
 
 /** A one-line reason a session needs you, or null when it doesn't. */
-export function needsYouReason(s: Session, fleet: Session[] = [s]): string | null {
+export function needsYouReason(s: Session, sessions: Session[] = [s]): string | null {
   if (s.pendingReviews > 0) return s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review";
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
-  if (gateParked(s, fleet)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;
+  if (gateParked(s, sessions)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;
   return null;
 }

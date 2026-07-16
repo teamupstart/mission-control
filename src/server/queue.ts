@@ -34,7 +34,7 @@ export class QueueManager {
     return this.registry.getQueueItem(itemId);
   }
 
-  /** Every stored queue - backs the orphan sweep and the fleet-level list. */
+  /** Every stored queue - backs the orphan sweep and the cross-session list. */
   list(): SessionQueue[] {
     return this.registry.listQueues();
   }
@@ -45,13 +45,13 @@ export class QueueManager {
    * The caller escalates what it finds here, terminally, so this answers only from
    * POSITIVE evidence: until a discovery sweep has actually reconciled the session
    * map against the OS, "no live session holds this key" is a statement about an
-   * empty map rather than about the fleet. The daemon answers this route from the
+   * empty map rather than about the sessions. The daemon answers this route from the
    * moment it binds its port, and the worker polls it several times a second, so
    * that window is reached on every single restart - and without this guard it
-   * escalates the in-flight item of every healthy session in the fleet.
+   * escalates the in-flight item of every healthy session across the sessions.
    */
   orphaned(): SessionQueue[] {
-    if (!this.registry.fleetObserved()) return [];
+    if (!this.registry.sessionsObserved()) return [];
     const live = this.registry.liveNoteKeys();
     return this.registry.listQueues().filter((q) => !live.has(q.noteKey));
   }

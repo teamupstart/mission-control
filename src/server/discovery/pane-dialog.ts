@@ -6,8 +6,8 @@ import type { Session } from "@shared/types.ts";
  * folder-trust check - off its terminal pane.
  *
  * This exists because prose is not an answer to a menu. Foreman's reply reaches a child
- * through `sendText`, which types the text and presses Enter; measured against the live
- * fleet, a dialog SWALLOWS the typed characters entirely (they are not keybindings and
+ * through `sendText`, which types the text and presses Enter; measured against live
+ * sessions, a dialog SWALLOWS the typed characters entirely (they are not keybindings and
  * there is no text field focused), leaving the cursor wherever it started - so the Enter
  * confirms the DEFAULT row. The reviewer's actual judgment never reaches the child, and
  * what it gets instead is whatever Claude happened to highlight first, delivered under the
@@ -166,7 +166,7 @@ export type OptionRowMiss =
  * tolerance was read whole off the row it names: a caller meaning row 2 above cannot quote
  * row 1's label exactly, because row 2's rendered text is not "Yes". Without this the two
  * rows that pair is FOR - the approve rows - are both unanswerable, which is every Bash
- * permission prompt on the fleet: quiet on an ambiguous miscount is the trade this makes,
+ * permission prompt on the dashboard: quiet on an ambiguous miscount is the trade this makes,
  * quiet on an exact, correct answer would be Foreman unable to approve anything at all.
  */
 export function optionRowMiss(

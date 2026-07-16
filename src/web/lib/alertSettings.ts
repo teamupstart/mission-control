@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AlertSettings } from "./alerts.ts";
 
-const KEY = "fleet-control.alerts";
+const KEY = "mission-control.alerts";
 const LEGACY_KEY = "ai-harness.alerts";
 const DEFAULTS: AlertSettings = { notifications: false, sound: true, afk: false, digestMinutes: 15 };
 

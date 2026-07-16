@@ -70,7 +70,7 @@ export type QueueAction =
 
 export interface QueueTickInput {
   session: Session;
-  /** The session's bucket, computed fleet-wide (a parked gate needs the fleet). */
+  /** The session's bucket, computed cross-session (a parked gate needs the other sessions). */
   bucket: ReportBucket;
   queue: SessionQueue;
   cfg: QueueConfig;

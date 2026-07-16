@@ -65,7 +65,7 @@ export function useSkills(): SkillsState {
    * therefore be the panel claiming a skill is live in every session on the machine when
    * it is live in none. The next poll would eventually snap it back with no explanation
    * of what happened. For a control whose whole promise is "this is now in force
-   * fleet-wide", showing a state that isn't in force is the whole ballgame.
+   * across every session", showing a state that isn't in force is the whole ballgame.
    */
   const update = useCallback(
     async (patch: SkillsConfigPatch): Promise<void> => {

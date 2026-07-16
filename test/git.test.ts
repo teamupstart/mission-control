@@ -22,7 +22,7 @@ function makeRepoWithWorktree(): { main: string; worktree: string } {
   // The linked worktree's own git dir under the main repo's .git/worktrees.
   const wtGitDir = join(gitDir, "worktrees", "wt1");
   mkdirSync(wtGitDir, { recursive: true });
-  writeFileSync(join(wtGitDir, "HEAD"), "ref: refs/heads/mancej/dispatch-fleet-report\n");
+  writeFileSync(join(wtGitDir, "HEAD"), "ref: refs/heads/mancej/dispatch-mission-report\n");
   writeFileSync(join(wtGitDir, "commondir"), "../..\n");
 
   // The checked-out worktree dir, whose `.git` is a FILE pointing at wtGitDir.
@@ -44,7 +44,7 @@ test("gitInfo resolves a linked worktree's branch, own root, and shared gating",
   // config. The root is the worktree itself, NOT the main checkout - they're
   // separate trees, and only one of them is touched by a reset.
   assert.deepEqual(gitInfo(worktree), {
-    branch: "mancej/dispatch-fleet-report",
+    branch: "mancej/dispatch-mission-report",
     root: worktree,
     // The worktree's own root is itself, but the REPO it belongs to is the main
     // checkout - the distinction Foreman's allowlist turns on.

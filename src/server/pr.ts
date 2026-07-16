@@ -17,7 +17,7 @@ import { run } from "./util/exec.ts";
 // different branch. Only a *closed-unmerged* PR is treated as "no PR".
 //
 // Cheap by construction: only feature-branch sessions are queried (one `gh` call
-// per distinct worktree), and an all-idle or all-on-main fleet spawns nothing.
+// per distinct worktree), and an all-idle or all-on-main dashboard spawns nothing.
 
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -140,7 +140,7 @@ function checksOf(p: unknown): PrChecks | null {
 
 /**
  * Query every feature-branch session's open PR and reconcile the results onto
- * the fleet in one pass. Sessions on a default branch (or none) are never
+ * every session in one pass. Sessions on a default branch (or none) are never
  * queried; reconciliation still clears any stale link they carry, which is what
  * retires a chip after the session moves off the branch its PR belonged to.
  */

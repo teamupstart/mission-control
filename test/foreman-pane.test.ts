@@ -198,56 +198,60 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
 function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   return {
     transcript: async () => ({ messages: [msg("Ready to run the unit tests.")], truncated: false }),
-    pane: async () => null,
     runModel: async () => JSON.stringify(report()),
     ...over,
   };
 }
 
-test("triageSession puts the screen in the router's prompt", async () => {
+test("triageSession puts the screen it was handed in the router's prompt", async () => {
   let prompt = "";
   await triageSession(
-    deps({ pane: async () => REAL_MENU, runModel: async (p) => ((prompt = p), JSON.stringify(report())) }),
+    deps({ runModel: async (p) => ((prompt = p), JSON.stringify(report())) }),
     pend(),
     mkSession(),
     cfg(),
+    REAL_MENU,
   );
   assert.ok(prompt.includes("Holder policy"), "the router buckets an ask it has actually read");
 });
 
-test("triageSession scans the screen it fetched", async () => {
-  // End to end through the tier: the fetched screen must reach the backstop, not just the prompt.
+test("triageSession scans the screen it was handed", async () => {
+  // End to end through the tier: the screen must reach the backstop, not just the prompt.
   const out = await triageSession(
-    deps({ pane: async () => "Bash(rm -rf build/)\n\nDo you want to proceed?" }),
+    deps(),
     pend(),
     mkSession(),
     cfg(),
+    "Bash(rm -rf build/)\n\nDo you want to proceed?",
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
 });
 
-test("triageSession skips the pane fetch on a surface that already carries its question", async () => {
-  let fetched = 0;
+test("triageSession captures no screen of its own - it reads the one the worker captured", async () => {
+  // The tier has no way to fetch a pane (`TriageDeps` carries none), which is the invariant
+  // rather than a habit: the worker checks what this tier ANSWERS against its own copy of the
+  // screen, so a second capture here would be a second screen, and the router would be judged
+  // against rows it was never shown. Whether a surface has a screen at all is the caller's
+  // question now - see `paneFor`, which reads one for the terminal surface only.
+  assert.equal("pane" in deps(), false, "no pane fetch on the cheap tier's dependency surface");
+  let prompt = "";
   await triageSession(
-    deps({ pane: async () => (fetched++, null) }),
+    deps({ runModel: async (p) => ((prompt = p), JSON.stringify(report())) }),
     pend({ situation: "input-review", surface: "input-review", question: "Should I use option B?", canSend: false }),
     mkSession(),
     cfg(),
+    null,
   );
-  assert.equal(fetched, 0, "an input review carries its whole body already");
+  assert.ok(!prompt.includes("Holder policy"), "an input review carries its whole body already");
 });
 
-test("triageSession survives a pane fetch that fails", async () => {
-  // The fallback is the pre-existing behaviour, so an unreadable pane must cost the improvement
-  // and nothing else - never the review itself.
-  const out = await triageSession(
-    deps({ pane: async () => { throw new Error("tmux is gone"); } }),
-    pend(),
-    mkSession(),
-    cfg(),
-  );
+test("triageSession survives a screen that couldn't be read", async () => {
+  // `ForemanClient.pane` answers an unreadable pane with null rather than a throw, so this is
+  // the shape a failed capture arrives in. The fallback is the pre-existing behaviour: an
+  // unreadable pane must cost the improvement and nothing else - never the review itself.
+  const out = await triageSession(deps(), pend(), mkSession(), cfg(), null);
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer");

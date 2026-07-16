@@ -126,3 +126,45 @@ export function sameOptionLabel(rendered: string, wanted: string): boolean {
   if (!a || !b) return false;
   return a.startsWith(b) || b.startsWith(a);
 }
+
+/** Why a target row is not the row the menu is showing, in the caller's own words. */
+export type OptionRowMiss =
+  /** The menu has no row with that number. */
+  | "no-such-row"
+  /** The row is there, but it doesn't read like the label the caller is aiming at. */
+  | "label-differs"
+  /** The label fits more than one row, so it can't tell which one was meant. */
+  | "label-ambiguous";
+
+/**
+ * Whether a target row is the row this menu is showing at that number, and if not, why.
+ *
+ * One home for the rule because two callers apply it to the same screen and must agree:
+ * `menuMismatch` decides whether an answer can be delivered at all, and `selectPaneOption`
+ * re-checks it against a fresh read before the Enter. Duplicated, it is a rule that can drift
+ * in one place and not the other - and the half that drifts loose is the half that confirms a
+ * row nobody chose.
+ *
+ * A label matching MORE THAN ONE row is refused. The prefix compare in `sameOptionLabel` is
+ * there for wrapping, but a real permission prompt offers exactly this pair:
+ *
+ *     1. Yes
+ *     2. Yes, and don't ask again for: curl -s https://...
+ *
+ * so a caller that miscounts between those two rows has its label AGREE with the wrong one -
+ * precisely the miscount the label is carried to catch. When the label cannot tell the rows
+ * apart it has confirmed nothing, and nothing is not enough to answer with. Refusing is the
+ * quiet failure (the menu stays up for a human); confirming would be the wrong one.
+ */
+export function optionRowMiss(
+  menu: PaneDialog,
+  target: { number: number; label: string },
+): OptionRowMiss | null {
+  const row = menu.options.find((o) => o.number === target.number);
+  if (!row) return "no-such-row";
+  if (!sameOptionLabel(row.label, target.label)) return "label-differs";
+  if (menu.options.filter((o) => sameOptionLabel(o.label, target.label)).length > 1) {
+    return "label-ambiguous";
+  }
+  return null;
+}

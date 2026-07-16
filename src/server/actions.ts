@@ -1,7 +1,7 @@
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
 import { resolveWeztermBin } from "./config.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
-import { readPaneDialog, sameOptionLabel, type PaneDialog } from "./discovery/pane-dialog.ts";
+import { optionRowMiss, readPaneDialog, type OptionRowMiss, type PaneDialog } from "./discovery/pane-dialog.ts";
 import { listTmuxClients } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
@@ -391,43 +391,58 @@ async function awaitCursorMove(session: Session, from: number): Promise<PaneDial
 export async function selectPaneOption(session: Session, target: OptionTarget): Promise<ActionResult> {
   if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
   // Shares the mode-walk's lock: both drive the same pane with bare keystrokes, and
-  // interleaving them would land arrows in a dialog the other opened.
-  if (driving.has(session.id)) return { ok: false, error: "already driving this session's pane" };
-  driving.add(session.id);
-  try {
-    let dialog = await readPaneDialog(session);
-    if (!dialog) return { ok: false, error: NO_MENU };
-    const row = dialog.options.find((o) => o.number === target.number);
-    if (!row) return { ok: false, error: `this menu has no option ${target.number}` };
-    // The number alone is a position; the label is what makes it an ANSWER. If the screen
-    // now reads differently at that position, the menu we were told to answer is not the
-    // menu on screen, and pressing Enter would confirm whatever replaced it.
-    if (!sameOptionLabel(row.label, target.label)) {
-      return { ok: false, error: `option ${target.number} now reads "${row.label}" - the screen changed` };
-    }
+  // interleaving them would land arrows in a dialog the other opened. It has to be the
+  // SAME lock, keyed the same way (on the pane, not the session), or the exclusion is
+  // nil in both directions - a concurrent `sendText`'s trailing Enter would confirm
+  // whatever row this walk is passing through.
+  return withPaneLock<ActionResult>(
+    session,
+    () => ({ ok: false, error: PANE_BUSY }),
+    () => selectOptionLocked(session, target),
+  );
+}
 
-    for (let i = 0; dialog.highlighted !== target.number; i++) {
-      if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
-      const dir = target.number > dialog.highlighted ? "Down" : "Up";
-      const sent = await injectArrow(session, dir);
-      if (!sent.ok) return sent;
-      const moved = await awaitCursorMove(session, dialog.highlighted);
-      // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
-      // way we no longer know what Enter would confirm, so we don't press it.
-      if (!moved) return { ok: false, error: "Claude ignored the arrow key - the menu may have closed" };
-      dialog = moved;
-    }
+async function selectOptionLocked(session: Session, target: OptionTarget): Promise<ActionResult> {
+  let dialog = await readPaneDialog(session);
+  if (!dialog) return { ok: false, error: NO_MENU };
+  // The number alone is a position; the label is what makes it an ANSWER. If the screen
+  // doesn't read as the row we were told to answer, the menu on it isn't that menu, and
+  // pressing Enter would confirm whatever replaced it.
+  const miss = optionRowMiss(dialog, target);
+  if (miss) return { ok: false, error: describeMiss(miss, dialog, target) };
 
-    // Read once more rather than trusting the walk: this is the last look before the only
-    // irreversible keystroke in the function.
-    const final = await readPaneDialog(session);
-    const landed = final?.options.find((o) => o.number === final.highlighted);
-    if (!final || final.highlighted !== target.number || !landed || !sameOptionLabel(landed.label, target.label)) {
-      return { ok: false, error: "the menu changed before the selection could be confirmed" };
+  for (let i = 0; dialog.highlighted !== target.number; i++) {
+    if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
+    const dir = target.number > dialog.highlighted ? "Down" : "Up";
+    const sent = await injectArrow(session, dir);
+    if (!sent.ok) return sent;
+    const moved = await awaitCursorMove(session, dialog.highlighted);
+    // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
+    // way we no longer know what Enter would confirm, so we don't press it.
+    if (!moved) return { ok: false, error: "Claude ignored the arrow key - the menu may have closed" };
+    dialog = moved;
+  }
+
+  // Read once more rather than trusting the walk: this is the last look before the only
+  // irreversible keystroke in the function.
+  const final = await readPaneDialog(session);
+  if (!final || final.highlighted !== target.number || optionRowMiss(final, target)) {
+    return { ok: false, error: "the menu changed before the selection could be confirmed" };
+  }
+  return injectEnter(session);
+}
+
+/** Say which way the screen failed to be the menu we were told to answer. */
+function describeMiss(miss: OptionRowMiss, dialog: PaneDialog, target: OptionTarget): string {
+  switch (miss) {
+    case "no-such-row":
+      return `this menu has no option ${target.number}`;
+    case "label-differs": {
+      const row = dialog.options.find((o) => o.number === target.number);
+      return `option ${target.number} now reads "${row?.label}" - the screen changed`;
     }
-    return injectEnter(session);
-  } finally {
-    driving.delete(session.id);
+    case "label-ambiguous":
+      return `"${target.label}" reads the same as another row on this menu`;
   }
 }
 

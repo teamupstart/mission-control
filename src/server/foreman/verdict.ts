@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ForemanConfig, SetNote } from "@shared/protocol.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
-import { sameOptionLabel } from "../discovery/pane-dialog.ts";
+import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import type { GateRef } from "./pending.ts";
 
@@ -363,13 +363,19 @@ export interface ForemanActions {
  *
  * A send that answered a no-mistakes gate is also recorded against that gate, so
  * the fix log can put a byline on whatever reply it produces. Only a DELIVERED
- * send is logged: words the agent never saw caused nothing, and claiming
- * otherwise on the card would be a fabricated byline. Undelivered has TWO shapes
- * here, and they are easy to mistake for one:
+ * send is logged, and only the words actually delivered: words the agent never saw
+ * caused nothing, and claiming otherwise on the card would be a fabricated byline.
+ * Undelivered has TWO shapes here, and they are easy to mistake for one:
  *   - no send at all (dry-run / semi-auto / off-allowlist), which returns above;
  *   - `submit: false`, which types the text and never presses Enter, leaving it
  *     sitting unsubmitted in the pane (queue-machine.ts names the same state) with
  *     the gate still parked. The send SUCCEEDS, so nothing else here notices.
+ *
+ * A menu send is a third shape, and it inverts both halves. `text` is the rationale
+ * and is NEVER typed - the row's label is the whole of what the child received - so
+ * the byline has to quote the label. And `submit` is not a delivery question there:
+ * `selectOption` always presses the Enter, so gating the log on it would drop the
+ * byline for a reply that did land.
  */
 export async function applyVerdict(
   actions: ForemanActions,
@@ -410,9 +416,10 @@ export async function applyVerdict(
   // byline - the card reads `replied` with no author, exactly as it did before this
   // existed. Letting it throw would instead skip the note below and leave a
   // delivered send unstamped, which the worker's idempotency check would re-send.
-  if (ctx.gate && plan.send.submit) {
+  const delivered = plan.send.option ? plan.send.option.label : plan.send.submit ? plan.send.text : null;
+  if (ctx.gate && delivered !== null) {
     await actions
-      .logGateReply(ctx.sessionId, ctx.gate, plan.send.text)
+      .logGateReply(ctx.sessionId, ctx.gate, delivered)
       .catch((err) => console.error("[foreman] could not record the gate reply:", err));
   }
   await actions.putNote(ctx.sessionId, plan.note);
@@ -438,12 +445,35 @@ function menuMismatch(
 ): string | null {
   if (!menu) return null;
   if (!option) return "a menu is open and the reviewer named no option to select";
-  const row = menu.options.find((o) => o.number === option.number);
-  if (!row) return `the reviewer chose option ${option.number}, which this menu doesn't have`;
-  if (!sameOptionLabel(row.label, option.label)) {
-    return `the reviewer's option ${option.number} ("${oneLine(option.label, 40)}") isn't what that row says`;
+  const miss = optionRowMiss(menu, option);
+  if (!miss) return null;
+  const chose = `the reviewer's option ${option.number} ("${oneLine(option.label, 40)}")`;
+  switch (miss) {
+    case "no-such-row":
+      return `the reviewer chose option ${option.number}, which this menu doesn't have`;
+    case "label-differs":
+      return `${chose} isn't what that row says`;
+    case "label-ambiguous":
+      return `${chose} reads the same as another row, so it can't say which was meant`;
   }
-  return null;
+}
+
+/**
+ * Whether the menu on screen would block this verdict's answer from reaching the child.
+ *
+ * The tier ladder's question, not the planner's: a verdict that names no row can't be
+ * DELIVERED to a menu, but the cheap tier's inability to name one says nothing about whether
+ * a human is needed - only that this reviewer can't answer this surface. The Tier 1 router's
+ * schema has no `option` field at all, so on a permission prompt (which is a menu) every one
+ * of its answers is blocked here. Routing up hands the same ask to the full reviewer, which
+ * can name a row; escalating instead would put a human in front of every routine approval on
+ * an `on` fleet, having already spent the cheap call to learn nothing.
+ */
+export function menuBlocksAnswer(v: Verdict, ctx: ReviewContext): boolean {
+  if (v.action !== "answer") return false;
+  const chan = pickChannel(ctx);
+  if (chan?.channel !== "send") return false;
+  return menuMismatch(ctx.menu, v.answer?.option) !== null;
 }
 
 /** Collapse whitespace and cap a string to one short line for the audit field. */

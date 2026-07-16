@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parsePaneDialog, sameOptionLabel } from "../src/server/discovery/pane-dialog.ts";
+import { optionRowMiss, parsePaneDialog, sameOptionLabel } from "../src/server/discovery/pane-dialog.ts";
 
 // Reading a Claude option dialog off a pane. Every fixture here is a VERBATIM tmux
 // capture-pane of a real Claude session, not a hand-written approximation - the bug this
@@ -199,4 +199,39 @@ test("option labels do not match across different options", () => {
   assert.equal(sameOptionLabel("Yes", "No"), false);
   assert.equal(sameOptionLabel("Revert it; rely on master switch", "Make the tray uninstall durable"), false);
   assert.equal(sameOptionLabel("", "Yes"), false);
+});
+
+test("a row the target's label can't be told apart from is refused, not confirmed", () => {
+  // The real permission prompt: "Yes" is a prefix of "Yes, and don't ask again for: X", so a
+  // caller that miscounts between rows 1 and 2 has its LABEL agree with the wrong row - the
+  // exact miscount the label is carried to catch. Neither direction may confirm.
+  const menu = parsePaneDialog(PERMISSION)!;
+  assert.equal(
+    optionRowMiss(menu, { number: 1, label: "Yes, and don’t ask again for: curl -s https://example.com" }),
+    "label-ambiguous",
+    "the persistent grant must never be answered as the one-off Yes",
+  );
+  assert.equal(
+    optionRowMiss(menu, { number: 2, label: "Yes" }),
+    "label-ambiguous",
+    "nor the one-off Yes as the persistent grant",
+  );
+});
+
+test("an unambiguous row on the same menu still confirms", () => {
+  // The tightening above must not go quiet on the rows the ambiguity doesn't touch, or a
+  // permission prompt could never be answered at all.
+  const menu = parsePaneDialog(PERMISSION)!;
+  assert.equal(optionRowMiss(menu, { number: 3, label: "No" }), null);
+});
+
+test("a wrapped label still confirms its row - the ambiguity check doesn't cost the wrap handling", () => {
+  const menu = parsePaneDialog(ASK_USER_QUESTION)!;
+  assert.equal(optionRowMiss(menu, { number: 2, label: "SQLite" }), null);
+});
+
+test("optionRowMiss names how the screen failed, so each caller can word it", () => {
+  const menu = parsePaneDialog(TRUST)!;
+  assert.equal(optionRowMiss(menu, { number: 9, label: "Yes, I trust this folder" }), "no-such-row");
+  assert.equal(optionRowMiss(menu, { number: 2, label: "Yes, I trust this folder" }), "label-differs");
 });

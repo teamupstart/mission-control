@@ -4,6 +4,7 @@ import type { ForemanConfig, SetNote } from "../src/shared/protocol.ts";
 import {
   applyVerdict,
   foremanMayActLive,
+  menuBlocksAnswer,
   planFromVerdict,
   REVIEW_FAILURE_CAP,
   ReviewFailureTracker,
@@ -368,7 +369,28 @@ test("a row whose label disagrees with the screen is escalated", () => {
 });
 
 test("a hard-wrapped label still matches the row it names", () => {
-  // The pane cut the row at the terminal's width; the reviewer copied what it could see.
+  // The pane cut the row at the terminal's width; the reviewer copied what it could see. The
+  // prefix compare exists for exactly this, and the ambiguity rule below must not cost it.
+  const menu = {
+    options: [
+      { number: 1, label: "Revert it; rely on master switch (recommended)" },
+      { number: 2, label: "Make the tray uninstall durable, via the daemon’s config API" },
+    ],
+    highlighted: 1,
+  };
+  const v = {
+    ...MENU_ANSWER,
+    answer: { ...MENU_ANSWER.answer!, option: { number: 2, label: "Make the tray uninstall durable" } },
+  };
+  assert.equal(planFromVerdict(v, ctx({ menu }), true).send?.option?.number, 2);
+});
+
+test("a wrapped label that fits two rows is refused - the wrap can't be told from a miscount", () => {
+  // The permission prompt's rows are a prefix pair ("Yes" / "Yes, and don't ask again for: X"),
+  // so "the pane cut row 1 short" and "the reviewer miscounted onto row 2" are the SAME string
+  // to a prefix compare - it has no terminal width to tell them apart. The label is the only
+  // check on the number, so when it can't discriminate it has checked nothing, and confirming
+  // a persistent grant nobody verified is worse than going quiet and asking.
   const menu = {
     options: [{ number: 1, label: "Yes" }, { number: 2, label: "Yes, and don’t ask again for: npm test" }],
     highlighted: 1,
@@ -378,7 +400,10 @@ test("a hard-wrapped label still matches the row it names", () => {
     classification: "access" as const,
     answer: { text: "Approve - running tests is routine.", submit: true, option: { number: 2, label: "Yes, and don't ask again" } },
   };
-  assert.equal(planFromVerdict(v, ctx({ menu }), true).send?.option?.number, 2);
+  const plan = planFromVerdict(v, ctx({ menu }), true);
+  assert.equal(plan.send, null);
+  assert.equal(plan.note.disposition, "escalated");
+  assert.match(plan.note.lastAction ?? "", /reads the same as another row/);
 });
 
 test("with no menu on screen, prose is still typed as it always was", () => {
@@ -440,4 +465,102 @@ test("a refused selection leaves the session unanswered and retryable", async ()
   const c = ctx({ menu: TRAY_MENU });
   await assert.rejects(applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true)), /menu changed/);
   assert.deepEqual(notes, [{ purpose: MENU_ANSWER.purpose, disposition: "skipped" }]);
+});
+
+test("a label that fits two rows is escalated - an ambiguous match may not confirm one", () => {
+  // The real permission prompt's rows are a prefix pair, so a reviewer that miscounts
+  // between them produces a label that AGREES with the wrong row. The label is the only
+  // check on the number; when it can't tell the rows apart it has checked nothing.
+  const menu = {
+    options: [
+      { number: 1, label: "Yes" },
+      { number: 2, label: "Yes, and don’t ask again for: curl -s https://example.com" },
+      { number: 3, label: "No" },
+    ],
+    highlighted: 1,
+  };
+  const v: Verdict = {
+    ...MENU_ANSWER,
+    answer: { text: "Approve it once.", submit: true, option: { number: 1, label: "Yes, and don't ask again for: curl -s https://example.com" } },
+  };
+  const plan = planFromVerdict(v, ctx({ menu }), true);
+  assert.equal(plan.send, null, "the one-off Yes must not be confirmed for a persistent grant");
+  assert.equal(plan.note.disposition, "escalated");
+  assert.match(plan.note.lastAction ?? "", /reads the same as another row/);
+  // The reviewer's judgment still reaches the human.
+  assert.match(plan.note.recommendation ?? "", /Approve it once/);
+});
+
+test("the gate byline quotes the row that was delivered, never the prose that wasn't", async () => {
+  // `text` is the rationale on a menu - it is never typed. A byline quoting it would put
+  // words on the fix card that the child never saw, which is the one fabrication that is
+  // invisible downstream.
+  const logged: string[] = [];
+  const actions: ForemanActions = {
+    putNote: async () => ({}),
+    sendText: async () => ({}),
+    selectOption: async () => ({}),
+    resolveReview: async () => ({}),
+    logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
+  };
+  const c = ctx({ menu: TRAY_MENU, gate: { runId: "r1", step: "review", findingIds: ["f1"] } });
+  await applyVerdict(actions, c, planFromVerdict(MENU_ANSWER, c, true));
+  assert.deepEqual(logged, ["Make the tray uninstall durable"]);
+});
+
+test("a menu send is logged even with submit false - selecting a row always presses the Enter", async () => {
+  // `submit` is a question about typing, and nothing is typed here. Gating the byline on it
+  // would drop the author of a reply that did land.
+  const logged: string[] = [];
+  const actions: ForemanActions = {
+    putNote: async () => ({}),
+    sendText: async () => ({}),
+    selectOption: async () => ({}),
+    resolveReview: async () => ({}),
+    logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
+  };
+  const v: Verdict = { ...MENU_ANSWER, answer: { ...MENU_ANSWER.answer!, submit: false } };
+  const c = ctx({ menu: TRAY_MENU, gate: { runId: "r1", step: "review", findingIds: ["f1"] } });
+  await applyVerdict(actions, c, planFromVerdict(v, c, true));
+  assert.deepEqual(logged, ["Make the tray uninstall durable"]);
+});
+
+test("an unsubmitted PROSE send still logs no byline - it's sitting in the pane, unread", async () => {
+  const logged: string[] = [];
+  const actions: ForemanActions = {
+    putNote: async () => ({}),
+    sendText: async () => ({}),
+    selectOption: async () => ({}),
+    resolveReview: async () => ({}),
+    logGateReply: async (_id, _gate, text: string) => (logged.push(text), {}),
+  };
+  const v: Verdict = { ...ANSWER, answer: { ...ANSWER.answer!, submit: false } };
+  const c = ctx({ menu: null, gate: { runId: "r1", step: "review", findingIds: ["f1"] } });
+  await applyVerdict(actions, c, planFromVerdict(v, c, true));
+  assert.deepEqual(logged, []);
+});
+
+// --- Which tier can answer a menu --------------------------------------------------
+
+test("menuBlocksAnswer: an answer naming no row is blocked by a menu, so the ladder can route up", () => {
+  // The Tier 1 router's schema has no `option` field at all, so every answer it reaches on a
+  // menu lands here. Blocked means "this tier can't deliver it", not "a human is needed".
+  assert.equal(menuBlocksAnswer(ANSWER, ctx({ menu: TRAY_MENU })), true);
+  assert.equal(menuBlocksAnswer(MENU_ANSWER, ctx({ menu: TRAY_MENU })), false, "a named row delivers");
+});
+
+test("menuBlocksAnswer: nothing is blocked when the menu isn't the answer's surface", () => {
+  assert.equal(menuBlocksAnswer(ANSWER, ctx({ menu: null })), false, "no menu: prose is typed");
+  assert.equal(
+    menuBlocksAnswer(ANSWER, ctx({ menu: TRAY_MENU, inputReviewId: "r1" })),
+    false,
+    "an input review is answered over the API; no keystroke reaches the menu",
+  );
+  assert.equal(
+    menuBlocksAnswer(ANSWER, ctx({ menu: TRAY_MENU, canSend: false })),
+    false,
+    "no channel at all is the planner's escalation, not a route-up",
+  );
+  const escalate: Verdict = { purpose: "p", classification: "other", action: "escalate" };
+  assert.equal(menuBlocksAnswer(escalate, ctx({ menu: TRAY_MENU })), false, "only an ANSWER can be blocked");
 });

@@ -9,7 +9,7 @@ import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import { parsePaneDialog } from "../discovery/pane-dialog.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { applyVerdict, foremanMayActLive, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
+import { applyVerdict, foremanMayActLive, menuBlocksAnswer, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
 import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
@@ -710,7 +710,7 @@ async function decide(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `handleSession`. */
+  /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
@@ -730,7 +730,7 @@ async function fullReviewOnly(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `handleSession`. */
+  /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
@@ -748,12 +748,12 @@ async function shadowBoth(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `handleSession`. */
+  /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
   const [cheap, r] = await Promise.all([
-    triageSession(triageDeps(client), pending, session, cfg),
+    triageSession(triageDeps(client), pending, session, cfg, pane),
     fullReview(client, session, pending, ctx, pane, queueItem),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
@@ -771,16 +771,23 @@ async function cheapTierDecides(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `handleSession`. */
+  /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
-  const cheap = await triageSession(triageDeps(client), pending, session, cfg);
-  if (cheap.kind === "dispose") {
+  const cheap = await triageSession(triageDeps(client), pending, session, cfg, pane);
+  if (cheap.kind === "dispose" && !menuBlocksAnswer(cheap.verdict, ctx)) {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
     return { verdict: cheap.verdict, tier: cheap.tier };
   }
-  log(`${session.name}: routed up to full review (${cheap.reason})`);
+  // A dispose this tier can't DELIVER is not a decision, it's a route-up. The router names no
+  // row (its schema has no field for one), so on a menu every answer it reaches lands here -
+  // and a menu is what a permission prompt is. Handing it to the full reviewer, which can name
+  // a row, keeps the ask automated; treating it as final would escalate every routine approval
+  // on an `on` fleet to a human. If the full review can't name a row either, `planFromVerdict`
+  // escalates it there - the fallback stays, it just stops being the first stop.
+  const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
+  log(`${session.name}: routed up to full review (${why})`);
   return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
 }
 
@@ -795,7 +802,7 @@ async function fullReview(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `handleSession`. */
+  /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<{ verdict: Verdict } | null> {
@@ -849,7 +856,6 @@ async function fullReview(
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
-    pane: (id) => client.pane(id),
     runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
   };
 }
@@ -863,7 +869,7 @@ function triageDeps(client: ForemanClient): TriageDeps {
  * back null (`capturePaneText` has no handle to use), so `terminal-no-pane` needs no case of
  * its own here.
  *
- * Called ONCE per session, by `handleSession`, and the result is threaded down to whichever
+ * Called ONCE per session, by `processSession`, and the result is threaded down to whichever
  * tier ends up reviewing. It used to be captured inside the review, concurrently with the
  * transcript; that concurrency is gone on purpose, because the screen now decides how an
  * answer is DELIVERED (a menu is selected, not typed at) and not merely what the model reads.

@@ -17,7 +17,7 @@ import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { TranscriptPanel } from "./TranscriptPanel.tsx";
+import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
 
@@ -145,6 +145,20 @@ export function SessionCard({
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
   const canRename = canRenameSession(session);
+  // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut
+  // / the queued chip and stays open until you close it. Deliberately independent of
+  // `expanded` - a queue is worth a glance without surrendering the grid to one card,
+  // and expanding to read a conversation shouldn't dump a batch of work on top of it.
+  const [queueOpen, setQueueOpen] = useState(false);
+  // Folded down to its header, without closing the drawer. Distinct from `queueOpen` on
+  // purpose: "put it away" and "keep it, but give the conversation the room back" are
+  // different intents, and on a collapsed card folding is what stops a long batch from
+  // stretching the whole grid row.
+  const [queueCollapsed, setQueueCollapsed] = useState(false);
+  // The expanded transcript's reply box, so the send shortcut can put a cursor in the
+  // box that's already there instead of opening a second one (null while collapsed,
+  // which is exactly when this card's own send box is the right answer).
+  const transcriptRef = useRef<TranscriptHandle>(null);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -322,17 +336,22 @@ export function SessionCard({
         </div>
       )}
 
-      {session.queue && session.queue.openCount > 0 && (
+      {/* The teaser for a queue you can't see. Once the drawer is open it is the same
+          count, verbatim, one row above the panel that states it - and on an expanded
+          card that row is a section's worth of the height the panel needs. So it stands
+          down and lets the real thing speak: the drawer is open; you're looking at it. */}
+      {session.queue && session.queue.openCount > 0 && !queueOpen && (
         <button
           className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
+          aria-expanded={queueOpen}
           title={
             session.queue.inFlightIntent
               ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
-              : "Work queued for this session - expand to see it"
+              : "Work queued for this session - click to see it"
           }
           onClick={(e) => {
             e.stopPropagation();
-            onToggleExpand?.();
+            setQueueOpen(true);
           }}
         >
           <span className="qc-count">{session.queue.openCount} queued</span>
@@ -387,32 +406,52 @@ export function SessionCard({
         <ActionBar
           session={session}
           expanded={expanded}
+          queueOpen={queueOpen}
+          onToggleQueue={() => setQueueOpen((v) => !v)}
+          onFocusReply={() => transcriptRef.current?.focusReply() ?? false}
           registerActions={registerActions}
           onReset={onReset}
         />
       )}
 
-      {expanded && (
-        <>
-          {session.note && (
-            <ForemanNote
+      {expanded && session.note && (
+        <ForemanNote
+          session={session}
+          note={session.note}
+          mode={foremanMode}
+          enabled={foremanEnabled}
+          allowlist={foremanAllowlist}
+          inputReviewId={inputReviewId}
+          pendingReviewIds={pendingReviewIds}
+        />
+      )}
+
+      {/* The queue and the conversation, wrapped together so they can be laid out as one
+          region rather than two things fighting over the card's height. Stacked on a card
+          in the grid; side by side on an expanded one, where the card is full-width and
+          the vertical room is the scarce thing (see `.card-panels`). One WorkQueue either
+          way - moving the element between two parents would remount it on every expand. */}
+      {(queueOpen || expanded) && (
+        <div className="card-panels">
+          {queueOpen && (
+            <WorkQueue
               session={session}
-              note={session.note}
-              mode={foremanMode}
-              enabled={foremanEnabled}
-              allowlist={foremanAllowlist}
-              inputReviewId={inputReviewId}
-              pendingReviewIds={pendingReviewIds}
+              foremanMode={foremanMode}
+              foremanEnabled={foremanEnabled}
+              allowlisted={allowlisted(session, foremanAllowlist)}
+              collapsed={queueCollapsed}
+              onToggleCollapsed={() => setQueueCollapsed((v) => !v)}
             />
           )}
-          <WorkQueue
-            session={session}
-            foremanMode={foremanMode}
-            foremanEnabled={foremanEnabled}
-            allowlisted={allowlisted(session, foremanAllowlist)}
-          />
-          <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
-        </>
+          {expanded && (
+            <TranscriptPanel
+              ref={transcriptRef}
+              sessionId={session.id}
+              agent={session.agent}
+              canSend={canSend}
+            />
+          )}
+        </div>
       )}
     </article>
   );

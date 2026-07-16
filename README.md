@@ -471,7 +471,31 @@ is the proactive half: queue a batch of work for one specific session, and Forem
 in one item at a time, in the order you authored, checking each one before releasing the
 next.
 
-Open a card and use the **Work queue** panel: type an intent, **Add**, repeat. The box also
+The **Work queue** panel is a drawer, kept out of the way until you ask for it: press
+**Queue** on the card (next to **Send** / **Focus** / **Reset**) or <kbd>q</kbd> on the
+selected session, and it opens under the controls. The button carries the open-item count,
+so you can see there's a batch waiting without opening anything; the **"n queued"** chip on
+the card opens the same drawer. It's independent of expanding a card - a queue is worth a
+glance without handing the whole grid to one session - and stays open until you close it.
+
+Two ways to get the room back, for two different intents. **Queue** (or <kbd>q</kbd>) puts
+the drawer away entirely. Clicking the panel's **Work queue** header *folds* it instead -
+down to a title bar that still reports the count, so a long batch stops taking up the card
+without you losing sight of it. Fold state is per card and survives closing and reopening
+the drawer.
+
+On an **expanded** card the queue doesn't sit above the conversation at all - it moves into
+a column beside it. An expanded card is full-width and the scarce thing is height, so
+stacking them meant the queue and the log competed for the same pixels and a long enough
+queue pushed the conversation off the bottom of the card. Side by side, neither can take
+anything from the other: the log keeps its full height however much work is queued. Below
+about 820px wide there isn't room for two readable columns, so it stacks again - and there
+the queue is capped at 40% of the space it shares with the log, which always keeps the
+larger half.
+
+Inside it: type an intent, press <kbd>Enter</kbd> (or **Add**), repeat - the same contract
+as the reply box on the same card, with <kbd>Shift</kbd><kbd>Enter</kbd> for a newline when
+an intent needs more than one line. The box also
 takes **dropped or pasted images**: the upload starts on drop, and what's queued is the
 uploaded file's *path*, so the agent reads it with its own file tools whenever the item is
 finally delivered. **Add** stays disabled while an upload is in flight, and an image with no
@@ -514,7 +538,12 @@ boxes hold a draft:
 - the **Work queue** panel's add box,
 - the **reply** box under the transcript on an expanded card, and
 - the **send** box - opened by <kbd>s</kbd> on the selected session, or by **Send** on the
-  card (the button shows while the card is collapsed; the shortcut works either way).
+  card.
+
+A card only ever has **one** box to send from. While it's expanded that box is the reply
+under the transcript, so <kbd>s</kbd> and **Send** put the cursor *there* rather than
+opening a second one; expanding a card with the send box open closes it, and the text is
+waiting in it again when you collapse and press **Send**.
 
 Each survives everything that isn't you deleting text: **collapsing the card** (opening any
 other card collapses this one - only one is expanded at a time), a **filter** that hides the
@@ -610,8 +639,9 @@ without reaching for the mouse:
 | <kbd>/</kbd> | Focus the filter box | Anywhere |
 | <kbd>e</kbd> | Expand / collapse the selected card | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
-| <kbd>s</kbd> | Send a message to the selected session | Selected session |
+| <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |

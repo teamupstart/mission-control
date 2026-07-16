@@ -335,6 +335,9 @@ export function App(): React.JSX.Element {
       } else if (chord === bindings.focus) {
         e.preventDefault();
         h.focusPane();
+      } else if (chord === bindings.queue) {
+        e.preventDefault();
+        h.toggleQueue();
       } else if (chord === bindings.mode) {
         e.preventDefault();
         h.cycleMode();
@@ -576,7 +579,7 @@ function CommandBar({
   bindings: Record<ActionId, string>;
   expanded: boolean;
   onToggleExpand: () => void;
-  onAction: (action: "startSend" | "focusPane" | "cycleMode" | "requestKill") => void;
+  onAction: (action: "startSend" | "focusPane" | "toggleQueue" | "cycleMode" | "requestKill") => void;
   onDiff: () => void;
   onReset: () => void;
   onRename: () => void;
@@ -623,6 +626,13 @@ function CommandBar({
             </button>
             <button className="keycap-btn" onClick={() => onAction("focusPane")}>
               <kbd>{formatChord(bindings.focus)}</kbd> focus
+            </button>
+            <button
+              className="keycap-btn"
+              onClick={() => onAction("toggleQueue")}
+              title="Show or hide this session's work queue"
+            >
+              <kbd>{formatChord(bindings.queue)}</kbd> queue
             </button>
             {canCycleMode && (
               <button className="keycap-btn" onClick={() => onAction("cycleMode")}>

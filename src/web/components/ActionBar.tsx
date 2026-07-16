@@ -2,41 +2,57 @@ import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
+import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 
 /**
  * Imperative surface an ActionBar registers with the App so keyboard shortcuts
- * (send / focus / mode / kill / esc on the selected card) drive the exact same
- * compose, mode-cycle and confirm-kill flows as the on-card buttons - one source
- * of truth for both.
+ * (send / focus / queue / mode / kill / esc on the selected card) drive the exact
+ * same compose, queue, mode-cycle and confirm-kill flows as the on-card buttons -
+ * one source of truth for both.
  */
 export interface ActionBarHandle {
   startSend: () => void;
   focusPane: () => void;
+  toggleQueue: () => void;
   cycleMode: () => void;
   requestKill: () => void;
   cancel: () => void;
 }
 
 /**
- * Per-session controls: focus its pane, send a message into its prompt, reset its
- * checkout, or terminate it. "Send" reveals an inline input; "Reset" (only with a
- * working dir) opens an app-level confirm; "Kill" requires a second confirming
+ * Per-session controls: focus its pane, send a message into its prompt, show its
+ * work queue, reset its checkout, or terminate it. "Send" puts a cursor in this
+ * card's one compose box; "Queue" toggles the work-queue panel; "Reset" (only with
+ * a working dir) opens an app-level confirm; "Kill" requires a second confirming
  * click so a stray click can't take down a session.
  */
 export function ActionBar({
   session,
   expanded = false,
+  queueOpen = false,
+  onToggleQueue,
+  onFocusReply,
   registerActions,
   onReset,
 }: {
   session: Session;
-  /** When the card is expanded, the transcript panel owns the reply box, so we
-   * hide this bar's Send button to avoid two send surfaces. */
+  /** Whether this card is focus-expanded (the transcript's reply box is on screen). */
   expanded?: boolean;
+  /** Whether the work-queue panel is currently showing, so Queue can read as pressed. */
+  queueOpen?: boolean;
+  /** Show / hide this card's work-queue panel. */
+  onToggleQueue?: () => void;
+  /**
+   * Put the cursor in the transcript's reply box, returning whether there was one to
+   * focus. A card may only ever have ONE compose box: when the expanded transcript is
+   * carrying it, Send hands off here instead of opening a second one beside it.
+   */
+  onFocusReply?: () => boolean;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
   /** Open the reset-to-origin confirm (app-level modal). Absent = no reset control. */
   onReset?: () => void;
 }): React.JSX.Element {
+  const { bindings } = useKeybindings();
   const [composing, setComposing] = useState(false);
   const [confirmKill, setConfirmKill] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -44,6 +60,9 @@ export function ActionBar({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const canSend = Boolean(session.tmux || session.wezterm);
+  // Queued work is the reason to open a hidden panel, so the button carries the count
+  // rather than making you press it to find out whether anything is waiting.
+  const openQueued = session.queue?.openCount ?? 0;
 
   async function run(label: string, fn: () => Promise<{ ok: boolean; error?: string }>) {
     setBusy(label);
@@ -77,8 +96,19 @@ export function ActionBar({
   function startSend() {
     if (!canSend) return;
     setConfirmKill(false);
+    // An expanded card already has a compose box - the transcript's reply. Send means
+    // "let me type", not "give me another box", so put the cursor in that one. Only if
+    // there is none (an unavailable transcript has no reply box) do we open our own.
+    if (onFocusReply?.()) return;
     setComposing(true);
   }
+
+  // The transcript's reply box arrives with the expansion, so a compose box open here
+  // when the card expands would be the second one on the card. Close it - the text is
+  // in the draft map, so reopening Send on the collapsed card brings it straight back.
+  useEffect(() => {
+    if (expanded) setComposing(false);
+  }, [expanded]);
 
   function focusPane() {
     void run("focus", () => api.focus(session.id));
@@ -105,15 +135,20 @@ export function ActionBar({
     setConfirmKill(false);
   }
 
+  function toggleQueue() {
+    onToggleQueue?.();
+  }
+
   // Register a stable handle that always calls the latest closures, so App can
   // drive this bar by keyboard without re-registering on every render.
-  const latest = useRef({ startSend, focusPane, cycleMode, requestKill, cancel });
-  latest.current = { startSend, focusPane, cycleMode, requestKill, cancel };
+  const latest = useRef({ startSend, focusPane, toggleQueue, cycleMode, requestKill, cancel });
+  latest.current = { startSend, focusPane, toggleQueue, cycleMode, requestKill, cancel };
   useEffect(() => {
     if (!registerActions) return;
     const handle: ActionBarHandle = {
       startSend: () => latest.current.startSend(),
       focusPane: () => latest.current.focusPane(),
+      toggleQueue: () => latest.current.toggleQueue(),
       cycleMode: () => latest.current.cycleMode(),
       requestKill: () => latest.current.requestKill(),
       cancel: () => latest.current.cancel(),
@@ -150,23 +185,32 @@ export function ActionBar({
         </div>
       ) : (
         <>
-          {!expanded && (
-            <button
-              className="btn"
-              disabled={!canSend}
-              title={canSend ? "Type into this session's prompt" : "No pane to send to"}
-              onClick={startSend}
-            >
-              Send
-            </button>
-          )}
+          <button
+            className="btn"
+            disabled={!canSend}
+            title={canSend ? "Type into this session's prompt" : "No pane to send to"}
+            onClick={startSend}
+          >
+            Send
+          </button>
           <button className="btn" onClick={focusPane}>
             Focus
           </button>
+          {onToggleQueue && (
+            <button
+              className={`btn btn-queue${queueOpen ? " on" : ""}`}
+              aria-expanded={queueOpen}
+              title={`${queueOpen ? "Hide" : "Show"} the work queued for this session (${formatChord(bindings.queue)})`}
+              onClick={onToggleQueue}
+            >
+              Queue
+              {openQueued > 0 && <span className="btn-count">{openQueued}</span>}
+            </button>
+          )}
           {session.cwd && onReset && (
             <button
               className="btn btn-reset"
-              title="Reset checkout to origin's default branch and clear context (Ctrl+R)"
+              title={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
               onClick={onReset}
             >
               Reset

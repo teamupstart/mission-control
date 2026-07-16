@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { AgentType, ToolCall, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
@@ -15,6 +15,16 @@ import {
 const AGENT_LABEL: Record<AgentType, string> = { claude: "claude", codex: "codex" };
 
 /**
+ * Imperative surface the card holds onto so the send shortcut can reach this panel's
+ * reply box - the card's single compose box while it's expanded.
+ */
+export interface TranscriptHandle {
+  /** Focus the reply box, reporting whether there was one (an unavailable transcript
+   *  renders no compose row, and the caller then owns the send flow itself). */
+  focusReply: () => boolean;
+}
+
+/**
  * The expanded card's live conversation. Opens a dedicated SSE stream to the
  * session's transcript (the server tails the JSONL file), renders the turns, and
  * offers an inline reply that types straight into the agent's prompt. Images can
@@ -25,10 +35,12 @@ export function TranscriptPanel({
   sessionId,
   agent,
   canSend,
+  ref,
 }: {
   sessionId: string;
   agent: AgentType;
   canSend: boolean;
+  ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
@@ -40,6 +52,23 @@ export function TranscriptPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const atBottom = useRef(true);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
+
+  // The panel deliberately never takes focus on its own (see below), but the send
+  // shortcut is an explicit "I want to type now" - so it gets a way in. Reported as a
+  // boolean rather than assumed: an unavailable transcript renders no reply box at
+  // all, and the card must know that to fall back to its own send box.
+  useImperativeHandle(ref, () => ({
+    focusReply: () => {
+      const el = inputRef.current;
+      if (!el) return false;
+      el.focus();
+      // Land at the end of a re-hydrated draft, where you'd resume typing - not at
+      // whatever offset the last mount happened to leave behind.
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      return true;
+    },
+  }), []);
 
   // The reply's attachments are the panel's own, and unlike the TEXT beside them they
   // do not survive a collapse - so their thumbnails are ours to release. Read through

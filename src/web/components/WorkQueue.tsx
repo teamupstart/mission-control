@@ -26,6 +26,8 @@ export function WorkQueue({
   foremanMode,
   foremanEnabled,
   allowlisted,
+  collapsed = false,
+  onToggleCollapsed,
 }: {
   session: Session;
   /** Current Foreman mode, so a dry-run queue explains why it isn't sending. */
@@ -37,6 +39,10 @@ export function WorkQueue({
   foremanEnabled: boolean;
   /** Whether this session's repo is cleared for live sends (see the panel note). */
   allowlisted: boolean;
+  /** Folded down to just its header - the panel is still open, only its body is away. */
+  collapsed?: boolean;
+  /** Fold / unfold. Absent = no fold control (the header stays a plain label). */
+  onToggleCollapsed?: () => void;
 }): React.JSX.Element | null {
   const [queue, setQueue] = useState<SessionQueue | null>(null);
   // Survives this mount: collapsing the card (which expanding ANY other card does)
@@ -54,6 +60,14 @@ export function WorkQueue({
   const sessionId = session.id;
   const summary = session.queue;
   const imageDrop = useImageDrop({ attachments, onChange: setAttachments, disabled: busy });
+
+  // Every branch below renders the same shell, and folding is the shell's job: one rule
+  // (`.wq-collapsed > :not(.wq-head)`) hides the body, so a new branch can't forget to
+  // implement it and the four can't drift apart.
+  const cls = `work-queue${collapsed ? " wq-collapsed" : ""}`;
+  const head = (count: number): React.JSX.Element => (
+    <Header count={count} collapsed={collapsed} onToggle={onToggleCollapsed} />
+  );
 
   // These thumbnails belong to the add box, which dies with the expanded card - so
   // their object URLs are ours to release. Read through a ref because the cleanup runs
@@ -106,8 +120,8 @@ export function WorkQueue({
   // nothing would ever heal this on its own.
   if (loadFailed && (summary?.totalCount ?? 0) > 0) {
     return (
-      <section className="work-queue" onClick={(e) => e.stopPropagation()}>
-        <Header count={summary?.openCount ?? 0} />
+      <section className={cls} onClick={(e) => e.stopPropagation()}>
+        {head(summary?.openCount ?? 0)}
         <p className="wq-error">
           Couldn&apos;t load this queue. Its {summary?.totalCount}{" "}
           {summary?.totalCount === 1 ? "item is" : "items are"} still there - don&apos;t re-add them.
@@ -133,15 +147,15 @@ export function WorkQueue({
     // which is precisely where re-attaching is refused. It was shown only when it
     // would fail, and hidden whenever it would work.
     return (
-      <section className="work-queue" onClick={(e) => e.stopPropagation()}>
-        <Header count={0} />
+      <section className={cls} onClick={(e) => e.stopPropagation()}>
+        {head(0)}
         {session.orphanedQueue && <ReattachHint session={session} onDone={() => void refresh()} />}
         <AddBox
           value={adding}
           onChange={setAdding}
           disabled={busy}
           onAdd={() => void add()}
-          placeholder="Queue work for this session…  (⌘↵ to add, drop or paste images)"
+          placeholder="Queue work for this session…  (Enter to add, Shift+Enter for newline, drop or paste images)"
           attachments={attachments}
           drop={imageDrop}
         />
@@ -162,7 +176,9 @@ export function WorkQueue({
   async function add(): Promise<void> {
     const ready = readyAttachments(attachments);
     // An image mid-upload has no path yet, so adding now would quietly leave it out of
-    // the very item it was dropped on. The button says so; ⌘↵ doesn't.
+    // the very item it was dropped on. The button says so by going disabled; the Enter
+    // key can't, and now that Enter is the *primary* way to add, this guard is the only
+    // thing standing between a dropped screenshot and an item that never mentions it.
     if (busy || imageDrop.uploading) return;
     const intent = withAttachments(adding.trim(), ready);
     if (!intent) return;
@@ -300,8 +316,8 @@ export function WorkQueue({
   */
   if (blocked) {
     return (
-      <section className="work-queue" onClick={(e) => e.stopPropagation()}>
-        <Header count={0} />
+      <section className={cls} onClick={(e) => e.stopPropagation()}>
+        {head(0)}
         <p className="wq-blocked">{blocked}</p>
         {items.length > 0 && (
           <>
@@ -341,8 +357,8 @@ export function WorkQueue({
   }
 
   return (
-    <section className="work-queue" onClick={(e) => e.stopPropagation()}>
-      <Header count={open.length} />
+    <section className={cls} onClick={(e) => e.stopPropagation()}>
+      {head(open.length)}
 
       {/*
         Gated on the session having no OPEN items of its own, because that is exactly
@@ -494,7 +510,7 @@ export function WorkQueue({
         onChange={setAdding}
         disabled={busy}
         onAdd={() => void add()}
-        placeholder="Queue more work…  (⌘↵ to add, drop or paste images)"
+        placeholder="Queue more work…  (Enter to add, Shift+Enter for newline, drop or paste images)"
         attachments={attachments}
         drop={imageDrop}
       />
@@ -570,11 +586,47 @@ function QueueHint(props: {
   }
 }
 
-function Header({ count }: { count: number }): React.JSX.Element {
-  return (
-    <header className="wq-head">
+/**
+ * The panel's title bar, and its fold control.
+ *
+ * The whole strip is the button rather than a chevron you have to hit: it's the one
+ * row that survives folding, so it's also the only thing left to click to get the
+ * panel back - a 12px target for that would be a trap. `count` stays outside the
+ * label so a folded queue still reports what's waiting in it, which is the entire
+ * point of folding rather than closing.
+ */
+function Header({
+  count,
+  collapsed,
+  onToggle,
+}: {
+  count: number;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}): React.JSX.Element {
+  const inner = (
+    <>
+      {onToggle && (
+        <span className="wq-fold" aria-hidden>
+          {collapsed ? "▸" : "▾"}
+        </span>
+      )}
       <span className="wq-badge">Work queue</span>
       {count > 0 && <span className="wq-count">{count} to do</span>}
+    </>
+  );
+  if (!onToggle) return <header className="wq-head">{inner}</header>;
+  return (
+    <header className="wq-head">
+      <button
+        type="button"
+        className="wq-head-btn"
+        aria-expanded={!collapsed}
+        title={collapsed ? "Unfold the work queue" : "Fold the work queue away"}
+        onClick={onToggle}
+      >
+        {inner}
+      </button>
     </header>
   );
 }
@@ -688,8 +740,16 @@ export function AddBox({
           onPaste={drop.onPaste}
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            // Cmd/Ctrl+Enter adds, so a multi-line intent can contain newlines.
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onAdd();
+            // Enter adds, Shift+Enter breaks the line - the same contract as the reply
+            // box a few pixels below it, which is the point: these two boxes sit on one
+            // card and look identical, so the hands that learned one drive the other.
+            // ⌘/Ctrl+Enter still adds (it doesn't type a newline, so nothing is lost by
+            // letting the old chord through) and `preventDefault` keeps the submitting
+            // Enter from leaving a stray newline in a box that's about to be reused.
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onAdd();
+            }
             // Blur back to the grid so card keyboard nav (e to collapse) works again -
             // the same escape the reply box offers. The grid's own Escape stands down
             // for this press (its guard reads the event's target, which is still this

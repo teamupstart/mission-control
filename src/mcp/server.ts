@@ -20,7 +20,12 @@ async function http(path: string, method: string, body?: unknown): Promise<Respo
   });
 }
 
-async function createReview(kind: string, title: string, body: string): Promise<string> {
+async function createReview(
+  kind: string,
+  title: string,
+  body: string,
+  decisions?: unknown,
+): Promise<string> {
   const res = await http("/mcp/reviews", "POST", {
     env: ENV,
     sessionId: SESSION_ID,
@@ -28,6 +33,7 @@ async function createReview(kind: string, title: string, body: string): Promise<
     kind,
     title,
     body,
+    decisions,
   });
   if (!res.ok) throw new Error(`harness ${res.status}: ${await res.text()}`);
   return ((await res.json()) as { id: string }).id;
@@ -64,6 +70,61 @@ server.registerTool(
     try {
       await createReview("plan", title, plan);
       return textResult("Plan shared to the Mission Control dashboard.");
+    } catch (err) {
+      return textResult(`Could not reach Mission Control: ${String(err)}`, true);
+    }
+  },
+);
+
+server.registerTool(
+  "request_plan_decisions",
+  {
+    title: "Present a plan with selectable decisions",
+    description:
+      "Show a plan in the Mission Control dashboard with one or more decision points the " +
+      "human answers by selecting options and clicking Submit, then BLOCK until they do. " +
+      "Returns their selections so you can proceed. Use this instead of asking open-ended " +
+      "questions whenever the plan's open choices can be expressed as options.",
+    inputSchema: {
+      title: z.string().describe("Short title for the plan"),
+      plan: z.string().describe("The plan as GitHub-flavored markdown, shown above the decisions"),
+      decisions: z
+        .array(
+          z.object({
+            id: z.string().describe("Stable id for this question, echoed back in the answer"),
+            question: z.string().describe("What the human is deciding"),
+            options: z
+              .array(
+                z.object({
+                  id: z.string().describe("Stable id, echoed back in the selection"),
+                  label: z.string().describe("What the human reads on the control"),
+                  detail: z.string().optional().describe("Optional one-line elaboration"),
+                  recommended: z
+                    .boolean()
+                    .optional()
+                    .describe("Marks a suggested choice; does not preselect"),
+                }),
+              )
+              .min(1),
+            multiSelect: z
+              .boolean()
+              .optional()
+              .describe("Checkboxes (choose many) when true, radios (choose one) otherwise"),
+            allowOther: z
+              .boolean()
+              .optional()
+              .describe("Adds a free-text 'Other' field for an answer outside the options"),
+          }),
+        )
+        .min(1)
+        .describe("The decision points to present"),
+    },
+  },
+  async ({ title, plan, decisions }) => {
+    try {
+      const id = await createReview("plan-decisions", title, plan, decisions);
+      const review = await waitForResolution(id);
+      return textResult(review.response ?? "(no selections given)");
     } catch (err) {
       return textResult(`Could not reach Mission Control: ${String(err)}`, true);
     }

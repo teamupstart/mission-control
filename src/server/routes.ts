@@ -364,10 +364,10 @@ export function buildApp(
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, CreateReviewSchema);
     if (!parsed.ok) return parsed.res;
-    const { env, sessionId, cwd, kind, title, body } = parsed.data;
+    const { env, sessionId, cwd, kind, title, body, decisions } = parsed.data;
     const session = registry.findSessionByEnv(env, sessionId, cwd);
     if (!session) return c.json({ error: "no matching session" }, 404);
-    const review = reviews.create(session.id, kind, title, body);
+    const review = reviews.create(session.id, kind, title, body, decisions ?? null);
     return c.json({ id: review.id, sessionId: session.id });
   });
 

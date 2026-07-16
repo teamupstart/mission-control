@@ -128,8 +128,9 @@ export const NO_QUESTION_PLACEHOLDER = "(the session needs you, but no explicit 
 
 /**
  * Work out what a needs-you session is blocked on, and how (if at all) Foreman may
- * reply. An `input` review is directly answerable (resolve it); a plan/diff review
- * is not (Foreman can only frame it); a terminal `awaiting_input` and a parked
+ * reply. An `input` review is directly answerable (resolve it); any other kind -
+ * plan, diff, plan-decisions - is not (Foreman can only frame it, so a plan's
+ * decisions stay the human's to make); a terminal `awaiting_input` and a parked
  * no-mistakes gate are both answerable by typing when a pane exists; anything else
  * is purpose-only. Pure.
  *

@@ -287,9 +287,11 @@ claude mcp add -s user mission-control -- node /ABSOLUTE/PATH/dist/mcp/server.mj
 (`npm run install-hooks` prints the exact command with your paths.)
 
 This registers a stdio MCP server (`src/mcp/server.ts`) that each Claude session
-launches. It exposes four tools:
+launches. It exposes five tools:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
+- `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
+  options (radios / checkboxes) and **block** until the human submits their choices
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
 - `request_input(question)` - ask a question and **block** for the answer
 - `report_status(activity)` - update the session's activity line

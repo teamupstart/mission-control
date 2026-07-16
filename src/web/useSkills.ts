@@ -59,13 +59,13 @@ export function useSkills(): SkillsState {
   /**
    * Apply a change optimistically, and TAKE IT BACK if the server refuses.
    *
-   * The revert is not politeness. A refused patch changed nothing - not the config,
-   * not the symlinks (the daemon undoes a partial apply before answering) - so a
-   * toggle left sitting in the on position would be the panel claiming a skill is
-   * live in every session on the machine when it is live in none. The next poll would
-   * eventually snap it back with no explanation of what happened. For a control whose
-   * whole promise is "this is now in force fleet-wide", showing a state that isn't in
-   * force is the whole ballgame.
+   * The revert is not politeness. A refused patch changed nothing - not the config, not
+   * the symlinks: the daemon decides before it writes, so a refusal is a patch it never
+   * began, not one it took back. A toggle left sitting in the on position would
+   * therefore be the panel claiming a skill is live in every session on the machine when
+   * it is live in none. The next poll would eventually snap it back with no explanation
+   * of what happened. For a control whose whole promise is "this is now in force
+   * fleet-wide", showing a state that isn't in force is the whole ballgame.
    */
   const update = useCallback(
     async (patch: SkillsConfigPatch): Promise<void> => {

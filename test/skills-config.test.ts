@@ -149,6 +149,40 @@ test("one blocked skill does NOT wedge every other toggle in the panel", () => {
   assert.equal(r.config.generation, 2, "alpha's arrival is a real change the fleet needs");
 });
 
+test("a skill deleted from the catalog does not wedge the master switch", () => {
+  applySkillsConfig({ enabled: true, skills: { alpha: true, beta: true } }, NOW);
+  // A `git pull` drops beta from the repo. Startup correctly unlinks it - and correctly
+  // leaves `beta: true` in the config, because the row is the operator's intent and the
+  // skill may come back.
+  rmSync(join(catalogDir, "beta"), { recursive: true, force: true });
+  reconcileSkills(NOW + 1);
+  assert.deepEqual(links(), ["fleet-alpha"]);
+
+  // `touchedBy` hands a master flip EVERY enabled id, so the stale `beta: true` rides
+  // along on both of these. Refusing over it would wedge the switch permanently: there
+  // is no directory to remove and no panel row to clear the flag on, so the operator
+  // could never turn the feature back on - and healthy alpha would go down with it.
+  const off = applySkillsConfig({ enabled: false }, NOW + 2);
+  assert.deepEqual(off.refused, []);
+  const on = applySkillsConfig({ enabled: true }, NOW + 3);
+
+  assert.deepEqual(on.refused, [], "a skill nobody can restore must not refuse the switch");
+  assert.equal(getSkillsConfig().enabled, true);
+  assert.deepEqual(links(), ["fleet-alpha"], "and the skills that DO exist come back");
+  // Not silence: it's drift, and the panel says so on every poll.
+  assert.match(skillDrift(getSkillsConfig(), readCatalog()).join("; "), /beta is switched on but is no longer/);
+});
+
+test("a stale enabled flag for a deleted skill doesn't refuse an unrelated toggle", () => {
+  applySkillsConfig({ enabled: true, skills: { beta: true } }, NOW);
+  rmSync(join(catalogDir, "beta"), { recursive: true, force: true });
+
+  const r = applySkillsConfig({ skills: { alpha: true } }, NOW + 1);
+
+  assert.deepEqual(r.refused, [], "alpha's toggle is not refused over beta's disappearance");
+  assert.ok(links().includes("fleet-alpha"));
+});
+
 test("a patch IS refused when the skill it names is the blocked one", () => {
   applySkillsConfig({ enabled: true }, NOW);
   mkdirSync(join(claudeSkills, "fleet-beta"), { recursive: true });

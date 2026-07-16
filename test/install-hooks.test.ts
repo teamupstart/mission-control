@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, symlinkSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "jsonc-parser";
@@ -13,11 +13,28 @@ import { parse } from "jsonc-parser";
 const INSTALLER = join(import.meta.dirname, "..", "hooks", "install.mjs");
 const MARKER = "harness-hook.mjs";
 const STATUSLINE_MARKER = "harness-statusline.mjs";
+// Under tsx, because that is the installer's real entry point (`npm run install-hooks`)
+// and it imports the TypeScript reconciler to unwind the skill links. Running it under
+// bare node here would test a way nobody invokes it.
+const RUN = ["--import", "tsx", INSTALLER];
+
+/**
+ * The throwaway `~/.claude/skills` for a settings file, kept beside it so it is torn
+ * down with it. Every run gets one: `--uninstall` really does remove skill symlinks
+ * now, so a test that let `claudeSkillsDir()` fall through to the real homedir would
+ * delete the skills off the machine of whoever ran the suite.
+ */
+const skillsDirFor = (settingsPath: string): string => join(settingsPath, "..", "claude-skills");
 
 /** Run the installer with an isolated state dir (for the status line sidecar). */
 function runInstallerHome(settingsPath: string, homeDir: string, args: string[] = []): void {
-  execFileSync(process.execPath, [INSTALLER, ...args], {
-    env: { ...process.env, CLAUDE_SETTINGS_PATH: settingsPath, FLEET_HOME: homeDir },
+  execFileSync(process.execPath, [...RUN, ...args], {
+    env: {
+      ...process.env,
+      CLAUDE_SETTINGS_PATH: settingsPath,
+      CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath),
+      FLEET_HOME: homeDir,
+    },
     stdio: "ignore",
   });
 }
@@ -44,8 +61,8 @@ const SETTINGS_WITH_STATUSLINE = `{
 
 /** Run the installer against a throwaway settings file and return its text. */
 function runInstaller(settingsPath: string, args: string[] = []): void {
-  execFileSync(process.execPath, [INSTALLER, ...args], {
-    env: { ...process.env, CLAUDE_SETTINGS_PATH: settingsPath },
+  execFileSync(process.execPath, [...RUN, ...args], {
+    env: { ...process.env, CLAUDE_SETTINGS_PATH: settingsPath, CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath) },
     stdio: "ignore",
   });
 }
@@ -171,5 +188,67 @@ test("--statusline with no prior status line wraps, and uninstall removes the ke
     runInstallerHome(path, home, ["--uninstall"]);
     s = parse(readFileSync(path, "utf8")) as any;
     assert.equal(s.statusLine, undefined, "status line key removed on uninstall");
+  });
+});
+
+// ---- the skill symlinks ----
+// The most invasive thing the harness puts in a home directory: they sit in Claude's
+// native loading path for every session on the machine, so leaving them behind would
+// outlive the uninstall meant to remove them.
+
+/** A populated `~/.claude/skills`: one of ours, and two that are emphatically not. */
+function seedSkills(settingsPath: string): string {
+  const dir = skillsDirFor(settingsPath);
+  mkdirSync(dir, { recursive: true });
+  // Real targets, so `existsSync` on a link answers about the link rather than about a
+  // dangling one - and so the assertions below can watch the targets survive.
+  for (const target of ["src-alpha", "src-theirs"]) mkdirSync(join(dir, "..", target), { recursive: true });
+  symlinkSync(join(dir, "..", "src-alpha"), join(dir, "fleet-alpha"), "dir");
+  // The operator's hand-authored skill, and a real directory wearing our prefix.
+  symlinkSync(join(dir, "..", "src-theirs"), join(dir, "no-mistakes"), "dir");
+  mkdirSync(join(dir, "fleet-handmade"), { recursive: true });
+  return dir;
+}
+
+test("--uninstall removes our skill links from ~/.claude/skills", () => {
+  withTempSettings(USER_SETTINGS, (path) => {
+    const dir = seedSkills(path);
+    runInstaller(path);
+    runInstaller(path, ["--uninstall"]);
+
+    assert.ok(!existsSync(join(dir, "fleet-alpha")), "our link is gone - uninstall really uninstalls");
+    // Unlinked, never recursed into: the skill's source lives in the app repo, and the
+    // link is a pointer at it, not a copy of it.
+    assert.ok(existsSync(join(dir, "..", "src-alpha")), "the link's target is not ours to delete");
+    // Marker discipline survives the uninstall: the prefix scopes what we may remove,
+    // it does not license deleting a directory of someone's work because the name matched.
+    assert.ok(existsSync(join(dir, "no-mistakes")), "the operator's own skill is untouched");
+    assert.ok(existsSync(join(dir, "fleet-handmade")), "a real directory is never removed, prefix or no prefix");
+  });
+});
+
+test("--uninstall clears the links even when no hooks are left to strip", () => {
+  withTempSettings(USER_SETTINGS, (path) => {
+    const dir = seedSkills(path);
+    // Never installed, so settings.json has nothing of ours and the run takes the
+    // "nothing to remove" exit. Whether a hook survives says nothing about whether a
+    // link does, and an early exit that skipped these would leave the fleet loading
+    // skills from an app that has been uninstalled.
+    runInstaller(path, ["--uninstall"]);
+
+    assert.ok(!existsSync(join(dir, "fleet-alpha")), "the link is removed on the hooks-are-already-gone path");
+    assert.ok(existsSync(join(dir, "no-mistakes")), "and still only ours");
+  });
+});
+
+test("an install leaves the skills directory exactly as it found it", () => {
+  withTempSettings(USER_SETTINGS, (path) => {
+    const dir = seedSkills(path);
+    runInstaller(path);
+    // Installing is not a reconcile. Which skills are on is the operator's decision in
+    // the panel, applied from the config by the daemon - an installer that added links
+    // would switch skills on fleet-wide because someone wired up hooks, and one that
+    // removed them would switch them off for the same reason.
+    assert.deepEqual(readdirSync(dir).sort(), ["fleet-alpha", "fleet-handmade", "no-mistakes"]);
   });
 });

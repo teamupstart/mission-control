@@ -261,10 +261,21 @@ function msg(err: unknown): string {
  * that no live session would ever load - and there was no way, after the fact, to tell
  * the healing apart from the undoing. Deciding first has no such window.
  *
- * Only reasons we can KNOW in advance are here (a catalog we can't read, a skill that
- * isn't in it, someone else's directory in the way). An I/O failure during the write
- * can't be predicted and isn't pretended at: the config records the operator's intent
- * and `skillDrift` says loudly that the disk doesn't have it yet.
+ * A blocker must be something the operator can ACT ON, because a refusal's only
+ * instruction is "clear this and try again". So the bar here is narrow: a catalog we
+ * can't read (fix the path, the permissions, the build) and someone else's directory in
+ * the way (move it). An id the catalog no longer HAS is deliberately not one - there is
+ * no directory to remove and no panel row to clear the flag on, so refusing over it is a
+ * dead end the operator cannot leave. It would also wedge the very control that escapes
+ * it: a `git pull` that deletes an enabled skill leaves a stale `true` behind, and
+ * `touchedBy` hands a master-switch flip every enabled id, so one deleted skill would
+ * refuse the master switch forever and take every healthy skill down with it. It is
+ * drift, not a refusal - `skillDrift` says so on every poll, and `desiredSkillIds`
+ * already declines to link a directory that isn't there.
+ *
+ * An I/O failure during the write can't be predicted and isn't pretended at either: the
+ * config records the operator's intent and `skillDrift` says loudly that the disk doesn't
+ * have it yet.
  */
 export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkillsDir()): Map<string, string> {
   const out = new Map<string, string>();
@@ -279,10 +290,7 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
   }
 
   for (const id of enabledIds) {
-    if (!catalog.present.has(id)) {
-      out.set(id, `${id} is switched on but is no longer in the catalog`);
-      continue;
-    }
+    if (!catalog.present.has(id)) continue;
     const path = join(dir, fleetSkillDirName(id));
     try {
       // Ours, or absent, are both fine - we can write either. Only somebody else's

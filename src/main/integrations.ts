@@ -12,11 +12,13 @@
 // arrays we own, exactly like hooks/install.mjs - the user's other hooks,
 // comments, and formatting are preserved.
 //
-// Removal also clears the `fleet-*` skill symlinks, for a reason that is sharper here
-// than it is in hooks/install.mjs: this is the ONLY uninstall a packaged operator has.
-// The bundle ships dist/, skills/ and package.json (see electron-builder.yml) - no
-// hooks/, no src/, no tsx, no npm scripts - so the tray's "Remove Claude integrations"
-// is the door, and anything it fails to remove is unremovable short of doing it by hand.
+// Scope: hooks and the MCP server, NOT skills. Skills are the daemon's to install and
+// remove, and the operator's to decide on, via the panel's master switch - which is the
+// durable off-switch because it persists `enabled: false`. Removing links from here
+// could not be durable: this process supervises the daemon, whose startup reconcile
+// reads a config still saying `enabled: true` and would put every link straight back,
+// re-broadcasting a reload to the fleet. A removal the next launch silently undoes is
+// worse than one that never claimed to happen.
 
 import { app } from "electron";
 import { execFileSync } from "node:child_process";
@@ -24,7 +26,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
-import { uninstallSkillLinks } from "../server/skills/reconcile.ts";
 
 const MARKER = "harness-hook";
 const EVENTS = [
@@ -223,41 +224,14 @@ export function installIntegrations(): IntegrationResult {
   }
 }
 
-/**
- * Clear our `fleet-*` symlinks out of `~/.claude/skills`, reporting rather than throwing.
- *
- * The links are the most invasive thing this app puts in a home directory - they sit in
- * Claude's native loading path for EVERY session on the machine, so left behind they
- * outlive the app that made them, dangling at a bundle the operator just deleted. The
- * daemon's reconciler owns them, and it is reused here rather than re-walked, so the
- * "only ever our own symlinks, never a real directory, never someone else's" rule keeps
- * its single implementation and this door cannot drift from the other one.
- *
- * Best-effort by design: the hooks and the MCP registration are already gone by the time
- * this runs, so throwing would report a wholesale failure for a removal that mostly
- * succeeded, and would strand the operator with no way to retry the part that worked. A
- * link we couldn't remove is said out loud instead - they are the only one who can finish
- * it, and it is still loaded in every session until they do.
- */
-function removeSkillLinks(): string {
-  try {
-    const { unlinked, problems } = uninstallSkillLinks();
-    const removed = unlinked.length > 0 ? ` ${unlinked.length} fleet skill link(s) removed.` : "";
-    return problems.length > 0 ? `${removed} ${problems.join(" ")}` : removed;
-  } catch (err) {
-    return ` Couldn't remove the fleet skill links: ${err instanceof Error ? err.message : String(err)}`;
-  }
-}
-
-/** Remove our hooks + MCP registration + skill links, leaving the user's own intact. */
+/** Remove our hooks + MCP registration, leaving the user's other settings intact. */
 export function removeIntegrations(): IntegrationResult {
   try {
     const { hook, mcp } = satellitePaths();
     const runtime = resolveRuntime();
     editHooks(true, runtime.hookCommand, hook);
     const mcpMsg = claudeMcp(false, runtime, mcp);
-    const skillsMsg = removeSkillLinks();
-    return { ok: true, message: `Claude integrations removed. ${mcpMsg}${skillsMsg}` };
+    return { ok: true, message: `Claude integrations removed. ${mcpMsg}` };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

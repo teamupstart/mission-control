@@ -5,14 +5,18 @@
 // the path in place (matched by the "harness-hook.mjs" marker) without touching
 // any of the user's other hooks. `--uninstall` removes only our entries.
 //
-// Uninstall also clears the `fleet-*` skill symlinks out of ~/.claude/skills. They
-// are not written here (the daemon's reconciler owns them), but this is the door the
-// operator leaves by, and they are the most invasive thing the harness puts in a home
-// directory: they sit in Claude's native loading path for EVERY session on the
-// machine, so leaving them behind would outlive the uninstall meant to remove them,
-// dangling at an app directory that may no longer exist. Delegated to the reconciler
+// Uninstall also clears the `fleet-*` skill symlinks out of ~/.claude/skills - as
+// TEARDOWN, not as the off-switch. They are the most invasive thing the harness puts in
+// a home directory (Claude loads them into every session on the machine), so a checkout
+// being abandoned should not leave them pointing at it. Delegated to the reconciler
 // rather than re-walked here, so the "only ever our own symlinks, never a real
 // directory" rule keeps its single implementation.
+//
+// It does NOT turn the feature off, and must not be described as though it does: the
+// config still says the skills are on, and the daemon reconciles against that config on
+// every start, so a daemon run from this checkout again re-creates them. The durable
+// off-switch is the panel's master switch, which records the intent. This is for the
+// case where there is no panel left to click.
 //
 // The edit is surgical: we parse settings.json with jsonc-parser and rewrite
 // ONLY the hook arrays we actually change, so the rest of the file - your other

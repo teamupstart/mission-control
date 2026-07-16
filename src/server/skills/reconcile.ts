@@ -352,12 +352,23 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
 }
 
 /**
- * Remove every `fleet-*` symlink and nothing else - the real uninstall.
+ * Remove every `fleet-*` symlink and nothing else - the WALK, not the decision.
  *
- * Global blast radius is accepted deliberately (that IS the feature), which is
- * exactly why leaving is as supported as arriving. Expressed as a reconcile against
- * a disabled config rather than as its own walk, so the "only ever remove our own
- * symlinks" rule has one implementation and uninstall cannot drift from it.
+ * Global blast radius is accepted deliberately (that IS the feature), which is exactly
+ * why leaving is as supported as arriving. Expressed as a reconcile against a disabled
+ * config rather than as its own walk, so the "only ever remove our own symlinks" rule has
+ * one implementation and uninstall cannot drift from it.
+ *
+ * This does NOT turn the feature off, and callers must not present it as though it does.
+ * It touches the disk and nothing else, while the config goes on saying the skills are
+ * on - and `reconcileSkills` re-reads that config on every daemon start, so a removal
+ * this alone performed is re-created at the next launch, complete with a reload
+ * broadcast to the whole fleet. The durable off-switch is the master switch
+ * (`applySkillsConfig({enabled: false})`), which records the intent and takes this same
+ * removal path to carry it out.
+ *
+ * So the honest use is teardown of an install that is going away with no panel left to
+ * click: `hooks/install.mjs --uninstall`, walking out of a checkout.
  */
 export function uninstallSkillLinks(dir = claudeSkillsDir()): ReconcileResult {
   return reconcileSkillLinks(

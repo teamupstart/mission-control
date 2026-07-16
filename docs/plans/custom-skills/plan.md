@@ -247,6 +247,18 @@ sessions the fleet has nothing to do with. Accepted deliberately. `install.mjs` 
 precedent, but hooks only changed telemetry; skills change what the model does. Marker
 discipline and a real uninstall are therefore not optional.
 
+The real uninstall is the **master switch**, and only it: `applySkillsConfig({enabled:
+false})` persists the intent, unlinks every `fleet-*`, and bumps the generation so the
+fleet is told to drop them. That durability is the whole point - the daemon reconciles
+`~/.claude/skills` against the config on every start, so any removal that leaves the
+config saying "on" is undone by the next launch, which would also re-broadcast a reload.
+`uninstallSkillLinks()` is the walk, not the decision: it is reached from
+`hooks/install.mjs --uninstall` as a dev-teardown convenience (a checkout being abandoned
+has no panel to click), and is deliberately NOT wired into the packaged tray's "Remove
+Claude integrations", which is scoped to hooks and the MCP server. The tray runs in the
+Electron main process, which supervises the daemon rather than owning the config - it
+could unlink, but it could not make it stick.
+
 **Transcript cost.** Each reload writes a command and its response into the session's context.
 Cheap once, not free across twenty sessions times every toggle. The generation watermark is the
 mitigation; the misuse to avoid is bumping it on any config write.

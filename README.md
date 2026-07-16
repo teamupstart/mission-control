@@ -180,6 +180,12 @@ curl -s http://127.0.0.1:7317/api/sessions | grep -o '"instrumented":[a-z]*'
 npm run install-hooks -- --uninstall
 ```
 
+This also clears any `fleet-*` skill links out of `~/.claude/skills` as a dev-teardown
+convenience, so a checkout you're walking away from leaves nothing loaded in Claude. It
+does not turn the feature off: the config still says the skills are on, so a daemon
+started from this checkout re-creates them. To switch skills off for good, use the
+master switch in Settings → Skills.
+
 <details>
 <summary>What it writes to <code>settings.json</code></summary>
 
@@ -503,7 +509,12 @@ Three things worth knowing before you switch one on:
   directory, shared by every Claude on the machine. The harness only ever creates or
   removes entries under the `fleet-` prefix, and only ones that are symlinks - your
   `no-mistakes`, `implement-plan` and friends are untouchable by construction, not by
-  care. Turning the master switch off is a real uninstall.
+  care. **Turning the master switch off is the real uninstall**: it's the only control
+  that both removes every link and records that you wanted them gone, so nothing brings
+  them back. Removing the links any other way is temporary - the daemon reconciles
+  `~/.claude/skills` against this config on every start, so a config still saying "on"
+  re-creates them. (The tray's "Remove Claude integrations" is hooks and the MCP server
+  only; it does not touch skills.)
 - **Enabling a skill loads it; it does not oblige Claude to use it.** Native skills
   are model-invoked, so each row carries an **enforcement badge** saying which rung it
   sits on. "When relevant" means exactly that.

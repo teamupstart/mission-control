@@ -69,6 +69,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     cwd: "/repo",
     gitBranch: "main",
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",
@@ -196,7 +197,7 @@ test("a failed reset leaves the fix log alone", async () => {
   registry.applyNomistakesFixes("sess-bad", [
     {
       sha: "abc1234", step: "review", summary: "keep me", committedAt: 1,
-      filesChanged: 1, added: 1, removed: 0, decision: null, findingCount: 0,
+      filesChanged: 1, added: 1, removed: 0, decision: null, repliedBy: null, findingCount: 0,
     },
   ]);
 

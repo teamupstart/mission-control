@@ -1117,6 +1117,22 @@ body {
   flex: none;
   font-variant-numeric: tabular-nums;
 }
+/* The byline chip on a collapsed row. `flex: none` like the step tag and the
+   timestamp it sits between: the summary is the only flexible thing on this row,
+   so the chip must never be the thing that gives way - a truncated "forema" is
+   worse than a shorter summary, and .nm-fixsum already ellipsizes for exactly this. */
+.nm-byline {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  padding: 0 5px;
+  border-radius: 4px;
+  flex: none;
+}
+.nm-byline-foreman {
+  color: var(--claude);
+  background: color-mix(in oklab, var(--claude) 14%, transparent);
+}
 .nm-fixdetail {
   display: flex;
   flex-direction: column;
@@ -1161,6 +1177,9 @@ body {
 }
 .nm-who-auto {
   color: var(--idle);
+}
+.nm-who-foreman {
+  color: var(--claude);
 }
 .nm-find {
   display: flex;
@@ -1237,6 +1256,27 @@ body {
   border-left-color: color-mix(in oklab, var(--idle) 45%, transparent);
   color: var(--muted);
   font-style: italic;
+}
+/* What the foreman said about the gate, under the reply it led to.
+   Indented and tagged so the two are never read as one voice: the reply above is
+   the agent's, this is the foreman's, and the visual gap between them is the
+   attribution. */
+.nm-foreman-said {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+.nm-foreman-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--claude) 70%, var(--muted));
+}
+.nm-reply-foreman {
+  border-left-color: color-mix(in oklab, var(--claude) 55%, transparent);
+  color: var(--muted);
 }
 .nm-stat {
   display: flex;
@@ -2160,6 +2200,12 @@ kbd {
   padding: 3px 6px;
 }
 .transcript-compose {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.transcript-compose .compose-row {
   display: flex;
   gap: 6px;
   align-items: flex-end;
@@ -2183,6 +2229,111 @@ kbd {
 }
 .transcript-input:disabled {
   opacity: 0.55;
+}
+
+/* ---- dropped images (transcript reply + dispatch task) ---- */
+
+/* Wraps the dispatch textarea so the veil has something to cover. The transcript's
+   compose row is already positioned, so it needs no equivalent. */
+.drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The drag affordance. Sits over the box rather than resizing it, so nothing
+   reflows under the cursor mid-drag - a compose box that jumps as you arrive is a
+   compose box you drop next to. `pointer-events: none` keeps the veil from
+   stealing the drop from the zone underneath it. */
+.drop-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  font: 560 12px/1 var(--sans);
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 14%, var(--bg-2));
+  border: 1.5px dashed color-mix(in oklab, var(--working) 55%, var(--border));
+  border-radius: 9px;
+}
+
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  padding: 4px 4px 4px 5px;
+  font: 11.5px/1 var(--sans);
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.attach-chip.is-uploading {
+  opacity: 0.6;
+}
+/* An error chip is a sentence, not a filename - give it the room to be read rather
+   than truncating the reason to "not a recognised image (…". The strip wraps, so a
+   wide chip simply takes its own line. */
+.attach-chip.is-error {
+  max-width: 100%;
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+  background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
+}
+/* Stands in for the thumbnail on a refused drop, at the same 26px so the strip's
+   rhythm doesn't break when one chip fails. */
+.attach-warn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  font: 700 13px/1 var(--sans);
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  border-radius: 5px;
+}
+.attach-thumb {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg);
+}
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-remove {
+  flex: none;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.attach-remove:hover {
+  color: var(--fg);
+  background: var(--panel);
 }
 
 /* ---- dispatch button (topbar) ---- */
@@ -3339,6 +3490,13 @@ kbd {
   font-size: 11.5px;
   color: var(--muted);
 }
+/* Sits between the label and the textarea, so it reads as part of the question
+   rather than as a caption under the answer. */
+.foreman-allowlist-hint {
+  font-size: 10.5px;
+  line-height: 1.4;
+  margin-top: -2px;
+}
 .foreman-allowlist textarea {
   font: inherit;
   font-size: 11.5px;
@@ -3470,7 +3628,16 @@ kbd {
 .fn-hint {
   margin: 0;
   font-size: 11px;
+  line-height: 1.5;
   color: var(--dim);
+}
+/* The allowlist hint names a repo path, which is long and has no spaces to break
+   at - without `anywhere` it rides straight out through the side of the card.
+   Mirrors `.wq-hint code`, which says the same sentence in the queue panel. */
+.fn-hint code {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
 }
 
 /* ---- tooltip (reusable, see components/Tooltip.tsx) ---- */

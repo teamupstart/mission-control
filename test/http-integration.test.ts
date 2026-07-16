@@ -47,6 +47,7 @@ function seedSession(): void {
     cwd: "/repo/app",
     gitBranch: "main",
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: false,
     pid: 4242,
     tty: "ttys003",
@@ -237,6 +238,7 @@ test("cycling the permission mode is rejected for a non-Claude session", async (
       cwd: "/repo/cx",
       gitBranch: "main",
       gitRoot: null,
+      repoRoot: null,
       nomistakesGated: false,
       pid: 9191,
       tty: "ttys009",
@@ -307,6 +309,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
       cwd: "/repo/app",
       gitBranch: "main",
       gitRoot: null,
+      repoRoot: null,
       nomistakesGated: false,
       pid: 5252,
       tty: "ttys055",
@@ -950,6 +953,7 @@ test("adding to a NON-claude session is refused, with a reason that isn't a lie"
     cwd: "/repo/app",
     gitBranch: "main",
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: false,
     pid: 4243,
     tty: "ttys004",
@@ -1149,6 +1153,7 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
       cwd: join(repo, "packages", "app"),
       gitBranch: "main",
       gitRoot: repo,
+      repoRoot: repo,
       nomistakesGated: false,
       pid: 4343,
       tty: "ttys009",
@@ -1191,6 +1196,7 @@ test("the standards request carries its paths in a BODY, so a big refactor still
       cwd: repo,
       gitBranch: "main",
       gitRoot: repo,
+      repoRoot: repo,
       nomistakesGated: false,
       pid: 4444,
       tty: "ttys010",
@@ -1330,4 +1336,22 @@ test("a /clear orphans the queue, and re-attaching it is offered where it can su
     });
     await app.request(`/api/sessions/sess-1/queue/${i.id}`, { method: "DELETE", headers: LOOPBACK });
   }
+});
+
+test("/api/sessions/:id/pane serves the child's screen, and 404s an unknown session", async () => {
+  // The route Foreman's reviewer reads the pending ask from (see `ReviewInput.pane`): an ask
+  // that is BLOCKING on the user is not in the transcript until it returns, so this is the only
+  // place it exists.
+  seedSession();
+
+  const miss = await app.request("/api/sessions/nope/pane", { headers: LOOPBACK });
+  assert.equal(miss.status, 404, "an unknown session is not a null pane - say so");
+
+  // The seeded session names a tmux pane that isn't there, which is exactly how a real capture
+  // fails (the pane died, tmux is gone). It must read back as "no screen" rather than a 500:
+  // every caller's fallback is the transcript alone, which is the pre-existing behaviour and a
+  // safe one - failing the request would turn a lost improvement into a lost review.
+  const res = await app.request("/api/sessions/sess-1/pane", { headers: LOOPBACK });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { text: null });
 });

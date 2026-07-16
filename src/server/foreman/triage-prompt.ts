@@ -1,4 +1,4 @@
-import { formatTranscript } from "./prompt.ts";
+import { formatTranscript, paneSection } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
 
 // The Tier 1 routing prompt, handed to a cheap model (Haiku) in a fresh process. Unlike
@@ -60,13 +60,19 @@ export function buildTriagePrompt(input: ReviewInput): string {
     `reply surface: ${surface}`,
     "",
     "## The pending question",
-    question.trim() || "(no explicit question text - infer it from the transcript tail)",
+    question.trim() || "(no explicit question text - read the ask off the terminal screen below)",
     "",
     truncated
       ? "## Transcript (oldest first; the middle was elided for length)"
       : "## Transcript (oldest first)",
     formatTranscript(transcript),
     "",
+    // The router needs the screen for the same reason the full reviewer does - `question` on
+    // the terminal surface is the generic notification line, so without this the ONLY thing it
+    // could bucket a permission ask on was ambient prose. That is a bucketing it should never
+    // have been confident about, and unlike Tier 2 it has no "skip, I can't tell" instinct to
+    // fall back on: it would answer `routine-access` on an ask it had not read.
+    ...paneSection(input),
     "Now output your bucketing as a single raw JSON object and NOTHING else - no prose, no markdown",
     "fences. Begin your reply with { and end it with }.",
   ].join("\n");

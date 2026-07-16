@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PrState, Session, SessionMeta } from "@shared/types.ts";
-import { cwdAllowlisted } from "@shared/foreman.ts";
+import { foremanAllowlisted } from "@shared/foreman.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import {
   canRenameSession,
@@ -80,11 +80,13 @@ function GoalLine({ session }: { session: Session }): React.JSX.Element | null {
 }
 
 /**
- * Whether Foreman may send live in this session's cwd - the SAME predicate the
- * server decides with (`foremanMayActLive` calls it too), not a copy of it.
+ * Whether Foreman may send live in this session - the SAME predicate the server
+ * decides with (`foremanMayActLive` calls it too), not a copy of it. Takes the
+ * session so cwd and repoRoot can't be passed in the wrong order or one of them
+ * forgotten, which is exactly how the UI would start lying about the gate.
  */
-function allowlisted(cwd: string | null, allowlist: string[] | undefined): boolean {
-  return cwdAllowlisted(cwd, allowlist ?? []);
+function allowlisted(session: Session, allowlist: string[] | undefined): boolean {
+  return foremanAllowlisted(session.cwd, session.repoRoot, allowlist ?? []);
 }
 
 export function SessionCard({
@@ -131,8 +133,8 @@ export function SessionCard({
   foremanMode?: string;
   /** Whether Foreman is switched on at all - the mode says nothing while it's off. */
   foremanEnabled?: boolean;
-  /** Repo roots Foreman may send live in, so the queue can be honest about why
-   *  it's only drafting (the allowlist is a prefix match on the repo root). */
+  /** Repo roots Foreman may send live in, so the card can be honest about why it's
+   *  only drafting (matched against the session's cwd AND the repo it belongs to). */
   foremanAllowlist?: string[];
   /** A pending `input` review id for this session (for Foreman's Approve). */
   inputReviewId?: string | null;
@@ -394,9 +396,11 @@ export function SessionCard({
         <>
           {session.note && (
             <ForemanNote
-              sessionId={session.id}
+              session={session}
               note={session.note}
               mode={foremanMode}
+              enabled={foremanEnabled}
+              allowlist={foremanAllowlist}
               inputReviewId={inputReviewId}
               pendingReviewIds={pendingReviewIds}
             />
@@ -405,7 +409,7 @@ export function SessionCard({
             session={session}
             foremanMode={foremanMode}
             foremanEnabled={foremanEnabled}
-            allowlisted={allowlisted(session.cwd, foremanAllowlist)}
+            allowlisted={allowlisted(session, foremanAllowlist)}
           />
           <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
         </>

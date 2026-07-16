@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
@@ -9,6 +10,7 @@ import {
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
   ForemanHeartbeatSchema,
+  GateReplySchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -27,10 +29,12 @@ import {
   StatusSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
+import type { NomistakesRespond } from "@shared/protocol.ts";
+import { capturePaneText } from "./discovery/pane-mode.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
-import type { WorkItem } from "@shared/types.ts";
+import type { NmRunSummary, Session, WorkItem } from "@shared/types.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
@@ -52,6 +56,7 @@ import { readStandards } from "./standards.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
+import { dropGateReply, logGateReply } from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -68,12 +73,16 @@ import {
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos } from "./repos.ts";
+import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import { run } from "./util/exec.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
+
+/** The upload cap as the refusal states it - both size guards say the same number. */
+const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -123,6 +132,57 @@ function ownedItem(
     return { ok: false, res: c.json({ error: "that item is not in this session's queue" }, 404) };
   }
   return { ok: true, item };
+}
+
+/**
+ * Stake the "you typed this" byline on a gate decision that is about to go out.
+ * Returns the row to retract if it doesn't land, or null if there is nothing to
+ * take back (the byline is best-effort, so a failed write costs the byline alone).
+ */
+function stakeYourByline(
+  session: Session,
+  gate: NmRunSummary,
+  step: string,
+  body: NomistakesRespond,
+): number | null {
+  try {
+    return logGateReply({
+      sessionId: session.id,
+      ts: Date.now(),
+      source: "you",
+      runId: gate.id,
+      step,
+      // What the human actually picked. Falling back to every finding at the gate
+      // matches the Fix box's own contract - it sends an empty list to mean "all
+      // shown findings" - so the recorded set is what was decided either way, which
+      // is what the join reads.
+      findingIds:
+        body.findings.length > 0 ? body.findings : gate.findings.map((f) => f.id).filter(Boolean),
+      // The Fix box sends `trim() || undefined`, so selecting findings and typing
+      // nothing is ordinary and lands as null: an author with no words, not an
+      // absent author.
+      text: body.instructions ?? null,
+    });
+  } catch (err) {
+    // The decision still goes out; losing the byline must not fail the request.
+    console.error("[nomistakes] could not record the gate reply:", err);
+    return null;
+  }
+}
+
+/**
+ * Take back a "you typed this" byline the gate never received.
+ *
+ * Fail-soft, like the write it undoes: this runs both in a request path and in a
+ * background `.then()`, and losing the retraction costs one wrong byline while
+ * throwing would cost the caller its response or its reconcile.
+ */
+function retractByline(rowId: number): void {
+  try {
+    dropGateReply(rowId);
+  } catch (err) {
+    console.error("[nomistakes] could not retract the gate reply:", err);
+  }
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
@@ -192,6 +252,22 @@ export function buildApp(
     const turns = Number(c.req.query("turns"));
     const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
     return c.json(readTranscriptWindow(path, 12, tail));
+  });
+
+  // The child's rendered screen - the only place an ask that is BLOCKING on the user
+  // exists (see `ReviewInput.pane`). Foreman's reviewer reads it alongside the transcript.
+  //
+  // Captured on demand rather than served off the poll's snapshot, even though
+  // `annotatePermissionModes` already captures every pane each tick and throws the text
+  // away. A review fires after a settle debounce, so a snapshot would be up to a tick stale
+  // - and "stale by one tick" here is not a slightly-old screen, it is the wrong question:
+  // the menu the reviewer is about to answer may have replaced the one the poll saw. The
+  // cost is one `tmux capture-pane` per review, which is noise beside the `claude -p` it
+  // feeds.
+  app.get("/api/sessions/:id/pane", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json({ text: await capturePaneText(session) });
   });
 
   // The transcript's current byte size - the anchor a work item records when it's
@@ -367,6 +443,48 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
+  // Park a dropped image on disk and hand back its path, which the caller pastes
+  // into a prompt for the agent to read - the same trick a terminal plays when you
+  // drag a file onto it, and the only one available when the last hop is a pty.
+  //
+  // Not bound to a session: the dispatch modal drops images before a session
+  // exists, and an upload is inert until a path is typed somewhere, so scoping it
+  // to a session would buy nothing.
+  //
+  // The response is a path this daemon just wrote inside its own state dir, never
+  // one the client named - the request supplies bytes and a display name, and
+  // `saveImageUpload` decides where they land. That, plus the sniff (bytes must
+  // BE an image, whatever the client claims) and the loopback guard above, is what
+  // keeps "write a file the agent will act on" from being a wider door than /send.
+  //
+  // `bodyLimit` runs first so an oversized request is refused while it's still a
+  // stream - `formData()` would otherwise buffer the whole thing into memory before
+  // anyone could object to its size. The slack over the cap covers the multipart
+  // envelope (boundaries, headers) wrapping the bytes; the route re-checks the
+  // decoded part below, which is what lets the refusal talk about the IMAGE's size
+  // rather than the request's.
+  app.post(
+    "/api/uploads",
+    bodyLimit({
+      maxSize: MAX_UPLOAD_BYTES + 64 * 1024,
+      onError: (c) => c.json({ error: `image is larger than ${TOO_BIG_MB}MB` }, 413),
+    }),
+    async (c) => {
+      const form = await c.req.formData().catch(() => null);
+      const file = form?.get("file");
+      if (!(file instanceof File)) return c.json({ error: "expected a `file` part" }, 400);
+      if (file.size > MAX_UPLOAD_BYTES) {
+        return c.json({ error: `image is larger than ${TOO_BIG_MB}MB` }, 413);
+      }
+      try {
+        const saved = saveImageUpload(new Uint8Array(await file.arrayBuffer()), file.name);
+        return c.json(saved);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    },
+  );
+
   app.post("/api/sessions/:id/focus", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -452,8 +570,77 @@ export function buildApp(
     if (!session.cwd) return c.json({ error: "session has no repo directory" }, 400);
     const parsed = await parseBody(c, NomistakesRespondSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, parsed.data);
+    // The "you typed this" byline. Recorded HERE rather than inside `respond()`
+    // because this route is what the claim actually means: `respond()` is a helper
+    // keyed by cwd that anything could call, while a POST to this route is by
+    // definition the dashboard's Fix box. It's also the only side holding a session
+    // and its live run.
+    //
+    // Only for `fix`: `approve`/`skip` commit nothing, so they have no fix to put a
+    // byline on.
+    //
+    // Written BEFORE the decision goes out and RETRACTED if it doesn't land, rather
+    // than written once we know. The ordering is load-bearing, not an optimisation:
+    // `axi respond` blocks server-side until the run reaches the next gate or an
+    // outcome, so by the time it settles the fix it authorized is already committed -
+    // a byline stamped then would date from after that commit, and `pickGateReply`'s
+    // causality filter would discard it. Logging on the way out is the only way the
+    // row's `ts` can precede the fix it explains; the alternative silently deletes
+    // the whole "you" lane.
+    const gate = session.nomistakes;
+    const step = parsed.data.step || gate?.gateStep;
+    const rowId =
+      parsed.data.action === "fix" && gate && step
+        ? stakeYourByline(session, gate, step, parsed.data)
+        : null;
+
+    const r = await nomistakesRespond(registry, session.cwd, parsed.data.action, {
+      ...parsed.data,
+      // Undelivered is un-authored. The gate the user answered may be one the run has
+      // already moved past (status is polled, so the Fix box can be ~seconds stale),
+      // and `axi respond` then exits non-zero having said nothing. Left behind, that
+      // row would sign whatever the agent later decided for itself through the
+      // `/no-mistakes` skill - stamping "by you, in the dashboard" on an autonomous
+      // fix, which is the feature's own distinction inverted, in its worst direction.
+      //
+      // KNOWN LIMITATION: only the LOUD failure is compensated. `axi` exiting 0 while
+      // no-opping on an already-decided gate leaves a row nothing here can tell from a
+      // delivered one, so that byline stands. Guessing at it would reintroduce exactly
+      // the misattribution this closes.
+      onUndelivered: rowId === null ? undefined : () => retractByline(rowId),
+    });
+    // Rejected before anything was spawned (no binary, or a decision already in
+    // flight): the gate heard nothing, so the same retraction applies.
+    if (!r.ok && rowId !== null) retractByline(rowId);
     return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Record a Foreman gate nudge, for the fix log's byline. Loopback-gated like
+  // every /api route: the worker is a separate process with no DB access of its own.
+  app.post("/api/sessions/:id/gate-reply", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, GateReplySchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      logGateReply({
+        sessionId: session.id,
+        ts: Date.now(),
+        source: "foreman",
+        runId: parsed.data.runId,
+        step: parsed.data.step,
+        findingIds: parsed.data.findingIds,
+        text: parsed.data.text || null,
+      });
+    } catch (err) {
+      // Fail soft, like every other byline write (stakeYourByline, retractByline,
+      // attribute, the prune). A byline is never worth an error to its caller: the
+      // foreman's reply is already delivered by the time it posts this, so a DB
+      // failure must cost the byline and nothing else. 500ing here would be the one
+      // write in the feature that breaks that posture.
+      console.error("[nomistakes] could not record the foreman gate reply:", err);
+    }
+    return c.json({ ok: true });
   });
 
   // --- Foreman session notes (localhost only) ---

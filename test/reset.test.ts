@@ -13,7 +13,7 @@ const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("har
 function sess(cwd: string | null, branch: string | null = "main"): Session {
   return {
     id: "s1", agent: "claude", name: "work", nameSource: "process", state: "idle",
-    cwd, gitBranch: branch, gitRoot: null, nomistakesGated: false, pid: 1, tty: null,
+    cwd, gitBranch: branch, gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null,
     permissionMode: null, wezterm: null, tmux: null, agentSessionId: null, transcriptPath: null,
     instrumented: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, nomistakes: null, nomistakesFixes: [], task: null,

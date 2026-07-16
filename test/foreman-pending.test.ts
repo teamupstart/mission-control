@@ -14,6 +14,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: null,
     gitBranch: null,
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: null,
@@ -247,7 +248,7 @@ test("an answered gate decision is delivered by typing into the pane", () => {
       answer: { text: "Approve r2 - gate --force on CI=true, keep the confirm for humans." },
       confidence: 0.9,
     }),
-    { sessionId: "s1", repoRoot: "/repo", promptMarker: p.marker, inputReviewId: p.inputReviewId, canSend: p.canSend },
+    { sessionId: "s1", promptMarker: p.marker, inputReviewId: p.inputReviewId, canSend: p.canSend },
     true,
     true,
   );
@@ -266,7 +267,7 @@ test("a gate decision with no pane is drafted for you, never dropped", () => {
       answer: { text: "Approve r2 - gate it on CI." },
       confidence: 0.9,
     }),
-    { sessionId: "s1", repoRoot: "/repo", promptMarker: p.marker, inputReviewId: p.inputReviewId, canSend: p.canSend },
+    { sessionId: "s1", promptMarker: p.marker, inputReviewId: p.inputReviewId, canSend: p.canSend },
     true,
     true,
   );

@@ -13,14 +13,20 @@ import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
+import { startPoolReaper } from "./pool.ts";
 import { startPrPoller } from "./pr.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startGoalRefiner } from "./goal/refiner.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
+import { sweepUploads } from "./uploads.ts";
 
 openDb();
 ensureToken();
+// Reclaim expired image drops now, while we know no send is mid-flight. An upload
+// outlives its send on purpose (the agent reads the path on its own schedule), so
+// a clock is the only thing that can retire one.
+sweepUploads();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
@@ -31,6 +37,7 @@ const stopPrPoller = startPrPoller(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
 const stopHeadlessPruner = startHeadlessPruner();
+const stopPoolReaper = startPoolReaper(registry);
 
 const app = buildApp(registry, reviews, tasks, queues);
 
@@ -69,6 +76,7 @@ function shutdown(): void {
   // `claude-cli.ts` hooks `process.exit` for the same reason, but this path calls it
   // explicitly rather than relying on that ordering.
   killLiveClaudeRuns();
+  stopPoolReaper();
   server.close();
   process.exit(0);
 }

@@ -556,7 +556,7 @@ test("classifyDivergence: agree, over-eager, too-cautious, minor", () => {
 function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1", agent: "claude", name: "sess", nameSource: "process", state: "awaiting_input" as SessionState,
-    cwd: "/repo", gitBranch: null, gitRoot: null, nomistakesGated: false, pid: 1, tty: null, permissionMode: null,
+    cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null, permissionMode: null,
     wezterm: null, tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" }, agentSessionId: null,
     transcriptPath: null, instrumented: true, hooksSeen: true, activity: "Approve?",
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
@@ -576,6 +576,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     triage: "on",
     maxFixAttempts: 3,
     maxFixRounds: 10,
+    wrapup: "ask",
     ...over,
   };
 }
@@ -585,6 +586,9 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
     // A real (clean) window by default: an empty one is a gated case in its own right, so
     // defaulting to it would quietly turn every case below into a no-transcript route-up.
     transcript: async () => ({ messages: cleanWindow().messages, truncated: false }),
+    // No screen by default, so the cases below keep measuring exactly what they did before
+    // the pane existed. The pane's own effects are asserted by the tests that opt into one.
+    pane: async () => null,
     runModel: async () => JSON.stringify(report()),
     ...over,
   };
@@ -1066,7 +1070,7 @@ test("triagePosture: a non-string value falls back to shadow", () => {
 // ---- the safety invariant: a Tier 1 access verdict is gated exactly like a Tier 2 one ----
 
 function ctx(over: Partial<ReviewContext> = {}): ReviewContext {
-  return { sessionId: "s1", repoRoot: "/repo", promptMarker: "await:1", inputReviewId: null, canSend: true, ...over };
+  return { sessionId: "s1", promptMarker: "await:1", inputReviewId: null, canSend: true, ...over };
 }
 
 test("Tier 1 routine-access verdict SENDS only under the full path's config gate", () => {

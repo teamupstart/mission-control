@@ -86,6 +86,7 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
 
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
+  const wrapup = config?.wrapup ?? "ask";
   const chip = !enabled ? "off" : MODE_LABEL[mode] ?? mode;
   const running = status?.running ?? false;
   const queue = status?.queueDepth ?? 0;
@@ -185,9 +186,43 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
             />
           </fieldset>
 
+          {/*
+            What Foreman does when a queue drains. Unlike every other knob here, the two
+            automated options make it TYPE something that pushes - so they are gated on
+            live + allowlist in the machine (step 5), and the hint below says so out loud
+            rather than letting a selected radio quietly do nothing.
+          */}
+          <fieldset className="foreman-modes" disabled={!enabled}>
+            <legend>On drain</legend>
+            {(["ask", "no-mistakes", "pr"] as const).map((w) => (
+              <label className="alert-row" key={w}>
+                <input
+                  type="radio"
+                  name="foreman-wrapup"
+                  checked={wrapup === w}
+                  onChange={() => void update({ wrapup: w })}
+                />
+                {w === "ask" && "Ask me - show the Ship it? card"}
+                {w === "no-mistakes" && "Run /no-mistakes automatically"}
+                {w === "pr" && "Straight to PR - commit, push, open a PR"}
+              </label>
+            ))}
+            {enabled && wrapup !== "ask" && mode !== "live" && (
+              <p className="alert-hint dim">
+                Only fires in Live mode on an allowlisted repo - until then Foreman asks.
+              </p>
+            )}
+          </fieldset>
+
           {mode === "live" && (
             <label className="foreman-allowlist">
               Live only in these repos (one path per line):
+              {/* Worktrees are the normal case, not the exception - every dispatched
+                  agent runs in one, parked far from the repo. Saying so here is what
+                  stops "I set it to live and it still asks me" from reading as a bug. */}
+              <span className="foreman-allowlist-hint dim">
+                Worktrees of these repos count too, wherever they live on disk.
+              </span>
               <textarea
                 rows={3}
                 defaultValue={config.repoAllowlist.join("\n")}

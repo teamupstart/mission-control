@@ -17,7 +17,13 @@ import type { Session, SessionQueue, WorkItem } from "../src/shared/types.ts";
 // ForemanActions fake. What matters here is what does and does NOT reach the pane.
 
 const NOW = 1_000_000;
-const CFG: QueueConfig = { maxFixAttempts: 3, maxFixRounds: 10, settleMs: 10_000, pickupTimeoutMs: 45_000 };
+const CFG: QueueConfig = {
+  maxFixAttempts: 3,
+  maxFixRounds: 10,
+  settleMs: 10_000,
+  pickupTimeoutMs: 45_000,
+  wrapup: "ask",
+};
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -29,6 +35,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: "/repo",
     gitBranch: "feature",
     gitRoot: "/repo",
+    repoRoot: "/repo",
     nomistakesGated: false,
     pid: 1,
     tty: "ttys001",
@@ -93,6 +100,7 @@ const LIVE_CFG: ForemanConfig = {
   mode: "live",
   repoAllowlist: ["/repo"],
   autoApproveAccess: true,
+  wrapup: "ask",
   triage: "off",
   maxFixAttempts: 3,
   maxFixRounds: 10,
@@ -112,6 +120,13 @@ interface Fake extends QueueActions {
   sentMarks: number;
   recovered: number;
   wrapups: number;
+  /** Wrap-up answers recorded, in order - the durable "we sent this" record. */
+  wrapupAnswers: string[];
+  /**
+   * The wrap-up's calls in the order they happened. The ORDER is the safety property
+   * (mark before typing), and a per-call counter cannot express it.
+   */
+  order: string[];
 }
 
 function mkFake(
@@ -124,6 +139,8 @@ function mkFake(
     injectThrows: boolean;
     /** The delivery fails with the text already pasted, or in an unknown state. */
     injectFailure: unknown;
+    /** Recording the wrap-up answer fails, AFTER the instruction reached the pane. */
+    answerThrows: boolean;
   }> = {},
 ): Fake {
   const session = over.session ?? mkSession();
@@ -135,6 +152,8 @@ function mkFake(
     sentMarks: 0,
     recovered: 0,
     wrapups: 0,
+    wrapupAnswers: [],
+    order: [],
     sessions: async () => [session],
     getConfig: async () => cfg,
     queue: async (): Promise<SessionQueue> => ({
@@ -148,6 +167,7 @@ function mkFake(
     }),
     setItemState: async (_s, itemId, patch) => void fake.states.push({ itemId, patch }),
     inject: async (_s, text) => {
+      fake.order.push("inject");
       if (over.injectFailure !== undefined) throw over.injectFailure;
       // What the real client throws when the paste itself never happened: tmux
       // resolves the buffer and the pane before writing, so nothing reached it.
@@ -156,7 +176,15 @@ function mkFake(
     },
     markSent: async () => void fake.sentMarks++,
     recoverItem: async () => void fake.recovered++,
-    markWrapupAsked: async () => void fake.wrapups++,
+    markWrapupAsked: async () => {
+      fake.order.push("mark");
+      fake.wrapups++;
+    },
+    setWrapupAnswer: async (_s, answer) => {
+      fake.order.push("answer");
+      if (over.answerThrows) throw new Error("the write failed");
+      fake.wrapupAnswers.push(answer);
+    },
     captureScope: async () => ({ baseSha: "abc123", transcriptAnchor: 4096 }),
     holdsLease: () => over.lease ?? true,
   };
@@ -605,7 +633,59 @@ test("ask-wrapup stamps the ask and types nothing", async () => {
   const out = await applyQueueAction(fake, session, { kind: "ask-wrapup", queue: queue! }, CFG, NOW);
   assert.equal(out.kind, "done");
   assert.equal(fake.wrapups, 1);
-  assert.deepEqual(fake.injected, [], "Foreman always asks - it never auto-launches the wrap-up");
+  assert.deepEqual(fake.injected, [], "the ask hands the decision to the human - it never types");
+});
+
+// ---- auto-wrapup: the drain Foreman answers itself (the `wrapup` config) ----
+//
+// Every test here is about NOT pushing twice. `/no-mistakes` opens a PR at the end of
+// its pipeline, so a doubled wrap-up is two pipelines racing on one branch - the harm
+// the card's `wrapupSent` latch was added for after a remount did exactly that.
+
+async function autoWrapup(fake: Fake, payload = "/no-mistakes") {
+  const queue = await fake.queue("s1");
+  return applyQueueAction(fake, mkSession(), { kind: "auto-wrapup", queue: queue!, payload }, CFG, NOW);
+}
+
+test("auto-wrapup retires the drain BEFORE typing, then records what it sent", async () => {
+  const fake = mkFake();
+  const out = await autoWrapup(fake);
+  assert.equal(out.kind, "done");
+  // The order IS the safety argument: `mark` stamps the once-only guard, so no later
+  // tick can re-decide auto-wrapup even if the process dies on the next line.
+  assert.deepEqual(fake.order, ["mark", "inject", "answer"]);
+  assert.deepEqual(fake.injected, ["/no-mistakes"]);
+  assert.deepEqual(fake.wrapupAnswers, ["/no-mistakes"], "the card must not re-offer this");
+});
+
+test("a wrap-up whose send fails degrades to the human, and never retries", async () => {
+  const fake = mkFake({ injectThrows: true });
+  const out = await autoWrapup(fake);
+  assert.equal(out.kind, "aborted");
+  assert.deepEqual(fake.injected, []);
+  assert.equal(fake.wrapups, 1, "still retired - a retry next tick would be the second push");
+  assert.deepEqual(
+    fake.wrapupAnswers,
+    [],
+    "no answer recorded, so the card renders with this text prefilled - i.e. exactly `ask`",
+  );
+});
+
+test("a wrap-up that sends but cannot be recorded reports it rather than throwing", async () => {
+  // The instruction IS in the pane. Throwing here reads to the loop like the send
+  // never happened, and the card would re-offer an instruction the agent already has.
+  const fake = mkFake({ answerThrows: true });
+  const out = await autoWrapup(fake);
+  assert.equal(out.kind, "done");
+  assert.deepEqual(fake.injected, ["/no-mistakes"]);
+  assert.match(out.kind === "done" ? out.what : "", /could not record/);
+});
+
+test("auto-wrapup sends the payload it was given, verbatim", async () => {
+  // The machine decides WHAT to send (it holds the config); apply holds no policy.
+  const fake = mkFake();
+  await autoWrapup(fake, "Please commit this work, push the branch, and open a PR.");
+  assert.deepEqual(fake.injected, ["Please commit this work, push the branch, and open a PR."]);
 });
 
 // ---- resolveLiveSession: the one predicate two callers must agree on ----

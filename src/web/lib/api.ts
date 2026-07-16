@@ -7,6 +7,7 @@ import type {
   SessionQueue,
 } from "@shared/types.ts";
 import type { ForemanConfig, ForemanConfigPatch, SetNote } from "@shared/protocol.ts";
+import type { Attachment } from "@shared/attachments.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -126,6 +127,27 @@ export async function fetchQueue(
     return { ok: true, queue: (await res.json()) as SessionQueue | null };
   } catch {
     return { ok: false };
+  }
+}
+
+/**
+ * Park a dropped image on the daemon's disk, resolving to the path an agent can
+ * read. Never throws - maps failures into the shape, like the other uploaders
+ * here, because a failed drop is a chip that says why, not a broken compose box.
+ */
+export async function uploadImage(
+  file: File,
+): Promise<{ ok: true; upload: Attachment } | { ok: false; error: string }> {
+  try {
+    const body = new FormData();
+    body.append("file", file);
+    const res = await fetch("/api/uploads", { method: "POST", body });
+    const data = (await res.json().catch(() => ({}))) as Partial<Attachment> & { error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    if (!data.path || !data.name) return { ok: false, error: "upload returned no path" };
+    return { ok: true, upload: { path: data.path, name: data.name } };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

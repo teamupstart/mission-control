@@ -72,6 +72,20 @@ export interface RespondOpts {
   findings?: string[];
   instructions?: string;
   step?: string;
+  /**
+   * Called when the spawned `axi respond` did NOT exit cleanly, so nothing here can
+   * claim the decision reached the gate. Deliberately opaque: this module knows only
+   * that the spawn failed, never what a caller staked on it going through.
+   *
+   * "Not delivered" is the honest reading, not a proven one: the timeout kills the
+   * CLI without proving the gate missed what it sent, so this can fire for a decision
+   * that did land. That's the direction to be wrong in - a caller drops a claim it can
+   * no longer support, rather than keeping one it can't back.
+   *
+   * Never on the success path, and never for a respond rejected before a spawn (the
+   * caller already has that in the returned `ok`).
+   */
+  onUndelivered?: () => void;
 }
 
 /**
@@ -105,7 +119,10 @@ export async function respond(
   // Background: run to completion, then reconcile the resulting fleet-wide state.
   run(bin, args, { cwd, timeoutMs: 10 * 60 * 1000 })
     .then(async (res) => {
-      if (res.code !== 0) console.error(`[nomistakes] respond ${action} failed:`, res.stderr.trim());
+      if (res.code !== 0) {
+        console.error(`[nomistakes] respond ${action} failed:`, res.stderr.trim());
+        opts.onUndelivered?.();
+      }
       await pollAndReconcile(registry);
     })
     .catch((err) => console.error("[nomistakes] respond error:", err))

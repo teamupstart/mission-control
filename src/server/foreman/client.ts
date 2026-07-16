@@ -18,6 +18,7 @@ import type {
 } from "@shared/types.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { InjectError } from "./queue-apply.ts";
+import type { GateRef } from "./pending.ts";
 import type { ForemanActions } from "./verdict.ts";
 
 // The worker's client for the daemon's localhost API. All `/api/*` routes are
@@ -145,6 +146,25 @@ export class ForemanClient implements ForemanActions {
     return r.size;
   }
 
+  /**
+   * The child's rendered screen, or null when there is none to read - no pane, a failed
+   * capture, or a daemon too old to serve the route (the worker is started separately, so a
+   * version skew between them is an ordinary upgrade-window state).
+   *
+   * Null-on-failure rather than a throw, because every caller's fallback is the same and is
+   * safe: without the screen the reviewer reads the transcript alone and skips honestly,
+   * which is exactly the behaviour this replaced. Failing the whole review over an
+   * unreadable pane would turn a lost improvement into a lost review.
+   */
+  async pane(id: string): Promise<string | null> {
+    try {
+      const r = await get<{ text: string | null }>(`/api/sessions/${enc(id)}/pane`);
+      return typeof r.text === "string" ? r.text : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** The transcript from a byte offset forward - one work item's turns, exactly. */
   transcriptSince(id: string, offset: number): Promise<TranscriptWindowResponse> {
     return get<TranscriptWindowResponse>(`/api/sessions/${enc(id)}/transcript?since=${offset}`);
@@ -264,6 +284,17 @@ export class ForemanClient implements ForemanActions {
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }
 
+  /**
+   * Record the wrap-up answer. This is the same endpoint the card uses when a human
+   * clicks Send: an auto-wrapup is that same event with Foreman as the author, so it
+   * must land in the same durable field. Anything else and the card would re-offer an
+   * instruction the agent already has.
+   */
+  async setWrapupAnswer(sessionId: string, answer: string): Promise<void> {
+    const res = await send("PUT", `/api/sessions/${enc(sessionId)}/queue/wrapup`, { answer });
+    if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
+  }
+
   note(id: string): Promise<SessionNote | null> {
     return get<SessionNote | null>(`/api/sessions/${enc(id)}/note`);
   }
@@ -283,6 +314,17 @@ export class ForemanClient implements ForemanActions {
   async resolveReview(reviewId: string, action: "answer", response: string): Promise<unknown> {
     const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, { action, response });
     if (!res.ok) throw new Error(`resolveReview ${reviewId} -> ${res.status}`);
+    return res.json();
+  }
+
+  async logGateReply(id: string, gate: GateRef, text: string): Promise<unknown> {
+    const res = await send("POST", `/api/sessions/${enc(id)}/gate-reply`, {
+      runId: gate.runId,
+      step: gate.step,
+      findingIds: gate.findingIds,
+      text,
+    });
+    if (!res.ok) throw new Error(`logGateReply ${id} -> ${res.status}`);
     return res.json();
   }
 }

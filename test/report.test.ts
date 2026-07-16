@@ -14,6 +14,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: null,
     gitBranch: null,
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: null,

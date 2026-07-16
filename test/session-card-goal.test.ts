@@ -25,6 +25,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     cwd: "/wt/goal",
     gitBranch: "harness/goal",
     gitRoot: null,
+    repoRoot: null,
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",

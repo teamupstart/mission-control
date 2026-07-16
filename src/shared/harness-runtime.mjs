@@ -1,14 +1,16 @@
 // Single source of truth for the daemon's runtime coordinates - port, host, and
-// the state-dir/token paths - plus the tiny client helpers the hook and the MCP
-// bridge both need to reach the daemon.
+// the state-dir/token paths - plus the harness's lease identity and the tiny client
+// helpers the hook and the MCP bridge both need to reach the daemon.
 //
 // This is plain JavaScript (.mjs) on purpose: the Claude hook (hooks/harness-hook.mjs)
 // runs under bare `node` at hook-invocation time with no build step, so it cannot
 // import the TypeScript config. Every consumer - the daemon (via src/server/config.ts),
 // the MCP bridge (src/mcp/server.ts, bundled by esbuild), the hook, the service
-// installer, and vite.config.ts - imports this file so the port and token path can
-// never drift. A drift here fails silently (the hook swallows fetch errors), which
-// is exactly why it must live in one place. A .d.mts alongside gives the TS side types.
+// installer, scripts/new-session.mjs, and vite.config.ts - imports this file so the
+// port, token path, and lease holder can never drift. A drift here fails silently
+// (the hook swallows fetch errors; a mismatched lease holder just stops the reaper
+// from ever matching), which is exactly why these must live in one place. A .d.mts
+// alongside gives the TS side types.
 
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -31,6 +33,21 @@ export const HOST = "127.0.0.1";
 
 /** Base URL clients use to reach the daemon. */
 export const BASE_URL = `http://${HOST}:${PORT}`;
+
+/**
+ * The holder this harness records on every treehouse lease it takes, and the only
+ * one its leak sweep will ever hand back.
+ *
+ * It lives here, on the shared surface, because the code that TAKES a lease spans
+ * the build boundary - `scripts/new-session.mjs` runs under bare `node`, the
+ * dispatcher is TypeScript - while the code that decides a lease may be RETURNED
+ * (the reap gate in src/server/pool.ts) is a third site again. All three have to
+ * agree on this string, and disagreement is silent either way: a lease site that
+ * drifts stamps a label the gate reads as a stranger's, so the abandoned leases the
+ * sweep exists to collect become permanently uncollectable with no error; a gate
+ * that drifts points at leases we never took. One import, no drift.
+ */
+export const LEASE_HOLDER = "fleet-control";
 
 /**
  * Where the daemon keeps its state (db, token, logs). Defaults to `~/.fleet-control`,

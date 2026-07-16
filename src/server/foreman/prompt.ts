@@ -29,6 +29,25 @@ export interface ReviewInput {
   transcript: TranscriptMessage[];
   truncated: boolean;
   /**
+   * The child's rendered terminal screen, for a `terminal` surface. Null when it has no
+   * pane, the capture failed, or the surface answers itself (an `input-review` carries its
+   * body as the question).
+   *
+   * This is the ONLY place an in-flight ask exists. Claude appends an assistant turn to the
+   * transcript when it COMPLETES, so a tool call blocked on the user - an `AskUserQuestion`
+   * menu, a permission dialog - is not in the file yet, and `Pending.question` on this
+   * surface is only the Notification hook's generic "Claude needs your permission", which
+   * never names what is being approved (see `classifyPending`). Both of the reviewer's
+   * inputs therefore described everything EXCEPT the decision it was convened to make, and
+   * it skipped ("can't tell what is being asked") on the sessions it was most needed for.
+   * Measured against the live fleet: 5 of the last 8 dispositions were that skip.
+   *
+   * A COMPLEMENT to the transcript, never a replacement: it is a viewport snapshot, so it is
+   * hard-wrapped, holds only what fits on screen, and has no history behind it. The
+   * transcript remains the record of what the session did; this is what it is asking.
+   */
+  pane?: string | null;
+  /**
    * The work-queue item Foreman itself commissioned, when the blocked session is
    * working on one. Without it triage is blind to the queue and the two subsystems
    * fight: the reviewer can answer "no, don't do that" to a question about the very
@@ -91,6 +110,12 @@ Fill "brief" (the framed decision) and "recommendation" (what you'd suggest) so 
 WHEN TO SKIP (action="skip"):
 - The pending item is a plan/diff review rather than an answerable question, or you genuinely
   can't tell what is being asked. Still fill in "purpose".
+- On the terminal surface the transcript almost always ENDS BEFORE the pending ask: a tool call
+  waiting on the user is not written to the transcript until it returns. That is normal and is NOT
+  a reason to skip. The ask itself - a menu, a permission dialog, the options offered - is rendered
+  in "The terminal screen" section, which is the live view of what the child is showing right now.
+  Read the question from there. Skip for "can't tell what is being asked" only when it is missing
+  from the screen too.
 - A parked no-mistakes gate is NOT one of those. It reads as "The no-mistakes run on <branch> is parked
   at the "<step>" gate...", usually listing the findings no-mistakes routed to the user's judgment rather
   than fixing itself. It IS answerable prose-to-prose: the child translates your reply into the matching
@@ -123,13 +148,16 @@ export function buildReviewPrompt(input: ReviewInput): string {
     "",
     ...(queueItem ? queueItemSection(queueItem) : []),
     "## The pending question",
-    question.trim() || "(no explicit question text - infer it from the transcript tail)",
+    question.trim() || NO_QUESTION_TEXT,
     "",
     truncated
       ? "## Transcript (oldest first; the middle was elided for length)"
       : "## Transcript (oldest first)",
     formatTranscript(transcript),
     "",
+    // AFTER the transcript, for recency: it is both the latest state and, on this surface,
+    // the only section that carries the actual ask (see `ReviewInput.pane`).
+    ...paneSection(input),
     // Repeated LAST (recency) and made concrete, because the highest-value cases -
     // a risky ask you must escalate - are exactly where the model is tempted to
     // editorialize in prose. A parse miss is safe (it falls back to a no-op skip),
@@ -138,6 +166,41 @@ export function buildReviewPrompt(input: ReviewInput): string {
     "no markdown fences, no commentary. Begin your reply with { and end it with }.",
   ];
   return head.join("\n");
+}
+
+/**
+ * Stand-in for an empty `question`. It names the SCREEN and not the transcript tail (which
+ * is what it used to say) for the reason `ReviewInput.pane` exists: a terminal ask is not in
+ * the transcript while it blocks, so "infer it from the transcript tail" pointed the reviewer
+ * at the one place guaranteed not to hold it.
+ */
+const NO_QUESTION_TEXT = "(no explicit question text - read the ask off the terminal screen below)";
+
+/**
+ * Render the child's screen, or nothing at all when there is none to show.
+ *
+ * Omitted rather than rendered as "(no pane)" when absent: the POLICY tells the reviewer the
+ * ask is on the screen, so an empty section under that promise reads as "the screen is blank"
+ * - a fact about the child - when it actually means Foreman couldn't look. Absent, the
+ * reviewer falls back on the transcript and skips honestly, which is the pre-existing
+ * behaviour and the safe one.
+ *
+ * Shared with the Tier 1 router (`buildTriagePrompt`) so the two prompts cannot drift on the
+ * one input that decides whether either can see the question at all.
+ */
+export function paneSection(input: ReviewInput): string[] {
+  const pane = input.pane?.trim();
+  if (!pane || input.surface !== "terminal") return [];
+  return [
+    "## The terminal screen (live - what the child is showing RIGHT NOW)",
+    "This is the child's actual screen, captured just now. A tool call that is blocked on the user",
+    "is not written to the transcript until it returns, so the pending ask - a menu, a permission",
+    "dialog, the options on offer - appears HERE and not above. This is a viewport: it is",
+    "hard-wrapped, and anything scrolled off is gone. Read the ask here; read the history above.",
+    "",
+    pane,
+    "",
+  ];
 }
 
 /**

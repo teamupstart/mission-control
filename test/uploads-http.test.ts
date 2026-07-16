@@ -31,11 +31,18 @@ const PNG = Buffer.from(
   "base64",
 );
 
-/** Post one file part exactly as a browser's FormData would. */
-function upload(bytes: Buffer, name: string, type = "image/png"): Promise<Response> {
+/**
+ * Post one file part exactly as a browser's FormData would.
+ *
+ * `async` so the awaited `app.request` collapses Hono's `Response |
+ * Promise<Response>` - returning that union straight out of a `Promise<Response>`
+ * function is a type error the test runner never sees, since tsx strips types
+ * rather than checking them.
+ */
+async function upload(bytes: Buffer, name: string, type = "image/png"): Promise<Response> {
   const body = new FormData();
   body.append("file", new File([new Uint8Array(bytes)], name, { type }));
-  return app.request("/api/uploads", { method: "POST", body, headers: LOOPBACK });
+  return await app.request("/api/uploads", { method: "POST", body, headers: LOOPBACK });
 }
 
 test("POST /api/uploads: stores the image and returns a path that exists", async () => {

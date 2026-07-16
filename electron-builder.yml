@@ -17,12 +17,19 @@ directories:
   output: release
   buildResources: build
 
-# Only the built bundles + the tray image + package.json (for "main"/version).
-# node_modules are intentionally excluded: every runtime dep is inlined by esbuild
-# into the dist bundles, and node:sqlite is a builtin, so nothing under
-# node_modules is needed at runtime. This keeps the app ~275MB smaller.
+# Only the built bundles + the tray image + the skills catalog + package.json (for
+# "main"/version). node_modules are intentionally excluded: every runtime dep is
+# inlined by esbuild into the dist bundles, and node:sqlite is a builtin, so nothing
+# under node_modules is needed at runtime. This keeps the app ~275MB smaller.
+#
+# `skills/` ships as SOURCE rather than through dist because Claude - not us - is the
+# thing that reads it: the daemon only symlinks `~/.claude/skills/fleet-<id>` at it,
+# and an external claude then reads the SKILL.md through that link. Which is exactly
+# why `asar: false` above is load-bearing for this too, and not only for the
+# satellites: a symlink into an archive resolves to nothing.
 files:
   - dist/**/*
+  - skills/**/*
   - build/trayTemplate.png
   - build/trayTemplate@2x.png
   - package.json

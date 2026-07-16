@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { fileURLToPath, URL } from "node:url";
 import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
 
 /** Runtime coordinates and the `FLEET_`/legacy env resolution live in the shared
@@ -14,6 +15,32 @@ export const DB_PATH = join(STATE_DIR, "harness.db");
 export const TOKEN_PATH = tokenPath();
 /** Isolated worktrees the daemon creates for dispatched tasks (git-worktree fallback). */
 export const WORKTREES_DIR = join(STATE_DIR, "worktrees");
+
+/**
+ * The skills catalog (`skills/<id>/SKILL.md`), baked into the repo and shipped with
+ * the app - resolved absolutely, so it never depends on the daemon's working
+ * directory (unpredictable when Electron spawns it).
+ *
+ * `../../skills` lands on the repo root under `tsx src/server/index.ts` AND on the app
+ * root under `node dist/server/index.mjs`, exactly like index.ts's `FLEET_WEB_DIR`
+ * fallback and for the same reason: both entry points sit two levels down.
+ *
+ * WHICH IS WHY THIS LIVES HERE and not beside its callers in skills/. esbuild bundles
+ * the whole server into `dist/server/index.mjs`, so every bundled module's
+ * `import.meta.url` becomes that ONE file's - and only a module that already sits two
+ * levels down in the source tree resolves the same before and after bundling.
+ * `skills/catalog.ts` is three levels down, so the identical expression there is
+ * correct packaged and points at a nonexistent `src/skills` in dev.
+ *
+ * The symlinks this feeds read fine from a packaged build: the app ships `asar: false`
+ * (see electron-builder.yml), so these are real directories on disk. That was the
+ * plan's one open question, and it was already answered - the satellites need plain
+ * files for the same reason. If asar is ever turned back on, the reconciler has to
+ * copy and compare a content hash instead; nothing about the symlink path survives it.
+ */
+export function skillsDir(): string {
+  return envVar("SKILLS_DIR") ?? fileURLToPath(new URL("../../skills", import.meta.url));
+}
 
 /** Resolve the CLI to launch for a dispatched agent, overridable per agent. */
 export function resolveAgentBin(agent: "claude" | "codex"): string {

@@ -24,6 +24,7 @@ import {
   SetNoteSchema,
   SetPermissionModeSchema,
   SetWorkItemStateSchema,
+  SkillsConfigPatchSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
@@ -34,7 +35,7 @@ import { capturePaneText } from "./discovery/pane-mode.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
-import type { NmRunSummary, Session, WorkItem } from "@shared/types.ts";
+import type { NmRunSummary, Session, SkillsView, WorkItem } from "@shared/types.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
@@ -52,11 +53,15 @@ import {
   releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { readCatalog } from "./skills/catalog.ts";
+import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
+import { skillDrift } from "./skills/reconcile.ts";
+import { pendingReloads } from "./skills/reload.ts";
 import { readStandards } from "./standards.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
-import { dropGateReply, logGateReply } from "./db.ts";
+import { dropGateReply, getSkillsAcks, logGateReply } from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -850,6 +855,59 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     releaseForemanLease(parsed.data.workerId);
     return c.body(null, 204);
+  });
+
+  // --- custom skills: the catalog + what's switched on (localhost only) ---
+
+  /**
+   * The whole panel in one read: the catalog, what's enabled, how many sessions are
+   * behind, and anything the reconciler refused.
+   *
+   * One route rather than a config/status pair, because unlike Foreman there is no
+   * second consumer - the worker process doesn't read this - and the two halves are
+   * only ever rendered together. A split would be two polls to draw one panel.
+   */
+  const skillsView = (): SkillsView => {
+    const cfg = getSkillsConfig();
+    const catalog = readCatalog();
+    return {
+      enabled: cfg.enabled,
+      skills: catalog.skills.map((s) => ({ ...s, enabled: cfg.skills[s.id] === true })),
+      pending: pendingReloads(registry.snapshot().sessions, getSkillsAcks(), cfg),
+      // Catalog problems plus a fresh look at the DISK. The drift check is what keeps a
+      // failed STARTUP reconcile from being invisible: its problems had no PUT to answer,
+      // so they went to a console nobody reads, and every toggle would render on while
+      // the fleet had none of them.
+      problems: [...catalog.problems, ...skillDrift(cfg, catalog)],
+    };
+  };
+
+  app.get("/api/skills", (c) => c.json(skillsView()));
+
+  /**
+   * Reconcile, then persist - both inside `applySkillsConfig`, so this route cannot
+   * do one without the other.
+   *
+   * The patch schema accepts only `enabled` and `skills`. The generation is the
+   * server's watermark, and a client that could set it could either silence the whole
+   * fleet's reload (set it back) or type into every pane on the machine at will (set
+   * it forward). Excluding it at the boundary beats trusting the route.
+   *
+   * 409 on `refused` and NOT on `problems`, which is the difference between "your
+   * toggle didn't work" and "something else is wrong". A reconcile pass reports on every
+   * enabled skill, so `problems` is routinely non-empty for reasons the caller had
+   * nothing to do with - one skill dropped from the catalog by a `git pull` says so on
+   * every pass, forever. 409ing on that turned a toggle that had fully applied into
+   * "nothing changed" in the panel, reverted the switch, and let the next poll flip it
+   * back on - and wedged every other toggle the same way. Those problems reach the
+   * operator through the view, which reports them continuously anyway.
+   */
+  app.put("/api/skills/config", async (c) => {
+    const parsed = await parseBody(c, SkillsConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const synced = applySkillsConfig(parsed.data);
+    if (synced.refused.length > 0) return c.json({ error: synced.refused.join("; ") }, 409);
+    return c.json(skillsView());
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

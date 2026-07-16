@@ -22,6 +22,70 @@ export interface ActionResult {
 /** Shared error when a session has no pane handle we can drive. */
 const NO_HANDLE = "session has no tmux or wezterm handle to send to";
 
+/** Shared error when another write already owns this pane. */
+const PANE_BUSY = "another write is already in flight for this session's pane";
+
+/** Panes with a write in flight, so two writers can't interleave keystrokes. */
+const driving = new Set<string>();
+
+/**
+ * The pane a session's writes land on, or null when it has no handle.
+ *
+ * Keyed on the PANE and not on `session.id`, because the pane is the thing being
+ * protected and the id is not stable: it's synthetic for an uninstrumented session
+ * and churns as pids/ttys change, so two reads of "the same session" can key
+ * differently while addressing one pane. tmux wins when both exist, exactly as every
+ * write below resolves its target.
+ */
+function paneKey(s: Pick<Session, "tmux" | "wezterm">): string | null {
+  if (s.tmux) return `tmux:${s.tmux.paneId}`;
+  if (s.wezterm) return `wezterm:${s.wezterm.paneId}`;
+  return null;
+}
+
+/**
+ * Serialize writes to one pane. Every public write below goes through this.
+ *
+ * It began life narrower - one set guarding permission-mode cycling, where two
+ * concurrent Shift+Tab walks would step on each other's readback. The hazard was
+ * always broader than that: NOTHING stopped a Foreman auto-wrapup and a dashboard
+ * send from interleaving into one pane, producing a prompt that is neither of the
+ * two things anyone asked to send. It was merely unlikely, because every writer was
+ * downstream of a person.
+ *
+ * The skills reload loop is what makes it likely. It is the first writer that types
+ * into MANY panes on its own schedule, so for the first time two writers can pick
+ * the same pane at the same moment with nobody involved. Widening the guard is
+ * cheaper than reasoning about which pairs can collide.
+ *
+ * A refusal is a REFUSAL, not a wait: the loser reports busy and its caller decides.
+ * Queueing would hold a keystroke behind a walk that reads the pane between every
+ * step, and deliver it into a session that has moved on since.
+ *
+ * Sessions with no pane skip the lock entirely - the write itself answers with
+ * NO_HANDLE, which is the honest error, and a null key must not collide with
+ * another handleless session's.
+ *
+ * Exported for its tests. Every writer below is a real subprocess, so the guard's own
+ * semantics - who wins, who is refused, and whether the key is ever left held - can
+ * only be asserted here.
+ */
+export async function withPaneLock<T>(
+  session: Pick<Session, "tmux" | "wezterm">,
+  busy: () => T,
+  write: () => Promise<T>,
+): Promise<T> {
+  const key = paneKey(session);
+  if (key === null) return write();
+  if (driving.has(key)) return busy();
+  driving.add(key);
+  try {
+    return await write();
+  } finally {
+    driving.delete(key);
+  }
+}
+
 /** Reduce a finished command to an ActionResult, using stderr (or a fallback) as the error. */
 function check(r: RunResult, failMsg: string): ActionResult {
   return r.code !== 0 ? { ok: false, error: r.stderr.trim() || failMsg } : { ok: true };
@@ -43,6 +107,10 @@ export async function sendText(
   text: string,
   submit: boolean,
 ): Promise<ActionResult> {
+  return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => sendTextLocked(session, text, submit));
+}
+
+async function sendTextLocked(session: Session, text: string, submit: boolean): Promise<ActionResult> {
   if (session.tmux) {
     const target = session.tmux.paneId;
     const typed = await step("tmux", ["send-keys", "-t", target, "-l", text], "tmux send-keys failed");
@@ -96,6 +164,18 @@ export interface InjectResult extends ActionResult {
  * landed and then failed to submit must not be retyped over.
  */
 export async function injectPrompt(session: Session, text: string): Promise<InjectResult> {
+  // A refusal here is `pasted: false`, and that is the contract doing its job rather
+  // than a detail: the lock turns a would-be write away BEFORE any byte reaches the
+  // pane, which is precisely the positive evidence of non-delivery a caller is
+  // allowed to retry from.
+  return withPaneLock<InjectResult>(
+    session,
+    () => ({ ok: false, error: PANE_BUSY, pasted: false }),
+    () => injectPromptLocked(session, text),
+  );
+}
+
+async function injectPromptLocked(session: Session, text: string): Promise<InjectResult> {
   if (session.tmux) {
     const target = session.tmux.paneId;
     const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
@@ -174,9 +254,6 @@ const REPAINT_POLL_MS = 50;
  */
 const MAX_CYCLE_STEPS = 6;
 
-/** Sessions currently being walked, so two requests can't interleave keystrokes. */
-const driving = new Set<string>();
-
 /** Wait for the pane's mode line to differ from `prev`, or null if it never does. */
 async function awaitModeLineChange(session: Session, prev: string): Promise<PaneModeLine | null> {
   const deadline = Date.now() + REPAINT_TIMEOUT_MS;
@@ -193,6 +270,10 @@ async function awaitModeLineChange(session: Session, prev: string): Promise<Pane
  * actually landed on rather than guessing at it.
  */
 export async function cyclePermissionMode(session: Session): Promise<ModeResult> {
+  return withPaneLock<ModeResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => cycleLocked(session));
+}
+
+async function cycleLocked(session: Session): Promise<ModeResult> {
   const before = await readPaneModeLine(session);
   const sent = await injectShiftTab(session);
   if (!sent.ok) return sent;
@@ -225,30 +306,28 @@ export async function cyclePermissionMode(session: Session): Promise<ModeResult>
  */
 export async function setPermissionMode(session: Session, target: PermissionMode): Promise<ModeResult> {
   if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
-  if (driving.has(session.id)) return { ok: false, error: "already changing this session's mode" };
-  driving.add(session.id);
-  try {
-    let line = await readPaneModeLine(session);
-    if (!line) return { ok: false, error: CANNOT_SEE_MODE, mode: null };
-    if (line.mode === target) return { ok: true, mode: target };
+  return withPaneLock<ModeResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => walkToMode(session, target));
+}
 
-    // Keyed on the line text, not the parsed mode, so a mode this build doesn't
-    // recognize is still a distinct position we can step through and loop on.
-    const seen = new Set<string>([line.text]);
-    for (let i = 0; i < MAX_CYCLE_STEPS; i++) {
-      const sent = await injectShiftTab(session);
-      if (!sent.ok) return { ...sent, mode: line.mode };
-      const next = await awaitModeLineChange(session, line.text);
-      if (!next) return { ok: false, error: SWALLOWED, mode: line.mode };
-      if (next.mode === target) return { ok: true, mode: target };
-      if (seen.has(next.text)) return { ok: false, error: notInCycle(target), mode: next.mode };
-      seen.add(next.text);
-      line = next;
-    }
-    return { ok: false, error: notInCycle(target), mode: line.mode };
-  } finally {
-    driving.delete(session.id);
+async function walkToMode(session: Session, target: PermissionMode): Promise<ModeResult> {
+  let line = await readPaneModeLine(session);
+  if (!line) return { ok: false, error: CANNOT_SEE_MODE, mode: null };
+  if (line.mode === target) return { ok: true, mode: target };
+
+  // Keyed on the line text, not the parsed mode, so a mode this build doesn't
+  // recognize is still a distinct position we can step through and loop on.
+  const seen = new Set<string>([line.text]);
+  for (let i = 0; i < MAX_CYCLE_STEPS; i++) {
+    const sent = await injectShiftTab(session);
+    if (!sent.ok) return { ...sent, mode: line.mode };
+    const next = await awaitModeLineChange(session, line.text);
+    if (!next) return { ok: false, error: SWALLOWED, mode: line.mode };
+    if (next.mode === target) return { ok: true, mode: target };
+    if (seen.has(next.text)) return { ok: false, error: notInCycle(target), mode: next.mode };
+    seen.add(next.text);
+    line = next;
   }
+  return { ok: false, error: notInCycle(target), mode: line.mode };
 }
 
 const CANNOT_SEE_MODE =

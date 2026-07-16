@@ -2,6 +2,8 @@
 // and the web UI (src/web). Keep this the single source of truth for anything
 // that crosses the SSE / HTTP boundary.
 
+import type { SkillEnforcement } from "./skills.ts";
+
 export type AgentType = "claude" | "codex";
 
 /**
@@ -543,6 +545,43 @@ export interface ForemanStatus {
   counts: { answered: number; escalated: number; pending: number; skipped: number };
   /** epoch ms of the most recent Foreman note, or null. */
   lastActionAt: number | null;
+}
+
+// ---- Custom skills ----
+
+/** One catalog skill, as parsed from `skills/<id>/SKILL.md`'s frontmatter. */
+export interface SkillCatalogEntry {
+  /** The directory under `skills/`. Owns the `fleet-<id>` namespace in ~/.claude/skills. */
+  id: string;
+  /** The frontmatter `name` - what the user types and what the panel shows. */
+  name: string;
+  /** The frontmatter `description`. Preloaded into context; drives model invocation. */
+  description: string;
+  category: string;
+  enforcement: SkillEnforcement;
+}
+
+/** A catalog row plus whether it is currently symlinked in. */
+export interface SkillRow extends SkillCatalogEntry {
+  enabled: boolean;
+}
+
+/** Everything the skills panel draws, in one read. */
+export interface SkillsView {
+  /** The master switch. Off means nothing is symlinked, whatever the rows say. */
+  enabled: boolean;
+  skills: SkillRow[];
+  /**
+   * Live CLAUDE sessions that have yet to pick up the current symlink set - i.e.
+   * what "N sessions will pick this up when they next go idle" is counting.
+   *
+   * Codex sessions are excluded, and not as a detail: codex has no
+   * `/reload-skills` and no `~/.claude/skills`, so counting them would leave a
+   * number that can never reach zero on a mixed fleet.
+   */
+  pending: number;
+  /** Anything the reconciler could not do, in the operator's words. Usually empty. */
+  problems: string[];
 }
 
 /** The states we surface for a session's PR. Closed-unmerged is treated as "no PR". */

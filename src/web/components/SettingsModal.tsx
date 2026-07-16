@@ -11,6 +11,8 @@ import {
   setBinding,
   useKeybindings,
 } from "../lib/keybindings.ts";
+import { SkillsPanel } from "./SkillsPanel.tsx";
+import { useSkills } from "../useSkills.ts";
 
 const GROUPS = [
   { key: "global", label: "Anywhere" },
@@ -23,12 +25,17 @@ function labelOf(id: ActionId): string {
 
 /**
  * App settings, reached from the topbar gear or the native Settings… menu (⌘,).
- * Today it hosts the keyboard-shortcut editor: click an action's key, press the
- * new one (with ⌘/⌃/⌥ if you like), and it persists immediately. Reserved
- * navigation keys are refused, and duplicate bindings are flagged inline.
+ *
+ * Two sections. The keyboard-shortcut editor: click an action's key, press the new
+ * one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved navigation keys
+ * are refused and duplicate bindings are flagged inline. And the skills catalog,
+ * which is the modal's first setting that leaves this machine's localStorage - it
+ * writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
+ * thing here that can fail asynchronously. `SkillsPanel` owns that error path.
  */
 export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.Element {
   const { bindings, hasCustom } = useKeybindings();
+  const skills = useSkills();
   const [recording, setRecording] = useState<ActionId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const conflicts = findConflicts(bindings);
@@ -155,6 +162,8 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
               navigation and can't be reassigned.
             </p>
           </section>
+
+          <SkillsPanel state={skills} />
         </div>
       </div>
     </div>

@@ -144,6 +144,16 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
 
+    -- The last skills generation each session was told about. Durable on purpose:
+    -- held in memory, a daemon restart would forget every ack while the generation
+    -- stayed put, and the next idle moment would type /reload-skills into every
+    -- claude on the machine at once.
+    CREATE TABLE IF NOT EXISTS skills_acks (
+      note_key   TEXT PRIMARY KEY,   -- noteKeyFor(s), same key as session_notes
+      generation INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS foreman_queues (
       note_key        TEXT PRIMARY KEY,   -- noteKeyFor(s) = agentSessionId ?? synthetic id
       cwd             TEXT,               -- + branch: the re-attach hint when the key dies
@@ -1202,6 +1212,39 @@ export function getAppConfig<T>(key: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+// ---- skills acks (which generation each session has been told about) ----
+
+/**
+ * Every session's acked generation, as one map.
+ *
+ * Read whole rather than per-session because the reload loop's selector is a pure
+ * function over the fleet and wants no I/O inside it - the same discipline
+ * `decideQueueTick` holds. The table is one row per session ever seen, integers
+ * only, so reading it on a 1.5s tick is noise.
+ */
+export function getSkillsAcks(): Map<string, number> {
+  const rows = openDb().prepare(`SELECT note_key, generation FROM skills_acks`).all() as unknown as
+    Array<{ note_key: string; generation: number }>;
+  return new Map(rows.map((r) => [r.note_key, r.generation]));
+}
+
+/**
+ * Record that a session has been told about `generation`.
+ *
+ * Also the ROLLBACK: pass the prior value to undo an ack written before a delivery
+ * that turned out never to reach the pane. Absent and 0 are the same fact ("never
+ * acked"), because generation 0 means the symlink set has never changed and so
+ * nothing is owed to anybody.
+ */
+export function setSkillsAck(noteKey: string, generation: number, now = Date.now()): void {
+  openDb()
+    .prepare(
+      `INSERT INTO skills_acks (note_key, generation, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET generation=excluded.generation, updated_at=excluded.updated_at`,
+    )
+    .run(noteKey, generation, now);
 }
 
 export function setAppConfig(key: string, value: unknown): void {

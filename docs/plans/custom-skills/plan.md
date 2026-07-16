@@ -1,6 +1,7 @@
 # Plan: Custom Skills (fleet-wide skill toggles)
 
-Status: decided, not built.
+Status: **built.** See "As built" at the foot for what changed on contact with the code,
+and for the answer to the packaged-Electron question this plan left open.
 Companion doc: the options analysis and the evidence behind every claim here live in the
 review artifact; this file is the buildable version.
 
@@ -286,3 +287,153 @@ failure that disqualified launch flags.
   as a `control-request`; the skills path is the better-supported one.
 - Always-on enforcement above the "intercepted" rung (output styles, `--append-system-prompt`).
 - Codex parity via `AGENTS.md`.
+
+## As built
+
+Everything above shipped as decided. What follows is only where the code differs from
+the text, plus what the build established that the plan could not.
+
+**The asar question is answered: symlinks, no copy.** `electron-builder.yml` already
+ships `asar: false`, and for a closely related reason - Claude launches the satellite
+scripts with an EXTERNAL node that can't read inside an archive either. So `appRoot/skills/<id>`
+is a real directory in a packaged build and the symlink resolves. `skills/**/*` was added
+to the packaged `files` list. If asar is ever turned back on, the reconciler must copy and
+compare a content hash; nothing on the symlink path survives it.
+
+**The catalog dir resolves from `config.ts`, not from `skills/catalog.ts`.** esbuild
+bundles the whole server into `dist/server/index.mjs`, so every bundled module's
+`import.meta.url` collapses to that one file's - and only a module already two levels down
+in the source tree resolves `../../skills` the same before and after bundling. `catalog.ts`
+is three levels down, so the identical expression there is correct packaged and points at a
+nonexistent `src/skills` in dev. This was a real bug, caught by the catalog test.
+
+**The `/reload-skills` literal lives in `src/shared/skills.ts`, not `src/shared/queue.ts`.**
+The plan's stated reason - "the worker and the card must send the same bytes" - doesn't
+transfer: there is no card, and the reload has exactly one sender. It's still on the shared
+surface (it's typed into a pane, so the bytes need one definition), just not inside a module
+about the work-item lifecycle. The enforcement rungs needed a shared home anyway.
+
+**The reload loop has its own timer rather than riding `startPoller`.** It reuses
+`POLL_INTERVAL_MS`, so there's no new knob, and it matches the three sibling pollers
+(nomistakes, pr, runtime-meta). What "ride the poller" was actually protecting - a
+per-target re-read instead of a fan-out from one snapshot - is kept, and is the
+load-bearing half.
+
+**Two things the plan didn't have, both forced by the same question ("what does this
+feature owe an operator?"):**
+
+- `generationAt`. Without it every session discovered from here to the end of time gets an
+  unsolicited `/reload-skills` the first time it goes idle: no ack row, and `0 < generation`
+  forever. A session that booted after the symlink landed already loaded it.
+- A rollback on `pasted: false`. The plan inherited "never retry" from the auto-wrapup
+  path, whose reason - *"a retry IS the double-push"*, because `/no-mistakes` opens a PR -
+  is exactly what does not transfer. `/reload-skills` is idempotent, so here a silent miss
+  (the panel claiming a skill is live in a session that never heard) is worse than a
+  duplicate. The ack still lands before the keystroke; it's taken back only on the one
+  state actions.ts defines as positive evidence nothing reached the pane.
+
+**`applySkillsConfig` decides before it writes, and reconciles before it persists.** A
+half-applied patch would leave the config claiming a skill that isn't on disk, and every
+way of rendering that lies; the remaining crash window is the harmless direction (disk
+ahead of config), which startup's `reconcileSkills` heals. The first cut wrote and rolled
+back instead, which was wrong twice over: the undo pass also HEALED unrelated drift, so
+the disk really moved while the caller reported `changed: false` and told nobody - a
+skill installed that no session would ever load, and no drift left for the panel to
+report - and afterwards nothing could tell the healing from the undoing. Refusing up
+front has no write to take back.
+
+**Refusal is scoped to the patch, at BOTH layers.** A reconcile pass reports on every
+enabled skill, not just the ones that moved, so one stuck row (a skill a `git pull`
+deleted) makes `problems` non-empty forever. Scoping only the rollback wasn't enough -
+the route still answered 409 on any problem, which turned a toggle that had fully
+applied (links written, generation bumped, fleet notified) into "nothing changed",
+reverted the switch, then let the next poll flip it back on. `refused` is therefore its
+own field, separate from `problems`, and the route 409s on that alone.
+
+**The catalog distinguishes "absent" from "unreadable", and the reconciler keys on
+directories that EXIST rather than on rows we could parse.** This was the worst bug in
+the first cut, and it was invisible because the wrong behaviour had a test asserting it.
+"Not in the parsed catalog" has two causes - deleted from the repo, or its SKILL.md
+defeated our deliberately narrow frontmatter reader - and only the first is a reason to
+unlink. Conflated, a formatting-only edit (a description folded to `>-`, still valid
+YAML, still loaded by Claude) uninstalled a working skill from every session on the
+machine and bumped the generation so they all dropped it at once. An unreadable
+`skills/` was worse: every id looked deleted, so one permissions hiccup uninstalled the
+lot. The catalog now reports `readable` and `present`, the reconciler refuses to touch
+anything when the catalog is unreadable, and a block scalar is reported instead of read
+as the literal string `">-"`.
+
+**`changed` means "what Claude loads moved", not "we wrote something".** Two bugs here:
+a `remove() && link()` short-circuit dropped an unlink on the floor when the relink
+failed (disk moved, `changed: false`, nobody told - the one state this design must not
+have), and re-pointing a link whose old target still RESOLVED was counted as a change,
+so rebuilding the app somewhere else typed `/reload-skills` into every idle claude on
+the machine.
+
+**`pendingReloads` and `reloadNeeded` share one predicate (`reloadOwed`).** They had
+drifted: the count omitted `hasPane` and `hooksSeen`, so it sat above zero forever for
+sessions nothing could ever reload - the exact never-reaches-zero failure the count
+excludes codex to avoid. The split is the codebase's own `hooksSeen` (permanent, so it
+belongs to the count) vs `instrumented` (a 30-minute freshness window, so it belongs
+only to "safe to type right now" - a healthy session that goes quiet flips it, and the
+count must not blink out for one).
+
+**The panel re-reads the disk rather than trusting the reconciler's memory.** Reconcile
+problems reach the operator on the PUT that produced them; a STARTUP reconcile has no
+PUT to answer, so its failures went to a console nobody reads while every toggle
+rendered on. `skillDrift` is a read-only check on each poll.
+
+**The `skills` patch merges per key.** Replacement would make the panel round-trip the
+whole map on every click, so a second open dashboard would silently switch off a skill the
+first just enabled fleet-wide.
+
+**"Absence of evidence is not evidence" turned out to be the whole shape of this
+subsystem's bugs**, and it recurred in four places that each looked unrelated: a skill
+missing from the parsed catalog (deleted, or unparseable?), an unreadable `skills/` (no
+skills, or no answer?), an unreadable `~/.claude/skills` (empty, or not allowed to
+look?), and a `fleet-` entry that isn't a symlink (stale, or someone's own work?). Every
+one defaulted to the destructive reading, and every one is silent. If you add a branch
+here, the question to ask is which of the two things a null means.
+
+### Known and accepted
+
+- **The `pending` count can stick above zero.** It gates on `hooksSeen` (permanent) while
+  the reload gates on `settledIdle` (which needs `instrumented`, a 30-minute freshness
+  window). A session that fired hooks once and then went silent forever - hooks
+  uninstalled mid-session, an agent wedged without exiting - is counted and never
+  reloaded. The alternative is worse: gating the count on `instrumented` makes it blink
+  to zero for a session that is merely quiet, which is the single most common state in
+  this fleet, and a zero that means "nobody needs this" when twenty sessions do is a
+  worse lie than an N that lingers.
+- **The pane lock makes every write refusable.** `sendText`/`injectPrompt` can now answer
+  PANE_BUSY, and existing callers read any failure as a real one - `dispatcher.ts` fails
+  a whole task on it. The contention window is a real autonomous writer against a real
+  pane, so the refusal is correct (an interleaved paste is worse), and it is very narrow:
+  a freshly dispatched session has `startedAt >= generationAt`, so the reload loop never
+  targets it.
+
+### Verified live (claude 2.1.211, real tmux pane, real `~/.claude/skills`)
+
+Through the production path (`applySkillsConfig` -> `reconcileSkillLinks`), against a
+session already at its prompt:
+
+```
+❯ /reload-skills
+  ⎿  Reloaded skills: 52 skills available (no changes)   ← before the symlink
+# fleet-html-plans symlinked here, mid-session, no restart
+❯ /reload-skills
+  ⎿  Reloaded skills: 53 skills available (1 added)      ← picked up
+```
+
+- The skill presents in the slash menu as `/html-plans` from a `fleet-html-plans/`
+  directory, with its own description. The prefix split holds.
+- **But the MODEL's skill registry uses the DIRECTORY name** - it sees `fleet-html-plans`.
+  Harmless (the description is what drives invocation, and it's untouched) but the prefix
+  is not quite invisible, and anything matching on a model-facing skill name must expect it.
+- The reconciler linked and later unlinked `fleet-html-plans` while five hand-authored
+  skills - three of them symlinks - sat beside it untouched, byte for byte.
+- **The gate was tested against two real dialogs, not a fixture.** A fresh claude opened on
+  the "Quick safety check: Is this a project you created or one you trust?" list, and later
+  the probe drove itself onto a genuine permission dialog sitting on `❯ 1. Yes`. The pane
+  read returned null - i.e. refused - for both. That is the unattended-approval failure the
+  whole design exists to prevent, declined against the real thing.

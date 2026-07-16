@@ -203,6 +203,18 @@ export interface Session {
    */
   note: SessionNoteSummary | null;
   /**
+   * What this session is currently attempting to solve, in one sentence. Denormalized like
+   * `note` and keyed on the same stable note key, but written by the daemon on every
+   * instrumented Claude session rather than by Foreman on the ones it inspects.
+   *
+   * A sibling of `note` rather than a field inside it, because Foreman does not own this
+   * sentence and the card must be free to show it without showing (or gating on) anything
+   * of Foreman's - the whole point of the feature is that it is visible on a collapsed card.
+   * Null for a session that has taken no prompt yet, and for a Codex session, which carries
+   * no hooks to derive one from.
+   */
+  goal: SessionGoalSummary | null;
+  /**
    * Compact view of this session's Foreman work queue - the batch of work queued
    * for it to do next. Denormalized like `note`, keyed on the same stable note
    * key. Null when the session has no queue.
@@ -237,6 +249,20 @@ export interface Session {
 export type NoteDisposition = "answered" | "pending" | "escalated" | "skipped";
 
 /**
+ * Where a session's Goal sentence came from.
+ *
+ *  - heuristic: the human's own filtered prompt, written instantly by the daemon on
+ *    `UserPromptSubmit`. Free, always available, but reads like a prompt rather than a
+ *    summary - and says nothing at all for a session driven by a slash command.
+ *  - model: a `claude -p` pass rewrote it into one sentence.
+ *
+ * Stored rather than inferred because the refiner needs to know what it is upgrading, and
+ * because "this is still the raw prompt" is a real distinction when a refinement silently
+ * fails (see the Q3 fallback: a failed refine leaves the heuristic goal standing).
+ */
+export type GoalSource = "heuristic" | "model";
+
+/**
  * The durable Foreman record for one session, keyed on `agentSessionId` when
  * known (stable across the synthetic-id churn) else the synthetic session id.
  */
@@ -253,6 +279,37 @@ export interface SessionNote {
   lastAction: string | null;
   /** The reviewId / transcript turn id Foreman last acted on, for idempotency. */
   handledMarker: string | null;
+  updatedAt: number;
+}
+
+/**
+ * A session's Goal: one sentence saying what it is currently attempting to solve, written
+ * by the DAEMON on every instrumented Claude session whether or not Foreman ever runs.
+ *
+ * Keyed on the same `noteKeyFor` as SessionNote - so it survives a daemon restart and
+ * orphans on a `/clear` exactly as a note does - but stored in its own row, NOT as columns
+ * on `session_notes`, for the reason `QueueManager` gives for the same choice: one note has
+ * one `disposition` and one `updatedAt`, and a second writer sharing them corrupts both.
+ * A goal-only write would have had to invent a disposition (defaulting to "pending", which
+ * means "Foreman drafted a reply it hasn't sent" - untrue for every session that merely has
+ * a goal) and would bump the timestamp `foremanStatus` reports as `lastActionAt`. On a live
+ * fleet that reads as N phantom drafts in ForemanBar and a Foreman that claims to have just
+ * acted on every keystroke. Same key, same lifecycle, different record.
+ */
+export interface SessionGoal {
+  noteKey: string;
+  /** The sentence itself. Null while only the raw prompt has been captured. */
+  text: string | null;
+  source: GoalSource | null;
+  /**
+   * The filtered prompt `text` was derived from.
+   *
+   * Persisted rather than re-read because the refiner runs debounced, well after the hook
+   * that captured it: without this it would have to race the transcript for text it was
+   * already handed, and would lose it entirely across a restart. Clamped (`clampPrompt`) so
+   * a pasted log can't put a megabyte in a row. Server-side only - never shipped to a card.
+   */
+  prompt: string | null;
   updatedAt: number;
 }
 
@@ -423,6 +480,23 @@ export interface OrphanedQueueHint {
   noteKey: string;
   itemCount: number;
   branch: string | null;
+}
+
+/**
+ * Compact goal view denormalized onto a Session card.
+ *
+ * Rides the existing session snapshot, so Goal needs no event type of its own - exactly how
+ * `note` already reaches the card. `SessionGoal.prompt` is deliberately absent: it is the
+ * refiner's input, up to `clampPrompt`'s 4KB, and this is denormalized onto every card in
+ * every snapshot - shipping it would put kilobytes of prompt on the wire per session to
+ * render nothing.
+ */
+export interface SessionGoalSummary {
+  /** The sentence shown under the card title. */
+  text: string | null;
+  /** Lets the card tell a raw prompt from a refined sentence. */
+  source: GoalSource | null;
+  updatedAt: number;
 }
 
 /** Compact note view denormalized onto a Session card (like TaskSummary). */

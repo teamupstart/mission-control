@@ -7,6 +7,7 @@ import type {
   ReviewItem,
   ReviewKind,
   ReviewStatus,
+  SessionGoal,
   SessionNote,
   SessionQueue,
   Task,
@@ -95,6 +96,18 @@ export function openDb(): DatabaseSync {
       last_action    TEXT,
       handled_marker TEXT,
       updated_at     INTEGER NOT NULL
+    );
+
+    -- What each session is currently attempting to solve. Keyed exactly like session_notes
+    -- (noteKeyFor = agentSessionId ?? synthetic id) so it shares that lifecycle, but kept
+    -- in its own row: the note has one disposition and one updated_at that mean "what
+    -- Foreman decided, and when", and a second writer sharing them would corrupt both.
+    CREATE TABLE IF NOT EXISTS session_goals (
+      note_key   TEXT PRIMARY KEY,
+      text       TEXT,              -- the sentence; null while only a prompt is captured
+      source     TEXT,              -- 'heuristic' (the raw prompt) | 'model' (refined)
+      prompt     TEXT,              -- the filtered prompt it came from; the refiner's input
+      updated_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS app_config (
@@ -189,6 +202,13 @@ function migrate(d: DatabaseSync): void {
   // default, so an existing row reads as "never crash-recovered" - which is the
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
+
+  // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
+  // creates it on an upgraded db exactly as on a fresh one. An existing fleet simply has no
+  // goals until its sessions take their next prompt, which is the truthful answer for a
+  // session whose prompts were all seen before goals existed. (This is the payoff of a
+  // separate table over columns on `session_notes`: no ALTER, and no row written before
+  // this build that has to be reasoned about.)
 
   rebuildInFlightIndexIfStale(d);
 }
@@ -552,6 +572,55 @@ export function loadSessionNotes(): SessionNote[] {
     .prepare(`SELECT * FROM session_notes ORDER BY updated_at DESC`)
     .all() as unknown as SessionNoteRow[];
   return rows.map(rowToNote);
+}
+
+// ---- session goals ----
+
+interface SessionGoalRow {
+  note_key: string;
+  text: string | null;
+  source: string | null;
+  prompt: string | null;
+  updated_at: number;
+}
+
+function rowToGoal(r: SessionGoalRow): SessionGoal {
+  return {
+    noteKey: r.note_key,
+    text: r.text,
+    // Narrowed, not cast blind: a row written by a newer build (or hand-edited) could carry
+    // a source this build doesn't know, and typing it as one we do would put an unrenderable
+    // value on a card. An unknown source reads as "no source", which the UI handles already.
+    source: r.source === "heuristic" || r.source === "model" ? r.source : null,
+    prompt: r.prompt,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function upsertSessionGoal(g: SessionGoal): void {
+  openDb()
+    .prepare(
+      `INSERT INTO session_goals (note_key, text, source, prompt, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(note_key) DO UPDATE SET
+         text=excluded.text, source=excluded.source, prompt=excluded.prompt,
+         updated_at=excluded.updated_at`,
+    )
+    .run(g.noteKey, g.text, g.source, g.prompt, g.updatedAt);
+}
+
+export function getSessionGoal(noteKey: string): SessionGoal | undefined {
+  const r = openDb().prepare(`SELECT * FROM session_goals WHERE note_key = ?`).get(noteKey) as
+    | unknown as SessionGoalRow | undefined;
+  return r ? rowToGoal(r) : undefined;
+}
+
+/** All goals, reloaded into the registry on start so a card keeps its Goal across one. */
+export function loadSessionGoals(): SessionGoal[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM session_goals ORDER BY updated_at DESC`)
+    .all() as unknown as SessionGoalRow[];
+  return rows.map(rowToGoal);
 }
 
 // ---- Foreman session work queues ----

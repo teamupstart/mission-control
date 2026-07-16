@@ -2165,6 +2165,12 @@ kbd {
   padding: 3px 6px;
 }
 .transcript-compose {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.transcript-compose .compose-row {
   display: flex;
   gap: 6px;
   align-items: flex-end;
@@ -2188,6 +2194,111 @@ kbd {
 }
 .transcript-input:disabled {
   opacity: 0.55;
+}
+
+/* ---- dropped images (transcript reply + dispatch task) ---- */
+
+/* Wraps the dispatch textarea so the veil has something to cover. The transcript's
+   compose row is already positioned, so it needs no equivalent. */
+.drop-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The drag affordance. Sits over the box rather than resizing it, so nothing
+   reflows under the cursor mid-drag - a compose box that jumps as you arrive is a
+   compose box you drop next to. `pointer-events: none` keeps the veil from
+   stealing the drop from the zone underneath it. */
+.drop-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  font: 560 12px/1 var(--sans);
+  color: var(--working);
+  background: color-mix(in oklab, var(--working) 14%, var(--bg-2));
+  border: 1.5px dashed color-mix(in oklab, var(--working) 55%, var(--border));
+  border-radius: 9px;
+}
+
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  padding: 4px 4px 4px 5px;
+  font: 11.5px/1 var(--sans);
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.attach-chip.is-uploading {
+  opacity: 0.6;
+}
+/* An error chip is a sentence, not a filename - give it the room to be read rather
+   than truncating the reason to "not a recognised image (…". The strip wraps, so a
+   wide chip simply takes its own line. */
+.attach-chip.is-error {
+  max-width: 100%;
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 45%, var(--border));
+  background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
+}
+/* Stands in for the thumbnail on a refused drop, at the same 26px so the strip's
+   rhythm doesn't break when one chip fails. */
+.attach-warn {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  font: 700 13px/1 var(--sans);
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 18%, transparent);
+  border-radius: 5px;
+}
+.attach-thumb {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--bg);
+}
+.attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-remove {
+  flex: none;
+  padding: 0;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.attach-remove:hover {
+  color: var(--fg);
+  background: var(--panel);
 }
 
 /* ---- dispatch button (topbar) ---- */

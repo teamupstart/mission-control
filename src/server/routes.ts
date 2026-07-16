@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
@@ -72,12 +73,16 @@ import {
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos } from "./repos.ts";
+import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
 import { run } from "./util/exec.ts";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
+
+/** The upload cap as the refusal states it - both size guards say the same number. */
+const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -437,6 +442,48 @@ export function buildApp(
     const r = await injectPrompt(session, parsed.data.text);
     return c.json(r, r.ok ? 200 : 500);
   });
+
+  // Park a dropped image on disk and hand back its path, which the caller pastes
+  // into a prompt for the agent to read - the same trick a terminal plays when you
+  // drag a file onto it, and the only one available when the last hop is a pty.
+  //
+  // Not bound to a session: the dispatch modal drops images before a session
+  // exists, and an upload is inert until a path is typed somewhere, so scoping it
+  // to a session would buy nothing.
+  //
+  // The response is a path this daemon just wrote inside its own state dir, never
+  // one the client named - the request supplies bytes and a display name, and
+  // `saveImageUpload` decides where they land. That, plus the sniff (bytes must
+  // BE an image, whatever the client claims) and the loopback guard above, is what
+  // keeps "write a file the agent will act on" from being a wider door than /send.
+  //
+  // `bodyLimit` runs first so an oversized request is refused while it's still a
+  // stream - `formData()` would otherwise buffer the whole thing into memory before
+  // anyone could object to its size. The slack over the cap covers the multipart
+  // envelope (boundaries, headers) wrapping the bytes; the route re-checks the
+  // decoded part below, which is what lets the refusal talk about the IMAGE's size
+  // rather than the request's.
+  app.post(
+    "/api/uploads",
+    bodyLimit({
+      maxSize: MAX_UPLOAD_BYTES + 64 * 1024,
+      onError: (c) => c.json({ error: `image is larger than ${TOO_BIG_MB}MB` }, 413),
+    }),
+    async (c) => {
+      const form = await c.req.formData().catch(() => null);
+      const file = form?.get("file");
+      if (!(file instanceof File)) return c.json({ error: "expected a `file` part" }, 400);
+      if (file.size > MAX_UPLOAD_BYTES) {
+        return c.json({ error: `image is larger than ${TOO_BIG_MB}MB` }, 413);
+      }
+      try {
+        const saved = saveImageUpload(new Uint8Array(await file.arrayBuffer()), file.name);
+        return c.json(saved);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    },
+  );
 
   app.post("/api/sessions/:id/focus", async (c) => {
     const session = registry.getSession(c.req.param("id"));

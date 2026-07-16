@@ -16,9 +16,14 @@ import { startPoolReaper } from "./pool.ts";
 import { startPrPoller } from "./pr.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { buildApp } from "./routes.ts";
+import { sweepUploads } from "./uploads.ts";
 
 openDb();
 ensureToken();
+// Reclaim expired image drops now, while we know no send is mid-flight. An upload
+// outlives its send on purpose (the agent reads the path on its own schedule), so
+// a clock is the only thing that can retire one.
+sweepUploads();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);

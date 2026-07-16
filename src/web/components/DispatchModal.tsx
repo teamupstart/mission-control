@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskKind, AgentType } from "@shared/types.ts";
+import { withAttachments } from "@shared/attachments.ts";
 import { api, fetchRepos } from "../lib/api.ts";
+import {
+  AttachmentStrip,
+  readyAttachments,
+  revokeAttachments,
+  useImageDrop,
+  type PendingAttachment,
+} from "./ImageDrop.tsx";
 
 /**
  * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
@@ -15,6 +23,8 @@ type DispatchDraft = {
   title: string;
   kind: TaskKind;
   agent: AgentType;
+  /** Images dropped on the task box; sent as paths appended to the intent. */
+  attachments: PendingAttachment[];
 };
 
 const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
@@ -23,6 +33,7 @@ const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   title: "",
   kind: "ship",
   agent: "claude",
+  attachments: [],
 };
 
 /** True when a draft holds nothing worth keeping - so "Clear" has nothing to do. */
@@ -31,6 +42,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     !d.repoRoot.trim() &&
     !d.intent.trim() &&
     !d.title.trim() &&
+    d.attachments.length === 0 &&
     d.kind === EMPTY_DISPATCH_DRAFT.kind &&
     d.agent === EMPTY_DISPATCH_DRAFT.agent
   );
@@ -41,6 +53,10 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
  * instance that sent it is gone, so its resolve path hands back the draft it sent
  * and the owner compares: still the same draft means nothing newer to lose (see
  * onSubmitted).
+ *
+ * Attachments compare by identity rather than contents, because the question this
+ * answers is "did the human add or drop an image since?" - and an upload landing
+ * mid-flight rewrites the row without being an answer to it.
  */
 function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
   return (
@@ -48,7 +64,9 @@ function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.intent === b.intent &&
     a.title === b.title &&
     a.kind === b.kind &&
-    a.agent === b.agent
+    a.agent === b.agent &&
+    a.attachments.length === b.attachments.length &&
+    a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
   );
 }
 
@@ -89,17 +107,34 @@ export function DispatchLayer({
   const onSubmitted = useCallback(
     (submitted: DispatchDraft) => {
       if (!draftsEqual(draftRef.current, submitted)) return;
+      // The task has the paths now; these thumbnails are the last thing holding the
+      // blobs. (The files themselves stay on the daemon - the agent hasn't read them
+      // yet, and won't for as long as it takes to provision a worktree.)
+      revokeAttachments(draftRef.current.attachments);
       setDraft(EMPTY_DISPATCH_DRAFT);
       onClose();
     },
     [onClose],
   );
 
+  /**
+   * Attachment writes go through a functional update with a STABLE identity, which
+   * the other fields don't need and this one can't do without: an upload resolves
+   * a network round-trip after the drop that started it, and patches its row from
+   * a callback captured back then. Handed a plain `{...draft, attachments}` from
+   * that render, a late upload would restore the intent as it read at drop time,
+   * silently eating everything typed since.
+   */
+  const onAttachmentsChange = useCallback((attachments: PendingAttachment[]) => {
+    setDraft((d) => ({ ...d, attachments }));
+  }, []);
+
   if (!open) return null;
   return (
     <DispatchModal
       draft={draft}
       onDraftChange={setDraft}
+      onAttachmentsChange={onAttachmentsChange}
       onClose={onClose}
       onSubmitted={onSubmitted}
     />
@@ -117,11 +152,13 @@ export function DispatchLayer({
 function DispatchModal({
   draft,
   onDraftChange,
+  onAttachmentsChange,
   onClose,
   onSubmitted,
 }: {
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
+  onAttachmentsChange: (attachments: PendingAttachment[]) => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
 }): React.JSX.Element {
@@ -130,6 +167,7 @@ function DispatchModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
+  const drop = useImageDrop({ attachments: draft.attachments, onChange: onAttachmentsChange });
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -166,13 +204,17 @@ function DispatchModal({
   // Discard the draft without closing: every close path preserves it, so this is
   // the one way to start a fresh dispatch.
   function clearDraft(): void {
+    revokeAttachments(draft.attachments);
     onDraftChange(EMPTY_DISPATCH_DRAFT);
     setError(null);
     intentRef.current?.focus();
   }
 
   async function submit(backlog: boolean): Promise<void> {
-    if (!draft.repoRoot.trim() || !draft.intent.trim() || busy) return;
+    // An image still uploading has no path yet, so dispatching now would launch the
+    // agent on a task missing the screenshot it was written around. The buttons say
+    // so; this also guards ⌘Enter, which doesn't.
+    if (!draft.repoRoot.trim() || !draft.intent.trim() || busy || drop.uploading) return;
     setBusy(true);
     setError(null);
     // Dispatching is an async network POST, so this promise can resolve after the
@@ -183,7 +225,10 @@ function DispatchModal({
     const submitted = draft;
     const r = await api.dispatch({
       repoRoot: submitted.repoRoot.trim(),
-      intent: submitted.intent.trim(),
+      // Paths ride at the end of the intent, which the dispatcher already delivers
+      // as one bracketed paste - so the agent's first prompt cites the screenshot
+      // exactly as a terminal drag would have.
+      intent: withAttachments(submitted.intent.trim(), readyAttachments(submitted.attachments)),
       title: submitted.title.trim() || undefined,
       kind: submitted.kind,
       agent: submitted.agent,
@@ -268,25 +313,36 @@ function DispatchModal({
           </label>
 
           <label className="field">
-            <span className="field-label">Task</span>
-            <textarea
-              ref={intentRef}
-              className="field-input field-textarea"
-              placeholder="What should this agent do?"
-              rows={5}
-              value={draft.intent}
-              onChange={(e) => update({ intent: e.target.value })}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(false);
-              }}
-            />
+            <span className="field-label">
+              Task <span className="field-hint">drop or paste images to attach them</span>
+            </span>
+            <div className="drop-zone" {...drop.dropProps}>
+              <textarea
+                ref={intentRef}
+                className="field-input field-textarea"
+                placeholder="What should this agent do?"
+                rows={5}
+                value={draft.intent}
+                onChange={(e) => update({ intent: e.target.value })}
+                onPaste={drop.onPaste}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(false);
+                }}
+              />
+              <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
+              {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
+            </div>
           </label>
 
           {error && <p className="dispatch-error">{error}</p>}
         </div>
 
         <footer className="modal-foot">
-          <button className="btn btn-ghost" onClick={() => void submit(true)} disabled={busy}>
+          <button
+            className="btn btn-ghost"
+            onClick={() => void submit(true)}
+            disabled={busy || drop.uploading}
+          >
             Add to backlog
           </button>
           <button
@@ -304,10 +360,10 @@ function DispatchModal({
           <button
             className="btn btn-primary"
             onClick={() => void submit(false)}
-            disabled={busy || !draft.repoRoot.trim() || !draft.intent.trim()}
+            disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
             title="⌘/Ctrl+Enter"
           >
-            {busy ? "Dispatching…" : "Dispatch now"}
+            {busy ? "Dispatching…" : drop.uploading ? "Uploading…" : "Dispatch now"}
           </button>
         </footer>
       </div>

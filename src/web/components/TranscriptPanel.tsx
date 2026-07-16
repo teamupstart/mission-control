@@ -1,15 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentType, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
+import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
+import {
+  AttachmentStrip,
+  readyAttachments,
+  revokeAttachments,
+  useImageDrop,
+  type PendingAttachment,
+} from "./ImageDrop.tsx";
 
 const AGENT_LABEL: Record<AgentType, string> = { claude: "claude", codex: "codex" };
 
 /**
  * The expanded card's live conversation. Opens a dedicated SSE stream to the
  * session's transcript (the server tails the JSONL file), renders the turns, and
- * offers an inline reply that types straight into the agent's prompt via the
- * existing send action. Closing the panel closes the stream, so the server stops
- * tailing.
+ * offers an inline reply that types straight into the agent's prompt. Images can
+ * be dropped or pasted onto the reply box; they upload as they land and ride along
+ * as paths. Closing the panel closes the stream, so the server stops tailing.
  */
 export function TranscriptPanel({
   sessionId,
@@ -25,9 +33,19 @@ export function TranscriptPanel({
   const [note, setNote] = useState("");
   const [sending, setSending] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const atBottom = useRef(true);
+  const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
+
+  // The reply's attachments are the panel's own: nothing outlives a collapsed card,
+  // so their thumbnails are ours to release. Read through a ref because the cleanup
+  // runs once, at unmount, and must see the list as it ended - not as it was on the
+  // render that armed it.
+  const attachRef = useRef(attachments);
+  attachRef.current = attachments;
+  useEffect(() => () => revokeAttachments(attachRef.current), []);
 
   useEffect(() => {
     setMessages([]);
@@ -71,14 +89,29 @@ export function TranscriptPanel({
     if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   }
 
+  /**
+   * Deliver the reply as ONE submission via `/inject`'s bracketed paste, rather
+   * than `/send`'s literal send-keys.
+   *
+   * `/send` types the text character by character, so every newline in it lands as
+   * an Enter and submits - which makes the "Shift+Enter for newline" this box
+   * advertises a lie (a two-line reply arrives as two half-prompts), and makes
+   * attachment paths on their own lines impossible. One paste, one Enter, one turn.
+   */
   async function send(): Promise<void> {
-    const text = inputRef.current?.value.trim();
-    if (!text) return;
+    const text = inputRef.current?.value.trim() ?? "";
+    const ready = readyAttachments(attachments);
+    // An image mid-upload has no path yet, and sending now would quietly leave it
+    // out of the very prompt it was dropped on. The button says so; this guards the
+    // Enter key, which doesn't.
+    if (drop.uploading || sending || (!text && ready.length === 0)) return;
     setSending(true);
-    const r = await api.sendText(sessionId, text);
+    const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
     setSending(false);
     if (r.ok) {
       if (inputRef.current) inputRef.current.value = "";
+      revokeAttachments(attachments);
+      setAttachments([]);
     } else {
       setFlash(r.error ?? "send failed");
       setTimeout(() => setFlash(null), 3500);
@@ -99,35 +132,40 @@ export function TranscriptPanel({
       </div>
 
       {status !== "unavailable" && (
-        <div className="transcript-compose">
-          <textarea
-            ref={inputRef}
-            className="transcript-input"
-            placeholder={
-              canSend
-                ? "Reply to this session…  (Enter to send, Shift+Enter for newline)"
-                : "No pane to send to"
-            }
-            rows={2}
-            disabled={!canSend}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              } else if (e.key === "Escape") {
-                // Blur back to the grid so card keyboard nav (e to collapse) works.
-                e.currentTarget.blur();
+        <div className="transcript-compose" {...drop.dropProps}>
+          <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
+          <div className="compose-row">
+            <textarea
+              ref={inputRef}
+              className="transcript-input"
+              placeholder={
+                canSend
+                  ? "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
+                  : "No pane to send to"
               }
-            }}
-          />
-          <button
-            className="btn btn-send"
-            disabled={!canSend || sending}
-            onClick={() => void send()}
-          >
-            Send
-          </button>
+              rows={2}
+              disabled={!canSend}
+              onPaste={drop.onPaste}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                } else if (e.key === "Escape") {
+                  // Blur back to the grid so card keyboard nav (e to collapse) works.
+                  e.currentTarget.blur();
+                }
+              }}
+            />
+            <button
+              className="btn btn-send"
+              disabled={!canSend || sending || drop.uploading}
+              onClick={() => void send()}
+            >
+              {drop.uploading ? "Uploading…" : "Send"}
+            </button>
+          </div>
           {flash && <span className="action-flash">{flash}</span>}
+          {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
         </div>
       )}
     </div>

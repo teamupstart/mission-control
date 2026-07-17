@@ -10,7 +10,7 @@ import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
-import { SettingsModal } from "./components/SettingsModal.tsx";
+import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
@@ -46,6 +46,10 @@ export function App(): React.JSX.Element {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Which category Settings opens on. The gear and ⌘, land on Keyboard; the ForemanBar
+  // "manage in Settings" link deep-links Foreman. Applied via SettingsModal's
+  // initialCategory, which re-reads on each open because the modal remounts.
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>("keyboard");
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
@@ -57,7 +61,14 @@ export function App(): React.JSX.Element {
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
-  useEffect(() => window.missionDesktop?.onOpenSettings(() => setSettingsOpen(true)), []);
+  useEffect(
+    () =>
+      window.missionDesktop?.onOpenSettings(() => {
+        setSettingsCategory("keyboard");
+        setSettingsOpen(true);
+      }),
+    [],
+  );
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -417,7 +428,13 @@ export function App(): React.JSX.Element {
             from the filter/stats, so they read as one cluster and wrap as a
             unit. `live` stays outside it: that is status, not an action. */}
         <div className="topbar-actions">
-          <ForemanBar state={foreman} />
+          <ForemanBar
+            state={foreman}
+            onOpenSettings={() => {
+              setSettingsCategory("foreman");
+              setSettingsOpen(true);
+            }}
+          />
           <button
             className="dispatch-btn"
             onClick={() => setDispatchOpen(true)}
@@ -436,7 +453,10 @@ export function App(): React.JSX.Element {
           </button>
           <button
             className="ghost-btn glyph-btn gear-btn"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => {
+              setSettingsCategory("keyboard");
+              setSettingsOpen(true);
+            }}
             title="Settings (⌘,)"
             aria-label="Settings"
           >
@@ -513,7 +533,13 @@ export function App(): React.JSX.Element {
         />
       )}
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          foreman={foreman}
+          initialCategory={settingsCategory}
+        />
+      )}
 
       {resetSession && (
         <ResetModal session={resetSession} onClose={() => setResetSessionId(null)} />

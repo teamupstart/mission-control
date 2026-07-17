@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
+import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
+import type { ForemanState } from "../useForeman.ts";
 
 /**
  * The settings categories, in rail order. Each is a peer destination in the left nav,
@@ -12,6 +14,7 @@ import { useSkills } from "../useSkills.ts";
 export const SETTINGS_CATEGORIES = [
   { id: "keyboard", label: "Keyboard", icon: "⌨" },
   { id: "skills", label: "Skills", icon: "✦" },
+  { id: "foreman", label: "Foreman", icon: "●" },
 ] as const;
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
@@ -37,10 +40,18 @@ function tabDomId(id: SettingsCategoryId): string {
  */
 export function SettingsModal({
   onClose,
+  foreman,
   initialCategory = "keyboard",
 }: {
   onClose: () => void;
-  /** Which category to open on. Lets the ⌘, menu (or a test) deep-link a category. */
+  /**
+   * Foreman config/status, OWNED BY App - the topbar ForemanBar shares this exact state,
+   * so it is passed in rather than re-instantiated here, and an edit in the panel and an
+   * edit in the popover can never drift or double-poll. Skills is the opposite: App
+   * doesn't use it, so it stays a local `useSkills()` below.
+   */
+  foreman: ForemanState;
+  /** Which category to open on. Lets the ⌘, menu, the ForemanBar link, or a test deep-link one. */
   initialCategory?: SettingsCategoryId;
 }): React.JSX.Element {
   const [active, setActive] = useState<SettingsCategoryId>(initialCategory);
@@ -100,6 +111,8 @@ export function SettingsModal({
         return <KeyboardPanel />;
       case "skills":
         return <SkillsPanel state={skills} />;
+      case "foreman":
+        return <ForemanSettingsPanel state={foreman} />;
     }
   }
 

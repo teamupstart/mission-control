@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsModal, SETTINGS_CATEGORIES } from "../src/web/components/SettingsModal.tsx";
 import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx";
+import type { ForemanState } from "../src/web/useForeman.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
 // connection open, which hangs headless automation (same reason as plan-decisions-render).
@@ -11,9 +12,13 @@ import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx
 // and the active category selects which panel renders - since the only thing a click does
 // is set `active`, which we exercise here through the initialCategory prop.
 
+// Foreman config is owned by App and passed in; null config is the pre-poll state, which
+// renders the panel's defaults. Static render never runs effects, so nothing fetches.
+const FOREMAN: ForemanState = { config: null, status: null, update: async () => {}, error: null };
+
 function render(initialCategory?: SettingsCategoryId): string {
   return renderToStaticMarkup(
-    createElement(SettingsModal, { onClose: () => {}, initialCategory }),
+    createElement(SettingsModal, { onClose: () => {}, foreman: FOREMAN, initialCategory }),
   );
 }
 

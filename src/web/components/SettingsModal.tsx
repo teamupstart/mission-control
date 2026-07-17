@@ -1,85 +1,65 @@
 import { useEffect, useState } from "react";
-import {
-  ACTIONS,
-  type ActionId,
-  chordFromEvent,
-  findConflicts,
-  formatChord,
-  isReservedChord,
-  resetAll,
-  resetBinding,
-  setBinding,
-  useKeybindings,
-} from "../lib/keybindings.ts";
+import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 
-const GROUPS = [
-  { key: "global", label: "Anywhere" },
-  { key: "selection", label: "Selected session" },
+/**
+ * The settings categories, in rail order. Each is a peer destination in the left nav,
+ * so adding one - Notifications, Foreman, Appearance - is appending an entry here plus a
+ * `case` in `renderCategory`, never lengthening a scroll. Keeping the list as data (not
+ * inlined JSX) is also what the render test walks to prove every category is reachable.
+ */
+export const SETTINGS_CATEGORIES = [
+  { id: "keyboard", label: "Keyboard", icon: "⌨" },
+  { id: "skills", label: "Skills", icon: "✦" },
 ] as const;
 
-function labelOf(id: ActionId): string {
-  return ACTIONS.find((a) => a.id === id)?.label ?? id;
-}
+export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
 
 /**
  * App settings, reached from the topbar gear or the native Settings… menu (⌘,).
  *
- * Two sections. The keyboard-shortcut editor: click an action's key, press the new
- * one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved navigation keys
- * are refused and duplicate bindings are flagged inline. And the skills catalog,
- * which is the modal's first setting that leaves this machine's localStorage - it
- * writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
- * thing here that can fail asynchronously. `SkillsPanel` owns that error path.
+ * A two-pane surface: a category rail on the left, the selected category's panel on the
+ * right. Only the active category renders, so no setting is ever buried below another -
+ * Skills is one click from open, not the tail of a scroll. The panels themselves are
+ * unchanged; this component only arranges them and owns which one is showing.
+ *
+ * `KeyboardPanel` is the modal's local-only, synchronous setting (localStorage). Skills
+ * is the one that leaves this machine: it writes to the daemon, and through it to
+ * `~/.claude/skills`, so it is also the first that can fail asynchronously. `SkillsPanel`
+ * owns that error path. `useSkills` lives here rather than inside the Skills panel so the
+ * catalog keeps polling (and `pending` keeps moving) while you're on another category.
  */
-export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.Element {
-  const { bindings, hasCustom } = useKeybindings();
+export function SettingsModal({
+  onClose,
+  initialCategory = "keyboard",
+}: {
+  onClose: () => void;
+  /** Which category to open on. Lets the ⌘, menu (or a test) deep-link a category. */
+  initialCategory?: SettingsCategoryId;
+}): React.JSX.Element {
+  const [active, setActive] = useState<SettingsCategoryId>(initialCategory);
   const skills = useSkills();
-  const [recording, setRecording] = useState<ActionId | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const conflicts = findConflicts(bindings);
 
-  // While *not* recording, Escape closes the modal. (During recording the capture
-  // listener below owns Escape, using it to cancel the capture instead.)
+  // Escape closes the modal. This is a plain bubble-phase handler with no "is a shortcut
+  // recording?" guard: while KeyboardPanel records, its capture-phase listener swallows
+  // the keystroke (stopPropagation) before this ever runs, so Escape cancels the capture
+  // instead of closing - the modal never has to know recording is happening.
   useEffect(() => {
-    if (recording) return;
     function onKey(e: KeyboardEvent): void {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [recording, onClose]);
+  }, [onClose]);
 
-  // Capture the next keystroke for the action being recorded. Capture phase +
-  // stopPropagation so we intercept before the grid's global handler ever sees it.
-  useEffect(() => {
-    if (!recording) return;
-    const id = recording;
-    function onKey(e: KeyboardEvent): void {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        setRecording(null);
-        return;
-      }
-      const chord = chordFromEvent(e);
-      if (!chord) return; // a lone modifier - keep waiting
-      if (isReservedChord(chord)) {
-        setError(`${formatChord(chord)} is reserved for grid navigation.`);
-        return;
-      }
-      setBinding(id, chord);
-      setRecording(null);
-      setError(null);
+  function renderCategory(id: SettingsCategoryId): React.JSX.Element {
+    switch (id) {
+      case "keyboard":
+        return <KeyboardPanel />;
+      case "skills":
+        return <SkillsPanel state={skills} />;
     }
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording]);
-
-  function startRecording(id: ActionId): void {
-    setError(null);
-    setRecording((cur) => (cur === id ? null : id));
   }
 
   return (
@@ -97,73 +77,25 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
           </button>
         </header>
 
-        <div className="settings-body">
-          <section className="settings-section">
-            <div className="settings-section-head">
-              <h3>Keyboard shortcuts</h3>
-              {hasCustom && (
-                <button className="btn btn-ghost" onClick={() => resetAll()}>
-                  Reset all
-                </button>
-              )}
-            </div>
-
-            {error && <p className="settings-error">{error}</p>}
-
-            {GROUPS.map((group) => (
-              <div className="settings-group" key={group.key}>
-                <p className="settings-group-label">{group.label}</p>
-                {ACTIONS.filter((a) => a.group === group.key).map((a) => {
-                  const chord = bindings[a.id];
-                  const custom = chord !== a.defaultBinding;
-                  const conflict = conflicts.get(a.id);
-                  const isRec = recording === a.id;
-                  return (
-                    <div className={`kb-row${conflict ? " has-conflict" : ""}`} key={a.id}>
-                      <div className="kb-row-text">
-                        <span className="kb-row-label">{a.label}</span>
-                        <span className="kb-row-desc">{a.description}</span>
-                        {conflict && (
-                          <span className="kb-row-conflict">
-                            Same key as {conflict.map(labelOf).join(", ")}
-                          </span>
-                        )}
-                      </div>
-                      <div className="kb-row-controls">
-                        <button
-                          className={`kb-capture${isRec ? " is-recording" : ""}`}
-                          onClick={() => startRecording(a.id)}
-                          aria-label={
-                            isRec
-                              ? `Recording new shortcut for ${a.label}`
-                              : `Change shortcut for ${a.label} (currently ${formatChord(chord)})`
-                          }
-                        >
-                          {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formatChord(chord)}</kbd>}
-                        </button>
-                        <button
-                          className="kb-reset"
-                          disabled={!custom}
-                          onClick={() => resetBinding(a.id)}
-                          title="Reset to default"
-                          aria-label={`Reset ${a.label} to default`}
-                        >
-                          ↺
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Settings categories">
+            {SETTINGS_CATEGORIES.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
+                aria-current={active === c.id ? "page" : undefined}
+                onClick={() => setActive(c.id)}
+              >
+                <span className="settings-nav-icon" aria-hidden>
+                  {c.icon}
+                </span>
+                {c.label}
+              </button>
             ))}
+          </nav>
 
-            <p className="settings-hint">
-              Click a shortcut, then press the new key. Esc and the arrow keys drive grid
-              navigation and can't be reassigned.
-            </p>
-          </section>
-
-          <SkillsPanel state={skills} />
+          <div className="settings-pane">{renderCategory(active)}</div>
         </div>
       </div>
     </div>

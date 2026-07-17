@@ -3440,12 +3440,92 @@ kbd {
   line-height: 1;
 }
 .settings-modal {
-  width: min(560px, 100%);
+  width: min(820px, 100%);
 }
-.settings-body {
-  padding: 18px;
+/* Two panes side by side, each capped and scrolling on its own so no category is ever
+   "below" another - the whole point of moving off the single scroll. */
+.settings-layout {
+  display: flex;
+  align-items: stretch;
   max-height: 74vh;
-  overflow: auto;
+}
+.settings-nav {
+  flex: 0 0 178px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 10px;
+  border-right: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 540;
+  color: var(--muted);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+.settings-nav-item:hover {
+  background: var(--panel);
+  color: var(--fg);
+}
+.settings-nav-item.is-active {
+  background: color-mix(in oklab, var(--working) 14%, transparent);
+  border-color: color-mix(in oklab, var(--working) 30%, var(--border));
+  color: var(--fg);
+  font-weight: 600;
+}
+.settings-nav-icon {
+  flex: none;
+  width: 18px;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+  color: var(--dim);
+}
+.settings-nav-item:hover .settings-nav-icon,
+.settings-nav-item.is-active .settings-nav-icon {
+  color: var(--fg);
+}
+.settings-pane {
+  flex: 1;
+  min-width: 0;
+  padding: 18px;
+  overflow-y: auto;
+}
+/* Narrow windows can't spare room for a side rail; fold it into a horizontal strip
+   above the pane so both stay usable. */
+@media (max-width: 620px) {
+  .settings-layout {
+    flex-direction: column;
+    max-height: 78vh;
+  }
+  .settings-nav {
+    flex: none;
+    flex-direction: row;
+    gap: 6px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    overflow-x: auto;
+  }
+  .settings-nav-item {
+    width: auto;
+    white-space: nowrap;
+  }
 }
 .settings-section-head {
   display: flex;

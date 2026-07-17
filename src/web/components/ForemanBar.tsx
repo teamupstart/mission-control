@@ -115,7 +115,15 @@ export function ForemanBar({
         {enabled && queue > 0 && <span className="ghost-badge">{queue}</span>}
       </button>
 
-      {open && <ForemanPopover state={state} onOpenSettings={onOpenSettings} />}
+      {open && (
+        <ForemanPopover
+          state={state}
+          onOpenSettings={() => {
+            setOpen(false);
+            onOpenSettings();
+          }}
+        />
+      )}
     </div>
   );
 }

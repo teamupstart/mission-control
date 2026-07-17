@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
@@ -34,6 +34,12 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
 
   const allowlist = config?.repoAllowlist ?? [];
   const triage = config?.triage ?? "shadow";
+  // `add` resolves the path server-side before it writes, and the config polls every 4s
+  // underneath that round-trip. Reading the list from a ref rather than the render closure
+  // means the write extends whatever is in force when it lands, not what was on screen
+  // when the button was clicked.
+  const allowlistRef = useRef(allowlist);
+  allowlistRef.current = allowlist;
   // Don't offer a repo that's already trusted.
   const candidates = candidateRepos(repos, allowlist);
 
@@ -50,9 +56,16 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
       setAddError(res.error);
       return;
     }
+    const current = allowlistRef.current;
+    // A subdirectory of a trusted repo resolves back to that repo's root, so this is
+    // reachable from a typed path even though the picker hides trusted repos. Say so
+    // against the input the human typed, rather than clearing it like a success.
+    if (current.includes(res.repoRoot)) {
+      setAddError(`${res.repoRoot} is already trusted`);
+      return;
+    }
     setDraft("");
-    if (allowlist.includes(res.repoRoot)) return; // already trusted - nothing to add
-    await update({ repoAllowlist: [...allowlist, res.repoRoot] });
+    await update({ repoAllowlist: [...current, res.repoRoot] });
   }
 
   function remove(path: string): void {

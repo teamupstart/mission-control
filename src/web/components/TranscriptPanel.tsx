@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { AgentType, ToolCall, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
@@ -15,6 +15,16 @@ import {
 const AGENT_LABEL: Record<AgentType, string> = { claude: "claude", codex: "codex" };
 
 /**
+ * Imperative surface the card holds onto so the send shortcut can reach this panel's
+ * reply box - the card's single compose box while it's expanded.
+ */
+export interface TranscriptHandle {
+  /** Focus the reply box, reporting whether there was one (an unavailable transcript
+   *  renders no compose row, and the caller then owns the send flow itself). */
+  focusReply: () => boolean;
+}
+
+/**
  * The expanded card's live conversation. Opens a dedicated SSE stream to the
  * session's transcript (the server tails the JSONL file), renders the turns, and
  * offers an inline reply that types straight into the agent's prompt. Images can
@@ -25,10 +35,20 @@ export function TranscriptPanel({
   sessionId,
   agent,
   canSend,
+  onReplyBox,
+  ref,
 }: {
   sessionId: string;
   agent: AgentType;
   canSend: boolean;
+  /**
+   * Whether this panel is currently rendering a reply box, reported as it changes.
+   * The card's send box may only be open when there is none, and whether there is one
+   * is this panel's fact alone - an unavailable transcript has no reply row, and the
+   * stream can hand one back at any time (see the compose gate below).
+   */
+  onReplyBox?: (present: boolean) => void;
+  ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [status, setStatus] = useState<"connecting" | "live" | "unavailable">("connecting");
@@ -40,6 +60,38 @@ export function TranscriptPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const atBottom = useRef(true);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
+
+  // The single source of truth for "is there a reply box here?" - read by the render
+  // below AND reported to the card, so the two can't disagree about a box the card is
+  // deciding against.
+  const replyBox = status !== "unavailable";
+
+  // Report through a ref so a caller passing a fresh closure each render doesn't
+  // re-fire this, and so the unmount cleanup can retract the box without depending on
+  // the callback identity - a card whose transcript has gone owns its send box again.
+  const notifyRef = useRef(onReplyBox);
+  notifyRef.current = onReplyBox;
+  useEffect(() => {
+    notifyRef.current?.(replyBox);
+  }, [replyBox]);
+  useEffect(() => () => notifyRef.current?.(false), []);
+
+  // The panel deliberately never takes focus on its own (see below), but the send
+  // shortcut is an explicit "I want to type now" - so it gets a way in. Reported as a
+  // boolean rather than assumed: an unavailable transcript renders no reply box at
+  // all, and the card must know that to fall back to its own send box.
+  useImperativeHandle(ref, () => ({
+    focusReply: () => {
+      const el = inputRef.current;
+      if (!el) return false;
+      el.focus();
+      // Land at the end of a re-hydrated draft, where you'd resume typing - not at
+      // whatever offset the last mount happened to leave behind.
+      const end = el.value.length;
+      el.setSelectionRange(end, end);
+      return true;
+    },
+  }), []);
 
   // The reply's attachments are the panel's own, and unlike the TEXT beside them they
   // do not survive a collapse - so their thumbnails are ours to release. Read through
@@ -151,7 +203,7 @@ export function TranscriptPanel({
         )}
       </div>
 
-      {status !== "unavailable" && (
+      {replyBox && (
         <div className="transcript-compose" {...drop.dropProps}>
           <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
           <div className="compose-row">
@@ -174,7 +226,11 @@ export function TranscriptPanel({
               onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
               onPaste={drop.onPaste}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                // The Enter that commits an IME candidate (Japanese/Chinese/Korean) is
+                // the same keystroke as the one that sends, and the browser tells them
+                // apart only by `isComposing`. Without this, picking a candidate fires
+                // off the half-composed reply.
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   void send();
                 } else if (e.key === "Escape") {

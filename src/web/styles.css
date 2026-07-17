@@ -652,6 +652,20 @@ body {
   /* Wrap anywhere as a last resort: a Tier 1 goal can be a pasted path or URL with no
      spaces in it, which would otherwise widen the card and scroll the whole grid. */
   overflow-wrap: anywhere;
+  /* Never give ground to a squeeze - the clamp above decides this line's height, and
+     nothing else may.
+
+     Not belt-and-braces: the card is a flex column and an EXPANDED one is a fixed-height
+     box, so its children are asked to shrink whenever the content wants more room than
+     the window allows. A flex item normally refuses, because its automatic minimum size
+     is its own content - but that floor only holds while `overflow` is visible, and the
+     line-clamp above needs `overflow: hidden`. Clamping is therefore what dropped this
+     one item's floor to zero, and a zero floor doesn't take a share of the deficit, it
+     takes ALL of it: on a short window the goal alone collapsed (measured: 0px tall for
+     19px of text), sliced through the middle of its own glyphs, while every sibling on
+     the card kept its full height. The card scrolls instead now - which is what the
+     `overflow-y: auto` on `.card.expanded` is there for. */
+  flex: none;
 }
 
 /* A goal still awaiting its model pass: the human's prompt verbatim. Dimmed a touch so a
@@ -1660,6 +1674,32 @@ body {
 .btn-danger:hover {
   background: #d94840 !important;
 }
+/* Queue is a disclosure, not a command: it stays a plain button until the drawer is
+   open, then holds the pressed tint for as long as the panel below it is showing -
+   so the one control and the thing it opened read as the same object. */
+.btn-queue {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-queue.on {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  background: color-mix(in oklab, var(--working) 14%, var(--panel-2));
+}
+/* The count rides inside the button, so it sizes off the label rather than the card. */
+.btn-count {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 26%, var(--panel));
+  color: var(--fg);
+  font-size: 10.5px;
+  font-weight: 640;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 /* Reset is destructive-but-recoverable-adjacent: a cautionary amber ghost that
    reads as "careful" without competing with the red Kill next to it. */
 .btn-reset {
@@ -2210,6 +2250,12 @@ kbd {
 .card.expanded {
   grid-column: 1 / -1;
   order: -1;
+  /* Tighter than a tile's 13px, because on an expanded card this is not decoration - it
+     is the single largest line item on the card. Eleven gaps between twelve sections
+     came to 143px of the ~636px available, more than the conversation itself was left
+     with once Foreman's note was open. 9px buys the log back ~55px and reads as denser
+     on purpose: focus mode is the one place carrying every section at once. */
+  gap: 9px;
   height: calc(100dvh - var(--topbar-h, 88px) - var(--cmdbar-clearance, 64px) - 28px);
   min-height: 440px;
   scroll-margin-top: calc(var(--topbar-h, 88px) + 16px);
@@ -2226,18 +2272,18 @@ kbd {
    the reply box stays pinned at the bottom and tail-follow keeps working.
 
    The min-height is what keeps the reply box ON the card. A focus-mode card is a
-   fixed-height box with `overflow: hidden`, so every section competes for the same
-   pixels - and the work queue grows without limit as items are added. At 12 items it
-   took 695 of the card's 901px, squeezing this to 11px: the log collapsed to zero and
-   the reply box, overflowing a parent shorter than itself, fell outside the card's
-   clip and off screen. A session with a full queue was the one you couldn't read or
-   reply to.
+   fixed-height box, so every section competes for the same pixels - and the work queue
+   grows without limit as items are added. At 12 items it took 695 of the card's 901px,
+   squeezing this to 11px: the log collapsed to zero and the reply box, overflowing a
+   parent shorter than itself, fell outside the card's clip and off screen. A session
+   with a full queue was the one you couldn't read or reply to.
 
    Sized to the compose box plus a sliver of log, NOT to a comfortable conversation.
    It's a last line of defence, and a floor big enough to be comfortable would be big
    enough to overflow a SHORT card (min-height: 440px) that renders fine today - which
-   would cause this very bug on a window that doesn't have it. Room to read comes from
-   capping the queue below; this only guarantees you can always reply. */
+   would cause this very bug on a window that doesn't have it. Room to read no longer
+   comes from rationing the queue's share (`.card-panels` below moved the queue out of
+   this column entirely); this only guarantees you can always reply. */
 .card.expanded .transcript {
   flex: 1 1 auto;
   min-height: 96px;
@@ -2247,13 +2293,84 @@ kbd {
   min-height: 0;
   max-height: none;
 }
-/* A share of the card, not a pixel count: the queue is a list, and a list gets a
-   bounded window and scrolls. A third leaves the conversation the larger half, which
-   is the right split for a surface you expanded in order to read. Under the cap a
-   short queue keeps its natural height, so nothing pads out to meet this. */
-.card.expanded .work-queue {
-  flex: 0 1 auto;
-  max-height: 33%;
+/* The queue + conversation region. On a card in the grid it's a plain column - the
+   drawer opens above the (absent) transcript, full width, exactly as it always did, and
+   the children's own `margin-top` still does the spacing, so there is no `gap` here to
+   double it up. The interesting case is the expanded card, below. */
+.card-panels {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* The queue and the conversation, side by side.
+ *
+ * Stacking them was the bug. An expanded card is a FIXED-height box whose chrome alone
+ * takes ~375 of its ~636px, so the queue, Foreman's note and the log were left fighting
+ * over ~260px - and vertical space is the only thing they were fighting over. Whoever
+ * lost, lost badly: uncapped, the queue pushed the log clean off the bottom (measured at
+ * y=1145 in a 636px card - zero pixels visible); capped, the panels crushed to 29px
+ * slivers instead. There is no split of 260px that makes three panels comfortable.
+ *
+ * So stop splitting it. The expanded card is full-width by definition (`grid-column:
+ * 1 / -1`) and was carrying ~700px of dead space to the right of a 108px log. Turned on
+ * its side, the two panels each get the card's FULL height and the fight is over - the
+ * queue can never push the log anywhere, because it isn't above it. */
+.card.expanded .card-panels {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 14px;
+  /* Same bargain as always: yield to the card's height and let the panels scroll
+     internally, rather than growing the card and pushing the reply box out of reach. */
+  min-height: 0;
+}
+/* Wide enough to read an intent without wrapping every other word, narrow enough to
+   leave the conversation the larger share - it is still the reason the card is open.
+   `0 0 <basis>` rather than a percentage so the column is stable as the log's content
+   changes: a queue that resized itself whenever a tool chip landed would be its own
+   kind of broken. */
+.card.expanded .card-panels > .work-queue {
+  flex: 0 0 clamp(300px, 30%, 460px);
+  min-height: 0;
+  margin-top: 0;
+}
+/* Folded, the column is just a title bar - so it stops reserving a 300px column and
+   sits as a slim rail, handing the whole width back to the conversation. `align-self`
+   drops the row's `stretch` too, or the rail would be a full-height empty box with a
+   16px header adrift at the top of it. */
+.card.expanded .card-panels > .work-queue.wq-collapsed {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+.card.expanded .card-panels > .transcript {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+/* Two columns need the width for two columns. Below this the queue's 300px would leave
+   the conversation under ~360px - a reply box you can't write in and turns that wrap
+   every third word - so the row gives up honestly and stacks again.
+ *
+ * Stacked here is not the bug it was, because the cap now resolves against `.card-panels`
+ * rather than the whole card: it is a share of the space the queue and the log actually
+ * share, so the log is guaranteed the other 60% no matter how long the batch gets. That
+ * was impossible when the pair's only container was the card - a third of the CARD meant
+ * nothing about what was left after the chrome and Foreman's note had taken theirs. */
+@media (max-width: 820px) {
+  .card.expanded .card-panels {
+    flex-direction: column;
+    gap: 12px;
+  }
+  .card.expanded .card-panels > .work-queue {
+    flex: 0 1 auto;
+    max-height: 40%;
+  }
+  /* Folded, it's a full-width title bar again - `flex-start` is a row idea and would
+     shrink-wrap it to its text here. */
+  .card.expanded .card-panels > .work-queue.wq-collapsed {
+    flex: 0 0 auto;
+    align-self: stretch;
+  }
 }
 /* Only `.wq-items` gives ground. Everything else here (the add box, the hints, the
    wrap-up) is a control or a sentence, and a flex child shrinks by default - without
@@ -2266,6 +2383,58 @@ kbd {
    through the panel's border and onto the transcript - the panel doesn't clip. Zeroed,
    the list takes the squeeze and scrolls, which is what a bounded list should do. */
 .card.expanded .wq-items {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* The same bounded-list argument, for the queue opened on a card still in the grid.
+   There's no card height to take a share of here, so the cap is a pixel count - enough
+   for a glance at the batch, short of a tile that stretches its whole grid row (every
+   card in a row matches the tallest) to push the rest of the fleet off screen. */
+.card:not(.expanded) .wq-items {
+  max-height: 232px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Foreman's note is the third panel competing for the same pixels, and it was the only
+   one never bounded - measured at 535px (a 322px brief) on a 636px card, which on its
+   own is more than the card has to give. Uncapped and unshrinkable, it evicted the
+   transcript exactly as an over-long queue did; capping the queue alone would just have
+   handed the same eviction to the next panel that grew. So it gets the treatment the
+   queue already had: a share of the card, and the prose inside it scrolls.
+
+   A smaller share than the queue's third because this is a *message*: the rule below
+   pins its heading, purpose and recommendation, so what the cap squeezes is the brief's
+   middle paragraphs and the Approve button stays where you left it.
+
+   The two heights are doing opposite jobs and both are load-bearing:
+
+   `overflow-y: auto` is the one that can't be dropped. The pinned children come to
+   ~212px all told, so on any card whose 30% is less than that the cap is asking for
+   something the content cannot give - and a panel with visible overflow answers that by
+   painting its text straight over its neighbours (measured: 216px of note in a 52px box,
+   bleeding across both the queue and the transcript). Scrolling is how a bounded box
+   says no.
+
+   `min-height` then has to be spelled out, precisely BECAUSE of that: overflow that
+   isn't `visible` zeroes a flex item's automatic minimum size (the same clause that let
+   `.goal` collapse to nothing), so without a floor this panel would answer a squeeze by
+   vanishing to a scrollbar instead. */
+.card.expanded .foreman-note {
+  flex: 0 1 auto;
+  min-height: 120px;
+  max-height: 30%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Only the brief gives ground; the heading, the purpose line and the recommendation
+   (which carries Approve) stay whole - a note you have to scroll to find the button in
+   is a note that reads as broken. */
+.card.expanded .foreman-note > :not(.fn-brief) {
+  flex: none;
+}
+.card.expanded .fn-brief {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -3973,6 +4142,45 @@ kbd {
   flex-direction: column;
   gap: 10px;
 }
+/* Folded: the header is all that's left. One rule for every branch the panel renders
+   (loaded, empty, blocked, unreadable) - each builds the same shell, so none of them can
+   forget to fold, and the count in the header keeps reporting the batch that's still
+   there. `gap` goes too, or the flex gap would hold a 10px ghost of the hidden body. */
+.work-queue.wq-collapsed {
+  gap: 0;
+}
+.work-queue.wq-collapsed > :not(.wq-head) {
+  display: none;
+}
+/* The whole title strip is the fold target - it's the only row a folded panel has, so
+   it's also the only way back. Unstyled as a button; it reads as the header it replaced. */
+.wq-head-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+/* Big enough to read as an arrow. At 10px these glyphs both collapse into the same
+   indeterminate speck, which on the one control that says "there is more here" is worse
+   than no marker at all. */
+.wq-fold {
+  width: 9px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  transition: color 0.14s ease;
+}
+.wq-head-btn:hover .wq-fold {
+  color: var(--fg);
+}
 .wq-head {
   display: flex;
   align-items: center;
@@ -4293,6 +4501,14 @@ kbd {
 }
 .queue-chip.qc-proposed {
   border-left-color: var(--attention);
+}
+/* Last, so an escalation outranks whatever the in-flight item happens to be doing:
+   work Foreman gave up on is the thing on this card that wants a human. */
+.queue-chip.qc-escalated {
+  border-left-color: var(--attention);
+}
+.queue-chip.qc-escalated .qc-count {
+  color: var(--attention);
 }
 .qc-count {
   flex: none;

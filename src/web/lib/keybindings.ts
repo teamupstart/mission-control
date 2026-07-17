@@ -18,6 +18,7 @@ export type ActionId =
   | "diff"
   | "send"
   | "focus"
+  | "queue"
   | "mode"
   | "rename"
   | "kill"
@@ -82,6 +83,13 @@ export const ACTIONS: readonly ActionDef[] = [
     label: "Focus pane",
     description: "Bring the selected session's terminal pane to the front.",
     defaultBinding: "f",
+    group: "selection",
+  },
+  {
+    id: "queue",
+    label: "Toggle work queue",
+    description: "Show or hide the selected session's work queue.",
+    defaultBinding: "q",
     group: "selection",
   },
   {

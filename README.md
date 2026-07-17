@@ -477,13 +477,55 @@ is the proactive half: queue a batch of work for one specific session, and Forem
 in one item at a time, in the order you authored, checking each one before releasing the
 next.
 
-Open a card and use the **Work queue** panel: type an intent, **Add**, repeat. The box also
+The **Work queue** panel is a drawer, kept out of the way until you ask for it: press
+**Queue** on the card (next to **Send** / **Focus** / **Reset**) or <kbd>q</kbd> on the
+selected session, and it opens under the controls. The button carries the open-item count,
+so you can see there's a batch waiting without opening anything. It's independent of
+expanding a card - a queue is worth a glance without handing the whole grid to one session
+- and stays open until you close it.
+
+The **chip** above the controls opens the same drawer, and it's there for as long as the
+session has queued anything at all - not just while work is still waiting. It reports what
+the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they've all
+landed, and **"1 done · 2 escalated · 1 stopped"** in the attention tone when some of them
+didn't - *escalated* being work Foreman gave up on and handed back, *stopped* being work
+that ended without landing at all.
+
+Only work that actually **verified** is ever counted as done, and that's the point of the
+wording rather than a detail of it. Every ending is *finished* in the sense that nothing
+will advance it again - landed, escalated and cancelled alike - so a chip that counted
+"finished" work would report a clean-looking total over a batch that quietly stalled. An
+**exited** session has no controls at all - no **Queue** button - so the chip is the only
+thing left saying what its batch did, which is why it outlives the work and why it doesn't
+flatter it.
+
+Two ways to get the room back, for two different intents. **Queue** (or <kbd>q</kbd>) puts
+the drawer away entirely. Clicking the panel's **Work queue** header *folds* it instead -
+down to a title bar that still reports the count, so a long batch stops taking up the card
+without you losing sight of it. Fold state is per card and survives closing and reopening
+the drawer.
+
+On an **expanded** card the queue doesn't sit above the conversation at all - it moves into
+a column beside it. An expanded card is full-width and the scarce thing is height, so
+stacking them meant the queue and the log competed for the same pixels and a long enough
+queue pushed the conversation off the bottom of the card. Side by side, neither can take
+anything from the other: the log keeps its full height however much work is queued. Below
+about 820px wide there isn't room for two readable columns, so it stacks again - and there
+the queue is capped at 40% of the space it shares with the log, which always keeps the
+larger half.
+
+Inside it: type an intent, press <kbd>Enter</kbd> (or **Add**), repeat - the same contract
+as the reply box on the same card, with <kbd>Shift</kbd><kbd>Enter</kbd> for a newline when
+an intent needs more than one line. The box also
 takes **dropped or pasted images**: the upload starts on drop, and what's queued is the
 uploaded file's *path*, so the agent reads it with its own file tools whenever the item is
 finally delivered. **Add** stays disabled while an upload is in flight, and an image with no
 words is a valid item. The same gesture works on the card's transcript reply box and the
-dispatch form. Items are drag-reorderable, editable, and removable while they wait. Then
-walk away. For each item Foreman:
+dispatch form. Items are drag-reorderable, editable, and removable while they wait -
+and **editing** one obeys the same <kbd>Enter</kbd> saves / <kbd>Shift</kbd><kbd>Enter</kbd>
+newline contract, because the edit box and the add box are the same textarea to look at and
+sit inches apart: the panel has one Enter rule, not two. Then walk away. For each item
+Foreman:
 
 1. waits for the session to actually go **idle and settle** (not just look idle);
 2. **delivers** the intent as a single bracketed paste (so a multi-line prompt doesn't
@@ -520,7 +562,16 @@ boxes hold a draft:
 - the **Work queue** panel's add box,
 - the **reply** box under the transcript on an expanded card, and
 - the **send** box - opened by <kbd>s</kbd> on the selected session, or by **Send** on the
-  card (the button shows while the card is collapsed; the shortcut works either way).
+  card.
+
+A card only ever has **one** box to send from - at any moment, in every state. The rule
+keys off whether a reply box actually *exists*, not off whether the card is expanded:
+whenever the transcript is carrying one, <kbd>s</kbd> and **Send** put the cursor *there*
+rather than opening a second, and a send box already open closes itself the moment a reply
+box appears. When there's genuinely no reply box - an expanded card whose transcript can't
+be read renders no reply row - **Send** opens the card's own box, which is exactly right:
+one box either way. Nothing is lost when one closes, because the text is in the draft map;
+press **Send** again and it's waiting in it.
 
 Each survives everything that isn't you deleting text: **collapsing the card** (opening any
 other card collapses this one - only one is expanded at a time), a **filter** that hides the
@@ -537,9 +588,9 @@ Two things worth knowing:
 
 - The scope is this **browser tab**. A reload starts over; drafts aren't stored anywhere.
 - **Images are the exception - only the text comes back.** A screenshot dropped on the queue
-  add box or the reply box is gone once the card collapses, so attach yours when you're
-  ready to send. (The [dispatch form](#dispatch-an-agent) is the one that keeps its
-  attachments across a close.)
+  add box is gone once you close the drawer, and one on the reply box once the card
+  collapses, so attach yours when you're ready to send. (The
+  [dispatch form](#dispatch-an-agent) is the one that keeps its attachments across a close.)
 
 ## Skills (every session, no restarts)
 
@@ -616,8 +667,9 @@ without reaching for the mouse:
 | <kbd>/</kbd> | Focus the filter box | Anywhere |
 | <kbd>e</kbd> | Expand / collapse the selected card | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
-| <kbd>s</kbd> | Send a message to the selected session | Selected session |
+| <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
+| <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |

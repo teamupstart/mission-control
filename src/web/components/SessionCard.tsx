@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import type { PrState, Session, SessionMeta, SessionQueueSummary } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import {
@@ -12,12 +12,13 @@ import {
   uptime,
 } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
+import { queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
-import { TranscriptPanel } from "./TranscriptPanel.tsx";
+import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
 
@@ -76,6 +77,43 @@ function GoalLine({ session }: { session: Session }): React.JSX.Element | null {
     >
       {session.goal.text}
     </p>
+  );
+}
+
+/**
+ * The teaser for a queue you can't see, and the way back into it.
+ *
+ * Hidden while the drawer is open: it would be the same count, verbatim, one row above
+ * the panel that states it - and on an expanded card that row is a section's worth of
+ * the height the panel needs. So it stands down and lets the real thing speak.
+ *
+ * Gated on the queue having a HISTORY rather than on work still waiting in it, because
+ * an exited session has no ActionBar and therefore no Queue button: this chip is the
+ * only way back to what its batch did, and a batch that has stopped is exactly the one
+ * worth reading. What it SAYS about that batch is `queueChipView`'s call - it's a rule
+ * about honesty, and rules are tested without a DOM; this renders the answer.
+ */
+function QueueChip({
+  queue,
+  onOpen,
+}: {
+  queue: SessionQueueSummary;
+  onOpen: () => void;
+}): React.JSX.Element {
+  const chip = queueChipView(queue);
+  return (
+    <button
+      className={`queue-chip qc-${queue.inFlightState ?? "waiting"}${chip.attention ? " qc-escalated" : ""}`}
+      title={chip.title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+    >
+      <span className="qc-count">{chip.label}</span>
+      {queue.inFlightIntent && <span className="qc-intent">{queue.inFlightIntent}</span>}
+      {queue.round > 0 && <span className="qc-round">fix {queue.round}</span>}
+    </button>
   );
 }
 
@@ -145,6 +183,25 @@ export function SessionCard({
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
   const canRename = canRenameSession(session);
+  // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut
+  // / the queued chip and stays open until you close it. Deliberately independent of
+  // `expanded` - a queue is worth a glance without surrendering the grid to one card,
+  // and expanding to read a conversation shouldn't dump a batch of work on top of it.
+  const [queueOpen, setQueueOpen] = useState(false);
+  // Folded down to its header, without closing the drawer. Distinct from `queueOpen` on
+  // purpose: "put it away" and "keep it, but give the conversation the room back" are
+  // different intents, and on a collapsed card folding is what stops a long batch from
+  // stretching the whole grid row.
+  const [queueCollapsed, setQueueCollapsed] = useState(false);
+  // The expanded transcript's reply box, so the send shortcut can put a cursor in the
+  // box that's already there instead of opening a second one (null while collapsed,
+  // which is exactly when this card's own send box is the right answer).
+  const transcriptRef = useRef<TranscriptHandle>(null);
+  // Whether that reply box is actually on screen right now - the panel's own report,
+  // not `expanded`. An expanded card can be carrying an unavailable transcript with no
+  // reply row at all, and can grow one later when the stream reconnects; the bar has to
+  // hear about both or it ends up as the second send box on the card.
+  const [hasReply, setHasReply] = useState(false);
 
   // Stable per-session ref callback so the element map isn't churned each render.
   const setRef = useCallback(
@@ -322,25 +379,8 @@ export function SessionCard({
         </div>
       )}
 
-      {session.queue && session.queue.openCount > 0 && (
-        <button
-          className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
-          title={
-            session.queue.inFlightIntent
-              ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
-              : "Work queued for this session - expand to see it"
-          }
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleExpand?.();
-          }}
-        >
-          <span className="qc-count">{session.queue.openCount} queued</span>
-          {session.queue.inFlightIntent && (
-            <span className="qc-intent">{session.queue.inFlightIntent}</span>
-          )}
-          {session.queue.round > 0 && <span className="qc-round">fix {session.queue.round}</span>}
-        </button>
+      {session.queue && session.queue.totalCount > 0 && !queueOpen && (
+        <QueueChip queue={session.queue} onOpen={() => setQueueOpen(true)} />
       )}
 
       {session.activity && <p className="activity">{session.activity}</p>}
@@ -386,33 +426,54 @@ export function SessionCard({
       {session.state !== "exited" && (
         <ActionBar
           session={session}
-          expanded={expanded}
+          hasReply={hasReply}
+          queueOpen={queueOpen}
+          onToggleQueue={() => setQueueOpen((v) => !v)}
+          onFocusReply={() => transcriptRef.current?.focusReply() ?? false}
           registerActions={registerActions}
           onReset={onReset}
         />
       )}
 
-      {expanded && (
-        <>
-          {session.note && (
-            <ForemanNote
+      {expanded && session.note && (
+        <ForemanNote
+          session={session}
+          note={session.note}
+          mode={foremanMode}
+          enabled={foremanEnabled}
+          allowlist={foremanAllowlist}
+          inputReviewId={inputReviewId}
+          pendingReviewIds={pendingReviewIds}
+        />
+      )}
+
+      {/* The queue and the conversation, wrapped together so they can be laid out as one
+          region rather than two things fighting over the card's height. Stacked on a card
+          in the grid; side by side on an expanded one, where the card is full-width and
+          the vertical room is the scarce thing (see `.card-panels`). One WorkQueue either
+          way - moving the element between two parents would remount it on every expand. */}
+      {(queueOpen || expanded) && (
+        <div className="card-panels">
+          {queueOpen && (
+            <WorkQueue
               session={session}
-              note={session.note}
-              mode={foremanMode}
-              enabled={foremanEnabled}
-              allowlist={foremanAllowlist}
-              inputReviewId={inputReviewId}
-              pendingReviewIds={pendingReviewIds}
+              foremanMode={foremanMode}
+              foremanEnabled={foremanEnabled}
+              allowlisted={allowlisted(session, foremanAllowlist)}
+              collapsed={queueCollapsed}
+              onToggleCollapsed={() => setQueueCollapsed((v) => !v)}
             />
           )}
-          <WorkQueue
-            session={session}
-            foremanMode={foremanMode}
-            foremanEnabled={foremanEnabled}
-            allowlisted={allowlisted(session, foremanAllowlist)}
-          />
-          <TranscriptPanel sessionId={session.id} agent={session.agent} canSend={canSend} />
-        </>
+          {expanded && (
+            <TranscriptPanel
+              ref={transcriptRef}
+              sessionId={session.id}
+              agent={session.agent}
+              canSend={canSend}
+              onReplyBox={setHasReply}
+            />
+          )}
+        </div>
       )}
     </article>
   );

@@ -1,4 +1,4 @@
-import type { WorkItem, WorkItemState } from "@shared/types.ts";
+import type { SessionQueueSummary, WorkItem, WorkItemState } from "@shared/types.ts";
 
 // The work-queue panel's pure presentation logic, kept out of the component so it
 // can be tested without a DOM - the same split `src/web/lib/diff.ts` and
@@ -58,4 +58,62 @@ export function moveTarget(items: WorkItem[], item: WorkItem, dir: -1 | 1): numb
   let to = from + dir;
   while (to >= 0 && to < items.length && !isWaiting(items[to]!.state)) to += dir;
   return to >= 0 && to < items.length ? to : -1;
+}
+
+/** What the card's queue chip says on its face, and whether it needs your eye. */
+export interface QueueChipView {
+  label: string;
+  title: string;
+  /** Something in this batch ended without landing, so it's owed a human's eye. */
+  attention: boolean;
+}
+
+/**
+ * The chip's label and tone.
+ *
+ * The one rule: only work the agent actually LANDED may be counted as done. That's
+ * why `done` is read straight from `verifiedCount` rather than reckoned as "terminal
+ * minus the failures I could think of" - subtraction quietly promotes every terminal
+ * state nobody enumerated into the win column, which is how a cancelled item came to
+ * report itself as done here. Anything terminal that isn't verified is work that
+ * stopped, and it says so.
+ *
+ * `stopped` is deliberately unnamed beyond that: it's whatever ended without landing
+ * and without escalating - `cancelled` today - and calling it by that name would be
+ * the same guess in a new coat. It counts as unfinished either way, which is the fact
+ * that matters and the safe direction to be wrong in.
+ *
+ * All of this matters most on a session that has exited: it has no ActionBar, so no
+ * Queue button, which leaves this chip the last thing pointing at what the batch did.
+ */
+export function queueChipView(q: SessionQueueSummary): QueueChipView {
+  const done = q.verifiedCount;
+  const escalated = q.escalatedCount;
+  const stopped = Math.max(0, q.totalCount - q.openCount - done - escalated);
+  const parts: string[] = [];
+  // While anything is still waiting, that's the headline; a done count beside it is
+  // just noise on a queue whose whole point is what's left.
+  if (q.openCount > 0) parts.push(`${q.openCount} queued`);
+  else if (done > 0) parts.push(`${done} done`);
+  if (escalated > 0) parts.push(`${escalated} escalated`);
+  if (stopped > 0) parts.push(`${stopped} stopped`);
+  return {
+    label: parts.join(" · "),
+    title: chipTitle(q, escalated + stopped, escalated),
+    attention: escalated + stopped > 0,
+  };
+}
+
+function chipTitle(q: SessionQueueSummary, unfinished: number, escalated: number): string {
+  if (q.inFlightIntent) {
+    return `Foreman is working through this session's queue: ${q.inFlightIntent}`;
+  }
+  if (unfinished > 0) {
+    const escalatedNote = escalated > 0 ? ` (${escalated} escalated to you)` : "";
+    return `${unfinished} of this session's ${q.totalCount} queued ${
+      q.totalCount === 1 ? "item" : "items"
+    } never landed${escalatedNote} - click to read ${unfinished === 1 ? "it" : "them"}`;
+  }
+  if (q.openCount > 0) return "Work queued for this session - click to see it";
+  return "This session's queued work all landed - click to read it";
 }

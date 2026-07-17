@@ -258,6 +258,7 @@ function mkSummary(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary
     inFlightIntent: null,
     round: 0,
     blockingGaps: 0,
+    verifiedCount: 0,
     escalatedCount: 0,
     drained: false,
     wrapupAskedAt: null,

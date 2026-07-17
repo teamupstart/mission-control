@@ -115,7 +115,7 @@ const addBox = (over: { value?: string; attachments?: PendingAttachment[]; drop?
       onChange: () => {},
       onAdd: () => {},
       disabled: false,
-      placeholder: "Queue more work…  (⌘↵ to add, drop or paste images)",
+      placeholder: "Queue more work…  (Enter to add, Shift+Enter for newline, drop or paste images)",
       attachments: over.attachments ?? [],
       drop: over.drop ?? drop(),
     }),

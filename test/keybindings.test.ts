@@ -139,11 +139,24 @@ test("rename defaults to Shift+O and every default round-trips from a keypress",
     chordFromEvent(key("d")),
     chordFromEvent(key("s")),
     chordFromEvent(key("f")),
+    chordFromEvent(key("q")),
     chordFromEvent(key("Tab", { shift: true })),
     chordFromEvent(key("O", { shift: true })),
     chordFromEvent(key("k")),
   ]);
   for (const a of ACTIONS) assert.ok(producible.has(a.defaultBinding), `${a.id} unreachable`);
+});
+
+test("queue is a first-class action defaulting to q on the selected card", () => {
+  // The work queue is hidden behind a disclosure now, so this chord is the only way to
+  // reach it without the mouse - it has to be in the registry (which is also what puts
+  // it in the settings editor) rather than hard-coded in App.
+  const queue = ACTIONS.find((a) => a.id === "queue");
+  assert.ok(queue, "queue missing from the customizable registry");
+  assert.equal(queue.defaultBinding, "q");
+  assert.equal(queue.group, "selection");
+  assert.equal(chordFromEvent(key("q")), "q");
+  assert.equal(formatChord(queue.defaultBinding), "q");
 });
 
 test("reset is a first-class action defaulting to Ctrl+R on the selected card", () => {

@@ -1,4 +1,4 @@
-import type { WorkItem, WorkItemState } from "@shared/types.ts";
+import type { SessionQueueSummary, WorkItem, WorkItemState } from "@shared/types.ts";
 
 // The work-queue panel's pure presentation logic, kept out of the component so it
 // can be tested without a DOM - the same split `src/web/lib/diff.ts` and
@@ -58,4 +58,57 @@ export function moveTarget(items: WorkItem[], item: WorkItem, dir: -1 | 1): numb
   let to = from + dir;
   while (to >= 0 && to < items.length && !isWaiting(items[to]!.state)) to += dir;
   return to >= 0 && to < items.length ? to : -1;
+}
+
+/** What the card's queue chip says on its face, and whether it needs your eye. */
+export interface QueueChipView {
+  label: string;
+  title: string;
+  /** Something in this batch stopped short and is waiting on a human. */
+  attention: boolean;
+}
+
+/**
+ * The chip's label and tone, from the counts the card summary already carries.
+ *
+ * The one rule here: an item that Foreman GAVE UP on may never hide behind a count
+ * that reads as success. `openCount` excludes every terminal state, and `escalated`
+ * is terminal (see TERMINAL_ITEM_STATES) - so "all the work is through" and "all the
+ * work landed" are different facts, and a chip saying only the first is claiming the
+ * second. That matters most on a session that has exited: it has no ActionBar, so no
+ * Queue button, which makes this chip the last thing left pointing at what the batch
+ * actually did.
+ *
+ * `done` is derived rather than read, because the summary carries no verified count -
+ * only what's open and what escalated. Deriving it (rather than plumbing a new count
+ * through the server) is honest today because `cancelled` is declared but unreachable:
+ * nothing transitions an item into it, so terminal-and-not-escalated IS verified. If
+ * that ever changes, this is the line that has to learn the difference.
+ */
+export function queueChipView(q: SessionQueueSummary): QueueChipView {
+  const escalated = q.escalatedCount;
+  const done = q.totalCount - q.openCount - escalated;
+  const parts: string[] = [];
+  if (q.openCount > 0) parts.push(`${q.openCount} queued`);
+  else if (done > 0) parts.push(`${done} done`);
+  if (escalated > 0) parts.push(`${escalated} escalated`);
+  return {
+    label: parts.join(" · "),
+    title: chipTitle(q, escalated),
+    attention: escalated > 0,
+  };
+}
+
+function chipTitle(q: SessionQueueSummary, escalated: number): string {
+  if (q.inFlightIntent) {
+    return `Foreman is working through this session's queue: ${q.inFlightIntent}`;
+  }
+  if (escalated > 0) {
+    const them = escalated === 1 ? "it" : "them";
+    return `Foreman escalated ${escalated} of this session's ${q.totalCount} queued ${
+      q.totalCount === 1 ? "item" : "items"
+    } and needs you - click to read ${them}`;
+  }
+  if (q.openCount > 0) return "Work queued for this session - click to see it";
+  return "This session's queued work is all through - click to read it";
 }

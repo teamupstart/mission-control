@@ -474,9 +474,19 @@ next.
 The **Work queue** panel is a drawer, kept out of the way until you ask for it: press
 **Queue** on the card (next to **Send** / **Focus** / **Reset**) or <kbd>q</kbd> on the
 selected session, and it opens under the controls. The button carries the open-item count,
-so you can see there's a batch waiting without opening anything; the **"n queued"** chip on
-the card opens the same drawer. It's independent of expanding a card - a queue is worth a
-glance without handing the whole grid to one session - and stays open until you close it.
+so you can see there's a batch waiting without opening anything. It's independent of
+expanding a card - a queue is worth a glance without handing the whole grid to one session
+- and stays open until you close it.
+
+The **chip** above the controls opens the same drawer, and it's there for as long as the
+session has queued anything at all - not just while work is still waiting. It reports what
+the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they're all
+through, and **"1 done · 2 escalated"** in the attention tone when Foreman gave up on some
+of them and needs you. That last case is the point of the wording: an item Foreman
+escalated is *finished* in the sense that nothing will advance it again, so a chip that
+only counted what was through would report a clean-looking total over a batch that had
+quietly stalled. An **exited** session has no controls at all - no **Queue** button - so
+the chip is the only way back to what its batch did, which is why it outlives the work.
 
 Two ways to get the room back, for two different intents. **Queue** (or <kbd>q</kbd>) puts
 the drawer away entirely. Clicking the panel's **Work queue** header *folds* it instead -
@@ -500,8 +510,11 @@ takes **dropped or pasted images**: the upload starts on drop, and what's queued
 uploaded file's *path*, so the agent reads it with its own file tools whenever the item is
 finally delivered. **Add** stays disabled while an upload is in flight, and an image with no
 words is a valid item. The same gesture works on the card's transcript reply box and the
-dispatch form. Items are drag-reorderable, editable, and removable while they wait. Then
-walk away. For each item Foreman:
+dispatch form. Items are drag-reorderable, editable, and removable while they wait -
+and **editing** one obeys the same <kbd>Enter</kbd> saves / <kbd>Shift</kbd><kbd>Enter</kbd>
+newline contract, because the edit box and the add box are the same textarea to look at and
+sit inches apart: the panel has one Enter rule, not two. Then walk away. For each item
+Foreman:
 
 1. waits for the session to actually go **idle and settle** (not just look idle);
 2. **delivers** the intent as a single bracketed paste (so a multi-line prompt doesn't
@@ -540,10 +553,14 @@ boxes hold a draft:
 - the **send** box - opened by <kbd>s</kbd> on the selected session, or by **Send** on the
   card.
 
-A card only ever has **one** box to send from. While it's expanded that box is the reply
-under the transcript, so <kbd>s</kbd> and **Send** put the cursor *there* rather than
-opening a second one; expanding a card with the send box open closes it, and the text is
-waiting in it again when you collapse and press **Send**.
+A card only ever has **one** box to send from - at any moment, in every state. The rule
+keys off whether a reply box actually *exists*, not off whether the card is expanded:
+whenever the transcript is carrying one, <kbd>s</kbd> and **Send** put the cursor *there*
+rather than opening a second, and a send box already open closes itself the moment a reply
+box appears. When there's genuinely no reply box - an expanded card whose transcript can't
+be read renders no reply row - **Send** opens the card's own box, which is exactly right:
+one box either way. Nothing is lost when one closes, because the text is in the draft map;
+press **Send** again and it's waiting in it.
 
 Each survives everything that isn't you deleting text: **collapsing the card** (opening any
 other card collapses this one - only one is expanded at a time), a **filter** that hides the

@@ -4426,6 +4426,14 @@ kbd {
 .queue-chip.qc-proposed {
   border-left-color: var(--attention);
 }
+/* Last, so an escalation outranks whatever the in-flight item happens to be doing:
+   work Foreman gave up on is the thing on this card that wants a human. */
+.queue-chip.qc-escalated {
+  border-left-color: var(--attention);
+}
+.queue-chip.qc-escalated .qc-count {
+  color: var(--attention);
+}
 .qc-count {
   flex: none;
   font-weight: 600;

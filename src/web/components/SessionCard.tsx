@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import type { PrState, Session, SessionMeta, SessionQueueSummary } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import {
@@ -12,6 +12,7 @@ import {
   uptime,
 } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
+import { queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
@@ -76,6 +77,43 @@ function GoalLine({ session }: { session: Session }): React.JSX.Element | null {
     >
       {session.goal.text}
     </p>
+  );
+}
+
+/**
+ * The teaser for a queue you can't see, and the way back into it.
+ *
+ * Hidden while the drawer is open: it would be the same count, verbatim, one row above
+ * the panel that states it - and on an expanded card that row is a section's worth of
+ * the height the panel needs. So it stands down and lets the real thing speak.
+ *
+ * Gated on the queue having a HISTORY rather than on work still waiting in it, because
+ * an exited session has no ActionBar and therefore no Queue button: this chip is the
+ * only way back to what its batch did, and a batch that has stopped is exactly the one
+ * worth reading. What it SAYS about that batch is `queueChipView`'s call - it's a rule
+ * about honesty, and rules are tested without a DOM; this renders the answer.
+ */
+function QueueChip({
+  queue,
+  onOpen,
+}: {
+  queue: SessionQueueSummary;
+  onOpen: () => void;
+}): React.JSX.Element {
+  const chip = queueChipView(queue);
+  return (
+    <button
+      className={`queue-chip qc-${queue.inFlightState ?? "waiting"}${chip.attention ? " qc-escalated" : ""}`}
+      title={chip.title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen();
+      }}
+    >
+      <span className="qc-count">{chip.label}</span>
+      {queue.inFlightIntent && <span className="qc-intent">{queue.inFlightIntent}</span>}
+      {queue.round > 0 && <span className="qc-round">fix {queue.round}</span>}
+    </button>
   );
 }
 
@@ -341,41 +379,8 @@ export function SessionCard({
         </div>
       )}
 
-      {/* The teaser for a queue you can't see. Once the drawer is open it is the same
-          count, verbatim, one row above the panel that states it - and on an expanded
-          card that row is a section's worth of the height the panel needs. So it stands
-          down and lets the real thing speak: the drawer is open; you're looking at it.
-
-          Gated on the queue having a HISTORY, not on work still waiting in it. An
-          exited session has no ActionBar and therefore no Queue button, so this chip is
-          the only way back to what its batch did - and a finished batch is exactly what
-          you want to read on a session that has stopped. The label follows the count
-          rather than the gate: nothing is "queued" once it has all run. */}
       {session.queue && session.queue.totalCount > 0 && !queueOpen && (
-        <button
-          className={`queue-chip qc-${session.queue.inFlightState ?? "waiting"}`}
-          title={
-            session.queue.inFlightIntent
-              ? `Foreman is working through this session's queue: ${session.queue.inFlightIntent}`
-              : session.queue.openCount > 0
-                ? "Work queued for this session - click to see it"
-                : "This session's queued work has all finished - click to read it"
-          }
-          onClick={(e) => {
-            e.stopPropagation();
-            setQueueOpen(true);
-          }}
-        >
-          <span className="qc-count">
-            {session.queue.openCount > 0
-              ? `${session.queue.openCount} queued`
-              : `${session.queue.totalCount} finished`}
-          </span>
-          {session.queue.inFlightIntent && (
-            <span className="qc-intent">{session.queue.inFlightIntent}</span>
-          )}
-          {session.queue.round > 0 && <span className="qc-round">fix {session.queue.round}</span>}
-        </button>
+        <QueueChip queue={session.queue} onOpen={() => setQueueOpen(true)} />
       )}
 
       {session.activity && <p className="activity">{session.activity}</p>}

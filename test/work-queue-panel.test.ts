@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { itemLabel, moveTarget } from "../src/web/lib/queue.ts";
+import { itemLabel, moveTarget, queueChipView } from "../src/web/lib/queue.ts";
 import { foremanSendBlock } from "../src/web/lib/foreman.ts";
 import type { ForemanSendBlock } from "../src/web/lib/foreman.ts";
-import type { WorkItem, WorkItemState } from "../src/shared/types.ts";
+import type { SessionQueueSummary, WorkItem, WorkItemState } from "../src/shared/types.ts";
 
 // The work-queue panel's pure presentation logic. It lives in src/web/lib precisely
 // so it can be checked here without a DOM - both of these were bugs a rendering test
@@ -150,4 +150,83 @@ test("a non-live mode explains the drafts, whatever the allowlist says", () => {
   assert.equal(hint({ mode: "dry-run" }), "drafts-only");
   assert.equal(hint({ mode: "dry-run", allowlisted: false }), "drafts-only");
   assert.equal(hint({ mode: "semi-auto", cwd: null }), "drafts-only");
+});
+
+// ---- the chip: what a card claims about a batch you can't see ----
+//
+// This chip is the LAST surviving signal for a stopped session: an exited card renders
+// no ActionBar, so there is no Queue button, and this is the only way back into the
+// drawer. A label that reads as clean success on a batch Foreman actually gave up on is
+// worse than the unreachability it was added to fix - so these pin the honesty.
+
+function mkSummary(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary {
+  return {
+    openCount: 0,
+    totalCount: 0,
+    inFlightState: null,
+    inFlightIntent: null,
+    round: 0,
+    blockingGaps: 0,
+    escalatedCount: 0,
+    drained: false,
+    wrapupAskedAt: null,
+    updatedAt: 0,
+    ...over,
+  };
+}
+
+test("a queue with work still in it counts what's waiting, quietly", () => {
+  const chip = queueChipView(mkSummary({ openCount: 3, totalCount: 3 }));
+  assert.equal(chip.label, "3 queued");
+  assert.equal(chip.attention, false);
+});
+
+test("a batch that all landed says so, and doesn't call itself queued", () => {
+  // `openCount` excludes every terminal state, so once the batch is through there is
+  // nothing "queued" left to claim - the old label said "3 queued" here.
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3 }));
+  assert.equal(chip.label, "3 done");
+  assert.equal(chip.attention, false);
+});
+
+test("an escalation is never hidden behind a count that reads as success", () => {
+  // The regression this exists for. `escalated` is TERMINAL, so it leaves `openCount`
+  // at zero exactly like a verified item does - and a chip that only counts what's
+  // through reported "3 finished" over a batch Foreman gave up on two thirds of.
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3, escalatedCount: 2 }));
+  assert.equal(chip.label, "1 done · 2 escalated");
+  assert.equal(chip.attention, true, "work that stopped short must not wear the neutral tone");
+  assert.doesNotMatch(chip.title, /all through/, "the tooltip must not claim it finished");
+  assert.match(chip.title, /escalated/);
+});
+
+test("a batch Foreman gave up on entirely claims nothing was done", () => {
+  // Not "0 done · 3 escalated": a zero is noise, and this is the whole story.
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3, escalatedCount: 3 }));
+  assert.equal(chip.label, "3 escalated");
+  assert.equal(chip.attention, true);
+});
+
+test("an escalation shows even while the rest of the batch is still running", () => {
+  // Terminal and open items coexist, so gating the call-out on a drained queue would
+  // hide an escalation behind every batch that still had work left in it.
+  const chip = queueChipView(
+    mkSummary({ openCount: 3, totalCount: 6, escalatedCount: 2, inFlightState: "in_progress" }),
+  );
+  assert.equal(chip.label, "3 queued · 2 escalated");
+  assert.equal(chip.attention, true);
+});
+
+test("the in-flight intent is what the tooltip leads with while one is running", () => {
+  const chip = queueChipView(
+    mkSummary({ openCount: 2, totalCount: 2, inFlightIntent: "add the retry" }),
+  );
+  assert.match(chip.title, /add the retry/);
+});
+
+test("one escalated item is spoken about in the singular", () => {
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 1, escalatedCount: 1 }));
+  assert.equal(chip.label, "1 escalated");
+  assert.match(chip.title, /1 of this session's 1 queued item /);
+  assert.doesNotMatch(chip.title, /items/);
 });

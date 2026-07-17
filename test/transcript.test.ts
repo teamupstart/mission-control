@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   computeRuntimeMeta,
+  computeSessionActivity,
   latestEffortLevel,
   latestTodoNarration,
   parseLines,
@@ -345,4 +346,100 @@ test("resolveTranscriptPath ignores non-claude, id-less, and cwd-less sessions",
   assert.equal(resolveTranscriptPath(session({ agent: "codex" }), root), null);
   assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);
   assert.equal(resolveTranscriptPath(session({ cwd: null }), root), null);
+});
+
+test("resolveTranscriptPath falls back to the newest sibling when the bound id is stale", () => {
+  // The /clear case: the daemon still holds the pre-clear agentSessionId, whose file
+  // is gone, while the live session writes to a fresh transcript beside it.
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const cwd = "/Users/me/work/app";
+  const dir = join(root, encode(cwd));
+  mkdirSync(dir, { recursive: true });
+  const older = join(dir, "11111111-1111-1111-1111-111111111111.jsonl");
+  const newer = join(dir, "22222222-2222-2222-2222-222222222222.jsonl");
+  writeFileSync(older, "{}\n");
+  writeFileSync(newer, "{}\n");
+  // Make `newer` win regardless of creation order on disk.
+  const past = new Date("2026-07-11T00:00:00.000Z");
+  utimesSync(older, past, past);
+  // The bound id names no file, so resolution falls through to the newest sibling.
+  assert.equal(resolveTranscriptPath(session({ cwd }), root), newer);
+});
+
+test("resolveTranscriptPath fallback returns null for an empty project dir", () => {
+  const root = mkdtempSync(join(tmpdir(), "proj-"));
+  const cwd = "/Users/me/work/app";
+  mkdirSync(join(root, encode(cwd)), { recursive: true }); // exists but no .jsonl
+  assert.equal(resolveTranscriptPath(session({ cwd }), root), null);
+});
+
+// ---- computeSessionActivity (hook-free idle/working) -----------------------
+
+/** A main-chain record with the given role/stop_reason/timestamp. */
+const rec = (over: Record<string, unknown>): string =>
+  JSON.stringify({
+    type: over.role ?? "assistant",
+    isSidechain: false,
+    timestamp: "2026-07-11T02:00:00.000Z",
+    ...over,
+    message: {
+      role: over.role ?? "assistant",
+      stop_reason: over.stop_reason ?? null,
+      content: over.content ?? [{ type: "text", text: "x" }],
+    },
+  });
+
+test("computeSessionActivity reads idle off a cleanly-ended assistant turn", () => {
+  const a = computeSessionActivity([
+    rec({ role: "user", content: "go" }),
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:05:00.000Z" }),
+  ]);
+  assert.deepEqual(a, { state: "idle", lastActivity: Date.parse("2026-07-11T02:05:00.000Z") });
+});
+
+test("computeSessionActivity reads working off a pending tool call", () => {
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn" }),
+    rec({
+      role: "assistant",
+      stop_reason: "tool_use",
+      timestamp: "2026-07-11T02:06:00.000Z",
+      content: [{ type: "tool_use", name: "Bash", input: {} }],
+    }),
+  ]);
+  assert.equal(a?.state, "working");
+  assert.equal(a?.lastActivity, Date.parse("2026-07-11T02:06:00.000Z"));
+});
+
+test("computeSessionActivity reads working off an unanswered tool result", () => {
+  // The interrupted-mid-turn tail (a /clear right after a tool returned): the last
+  // main-chain record is a user tool_result with no assistant continuation. Ambiguous
+  // by content, so it falls to `working` - the settle-gap age is what proves it idle.
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "tool_use" }),
+    rec({ role: "user", content: [{ type: "tool_result", content: "ok" }] }),
+  ]);
+  assert.equal(a?.state, "working");
+});
+
+test("computeSessionActivity scans newest-first and skips sidechains + undatable tails", () => {
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:01:00.000Z" }),
+    rec({ role: "assistant", isSidechain: true, stop_reason: "tool_use" }), // subagent noise
+    JSON.stringify({ type: "system", timestamp: "2026-07-11T02:09:00.000Z" }), // no role
+    JSON.stringify({ type: "bridge-session" }), // no timestamp, no role
+  ]);
+  // The newest datable main-chain record is the end_turn assistant - the sidechain and
+  // the role-less system/bridge tails are skipped.
+  assert.deepEqual(a, { state: "idle", lastActivity: Date.parse("2026-07-11T02:01:00.000Z") });
+});
+
+test("computeSessionActivity returns null when nothing datable is found", () => {
+  assert.equal(computeSessionActivity([]), null);
+  assert.equal(computeSessionActivity(["", "not json", "{}"]), null);
+  assert.equal(
+    computeSessionActivity([rec({ role: "assistant", stop_reason: "end_turn", timestamp: 42 })]),
+    null,
+    "a non-string timestamp is not datable",
+  );
 });

@@ -1,4 +1,4 @@
-import { openSync, readSync, closeSync, statSync, existsSync } from "node:fs";
+import { openSync, readSync, closeSync, statSync, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
@@ -36,8 +36,21 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
  * dirs and to compaction/resume/rename. As a fallback for a session whose hook
  * predates transcript reporting, we reconstruct Claude's documented layout:
  * the project dir is the cwd with every `/` and `.` replaced by `-`, and the
- * file is named by the session id. Returns null when neither locates a file
- * (no hook yet, or an agent that stores elsewhere - e.g. Codex).
+ * file is named by the session id.
+ *
+ * Last, when the bound `agentSessionId` no longer names a file on disk, fall back
+ * to the newest transcript in the cwd's project dir. This is the `/clear` case: a
+ * clear re-mints the agent-session id while the daemon still holds the previous
+ * one (nothing invalidates the binding until a fresh hook rebinds it), so the
+ * derived path points at a file that no longer exists even though the pane is very
+ * much alive and writing to a new transcript right beside it. Resolving to the
+ * newest sibling recovers that live session. It is only ever consulted for a
+ * discovered (live) session, and Foreman's own headless `claude -p` runs write to
+ * a temp `/private/var/folders/.../T/` project dir rather than the worktree's, so
+ * this does not pick up daemon machinery masquerading as the human's session.
+ *
+ * Returns null when nothing locates a file (no hook yet, an empty project dir, or
+ * an agent that stores elsewhere - e.g. Codex).
  *
  * `projectsDir` is injectable for tests; production uses the default.
  */
@@ -47,10 +60,45 @@ export function resolveTranscriptPath(
 ): string | null {
   if (session.agent !== "claude") return null;
   if (session.transcriptPath && existsSync(session.transcriptPath)) return session.transcriptPath;
-  if (!session.agentSessionId || !session.cwd) return null;
-  const dir = session.cwd.replace(/[/.]/g, "-");
-  const derived = join(projectsDir, dir, `${session.agentSessionId}.jsonl`);
-  return existsSync(derived) ? derived : null;
+  if (!session.cwd) return null;
+  const dir = join(projectsDir, session.cwd.replace(/[/.]/g, "-"));
+  if (session.agentSessionId) {
+    const derived = join(dir, `${session.agentSessionId}.jsonl`);
+    if (existsSync(derived)) return derived;
+  }
+  return newestTranscriptIn(dir);
+}
+
+/**
+ * The most-recently-modified `.jsonl` directly under `dir`, or null when the dir
+ * is absent/empty. Used only as the stale-binding fallback in
+ * `resolveTranscriptPath` - "newest wins" because a live pane's current transcript
+ * is the one still being appended to, while an abandoned sibling stops growing.
+ */
+function newestTranscriptIn(dir: string): string | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  let best: string | null = null;
+  let bestMtime = -1;
+  for (const name of entries) {
+    if (!name.endsWith(".jsonl")) continue;
+    const path = join(dir, name);
+    let mtime: number;
+    try {
+      mtime = statSync(path).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtime > bestMtime) {
+      bestMtime = mtime;
+      best = path;
+    }
+  }
+  return best;
 }
 
 /** Read bytes [start, end) of a file as a Buffer. */
@@ -515,6 +563,73 @@ export function readTailLines(path: string, maxBytes: number): string[] {
  */
 export function readRuntimeMeta(path: string): RuntimeMetaRead | null {
   return computeRuntimeMeta(readTailLines(path, META_TAIL_BYTES));
+}
+
+// ---- hook-free session activity (idle / working, from the transcript) ------
+
+/** What a transcript read yields about a session's liveness. */
+export interface SessionActivityRead {
+  /**
+   * `idle` ONLY when the newest main-chain record is an assistant turn that ended
+   * cleanly; everything else - a pending tool call, a tool result the agent hasn't
+   * answered yet, a bare user prompt - reads `working`. The bias is deliberate: a
+   * false `working` merely makes the queue wait, a false `idle` types into a busy
+   * session, so the ambiguous tails all fall to `working`.
+   */
+  state: "idle" | "working";
+  /** Epoch ms of that newest datable main-chain record. */
+  lastActivity: number;
+}
+
+/** Bytes to scan from the tail; sized like the metadata read so the newest record
+ *  (a tool result can be large) is captured whole rather than split off the front. */
+const ACTIVITY_TAIL_BYTES = 256 * 1024;
+
+/** Stop reasons that mean the assistant handed control back to the human, so the
+ *  session is genuinely parked rather than mid-turn. */
+const TURN_DONE = new Set(["end_turn", "stop_sequence"]);
+
+/**
+ * Derive a session's idle/working state from a window of transcript lines: scan
+ * newest-first for the last main-chain (non-sidechain) user/assistant record that
+ * carries a timestamp, and read `idle` off it only when it is an assistant turn
+ * that stopped cleanly. Null when nothing datable is found. Pure, for testing.
+ *
+ * This is the hook-free source of session state. Hooks remain primary (exact,
+ * instant, carry permission mode); this exists so a session whose hooks lapsed -
+ * a 30-min silence, or every session for the moment after a daemon restart wipes
+ * the in-memory overlays - can still be seen as idle and have its queue delivered,
+ * because the transcript is on disk and re-derived every poll tick.
+ */
+export function computeSessionActivity(lines: string[]): SessionActivityRead | null {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const t = lines[i]!.trim();
+    if (!t || t.indexOf('"role"') < 0) continue; // main-chain records carry a role
+    let o: Record<string, unknown>;
+    try {
+      o = JSON.parse(t) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (o.isSidechain) continue;
+    if (o.type !== "user" && o.type !== "assistant") continue;
+    const m = o.message as Record<string, unknown> | undefined;
+    if (!m || typeof m !== "object") continue;
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    const ts = typeof o.timestamp === "string" ? Date.parse(o.timestamp) : NaN;
+    if (Number.isNaN(ts)) continue;
+    const done = m.role === "assistant" && TURN_DONE.has(String(m.stop_reason));
+    return { state: done ? "idle" : "working", lastActivity: ts };
+  }
+  return null;
+}
+
+/**
+ * Read the tail of a session's transcript and derive its idle/working state, or
+ * null when the file is missing/unreadable or yields nothing datable.
+ */
+export function readSessionActivity(path: string): SessionActivityRead | null {
+  return computeSessionActivity(readTailLines(path, ACTIVITY_TAIL_BYTES));
 }
 
 /** Parse an array of JSONL lines into renderable messages. */

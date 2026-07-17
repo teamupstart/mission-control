@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Work-queue delivery deadlock: hook-free idle detection</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1c20; --muted: #5c6370; --rule: #e3e6ea;
+    --card: #f6f8fa; --accent: #2f6feb; --danger: #c0392b; --ok: #1f9254;
+    --code-bg: #f0f2f5; --code-fg: #24292f;
+    --box: #ffffff; --box-stroke: #c4ccd6; --arrow: #7a828d;
+    --box-warn: #fdecea; --box-warn-stroke: #e2a9a2;
+    --box-ok: #e8f6ee; --box-ok-stroke: #9ed6b6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e9ee; --muted: #9aa3ad; --rule: #2a2e35;
+      --card: #1c1f25; --accent: #6b9bff; --danger: #ff7b6b; --ok: #57c98a;
+      --code-bg: #1e2229; --code-fg: #dfe4ea;
+      --box: #1c1f25; --box-stroke: #3a414b; --arrow: #808893;
+      --box-warn: #2e1d1c; --box-warn-stroke: #6e3a34;
+      --box-ok: #16281f; --box-ok-stroke: #2f6244;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a; --fg: #e6e9ee; --muted: #9aa3ad; --rule: #2a2e35;
+    --card: #1c1f25; --accent: #6b9bff; --danger: #ff7b6b; --ok: #57c98a;
+    --code-bg: #1e2229; --code-fg: #dfe4ea;
+    --box: #1c1f25; --box-stroke: #3a414b; --arrow: #808893;
+    --box-warn: #2e1d1c; --box-warn-stroke: #6e3a34;
+    --box-ok: #16281f; --box-ok-stroke: #2f6244;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --fg: #1a1c20; --muted: #5c6370; --rule: #e3e6ea;
+    --card: #f6f8fa; --accent: #2f6feb; --danger: #c0392b; --ok: #1f9254;
+    --code-bg: #f0f2f5; --code-fg: #24292f;
+    --box: #ffffff; --box-stroke: #c4ccd6; --arrow: #7a828d;
+    --box-warn: #fdecea; --box-warn-stroke: #e2a9a2;
+    --box-ok: #e8f6ee; --box-ok-stroke: #9ed6b6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.3rem; margin: 40px 0 12px; padding-top: 18px; border-top: 1px solid var(--rule); letter-spacing: -0.01em; }
+  h3 { font-size: 1.05rem; margin: 26px 0 8px; }
+  p, li { color: var(--fg); }
+  .lede { color: var(--muted); font-size: 1.05rem; margin: 0 0 8px; }
+  code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; font-size: 0.86em; background: var(--code-bg); color: var(--code-fg); padding: 0.12em 0.4em; border-radius: 5px; }
+  pre { background: var(--code-bg); color: var(--code-fg); padding: 14px 16px; border-radius: 10px; overflow-x: auto; border: 1px solid var(--rule); }
+  pre code { background: none; padding: 0; font-size: 0.82rem; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 0.92rem; }
+  .tablewrap { overflow-x: auto; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 650; }
+  .fig { margin: 20px 0; padding: 16px; background: var(--card); border: 1px solid var(--rule); border-radius: 12px; }
+  .fig figcaption { color: var(--muted); font-size: 0.85rem; margin-top: 10px; text-align: center; }
+  .fig svg { display: block; width: 100%; height: auto; }
+  .pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; vertical-align: middle; }
+  .pill.none { background: var(--box-warn); color: var(--danger); border: 1px solid var(--box-warn-stroke); }
+  .pill.send { background: var(--box-ok); color: var(--ok); border: 1px solid var(--box-ok-stroke); }
+  .note { background: var(--card); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 12px 16px; margin: 16px 0; font-size: 0.95rem; }
+  .meta { color: var(--muted); font-size: 0.85rem; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Work-queue delivery deadlock: hook-free idle detection</h1>
+<p class="meta">docs/plans/queue-hook-free-idle/plan.md &middot; branch <code>mancej/queue-hook-free-idle</code></p>
+
+<h2>The bug</h2>
+<p>Two items queued for the <strong>"3 New UIs"</strong> session were never delivered. They are not a one-off: the same state stalls <strong>every</strong> queue whose session goes quiet or whose daemon restarts.</p>
+<p>The work queue only delivers when <code>settledIdle(session)</code> is true, and that predicate requires <code>session.instrumented</code>:</p>
+<pre><code>export function settledIdle(s: Session, now: number, settleMs: number): boolean {
+  if (!s.instrumented) return false;            // &lt;-- the gate
+  if (s.state !== "idle") return false;
+  const since = s.lastActivity ?? s.firstSeen;
+  return now - since &gt;= settleMs;
+}</code></pre>
+<p><code>instrumented</code> is true only while a <strong>hook overlay is fresh</strong> - a hook has arrived within <code>OVERLAY_TTL_MS</code> (30 min). Hook overlays are the daemon's <em>only</em> source of session <code>state</code>: they live in memory, and when one is missing or stale, <code>mergeDiscovered</code> rebuilds the session with a <strong>hardcoded default</strong>:</p>
+<pre><code>const base: Session = {
+  ...
+  state: "working",       // registry.ts - a placeholder, not an observation
+  instrumented: false,
+  lastActivity: prev?.lastActivity ?? null,
+  ...
+};</code></pre>
+<p>So a session that is genuinely sitting idle at its prompt reports <code>state: "working"</code>, <code>instrumented: false</code>. <code>settledIdle</code> returns false, and <code>decideQueueTick</code> returns <code>{ kind: "none" }</code> - <strong>silently, forever</strong>. Nothing escalates (the session isn't <code>exited</code>, hooks <em>were</em> seen, there's no in-flight item to time out); the queue just never advances.</p>
+
+<h3>Reproduced</h3>
+<p>Feeding the live "3 New UIs" session shape (captured from <code>GET /api/sessions</code>) straight into the real <code>decideQueueTick</code>:</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>input</th><th>result</th></tr></thead>
+<tbody>
+<tr><td>real session (<code>instrumented:false</code>, <code>state:"working"</code>, 2 queued items, has pane, hooks seen)</td><td><span class="pill none">kind: none</span></td></tr>
+<tr><td>same session, simulated a week later</td><td><span class="pill none">kind: none</span> - time does not heal it</td></tr>
+<tr><td>same session with a fresh hook (<code>instrumented:true</code>, <code>state:"idle"</code>)</td><td><span class="pill send">kind: send</span></td></tr>
+</tbody>
+</table>
+</div>
+<p>The deadlock is permanent because the only thing that refreshes the overlay is a hook, an idle session at a prompt fires no hooks, and the queue is the very thing that would give it something to do that would fire one.</p>
+
+<h3>Two triggers, one cause</h3>
+<ol>
+<li><strong>Daemon restart</strong> wipes all in-memory overlays at once, so every session rebuilds <code>instrumented:false</code> until it <em>individually</em> fires a fresh hook.</li>
+<li><strong>A long-quiet session</strong> ages its overlay past the 30-min TTL and flips back to <code>instrumented:false</code> on its own.</li>
+</ol>
+<p>Both are the same root cause: <strong>session <code>state</code> has exactly one source (live hooks), and that source is neither durable nor guaranteed.</strong></p>
+
+<h2>The fix: make the transcript a durable, hook-independent state source</h2>
+<p>The daemon already reads every live Claude session's transcript <strong>every 4 s</strong> in the passive runtime-meta poller (<code>startRuntimeMetaPoller</code>), today only to extract model / context %. The transcript is an on-disk, append-only record of exactly what we're missing: what the session did last and when. We make it a second source of session state, used whenever a fresh hook overlay is absent.</p>
+<p>Hooks stay the primary source - they are exact, instant, and carry permission mode. The transcript is the fallback that makes idle detection <strong>survive dropped hooks and daemon restarts</strong>, because it is re-derived from disk on every poll tick and needs no memory.</p>
+
+<figure class="fig">
+<svg viewBox="0 0 760 300" role="img" aria-label="Before and after: where session state comes from">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="var(--arrow)"/>
+    </marker>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7,3 L0,6 Z" fill="var(--danger)"/>
+    </marker>
+  </defs>
+  <style>
+    .bx { fill: var(--box); stroke: var(--box-stroke); stroke-width: 1.4; }
+    .bxw { fill: var(--box-warn); stroke: var(--box-warn-stroke); stroke-width: 1.4; }
+    .bxo { fill: var(--box-ok); stroke: var(--box-ok-stroke); stroke-width: 1.4; }
+    .t { fill: var(--fg); font: 12px -apple-system, "Segoe UI", sans-serif; }
+    .tm { fill: var(--muted); font: 11px -apple-system, "Segoe UI", sans-serif; }
+    .lbl { fill: var(--muted); font: 600 12px -apple-system, "Segoe UI", sans-serif; }
+    .fl { stroke: var(--arrow); stroke-width: 1.6; fill: none; }
+    .flw { stroke: var(--danger); stroke-width: 1.6; fill: none; stroke-dasharray: 4 3; }
+  </style>
+
+  <!-- BEFORE -->
+  <text x="12" y="22" class="lbl">BEFORE</text>
+  <rect class="bx" x="12" y="34" width="150" height="40" rx="8"/>
+  <text x="87" y="58" class="t" text-anchor="middle">hook event</text>
+  <path class="fl" d="M162,54 L214,54" marker-end="url(#ar)"/>
+  <rect class="bx" x="216" y="34" width="180" height="40" rx="8"/>
+  <text x="306" y="51" class="t" text-anchor="middle">in-memory overlay</text>
+  <text x="306" y="66" class="tm" text-anchor="middle">30-min TTL</text>
+  <path class="fl" d="M396,54 L520,54" marker-end="url(#ar)"/>
+  <rect class="bx" x="522" y="34" width="226" height="40" rx="8"/>
+  <text x="635" y="51" class="t" text-anchor="middle">session.state / .instrumented</text>
+  <text x="635" y="66" class="tm" text-anchor="middle">feeds settledIdle</text>
+
+  <rect class="bxw" x="12" y="96" width="150" height="40" rx="8"/>
+  <text x="87" y="120" class="t" text-anchor="middle">no fresh hook</text>
+  <path class="flw" d="M162,116 L214,116" marker-end="url(#arw)"/>
+  <rect class="bxw" x="216" y="96" width="180" height="40" rx="8"/>
+  <text x="306" y="113" class="t" text-anchor="middle">hardcoded "working"</text>
+  <text x="306" y="128" class="tm" text-anchor="middle">instrumented: false</text>
+  <path class="flw" d="M396,116 L520,116" marker-end="url(#arw)"/>
+  <rect class="bxw" x="522" y="96" width="226" height="40" rx="8"/>
+  <text x="635" y="113" class="t" text-anchor="middle">settledIdle = false</text>
+  <text x="635" y="128" class="tm" text-anchor="middle">queue stalls forever</text>
+
+  <!-- divider -->
+  <line x1="12" y1="164" x2="748" y2="164" stroke="var(--rule)" stroke-width="1"/>
+
+  <!-- AFTER -->
+  <text x="12" y="190" class="lbl">AFTER</text>
+  <rect class="bx" x="12" y="202" width="150" height="40" rx="8"/>
+  <text x="87" y="220" class="t" text-anchor="middle">hook event</text>
+  <text x="87" y="235" class="tm" text-anchor="middle">primary, wins</text>
+  <path class="fl" d="M162,222 L214,222" marker-end="url(#ar)"/>
+  <rect class="bx" x="216" y="202" width="180" height="40" rx="8"/>
+  <text x="306" y="226" class="t" text-anchor="middle">in-memory overlay</text>
+
+  <rect class="bxo" x="12" y="252" width="150" height="40" rx="8"/>
+  <text x="87" y="270" class="t" text-anchor="middle">transcript poll</text>
+  <text x="87" y="285" class="tm" text-anchor="middle">durable, no memory</text>
+  <path class="fl" d="M162,272 L214,272" marker-end="url(#ar)"/>
+  <rect class="bxo" x="216" y="252" width="180" height="40" rx="8"/>
+  <text x="306" y="270" class="t" text-anchor="middle">readSessionActivity()</text>
+  <text x="306" y="285" class="tm" text-anchor="middle">fallback, no fresh hook</text>
+
+  <!-- merge to shared state -->
+  <path class="fl" d="M396,222 C450,222 450,247 500,247" marker-end="url(#ar)"/>
+  <path class="fl" d="M396,272 C450,272 450,247 500,247" marker-end="url(#ar)"/>
+  <rect class="bxo" x="502" y="227" width="246" height="40" rx="8"/>
+  <text x="625" y="244" class="t" text-anchor="middle">session.state / .instrumented</text>
+  <text x="625" y="259" class="tm" text-anchor="middle">settledIdle truthful when quiet</text>
+</svg>
+<figcaption>Before &rarr; after: session state gains a durable second source, so a quiet session no longer reports a fabricated "working".</figcaption>
+</figure>
+
+<h3>Three changes</h3>
+<ol>
+<li><strong><code>readSessionActivity(path)</code></strong> (new, <code>transcript.ts</code>, pure + unit-tested): from a bounded tail read, return <code>{ state: "idle" | "working"; lastActivity: number }</code>. <em>Idle</em> when the newest main-chain record is a completed assistant turn; <em>working</em> when a user / tool-result record is pending after it. <code>lastActivity</code> is that record's timestamp.</li>
+<li><strong>Transcript resolution tolerant of a stale binding</strong> (<code>resolveTranscriptPath</code>). Today it derives <code>&lsaquo;cwd&rsaquo;/&lsaquo;agentSessionId&rsaquo;.jsonl</code> and returns null if that file is missing - which is exactly what happens after a <code>/clear</code> re-mints the agent-session id while the daemon still holds the old one. Add a fallback: the newest recently-modified <code>.jsonl</code> in the cwd's project directory. This is what lets a live-but-stale-bound pane be read at all. (Headless Foreman <code>claude -p</code> runs write to a temp <code>/private/var/folders/.../T/</code> project dir, <strong>not</strong> the worktree's, so they do not pollute this fallback.)</li>
+<li><strong>Registry applies the passive state</strong> when no fresh hook overlay exists. In <code>mergeDiscovered</code>, instead of the hardcoded <code>state:"working"</code>, seed <code>state</code>, <code>lastActivity</code>, and <code>instrumented</code> from the transcript read. A fresh hook overlay still wins outright (unchanged precedence). Net effect: <code>instrumented</code> now means <em>"we have current session state from a hook <strong>or</strong> the transcript"</em>, and <code>settledIdle</code> can be satisfied without a live hook.</li>
+</ol>
+<p><code>settledIdle</code>, <code>decideQueueTick</code>, and every downstream invariant are <strong>unchanged</strong> - they simply now receive a truthful <code>state</code>/<code>instrumented</code> for quiet sessions.</p>
+
+<h2>This specific session</h2>
+<p>"3 New UIs" is also <strong>identity-corrupted</strong>, independent of the deadlock: its queue is keyed to agent-session <code>726e0505</code>, which ended via <code>/clear</code>; the live pane (<code>%43</code>) now runs a different session in the same worktree, and that pane has been firing no hooks since the clear. Change 2 (stale-binding-tolerant resolution) is what lets the fix read its live transcript despite the dead binding.</p>
+<div class="note">Its prompt box also currently holds stray text (<code>There are 2 items</code>); since delivery pastes into the box, that must be cleared first or a send would concatenate and mangle the prompt.</div>
+<p>After the fix lands and the daemon restarts, the plan is to verify the queue delivers on its own; if the corruption still blocks it, deliver the two items into pane <code>%43</code> directly (clear the stray text first) and reconcile the queue rows so the dashboard matches reality.</p>
+
+<h2>Out of scope (noted, not fixed here)</h2>
+<ul>
+<li><strong>Stale agent-session binding on <code>SessionEnd</code>.</strong> A <code>/clear</code>'d session's binding is never invalidated, so its queue looks healthily attached instead of being offered for re-attach. Change 2 works around it for reads; the durable fix is a separate follow-up.</li>
+<li><strong>Why pane <code>%43</code> stopped firing hooks entirely.</strong> An operational quirk of that one long-lived process (it reported normally until the <code>/clear</code>), not a harness code path. The whole point of this fix is that the queue no longer depends on that pane reporting.</li>
+</ul>
+
+<h2>Testing</h2>
+<ul>
+<li>Unit: <code>readSessionActivity</code> over fixture transcripts (idle tail, working tail, empty, malformed, sidechain-only).</li>
+<li>Unit: <code>resolveTranscriptPath</code> fallback (missing derived path &rarr; newest-in-dir; no candidates &rarr; null; stale/old candidate excluded by recency).</li>
+<li>Machine: the existing repro assertion - a quiet-but-alive session with a readable transcript now yields <span class="pill send">kind: send</span>, and one with no transcript still yields <span class="pill none">kind: none</span> (no false sends).</li>
+<li>E2E: restart the daemon against the live DB and confirm previously-stalled queues on genuinely idle sessions deliver.</li>
+</ul>
+
+</div>
+</body>
+</html>

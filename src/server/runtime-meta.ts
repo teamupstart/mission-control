@@ -1,6 +1,6 @@
 import { envVar } from "./config.ts";
 import { unref } from "./util/timers.ts";
-import { readRuntimeMeta, resolveTranscriptPath } from "./transcript.ts";
+import { readRuntimeMeta, readSessionActivity, resolveTranscriptPath } from "./transcript.ts";
 import { findRolloutForSession, readRolloutMeta } from "./codex-rollout.ts";
 import type { Registry } from "./registry.ts";
 import type { Session } from "@shared/types.ts";
@@ -37,7 +37,12 @@ export function startRuntimeMetaPoller(registry: Registry): () => void {
       for (const s of live) {
         if (s.agent === "claude") {
           const path = resolveTranscriptPath(s);
-          if (path) registry.applyRuntimeMeta(s.id, readRuntimeMeta(path), "transcript");
+          if (path) {
+            registry.applyRuntimeMeta(s.id, readRuntimeMeta(path), "transcript");
+            // Same bounded tail read, second axis: keep a hook-free idle/working
+            // signal current so a quiet or post-restart session's queue still moves.
+            registry.applyPassiveActivity(s, readSessionActivity(path));
+          }
         } else if (s.agent === "codex" && s.cwd) {
           const path = codexRolloutPath(codexBindings, s);
           if (path) registry.applyRuntimeMeta(s.id, readRolloutMeta(path), "codex-rollout");

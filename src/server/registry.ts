@@ -33,7 +33,7 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import type { RuntimeMetaRead } from "./transcript.ts";
+import type { RuntimeMetaRead, SessionActivityRead } from "./transcript.ts";
 import { clampPrompt, substantivePrompt } from "./transcript.ts";
 import {
   deleteQueueItem,
@@ -138,6 +138,21 @@ interface HookOverlay {
 }
 
 /**
+ * Transcript-derived state for a session, applied in `mergeDiscovered` ONLY when no
+ * fresh hook overlay exists. The hook-free fallback that keeps a quiet session's
+ * queue moving: unlike a `HookOverlay` it needs no live event to refresh it - the
+ * passive poller re-derives it from the on-disk transcript every tick - so it
+ * survives both a daemon restart and a session going silent past the overlay TTL.
+ */
+interface PassiveState {
+  state: SessionState;
+  /** Epoch ms of the newest transcript record (drives `settledIdle`'s settle gap). */
+  lastActivity: number;
+  /** When the poller last refreshed this read; bounds staleness if the poller stalls. */
+  updatedAt: number;
+}
+
+/**
  * In-memory source of truth for live sessions and pending reviews. Emits a
  * `ServerEvent` on every change; the SSE layer forwards those to browsers.
  *
@@ -157,6 +172,9 @@ export class Registry extends EventEmitter {
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** overlay keyed by pane token ("tmux:%12" | "wez:12"). */
   private overlays = new Map<string, HookOverlay>();
+  /** Transcript-derived state keyed by the SAME pane token; consulted only when a
+   *  session has no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
+  private passiveStates = new Map<string, PassiveState>();
   /**
    * No-mistakes launcher bindings: sessionId -> worktree cwd -> {branch, seen}.
    * Records which worktree(s) a session is driving a run in, so a run dispatched
@@ -387,6 +405,22 @@ export class Registry extends EventEmitter {
       base.lastActivity = overlay.lastActivity;
       base.agentSessionId = overlay.agentSessionId ?? base.agentSessionId;
       base.transcriptPath = overlay.transcriptPath ?? base.transcriptPath;
+    } else {
+      // No fresh hook. Fall back to the transcript-derived state that the passive
+      // poller keeps current from disk, so a session whose hooks lapsed - a 30-min
+      // silence, or EVERY session for the moment after a restart wipes the in-memory
+      // overlays - reports a truthful idle/working instead of the base `working`
+      // default that silently strands its work queue.
+      //
+      // Deliberately does NOT set `instrumented`: that stays "a fresh hook exists"
+      // for the UI badge and `reportBucket`. `settledIdle` trusts hook-free idle
+      // through the `state === "idle"` claim itself, which is only ever a real
+      // report (the rebuild default is `working`), never an absence of data.
+      const passive = this.passiveStateFor(base);
+      if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) {
+        base.state = passive.state;
+        base.lastActivity = passive.lastActivity;
+      }
     }
     // The overlay may have just supplied a binding nothing has persisted yet, and
     // that is the ORDINARY case at launch, not an edge: a hook whose session hasn't
@@ -934,6 +968,28 @@ export class Registry extends EventEmitter {
     if (changed) this.emitSession(next);
   }
 
+  /**
+   * Record a transcript-derived idle/working read for a live session, keyed by pane
+   * token like a hook overlay so it survives the next discovery sweep. Consulted by
+   * `mergeDiscovered` only when the session has no fresh hook. A null read (nothing
+   * datable this tick) is a no-op, so a briefly unreadable file never clears a good
+   * reading; a session with no pane key is skipped (nothing to type into anyway).
+   *
+   * The actual apply happens on the next discovery sweep (which rebuilds the card
+   * from `passiveStateFor`), matching how hook overlays that arrive before discovery
+   * take effect - the poller runs at the discovery cadence, so the lag is one tick.
+   */
+  applyPassiveActivity(session: Session, read: SessionActivityRead | null): void {
+    if (!read) return;
+    const key = sessionKey(session);
+    if (!key) return;
+    this.passiveStates.set(key, {
+      state: read.state,
+      lastActivity: read.lastActivity,
+      updatedAt: Date.now(),
+    });
+  }
+
   private overlayFor(s: Session): HookOverlay | undefined {
     const key = sessionKey(s);
     if (key && this.overlays.has(key)) return this.overlays.get(key);
@@ -944,9 +1000,18 @@ export class Registry extends EventEmitter {
     return undefined;
   }
 
+  /** The transcript-derived state for a session, keyed by pane token. Pane-only:
+   *  it's written by pane key and a session with no pane can't be delivered to. */
+  private passiveStateFor(s: Session): PassiveState | undefined {
+    const key = sessionKey(s);
+    return key ? this.passiveStates.get(key) : undefined;
+  }
+
   private pruneOverlays(now: number): void {
     for (const [k, o] of this.overlays)
       if (now - o.updatedAt > OVERLAY_TTL_MS) this.overlays.delete(k);
+    for (const [k, p] of this.passiveStates)
+      if (now - p.updatedAt > OVERLAY_TTL_MS) this.passiveStates.delete(k);
   }
 
   private remove(id: string): void {

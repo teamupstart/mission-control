@@ -669,7 +669,7 @@ without reaching for the mouse:
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box | Anywhere |
-| <kbd>e</kbd> | Expand / collapse the selected card | Selected session |
+| <kbd>e</kbd> | Expand / collapse the selected card (expanding drops the cursor in its reply box, ready to type) | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |

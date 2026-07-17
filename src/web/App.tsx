@@ -73,6 +73,10 @@ export function App(): React.JSX.Element {
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
   const actionHandles = useRef<Map<string, ActionBarHandle>>(new Map());
+  // Set to the id a keyboard expand should drop the cursor into once its send box
+  // mounts (see the `expand` chord and the effect that consumes it). A ref, not
+  // state: it arms a one-shot side effect, and must not itself cause a render.
+  const pendingReplyFocus = useRef<string | null>(null);
   const gridRef = useRef<HTMLElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
@@ -308,6 +312,11 @@ export function App(): React.JSX.Element {
       if (chord === bindings.expand) {
         if (!selectedId) return;
         e.preventDefault();
+        // Expanding via the keyboard is an explicit "I want to type here", so arm the
+        // send box to take the cursor once it mounts. Collapsing (this card is already
+        // the expanded one) arms nothing. The focus itself is deferred to the effect
+        // below because the reply box only exists after the next render.
+        pendingReplyFocus.current = expandedId === selectedId ? null : selectedId;
         toggleExpand(selectedId);
         return;
       }
@@ -373,6 +382,18 @@ export function App(): React.JSX.Element {
     toggleExpand,
     bindings,
   ]);
+
+  // Land the cursor in a keyboard-expanded card's send box. The panel that renders
+  // it mounts on the render this effect trails, so a synchronous focus in the chord
+  // handler would find no box - the wait is the whole reason this is deferred here.
+  // Routed through the SAME `startSend` the `s` shortcut uses, so an unavailable
+  // transcript falls back to the card's own compose box exactly as it does there,
+  // and the panel still never grabs focus on its own.
+  useEffect(() => {
+    const id = pendingReplyFocus.current;
+    pendingReplyFocus.current = null;
+    if (id && expandedId === id) actionHandles.current.get(id)?.startSend();
+  }, [expandedId]);
 
   return (
     <div className="app">

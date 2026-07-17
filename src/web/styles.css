@@ -3465,6 +3465,15 @@ kbd {
   font-size: 14px;
   line-height: 1;
 }
+/* The topbar's actions are peers, so they sit at half the 24px gap the bar uses
+   to separate its groups - at the full gap they read as unrelated buttons. Being
+   one flex item also means they wrap together instead of splitting across rows. */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
 /* ⚙ is a plain text glyph, not an emoji: it draws about two-thirds of its em box
    where the neighbouring 📡/🔕 fill theirs, so at a shared font-size it reads a
    size small. Oversize it until the drawn glyph matches - the box is fixed above,

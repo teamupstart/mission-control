@@ -37,9 +37,11 @@ export interface ActionDef {
 // Order here is the order shown in the settings panel.
 export const ACTIONS: readonly ActionDef[] = [
   {
+    // Named "roundup" before the panel became the Sitrep. The id keys persisted
+    // overrides in localStorage, so it stays put while the label moves on.
     id: "roundup",
-    label: "Toggle Roundup",
-    description: "Open or close the roundup report.",
+    label: "Toggle Sitrep",
+    description: "Open or close the sitrep.",
     defaultBinding: "r",
     group: "global",
   },

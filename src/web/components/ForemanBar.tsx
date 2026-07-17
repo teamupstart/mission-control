@@ -3,9 +3,11 @@ import type { ForemanState } from "../useForeman.ts";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
-// worker is running; the popover flips the mode, the repo allowlist for live
-// sends, the access-approval switch, and the cheap-tier posture (off / shadow /
-// on - see docs/plans/foreman-watcher/plan.md). Mirrors AlertBar's popover pattern.
+// worker is running; the popover flips the in-the-moment knobs - the mode, the
+// access-approval switch, the work queues, and the on-drain action. The set-once
+// posture (cheap tier - off / shadow / on, see docs/plans/foreman-watcher/plan.md -
+// and the live repo allowlist) lives in Settings → Foreman, which the popover
+// deep-links. Mirrors AlertBar's popover pattern.
 
 const MODE_LABEL: Record<string, string> = {
   "dry-run": "dry-run",
@@ -22,8 +24,6 @@ const MODE_LABEL: Record<string, string> = {
  * field reads as `Number("") === 0`, which the schema refuses. So: hold the text
  * locally, send only a value that is actually in range, and otherwise snap back to
  * what's in force rather than firing a patch we know the server will refuse.
- *
- * Mirrors the allowlist textarea's commit-on-blur, which is here for the same reason.
  */
 function NumberSetting({
   value,
@@ -71,8 +71,16 @@ function NumberSetting({
   );
 }
 
-export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Element {
-  const { config, status, update, error } = state;
+export function ForemanBar({
+  state,
+  onOpenSettings,
+}: {
+  state: ForemanState;
+  /** Open Settings on the Foreman category, where the cheap tier and the trusted-repo
+   *  list now live. The popover keeps only the in-the-moment knobs. */
+  onOpenSettings: () => void;
+}): React.JSX.Element {
+  const { config, status } = state;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -86,7 +94,6 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
 
   const enabled = config?.enabled ?? false;
   const mode = config?.mode ?? "dry-run";
-  const wrapup = config?.wrapup ?? "ask";
   const chip = !enabled ? "off" : MODE_LABEL[mode] ?? mode;
   const running = status?.running ?? false;
   const queue = status?.queueDepth ?? 0;
@@ -108,147 +115,149 @@ export function ForemanBar({ state }: { state: ForemanState }): React.JSX.Elemen
         {enabled && queue > 0 && <span className="ghost-badge">{queue}</span>}
       </button>
 
-      {open && config && (
-        <div className="alert-pop foreman-pop" role="dialog" aria-label="Foreman settings">
-          <label className="alert-row">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => void update({ enabled: e.target.checked })}
-            />
-            Enable Foreman
-          </label>
-
-          <fieldset className="foreman-modes" disabled={!enabled}>
-            <legend>Mode</legend>
-            {(["dry-run", "semi-auto", "live"] as const).map((m) => (
-              <label className="alert-row" key={m}>
-                <input
-                  type="radio"
-                  name="foreman-mode"
-                  checked={mode === m}
-                  onChange={() => void update({ mode: m })}
-                />
-                {m === "dry-run" && "Dry-run - draft only, never send"}
-                {m === "semi-auto" && "Semi-auto - draft + one-click send"}
-                {m === "live" && "Live - send on my behalf"}
-              </label>
-            ))}
-          </fieldset>
-
-          <label className="alert-row">
-            <input
-              type="checkbox"
-              checked={config.autoApproveAccess}
-              disabled={!enabled}
-              onChange={(e) => void update({ autoApproveAccess: e.target.checked })}
-            />
-            Auto-approve non-destructive access
-          </label>
-
-          <fieldset className="foreman-modes" disabled={!enabled}>
-            <legend>Cheap tier</legend>
-            {(["off", "shadow", "on"] as const).map((t) => (
-              <label className="alert-row" key={t}>
-                <input
-                  type="radio"
-                  name="foreman-triage"
-                  checked={(config.triage ?? "shadow") === t}
-                  onChange={() => void update({ triage: t })}
-                />
-                {t === "off" && "Off - full review for every prompt"}
-                {t === "shadow" && "Shadow - run the cheap tier alongside, measure it"}
-                {t === "on" && "On - cheap tier answers the easy ones"}
-              </label>
-            ))}
-          </fieldset>
-
-          {/*
-            The queue's two policy knobs. Timings (settle, pickup, lease) are
-            deliberately module constants with env overrides - these are the only
-            two a human should actually reason about.
-          */}
-          <fieldset className="foreman-knobs" disabled={!enabled}>
-            <legend>Work queues</legend>
-            <NumberSetting
-              value={config.maxFixAttempts}
-              min={1}
-              max={10}
-              label="Fix attempts per issue before escalating"
-              onCommit={(n) => void update({ maxFixAttempts: n })}
-            />
-            <NumberSetting
-              value={config.maxFixRounds}
-              min={1}
-              max={50}
-              label="Max fix rounds per item"
-              onCommit={(n) => void update({ maxFixRounds: n })}
-            />
-          </fieldset>
-
-          {/*
-            What Foreman does when a queue drains. Unlike every other knob here, the two
-            automated options make it TYPE something that pushes - so they are gated on
-            live + allowlist in the machine (step 5), and the hint below says so out loud
-            rather than letting a selected radio quietly do nothing.
-          */}
-          <fieldset className="foreman-modes" disabled={!enabled}>
-            <legend>On drain</legend>
-            {(["ask", "no-mistakes", "pr"] as const).map((w) => (
-              <label className="alert-row" key={w}>
-                <input
-                  type="radio"
-                  name="foreman-wrapup"
-                  checked={wrapup === w}
-                  onChange={() => void update({ wrapup: w })}
-                />
-                {w === "ask" && "Ask me - show the Ship it? card"}
-                {w === "no-mistakes" && "Run /no-mistakes automatically"}
-                {w === "pr" && "Straight to PR - commit, push, open a PR"}
-              </label>
-            ))}
-            {enabled && wrapup !== "ask" && mode !== "live" && (
-              <p className="alert-hint dim">
-                Only fires in Live mode on an allowlisted repo - until then Foreman asks.
-              </p>
-            )}
-          </fieldset>
-
-          {mode === "live" && (
-            <label className="foreman-allowlist">
-              Live only in these repos (one path per line):
-              {/* Worktrees are the normal case, not the exception - every dispatched
-                  agent runs in one, parked far from the repo. Saying so here is what
-                  stops "I set it to live and it still asks me" from reading as a bug. */}
-              <span className="foreman-allowlist-hint dim">
-                Worktrees of these repos count too, wherever they live on disk.
-              </span>
-              <textarea
-                rows={3}
-                defaultValue={config.repoAllowlist.join("\n")}
-                placeholder="/Users/you/work/some-repo"
-                onBlur={(e) =>
-                  void update({
-                    repoAllowlist: e.target.value
-                      .split("\n")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  })
-                }
-              />
-            </label>
-          )}
-
-          {error && <p className="foreman-error">{error}</p>}
-
-          <p className="alert-hint">
-            {running ? "Worker running." : "Worker not running - start it with "}
-            {!running && <code>npm run foreman</code>}
-            {status &&
-              ` ${status.counts.answered} answered · ${status.counts.escalated} escalated · ${status.counts.pending} drafts`}
-          </p>
-        </div>
+      {open && (
+        <ForemanPopover
+          state={state}
+          onOpenSettings={() => {
+            setOpen(false);
+            onOpenSettings();
+          }}
+        />
       )}
+    </div>
+  );
+}
+
+/**
+ * The Foreman settings popover body. Split from the trigger button so it can be rendered
+ * on its own in a test: the SSE stream behind the live app hangs headless automation, so
+ * structure (which knobs are here, which moved to Settings) is asserted from static markup
+ * rather than a driven click. Renders nothing until the first config poll lands.
+ */
+export function ForemanPopover({
+  state,
+  onOpenSettings,
+}: {
+  state: ForemanState;
+  onOpenSettings: () => void;
+}): React.JSX.Element | null {
+  const { config, status, update, error } = state;
+  if (!config) return null;
+  const { enabled, mode, wrapup } = config;
+  const running = status?.running ?? false;
+
+  return (
+    <div className="alert-pop foreman-pop" role="dialog" aria-label="Foreman settings">
+      <label className="alert-row">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => void update({ enabled: e.target.checked })}
+        />
+        Enable Foreman
+      </label>
+
+      <fieldset className="foreman-modes" disabled={!enabled}>
+        <legend>Mode</legend>
+        {(["dry-run", "semi-auto", "live"] as const).map((m) => (
+          <label className="alert-row" key={m}>
+            <input
+              type="radio"
+              name="foreman-mode"
+              checked={mode === m}
+              onChange={() => void update({ mode: m })}
+            />
+            {m === "dry-run" && "Dry-run - draft only, never send"}
+            {m === "semi-auto" && "Semi-auto - draft + one-click send"}
+            {m === "live" && "Live - send on my behalf"}
+          </label>
+        ))}
+      </fieldset>
+
+      <label className="alert-row">
+        <input
+          type="checkbox"
+          checked={config.autoApproveAccess}
+          disabled={!enabled}
+          onChange={(e) => void update({ autoApproveAccess: e.target.checked })}
+        />
+        Auto-approve non-destructive access
+      </label>
+
+      {/*
+        The queue's two policy knobs. Timings (settle, pickup, lease) are
+        deliberately module constants with env overrides - these are the only
+        two a human should actually reason about.
+      */}
+      <fieldset className="foreman-knobs" disabled={!enabled}>
+        <legend>Work queues</legend>
+        <NumberSetting
+          value={config.maxFixAttempts}
+          min={1}
+          max={10}
+          label="Fix attempts per issue before escalating"
+          onCommit={(n) => void update({ maxFixAttempts: n })}
+        />
+        <NumberSetting
+          value={config.maxFixRounds}
+          min={1}
+          max={50}
+          label="Max fix rounds per item"
+          onCommit={(n) => void update({ maxFixRounds: n })}
+        />
+      </fieldset>
+
+      {/*
+        What Foreman does when a queue drains. Unlike every other knob here, the two
+        automated options make it TYPE something that pushes - so they are gated on
+        live + allowlist in the machine (step 5), and the hint below says so out loud
+        rather than letting a selected radio quietly do nothing.
+      */}
+      <fieldset className="foreman-modes" disabled={!enabled}>
+        <legend>On drain</legend>
+        {(["ask", "no-mistakes", "pr"] as const).map((w) => (
+          <label className="alert-row" key={w}>
+            <input
+              type="radio"
+              name="foreman-wrapup"
+              checked={wrapup === w}
+              onChange={() => void update({ wrapup: w })}
+            />
+            {w === "ask" && "Ask me - show the Ship it? card"}
+            {w === "no-mistakes" && "Run /no-mistakes automatically"}
+            {w === "pr" && "Straight to PR - commit, push, open a PR"}
+          </label>
+        ))}
+        {enabled && wrapup !== "ask" && mode !== "live" && (
+          <p className="alert-hint dim">
+            Only fires in Live mode on an allowlisted repo - until then Foreman asks.
+          </p>
+        )}
+      </fieldset>
+
+      {/*
+        The trusted-repo list moved to Settings → Foreman (a picker, not a paste box).
+        Live mode still needs the at-a-glance "am I actually acting here", so it keeps a
+        read-only count that deep-links to where you edit it - not an editor itself.
+      */}
+      {mode === "live" && (
+        <button type="button" className="foreman-live-repos" onClick={onOpenSettings}>
+          {config.repoAllowlist.length === 0
+            ? "Live, but no repos trusted yet - add them in Settings →"
+            : `Live in ${config.repoAllowlist.length} repo${
+                config.repoAllowlist.length === 1 ? "" : "s"
+              } · manage in Settings →`}
+        </button>
+      )}
+
+      {error && <p className="foreman-error">{error}</p>}
+
+      <p className="alert-hint">
+        {running ? "Worker running." : "Worker not running - start it with "}
+        {!running && <code>npm run foreman</code>}
+        {status &&
+          ` ${status.counts.answered} answered · ${status.counts.escalated} escalated · ${status.counts.pending} drafts`}
+      </p>
     </div>
   );
 }

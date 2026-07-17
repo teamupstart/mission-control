@@ -1,132 +1,135 @@
-import { useEffect, useState } from "react";
-import {
-  ACTIONS,
-  type ActionId,
-  chordFromEvent,
-  findConflicts,
-  formatChord,
-  isReservedChord,
-  resetAll,
-  resetBinding,
-  setBinding,
-  useKeybindings,
-} from "../lib/keybindings.ts";
+import { useEffect, useRef, useState } from "react";
+import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
-import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
-
-const GROUPS = [
-  { key: "global", label: "Anywhere" },
-  { key: "selection", label: "Selected session" },
-] as const;
-
-function labelOf(id: ActionId): string {
-  return ACTIONS.find((a) => a.id === id)?.label ?? id;
-}
+import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
+import { LayoutPanel } from "./LayoutPanel.tsx";
+import type { LayoutMode } from "../lib/layout.ts";
+import type { ForemanState } from "../useForeman.ts";
 
 /**
- * The layout's shape, drawn rather than described - three tiles, a rail + pane, or
- * four columns. Faster to tell apart than the words are, and it survives the
- * descriptions being skipped, which they will be.
+ * The settings categories, in rail order. Each is a peer destination in the left nav,
+ * so adding one - Notifications, Foreman, Appearance - is appending an entry here plus a
+ * `case` in `renderCategory`, never lengthening a scroll. Keeping the list as data (not
+ * inlined JSX) is also what the render test walks to prove every category is reachable.
  */
-function LayoutGlyph({ mode }: { mode: LayoutMode }): React.JSX.Element {
-  const rects: [number, number, number, number][] =
-    mode === "grid"
-      ? [
-          [0, 0, 7, 6],
-          [8.5, 0, 7, 6],
-          [0, 7, 7, 6],
-          [8.5, 7, 7, 6],
-        ]
-      : mode === "console"
-        ? [
-            [0, 0, 5, 4],
-            [0, 4.7, 5, 4],
-            [0, 9.4, 5, 3.6],
-            [6.2, 0, 9.3, 13],
-          ]
-        : [
-            [0, 0, 3.3, 13],
-            [4.1, 0, 3.3, 9],
-            [8.2, 0, 3.3, 6],
-            [12.3, 0, 3.3, 4],
-          ];
-  return (
-    <svg className="layout-glyph" viewBox="0 0 15.6 13" width="16" height="13" aria-hidden focusable="false">
-      {rects.map(([x, y, w, h], i) => (
-        <rect key={i} x={x} y={y} width={w} height={h} rx="1.5" fill="currentColor" />
-      ))}
-    </svg>
-  );
+export const SETTINGS_CATEGORIES = [
+  { id: "layout", label: "Layout", icon: "▦" },
+  { id: "keyboard", label: "Keyboard", icon: "⌨" },
+  { id: "skills", label: "Skills", icon: "✦" },
+  { id: "foreman", label: "Foreman", icon: "●" },
+] as const;
+
+export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
+
+/** Stable per-tab id, so the pane can name its tab as its `aria-labelledby` label. */
+function tabDomId(id: SettingsCategoryId): string {
+  return `settings-tab-${id}`;
 }
 
 /**
  * App settings, reached from the topbar gear or the native Settings… menu (⌘,).
  *
- * Three sections. The layout picker, which swaps the whole dashboard between the card
- * grid, the split-pane console and the state board - same sessions, same cards, same
- * actions, different shape. The keyboard-shortcut editor: click an action's key, press
- * the new one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved
- * navigation keys are refused and duplicate bindings are flagged inline. And the skills
- * catalog, which is the modal's first setting that leaves this machine's localStorage -
- * it writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
- * thing here that can fail asynchronously. `SkillsPanel` owns that error path.
+ * A two-pane surface: a category rail on the left, the selected category's panel on the
+ * right. Only the active category renders, so no setting is ever buried below another -
+ * Skills is one click from open, not the tail of a scroll. The panels themselves are
+ * unchanged; this component only arranges them and owns which one is showing.
+ *
+ * `LayoutPanel` and `KeyboardPanel` are the modal's local-only, synchronous settings
+ * (localStorage). Skills is the one that leaves this machine: it writes to the daemon,
+ * and through it to `~/.claude/skills`, so it is also the first that can fail
+ * asynchronously. `SkillsPanel` owns that error path. `useSkills` lives here rather than
+ * inside the Skills panel so the catalog keeps polling (and `pending` keeps moving) while
+ * you're on another category.
  */
 export function SettingsModal({
+  onClose,
+  foreman,
   layout,
   onLayoutChange,
-  onClose,
+  initialCategory = "keyboard",
 }: {
+  onClose: () => void;
+  /**
+   * Foreman config/status, OWNED BY App - the topbar ForemanBar shares this exact state,
+   * so it is passed in rather than re-instantiated here, and an edit in the panel and an
+   * edit in the popover can never drift or double-poll. Skills is the opposite: App
+   * doesn't use it, so it stays a local `useSkills()` below.
+   */
+  foreman: ForemanState;
+  /**
+   * The live layout, OWNED BY App for the same reason as `foreman`: App renders the
+   * layout, so it holds the state and this panel only edits it. A local `useLayoutMode()`
+   * here would be a second copy of the same localStorage key, and the dashboard behind
+   * the modal wouldn't move when you picked one.
+   */
   layout: LayoutMode;
   onLayoutChange: (mode: LayoutMode) => void;
-  onClose: () => void;
+  /** Which category to open on. Lets the ⌘, menu, the ForemanBar link, or a test deep-link one. */
+  initialCategory?: SettingsCategoryId;
 }): React.JSX.Element {
-  const { bindings, hasCustom } = useKeybindings();
+  const [active, setActive] = useState<SettingsCategoryId>(initialCategory);
   const skills = useSkills();
-  const [recording, setRecording] = useState<ActionId | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const conflicts = findConflicts(bindings);
+  const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
-  // While *not* recording, Escape closes the modal. (During recording the capture
-  // listener below owns Escape, using it to cancel the capture instead.)
+  // Escape closes the modal. This is a plain bubble-phase handler with no "is a shortcut
+  // recording?" guard: while KeyboardPanel records, its capture-phase listener swallows
+  // the keystroke (stopPropagation) before this ever runs, so Escape cancels the capture
+  // instead of closing - the modal never has to know recording is happening.
   useEffect(() => {
-    if (recording) return;
     function onKey(e: KeyboardEvent): void {
       if (e.key === "Escape") onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [recording, onClose]);
+  }, [onClose]);
 
-  // Capture the next keystroke for the action being recorded. Capture phase +
-  // stopPropagation so we intercept before the grid's global handler ever sees it.
-  useEffect(() => {
-    if (!recording) return;
-    const id = recording;
-    function onKey(e: KeyboardEvent): void {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        setRecording(null);
+  // Arrow/Home/End move the tab set, per the WAI-ARIA tabs pattern: selection follows
+  // focus, so a keyboard user lands on the panel the same way a click gets there. The
+  // stopPropagation keeps these keys inside the rail - the grid's window-level arrow
+  // handler stands down while settings is open, but it should not be the only thing
+  // standing between the rail and a background card moving under the modal.
+  function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
+    const last = SETTINGS_CATEGORIES.length - 1;
+    const idx = SETTINGS_CATEGORIES.findIndex((c) => c.id === active);
+    let next: number;
+    switch (e.key) {
+      case "ArrowUp":
+      case "ArrowLeft":
+        next = idx <= 0 ? last : idx - 1;
+        break;
+      case "ArrowDown":
+      case "ArrowRight":
+        next = idx >= last ? 0 : idx + 1;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = last;
+        break;
+      default:
         return;
-      }
-      const chord = chordFromEvent(e);
-      if (!chord) return; // a lone modifier - keep waiting
-      if (isReservedChord(chord)) {
-        setError(`${formatChord(chord)} is reserved for grid navigation.`);
-        return;
-      }
-      setBinding(id, chord);
-      setRecording(null);
-      setError(null);
     }
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording]);
+    e.preventDefault();
+    e.stopPropagation();
+    const nextId = SETTINGS_CATEGORIES[next]?.id;
+    if (!nextId) return;
+    setActive(nextId);
+    tabRefs.current.get(nextId)?.focus();
+  }
 
-  function startRecording(id: ActionId): void {
-    setError(null);
-    setRecording((cur) => (cur === id ? null : id));
+  function renderCategory(id: SettingsCategoryId): React.JSX.Element {
+    switch (id) {
+      case "layout":
+        return <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />;
+      case "keyboard":
+        return <KeyboardPanel />;
+      case "skills":
+        return <SkillsPanel state={skills} />;
+      case "foreman":
+        return <ForemanSettingsPanel state={foreman} />;
+    }
   }
 
   return (
@@ -144,102 +147,41 @@ export function SettingsModal({
           </button>
         </header>
 
-        <div className="settings-body">
-          <section className="settings-section">
-            <div className="settings-section-head">
-              <h3>Layout</h3>
-            </div>
-            {/* A radio group, not a segmented control: these are three exclusive answers to
-                one question, and the description is the point - the labels alone don't say
-                what you'd be trading. Applies live behind the modal, so you can see it. */}
-            <div className="layout-picker" role="radiogroup" aria-label="Dashboard layout">
-              {LAYOUTS.map((l) => (
-                <label key={l.id} className={`layout-option${layout === l.id ? " is-on" : ""}`}>
-                  <input
-                    type="radio"
-                    name="layout"
-                    value={l.id}
-                    checked={layout === l.id}
-                    onChange={() => onLayoutChange(l.id)}
-                  />
-                  <span className="layout-option-text">
-                    <span className="layout-option-label">
-                      <LayoutGlyph mode={l.id} />
-                      {l.label}
-                    </span>
-                    <span className="layout-option-desc">{l.description}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-head">
-              <h3>Keyboard shortcuts</h3>
-              {hasCustom && (
-                <button className="btn btn-ghost" onClick={() => resetAll()}>
-                  Reset all
-                </button>
-              )}
-            </div>
-
-            {error && <p className="settings-error">{error}</p>}
-
-            {GROUPS.map((group) => (
-              <div className="settings-group" key={group.key}>
-                <p className="settings-group-label">{group.label}</p>
-                {ACTIONS.filter((a) => a.group === group.key).map((a) => {
-                  const chord = bindings[a.id];
-                  const custom = chord !== a.defaultBinding;
-                  const conflict = conflicts.get(a.id);
-                  const isRec = recording === a.id;
-                  return (
-                    <div className={`kb-row${conflict ? " has-conflict" : ""}`} key={a.id}>
-                      <div className="kb-row-text">
-                        <span className="kb-row-label">{a.label}</span>
-                        <span className="kb-row-desc">{a.description}</span>
-                        {conflict && (
-                          <span className="kb-row-conflict">
-                            Same key as {conflict.map(labelOf).join(", ")}
-                          </span>
-                        )}
-                      </div>
-                      <div className="kb-row-controls">
-                        <button
-                          className={`kb-capture${isRec ? " is-recording" : ""}`}
-                          onClick={() => startRecording(a.id)}
-                          aria-label={
-                            isRec
-                              ? `Recording new shortcut for ${a.label}`
-                              : `Change shortcut for ${a.label} (currently ${formatChord(chord)})`
-                          }
-                        >
-                          {isRec ? <span className="kb-recording">Press a key…</span> : <kbd>{formatChord(chord)}</kbd>}
-                        </button>
-                        <button
-                          className="kb-reset"
-                          disabled={!custom}
-                          onClick={() => resetBinding(a.id)}
-                          title="Reset to default"
-                          aria-label={`Reset ${a.label} to default`}
-                        >
-                          ↺
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+        <div className="settings-layout">
+          <div
+            className="settings-nav"
+            role="tablist"
+            aria-orientation="vertical"
+            aria-label="Settings categories"
+            onKeyDown={onTablistKey}
+          >
+            {SETTINGS_CATEGORIES.map((c) => (
+              <button
+                key={c.id}
+                id={tabDomId(c.id)}
+                type="button"
+                className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
+                role="tab"
+                aria-selected={active === c.id}
+                // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
+                tabIndex={active === c.id ? 0 : -1}
+                ref={(el) => {
+                  if (el) tabRefs.current.set(c.id, el);
+                  else tabRefs.current.delete(c.id);
+                }}
+                onClick={() => setActive(c.id)}
+              >
+                <span className="settings-nav-icon" aria-hidden>
+                  {c.icon}
+                </span>
+                {c.label}
+              </button>
             ))}
+          </div>
 
-            <p className="settings-hint">
-              Click a shortcut, then press the new key. Esc and the arrow keys drive grid
-              navigation and can't be reassigned.
-            </p>
-          </section>
-
-          <SkillsPanel state={skills} />
+          <div className="settings-pane" role="tabpanel" aria-labelledby={tabDomId(active)}>
+            {renderCategory(active)}
+          </div>
         </div>
       </div>
     </div>

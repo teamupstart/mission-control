@@ -9,7 +9,7 @@ import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
-import { SettingsModal } from "./components/SettingsModal.tsx";
+import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
@@ -43,6 +43,10 @@ export function App(): React.JSX.Element {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Which category Settings opens on. The gear and ⌘, land on Keyboard; the ForemanBar
+  // "manage in Settings" link deep-links Foreman. Applied via SettingsModal's
+  // initialCategory, which re-reads on each open because the modal remounts.
+  const [settingsCategory, setSettingsCategory] = useState<SettingsCategoryId>("keyboard");
   const [diffSessionId, setDiffSessionId] = useState<string | null>(null);
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
@@ -54,7 +58,14 @@ export function App(): React.JSX.Element {
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
-  useEffect(() => window.missionDesktop?.onOpenSettings(() => setSettingsOpen(true)), []);
+  useEffect(
+    () =>
+      window.missionDesktop?.onOpenSettings(() => {
+        setSettingsCategory("keyboard");
+        setSettingsOpen(true);
+      }),
+    [],
+  );
 
   // Live element + imperative-handle maps for the keyboard-selected card.
   const cardEls = useRef<Map<string, HTMLElement>>(new Map());
@@ -252,7 +263,7 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
-      // Roundup toggles whether it's open or closed - held back only while a
+      // Sitrep toggles whether it's open or closed - held back only while a
       // review/dispatch/settings overlay owns the screen or you're typing.
       if (
         !typing &&
@@ -462,34 +473,46 @@ export function App(): React.JSX.Element {
             </button>
           )}
         </div>
-        <AlertBar settings={alertSettings} update={updateAlerts} />
-        <ForemanBar state={foreman} />
-        <button
-          className="ghost-btn settings-btn"
-          onClick={() => setSettingsOpen(true)}
-          title="Settings (⌘,)"
-          aria-label="Settings"
-        >
-          <span aria-hidden>⚙</span>
-        </button>
-        <button
-          className="ghost-btn"
-          onClick={() => setReportOpen(true)}
-          title={`Roundup - press ${formatChord(bindings.roundup)}`}
-        >
-          Roundup
-          <kbd className="ghost-key" aria-hidden>
-            {formatChord(bindings.roundup)}
-          </kbd>
-          {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
-        </button>
-        <button
-          className="dispatch-btn"
-          onClick={() => setDispatchOpen(true)}
-          title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
-        >
-          <span aria-hidden>＋</span> Dispatch
-        </button>
+        {/* Every action shares one rhythm, tighter than the gap separating them
+            from the filter/stats, so they read as one cluster and wrap as a
+            unit. `live` stays outside it: that is status, not an action. */}
+        <div className="topbar-actions">
+          <ForemanBar
+            state={foreman}
+            onOpenSettings={() => {
+              setSettingsCategory("foreman");
+              setSettingsOpen(true);
+            }}
+          />
+          <button
+            className="dispatch-btn"
+            onClick={() => setDispatchOpen(true)}
+            title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
+          >
+            <span aria-hidden>＋</span> Dispatch
+          </button>
+          <button
+            className="ghost-btn glyph-btn"
+            onClick={() => setReportOpen(true)}
+            title={`Sitrep - press ${formatChord(bindings.roundup)}`}
+            aria-label="Sitrep"
+          >
+            <span aria-hidden>📡</span>
+            {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
+          </button>
+          <button
+            className="ghost-btn glyph-btn gear-btn"
+            onClick={() => {
+              setSettingsCategory("keyboard");
+              setSettingsOpen(true);
+            }}
+            title="Settings (⌘,)"
+            aria-label="Settings"
+          >
+            <span aria-hidden>⚙</span>
+          </button>
+          <AlertBar settings={alertSettings} update={updateAlerts} />
+        </div>
         <div className={`link ${connected ? "up" : "down"}`}>
           <span className="link-dot" />
           {connected ? "live" : "reconnecting"}
@@ -541,7 +564,13 @@ export function App(): React.JSX.Element {
       )}
 
       {settingsOpen && (
-        <SettingsModal layout={layout} onLayoutChange={setLayout} onClose={() => setSettingsOpen(false)} />
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          foreman={foreman}
+          initialCategory={settingsCategory}
+          layout={layout}
+          onLayoutChange={setLayout}
+        />
       )}
 
       {resetSession && (

@@ -84,6 +84,30 @@ export const fetchNomistakesFix = (id: string, sha: string): Promise<NmFixDetail
     `/api/sessions/${encodeURIComponent(id)}/nomistakes/fixes/${encodeURIComponent(sha)}`,
   );
 
+/**
+ * Resolve a typed path to its canonical git repo root, validated server-side.
+ * Used by the Foreman allowlist picker so a typo can't enter the trusted list -
+ * a non-repo path comes back as an error rather than a silently-inert entry.
+ */
+export async function resolveRepo(
+  path: string,
+): Promise<{ ok: true; repoRoot: string } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/repos/resolve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { repoRoot?: string; error?: string };
+    if (!res.ok || !data.repoRoot) {
+      return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    }
+    return { ok: true, repoRoot: data.repoRoot };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Fetch the workspace's git repos (dispatch bases). Never throws - [] on failure. */
 export async function fetchRepos(): Promise<string[]> {
   try {

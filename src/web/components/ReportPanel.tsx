@@ -9,12 +9,16 @@ import {
 } from "@shared/session.ts";
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
+import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 
 /**
- * The Roundup panel (`/api/report`): who needs you, who's working, what's idle, the
+ * The Sitrep panel (`/api/report`): who needs you, who's working, what's idle, the
  * backlog, and recent outcomes - assembled from the same live snapshot the grid
  * uses (so it never flickers or lags), with the SAME bucketing the server uses
  * for its markdown digest.
+ *
+ * The action id + endpoint still say "roundup"/"report": the id keys persisted
+ * keybindings, so renaming it would orphan anyone's saved override.
  */
 export function ReportPanel({
   sessions,
@@ -27,6 +31,7 @@ export function ReportPanel({
   onClose: () => void;
   onOpenReviews: (sessionId: string) => void;
 }): React.JSX.Element {
+  const { bindings } = useKeybindings();
   const [copied, setCopied] = useState(false);
   const [marking, setMarking] = useState<string | null>(null);
   const [outcome, setOutcome] = useState("");
@@ -122,10 +127,14 @@ export function ReportPanel({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <aside className="report-panel" role="dialog" aria-label="Roundup" onClick={(e) => e.stopPropagation()}>
+      <aside className="report-panel" role="dialog" aria-label="Sitrep" onClick={(e) => e.stopPropagation()}>
         <header className="report-head">
-          <h2>Roundup</h2>
-          <button className="btn btn-ghost" onClick={() => void copyMarkdown()}>
+          <h2>Sitrep</h2>
+          {/* The topbar button that opens this is a bare glyph, so the shortcut
+              is spelled out here instead - where you can read it while the panel
+              is up, and act on it next time. */}
+          <kbd aria-hidden>{formatChord(bindings.roundup)}</kbd>
+          <button className="btn btn-ghost report-copy" onClick={() => void copyMarkdown()}>
             {copied ? "Copied ✓" : "Copy as markdown"}
           </button>
           <button className="icon-btn" aria-label="Close" onClick={onClose}>

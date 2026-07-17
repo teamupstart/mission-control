@@ -82,6 +82,28 @@ body {
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* Desktop shell only: the window has no native title bar, so the topbar is it.
+   The left inset clears the traffic lights, and empty topbar space drags the
+   window - interactive children opt back out via no-drag below.
+
+   The lights are pinned to the window, but .app is centred and caps at 1400px,
+   so once the window grows past that the dead space beside the column already
+   clears them and a fixed inset would just strand the brand out to the right.
+   Inset by whatever that gap leaves uncovered, and no more. */
+.is-desktop .topbar {
+  padding-left: clamp(4px, calc(84px - (100vw - 1400px) / 2), 84px);
+  -webkit-app-region: drag;
+}
+
+.is-desktop .topbar button,
+.is-desktop .topbar input,
+.is-desktop .topbar a,
+.is-desktop .topbar select,
+.is-desktop .topbar [role="button"],
+.is-desktop .topbar .filter-box {
+  -webkit-app-region: no-drag;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -2907,16 +2929,15 @@ kbd {
 .combobox {
   position: relative;
 }
+/* Rendered in a body-level portal with fixed positioning, so the list floats
+   above the modal and never clips against a scrollable ancestor's overflow.
+   `top`/`left`/`width`/`max-height` are set inline from the input's rect. */
 .combobox-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 60;
   margin: 0;
   padding: 4px;
   list-style: none;
-  max-height: 220px;
   overflow-y: auto;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -3080,18 +3101,6 @@ kbd {
   border-radius: 20px;
   padding: 1px 7px;
 }
-/* Subtle keyboard hint inside the Report button. */
-.ghost-key {
-  font-size: 9.5px;
-  padding: 2px 4px;
-  min-width: 12px;
-  color: var(--muted);
-  border-bottom-width: 1px;
-}
-.ghost-btn:hover .ghost-key {
-  color: var(--fg);
-}
-
 /* ---- roundup report (right slide-over) ---- */
 .modal-backdrop:has(.report-panel) {
   justify-content: flex-end;
@@ -3119,7 +3128,11 @@ kbd {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  flex: 1;
+}
+/* The shortcut hint hugs the title; the actions take the slack instead, so the
+   two never drift apart as the header widens. */
+.report-head .report-copy {
+  margin-left: auto;
 }
 .report-body {
   flex: 1;
@@ -3603,18 +3616,126 @@ kbd {
 }
 
 /* ---- settings (topbar gear + keybindings editor) ---- */
-.settings-btn {
+/* A .ghost-btn reduced to its glyph - keeps the ghost border/hover, just drops
+   the label to a single square-ish icon. The topbar's right cluster leans on
+   these: spelling out every control ate the horizontal room the traffic-light
+   inset needs (see .is-desktop .topbar), and the icons carry the meaning on
+   their own. The name still reaches screen readers + the tooltip.
+   (Distinct from .icon-btn above, which is the borderless modal close button.) */
+.glyph-btn {
+  /* Fixed box: the glyph is centred inside it and never sizes it, so a bigger
+     icon can't shoulder this button taller or wider than the rest of the
+     cluster. min-width (not width) so Sitrep's backlog badge can still grow it. */
+  height: 30px;
+  min-width: 36px;
+  justify-content: center;
   padding: 7px 10px;
   font-size: 14px;
   line-height: 1;
 }
-.settings-modal {
-  width: min(560px, 100%);
+/* The topbar's actions are peers, so they sit at half the 24px gap the bar uses
+   to separate its groups - at the full gap they read as unrelated buttons. Being
+   one flex item also means they wrap together instead of splitting across rows. */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
-.settings-body {
-  padding: 18px;
+
+/* ⚙ is a plain text glyph, not an emoji: it draws about two-thirds of its em box
+   where the neighbouring 📡/🔕 fill theirs, so at a shared font-size it reads a
+   size small. Oversize it until the drawn glyph matches - the box is fixed above,
+   so this only fills the button, it doesn't stretch it. */
+.gear-btn {
+  font-size: 22px;
+}
+.settings-modal {
+  width: min(820px, 100%);
+}
+/* Two panes side by side, each capped and scrolling on its own so no category is ever
+   "below" another - the whole point of moving off the single scroll. */
+.settings-layout {
+  display: flex;
+  align-items: stretch;
   max-height: 74vh;
-  overflow: auto;
+}
+.settings-nav {
+  flex: 0 0 178px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 10px;
+  border-right: 1px solid var(--border-soft);
+  background: var(--panel-2);
+  overflow-y: auto;
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 540;
+  color: var(--muted);
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+.settings-nav-item:hover {
+  background: var(--panel);
+  color: var(--fg);
+}
+.settings-nav-item.is-active {
+  background: color-mix(in oklab, var(--working) 14%, transparent);
+  border-color: color-mix(in oklab, var(--working) 30%, var(--border));
+  color: var(--fg);
+  font-weight: 600;
+}
+.settings-nav-icon {
+  flex: none;
+  width: 18px;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+  color: var(--dim);
+}
+.settings-nav-item:hover .settings-nav-icon,
+.settings-nav-item.is-active .settings-nav-icon {
+  color: var(--fg);
+}
+.settings-pane {
+  flex: 1;
+  min-width: 0;
+  padding: 18px;
+  overflow-y: auto;
+}
+/* Narrow windows can't spare room for a side rail; fold it into a horizontal strip
+   above the pane so both stay usable. */
+@media (max-width: 620px) {
+  .settings-layout {
+    flex-direction: column;
+    max-height: 78vh;
+  }
+  .settings-nav {
+    flex: none;
+    flex-direction: row;
+    gap: 6px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    overflow-x: auto;
+  }
+  .settings-nav-item {
+    width: auto;
+    white-space: nowrap;
+  }
 }
 .settings-section-head {
   display: flex;
@@ -3757,11 +3878,6 @@ kbd {
 /* ---- skills (the dashboard-wide skill catalog) ----
    Rows are `.kb-row` with a switch instead of a key capture - same label +
    description + control shape, so only the differences live here. */
-.settings-section + .settings-section {
-  margin-top: 26px;
-  padding-top: 22px;
-  border-top: 1px solid var(--border-soft);
-}
 .skills-blurb {
   margin: 0 0 12px;
 }
@@ -3907,29 +4023,95 @@ kbd {
 .foreman-modes .alert-row input[type="radio"] {
   accent-color: var(--idle);
 }
-.foreman-allowlist {
+/* The Live-mode read-only summary in the popover: a deep-link to Settings → Foreman,
+   where the trusted-repo list is now edited. Not an editor - a status line you can click. */
+.foreman-live-repos {
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  color: color-mix(in oklab, var(--idle) 78%, var(--fg));
+  background: color-mix(in oklab, var(--idle) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--idle) 30%, var(--border-soft));
+  border-radius: 8px;
+  padding: 7px 9px;
+  cursor: pointer;
+  transition:
+    background 0.14s ease,
+    border-color 0.14s ease;
+}
+.foreman-live-repos:hover {
+  background: color-mix(in oklab, var(--idle) 16%, transparent);
+  border-color: color-mix(in oklab, var(--idle) 45%, var(--border-soft));
+}
+
+/* ---- Foreman settings category (the panel behind the rail) ---- */
+.foreman-settings-blurb {
+  margin: 0 0 14px;
+}
+.foreman-repos {
+  margin-top: 20px;
+}
+.foreman-repos-hint {
+  margin: 4px 0 10px;
+}
+.foreman-repos-empty {
+  margin: 8px 0 0;
+}
+.foreman-repo-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  font-size: 11.5px;
-  color: var(--muted);
 }
-/* Sits between the label and the textarea, so it reads as part of the question
-   rather than as a caption under the answer. */
-.foreman-allowlist-hint {
-  font-size: 10.5px;
-  line-height: 1.4;
-  margin-top: -2px;
+.foreman-repo-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
 }
-.foreman-allowlist textarea {
-  font: inherit;
+.foreman-repo-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
   font-size: 11.5px;
   color: var(--fg);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.foreman-repo-remove {
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: 6px;
-  padding: 6px 8px;
-  resize: vertical;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    background 0.14s ease;
+}
+.foreman-repo-remove:hover {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 12%, transparent);
+}
+.foreman-repo-add {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 10px;
+}
+.foreman-repo-add .combobox {
+  flex: 1;
+  min-width: 0;
 }
 
 /* Card-header flag: Foreman drafted/escalated something worth opening. */

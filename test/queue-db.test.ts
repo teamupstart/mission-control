@@ -28,6 +28,7 @@ const {
   listQueueRowsForCwd,
   countOpenQueueItems,
   pruneDeadQueues,
+  clearQueue,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -548,4 +549,33 @@ test("pruneDeadQueues leaves a recently-touched queue alone", () => {
 
   pruneDeadQueues(new Set(), 5000);
   assert.ok(getQueueRow("recent-1"), "inside the retention window");
+});
+
+test("clearQueue drops the row and EVERY item - open and in-flight alike", () => {
+  // Where pruneDeadQueues refuses open work, the reset's clear takes it all: the
+  // task these items were authored for is gone.
+  seedRow("clr-1", "/wipe", 9000);
+  const waiting = mkItem({ noteKey: "clr-1", state: "queued" });
+  const draft = mkItem({ noteKey: "clr-1", state: "proposed" });
+  const flight = mkItem({ noteKey: "clr-1", state: "in_progress" });
+  const done = mkItem({ noteKey: "clr-1", state: "verified" });
+  [waiting, draft, flight, done].forEach(upsertQueueItem);
+
+  assert.equal(clearQueue("clr-1"), true, "reports it cleared something");
+  assert.equal(getQueueRow("clr-1"), undefined, "the row is gone");
+  assert.deepEqual(listQueueItems("clr-1"), [], "and so is every item, in-flight included");
+});
+
+test("clearQueue is a no-op on a key that holds no queue", () => {
+  assert.equal(clearQueue("never-existed"), false);
+});
+
+test("clearQueue is scoped to its key - a sibling queue is untouched", () => {
+  seedRow("clr-mine", "/shared", 9000);
+  upsertQueueItem(mkItem({ id: "keep", noteKey: "clr-other", state: "queued" }));
+  seedRow("clr-other", "/shared", 9000);
+
+  clearQueue("clr-mine");
+  assert.ok(getQueueRow("clr-other"), "the neighbour's row survives");
+  assert.equal(getQueueItem("keep")?.state, "queued", "and its items");
 });

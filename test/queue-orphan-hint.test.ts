@@ -267,3 +267,22 @@ test("removing a TERMINAL item moves the queue's change token", () => {
   assert.ok(after > before, `the change token must move (${before} -> ${after})`);
   assert.equal(registry.getQueue("rm-1")?.items.length, 0);
 });
+
+test("clearQueue retracts a sibling's re-attach hint at once", () => {
+  // A reset clears the stranded queue its own /clear just orphaned. The re-attach
+  // offer on any sibling at that cwd must vanish the instant the queue does, not
+  // linger until the next sweep re-derives the hint against a row that's now gone.
+  // A cwd of its own: this file shares one DB, and other tests strand queues at /repo.
+  const registry = new Registry();
+  const sibling = mkDiscovered({ syntheticId: "reset-sib", cwd: "/reset-repo" });
+  registry.applyDiscovery([sibling]);
+  seedQueue("wiped-key", "/reset-repo");
+  registry.applyDiscovery([sibling]); // the sweep surfaces the orphan hint
+  assert.equal(registry.getSession("reset-sib")?.orphanedQueue?.noteKey, "wiped-key");
+
+  const seen = captureUpserts(registry, () => registry.clearQueue("wiped-key"));
+  const cleared = seen.find((s) => s.id === "reset-sib");
+  assert.ok(cleared, "the sibling re-emits");
+  assert.equal(cleared.orphanedQueue, null, "with the hint retracted");
+  assert.equal(registry.getSession("reset-sib")?.orphanedQueue, null);
+});

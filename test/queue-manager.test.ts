@@ -288,3 +288,23 @@ test("re-attach is refused before the sessions has ever been observed", () => {
   assert.equal(unswept.sessionsObserved(), false);
   assert.equal(unsweptQueues.reattach("agent-seed", "s-target").ok, false);
 });
+
+// ---- clearQueue: the reset's "discard the whole batch" ----
+
+test("clearQueue drops the whole queue and blanks the card's summary", () => {
+  const registry = new Registry();
+  const queues = new QueueManager(registry);
+  seedSession(registry, "s-clear", "agent-clear");
+
+  const a = queues.add("s-clear", "first task")!;
+  queues.add("s-clear", "second task");
+  // Drive one item in-flight - the state a per-item `remove` refuses, but a reset
+  // takes anyway.
+  assert.ok(queues.setState(a.id, { state: "sending" }, 1).ok);
+  assert.equal(registry.getSession("s-clear")?.queue?.openCount, 2);
+
+  assert.equal(registry.clearQueue(a.noteKey), true, "reports it cleared something");
+  assert.equal(queues.get("s-clear"), null, "the queue is gone");
+  assert.equal(registry.getSession("s-clear")?.queue, null, "and the card shows no queue");
+  assert.equal(registry.clearQueue(a.noteKey), false, "a second clear finds nothing");
+});

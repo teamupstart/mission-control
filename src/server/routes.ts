@@ -595,6 +595,13 @@ export function buildApp(
       forgetFixLog(session.cwd);
       registry.clearNomistakesFixes(session.id);
     }
+    // The reset discarded the task these queued items were authored for - the branch
+    // is gone and (with `clear`) the agent's context is wiped - so clear the whole
+    // batch. This is the deliberate "start over", the one case that overrides the
+    // re-attach affordance a bare /clear leans on. Keyed on the PRE-reset session,
+    // whose note key still names the queue: a /clear only rotates that key once the
+    // agent processes it, which is after this handler returns.
+    if (r.ok) registry.clearQueue(noteKeyFor(session));
     return c.json(r, r.ok ? 200 : 500);
   });
 

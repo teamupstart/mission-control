@@ -582,9 +582,9 @@ Two things worth knowing:
 
 - The scope is this **browser tab**. A reload starts over; drafts aren't stored anywhere.
 - **Images are the exception - only the text comes back.** A screenshot dropped on the queue
-  add box or the reply box is gone once the card collapses, so attach yours when you're
-  ready to send. (The [dispatch form](#dispatch-an-agent) is the one that keeps its
-  attachments across a close.)
+  add box is gone once you close the drawer, and one on the reply box once the card
+  collapses, so attach yours when you're ready to send. (The
+  [dispatch form](#dispatch-an-agent) is the one that keeps its attachments across a close.)
 
 ## Skills (every session, no restarts)
 

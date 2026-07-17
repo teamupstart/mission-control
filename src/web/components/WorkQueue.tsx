@@ -45,8 +45,8 @@ export function WorkQueue({
   onToggleCollapsed?: () => void;
 }): React.JSX.Element | null {
   const [queue, setQueue] = useState<SessionQueue | null>(null);
-  // Survives this mount: collapsing the card (which expanding ANY other card does)
-  // unmounts the panel, and a half-written item must not go with it.
+  // Survives this mount: closing the drawer unmounts the panel, as does a filter that
+  // hides the card, and a half-written item must not go with it.
   const [adding, setAdding] = useSessionDraft(session.id, "queue");
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
@@ -69,8 +69,8 @@ export function WorkQueue({
     <Header count={count} collapsed={collapsed} onToggle={onToggleCollapsed} />
   );
 
-  // These thumbnails belong to the add box, which dies with the expanded card - so
-  // their object URLs are ours to release. Read through a ref because the cleanup runs
+  // These thumbnails belong to the add box, which dies with the drawer - so their
+  // object URLs are ours to release. Read through a ref because the cleanup runs
   // once, at unmount, and must see the list as it ended rather than as it was on the
   // render that armed it. (The dispatch draft deliberately does NOT do this; it
   // outlives its modal.)

@@ -656,8 +656,9 @@ the two subsystems actively fight.
 
 ## §4. Web UI
 
-- **`WorkQueue.tsx`** - in the expanded card between `ForemanNote` and `TranscriptPanel`
-  (`SessionCard.tsx:243-254`). Items with a drag handle, edit-in-place, remove (only while
+- **`WorkQueue.tsx`** - rendered by `SessionCard.tsx` (since shipped as a drawer rather than a
+  fixed section of the expanded card; the README's "Work queues" section owns where it sits and
+  how it opens). Items with a drag handle, edit-in-place, remove (only while
   `queued`/`proposed`); an add box; the in-flight item's state (blocking gaps, `round N/10`); the
   wrap-up block. Drag-reorder is hand-rolled HTML5 (`draggable` + `onDragStart`/`onDragOver`/
   `onDrop`) - there is no DnD library in a repo with 10 lean runtime deps, so this adds none.

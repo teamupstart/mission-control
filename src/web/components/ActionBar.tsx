@@ -34,8 +34,19 @@ export function ActionBar({
   onFocusReply,
   registerActions,
   onReset,
+  variant = "card",
+  onDiff,
 }: {
   session: Session;
+  /**
+   * Which control set to draw. "card" (default, unchanged) is the grid's full row -
+   * Send / Focus / Queue / Reset / Kill. "foot" is the console's detail footer, which
+   * matches the mockup: Focus / Diff / Reset / Kill, since Send is the conversation's own
+   * reply box and Queue is a tab. The imperative HANDLE is identical either way, so every
+   * keyboard shortcut still works in both - only the buttons drawn differ. */
+  variant?: "card" | "foot";
+  /** Open the diff viewer. Only drawn by the "foot" variant. */
+  onDiff?: () => void;
   /**
    * Whether the card is currently carrying the transcript's reply box - the live
    * answer to "is there already a compose box here?", reported by the panel itself.
@@ -190,6 +201,51 @@ export function ActionBar({
             Cancel
           </button>
         </div>
+      ) : variant === "foot" ? (
+        // The console footer: the mockup's Focus / Diff / Reset / Kill. Send lives in the
+        // conversation's reply box and Queue is a tab, so neither is drawn here - but the
+        // handle above still carries startSend and toggleQueue, so `s` and `q` work.
+        <>
+          <button className="act" onClick={focusPane} title="Bring this session's terminal pane to the front">
+            <kbd>{formatChord(bindings.focus)}</kbd> focus
+          </button>
+          {onDiff && session.cwd && (
+            <button className="act" onClick={onDiff} title="View changes vs source branch">
+              <kbd>{formatChord(bindings.diff)}</kbd> diff
+            </button>
+          )}
+          {session.cwd && onReset && (
+            <button
+              className="act"
+              onClick={onReset}
+              title={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
+            >
+              <kbd>{formatChord(bindings.reset)}</kbd> reset
+            </button>
+          )}
+          {confirmKill ? (
+            <button
+              className="act act-danger"
+              onClick={() => void doKill()}
+              title={
+                session.tmux
+                  ? `Terminates the agent and kills its tmux session "${session.tmux.session}"`
+                  : "Terminates the agent process"
+              }
+            >
+              confirm kill
+            </button>
+          ) : (
+            <button className="act act-danger" onClick={() => setConfirmKill(true)}>
+              <kbd>{formatChord(bindings.kill)}</kbd> kill
+            </button>
+          )}
+          {confirmKill && (
+            <button className="act" onClick={() => setConfirmKill(false)}>
+              cancel
+            </button>
+          )}
+        </>
       ) : (
         <>
           <button

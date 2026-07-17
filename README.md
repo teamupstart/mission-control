@@ -668,10 +668,14 @@ switches between them live, and the choice persists per machine:
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
 | **Board** | A column per state, detail in a slide-over drawer. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
-Nothing is lost by switching. All three render the *same* session card - every chip,
-strip, gate button and control - so the console's detail pane and the board's drawer are
-that card, not a smaller retelling of it. What changes is only the arrangement around it:
+Nothing is lost by switching. Every layout draws from the *same* leaf pieces - the
+transcript, the work queue, the gate strip, the action bar, the goal and runtime pills -
+so no chip, strip or control goes missing. What changes is how they're arranged:
 
+- **Cards** and the **Board** drawer render the full session card. The **Console** gives
+  the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
+  Gate / Diff** - because a split pane has room a card doesn't: the conversation is
+  permanent, and the sections that share a card's height in the grid get a tab each.
 - **Cards** is the only layout with a focus mode, so <kbd>e</kbd> (expand) and the floating
   command bar are unique to it. In the console and the board the selected session is
   *already* the open detail, so there is nothing to expand, and its controls are on screen

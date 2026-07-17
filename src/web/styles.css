@@ -4791,6 +4791,17 @@ kbd {
   margin-bottom: 0;
   padding-inline: 22px;
 }
+/* Desktop shell: these two layouts run the topbar full-width (the shell sets
+   `max-width: none`), so the grid's trick - once the window passes 1400px the
+   centred dead space beside the column already clears the traffic lights - never
+   fires here: the topbar always starts hard against x=0. `padding-inline` above
+   also just overwrote the grid's window-scaled left clamp. So reserve a fixed
+   inset wide enough to clear the lights at any width. Beats both the base
+   `.is-desktop .topbar` and `.app-console .topbar` rules on specificity (0,3,0). */
+.is-desktop .app-console .topbar,
+.is-desktop .app-board .topbar {
+  padding-left: 84px;
+}
 
 /* ---- console: rail + always-open detail ---- */
 .console {
@@ -4929,7 +4940,6 @@ kbd {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 16px 20px;
   overflow: hidden;
 }
 .console-empty {
@@ -4937,6 +4947,255 @@ kbd {
   max-width: 42ch;
   text-align: center;
   color: var(--muted);
+  padding: 0 20px;
+}
+
+/* ---- console detail: a bespoke, tabbed reading of one session ----
+   Ported from docs/mockups/console.html: fixed chrome (head / sub / tabs / foot),
+   only the body switches. Padding lives on each section, not the container, so the
+   dividing rules run edge to edge. */
+.cdetail {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.detail-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 14px 22px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.detail-head .agent-dot {
+  flex: none;
+}
+.detail-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.detail-title h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail-head .name-source {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.detail-head-spacer {
+  flex: 1;
+}
+
+.detail-sub {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 10px 22px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.detail-sub .kv {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+.detail-sub dt {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.detail-sub dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.detail-sub .branch {
+  color: var(--idle);
+}
+
+.detail-tabs {
+  flex: none;
+  display: flex;
+  gap: 2px;
+  padding: 0 22px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.detail-tab {
+  position: relative;
+  padding: 10px 13px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.detail-tab:hover {
+  color: var(--fg);
+}
+.detail-tab.on {
+  color: var(--fg);
+}
+.detail-tab.on::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--working);
+}
+.detail-pip {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  border-radius: 999px;
+  color: var(--bg);
+  background: var(--attention);
+}
+
+.detail-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Conversation: fill and pin. The leading bits (goal, note, gate strip) stay put and
+   the transcript scrolls inside itself, so the reply box never leaves the pane. */
+.detail-conv {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 16px 22px;
+}
+.detail-conv > .transcript {
+  flex: 1 1 auto;
+  min-height: 120px;
+}
+.detail-conv > .transcript .transcript-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+/* The other tabs are short - let the whole pane scroll. */
+.detail-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 22px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+}
+.detail-empty {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.detail-diff {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.detail-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 22px;
+  border-top: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 70%, transparent);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.detail-agent {
+  color: var(--muted);
+}
+.detail-foot .dot-sep {
+  color: var(--border);
+}
+.detail-seen {
+  font-variant-numeric: tabular-nums;
+}
+.detail-foot-spacer {
+  flex: 1;
+}
+/* The action bar sits in the foot rather than under a card section, so drop the
+   divider the card gives it (border-top + padding-top) and let it share the foot's row. */
+.detail-foot .actions {
+  margin: 0;
+  padding-top: 0;
+  border-top: 0;
+  flex: 0 1 auto;
+  gap: 8px;
+}
+/* The foot-variant action buttons (Focus / Diff / Reset / Kill), per the mockup. */
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    border-color 0.14s ease;
+}
+.act:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.act-danger:hover {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+}
+.act kbd {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: none;
 }
 
 /* ---- board: a column per state, detail in a drawer ---- */

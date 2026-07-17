@@ -1,23 +1,24 @@
 import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
-import { SessionCard } from "../SessionCard.tsx";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { groupByTone } from "../../lib/tone.ts";
-import { cardProps, type SessionViewProps } from "./types.ts";
+import { ConsoleDetail } from "./ConsoleDetail.tsx";
+import type { SessionViewProps } from "./types.ts";
 
 /**
  * Split-pane master/detail: a dense rail of every session, one always-open detail
  * beside it.
  *
- * The detail is a real SessionCard with `expanded` forced on - the same component
- * the grid renders, not a reimplementation of it. That is the whole reason this
- * layout is cheap: every chip, strip, gate button and action bar arrives for free
- * and can never drift from the grid's version of them.
+ * The detail is a bespoke, tabbed reading of the session (see ConsoleDetail) - NOT the
+ * grid's card dropped into a column. It's built from the same leaf pieces the card is
+ * (transcript, work queue, gate strip, action bar, session-bits), arranged for a pane
+ * that has room the card never does: the conversation is permanent, and the sections
+ * that share a card's height in the grid get a tab each here.
  *
- * Consequently selection means something stricter here than in the grid: the
- * selected session IS the mounted card, and only a mounted card registers the
- * ActionBar handle the keyboard shortcuts drive. Nothing selected means nothing to
- * send into, so the pane says so rather than silently swallowing a keystroke.
+ * Selection means something stricter here than in the grid: the selected session IS the
+ * mounted detail, and only a mounted ActionBar registers the handle the keyboard
+ * shortcuts drive. Nothing selected means nothing to send into, so the pane says so
+ * rather than silently swallowing a keystroke.
  */
 export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
@@ -47,11 +48,10 @@ export function ConsoleView(props: SessionViewProps): React.JSX.Element {
 
       <section className="console-detail">
         {active ? (
-          // `selected` is deliberately off: the ring exists to tell one card apart from
-          // eleven others in a grid. There is only ever one card here, and the rail
-          // already shows which session it is. `expanded` isn't forced either - App
-          // holds expandedId at the selection in this layout, so the card works it out.
-          <SessionCard {...cardProps(props, active)} selected={false} canExpand={false} />
+          // Keyed by id so switching sessions remounts: the tab resets to the
+          // conversation and the transcript starts clean, instead of showing the
+          // previous session's Gate tab.
+          <ConsoleDetail key={active.id} view={props} session={active} />
         ) : (
           <div className="console-empty">
             <p className="empty-title">No session selected</p>

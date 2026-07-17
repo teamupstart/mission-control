@@ -104,11 +104,17 @@ test("an idle session that hasn't settled yet is not selected", () => {
   assert.deepEqual(picked([mkSession({ lastActivity: NOW - 1000 })]), []);
 });
 
-test("an UNINSTRUMENTED idle session is not selected", () => {
-  // `settledIdle` and not `reportBucket(s) === "idle"`, and this is why: idle is that
-  // function's catch-all fallthrough, so an uninstrumented session reads idle by
-  // DEFAULT rather than by report. Nobody said this session was at a prompt.
-  assert.deepEqual(picked([mkSession({ instrumented: false })]), []);
+test("an idle session with a lapsed hook IS selected - hook-free idle", () => {
+  // We no longer require a fresh hook (`instrumented`) to type a reload. `settledIdle`
+  // trusts `state === "idle"`, which is only ever a real claim - from a hook OR the
+  // transcript-derived passive state - never the `working` rebuild default. So a healthy
+  // session whose hook merely went quiet still gets its owed reload instead of waiting.
+  assert.deepEqual(picked([mkSession({ instrumented: false })]), ["s1"]);
+
+  // The protection that used to lean on `instrumented` now rides the state itself: a
+  // session with NO idle claim rebuilds `working`, and a `working` session is never typed
+  // into - so an idleness that was an absence of data, not a report, is still refused.
+  assert.deepEqual(picked([mkSession({ instrumented: false, state: "working" })]), []);
 });
 
 test("a session already at the current generation is not selected", () => {
@@ -201,14 +207,15 @@ test("pendingReloads excludes a session that has never had hooks", () => {
   assert.deepEqual(picked(sessions), []);
 });
 
-test("a session that has simply GONE QUIET is still counted, though it can't be typed into yet", () => {
+test("a session that has simply GONE QUIET is both counted AND now reloaded", () => {
   // `instrumented` is a 30-minute freshness window, so a healthy idle session flips it to
   // false just by being left alone - the single most common state in this dashboard. It is
-  // still owed the skill, so the count must keep saying so; it just isn't safe to type
-  // into until a hook proves it's really there.
+  // still owed the skill (the count must keep saying so), and with hook-free idle it is now
+  // also safe to type into: its `idle` is a real claim, proven by the transcript that the
+  // passive poller reads from disk, not a guess that needs a live hook to confirm.
   const quiet = mkSession({ id: "quiet", agentSessionId: "a-quiet", instrumented: false });
   assert.equal(pendingReloads([quiet], acks(), mkCfg()), 1, "still owed");
-  assert.deepEqual(picked([quiet]), [], "but not typed into on a stale signal");
+  assert.deepEqual(picked([quiet]), ["quiet"], "and now delivered, no longer stranded on a stale signal");
 });
 
 test("pendingReloads excludes codex, or the number can never reach zero", () => {

@@ -181,13 +181,20 @@ function mkVerdict(over: Partial<QueueVerdict> = {}): QueueVerdict {
 
 // ---- settledIdle ----
 
-test("settledIdle refuses an UNINSTRUMENTED session, however idle it looks", () => {
-  // The trap: `bucket === 'idle'` also means "uninstrumented" (it's the catch-all
-  // return in reportBucket), so gating on the bucket would fire a whole queue into
-  // a hookless session in three ticks. There is no pickup or completion signal at
-  // all in that session, so nothing could ever advance it.
-  const s = mkSession({ instrumented: false, state: "idle" });
-  assert.equal(settledIdle(s, NOW, CFG.settleMs), false);
+test("settledIdle turns on the idle CLAIM, not on `instrumented`", () => {
+  // Hook-free idle: `settledIdle` no longer consults `instrumented` (the 30-min hook
+  // freshness window). It trusts `state === "idle"` directly, because `idle` is only
+  // ever set from a real source - a fresh hook OR the transcript-derived passive
+  // state - while the rebuild default is `working`. So a genuinely parked session
+  // whose hooks merely lapsed is still settled, and its queue still moves.
+  const idleNoHook = mkSession({ instrumented: false, state: "idle" });
+  assert.equal(settledIdle(idleNoHook, NOW, CFG.settleMs), true);
+
+  // But `working` - the default a session with NO idle claim rebuilds as - is never
+  // settled, however "uninstrumented" it is. That is what keeps the queue from
+  // firing into a session whose idleness was an absence of data rather than a report.
+  const workingNoHook = mkSession({ instrumented: false, state: "working" });
+  assert.equal(settledIdle(workingNoHook, NOW, CFG.settleMs), false);
 });
 
 test("settledIdle needs the session parked AND aged past settleMs", () => {
@@ -445,16 +452,25 @@ test("3. a STALE overlay is not a hookless session - it must not escalate the qu
   const a = tick({ session: quiet, items: [mkItem()] });
   assert.notEqual(a.kind, "escalate", "hooks are installed - they've just been quiet");
 
-  // It WAITS instead, and that's the whole intent: `settledIdle` still refuses a
-  // session whose `state` isn't currently hook-sourced, so the item sits untouched
-  // until a hook arrives and proves the agent is parked. Nothing is destroyed, and
-  // the queue resumes by itself the moment the session says anything at all.
-  assert.equal(a.kind, "none");
-  assert.equal(
-    tick({ session: { ...quiet, instrumented: true }, items: [mkItem()] }).kind,
-    "send",
-    "one hook later, the same queue sends",
-  );
+  // And it now DELIVERS rather than waiting: with hook-free idle detection, a
+  // stale-overlay session whose `state` is `idle` (here from the transcript-derived
+  // passive source, in production from either that or a hook) is a genuine parked
+  // session, and `settledIdle` no longer refuses it just because the hook freshness
+  // window lapsed. That is the deadlock fix - a quiet queue used to sit forever.
+  assert.equal(a.kind, "send", "hook-free idle: a quiet, parked session still delivers");
+});
+
+test("3. a stale-overlay session that is NOT idle waits - no false send", () => {
+  // The other half of the fix: `settledIdle` turns on the `state === "idle"` claim,
+  // and the rebuild default is `working`. A quiet session with no idle claim (no
+  // fresh hook AND no transcript-derived idle) rebuilds `working`, so the queue
+  // correctly holds rather than typing into a session that may still be busy.
+  const a = tick({
+    session: { instrumented: false, hooksSeen: true, state: "working" },
+    items: [mkItem()],
+  });
+  assert.notEqual(a.kind, "escalate");
+  assert.equal(a.kind, "none", "no idle claim - the queue waits, it does not guess");
 });
 
 test("3. a head waiting on an Approve is never escalated, even with no hooks at all", () => {

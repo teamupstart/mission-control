@@ -92,7 +92,7 @@
 <main>
   <h1>Plan: Foreman settings - repo picker + move Tier</h1>
   <p class="muted">A repository picker for the live allowlist, and Tier moved off the topbar popover into the settings panel.</p>
-  <span class="status">Decided · picker = known repos + manual add · popover = summary + link</span>
+  <span class="status">Decided · picker = workspace git repos (/api/repos) + manual add · popover = summary + link</span>
 
   <h2>Why</h2>
   <p>Two problems with today's <code>ForemanBar</code> popover:</p>
@@ -157,26 +157,33 @@
   </div>
   <p>Adding/removing is the existing <code>update({ repoAllowlist: [...] })</code> call - the
     daemon and persistence are unchanged; only the input changes from free text to a picked
-    value. Candidates are the repo roots the fleet already knows
-    (<code>SessionRow.repoRoot</code>, <code>types.ts:121</code> - the same value the server
-    gates live sends on), deduped and minus what's already listed.</p>
+    value. Candidates are the workspace's git repos, served by the existing
+    <code>/api/repos</code> (<code>listRepos</code>), minus what's already listed.</p>
 
   <h2>Decision 1 - where the picker's candidates come from</h2>
   <div class="opt">
-    <h3>A. Live-session repos + manual add<span class="rec">Recommended</span></h3>
-    <p>Candidates are the distinct <code>repoRoot</code>s across current sessions (derived on
-      the client from data the dashboard already holds), plus a text field to add a repo with
-      no active session, validated server-side so a typo can't enter a non-repo path. Covers
-      the common case with zero new data and still lets you add a cold repo deliberately.</p>
+    <h3>Workspace git repos (<code>/api/repos</code>) + manual add<span class="rec">Decided</span></h3>
+    <p>Candidates are the workspace's git repos, served by the existing <code>/api/repos</code>
+      (<code>listRepos</code>) and offered through the same <code>RepoCombobox</code> the
+      dispatch modal uses, minus the repos already on the list. A typed path is validated and
+      canonicalized server-side (<code>POST /api/repos/resolve</code>, reusing dispatch's
+      <code>resolveRepoRoot</code>) before it joins the list, so a typo is refused rather than
+      sitting inert.</p>
+    <p class="muted">The initial sketch derived candidates from the distinct
+      <code>repoRoot</code>s across current sessions, client-side.
+      <code>/api/repos</code> won because it's a superset: it includes repos with no live
+      session yet - exactly the case the picker most needs to serve, trusting a repo
+      <em>before</em> you dispatch into it. It also reuses a combobox and an endpoint that
+      already exist.</p>
   </div>
   <div class="opt">
-    <h3>B. Live-session repos only</h3>
-    <p>The same client-derived list, no manual field. Simplest, no backend at all - but a repo
+    <h3>Rejected: live-session repos only</h3>
+    <p>The client-derived list, no manual field. Simplest, no backend at all - but a repo
       with no session on the grid right now can't be added, so you're stuck configuring a repo
       before its first session.</p>
   </div>
   <div class="opt">
-    <h3>C. Filesystem directory browser</h3>
+    <h3>Rejected: filesystem directory browser</h3>
     <p>A new daemon endpoint lists directories so you can navigate and pick any folder,
       validated as a git root. Most flexible, most surface: a browsing API, its own UI, and
       path-traversal care - heaviest for a list that is usually 1-3 entries.</p>
@@ -200,15 +207,16 @@
       the Tier radios (moved verbatim), then the allowlist manager (list + picker). Takes a
       <code>ForemanState</code>, like <code>SkillsPanel</code> takes <code>SkillsState</code>.</li>
     <li><strong><code>SettingsModal.tsx</code></strong> - add a <code>foreman</code> entry to
-      <code>SETTINGS_CATEGORIES</code> + a <code>case</code>; lift <code>useForeman</code> into
-      the modal (as <code>useSkills</code> already is); pass the app's <code>sessions</code> for
-      candidate repos.</li>
+      <code>SETTINGS_CATEGORIES</code> + a <code>case</code>, so the Foreman category renders
+      while the modal is open. The panel fetches its own candidate repos from
+      <code>/api/repos</code>.</li>
     <li><strong><code>ForemanBar.tsx</code></strong> - remove the Tier fieldset and allowlist
       textarea; add the Live-mode summary per Decision 2.</li>
-    <li><strong>Server</strong> - only for option A/C: a small validated "resolve path to repo
-      root" endpoint reusing the existing <code>resolveRepoRoot</code> / <code>realpathSync</code>
-      logic dispatch already uses (<code>routes.ts:982-989</code>). No schema or persistence
-      change - <code>repoAllowlist</code> is already an array of strings.</li>
+    <li><strong>Server</strong> - a small validated <code>POST /api/repos/resolve</code>
+      ("resolve path to repo root") endpoint for the manual add, reusing the existing
+      <code>resolveRepoRoot</code> / <code>realpathSync</code> logic dispatch already uses
+      (<code>routes.ts:982-989</code>). No schema or persistence change -
+      <code>repoAllowlist</code> is already an array of strings.</li>
   </ul>
 
   <h2>Sequencing</h2>

@@ -5,9 +5,9 @@ allowlist (instead of pasting long paths into a textarea), and the **Tier** (che
 control moved off the topbar popover. The popover keeps only the quick, in-the-moment
 knobs.
 
-> **Decided:** picker candidates come from **known fleet repos + a validated manual add**
-> (Decision 1A); the popover keeps a **read-only "Live in N repos - manage in Settings"**
-> summary in Live mode (Decision 2A).
+> **Decided:** picker candidates come from **the workspace's git repos (`/api/repos`) + a
+> validated manual add** (Decision 1); the popover keeps a **read-only "Live in N repos -
+> manage in Settings"** summary in Live mode (Decision 2A).
 
 ## Why
 
@@ -44,33 +44,41 @@ The split is deliberate: the popover keeps what you reach for while watching the
 ## The repo picker
 
 The allowlist is a list of **repo roots** (realpaths) Foreman may act in when live
-(`ForemanConfig.repoAllowlist`, `protocol.ts:288`). The dashboard already carries exactly
-these paths: every `SessionRow` has a `repoRoot` (`types.ts:121`) - "the root of the REPO
-this checkout belongs to, from git's common dir ... the same `foremanAllowlisted` the
-server gates on." So the picker can offer the repos the fleet is already working in,
-instead of asking you to type a path.
+(`ForemanConfig.repoAllowlist`, `protocol.ts:288`). `/api/repos` already serves exactly
+these paths - the workspace's git repos, via `listRepos` - and it's what the dispatch
+modal's repo combobox is already fed from. So the picker can offer the repos the
+workspace holds, instead of asking you to type a path.
 
 **Settings → Foreman, below the settings rows:**
 
 - **Enabled repositories** - the current `repoAllowlist`, one row each, with a remove (×).
   Empty state says "No repos yet - Foreman won't act live anywhere."
-- **Add a repository** - a picker of candidate repo roots the fleet knows about but that
-  aren't on the list yet, deduped. Pick one (or several) and Add appends to the allowlist.
+- **Add a repository** - a picker of candidate repo roots the workspace holds but that
+  aren't on the list yet. Pick one and Add appends to the allowlist.
 
 Adding/removing is the existing `update({ repoAllowlist: [...] })` call - the daemon and
 persistence are unchanged; only the input changes from free text to a picked value.
 
-### Open question: where the picker's candidates come from
+### Decision 1: where the picker's candidates come from
 
-- **A. Live-session repos + manual add** *(recommended)* - candidates are the distinct
-   `repoRoot`s across current sessions (derived on the client from data the dashboard
-   already has), plus a text field to add a repo that has no active session, validated
-   server-side so a typo can't enter a non-repo path. Covers the common case with zero new
-   data and still lets you add a cold repo deliberately.
-- **B. Live-session repos only** - the same client-derived list, no manual field. Simplest,
-   no backend at all - but a repo with no session on the grid right now can't be added, so
-   you're stuck when setting up a repo before its first session.
-- **C. Filesystem directory browser** - a new daemon endpoint lists directories so you can
+**Decided: workspace git repos (`/api/repos`) + a validated manual add.** Candidates are the
+workspace's git repos, served by the existing `/api/repos` (`listRepos`) and offered through
+the same `RepoCombobox` the dispatch modal uses, minus the repos already on the list. A typed
+path is validated and canonicalized server-side (`POST /api/repos/resolve`, reusing dispatch's
+`resolveRepoRoot`) before it joins the list, so a typo is refused rather than sitting inert.
+
+The initial sketch derived candidates from the distinct `repoRoot`s across current sessions,
+client-side from data the dashboard already holds. `/api/repos` won because it's a superset:
+it includes repos with no live session yet, which is exactly the case the picker most needs to
+serve - trusting a repo *before* you dispatch into it. It also reuses a combobox and an
+endpoint that already exist, so it costs less than the session-derived list it replaced.
+
+Considered and rejected:
+
+- **Live-session repos only** - the client-derived list with no manual field. Simplest, no
+   backend at all - but a repo with no session on the grid right now can't be added, so you're
+   stuck when setting up a repo before its first session.
+- **Filesystem directory browser** - a new daemon endpoint lists directories so you can
    navigate and pick any folder, validated as a git root. Most flexible, most surface: a
    new browsing API, its own UI, and path-traversal care. Heaviest for a list that is
    usually 1-3 entries.
@@ -95,13 +103,13 @@ points at the new home.
   the Tier radios (moved verbatim from the popover), then the allowlist manager (list +
   picker). Takes a `ForemanState` like `SkillsPanel` takes `SkillsState`.
 - **`src/web/components/SettingsModal.tsx`** - add `{ id: "foreman", label: "Foreman", icon:
-  … }` to `SETTINGS_CATEGORIES` and a `case` in `renderCategory`. Lift `useForeman` into the
-  modal (as `useSkills` already is) so its poll runs while the category is open. Candidate
-  repos come from the `sessions` the app already holds, passed in.
+  … }` to `SETTINGS_CATEGORIES` and a `case` in `renderCategory`, so the Foreman category
+  renders while the modal is open. The panel fetches its own candidate repos from
+  `/api/repos`.
 - **`src/web/components/ForemanBar.tsx`** - remove the Tier fieldset and the allowlist
   textarea; add the Live-mode summary line (per the decision above).
-- **Server** - only if option A/C is chosen for candidates: a small validated
-  "resolve this path to a repo root" endpoint, reusing the existing `resolveRepoRoot` /
+- **Server** - a small validated `POST /api/repos/resolve` ("resolve this path to a repo
+  root") endpoint for the manual add, reusing the existing `resolveRepoRoot` /
   `realpathSync(top)` logic already used by dispatch (`routes.ts:982-989`). No schema or
   persistence change - `repoAllowlist` is already an array of strings.
 

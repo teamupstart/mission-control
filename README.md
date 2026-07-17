@@ -21,7 +21,11 @@ and get your decision back.
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
   reset its checkout back to origin (with a preview of exactly what that would
-  discard).
+  discard). A reset also **releases the branch** the checkout was standing on,
+  landing it on origin's default commit with no branch checked out - so a reused
+  session starts its next task free of the finished one's branch, rather than
+  carrying its PR chip and taking the next commits onto a branch already merged.
+  A checkout already on the default branch is left on it.
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
@@ -671,9 +675,8 @@ parked until you get to it.
 Resetting a checkout (the card's **reset** control, <kbd>⌃</kbd><kbd>R</kbd>) also
 **retires the run the card was showing**, clearing the strip and its narration for
 good. The reset throws away the very work that run validated, but `axi status` keeps
-reporting it for the branch long after - a reset moves the branch *pointer*, not the
-branch *name* - so simply clearing the strip wouldn't hold: the next poll would put
-it straight back. The dismissal is remembered per run, so a **new** run on the same
+reporting it for that branch long after, so simply clearing the strip wouldn't hold:
+the next poll would put it straight back. The dismissal is remembered per run, so a **new** run on the same
 branch decorates the card again, and it's scoped to the checkout that was wiped
 (worktree root + branch): a session sharing that worktree clears too, while a session
 on the same branch in a *different* worktree keeps its strip, its work still being on

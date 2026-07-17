@@ -1085,4 +1085,15 @@ export interface ResetResult {
   root: string | null;
   /** True when `/clear` was sent to the agent after the git reset landed. */
   cleared: boolean;
+  /**
+   * True when the checkout ends up holding no branch at all - standing on a
+   * commit, which is what leaves the next task free to claim a branch of its own.
+   *
+   * False only where the reset deliberately left a branch standing (the checkout
+   * was already on the repo's default branch) or where the detach failed after
+   * the reset had already landed. Both are reported rather than raised, for the
+   * reason `cleared` is: the git reset is done by then, so the operation
+   * succeeded even when this last step didn't.
+   */
+  detached: boolean;
 }

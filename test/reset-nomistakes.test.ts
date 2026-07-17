@@ -120,10 +120,12 @@ test("reset clears the no-mistakes strip, and the poller cannot bring it back", 
   assert.equal(afterReset.nomistakes, null, "strip is gone right after the reset");
   assert.equal(afterReset.nomistakesNarration, null, "narration goes with its run");
 
-  // The reset moved the branch pointer but NOT the branch name, so the session is
-  // still on `mancej/feature` and `axi status` still reports the same run for it.
-  // This next poll is what used to re-decorate the card ~5s later.
-  assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), branch);
+  // The reset released the branch, so the checkout is detached - but the session's
+  // RECORDED branch still reads `mancej/feature` until the next discovery sweep,
+  // and `axi status` keeps reporting the same run for that branch regardless of
+  // what any checkout holds. A poll in that window is what used to re-decorate the
+  // card ~5s later, so the dismissal - not the detach - is what has to hold here.
+  assert.equal(gitIn(clone, "branch", "--show-current"), "", "the reset released the branch");
   registry.reconcileNomistakes([finishedRun(branch)]);
   assert.equal((await card("s1")).nomistakes, null, "the poller must not resurrect it");
 });

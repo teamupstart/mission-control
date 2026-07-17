@@ -653,19 +653,42 @@ on, and an isolated `MISSION_HOME` makes it *worse*, because its ack table is em
 believes every session is owed a reload. If you're testing against a spare port, know
 that its reload loop is live from the moment it boots.
 
+## Layout (cards, console, or board)
+
+The same fleet, three shapes. **Settings** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) → **Layout**
+switches between them live, and the choice persists per machine:
+
+| Layout | Shape | Good for |
+|--------|-------|----------|
+| **Cards** (default) | Every session a card in a responsive grid; one expands in place to fill the screen. | The general case, and the most detail per session without clicking. |
+| **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
+| **Board** | A column per state, detail in a slide-over drawer. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
+
+Nothing is lost by switching. All three render the *same* session card - every chip,
+strip, gate button and control - so the console's detail pane and the board's drawer are
+that card, not a smaller retelling of it. What changes is only the arrangement around it:
+
+- **Cards** is the only layout with a focus mode, so <kbd>e</kbd> (expand) and the floating
+  command bar are unique to it. In the console and the board the selected session is
+  *already* the open detail, so there is nothing to expand, and its controls are on screen
+  permanently instead of on a bar that floats over them.
+- **Selecting is opening** in the console and the board: the arrow keys move the detail
+  with them, and <kbd>Esc</kbd> deselects (emptying the pane, closing the drawer).
+- **The arrow keys follow the shape** - see below.
+
 ## Keyboard shortcuts
 
-The dashboard is keyboard-driven - select a card with the arrow keys and act on it
-without reaching for the mouse:
+The dashboard is keyboard-driven - select a session with the arrow keys and act on it
+without reaching for the mouse. Every shortcut works in every layout:
 
 | Key | Action | Scope |
 |-----|--------|-------|
-| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection around the grid | Anywhere |
-| <kbd>Esc</kbd> | Peel back a layer - leave a focused text box, then collapse an expanded card, then deselect | Anywhere |
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection. Around the grid in **Cards**; up and down the rail in **Console**; along and across the columns in **Board** | Anywhere |
+| <kbd>Esc</kbd> | Peel back a layer - leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box | Anywhere |
-| <kbd>e</kbd> | Expand / collapse the selected card | Selected session |
+| <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded) | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
@@ -683,7 +706,7 @@ Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the
 plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
 (<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
-them) to its default. The arrow keys and <kbd>Esc</kbd> drive grid navigation and can't be
+them) to its default. The arrow keys and <kbd>Esc</kbd> drive navigation and can't be
 reassigned.
 
 ## no-mistakes

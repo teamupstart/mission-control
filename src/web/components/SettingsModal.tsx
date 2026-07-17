@@ -13,6 +13,7 @@ import {
 } from "../lib/keybindings.ts";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
+import { LAYOUTS, type LayoutMode } from "../lib/layout.ts";
 
 const GROUPS = [
   { key: "global", label: "Anywhere" },
@@ -24,16 +25,62 @@ function labelOf(id: ActionId): string {
 }
 
 /**
+ * The layout's shape, drawn rather than described - three tiles, a rail + pane, or
+ * four columns. Faster to tell apart than the words are, and it survives the
+ * descriptions being skipped, which they will be.
+ */
+function LayoutGlyph({ mode }: { mode: LayoutMode }): React.JSX.Element {
+  const rects: [number, number, number, number][] =
+    mode === "grid"
+      ? [
+          [0, 0, 7, 6],
+          [8.5, 0, 7, 6],
+          [0, 7, 7, 6],
+          [8.5, 7, 7, 6],
+        ]
+      : mode === "console"
+        ? [
+            [0, 0, 5, 4],
+            [0, 4.7, 5, 4],
+            [0, 9.4, 5, 3.6],
+            [6.2, 0, 9.3, 13],
+          ]
+        : [
+            [0, 0, 3.3, 13],
+            [4.1, 0, 3.3, 9],
+            [8.2, 0, 3.3, 6],
+            [12.3, 0, 3.3, 4],
+          ];
+  return (
+    <svg className="layout-glyph" viewBox="0 0 15.6 13" width="16" height="13" aria-hidden focusable="false">
+      {rects.map(([x, y, w, h], i) => (
+        <rect key={i} x={x} y={y} width={w} height={h} rx="1.5" fill="currentColor" />
+      ))}
+    </svg>
+  );
+}
+
+/**
  * App settings, reached from the topbar gear or the native Settings… menu (⌘,).
  *
- * Two sections. The keyboard-shortcut editor: click an action's key, press the new
- * one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved navigation keys
- * are refused and duplicate bindings are flagged inline. And the skills catalog,
- * which is the modal's first setting that leaves this machine's localStorage - it
- * writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
+ * Three sections. The layout picker, which swaps the whole dashboard between the card
+ * grid, the split-pane console and the state board - same sessions, same cards, same
+ * actions, different shape. The keyboard-shortcut editor: click an action's key, press
+ * the new one (with ⌘/⌃/⌥ if you like), and it persists immediately; reserved
+ * navigation keys are refused and duplicate bindings are flagged inline. And the skills
+ * catalog, which is the modal's first setting that leaves this machine's localStorage -
+ * it writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
  * thing here that can fail asynchronously. `SkillsPanel` owns that error path.
  */
-export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.Element {
+export function SettingsModal({
+  layout,
+  onLayoutChange,
+  onClose,
+}: {
+  layout: LayoutMode;
+  onLayoutChange: (mode: LayoutMode) => void;
+  onClose: () => void;
+}): React.JSX.Element {
   const { bindings, hasCustom } = useKeybindings();
   const skills = useSkills();
   const [recording, setRecording] = useState<ActionId | null>(null);
@@ -98,6 +145,35 @@ export function SettingsModal({ onClose }: { onClose: () => void }): React.JSX.E
         </header>
 
         <div className="settings-body">
+          <section className="settings-section">
+            <div className="settings-section-head">
+              <h3>Layout</h3>
+            </div>
+            {/* A radio group, not a segmented control: these are three exclusive answers to
+                one question, and the description is the point - the labels alone don't say
+                what you'd be trading. Applies live behind the modal, so you can see it. */}
+            <div className="layout-picker" role="radiogroup" aria-label="Dashboard layout">
+              {LAYOUTS.map((l) => (
+                <label key={l.id} className={`layout-option${layout === l.id ? " is-on" : ""}`}>
+                  <input
+                    type="radio"
+                    name="layout"
+                    value={l.id}
+                    checked={layout === l.id}
+                    onChange={() => onLayoutChange(l.id)}
+                  />
+                  <span className="layout-option-text">
+                    <span className="layout-option-label">
+                      <LayoutGlyph mode={l.id} />
+                      {l.label}
+                    </span>
+                    <span className="layout-option-desc">{l.description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </section>
+
           <section className="settings-section">
             <div className="settings-section-head">
               <h3>Keyboard shortcuts</h3>

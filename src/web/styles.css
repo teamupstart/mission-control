@@ -4561,3 +4561,585 @@ kbd {
   line-height: 1.5;
   color: var(--danger);
 }
+
+/* ============================================================================
+   LAYOUTS - console and board
+   ----------------------------------------------------------------------------
+   The card grid is the default and owns everything above; these two rearrange the
+   SAME cards. Both are full-height app shells rather than a scrolling page: their
+   detail pane keeps a reply box pinned at the bottom, and a page that scrolls under
+   it would carry that box off the screen.
+   ============================================================================ */
+.app-console,
+.app-board {
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  height: 100dvh;
+  /* No --cmdbar-clearance: the floating command bar is grid-only (see App), and these
+     shells don't scroll, so there is nothing to reserve room for. */
+  padding: 0;
+}
+.app-console .topbar,
+.app-board .topbar {
+  flex: none;
+  margin-bottom: 0;
+  padding-inline: 22px;
+}
+
+/* ---- console: rail + always-open detail ---- */
+.console {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) 1fr;
+  overflow: hidden;
+}
+.console-rail {
+  overflow-y: auto;
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.rail-group {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--tone-color, var(--dim));
+  background: linear-gradient(var(--bg), color-mix(in oklab, var(--bg) 82%, transparent));
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-soft);
+}
+.rail-group-n {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+.rail-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 9px;
+  width: 100%;
+  padding: 10px 14px 10px 15px;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.rail-row::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--tone-color, var(--neutral));
+  opacity: 0.8;
+}
+.rail-row:hover {
+  background: color-mix(in oklab, var(--panel) 65%, transparent);
+}
+.rail-row.selected {
+  background: var(--panel);
+  box-shadow: inset 2px 0 0 var(--select);
+}
+.rail-row.tone-attention::before {
+  box-shadow: 0 0 12px var(--attention);
+}
+.rail-row.tone-exited {
+  opacity: 0.6;
+}
+.rail-row .agent-dot {
+  grid-row: 1 / span 2;
+}
+.rail-name {
+  grid-column: 2;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 620;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-sub {
+  grid-column: 2;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-right {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.rail-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.rail-state {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--tone-color, var(--neutral));
+  white-space: nowrap;
+}
+.rail-marks {
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  color: var(--attention);
+}
+.rail-pr {
+  font-size: 9.5px;
+  font-weight: 650;
+  color: var(--pr-open);
+}
+.rail-pr.pr-merged {
+  color: var(--pr-merged);
+}
+.rail-seen {
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.console-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 20px;
+  overflow: hidden;
+}
+.console-empty {
+  margin: auto;
+  max-width: 42ch;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* ---- board: a column per state, detail in a drawer ---- */
+.board {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(250px, 1fr);
+  gap: 14px;
+  padding: 16px 20px 20px;
+  overflow-x: auto;
+}
+.board-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.board-col.tone-attention {
+  border-color: color-mix(in oklab, var(--attention) 32%, var(--border));
+  background: color-mix(in oklab, var(--attention) 5%, transparent);
+}
+.board-col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.board-swatch {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tone-color, var(--neutral));
+}
+.board-col.tone-attention .board-swatch {
+  box-shadow: 0 0 10px var(--attention);
+}
+.board-col-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--tone-color, var(--muted));
+}
+.board-col-n {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  padding: 1px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+}
+.board-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 9px;
+  overflow-y: auto;
+}
+.board-col-empty {
+  margin: 0;
+  padding: 14px 4px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* ---- board tile ---- */
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  width: 100%;
+  padding: 10px 11px 9px 13px;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  background: linear-gradient(var(--panel), var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition:
+    transform 0.14s ease,
+    border-color 0.14s ease;
+}
+.tile::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: var(--tone-color, var(--neutral));
+}
+.tile:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--tone-color, var(--neutral)) 42%, var(--border));
+}
+.tile.attention {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 20px color-mix(in oklab, var(--attention) 13%, transparent);
+}
+.tile.open {
+  border-color: color-mix(in oklab, var(--select) 70%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 2px color-mix(in oklab, var(--select) 55%, transparent);
+}
+.tile.tone-exited {
+  opacity: 0.62;
+}
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tile-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 640;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Two lines, hard. The goal is the tile's reason to exist, but a five-line goal would
+   make one tile as tall as a card and give the column back to scrolling. */
+.tile-goal {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* The no-mistakes pipeline as a hairline: one segment per step, same tones as the
+   dots on the card. Enough to see a gate parked; the drawer has the detail. */
+.tile-rail {
+  display: flex;
+  gap: 2px;
+}
+.tile-rail > span {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.tile-rail .tr-completed {
+  background: var(--idle);
+}
+.tile-rail .tr-running {
+  background: var(--working);
+}
+.tile-rail .tr-awaiting_approval,
+.tile-rail .tr-fix_review {
+  background: var(--attention);
+}
+.tile-rail .tr-failed {
+  background: var(--danger);
+}
+.tile-rail .tr-skipped {
+  background: var(--dim);
+}
+.tile-marks {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.tile-marks:empty {
+  display: none;
+}
+.tile-flag {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 650;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  background: var(--bg-2);
+}
+.tile-flag.tf-gate,
+.tile-flag.tf-escalated,
+.tile-flag.tf-review {
+  border-color: color-mix(in oklab, var(--attention) 48%, var(--border));
+  background: color-mix(in oklab, var(--attention) 13%, transparent);
+  color: var(--attention);
+}
+.tile-flag.tf-pending {
+  border-color: color-mix(in oklab, var(--working) 48%, var(--border));
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  color: var(--working);
+}
+.tile-flag.tf-queue {
+  border-color: color-mix(in oklab, var(--working) 35%, var(--border));
+  color: var(--working);
+}
+.tile-flag.pr-open {
+  border-color: color-mix(in oklab, var(--pr-open) 45%, var(--border));
+  color: var(--pr-open);
+}
+.tile-flag.pr-merged {
+  border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));
+  color: var(--pr-merged);
+}
+.tile-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.tile-branch {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  color: var(--idle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tile-seen {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- board drawer ---- */
+.board-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(4, 6, 9, 0.5);
+  backdrop-filter: blur(2px);
+}
+.board-drawer {
+  position: fixed;
+  z-index: 31;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(620px, 94vw);
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(var(--bg-2), var(--bg));
+  border-left: 1px solid var(--border);
+  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
+  animation: drawer-in 0.16s ease;
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(20px);
+    opacity: 0;
+  }
+}
+.board-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 12px 14px 10px 18px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.board-drawer-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.board-drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 12px 14px 14px;
+}
+
+/* ---- hosting an expanded card inside a pane ----
+   `.card.expanded` is sized for focus mode in the grid: it spans every column, jumps to
+   the top of the grid, and measures itself against the viewport minus the topbar and the
+   command bar. Inside a detail pane or a drawer every one of those is wrong - the pane
+   already has a size, and the card's job is simply to fill it. */
+.app-console .card.expanded,
+.app-board .card.expanded {
+  grid-column: auto;
+  order: 0;
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  scroll-margin-top: 0;
+}
+/* Inside a pane, only the conversation/queue region may give up height (and Foreman's
+   note some of its own - it has a min-height and scrolls internally). Every other
+   section is a fixed-size row: a chip, a footer, a strip. There is no such thing as
+   half of one, but flex will make one anyway - and because several of these rows set
+   `overflow: hidden`, their automatic minimum resolves to zero, so they shrink to
+   NOTHING rather than refusing. The no-mistakes fix log came out as a 3px sliver of a
+   32px chip on a card with 265px of conversation below it.
+
+   Scoped to these two layouts on purpose. The grid's focus mode is a different
+   bargain, tuned against a full-width card and a viewport-derived height (see
+   `.card.expanded`), and it hits its limits from the other direction: forbidding the
+   shrink there takes the compose box from 6px inside the card to 11px below it. This
+   pane sizes the card itself, so the rows can keep their height honestly. */
+.app-console .card.expanded > *:not(.card-panels):not(.foreman-note),
+.app-board .card.expanded > *:not(.card-panels):not(.foreman-note) {
+  flex-shrink: 0;
+}
+/* The drawer is ~620px. The expanded card puts the queue and the conversation side by
+   side above an 820px VIEWPORT - which the viewport is, while the container isn't - so
+   they'd share 620px and neither would be writable in. Stack them back up. */
+.app-board .card.expanded .card-panels {
+  flex-direction: column;
+}
+.app-board .card.expanded .card-panels > .work-queue {
+  flex: 0 0 auto;
+}
+.app-board .card.expanded .card-panels > .work-queue.wq-collapsed {
+  align-self: stretch;
+}
+
+/* ---- settings: layout picker ---- */
+.layout-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.layout-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.layout-option:hover {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.layout-option.is-on {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.layout-option input {
+  margin: 3px 0 0;
+  accent-color: var(--working);
+}
+.layout-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.layout-option-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--fg);
+}
+.layout-glyph {
+  color: var(--dim);
+}
+.layout-option.is-on .layout-glyph {
+  color: var(--working);
+}
+.layout-option-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* Below this the console's rail and the board's columns stop being a layout and start
+   being a squeeze. Both fall back to the card grid's shape rather than pretending. */
+@media (max-width: 760px) {
+  .console {
+    grid-template-columns: 1fr;
+  }
+  .console-rail {
+    display: none;
+  }
+  .board {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    overflow-y: auto;
+  }
+  .board-col {
+    max-height: none;
+  }
+}

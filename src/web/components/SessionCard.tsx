@@ -136,6 +136,7 @@ export function SessionCard({
   selected = false,
   onSelect,
   expanded = false,
+  canExpand = true,
   onToggleExpand,
   registerEl,
   registerActions,
@@ -158,6 +159,9 @@ export function SessionCard({
   selected?: boolean;
   onSelect?: () => void;
   expanded?: boolean;
+  /** Whether the header offers the expand/collapse toggle. False in the layouts whose
+   *  detail pane is always the expanded card, where the control would toggle nothing. */
+  canExpand?: boolean;
   onToggleExpand?: () => void;
   registerEl?: (id: string, el: HTMLElement | null) => void;
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
@@ -320,19 +324,21 @@ export function SessionCard({
             diff
           </button>
         )}
-        <Tooltip label={expanded ? "Hide conversation" : "Show conversation"}>
-          <button
-            className={`expand-toggle${expanded ? " open" : ""}`}
-            aria-label={expanded ? "Collapse conversation" : "Expand conversation"}
-            aria-expanded={expanded}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleExpand?.();
-            }}
-          >
-            ⌃
-          </button>
-        </Tooltip>
+        {canExpand && (
+          <Tooltip label={expanded ? "Hide conversation" : "Show conversation"}>
+            <button
+              className={`expand-toggle${expanded ? " open" : ""}`}
+              aria-label={expanded ? "Collapse conversation" : "Expand conversation"}
+              aria-expanded={expanded}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleExpand?.();
+              }}
+            >
+              ⌃
+            </button>
+          </Tooltip>
+        )}
       </header>
 
       <GoalLine session={session} />

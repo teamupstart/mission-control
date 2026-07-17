@@ -4392,14 +4392,23 @@ kbd {
   gap: 6px;
   counter-reset: wq;
 }
+/*
+  `flow-root` rather than `flex`, so the controls can float and the intent can wrap
+  back under them. As flex items they held a column of width for the row's whole
+  height, and a long intent on a narrow card wrapped at about half the space it had.
+  The left padding is the grip's gutter - reserved on every row, not just the
+  draggable ones, so the text starts on the same line whatever state the item is in.
+*/
 .wq-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
+  display: flow-root;
+  position: relative;
+  padding: 8px 10px 8px 28px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
   background: var(--panel);
+}
+.wq-items-gripless .wq-item {
+  padding-left: 10px;
 }
 .wq-item.dragging {
   opacity: 0.45;
@@ -4424,7 +4433,11 @@ kbd {
   opacity: 0.45;
   text-decoration: line-through;
 }
+/* Out of flow, in the gutter `.wq-item` reserves for it. */
 .wq-grip {
+  position: absolute;
+  top: 8px;
+  left: 9px;
   cursor: grab;
   color: var(--dim);
   font-size: 13px;
@@ -4434,12 +4447,11 @@ kbd {
 .wq-grip:active {
   cursor: grabbing;
 }
+/* A block, not a flex container: only line boxes wrap around a float, and a flex
+   container would step aside from `.wq-controls` instead of flowing under it. */
 .wq-body {
-  flex: 1;
+  display: block;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
 }
 .wq-intent {
   margin: 0;
@@ -4450,10 +4462,13 @@ kbd {
   overflow-wrap: anywhere;
 }
 .wq-edit {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+.wq-controls {
+  float: right;
+  margin: 0 0 4px 10px;
 }
 .wq-controls,
 .wq-actions {
@@ -4461,11 +4476,21 @@ kbd {
   align-items: center;
   gap: 6px;
 }
+/*
+  These two are flex containers, so they'd shoulder up against the floated controls
+  rather than wrap under them. `clear` drops them to their own full-width line - but
+  only when the intent above was too short to clear the buttons on its own.
+*/
+.wq-status,
+.wq-payload {
+  clear: right;
+}
 .wq-status {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  margin-top: 5px;
   font-size: 11px;
 }
 .wq-state {

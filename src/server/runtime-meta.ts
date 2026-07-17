@@ -1,6 +1,12 @@
 import { envVar } from "./config.ts";
 import { unref } from "./util/timers.ts";
-import { readRuntimeMeta, readSessionActivity, resolveTranscriptPath } from "./transcript.ts";
+import {
+  computeRuntimeMeta,
+  computeSessionActivity,
+  PASSIVE_TAIL_BYTES,
+  readTailLines,
+  resolveTranscriptPath,
+} from "./transcript.ts";
 import { findRolloutForSession, readRolloutMeta } from "./codex-rollout.ts";
 import type { Registry } from "./registry.ts";
 import type { Session } from "@shared/types.ts";
@@ -38,10 +44,12 @@ export function startRuntimeMetaPoller(registry: Registry): () => void {
         if (s.agent === "claude") {
           const path = resolveTranscriptPath(s);
           if (path) {
-            registry.applyRuntimeMeta(s.id, readRuntimeMeta(path), "transcript");
-            // Same bounded tail read, second axis: keep a hook-free idle/working
-            // signal current so a quiet or post-restart session's queue still moves.
-            registry.applyPassiveActivity(s, readSessionActivity(path));
+            // One bounded tail read feeds both axes: runtime metadata and the
+            // hook-free idle/working signal that keeps a quiet or post-restart
+            // session's queue moving.
+            const lines = readTailLines(path, PASSIVE_TAIL_BYTES);
+            registry.applyRuntimeMeta(s.id, computeRuntimeMeta(lines), "transcript");
+            registry.applyPassiveActivity(s, computeSessionActivity(lines));
           }
         } else if (s.agent === "codex" && s.cwd) {
           const path = codexRolloutPath(codexBindings, s);

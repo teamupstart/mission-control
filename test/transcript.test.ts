@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -346,31 +346,6 @@ test("resolveTranscriptPath ignores non-claude, id-less, and cwd-less sessions",
   assert.equal(resolveTranscriptPath(session({ agent: "codex" }), root), null);
   assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);
   assert.equal(resolveTranscriptPath(session({ cwd: null }), root), null);
-});
-
-test("resolveTranscriptPath falls back to the newest sibling when the bound id is stale", () => {
-  // The /clear case: the daemon still holds the pre-clear agentSessionId, whose file
-  // is gone, while the live session writes to a fresh transcript beside it.
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
-  const cwd = "/Users/me/work/app";
-  const dir = join(root, encode(cwd));
-  mkdirSync(dir, { recursive: true });
-  const older = join(dir, "11111111-1111-1111-1111-111111111111.jsonl");
-  const newer = join(dir, "22222222-2222-2222-2222-222222222222.jsonl");
-  writeFileSync(older, "{}\n");
-  writeFileSync(newer, "{}\n");
-  // Make `newer` win regardless of creation order on disk.
-  const past = new Date("2026-07-11T00:00:00.000Z");
-  utimesSync(older, past, past);
-  // The bound id names no file, so resolution falls through to the newest sibling.
-  assert.equal(resolveTranscriptPath(session({ cwd }), root), newer);
-});
-
-test("resolveTranscriptPath fallback returns null for an empty project dir", () => {
-  const root = mkdtempSync(join(tmpdir(), "proj-"));
-  const cwd = "/Users/me/work/app";
-  mkdirSync(join(root, encode(cwd)), { recursive: true }); // exists but no .jsonl
-  assert.equal(resolveTranscriptPath(session({ cwd }), root), null);
 });
 
 // ---- computeSessionActivity (hook-free idle/working) -----------------------

@@ -2929,16 +2929,15 @@ kbd {
 .combobox {
   position: relative;
 }
+/* Rendered in a body-level portal with fixed positioning, so the list floats
+   above the modal and never clips against a scrollable ancestor's overflow.
+   `top`/`left`/`width`/`max-height` are set inline from the input's rect. */
 .combobox-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 60;
   margin: 0;
   padding: 4px;
   list-style: none;
-  max-height: 220px;
   overflow-y: auto;
   background: var(--panel-2);
   border: 1px solid var(--border);

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * A themed combobox for a repo path. Replaces the native <datalist>, whose
@@ -9,7 +10,19 @@ import { useEffect, useRef, useState } from "react";
  * Shared: the dispatch form picks a base with it, and the Foreman settings panel
  * picks a repo to trust with it. Both want the same thing - "one of the repos I
  * know, or a path I type" - so it lives here rather than inside either caller.
+ *
+ * The dropdown is rendered in a body-level portal with fixed positioning, so it
+ * escapes any scrollable ancestor: absolutely-positioned, it was clipped by the
+ * settings pane's `overflow-y: auto` no matter its z-index.
  */
+
+/** Gap in px between the input and the dropdown. */
+const LIST_GAP = 4;
+/** Tallest the dropdown ever gets, when the viewport has room for it. */
+const LIST_MAX_HEIGHT = 220;
+/** Breathing room kept between the dropdown and the viewport's bottom edge. */
+const VIEWPORT_MARGIN = 8;
+
 export function RepoCombobox({
   repos,
   value,
@@ -21,7 +34,14 @@ export function RepoCombobox({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
 
   const q = value.trim().toLowerCase();
@@ -29,11 +49,36 @@ export function RepoCombobox({
   // Nothing to offer once the text already equals the only remaining match.
   const showList = open && matches.length > 0 && !(matches.length === 1 && matches[0] === value);
 
-  // Collapse when focus/click leaves the widget.
+  // Track the input so the portaled list stays glued to it. The scroll listener
+  // captures, so an ancestor pane scrolling - not just the window - repositions.
+  useLayoutEffect(() => {
+    if (!showList) return;
+    function place(): void {
+      const r = inputRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const top = r.bottom + LIST_GAP;
+      // Fixed means the list can't be scrolled into view, so cap it to the room
+      // below the input rather than letting it hang off the viewport's edge.
+      const room = window.innerHeight - top - VIEWPORT_MARGIN;
+      setPos({ top, left: r.left, width: r.width, maxHeight: Math.min(LIST_MAX_HEIGHT, room) });
+    }
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [showList]);
+
+  // Collapse when focus/click leaves the widget. The list is portaled outside
+  // rootRef, so it has to count as "inside" or picking an option would close
+  // the dropdown before the choice registered.
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent): void {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+      const t = e.target as Node;
+      if (!rootRef.current?.contains(t) && !listRef.current?.contains(t)) setOpen(false);
     }
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -82,6 +127,7 @@ export function RepoCombobox({
   return (
     <div className="combobox" ref={rootRef}>
       <input
+        ref={inputRef}
         className="field-input mono"
         role="combobox"
         aria-expanded={showList}
@@ -95,26 +141,34 @@ export function RepoCombobox({
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
       />
-      {showList && (
-        <ul className="combobox-list" role="listbox" ref={listRef}>
-          {matches.map((r, i) => (
-            <li
-              key={r}
-              role="option"
-              aria-selected={i === active}
-              className={`combobox-option${i === active ? " is-active" : ""}`}
-              onMouseEnter={() => setActive(i)}
-              onMouseDown={(e) => {
-                // Pick before the input's blur fires, so the click registers.
-                e.preventDefault();
-                choose(r);
-              }}
-            >
-              {r}
-            </li>
-          ))}
-        </ul>
-      )}
+      {showList &&
+        pos &&
+        createPortal(
+          <ul
+            className="combobox-list"
+            role="listbox"
+            ref={listRef}
+            style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight }}
+          >
+            {matches.map((r, i) => (
+              <li
+                key={r}
+                role="option"
+                aria-selected={i === active}
+                className={`combobox-option${i === active ? " is-active" : ""}`}
+                onMouseEnter={() => setActive(i)}
+                onMouseDown={(e) => {
+                  // Pick before the input's blur fires, so the click registers.
+                  e.preventDefault();
+                  choose(r);
+                }}
+              >
+                {r}
+              </li>
+            ))}
+          </ul>,
+          document.body,
+        )}
     </div>
   );
 }

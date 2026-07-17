@@ -476,6 +476,15 @@ export interface SessionQueueSummary {
   round: number;
   /** Blocking gaps on the in-flight item - what the agent is being asked to fix. */
   blockingGaps: number;
+  /**
+   * Items the agent actually LANDED. Projected positively rather than left to be
+   * derived, because "terminal" and "succeeded" are different facts: `verified`,
+   * `escalated` and `cancelled` are all terminal, so subtracting the failures a
+   * caller happens to know about counts every other terminal state as a success -
+   * which is how a cancelled item came to read as "done" on the card's chip. A new
+   * terminal state must not silently join the win column; it has to be added here.
+   */
+  verifiedCount: number;
   escalatedCount: number;
   /** True when every item is terminal and the wrap-up ask is due/answered. */
   drained: boolean;

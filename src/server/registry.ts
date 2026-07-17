@@ -1755,6 +1755,7 @@ export function summarizeQueue(
     inFlightIntent: inFlight?.intent ?? null,
     round: inFlight?.round ?? 0,
     blockingGaps: inFlight ? inFlight.gaps.filter((g) => g.severity === "blocking").length : 0,
+    verifiedCount: items.filter((i) => i.state === "verified").length,
     escalatedCount: items.filter((i) => i.state === "escalated").length,
     drained: items.length > 0 && open.length === 0,
     wrapupAskedAt,

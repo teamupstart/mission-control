@@ -480,13 +480,18 @@ expanding a card - a queue is worth a glance without handing the whole grid to o
 
 The **chip** above the controls opens the same drawer, and it's there for as long as the
 session has queued anything at all - not just while work is still waiting. It reports what
-the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they're all
-through, and **"1 done · 2 escalated"** in the attention tone when Foreman gave up on some
-of them and needs you. That last case is the point of the wording: an item Foreman
-escalated is *finished* in the sense that nothing will advance it again, so a chip that
-only counted what was through would report a clean-looking total over a batch that had
-quietly stalled. An **exited** session has no controls at all - no **Queue** button - so
-the chip is the only way back to what its batch did, which is why it outlives the work.
+the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they've all
+landed, and **"1 done · 2 escalated · 1 stopped"** in the attention tone when some of them
+didn't - *escalated* being work Foreman gave up on and handed back, *stopped* being work
+that ended without landing at all.
+
+Only work that actually **verified** is ever counted as done, and that's the point of the
+wording rather than a detail of it. Every ending is *finished* in the sense that nothing
+will advance it again - landed, escalated and cancelled alike - so a chip that counted
+"finished" work would report a clean-looking total over a batch that quietly stalled. An
+**exited** session has no controls at all - no **Queue** button - so the chip is the only
+thing left saying what its batch did, which is why it outlives the work and why it doesn't
+flatter it.
 
 Two ways to get the room back, for two different intents. **Queue** (or <kbd>q</kbd>) puts
 the drawer away entirely. Clicking the panel's **Work queue** header *folds* it instead -

@@ -167,6 +167,7 @@ function mkSummary(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary
     inFlightIntent: null,
     round: 0,
     blockingGaps: 0,
+    verifiedCount: 0,
     escalatedCount: 0,
     drained: false,
     wrapupAskedAt: null,
@@ -184,7 +185,7 @@ test("a queue with work still in it counts what's waiting, quietly", () => {
 test("a batch that all landed says so, and doesn't call itself queued", () => {
   // `openCount` excludes every terminal state, so once the batch is through there is
   // nothing "queued" left to claim - the old label said "3 queued" here.
-  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3 }));
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3, verifiedCount: 3 }));
   assert.equal(chip.label, "3 done");
   assert.equal(chip.attention, false);
 });
@@ -193,10 +194,12 @@ test("an escalation is never hidden behind a count that reads as success", () =>
   // The regression this exists for. `escalated` is TERMINAL, so it leaves `openCount`
   // at zero exactly like a verified item does - and a chip that only counts what's
   // through reported "3 finished" over a batch Foreman gave up on two thirds of.
-  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3, escalatedCount: 2 }));
+  const chip = queueChipView(
+    mkSummary({ openCount: 0, totalCount: 3, verifiedCount: 1, escalatedCount: 2 }),
+  );
   assert.equal(chip.label, "1 done · 2 escalated");
   assert.equal(chip.attention, true, "work that stopped short must not wear the neutral tone");
-  assert.doesNotMatch(chip.title, /all through/, "the tooltip must not claim it finished");
+  assert.doesNotMatch(chip.title, /all landed/, "the tooltip must not claim it finished");
   assert.match(chip.title, /escalated/);
 });
 
@@ -211,7 +214,13 @@ test("an escalation shows even while the rest of the batch is still running", ()
   // Terminal and open items coexist, so gating the call-out on a drained queue would
   // hide an escalation behind every batch that still had work left in it.
   const chip = queueChipView(
-    mkSummary({ openCount: 3, totalCount: 6, escalatedCount: 2, inFlightState: "in_progress" }),
+    mkSummary({
+      openCount: 3,
+      totalCount: 6,
+      verifiedCount: 1,
+      escalatedCount: 2,
+      inFlightState: "in_progress",
+    }),
   );
   assert.equal(chip.label, "3 queued · 2 escalated");
   assert.equal(chip.attention, true);
@@ -229,4 +238,64 @@ test("one escalated item is spoken about in the singular", () => {
   assert.equal(chip.label, "1 escalated");
   assert.match(chip.title, /1 of this session's 1 queued item /);
   assert.doesNotMatch(chip.title, /items/);
+});
+
+// ---- done is what LANDED, not what merely stopped moving ----
+//
+// The bug this table exists for: `done` used to be reckoned as totalCount - openCount
+// - escalatedCount, i.e. "terminal minus the failure I thought of". `cancelled` is
+// terminal and is NOT escalated, so it fell straight into the win column and a
+// cancelled batch reported itself as done. It is reachable today without touching this
+// file - SetWorkItemStateSchema accepts it and PUT /queue/:itemId/state hands it to
+// setState - so this is a live lie, not a hypothetical one. Reading `verifiedCount`
+// directly is what fixes it, and what keeps the NEXT terminal state from doing it
+// again: anything that isn't verified counts as unfinished by construction.
+
+test("a cancelled item never counts as done", () => {
+  // One verified, one cancelled: cancelled is terminal so openCount is 0, and the old
+  // subtraction called both of them done.
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 2, verifiedCount: 1 }));
+  assert.equal(chip.label, "1 done · 1 stopped");
+  assert.equal(chip.attention, true, "work that never landed must not wear the neutral tone");
+  assert.doesNotMatch(chip.title, /all landed/);
+});
+
+test("a wholly cancelled batch claims nothing landed", () => {
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 3 }));
+  assert.equal(chip.label, "3 stopped");
+  assert.equal(chip.attention, true);
+});
+
+test("a terminal state nobody enumerated still lands outside the win column", () => {
+  // The property, stated directly: whatever the summary can't account for as verified
+  // or escalated is unfinished. A new terminal state must not be able to join `done`
+  // by default - that default is the whole bug.
+  for (const [total, verified, escalated] of [
+    [1, 0, 0],
+    [4, 1, 1],
+    [9, 5, 0],
+  ] as const) {
+    const chip = queueChipView(
+      mkSummary({ openCount: 0, totalCount: total, verifiedCount: verified, escalatedCount: escalated }),
+    );
+    assert.match(chip.label, new RegExp(`${total - verified - escalated} stopped`));
+    assert.equal(chip.attention, true);
+  }
+});
+
+test("escalated and cancelled are counted apart, not lumped together", () => {
+  // Both are unfinished, but "Foreman gave up" and "you called it off" are different
+  // things to walk back into, and the chip is the only thing left saying which.
+  const chip = queueChipView(
+    mkSummary({ openCount: 0, totalCount: 4, verifiedCount: 1, escalatedCount: 2 }),
+  );
+  assert.equal(chip.label, "1 done · 2 escalated · 1 stopped");
+  assert.match(chip.title, /3 of this session's 4 queued items never landed \(2 escalated to you\)/);
+});
+
+test("the counts never go negative when the summary can't be reconciled", () => {
+  // Belt and braces: the parts come from one projection, but a label reading
+  // "-2 stopped" would be a worse bug than whatever produced the mismatch.
+  const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 1, verifiedCount: 5 }));
+  assert.doesNotMatch(chip.label, /-/);
 });

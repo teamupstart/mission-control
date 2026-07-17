@@ -76,32 +76,48 @@ Hooks stay the primary source - they are exact, instant, and carry permission mo
 transcript is the fallback that makes idle detection **survive dropped hooks and daemon
 restarts**, because it is re-derived from disk on every poll tick and needs no memory.
 
-### Three changes
+### The changes
 
-1. **`readSessionActivity(path)`** (new, `transcript.ts`, pure + unit-tested): from a
-   bounded tail read, return `{ state: "idle" | "working"; lastActivity: number }`.
-   *Idle* when the newest main-chain record is a completed assistant turn; *working* when
-   a user / tool-result record is pending after it. `lastActivity` is that record's
-   timestamp.
+Two new pieces of plumbing feed the transcript-derived state in, and the predicate that
+gates delivery is relaxed to honour it:
 
-2. **Transcript resolution tolerant of a stale binding**
-   (`resolveTranscriptPath`). Today it derives `‹cwd›/‹agentSessionId›.jsonl` and returns
-   null if that file is missing - which is exactly what happens after a `/clear` re-mints
-   the agent-session id while the daemon still holds the old one. Add a fallback: the
-   newest recently-modified `.jsonl` in the cwd's project directory. This is what lets a
-   live-but-stale-bound pane be read at all. (Headless Foreman `claude -p` runs write to a
-   temp `/private/var/folders/.../T/` project dir, **not** the worktree's, so they do not
-   pollute this fallback.)
+1. **`readSessionActivity(path)`** (new, `transcript.ts`, pure + unit-tested as
+   `computeSessionActivity`): from a bounded tail read, return
+   `{ state: "idle" | "working"; lastActivity: number }`. *Idle* only when the newest
+   main-chain record is a cleanly-ended assistant turn (`stop_reason` `end_turn` /
+   `stop_sequence`); *working* for every ambiguous tail - a pending user or tool-result
+   record - so we never read idle mid-turn. `lastActivity` is that record's timestamp.
 
-3. **Registry applies the passive state** when no fresh hook overlay exists. In
-   `mergeDiscovered`, instead of the hardcoded `state:"working"`, seed `state`,
-   `lastActivity`, and `instrumented` from the transcript read. A fresh hook overlay still
-   wins outright (unchanged precedence). Net effect: `instrumented` now means *"we have
-   current session state from a hook **or** the transcript"*, and `settledIdle` can be
-   satisfied without a live hook.
+2. **Registry applies the passive state** when no fresh hook overlay exists. In
+   `mergeDiscovered`, instead of the hardcoded `state:"working"`, seed `state` and
+   `lastActivity` from the transcript read (`applyPassiveActivity`). A fresh hook overlay
+   still wins outright (unchanged precedence). It deliberately does **not** touch
+   `instrumented`: that stays *"a fresh hook exists"* for the UI "uninstrumented" badge
+   and `reportBucket`.
 
-`settledIdle`, `decideQueueTick`, and every downstream invariant are **unchanged** - they
-simply now receive a truthful `state`/`instrumented` for quiet sessions.
+And `settledIdle()` is relaxed to match: it **no longer requires `instrumented`** and now
+trusts `state === "idle"` directly. That is safe because `idle` is only ever set from a
+real source - a fresh hook overlay or the transcript-derived passive state - while the
+rebuild default is `working`, so an `idle` is always a claim, never an absence of data.
+The old `instrumented` gate was redundant while hooks were the sole source of `idle`, and
+became wrong once the transcript was a second source: it stranded exactly the hook-free
+idle this fix exists to honour. Because `settledIdle` is shared, this also heals the same
+latent stall in skills-reload, which records its ack in the DB before typing (not via a
+hook), so a hook-free session is never re-injected.
+
+`decideQueueTick` and every downstream invariant are otherwise unchanged - they simply now
+receive a truthful `state` for quiet sessions.
+
+### Considered and rejected: a newest-sibling transcript fallback
+
+An earlier draft added a third change - when the bound `agentSessionId` no longer names a
+file (the `/clear` case, where a clear re-mints the id while the daemon still holds the old
+one), `resolveTranscriptPath` would fall back to the newest recently-modified `.jsonl` in
+the cwd's project dir. It was **dropped in review as unsafe**: two panes can share a cwd,
+so "newest sibling" can resolve to a *different, busy* session's transcript, read it as
+idle, and get a queued item typed into a pane that is mid-turn - violating the guarantee
+that we never paste into a busy pane. Resolution now stops at the derived path and returns
+null when it is missing; a `/clear`-corrupted binding simply reads no transcript (below).
 
 ### Flow: where session state comes from
 
@@ -121,31 +137,38 @@ AFTER
 "3 New UIs" is also **identity-corrupted**, independent of the deadlock: its queue is keyed
 to agent-session `726e0505`, which ended via `/clear`; the live pane (`%43`) now runs a
 different session in the same worktree, and that pane has been firing no hooks since the
-clear. Change 2 (stale-binding-tolerant resolution) is what lets the fix read its live
-transcript despite the dead binding.
+clear. With the newest-sibling fallback dropped, the stale `726e0505` binding resolves to
+**no transcript** (the derived path is gone), so this session is **not** auto-recovered by
+this fix - its two items must be delivered by hand.
 
 Its prompt box also currently holds stray text (`There are 2 items`); since delivery pastes
 into the box, that must be cleared first or a send would concatenate and mangle the prompt.
 
-After the fix lands and the daemon restarts, the plan is to verify the queue delivers on
-its own; if the corruption still blocks it, deliver the two items into pane `%43` directly
-(clear the stray text first) and reconcile the queue rows so the dashboard matches reality.
+So the two items are delivered into pane `%43` directly (clear the stray text first) and
+the queue rows reconciled so the dashboard matches reality. The durable value of this fix
+is elsewhere: every **correctly-bound** session now keeps delivering across daemon restarts
+and long-quiet periods, which is the general failure this change removes. The stale-binding
+case itself is left to a follow-up (below).
 
 ## Out of scope (noted, not fixed here)
 
 - **Stale agent-session binding on `SessionEnd`.** A `/clear`'d session's binding is never
   invalidated, so its queue looks healthily attached instead of being offered for
-  re-attach. Change 2 works around it for reads; the durable fix is a separate follow-up.
+  re-attach - and, with no newest-sibling fallback, its transcript can't be read either.
+  Invalidating the binding on `SessionEnd` (so the queue is offered for re-attach) is the
+  durable fix and a separate follow-up.
 - **Why pane `%43` stopped firing hooks entirely.** An operational quirk of that one
   long-lived process (it reported normally until the `/clear`), not a harness code path.
   The whole point of this fix is that the queue no longer depends on that pane reporting.
 
 ## Testing
 
-- Unit: `readSessionActivity` over fixture transcripts (idle tail, working tail, empty,
-  malformed, sidechain-only).
-- Unit: `resolveTranscriptPath` fallback (missing derived path → newest-in-dir; no
-  candidates → null; stale/old candidate excluded by recency).
+- Unit: `computeSessionActivity` over fixture transcripts (idle tail, pending-tool-call and
+  unanswered-tool-result working tails, sidechain / undatable tails skipped, empty /
+  malformed → null).
+- Unit: `resolveTranscriptPath` resolution (hook-reported path verbatim, cwd-derived
+  fallback, null when neither locates a file or the session is non-Claude / id-less /
+  cwd-less).
 - Machine: the existing repro assertion - a quiet-but-alive session with a readable
   transcript now yields `{ kind: "send" }`, and one with no transcript still yields
   `{ kind: "none" }` (no false sends).

@@ -6,11 +6,26 @@
 // Closing the window HIDES it (the app stays resident in the menu bar so alerts
 // keep firing); only a real quit destroys it.
 
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, screen, shell } from "electron";
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { isQuitting } from "./lifecycle.ts";
 
 let win: BrowserWindow | null = null;
+
+// The window has no native title bar, so the topbar doubles as one and gives up
+// its left edge to the traffic lights. With that inset its controls stay on one
+// row down to ~1280px; below that the session stats wrap to a second row, which
+// costs more height than removing the title bar saved. Open with room to spare -
+// but never wider than the display.
+const PREFERRED = { width: 1400, height: 860 };
+
+function initialSize(): { width: number; height: number } {
+  const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+  return {
+    width: Math.min(PREFERRED.width, width),
+    height: Math.min(PREFERRED.height, height),
+  };
+}
 
 export const getMainWindow = (): BrowserWindow | null => win;
 
@@ -49,13 +64,19 @@ async function loadWithRetry(w: BrowserWindow, url: string, attempts = 50): Prom
 
 export function createWindow(preloadPath: string): BrowserWindow {
   win = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    ...initialSize(),
     minWidth: 720,
     minHeight: 480,
     show: false,
     title: "Mission Control",
     backgroundColor: "#0e1116",
+    // The app's own dark topbar IS the title bar: no native strip, traffic
+    // lights inset over the topbar's left padding (see .topbar in styles.css).
+    // "hiddenInset" would park them at the standard y for a 38px bar, ~15px
+    // above the centre of our taller topbar row; position them explicitly so
+    // they line up with the brand instead.
+    titleBarStyle: "hidden",
+    trafficLightPosition: { x: 20, y: 28 },
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,

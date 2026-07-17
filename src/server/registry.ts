@@ -36,6 +36,7 @@ import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead } from "./transcript.ts";
 import { clampPrompt, substantivePrompt } from "./transcript.ts";
 import {
+  clearQueue as clearQueueDb,
   deleteQueueItem,
   deleteTask as dbDeleteTask,
   getQueueItem,
@@ -1609,6 +1610,28 @@ export class Registry extends EventEmitter {
     deleteQueueItem(id);
     this.touchQueue(item.noteKey, now);
     this.syncSessionsForQueue(item.noteKey);
+  }
+
+  /**
+   * Clear a whole queue - every item AND the row - then make it observable.
+   *
+   * The RESET action's cleanup: a reset discards the task these items were authored
+   * for, so the batch goes with it. Distinct from a bare /clear, whose backlog
+   * deliberately survives (orphaned) for the re-attach affordance - this is the
+   * explicit "start over", so it drops in-flight items too (see `clearQueueDb`).
+   *
+   * Two syncs, mirroring `reattachQueue`, because clearing changes the queue
+   * landscape twice over: `syncSessionsForQueue` blanks the summary on the card
+   * whose key this was, and `syncAllOrphanHints` retracts any sibling's re-attach
+   * hint that pointed at the batch just deleted. A no-op (no emit) when the key held
+   * no queue. Returns whether anything was cleared.
+   */
+  clearQueue(key: string): boolean {
+    if (!getQueueRow(key)) return false;
+    clearQueueDb(key);
+    this.syncSessionsForQueue(key);
+    this.syncAllOrphanHints();
+    return true;
   }
 
   /**

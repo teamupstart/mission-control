@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
@@ -15,6 +15,11 @@ export const SETTINGS_CATEGORIES = [
 ] as const;
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
+
+/** Stable per-tab id, so the pane can name its tab as its `aria-labelledby` label. */
+function tabDomId(id: SettingsCategoryId): string {
+  return `settings-tab-${id}`;
+}
 
 /**
  * App settings, reached from the topbar gear or the native Settings… menu (⌘,).
@@ -40,6 +45,7 @@ export function SettingsModal({
 }): React.JSX.Element {
   const [active, setActive] = useState<SettingsCategoryId>(initialCategory);
   const skills = useSkills();
+  const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
   // Escape closes the modal. This is a plain bubble-phase handler with no "is a shortcut
   // recording?" guard: while KeyboardPanel records, its capture-phase listener swallows
@@ -52,6 +58,41 @@ export function SettingsModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Arrow/Home/End move the tab set, per the WAI-ARIA tabs pattern: selection follows
+  // focus, so a keyboard user lands on the panel the same way a click gets there. The
+  // stopPropagation keeps these keys inside the rail - the grid's window-level arrow
+  // handler stands down while settings is open, but it should not be the only thing
+  // standing between the rail and a background card moving under the modal.
+  function onTablistKey(e: React.KeyboardEvent<HTMLDivElement>): void {
+    const last = SETTINGS_CATEGORIES.length - 1;
+    const idx = SETTINGS_CATEGORIES.findIndex((c) => c.id === active);
+    let next: number;
+    switch (e.key) {
+      case "ArrowUp":
+      case "ArrowLeft":
+        next = idx <= 0 ? last : idx - 1;
+        break;
+      case "ArrowDown":
+      case "ArrowRight":
+        next = idx >= last ? 0 : idx + 1;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = last;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    const nextId = SETTINGS_CATEGORIES[next]?.id;
+    if (!nextId) return;
+    setActive(nextId);
+    tabRefs.current.get(nextId)?.focus();
+  }
 
   function renderCategory(id: SettingsCategoryId): React.JSX.Element {
     switch (id) {
@@ -78,13 +119,27 @@ export function SettingsModal({
         </header>
 
         <div className="settings-layout">
-          <nav className="settings-nav" aria-label="Settings categories">
+          <div
+            className="settings-nav"
+            role="tablist"
+            aria-orientation="vertical"
+            aria-label="Settings categories"
+            onKeyDown={onTablistKey}
+          >
             {SETTINGS_CATEGORIES.map((c) => (
               <button
                 key={c.id}
+                id={tabDomId(c.id)}
                 type="button"
                 className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
-                aria-current={active === c.id ? "page" : undefined}
+                role="tab"
+                aria-selected={active === c.id}
+                // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
+                tabIndex={active === c.id ? 0 : -1}
+                ref={(el) => {
+                  if (el) tabRefs.current.set(c.id, el);
+                  else tabRefs.current.delete(c.id);
+                }}
                 onClick={() => setActive(c.id)}
               >
                 <span className="settings-nav-icon" aria-hidden>
@@ -93,9 +148,11 @@ export function SettingsModal({
                 {c.label}
               </button>
             ))}
-          </nav>
+          </div>
 
-          <div className="settings-pane">{renderCategory(active)}</div>
+          <div className="settings-pane" role="tabpanel" aria-labelledby={tabDomId(active)}>
+            {renderCategory(active)}
+          </div>
         </div>
       </div>
     </div>

@@ -33,12 +33,13 @@ the interactive path below instead of asking in prose.
 4. Style both light and dark via `prefers-color-scheme`, and let wide content (tables,
    code blocks) scroll inside its own container so the page body never scrolls sideways.
 5. Say where you wrote it. A page nobody can find is a page nobody reads.
-6. Open it for review - every time. Writing the file is not showing it: a path in a
-   sentence is a page the human has to go find and open. Render the page for them with
-   `SendUserFile` on `plan.html` using `display: "render"`, which opens it inline in the
-   side panel so the plan is reviewed as the rendered page it is, not re-read as raw
-   markdown. Do this for every plan, including the ones that then go on to the interactive
-   decisions below - the rendered page is the skim, the decisions are the ask.
+6. Open it for review - every time. Writing the file is not showing it. Where your harness
+   can render a page inline (for example `SendUserFile` with `display: "render"`), open
+   `plan.html` that way so the plan is reviewed as the rendered page it is. Where it
+   cannot, make the path unmissable - link `plan.html` explicitly and say it is the page to
+   open, not just where the file lives. Either way the human reviews the render, not raw
+   markdown; do this for every plan, including the ones that then go on to the interactive
+   decisions below.
 
 ## When the plan needs a decision: ask with selectable options
 

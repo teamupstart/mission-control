@@ -412,12 +412,16 @@ pick a mode.
 | **semi-auto** | drafts a reply with a one-click **Approve & send** on the card |
 | **live** | sends the reply on your behalf - but only in repos you've **allowlisted** |
 
-Live sending is gated by an explicit **repo allowlist** (paths, one per line in the
-popover); with an empty allowlist Foreman never types into any live session. An entry
-allowlists the **repo**, not just the directory: a session in a *worktree* of an
-allowlisted repo is cleared too, wherever that worktree sits on disk. That's what makes
-live mode usable - dispatched agents and treehouse checkouts run in worktrees parked far
-from the repo, so a directory-only rule would draft forever on the very repo you cleared.
+Live sending is gated by an explicit **repo allowlist**, managed in **Settings → Foreman**:
+each trusted repo is a row you can remove, and the picker adds one from the workspace's git
+repos (a typed path is validated and canonicalized first, so a typo is refused rather than
+sitting inert on the list). In Live mode the popover shows a read-only **Live in N repos ·
+manage in Settings →** link straight to it. With an empty allowlist Foreman never types into
+any live session. An entry allowlists the **repo**, not just the directory: a session in a
+*worktree* of an allowlisted repo is cleared too, wherever that worktree sits on disk.
+That's what makes live mode usable - dispatched agents and treehouse checkouts run in
+worktrees parked far from the repo, so a directory-only rule would draft forever on the
+very repo you cleared.
 A worktree of a repo you haven't allowlisted is still refused. A separate
 **Auto-approve non-destructive access** switch (on by default) governs whether it may
 approve access/permission asks - turn it off and those escalate to you instead.
@@ -457,7 +461,7 @@ route up to the reviewer that was taught to judge one. The fifth is delivery: th
 names a menu row, so its answer to a permission prompt (which is a menu) routes up to the full
 reviewer that can name one, rather than putting every routine approval in front of you.
 
-Pick the posture with the **Cheap tier** control in the popover:
+Pick the posture with the **Cheap tier** control in **Settings → Foreman**:
 
 | Cheap tier | What it does |
 |------|--------------|

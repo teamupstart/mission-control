@@ -3,9 +3,11 @@ import type { ForemanState } from "../useForeman.ts";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
-// worker is running; the popover flips the mode, the repo allowlist for live
-// sends, the access-approval switch, and the cheap-tier posture (off / shadow /
-// on - see docs/plans/foreman-watcher/plan.md). Mirrors AlertBar's popover pattern.
+// worker is running; the popover flips the in-the-moment knobs - the mode, the
+// access-approval switch, the work queues, and the on-drain action. The set-once
+// posture (cheap tier - off / shadow / on, see docs/plans/foreman-watcher/plan.md -
+// and the live repo allowlist) lives in Settings → Foreman, which the popover
+// deep-links. Mirrors AlertBar's popover pattern.
 
 const MODE_LABEL: Record<string, string> = {
   "dry-run": "dry-run",
@@ -22,8 +24,6 @@ const MODE_LABEL: Record<string, string> = {
  * field reads as `Number("") === 0`, which the schema refuses. So: hold the text
  * locally, send only a value that is actually in range, and otherwise snap back to
  * what's in force rather than firing a patch we know the server will refuse.
- *
- * Mirrors the allowlist textarea's commit-on-blur, which is here for the same reason.
  */
 function NumberSetting({
   value,

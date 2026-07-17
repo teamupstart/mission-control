@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Board layout</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      /*
+       * MOCKUP 2 - BOARD (kanban by state, detail in a drawer)
+       *
+       * The sort order that today is invisible (TONE_ORDER, silently ranking one
+       * flat grid) becomes the layout itself: one column per state, so "how many
+       * need me" is answered by column height, not by reading badges. Cards shrink
+       * to a glanceable tile; the full card body moves into a right-hand drawer
+       * that slides over, so expanding never reflows the board.
+       */
+      .board {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(270px, 1fr);
+        gap: 14px;
+        /* stretch, not start: columns of equal full height read as a board. Sized to
+           content they end at ragged heights and the whole thing looks unfinished. */
+        align-items: stretch;
+        padding: 18px 20px 20px;
+        flex: 1;
+        min-height: 0;
+        overflow-x: auto;
+      }
+      .col {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius);
+        background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+      }
+      .col-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 13px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .col-head .swatch {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--tone-color, var(--neutral));
+      }
+      .col-attention .col-head .swatch {
+        box-shadow: 0 0 10px var(--attention);
+      }
+      .col-head h2 {
+        margin: 0;
+        font-size: 11.5px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--tone-color, var(--muted));
+      }
+      .col-head .n {
+        margin-left: auto;
+        font-size: 11.5px;
+        font-weight: 680;
+        font-variant-numeric: tabular-nums;
+        color: var(--dim);
+        padding: 1px 7px;
+        border: 1px solid var(--border-soft);
+        border-radius: 999px;
+        background: var(--panel);
+      }
+      .col-attention {
+        border-color: color-mix(in oklab, var(--attention) 35%, var(--border));
+        background: color-mix(in oklab, var(--attention) 5%, transparent);
+      }
+      .col-body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 10px;
+        overflow-y: auto;
+      }
+      .col-empty {
+        padding: 16px 4px;
+        text-align: center;
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+
+      /* ---- tile ---- */
+      .tile {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 100%;
+        padding: 11px 12px 10px 13px;
+        text-align: left;
+        background: linear-gradient(var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: var(--shadow);
+        cursor: pointer;
+        transition:
+          transform 0.14s ease,
+          border-color 0.14s ease;
+      }
+      .tile::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        border-radius: 10px 0 0 10px;
+        background: var(--tone-color, var(--neutral));
+      }
+      .tile:hover {
+        transform: translateY(-2px);
+        border-color: color-mix(in oklab, var(--tone-color, var(--neutral)) 40%, var(--border));
+      }
+      .tile.attention {
+        border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+        box-shadow:
+          var(--shadow),
+          0 0 20px color-mix(in oklab, var(--attention) 14%, transparent);
+      }
+      .tile.open {
+        border-color: color-mix(in oklab, var(--select) 70%, var(--border));
+        box-shadow:
+          var(--shadow),
+          0 0 0 2px color-mix(in oklab, var(--select) 55%, transparent);
+      }
+      .tile.exited {
+        opacity: 0.6;
+      }
+      .tile-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .tile-head h3 {
+        margin: 0;
+        min-width: 0;
+        flex: 1;
+        font-size: 12.5px;
+        font-weight: 640;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .tile-goal {
+        margin: 0;
+        font-size: 11.5px;
+        line-height: 1.4;
+        color: var(--muted);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .tile-goal.none {
+        color: var(--dim);
+        font-size: 11px;
+      }
+      .tile-goal.heuristic {
+        font-style: italic;
+      }
+      .tile-marks {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .tile-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 10.5px;
+        color: var(--dim);
+      }
+      .tile-foot .spacer {
+        flex: 1;
+      }
+      .tile-branch {
+        min-width: 0;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--idle);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Progress rail: the no-mistakes pipeline compressed to a hairline the tile
+         can always afford - the detail drawer carries the full strip. */
+      .tile-rail {
+        display: flex;
+        gap: 2px;
+      }
+      .tile-rail span {
+        flex: 1;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--border);
+      }
+      .tile-rail .nm-done {
+        background: var(--idle);
+      }
+      .tile-rail .nm-run {
+        background: var(--working);
+        animation: breathe 1.6s ease-in-out infinite;
+      }
+      .tile-rail .nm-gate {
+        background: var(--attention);
+      }
+      .tile-rail .nm-fail {
+        background: var(--danger);
+      }
+      .tile-rail .nm-skip {
+        background: var(--dim);
+      }
+
+      /* ---- drawer ---- */
+      .scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 30;
+        background: rgba(4, 6, 9, 0.55);
+        backdrop-filter: blur(2px);
+      }
+      .drawer {
+        position: fixed;
+        z-index: 31;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: min(560px, 92vw);
+        display: flex;
+        flex-direction: column;
+        background: linear-gradient(var(--panel), var(--bg-2));
+        border-left: 1px solid var(--border);
+        box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
+        animation: slide 0.18s ease;
+      }
+      @keyframes slide {
+        from {
+          transform: translateX(24px);
+          opacity: 0;
+        }
+      }
+      .drawer-head {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        flex-wrap: wrap;
+        padding: 15px 18px 12px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .drawer-head h2 {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 650;
+      }
+      .drawer-close {
+        margin-left: auto;
+        width: 26px;
+        height: 26px;
+        font-size: 13px;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        cursor: pointer;
+      }
+      .drawer-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 15px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+      }
+      .drawer-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        padding: 11px 18px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .drawer-foot .spacer {
+        flex: 1;
+      }
+      .meta-grid {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin: 0;
+      }
+      .meta-grid dt {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .meta-grid dd {
+        margin: 2px 0 0;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--muted);
+      }
+      .meta-grid .branch {
+        color: var(--idle);
+      }
+      .nm-findings {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .note {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 11px 13px;
+        border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--attention) 8%, var(--bg-2));
+      }
+      .note-head {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--attention);
+      }
+      .note p {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .note-acts {
+        display: flex;
+        gap: 7px;
+      }
+      .mode-pick {
+        padding: 3px 8px;
+        font-size: 11px;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .fix-log {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 9px 11px;
+        font-size: 11.5px;
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        background: var(--bg-2);
+      }
+      .fix-log b {
+        font-size: 10.5px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .fix-row {
+        display: flex;
+        gap: 8px;
+        color: var(--muted);
+      }
+      .fix-row .sha {
+        font-family: var(--mono);
+        color: var(--working);
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="data.js"></script>
+    <script>
+      let openId = null;
+
+      const COLS = [
+        ["attention", "Needs you"],
+        ["working", "Working"],
+        ["idle", "Idle"],
+        ["neutral", "Unconfirmed"],
+        ["exited", "Gone"],
+      ];
+
+      function tile(s) {
+        const marks = [];
+        if (s.pr) marks.push(prChip(s));
+        if (s.note)
+          marks.push(
+            `<span class="foreman-flag ${s.note.disposition === "escalated" ? "" : "ff-pending"}">${s.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}</span>`,
+          );
+        if (s.queue)
+          marks.push(
+            `<span class="queue-chip"><span class="qc-count">${s.queue.open} queued</span>${s.queue.round ? `<span class="qc-round">fix ${s.queue.round}</span>` : ""}</span>`,
+          );
+        if (s.pendingReviews)
+          marks.push(`<span class="badge badge-attention"><span class="badge-dot"></span>review</span>`);
+        return `<button class="tile tone-${s.tone}${s.tone === "attention" ? " attention" : ""}${s.tone === "exited" ? " exited" : ""}${s.id === openId ? " open" : ""}" onclick="openDrawer('${s.id}')">
+          <span class="tile-head">
+            <span class="agent-dot agent-${s.agent}"></span>
+            <h3>${s.name}</h3>
+            ${s.gated ? `<span class="gated" title="gated by no-mistakes">◇</span>` : ""}
+          </span>
+          ${s.goal ? `<p class="tile-goal ${s.goal.source}">${s.goal.text}</p>` : `<p class="tile-goal none">No goal · Codex doesn't expose prompts</p>`}
+          ${s.nm ? `<span class="tile-rail" title="${s.nm.line}">${s.nm.steps.map((st) => `<span class="${NM_TONE[st]}"></span>`).join("")}</span>` : ""}
+          ${marks.length ? `<span class="tile-marks">${marks.join("")}</span>` : ""}
+          <span class="tile-foot">
+            ${s.branch ? `<span class="tile-branch">${s.branch.replace(/^[^/]+\//, "")}</span>` : `<span class="tile-branch">${s.nameSource}</span>`}
+            <span class="spacer"></span>
+            ${s.meta && s.meta.ctx != null ? `<span class="rt-ctx rt-ctx-${ctxTone(s.meta.ctx)}"><span class="rt-meter"><span class="rt-meter-fill" style="width:${s.meta.ctx}%"></span></span></span>` : ""}
+            <span>${s.seen}</span>
+          </span>
+        </button>`;
+      }
+
+      function board() {
+        return COLS.map(([tone, label]) => {
+          const items = sorted.filter((s) => s.tone === tone);
+          return `<section class="col col-${tone} tone-${tone}">
+            <header class="col-head"><span class="swatch"></span><h2>${label}</h2><span class="n">${items.length}</span></header>
+            <div class="col-body">${items.length ? items.map(tile).join("") : `<p class="col-empty">Nothing here</p>`}</div>
+          </section>`;
+        }).join("");
+      }
+
+      function drawer() {
+        if (!openId) return "";
+        const s = SESSIONS.find((x) => x.id === openId);
+        const needsYou = s.tone === "attention";
+        return `<div class="scrim" onclick="closeDrawer()"></div>
+        <aside class="drawer tone-${s.tone}">
+          <header class="drawer-head">
+            <span class="agent-dot agent-${s.agent}"></span>
+            <h2>${s.name}</h2>
+            <span class="rename-pencil" style="color:var(--dim);font-size:11px" title="Rename (n)">✎</span>
+            ${prChip(s)} ${badge(s)}
+            <button class="drawer-close" onclick="closeDrawer()" aria-label="Close">✕</button>
+          </header>
+          <div class="drawer-body">
+            ${goalLine(s)}
+            <dl class="meta-grid">
+              <div><dt>path</dt><dd>${s.cwd}</dd></div>
+              ${s.branch ? `<div><dt>branch</dt><dd class="branch">${s.branch}</dd></div>` : ""}
+              <div><dt>source</dt><dd>${s.nameSource}</dd></div>
+            </dl>
+            <div class="tile-marks">${runtimeRow(s)}</div>
+            ${s.task ? `<span class="task-chip"><span class="task-kind">${s.task.kind}</span><span class="task-title">${s.task.title}</span>${s.task.outcome ? `<span class="task-outcome">${s.task.outcome}</span>` : ""}</span>` : ""}
+            ${s.queue ? `<span class="queue-chip"><span class="qc-count">${s.queue.open} queued</span><span class="qc-intent">${s.queue.intent}</span><span class="qc-round">fix ${s.queue.round}</span></span>` : ""}
+            ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
+            ${s.note ? `<div class="note"><span class="note-head">◆ Foreman escalated a decision</span><p>${s.note.text}</p><div class="note-acts"><button class="act">Approve draft</button><button class="act">Edit</button><button class="act">Dismiss</button></div></div>` : ""}
+            ${s.nm ? nmStrip(s, needsYou) : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            ${transcript(s)}
+            ${composeBox(s)}
+          </div>
+          <footer class="drawer-foot">
+            <span>${AGENT_LABEL[s.agent]}</span>
+            ${s.gated ? `<span class="gated">◇ gated</span>` : ""}
+            ${s.mode ? `<button class="mode-pick">${s.mode} ▾</button>` : ""}
+            <span class="mono dim">pid ${s.pid}</span>
+            ${!s.instrumented ? `<span>uninstrumented</span>` : ""}
+            <span class="spacer"></span>
+            ${
+              s.state !== "exited"
+                ? `<button class="act"><kbd>f</kbd> focus</button><button class="act"><kbd>d</kbd> diff</button><button class="act"><kbd>^r</kbd> reset</button><button class="act act-danger"><kbd>k</kbd> kill</button>`
+                : `<button class="act"><kbd>d</kbd> diff</button>`
+            }
+          </footer>
+        </aside>`;
+      }
+
+      function render() {
+        document.getElementById("app").innerHTML =
+          mockbar("2 · Board") + topbar("Board") + `<main class="board">${board()}</main>` + drawer();
+      }
+      function openDrawer(id) {
+        openId = id;
+        render();
+      }
+      function closeDrawer() {
+        openId = null;
+        render();
+      }
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && openId) closeDrawer();
+      });
+      render();
+    </script>
+  </body>
+</html>

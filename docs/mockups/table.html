@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Ops table layout</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      /*
+       * MOCKUP 3 - OPS TABLE (dense grid, inline expansion)
+       *
+       * For a fleet of 20+ the card grid stops fitting on a screen. This trades the
+       * cards for one scannable row per session: every fact a card carries becomes a
+       * COLUMN, so you compare across sessions down a line rather than hunting the
+       * same chip in eight different card positions. Columns sort; a row expands in
+       * place into the full detail without leaving the table.
+       */
+      .wrap {
+        width: 100%;
+        max-width: 1600px;
+        margin: 0 auto;
+        padding: 16px 20px 40px;
+      }
+      .tbl-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 2px 11px;
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .chipset {
+        display: flex;
+        gap: 5px;
+      }
+      .fchip {
+        padding: 3px 10px;
+        font-size: 11.5px;
+        color: var(--muted);
+        background: var(--panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .fchip.on {
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+        background: color-mix(in oklab, var(--working) 12%, var(--panel));
+      }
+
+      /* `border-collapse: separate` and NO overflow clipping, both load-bearing:
+         `overflow: hidden` (to clip the radius) would make the table its own scroll
+         container, and a sticky thead sticks to its nearest scrollport - so the
+         header would park 97px INSIDE the table, sitting on top of the first row
+         instead of against the viewport. Corners are rounded per-cell instead. */
+      .tbl {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: linear-gradient(var(--panel), var(--panel-2));
+        box-shadow: var(--shadow);
+      }
+      .tbl thead th {
+        position: sticky;
+        top: 97px; /* mockup switcher (38) + topbar (59) */
+        z-index: 5;
+        padding: 9px 12px;
+        text-align: left;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--dim);
+        white-space: nowrap;
+        background: var(--bg-2);
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        user-select: none;
+      }
+      .tbl thead th:hover {
+        color: var(--fg);
+      }
+      .tbl thead th .caret {
+        color: var(--working);
+      }
+      .tbl thead th:first-child {
+        border-radius: var(--radius) 0 0 0;
+      }
+      .tbl thead th:last-child {
+        border-radius: 0 var(--radius) 0 0;
+      }
+      /* Separate borders don't paint on <tr>, so row rules live on the cells. */
+      .tbl tbody tr.r {
+        cursor: pointer;
+      }
+      .tbl tbody tr.r > td {
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .tbl tbody tr.r:hover td {
+        background: color-mix(in oklab, var(--working) 5%, transparent);
+      }
+      .tbl tbody tr.r.open td {
+        background: color-mix(in oklab, var(--select) 7%, transparent);
+      }
+      .tbl tbody tr.r.exited {
+        opacity: 0.55;
+      }
+      .tbl td {
+        padding: 9px 12px;
+        font-size: 12px;
+        vertical-align: middle;
+      }
+      .c-tone {
+        width: 3px;
+        padding: 0 !important;
+        background: var(--tone-color, var(--neutral));
+      }
+      .c-name {
+        min-width: 220px;
+      }
+      .name-cell {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .name-cell b {
+        font-weight: 620;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .name-cell .caretx {
+        color: var(--dim);
+        font-size: 9px;
+        transition: transform 0.14s ease;
+      }
+      tr.open .name-cell .caretx {
+        transform: rotate(90deg);
+        color: var(--fg);
+      }
+      .c-goal {
+        max-width: 340px;
+        color: var(--muted);
+        font-size: 11.5px;
+      }
+      .c-goal div {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .c-goal .heuristic {
+        font-style: italic;
+      }
+      .c-goal .none {
+        color: var(--dim);
+      }
+      .c-branch {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--idle);
+        max-width: 190px;
+      }
+      .c-branch div {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .c-gate {
+        width: 82px;
+      }
+      .gate-dots {
+        display: flex;
+        gap: 3px;
+      }
+      .c-seen {
+        color: var(--dim);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .c-acts {
+        white-space: nowrap;
+      }
+      .c-acts .act {
+        padding: 3px 7px;
+        font-size: 10.5px;
+      }
+      .flags {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .flag {
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .flag.on {
+        color: var(--attention);
+      }
+
+      /* ---- inline expansion ---- */
+      .exp td {
+        padding: 0;
+        background: var(--bg-2);
+        border-bottom: 1px solid var(--border);
+      }
+      .exp-inner {
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        gap: 18px;
+        padding: 16px 20px 18px 26px;
+      }
+      .exp-col {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
+      }
+      .section-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .nm-findings {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .note {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 11px 13px;
+        border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--attention) 8%, var(--panel));
+      }
+      .note-head {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--attention);
+      }
+      .note p {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      .note-acts {
+        display: flex;
+        gap: 7px;
+      }
+      .fix-log {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 9px 11px;
+        font-size: 11.5px;
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        background: var(--panel);
+      }
+      .fix-log b {
+        font-size: 10.5px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .fix-row {
+        display: flex;
+        gap: 8px;
+        color: var(--muted);
+      }
+      .fix-row .sha {
+        font-family: var(--mono);
+        color: var(--working);
+        cursor: pointer;
+      }
+      .exp-foot {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        font-size: 11.5px;
+        color: var(--dim);
+        padding-top: 2px;
+        border-top: 1px solid var(--border-soft);
+        margin-top: 2px;
+        padding-top: 10px;
+      }
+      .exp-foot .spacer {
+        flex: 1;
+      }
+      .mode-pick {
+        padding: 3px 8px;
+        font-size: 11px;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      @media (max-width: 1100px) {
+        .exp-inner {
+          grid-template-columns: 1fr;
+        }
+        .c-goal,
+        .c-branch {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="data.js"></script>
+    <script>
+      let openId = "s1";
+      let sortKey = "state";
+      let sortDir = 1;
+
+      const COLUMNS = [
+        ["name", "Session"],
+        ["goal", "Goal"],
+        ["state", "State"],
+        ["agent", "Agent"],
+        ["branch", "Branch / PR"],
+        ["gate", "Gate"],
+        ["ctx", "Context"],
+        ["flags", "Flags"],
+        ["seen", "Last seen"],
+        ["acts", ""],
+      ];
+
+      function sortVal(s, key) {
+        switch (key) {
+          case "name":
+            return s.name;
+          case "goal":
+            return s.goal ? s.goal.text : "￿";
+          case "state":
+            return String(TONE_ORDER[s.tone]);
+          case "agent":
+            return s.agent;
+          case "branch":
+            return s.branch || "￿";
+          case "gate":
+            return s.nm ? (s.nm.gate ? "0" : "1") : "2";
+          case "ctx":
+            return String(1000 - (s.meta && s.meta.ctx != null ? s.meta.ctx : -1)).padStart(5, "0");
+          case "seen":
+            return s.seen;
+          default:
+            return "";
+        }
+      }
+      function rows() {
+        return [...SESSIONS].sort(
+          (a, b) => sortVal(a, sortKey).localeCompare(sortVal(b, sortKey)) * sortDir || a.name.localeCompare(b.name),
+        );
+      }
+
+      function row(s) {
+        const flags = [];
+        if (s.gated) flags.push(`<span class="flag" title="gated by no-mistakes">◇</span>`);
+        if (s.note)
+          flags.push(
+            `<span class="flag on" title="Foreman ${s.note.disposition === "escalated" ? "escalated a decision" : "drafted a reply"}">◆</span>`,
+          );
+        if (s.queue)
+          flags.push(`<span class="flag" title="${s.queue.open} queued · ${s.queue.intent}">≡${s.queue.open}</span>`);
+        if (s.task) flags.push(`<span class="flag" title="${s.task.kind}: ${s.task.title}">▸</span>`);
+        if (!s.instrumented)
+          flags.push(`<span class="flag" title="No hooks reporting - status is coarse">⚠</span>`);
+        if (s.pendingReviews) flags.push(`<span class="flag on" title="pending review">●</span>`);
+
+        return `<tr class="r tone-${s.tone}${s.id === openId ? " open" : ""}${s.tone === "exited" ? " exited" : ""}" onclick="toggle('${s.id}')">
+          <td class="c-tone"></td>
+          <td class="c-name"><span class="name-cell"><span class="caretx">▶</span><span class="agent-dot agent-${s.agent}"></span><b title="${s.name}">${s.name}</b><span class="rename-pencil" style="color:var(--dim);font-size:10px" title="Rename (n)">✎</span></span></td>
+          <td class="c-goal">${s.goal ? `<div class="${s.goal.source}" title="${s.goal.text}">${s.goal.text}</div>` : `<div class="none">No goal · Codex</div>`}</td>
+          <td>${badge(s)}</td>
+          <td style="color:var(--muted);font-size:11.5px;white-space:nowrap">${AGENT_LABEL[s.agent]}</td>
+          <td class="c-branch"><div>${s.branch || `<span style="color:var(--dim)">${s.nameSource}</span>`}</div>${s.pr ? `<div style="margin-top:3px">${prChip(s)}</div>` : ""}</td>
+          <td class="c-gate">${s.nm ? `<span class="gate-dots" title="${s.nm.line}">${s.nm.steps.map((st, i) => `<span class="nm-dot ${NM_TONE[st]}" title="${s.nm.stepNames[i]}: ${st.replace("_", " ")}"></span>`).join("")}</span>` : `<span class="flag">—</span>`}</td>
+          <td>${s.meta && s.meta.ctx != null ? `<span class="rt-ctx rt-ctx-${ctxTone(s.meta.ctx)}" title="${s.meta.ctx}% of the context window used"><span class="rt-meter"><span class="rt-meter-fill" style="width:${s.meta.ctx}%"></span></span><span class="rt-ctx-num">${s.meta.ctx}%</span></span>` : `<span class="flag">—</span>`}</td>
+          <td><span class="flags">${flags.join("") || `<span class="flag">—</span>`}</span></td>
+          <td class="c-seen">${s.seen}</td>
+          <td class="c-acts" onclick="event.stopPropagation()">
+            ${s.state !== "exited" ? `<button class="act" title="Focus this session's pane (f)">focus</button>` : ""}
+            <button class="act" title="View changes vs source branch (d)">diff</button>
+          </td>
+        </tr>${s.id === openId ? expansion(s) : ""}`;
+      }
+
+      function expansion(s) {
+        const needsYou = s.tone === "attention";
+        // 11, not 10: the tone stripe is a column too, and one short left the
+        // expansion stopping an actions-column shy of the table's right edge.
+        return `<tr class="exp"><td colspan="11"><div class="exp-inner">
+          <div class="exp-col">
+            <span class="section-label">conversation</span>
+            ${transcript(s)}
+            ${composeBox(s)}
+          </div>
+          <div class="exp-col">
+            ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
+            <div style="display:flex;gap:7px;flex-wrap:wrap">${runtimeRow(s)}</div>
+            ${s.note ? `<div class="note"><span class="note-head">◆ Foreman escalated a decision</span><p>${s.note.text}</p><div class="note-acts"><button class="act">Approve draft</button><button class="act">Edit</button><button class="act">Dismiss</button></div></div>` : ""}
+            ${s.nm ? nmStrip(s, needsYou) : ""}
+            ${s.queue ? `<span class="section-label">work queue</span><span class="queue-chip"><span class="qc-count">${s.queue.open} queued</span><span class="qc-intent">${s.queue.intent}</span><span class="qc-round">fix ${s.queue.round}</span></span>` : ""}
+            ${s.task ? `<span class="task-chip"><span class="task-kind">${s.task.kind}</span><span class="task-title">${s.task.title}</span>${s.task.outcome ? `<span class="task-outcome">${s.task.outcome}</span>` : ""}</span>` : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            <div class="exp-foot">
+              <span class="mono dim">${s.cwd}</span><span>·</span><span class="mono dim">pid ${s.pid}</span>
+              ${s.mode ? `<button class="mode-pick">${s.mode} ▾</button>` : ""}
+              <span class="spacer"></span>
+              ${s.state !== "exited" ? `<button class="act"><kbd>^r</kbd> reset</button><button class="act act-danger"><kbd>k</kbd> kill</button>` : ""}
+            </div>
+          </div>
+        </div></td></tr>`;
+      }
+
+      function render() {
+        const head = COLUMNS.map(
+          ([k, label]) =>
+            `<th onclick="sortBy('${k}')">${label}${sortKey === k ? `<span class="caret"> ${sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`,
+        ).join("");
+        document.getElementById("app").innerHTML =
+          mockbar("3 · Ops table") +
+          topbar("Ops table") +
+          `<div class="wrap">
+            <div class="tbl-tools">
+              <div class="chipset">
+                <button class="fchip on">All ${counts.total}</button>
+                <button class="fchip">Needs you ${counts.attention}</button>
+                <button class="fchip">Working ${counts.working}</button>
+                <button class="fchip">Gated 4</button>
+                <button class="fchip">Claude 6</button>
+                <button class="fchip">Codex 2</button>
+              </div>
+              <span style="flex:1"></span>
+              <span>click a row to expand · click a header to sort</span>
+            </div>
+            <table class="tbl"><thead><tr><th class="c-tone"></th>${head}</tr></thead>
+            <tbody>${rows().map(row).join("")}</tbody></table>
+          </div>`;
+      }
+      function toggle(id) {
+        openId = openId === id ? null : id;
+        render();
+      }
+      function sortBy(k) {
+        if (k === "acts") return;
+        if (sortKey === k) sortDir *= -1;
+        else {
+          sortKey = k;
+          sortDir = 1;
+        }
+        render();
+      }
+      render();
+    </script>
+  </body>
+</html>

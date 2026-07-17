@@ -4451,7 +4451,6 @@ kbd {
    container would step aside from `.wq-controls` instead of flowing under it. */
 .wq-body {
   display: block;
-  min-width: 0;
 }
 .wq-intent {
   margin: 0;
@@ -4477,15 +4476,14 @@ kbd {
   gap: 6px;
 }
 /*
-  These two are flex containers, so they'd shoulder up against the floated controls
-  rather than wrap under them. `clear` drops them to their own full-width line - but
-  only when the intent above was too short to clear the buttons on its own.
+  A flex container, so it'd shoulder up against the floated controls rather than wrap
+  under them. `clear` drops it to its own full-width line - but only when the intent
+  above was too short to clear the buttons on its own. `.wq-payload` needs no clear of
+  its own: it only renders on a proposed item, where `.wq-status` always precedes it
+  and has already cleared the float.
 */
-.wq-status,
-.wq-payload {
-  clear: right;
-}
 .wq-status {
+  clear: right;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

@@ -379,151 +379,159 @@ export function WorkQueue({
       )}
 
       <ol className="wq-items">
-        {items.map((item) => (
-          <li
-            key={item.id}
-            className={`wq-item wq-${item.state}${dragId === item.id ? " dragging" : ""}`}
-            draggable={isWaiting(item.state)}
-            onDragStart={() => setDragId(item.id)}
-            /*
-              Drop targets are waiting items only, matching `draggable`. Allowing a
-              drop onto a done or in-flight row let a waiting item be renumbered in
-              among the completed work - harmless to delivery order, wrong on screen.
-            */
-            onDragOver={(e) => {
-              if (isWaiting(item.state)) e.preventDefault();
-            }}
-            onDrop={() => void drop(item.id)}
-            onDragEnd={() => setDragId(null)}
-          >
-            {isWaiting(item.state) && (
-              <span className="wq-grip" aria-hidden title="Drag to reorder">
-                ⠿
-              </span>
-            )}
+        {items.map((item) => {
+          const isEditingThis = editing === item.id && isWaiting(item.state);
+          return (
+            <li
+              key={item.id}
+              className={`wq-item wq-${item.state}${dragId === item.id ? " dragging" : ""}`}
+              draggable={isWaiting(item.state)}
+              onDragStart={() => setDragId(item.id)}
+              /*
+                Drop targets are waiting items only, matching `draggable`. Allowing a
+                drop onto a done or in-flight row let a waiting item be renumbered in
+                among the completed work - harmless to delivery order, wrong on screen.
+              */
+              onDragOver={(e) => {
+                if (isWaiting(item.state)) e.preventDefault();
+              }}
+              onDrop={() => void drop(item.id)}
+              onDragEnd={() => setDragId(null)}
+            >
+              {isWaiting(item.state) && (
+                <span className="wq-grip" aria-hidden title="Drag to reorder">
+                  ⠿
+                </span>
+              )}
 
-            {/*
-              Ahead of the body in source order because `.wq-controls` floats: a float
-              only shortens the line boxes that FOLLOW it, so this is what lets a long
-              intent wrap back under the buttons instead of beside them. It also puts
-              the buttons ahead of the intent for a screen reader, which is why every
-              label below names the item it acts on rather than saying "this item".
-            */}
-            {!(editing === item.id && isWaiting(item.state)) && (
-              <div className="wq-controls">
-                {/*
-                  No draft, no Approve. The button is consent to a SPECIFIC
-                  prompt, so offering it before `proposedPayload` exists would ask
-                  for consent to text that isn't on screen - and from round 1 on
-                  that text is the fix prompt, not the intent shown above. The
-                  server refuses this too; the button just shouldn't be there.
-                */}
-                {item.state === "proposed" && item.proposedPayload && !item.approvedAt && (
-                  <button className="btn btn-primary" disabled={busy} onClick={() => void approve(item)}>
-                    Approve
-                  </button>
-                )}
-                {/*
-                  The keyboard path to the reorder the grip offers by drag. Disabled
-                  rather than hidden at the ends of the list, so the controls don't
-                  reflow under the pointer as items move.
-                */}
-                {isWaiting(item.state) && (
-                  <>
+              {/*
+                Ahead of the body in source order because `.wq-controls` floats: a float
+                only shortens the line boxes that FOLLOW it, so this is what lets a long
+                intent wrap back under the buttons instead of beside them. It also puts
+                the buttons ahead of the intent for a screen reader, which is why every
+                label below names the item it acts on rather than saying "this item".
+              */}
+              {!isEditingThis && (
+                <div className="wq-controls">
+                  {/*
+                    No draft, no Approve. The button is consent to a SPECIFIC
+                    prompt, so offering it before `proposedPayload` exists would ask
+                    for consent to text that isn't on screen - and from round 1 on
+                    that text is the fix prompt, not the intent shown above. The
+                    server refuses this too; the button just shouldn't be there.
+                  */}
+                  {item.state === "proposed" && item.proposedPayload && !item.approvedAt && (
+                    <button
+                      className="btn btn-primary"
+                      aria-label={`Approve the prompt Foreman would send for "${item.intent}"`}
+                      disabled={busy}
+                      onClick={() => void approve(item)}
+                    >
+                      Approve
+                    </button>
+                  )}
+                  {/*
+                    The keyboard path to the reorder the grip offers by drag. Disabled
+                    rather than hidden at the ends of the list, so the controls don't
+                    reflow under the pointer as items move.
+                  */}
+                  {isWaiting(item.state) && (
+                    <>
+                      <button
+                        className="icon-btn"
+                        aria-label={`Move "${item.intent}" earlier in the queue`}
+                        title="Move up"
+                        disabled={busy || moveTarget(items, item, -1) < 0}
+                        onClick={() => void move(item, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        className="icon-btn"
+                        aria-label={`Move "${item.intent}" later in the queue`}
+                        title="Move down"
+                        disabled={busy || moveTarget(items, item, 1) < 0}
+                        onClick={() => void move(item, 1)}
+                      >
+                        ↓
+                      </button>
+                    </>
+                  )}
+                  {isWaiting(item.state) && (
                     <button
                       className="icon-btn"
-                      aria-label={`Move "${item.intent}" earlier in the queue`}
-                      title="Move up"
-                      disabled={busy || moveTarget(items, item, -1) < 0}
-                      onClick={() => void move(item, -1)}
+                      aria-label={`Edit "${item.intent}"`}
+                      title="Edit"
+                      onClick={() => {
+                        setEditing(item.id);
+                        setEditText(item.intent);
+                      }}
                     >
-                      ↑
+                      ✎
                     </button>
+                  )}
+                  {(isWaiting(item.state) || isTerminal(item.state)) && (
                     <button
                       className="icon-btn"
-                      aria-label={`Move "${item.intent}" later in the queue`}
-                      title="Move down"
-                      disabled={busy || moveTarget(items, item, 1) < 0}
-                      onClick={() => void move(item, 1)}
+                      aria-label={`Remove "${item.intent}"`}
+                      title="Remove"
+                      disabled={busy}
+                      onClick={() => void remove(item)}
                     >
-                      ↓
+                      ✕
                     </button>
-                  </>
-                )}
-                {isWaiting(item.state) && (
-                  <button
-                    className="icon-btn"
-                    aria-label={`Edit "${item.intent}"`}
-                    title="Edit"
-                    onClick={() => {
-                      setEditing(item.id);
-                      setEditText(item.intent);
-                    }}
-                  >
-                    ✎
-                  </button>
-                )}
-                {(isWaiting(item.state) || isTerminal(item.state)) && (
-                  <button
-                    className="icon-btn"
-                    aria-label={`Remove "${item.intent}"`}
-                    title="Remove"
-                    disabled={busy}
-                    onClick={() => void remove(item)}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/*
-              The editor closes as soon as the item leaves the states an edit can
-              land in. Keeping it open on an item Foreman has already picked up
-              offers a Save that CAN only 409, and it hides the state the item just
-              moved to behind the textarea that replaced it.
-            */}
-            {editing === item.id && isWaiting(item.state) ? (
-              <div className="wq-edit">
-                <textarea
-                  className="field-input"
-                  rows={3}
-                  autoFocus
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  onKeyDown={(e) => {
-                    // The panel has ONE Enter rule. This box and the add box below it are
-                    // the same textarea to look at, so they cannot disagree about what
-                    // Enter does: Enter saves, Shift+Enter breaks the line. ⌘/Ctrl+Enter
-                    // still saves - it types no newline, so the old chord costs nothing.
-                    // The IME guard is the same one the add box needs: the Enter that
-                    // commits a Japanese/Chinese/Korean candidate must not save over it.
-                    if (e.key === "Escape") setEditing(null);
-                    else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      void saveEdit(item);
-                    }
-                  }}
-                />
-                <div className="wq-actions">
-                  <button className="btn btn-send" disabled={busy} onClick={() => void saveEdit(item)}>
-                    Save
-                  </button>
-                  <button className="btn btn-ghost" onClick={() => setEditing(null)}>
-                    Cancel
-                  </button>
+                  )}
                 </div>
-              </div>
-            ) : (
-              <div className="wq-body">
-                <p className="wq-intent">{item.intent}</p>
-                <ItemStatus item={item} />
-                <ProposedPayload item={item} />
-              </div>
-            )}
+              )}
 
-          </li>
-        ))}
+              {/*
+                The editor closes as soon as the item leaves the states an edit can
+                land in. Keeping it open on an item Foreman has already picked up
+                offers a Save that CAN only 409, and it hides the state the item just
+                moved to behind the textarea that replaced it.
+              */}
+              {isEditingThis ? (
+                <div className="wq-edit">
+                  <textarea
+                    className="field-input"
+                    rows={3}
+                    autoFocus
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    onKeyDown={(e) => {
+                      // The panel has ONE Enter rule. This box and the add box below it are
+                      // the same textarea to look at, so they cannot disagree about what
+                      // Enter does: Enter saves, Shift+Enter breaks the line. ⌘/Ctrl+Enter
+                      // still saves - it types no newline, so the old chord costs nothing.
+                      // The IME guard is the same one the add box needs: the Enter that
+                      // commits a Japanese/Chinese/Korean candidate must not save over it.
+                      if (e.key === "Escape") setEditing(null);
+                      else if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        void saveEdit(item);
+                      }
+                    }}
+                  />
+                  <div className="wq-actions">
+                    <button className="btn btn-send" disabled={busy} onClick={() => void saveEdit(item)}>
+                      Save
+                    </button>
+                    <button className="btn btn-ghost" onClick={() => setEditing(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="wq-body">
+                  <p className="wq-intent">{item.intent}</p>
+                  <ItemStatus item={item} />
+                  <ProposedPayload item={item} />
+                </div>
+              )}
+
+            </li>
+          );
+        })}
       </ol>
 
       <AddBox

@@ -7,6 +7,7 @@ import {
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
+  ResolveRepoSchema,
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
   ForemanHeartbeatSchema,
@@ -233,6 +234,17 @@ export function buildApp(
   app.get("/api/tasks", (c) => c.json(tasks.list()));
   // Git repos under the workspace roots - the pickable bases for a new dispatch.
   app.get("/api/repos", async (c) => c.json(await listRepos()));
+
+  // Resolve a typed path to its canonical git repo root, so the Foreman allowlist
+  // picker stores what the server actually gates on (a realpath'd top-level) and
+  // rejects a non-repo path instead of letting a typo sit inertly on the list.
+  app.post("/api/repos/resolve", async (c) => {
+    const parsed = await parseBody(c, ResolveRepoSchema);
+    if (!parsed.ok) return parsed.res;
+    const repoRoot = await resolveRepoRoot(parsed.data.path);
+    if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.path}` }, 400);
+    return c.json({ repoRoot });
+  });
   // Roundup report (/bearings): a projection of the live snapshot, as JSON or a
   // copy-pasteable markdown digest. Localhost reads, like /api/sessions.
   app.get("/api/report", (c) => c.json(buildReport(registry.snapshot())));

@@ -210,6 +210,14 @@ export const DispatchSchema = z.object({
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
 /**
+ * Resolve a typed path to a canonical git repo root, so the Foreman allowlist
+ * picker can reject a typo before it enters the trusted-repos list.
+ */
+export const ResolveRepoSchema = z.object({
+  path: z.string().min(1),
+});
+
+/**
  * Reset a session's worktree to origin's default branch. The body is optional;
  * `clear` controls whether the agent's context is also reset via `/clear`.
  */

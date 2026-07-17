@@ -210,7 +210,7 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
-      // Roundup toggles whether it's open or closed - held back only while a
+      // Sitrep toggles whether it's open or closed - held back only while a
       // review/dispatch/settings overlay owns the screen or you're typing.
       if (
         !typing &&
@@ -413,34 +413,37 @@ export function App(): React.JSX.Element {
             </button>
           )}
         </div>
-        <AlertBar settings={alertSettings} update={updateAlerts} />
-        <ForemanBar state={foreman} />
-        <button
-          className="ghost-btn settings-btn"
-          onClick={() => setSettingsOpen(true)}
-          title="Settings (⌘,)"
-          aria-label="Settings"
-        >
-          <span aria-hidden>⚙</span>
-        </button>
-        <button
-          className="ghost-btn"
-          onClick={() => setReportOpen(true)}
-          title={`Roundup - press ${formatChord(bindings.roundup)}`}
-        >
-          Roundup
-          <kbd className="ghost-key" aria-hidden>
-            {formatChord(bindings.roundup)}
-          </kbd>
-          {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
-        </button>
-        <button
-          className="dispatch-btn"
-          onClick={() => setDispatchOpen(true)}
-          title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
-        >
-          <span aria-hidden>＋</span> Dispatch
-        </button>
+        {/* Every action shares one rhythm, tighter than the gap separating them
+            from the filter/stats, so they read as one cluster and wrap as a
+            unit. `live` stays outside it: that is status, not an action. */}
+        <div className="topbar-actions">
+          <ForemanBar state={foreman} />
+          <button
+            className="dispatch-btn"
+            onClick={() => setDispatchOpen(true)}
+            title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
+          >
+            <span aria-hidden>＋</span> Dispatch
+          </button>
+          <button
+            className="ghost-btn glyph-btn"
+            onClick={() => setReportOpen(true)}
+            title={`Sitrep - press ${formatChord(bindings.roundup)}`}
+            aria-label="Sitrep"
+          >
+            <span aria-hidden>📡</span>
+            {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
+          </button>
+          <button
+            className="ghost-btn glyph-btn gear-btn"
+            onClick={() => setSettingsOpen(true)}
+            title="Settings (⌘,)"
+            aria-label="Settings"
+          >
+            <span aria-hidden>⚙</span>
+          </button>
+          <AlertBar settings={alertSettings} update={updateAlerts} />
+        </div>
         <div className={`link ${connected ? "up" : "down"}`}>
           <span className="link-dot" />
           {connected ? "live" : "reconnecting"}

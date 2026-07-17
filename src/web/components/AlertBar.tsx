@@ -37,13 +37,20 @@ export function AlertBar({
   }
 
   const on = settings.notifications && perm === "granted";
-  const label = settings.afk ? "AFK" : "Alerts";
   const icon = settings.afk ? "🌙" : on ? "🔔" : "🔕";
+  // The glyph already distinguishes the three states, so the button carries no
+  // text; the state it used to spell out rides along in the label instead.
+  const label = `Alerts & AFK mode - ${settings.afk ? "AFK" : on ? "on" : "muted"}`;
 
   return (
     <div className="alertbar" ref={ref}>
-      <button className="ghost-btn" onClick={() => setOpen((o) => !o)} title="Alerts & AFK mode">
-        {icon} {label}
+      <button
+        className="ghost-btn glyph-btn"
+        onClick={() => setOpen((o) => !o)}
+        title={label}
+        aria-label={label}
+      >
+        <span aria-hidden>{icon}</span>
       </button>
       {open && (
         <div className="alert-pop" role="dialog" aria-label="Alert settings">

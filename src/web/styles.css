@@ -82,6 +82,28 @@ body {
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* Desktop shell only: the window has no native title bar, so the topbar is it.
+   The left inset clears the traffic lights, and empty topbar space drags the
+   window - interactive children opt back out via no-drag below.
+
+   The lights are pinned to the window, but .app is centred and caps at 1400px,
+   so once the window grows past that the dead space beside the column already
+   clears them and a fixed inset would just strand the brand out to the right.
+   Inset by whatever that gap leaves uncovered, and no more. */
+.is-desktop .topbar {
+  padding-left: clamp(4px, calc(84px - (100vw - 1400px) / 2), 84px);
+  -webkit-app-region: drag;
+}
+
+.is-desktop .topbar button,
+.is-desktop .topbar input,
+.is-desktop .topbar a,
+.is-desktop .topbar select,
+.is-desktop .topbar [role="button"],
+.is-desktop .topbar .filter-box {
+  -webkit-app-region: no-drag;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -3080,18 +3102,6 @@ kbd {
   border-radius: 20px;
   padding: 1px 7px;
 }
-/* Subtle keyboard hint inside the Report button. */
-.ghost-key {
-  font-size: 9.5px;
-  padding: 2px 4px;
-  min-width: 12px;
-  color: var(--muted);
-  border-bottom-width: 1px;
-}
-.ghost-btn:hover .ghost-key {
-  color: var(--fg);
-}
-
 /* ---- roundup report (right slide-over) ---- */
 .modal-backdrop:has(.report-panel) {
   justify-content: flex-end;
@@ -3119,7 +3129,11 @@ kbd {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  flex: 1;
+}
+/* The shortcut hint hugs the title; the actions take the slack instead, so the
+   two never drift apart as the header widens. */
+.report-head .report-copy {
+  margin-left: auto;
 }
 .report-body {
   flex: 1;
@@ -3603,10 +3617,38 @@ kbd {
 }
 
 /* ---- settings (topbar gear + keybindings editor) ---- */
-.settings-btn {
+/* A .ghost-btn reduced to its glyph - keeps the ghost border/hover, just drops
+   the label to a single square-ish icon. The topbar's right cluster leans on
+   these: spelling out every control ate the horizontal room the traffic-light
+   inset needs (see .is-desktop .topbar), and the icons carry the meaning on
+   their own. The name still reaches screen readers + the tooltip.
+   (Distinct from .icon-btn above, which is the borderless modal close button.) */
+.glyph-btn {
+  /* Fixed box: the glyph is centred inside it and never sizes it, so a bigger
+     icon can't shoulder this button taller or wider than the rest of the
+     cluster. min-width (not width) so Sitrep's backlog badge can still grow it. */
+  height: 30px;
+  min-width: 36px;
+  justify-content: center;
   padding: 7px 10px;
   font-size: 14px;
   line-height: 1;
+}
+/* The topbar's actions are peers, so they sit at half the 24px gap the bar uses
+   to separate its groups - at the full gap they read as unrelated buttons. Being
+   one flex item also means they wrap together instead of splitting across rows. */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ⚙ is a plain text glyph, not an emoji: it draws about two-thirds of its em box
+   where the neighbouring 📡/🔕 fill theirs, so at a shared font-size it reads a
+   size small. Oversize it until the drawn glyph matches - the box is fixed above,
+   so this only fills the button, it doesn't stretch it. */
+.gear-btn {
+  font-size: 22px;
 }
 .settings-modal {
   width: min(560px, 100%);

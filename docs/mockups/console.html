@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Console layout</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      /*
+       * MOCKUP 1 - CONSOLE (split-pane master/detail)
+       *
+       * The grid of expandable cards becomes a permanent two-pane console: a dense
+       * rail of every session on the left, one always-open detail pane on the right.
+       * Nothing expands or collapses - selecting IS expanding, and the detail pane
+       * has the whole right half of the screen to spend on the conversation.
+       */
+      .shell {
+        display: grid;
+        grid-template-columns: 340px 1fr;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      /* ---- left rail ---- */
+      .rail {
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+        overflow-y: auto;
+      }
+      .rail-group {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 16px 7px;
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        color: var(--tone-color, var(--dim));
+        background: linear-gradient(var(--bg), color-mix(in oklab, var(--bg) 85%, transparent));
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .rail-group .n {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        color: var(--dim);
+      }
+
+      .row {
+        position: relative;
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        padding: 11px 16px 11px 15px;
+        text-align: left;
+        background: none;
+        border: 0;
+        border-bottom: 1px solid var(--border-soft);
+        cursor: pointer;
+      }
+      .row::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: var(--tone-color, var(--neutral));
+        opacity: 0.75;
+      }
+      .row:hover {
+        background: color-mix(in oklab, var(--panel) 60%, transparent);
+      }
+      .row.active {
+        background: var(--panel);
+        box-shadow: inset 2px 0 0 var(--select);
+      }
+      .row.active::before {
+        width: 3px;
+        opacity: 1;
+      }
+      .row.attention::before {
+        box-shadow: 0 0 12px var(--attention);
+      }
+      .row.exited {
+        opacity: 0.55;
+      }
+      .row-name {
+        min-width: 0;
+        grid-column: 2;
+        font-size: 13px;
+        font-weight: 620;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .row-sub {
+        grid-column: 2;
+        min-width: 0;
+        font-size: 11px;
+        color: var(--dim);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .row-right {
+        grid-row: 1 / span 2;
+        grid-column: 3;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 5px;
+      }
+      .row-state {
+        font-size: 10.5px;
+        font-weight: 650;
+        color: var(--tone-color, var(--neutral));
+      }
+      .row-marks {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .row-mark {
+        font-size: 9.5px;
+        color: var(--dim);
+      }
+      .row-mark.on {
+        color: var(--attention);
+      }
+      .row-dot {
+        grid-row: 1 / span 2;
+      }
+      .row-seen {
+        font-size: 10px;
+        color: var(--dim);
+        font-variant-numeric: tabular-nums;
+      }
+
+      /* ---- detail pane ---- */
+      .detail {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .detail-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding: 14px 22px 12px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .detail-head h2 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 650;
+      }
+      .detail-head .name-source {
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .rename-pencil {
+        font-size: 11px;
+        color: var(--dim);
+        cursor: text;
+      }
+      .detail-sub {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding: 11px 22px;
+        border-bottom: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+      }
+      .detail-sub .kv {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        font-size: 11.5px;
+      }
+      .detail-sub dt {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .detail-sub dd {
+        margin: 0;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+      .detail-sub .branch {
+        color: var(--idle);
+      }
+
+      .tabs {
+        display: flex;
+        gap: 2px;
+        padding: 0 22px;
+        border-bottom: 1px solid var(--border-soft);
+      }
+      .tab {
+        position: relative;
+        padding: 10px 13px;
+        font-size: 12.5px;
+        font-weight: 600;
+        color: var(--muted);
+        background: none;
+        border: 0;
+        cursor: pointer;
+      }
+      .tab:hover {
+        color: var(--fg);
+      }
+      .tab.on {
+        color: var(--fg);
+      }
+      .tab.on::after {
+        content: "";
+        position: absolute;
+        left: 8px;
+        right: 8px;
+        bottom: -1px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--working);
+      }
+      .tab .pip {
+        display: inline-block;
+        margin-left: 6px;
+        min-width: 15px;
+        padding: 0 4px;
+        font-size: 10px;
+        font-weight: 700;
+        text-align: center;
+        border-radius: 999px;
+        color: var(--bg);
+        background: var(--attention);
+      }
+
+      .detail-body {
+        flex: 1;
+        overflow-y: auto;
+        padding: 18px 22px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+      }
+      .detail-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 11px 22px;
+        border-top: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg-2) 70%, transparent);
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .detail-foot .spacer {
+        flex: 1;
+      }
+      .mode-pick {
+        padding: 3px 8px;
+        font-size: 11px;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .nm-findings {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .fix-log {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 9px 11px;
+        font-size: 11.5px;
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        background: var(--bg-2);
+      }
+      .fix-log b {
+        font-size: 10.5px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .fix-row {
+        display: flex;
+        gap: 8px;
+        color: var(--muted);
+      }
+      .fix-row .sha {
+        font-family: var(--mono);
+        color: var(--working);
+        cursor: pointer;
+      }
+      .note {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 11px 13px;
+        border: 1px solid color-mix(in oklab, var(--attention) 45%, var(--border));
+        border-radius: 9px;
+        background: color-mix(in oklab, var(--attention) 8%, var(--bg-2));
+      }
+      .note-head {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--attention);
+      }
+      .note p {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--fg);
+      }
+      .note-acts {
+        display: flex;
+        gap: 7px;
+      }
+      .section-label {
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .qitem {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 11px;
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        background: var(--bg-2);
+      }
+      .qitem .st {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: var(--working);
+      }
+      @media (max-width: 900px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+        .rail {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="data.js"></script>
+    <script>
+      let activeId = "s1";
+      let tab = "conversation";
+
+      const GROUPS = [
+        ["attention", "needs you"],
+        ["working", "working"],
+        ["idle", "idle"],
+        ["neutral", "unconfirmed"],
+        ["exited", "gone"],
+      ];
+
+      function railRow(s) {
+        const marks = [];
+        if (s.gated) marks.push(`<span class="row-mark" title="gated by no-mistakes">◇</span>`);
+        if (s.nm && s.nm.gate)
+          marks.push(`<span class="row-mark on" title="parked at a gate">▮</span>`);
+        if (s.note) marks.push(`<span class="row-mark on" title="Foreman note">◆</span>`);
+        if (s.queue) marks.push(`<span class="row-mark" title="${s.queue.open} queued">≡</span>`);
+        if (s.pr)
+          marks.push(
+            `<span class="row-mark" style="color:var(--pr-${s.pr.state})" title="PR #${s.pr.num} ${s.pr.state}">#${s.pr.num}</span>`,
+          );
+        return `<button class="row tone-${s.tone}${s.id === activeId ? " active" : ""}${s.tone === "attention" ? " attention" : ""}${s.tone === "exited" ? " exited" : ""}" onclick="select('${s.id}')">
+          <span class="agent-dot agent-${s.agent} row-dot"></span>
+          <span class="row-name">${s.name}</span>
+          <span class="row-sub">${s.goal ? s.goal.text : s.nameSource}</span>
+          <span class="row-right">
+            <span class="row-state">${s.state}</span>
+            <span class="row-marks">${marks.join("")}</span>
+            <span class="row-seen">${s.seen}</span>
+          </span>
+        </button>`;
+      }
+
+      function rail() {
+        return GROUPS.map(([tone, label]) => {
+          const items = sorted.filter((s) => s.tone === tone);
+          if (!items.length) return "";
+          return `<div class="rail-group tone-${tone}">${label}<span class="n">${items.length}</span></div>${items.map(railRow).join("")}`;
+        }).join("");
+      }
+
+      function detail(s) {
+        const needsYou = s.tone === "attention";
+        const queueCount = s.queue ? s.queue.open : 0;
+        const tabs = [
+          ["conversation", "Conversation", 0],
+          ["queue", "Work queue", queueCount],
+          ["gate", "Gate", s.nm && s.nm.gate && needsYou ? 1 : 0],
+          ["diff", "Diff", 0],
+        ];
+
+        let body = "";
+        if (tab === "conversation") {
+          body = `
+            ${goalLine(s)}
+            ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
+            ${s.note ? `<div class="note"><span class="note-head">◆ Foreman escalated a decision</span><p>${s.note.text}</p><div class="note-acts"><button class="act">Approve draft</button><button class="act">Edit</button><button class="act">Dismiss</button></div></div>` : ""}
+            ${s.nm ? nmStrip(s, needsYou) : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            ${transcript(s)}
+            ${composeBox(s)}`;
+        } else if (tab === "queue") {
+          body = s.queue
+            ? `<span class="section-label">${s.queue.open} queued · fix round ${s.queue.round}</span>
+               <div class="qitem"><span class="st">running</span>${s.queue.intent}</div>
+               <div class="qitem"><span class="st" style="color:var(--dim)">waiting</span>re-run the gate once the fixes land</div>`
+            : `<span class="section-label">Nothing queued for this session</span>`;
+        } else if (tab === "gate") {
+          // nmStrip carries the findings itself - listing them again here printed them twice.
+          body = s.nm
+            ? nmStrip(s, needsYou)
+            : `<span class="section-label">This repo isn't gated by no-mistakes</span>`;
+        } else {
+          body = `<span class="section-label">changes vs ${s.branch ? "main" : "source branch"}</span>
+            <div class="qitem mono">+142 −38 across 6 files · click a file to open the diff</div>`;
+        }
+
+        return `
+          <div class="detail-head tone-${s.tone}">
+            <span class="agent-dot agent-${s.agent}"></span>
+            <h2>${s.name}</h2><span class="rename-pencil" title="Rename (n)">✎</span>
+            <span class="name-source">${s.nameSource}</span>
+            ${prChip(s)}
+            ${badge(s)}
+            <span style="flex:1"></span>
+            ${runtimeRow(s)}
+          </div>
+          <dl class="detail-sub">
+            <span class="kv"><dt>path</dt><dd>${s.cwd}</dd></span>
+            ${s.branch ? `<span class="kv"><dt>branch</dt><dd class="branch">${s.branch}</dd></span>` : ""}
+            ${s.task ? `<span class="task-chip"><span class="task-kind">${s.task.kind}</span><span class="task-title">${s.task.title}</span>${s.task.outcome ? `<span class="task-outcome">${s.task.outcome}</span>` : ""}</span>` : ""}
+          </dl>
+          <div class="tabs">${tabs
+            .map(
+              ([id, label, pip]) =>
+                `<button class="tab${tab === id ? " on" : ""}" onclick="setTab('${id}')">${label}${pip ? `<span class="pip">${pip}</span>` : ""}</button>`,
+            )
+            .join("")}</div>
+          <div class="detail-body">${body}</div>
+          <div class="detail-foot">
+            <span>${AGENT_LABEL[s.agent]}</span>
+            ${s.gated ? `<span class="gated" title="gated by no-mistakes">◇ gated</span>` : ""}
+            ${s.mode ? `<button class="mode-pick" title="Cycle permission mode (m)">${s.mode} ▾</button>` : ""}
+            <span>·</span><span class="mono dim">pid ${s.pid}</span>
+            ${!s.instrumented ? `<span class="hint" title="No hooks reporting - status is coarse">uninstrumented</span>` : ""}
+            <span class="spacer"></span>
+            ${
+              s.state !== "exited"
+                ? `<button class="act"><kbd>f</kbd> focus pane</button>
+                   <button class="act"><kbd>d</kbd> diff</button>
+                   <button class="act"><kbd>^r</kbd> reset</button>
+                   <button class="act act-danger"><kbd>k</kbd> kill</button>`
+                : `<span>${s.seen}</span>`
+            }
+          </div>`;
+      }
+
+      function render() {
+        const s = SESSIONS.find((x) => x.id === activeId);
+        document.getElementById("app").innerHTML =
+          mockbar("1 · Console") + topbar("Console") +
+          `<div class="shell"><nav class="rail">${rail()}</nav><section class="detail tone-${s.tone}">${detail(s)}</section></div>`;
+      }
+      function select(id) {
+        activeId = id;
+        tab = "conversation";
+        render();
+      }
+      function setTab(t) {
+        tab = t;
+        render();
+      }
+      // Arrow-key navigation moves down the rail, exactly as it moves across the grid today.
+      document.addEventListener("keydown", (e) => {
+        if (e.target.matches("input, textarea")) return;
+        if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+        e.preventDefault();
+        const ids = sorted.map((s) => s.id);
+        const i = ids.indexOf(activeId);
+        const next = ids[e.key === "ArrowDown" ? i + 1 : i - 1];
+        if (next) select(next);
+      });
+      render();
+    </script>
+  </body>
+</html>

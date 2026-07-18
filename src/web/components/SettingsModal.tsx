@@ -3,6 +3,8 @@ import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
+import { LayoutPanel } from "./LayoutPanel.tsx";
+import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 
 /**
@@ -12,6 +14,7 @@ import type { ForemanState } from "../useForeman.ts";
  * inlined JSX) is also what the render test walks to prove every category is reachable.
  */
 export const SETTINGS_CATEGORIES = [
+  { id: "layout", label: "Layout", icon: "▦" },
   { id: "keyboard", label: "Keyboard", icon: "⌨" },
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "foreman", label: "Foreman", icon: "●" },
@@ -32,15 +35,18 @@ function tabDomId(id: SettingsCategoryId): string {
  * Skills is one click from open, not the tail of a scroll. The panels themselves are
  * unchanged; this component only arranges them and owns which one is showing.
  *
- * `KeyboardPanel` is the modal's local-only, synchronous setting (localStorage). Skills
- * is the one that leaves this machine: it writes to the daemon, and through it to
- * `~/.claude/skills`, so it is also the first that can fail asynchronously. `SkillsPanel`
- * owns that error path. `useSkills` lives here rather than inside the Skills panel so the
- * catalog keeps polling (and `pending` keeps moving) while you're on another category.
+ * `LayoutPanel` and `KeyboardPanel` are the modal's local-only, synchronous settings
+ * (localStorage). Skills is the one that leaves this machine: it writes to the daemon,
+ * and through it to `~/.claude/skills`, so it is also the first that can fail
+ * asynchronously. `SkillsPanel` owns that error path. `useSkills` lives here rather than
+ * inside the Skills panel so the catalog keeps polling (and `pending` keeps moving) while
+ * you're on another category.
  */
 export function SettingsModal({
   onClose,
   foreman,
+  layout,
+  onLayoutChange,
   initialCategory = "keyboard",
 }: {
   onClose: () => void;
@@ -51,6 +57,14 @@ export function SettingsModal({
    * doesn't use it, so it stays a local `useSkills()` below.
    */
   foreman: ForemanState;
+  /**
+   * The live layout, OWNED BY App for the same reason as `foreman`: App renders the
+   * layout, so it holds the state and this panel only edits it. A local `useLayoutMode()`
+   * here would be a second copy of the same localStorage key, and the dashboard behind
+   * the modal wouldn't move when you picked one.
+   */
+  layout: LayoutMode;
+  onLayoutChange: (mode: LayoutMode) => void;
   /** Which category to open on. Lets the ⌘, menu, the ForemanBar link, or a test deep-link one. */
   initialCategory?: SettingsCategoryId;
 }): React.JSX.Element {
@@ -107,6 +121,8 @@ export function SettingsModal({
 
   function renderCategory(id: SettingsCategoryId): React.JSX.Element {
     switch (id) {
+      case "layout":
+        return <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />;
       case "keyboard":
         return <KeyboardPanel />;
       case "skills":

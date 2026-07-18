@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { gateParked } from "@shared/session.ts";
 import { useEventStream } from "./useEventStream.ts";
-import { SessionCard } from "./components/SessionCard.tsx";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
@@ -12,28 +11,26 @@ import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
+import { GridView } from "./components/layouts/GridView.tsx";
+import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
+import { BoardView } from "./components/layouts/BoardView.tsx";
+import type { SessionViewProps } from "./components/layouts/types.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
+import { useLayoutMode } from "./lib/layout.ts";
+import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
+import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
-
-// Sort priority: things needing you first, then busy, then calm, then
-// unconfirmed (uninstrumented "running"), then gone.
-const TONE_ORDER: Record<Tone, number> = {
-  attention: 0,
-  working: 1,
-  idle: 2,
-  neutral: 3,
-  exited: 4,
-};
 
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
   useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
+  const [layout, setLayout] = useLayoutMode();
   const foreman = useForeman();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -147,6 +144,23 @@ export function App(): React.JSX.Element {
 
   const backlogCount = useMemo(() => tasks.filter((t) => t.status === "backlog").length, [tasks]);
 
+  // The board's columns as ids, so the arrow keys can cross between them. Derived from
+  // the same `groupByTone` the board renders, so navigation can't disagree with what's
+  // on screen.
+  const boardColumns = useMemo(
+    () => groupByTone(visible).map((g) => g.sessions.map((s) => s.id)),
+    [visible],
+  );
+
+  // What "expanded" means depends on the layout, so App resolves it once here rather
+  // than leaving each view to force the prop:
+  //   grid    - focus mode: at most one card, toggled, usually none.
+  //   console - the detail pane IS the expanded card, so it's whatever is selected.
+  //   board   - same, for the card inside the drawer.
+  // Keeping the state honest (rather than overriding `expanded` at the call site) is
+  // what lets Escape, the expand chord and the card's own toggle all agree.
+  const expandedForView = layout === "grid" ? expandedId : selectedId;
+
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
     ? pendingReviews.filter((r) => r.sessionId === modalSession.id)
@@ -161,6 +175,34 @@ export function App(): React.JSX.Element {
     const first = pendingReviews[0];
     if (first) setReviewSessionId(first.sessionId);
   }
+
+  // Everything a layout needs, and nothing it could decide for itself. App stays the
+  // one owner of session state; a view only arranges what it's handed.
+  const viewProps: SessionViewProps = {
+    sessions: visible,
+    gateAlerts,
+    selectedId,
+    onSelect: setSelectedId,
+    onDeselect: () => setSelectedId(null),
+    expandedId: expandedForView,
+    onToggleExpand: toggleExpand,
+    onOpenReviews: setReviewSessionId,
+    onOpenDiff: (id, commit) => {
+      setDiffCommit(commit ?? null);
+      setDiffSessionId(id);
+    },
+    onReset: setResetSessionId,
+    registerEl,
+    registerActions,
+    renamingId,
+    onRenameStart: setRenamingId,
+    onRenameClose: () => setRenamingId(null),
+    foremanMode,
+    foremanEnabled,
+    foremanAllowlist,
+    inputReviewBySession,
+    pendingReviewIds,
+  };
 
   // Drop selection / collapse / close the diff if the session disappears
   // (exited + reaped, etc.).
@@ -271,7 +313,6 @@ export function App(): React.JSX.Element {
 
       const ids = visible.map((s) => s.id);
       if (ids.length === 0) return;
-      const idx = selectedId ? ids.indexOf(selectedId) : -1;
       const handle = (): ActionBarHandle | undefined =>
         selectedId ? actionHandles.current.get(selectedId) : undefined;
 
@@ -280,7 +321,12 @@ export function App(): React.JSX.Element {
         case "Escape":
           // Peel back one layer at a time: collapse an expanded card first, then
           // (on a second press) cancel any pending action and drop the selection.
-          if (expandedId) {
+          //
+          // Grid-only, because only the grid has a layer to peel: in the console and
+          // the board, "expanded" is just what the detail pane is, so collapsing would
+          // change nothing on screen while eating the Escape that should have closed
+          // the drawer. (`expandedId` can also be a leftover from a visit to the grid.)
+          if (layout === "grid" && expandedId) {
             e.preventDefault();
             setExpandedId(null);
             return;
@@ -295,14 +341,14 @@ export function App(): React.JSX.Element {
         case "ArrowUp":
         case "ArrowDown": {
           e.preventDefault();
-          const cols = columnCount(gridRef.current);
-          let next: number;
-          if (idx === -1) next = 0;
-          else if (e.key === "ArrowRight") next = idx + 1;
-          else if (e.key === "ArrowLeft") next = idx - 1;
-          else if (e.key === "ArrowDown") next = idx + cols;
-          else next = idx - cols;
-          const nextId = ids[next];
+          const nextId = moveSelection({
+            mode: layout,
+            key: e.key as ArrowKey,
+            ids,
+            currentId: selectedId,
+            cols: columnCount(gridRef.current),
+            columns: boardColumns,
+          });
           if (nextId) setSelectedId(nextId);
           return;
         }
@@ -310,7 +356,10 @@ export function App(): React.JSX.Element {
 
       // Actions on the selected card.
       if (chord === bindings.expand) {
-        if (!selectedId) return;
+        // Focus mode is a grid idea. The console and the board already show the selected
+        // session expanded, so there is nothing here to toggle - and we leave the chord
+        // unclaimed rather than swallowing it to no effect.
+        if (!selectedId || layout !== "grid") return;
         e.preventDefault();
         // Expanding via the keyboard is an explicit "I want to type here", so arm the
         // send box to take the cursor once it mounts. Collapsing (this card is already
@@ -396,7 +445,7 @@ export function App(): React.JSX.Element {
   }, [expandedId]);
 
   return (
-    <div className="app">
+    <div className={`app app-${layout}`}>
       <header className="topbar" ref={topbarRef}>
         <div className="brand">
           <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
@@ -491,35 +540,16 @@ export function App(): React.JSX.Element {
         </div>
       </header>
 
-      <main className="grid" ref={gridRef}>
-        {visible.map((s) => (
-          <SessionCard
-            key={s.id}
-            session={s}
-            gateNeedsYou={gateAlerts.has(s.id)}
-            selected={s.id === selectedId}
-            onSelect={() => setSelectedId(s.id)}
-            expanded={expandedId === s.id}
-            onToggleExpand={() => toggleExpand(s.id)}
-            onOpenReviews={() => setReviewSessionId(s.id)}
-            onOpenDiff={(commit) => {
-              setDiffCommit(commit ?? null);
-              setDiffSessionId(s.id);
-            }}
-            onReset={() => setResetSessionId(s.id)}
-            registerEl={registerEl}
-            registerActions={registerActions}
-            renaming={renamingId === s.id}
-            onRenameStart={() => setRenamingId(s.id)}
-            onRenameClose={() => setRenamingId(null)}
-            foremanMode={foremanMode}
-            foremanEnabled={foremanEnabled}
-            foremanAllowlist={foremanAllowlist}
-            inputReviewId={inputReviewBySession.get(s.id) ?? null}
-            pendingReviewIds={pendingReviewIds}
-          />
-        ))}
-      </main>
+      {/* Nothing to arrange means no layout: one of the two empty states below says why,
+          and every layout would otherwise dress that silence up as furniture - an empty
+          rail beside a "no session selected" pane, five empty board columns. */}
+      {visible.length > 0 && (
+        <>
+          {layout === "grid" && <GridView {...viewProps} gridRef={gridRef} />}
+          {layout === "console" && <ConsoleView {...viewProps} />}
+          {layout === "board" && <BoardView {...viewProps} />}
+        </>
+      )}
 
       {modalSession && modalReviews.length > 0 && (
         <ReviewModal
@@ -559,6 +589,8 @@ export function App(): React.JSX.Element {
           onClose={() => setSettingsOpen(false)}
           foreman={foreman}
           initialCategory={settingsCategory}
+          layout={layout}
+          onLayoutChange={setLayout}
         />
       )}
 
@@ -589,7 +621,12 @@ export function App(): React.JSX.Element {
         </div>
       )}
 
-      {selected && (
+      {/* Grid only. The bar floats fixed over the bottom of the page, which is empty
+          space under a scrolling grid but is exactly where the console's detail pane and
+          the board's drawer keep their reply box - it would sit on top of the control it
+          is advertising. Both of those layouts show the selected session's ActionBar
+          permanently instead, and every shortcut still works. */}
+      {selected && layout === "grid" && (
         <CommandBar
           session={selected}
           bindings={bindings}

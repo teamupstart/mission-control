@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Layout mockups</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      .wrap {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 44px 24px 80px;
+      }
+      .lede h1 {
+        margin: 0 0 10px;
+        font-size: 30px;
+        font-weight: 680;
+        letter-spacing: -0.5px;
+      }
+      .lede p {
+        margin: 0;
+        max-width: 74ch;
+        font-size: 14px;
+        line-height: 1.65;
+        color: var(--muted);
+      }
+      .lede .today {
+        margin-top: 14px;
+        padding: 11px 14px;
+        font-size: 12.5px;
+        line-height: 1.6;
+        color: var(--muted);
+        border: 1px solid var(--border-soft);
+        border-left: 3px solid var(--working);
+        border-radius: 0 9px 9px 0;
+        background: var(--bg-2);
+        max-width: 74ch;
+      }
+      .lede .today b {
+        color: var(--fg);
+      }
+
+      /* Four options want a 2x2, not a 3+1 that strands the fourth on its own row. */
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+        gap: 16px;
+        margin-top: 34px;
+      }
+      .m {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 18px 19px 17px;
+        text-decoration: none;
+        color: inherit;
+        background: linear-gradient(var(--panel), var(--panel-2));
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        transition:
+          transform 0.16s ease,
+          border-color 0.16s ease;
+      }
+      .m::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 3px;
+        background: var(--tone-color);
+        border-radius: var(--radius) 0 0 var(--radius);
+      }
+      .m:hover {
+        transform: translateY(-3px);
+        border-color: color-mix(in oklab, var(--tone-color) 45%, var(--border));
+      }
+      .m-head {
+        display: flex;
+        align-items: baseline;
+        gap: 9px;
+      }
+      .m-n {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--tone-color);
+        font-variant-numeric: tabular-nums;
+      }
+      .m-head h2 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 650;
+      }
+      .m-idea {
+        margin: 0;
+        font-size: 12.5px;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+      .m-idea b {
+        color: var(--fg);
+        font-weight: 600;
+      }
+
+      /* Wireframe: the layout's shape at a glance, drawn in the tokens themselves. */
+      .wire {
+        display: grid;
+        gap: 3px;
+        height: 78px;
+        padding: 5px;
+        border: 1px solid var(--border-soft);
+        border-radius: 8px;
+        background: var(--bg-2);
+      }
+      .wire i {
+        border-radius: 3px;
+        background: var(--border);
+      }
+      .wire i.hot {
+        background: color-mix(in oklab, var(--tone-color) 55%, var(--border));
+      }
+      .wire i.lit {
+        background: color-mix(in oklab, var(--tone-color) 28%, var(--border));
+      }
+      .w-console {
+        grid-template-columns: 1fr 2.2fr;
+      }
+      .w-console .stack {
+        display: grid;
+        grid-template-rows: repeat(5, 1fr);
+        gap: 3px;
+      }
+      .w-board {
+        grid-template-columns: repeat(4, 1fr);
+      }
+      .w-board .stack {
+        display: grid;
+        grid-template-rows: 9px 1fr 1fr;
+        gap: 3px;
+        align-content: start;
+      }
+      .w-table {
+        grid-template-rows: 9px repeat(4, 1fr);
+      }
+      .w-triage {
+        grid-template-columns: 1fr 3fr;
+        grid-template-rows: 1fr 12px;
+      }
+      .w-triage .stack {
+        grid-row: 1 / span 2;
+        display: grid;
+        grid-template-rows: repeat(4, 1fr);
+        gap: 3px;
+      }
+
+      .m-tradeoffs {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .t {
+        display: flex;
+        gap: 7px;
+        color: var(--muted);
+      }
+      .t .g {
+        flex: none;
+        width: 11px;
+        font-weight: 700;
+      }
+      .t.up .g {
+        color: var(--idle);
+      }
+      .t.down .g {
+        color: var(--attention);
+      }
+      .m-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 2px;
+        padding-top: 11px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .m-open {
+        margin-left: auto;
+        font-weight: 650;
+        color: var(--tone-color);
+      }
+
+      .note {
+        margin-top: 30px;
+        padding: 15px 17px;
+        border: 1px solid var(--border-soft);
+        border-radius: var(--radius);
+        background: var(--bg-2);
+        font-size: 12.5px;
+        line-height: 1.65;
+        color: var(--muted);
+        max-width: 84ch;
+      }
+      .note b {
+        color: var(--fg);
+      }
+      .note code {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--idle);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="lede">
+        <h1>Mission Control · four layout mockups</h1>
+        <p>
+          Same fleet, same theme, same functionality - four different answers to "how should eight
+          agent sessions be arranged on a screen". Each is clickable: select rows, open drawers, sort
+          columns, walk the triage stack. All eight sessions are the same fixture data in every
+          mockup, so the layouts are directly comparable.
+        </p>
+        <p class="today">
+          <b>Today:</b> one responsive grid of session cards, sorted by tone (needs-you → working →
+          idle → unconfirmed → gone). Click selects, a second click expands one card in place to
+          reveal the Foreman note, work queue and transcript. Everything else - the goal, meta,
+          runtime pills, no-mistakes strip, action bar - is always on the card.
+        </p>
+      </div>
+
+      <div class="cards">
+        <a class="m tone-working" href="console.html">
+          <span class="m-head"><span class="m-n">01</span><h2>Console</h2></span>
+          <div class="wire w-console">
+            <span class="stack"><i class="hot"></i><i class="lit"></i><i></i><i></i><i></i></span>
+            <i class="lit"></i>
+          </div>
+          <p class="m-idea">
+            <b>Split-pane master/detail.</b> A dense rail of every session on the left, one
+            always-open detail pane on the right. Nothing expands - selecting <i>is</i> expanding, and
+            the conversation gets half the screen permanently. Detail splits into tabs: Conversation
+            / Work queue / Gate / Diff.
+          </p>
+          <div class="m-tradeoffs">
+            <span class="t up"><span class="g">+</span>Transcript is first-class, not a click away</span>
+            <span class="t up"><span class="g">+</span>Whole fleet stays visible while you work one session</span>
+            <span class="t down"><span class="g">−</span>Only one session's detail at a time</span>
+          </div>
+          <span class="m-foot">closest to today's model<span class="m-open">Open →</span></span>
+        </a>
+
+        <a class="m tone-attention" href="board.html">
+          <span class="m-head"><span class="m-n">02</span><h2>Board</h2></span>
+          <div class="wire w-board">
+            <span class="stack"><i class="hot"></i><i class="hot"></i><i class="hot"></i></span>
+            <span class="stack"><i class="lit"></i><i></i><i></i></span>
+            <span class="stack"><i class="lit"></i><i></i></span>
+            <span class="stack"><i class="lit"></i><i></i></span>
+          </div>
+          <p class="m-idea">
+            <b>Kanban by state.</b> The sort order that's invisible today becomes the layout: one
+            column per state, so "how many need me" is answered by column height instead of by reading
+            badges. Cards shrink to glanceable tiles; the full body moves to a slide-over drawer, so
+            opening one never reflows the board.
+          </p>
+          <div class="m-tradeoffs">
+            <span class="t up"><span class="g">+</span>Fleet state readable from across the room</span>
+            <span class="t up"><span class="g">+</span>Opening a session never moves the others</span>
+            <span class="t down"><span class="g">−</span>Tiles cut goal to two lines; drawer hides the board</span>
+          </div>
+          <span class="m-foot">best for ambient monitoring<span class="m-open">Open →</span></span>
+        </a>
+
+        <a class="m tone-idle" href="table.html">
+          <span class="m-head"><span class="m-n">03</span><h2>Ops table</h2></span>
+          <div class="wire w-table">
+            <i class="lit"></i><i class="hot"></i><i></i><i></i><i></i>
+          </div>
+          <p class="m-idea">
+            <b>Dense sortable grid.</b> Every fact a card carries becomes a column, so you compare
+            across sessions down a line rather than hunting the same chip in eight card positions.
+            Sort by context pressure, gate state, or last-seen; a row expands in place into the full
+            detail without leaving the table.
+          </p>
+          <div class="m-tradeoffs">
+            <span class="t up"><span class="g">+</span>Scales past 20 sessions without scrolling forever</span>
+            <span class="t up"><span class="g">+</span>Sorting answers questions the grid can't ("who's near context limit?")</span>
+            <span class="t down"><span class="g">−</span>Least glanceable; reads as a spreadsheet, not a fleet</span>
+          </div>
+          <span class="m-foot">best at scale<span class="m-open">Open →</span></span>
+        </a>
+
+        <a class="m tone-attention" href="triage.html">
+          <span class="m-head"><span class="m-n">04</span><h2>Triage</h2></span>
+          <div class="wire w-triage">
+            <span class="stack"><i class="hot"></i><i class="lit"></i><i></i><i></i></span>
+            <i class="hot"></i>
+            <i></i>
+          </div>
+          <p class="m-idea">
+            <b>Inbox-zero focus stack.</b> The other three answer "what is the fleet doing". This one
+            answers the only question you act on: <i>what do I have to decide right now</i>. One
+            session fills the screen with its ask pulled out as the headline; answering advances to
+            the next. Everything not asking for you drops to an ambient strip along the bottom.
+          </p>
+          <div class="m-tradeoffs">
+            <span class="t up"><span class="g">+</span>The decision is the interface - no hunting for it</span>
+            <span class="t up"><span class="g">+</span>Keyboard-only loop: read, answer, <kbd>↵</kbd>, next</span>
+            <span class="t down"><span class="g">−</span>Poor for browsing; the fleet is peripheral by design</span>
+          </div>
+          <span class="m-foot">best for clearing a backlog<span class="m-open">Open →</span></span>
+        </a>
+      </div>
+
+      <p class="note">
+        <b>All existing functionality is present in each.</b> Topbar: filter, session/need-you/working/reviews
+        stats, Alerts, Foreman mode, Settings, Roundup + backlog badge, Dispatch, live indicator. Per
+        session: agent dot, rename, name source, PR chip + CI-failure alert, state badge, pending
+        reviews, Foreman decision/draft flag, goal line, path + branch, model / thinking / context
+        meter, task chip, work queue, activity ticker, no-mistakes pipeline + gate buttons + findings,
+        fix log with diff links, gated chip, permission-mode picker, pid, uninstrumented hint,
+        last-seen, and the send / focus / diff / reset / kill actions with their shortcuts.
+        <br /><br />
+        These are static mockups - <code>docs/mockups/*.html</code>, fixture data in
+        <code>data.js</code>, tokens lifted verbatim from <code>src/web/styles.css</code>. No app code
+        is touched.
+      </p>
+    </div>
+  </body>
+</html>

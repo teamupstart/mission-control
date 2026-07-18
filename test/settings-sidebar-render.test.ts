@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsModal, SETTINGS_CATEGORIES } from "../src/web/components/SettingsModal.tsx";
 import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx";
+import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
@@ -16,9 +17,17 @@ import type { ForemanState } from "../src/web/useForeman.ts";
 // renders the panel's defaults. Static render never runs effects, so nothing fetches.
 const FOREMAN: ForemanState = { config: null, status: null, update: async () => {}, error: null };
 
+// The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
+// modal renders it, so the panel only edits what it's handed.
 function render(initialCategory?: SettingsCategoryId): string {
   return renderToStaticMarkup(
-    createElement(SettingsModal, { onClose: () => {}, foreman: FOREMAN, initialCategory }),
+    createElement(SettingsModal, {
+      onClose: () => {},
+      foreman: FOREMAN,
+      layout: "grid",
+      onLayoutChange: () => {},
+      initialCategory,
+    }),
   );
 }
 
@@ -26,6 +35,7 @@ function render(initialCategory?: SettingsCategoryId): string {
 // proves that panel is the one rendered.
 const KEYBOARD_ONLY = /Anywhere/; // a keyboard action group label
 const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
+const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -40,6 +50,35 @@ test("opens on Keyboard by default: keyboard panel shows, skills panel does not"
   assert.doesNotMatch(html, SKILLS_ONLY);
   // The active item is Keyboard, not Skills.
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌨<\/span>Keyboard/);
+});
+
+test("Layout is a category of its own: its panel shows, the others don't", () => {
+  const html = render("layout");
+  assert.match(html, LAYOUT_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, SKILLS_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>▦<\/span>Layout/);
+});
+
+test("the layout picker offers every layout, with the live one checked", () => {
+  const html = render("layout");
+  // Every shipped layout is on offer...
+  for (const l of LAYOUTS) assert.ok(html.includes(l.label), `picker missing ${l.label}`);
+  // ...and the one App handed us is the checked radio, not a local guess. Rendering the
+  // panel against `layout: "grid"` must not leave a different mode selected - that is the
+  // bug where the picker and the dashboard behind it disagree about what you're in.
+  // (React emits `checked=""` BEFORE `value`, so the attributes are matched in that order.)
+  const inputs = html.match(/<input[^>]*>/g) ?? [];
+  const checked = inputs.filter((i) => i.includes("checked"));
+  assert.equal(inputs.length, LAYOUTS.length, "one radio per layout");
+  assert.equal(checked.length, 1, "exactly one layout is checked");
+  assert.match(checked[0]!, /value="grid"/);
+});
+
+test("the layout panel is absent from every other category", () => {
+  for (const id of ["keyboard", "skills", "foreman"] as const) {
+    assert.doesNotMatch(render(id), LAYOUT_ONLY, `layout picker leaked into ${id}`);
+  }
 });
 
 test("initialCategory swaps the panel: skills shows, keyboard does not", () => {

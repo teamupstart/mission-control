@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mission Control · Triage layout</title>
+    <link rel="stylesheet" href="theme.css" />
+    <style>
+      /*
+       * MOCKUP 4 - TRIAGE (inbox-zero focus stack)
+       *
+       * The other three layouts all answer "what is the fleet doing". This one
+       * answers the only question you act on: "what do I have to decide RIGHT NOW".
+       * One session gets the whole screen, chosen by the same TONE_ORDER the grid
+       * sorts by; answering it advances to the next. Everything not asking for you
+       * drops to an ambient strip along the bottom - present, glanceable, not
+       * competing for the middle of the screen.
+       */
+      .shell {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        grid-template-rows: 1fr auto;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      /* ---- up-next queue ---- */
+      .queue {
+        grid-row: 1 / span 2;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg-2) 60%, transparent);
+        overflow-y: auto;
+      }
+      .queue-head {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 14px 16px 10px;
+      }
+      .queue-head h2 {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .queue-head .n {
+        margin-left: auto;
+        font-size: 11.5px;
+        font-weight: 700;
+        color: var(--attention);
+      }
+      .qrow {
+        position: relative;
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: 9px;
+        width: 100%;
+        padding: 10px 14px;
+        text-align: left;
+        background: none;
+        border: 0;
+        border-bottom: 1px solid var(--border-soft);
+        cursor: pointer;
+      }
+      .qrow:hover {
+        background: color-mix(in oklab, var(--panel) 60%, transparent);
+      }
+      .qrow.on {
+        background: var(--panel);
+        box-shadow: inset 2px 0 0 var(--attention);
+      }
+      .qrow.done {
+        opacity: 0.45;
+      }
+      .qnum {
+        grid-row: 1 / span 2;
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        font-size: 10px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        color: var(--dim);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-2);
+      }
+      .qrow.on .qnum {
+        color: var(--bg);
+        background: var(--attention);
+        border-color: var(--attention);
+      }
+      .qname {
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 620;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .qask {
+        min-width: 0;
+        font-size: 10.5px;
+        color: var(--attention);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .qrow.done .qask {
+        color: var(--dim);
+      }
+      .queue-rest {
+        padding: 12px 16px;
+        font-size: 11px;
+        color: var(--dim);
+        line-height: 1.6;
+      }
+
+      /* ---- focus pane ---- */
+      .focus {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .focus-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        padding: 16px 26px 12px;
+      }
+      .focus-head h2 {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 660;
+        letter-spacing: -0.2px;
+      }
+      .focus-head .name-source {
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .focus-goal {
+        padding: 0 26px 12px;
+        margin: 0;
+        font-size: 13.5px;
+        line-height: 1.5;
+        color: var(--muted);
+        max-width: 78ch;
+      }
+      .focus-goal.heuristic {
+        font-style: italic;
+      }
+      .focus-goal.none {
+        color: var(--dim);
+        font-size: 12px;
+      }
+      .focus-meta {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        flex-wrap: wrap;
+        padding: 0 26px 14px;
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .focus-meta .mono {
+        color: var(--muted);
+      }
+      .focus-meta .branch {
+        color: var(--idle);
+      }
+
+      /* The ask - the reason this session is at the top of the stack. */
+      .ask {
+        margin: 0 26px 14px;
+        padding: 15px 17px;
+        border: 1px solid color-mix(in oklab, var(--attention) 50%, var(--border));
+        border-radius: 11px;
+        background: color-mix(in oklab, var(--attention) 9%, var(--bg-2));
+        box-shadow: 0 0 30px color-mix(in oklab, var(--attention) 10%, transparent);
+      }
+      .ask-kind {
+        display: block;
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--attention);
+        margin-bottom: 7px;
+      }
+      .ask p {
+        margin: 0 0 12px;
+        font-size: 14px;
+        line-height: 1.55;
+        color: var(--fg);
+        max-width: 76ch;
+      }
+      .ask-acts {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .ask-btn {
+        padding: 6px 14px;
+        font-size: 12.5px;
+        font-weight: 650;
+        color: #06121f;
+        background: var(--attention);
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .ask-btn:hover {
+        filter: brightness(1.08);
+      }
+      .ask-btn.ghost {
+        color: var(--fg);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+      }
+      .ask-btn.ghost:hover {
+        border-color: color-mix(in oklab, var(--attention) 50%, var(--border));
+        filter: none;
+      }
+
+      .focus-body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 26px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 13px;
+      }
+      .focus-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 11px 26px;
+        border-top: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg-2) 70%, transparent);
+        font-size: 11.5px;
+        color: var(--dim);
+      }
+      .focus-foot .spacer {
+        flex: 1;
+      }
+      .next-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 15px;
+        font-size: 12.5px;
+        font-weight: 650;
+        color: #06121f;
+        background: var(--idle);
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .next-btn kbd {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: #06121f;
+        background: rgba(255, 255, 255, 0.35);
+        border-radius: 3px;
+        padding: 0 4px;
+      }
+      .mode-pick {
+        padding: 3px 8px;
+        font-size: 11px;
+        color: var(--muted);
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      .section-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .nm-findings {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 11.5px;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      .fix-log {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        padding: 9px 11px;
+        font-size: 11.5px;
+        border: 1px solid var(--border-soft);
+        border-radius: 9px;
+        background: var(--bg-2);
+      }
+      .fix-log b {
+        font-size: 10.5px;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+      .fix-row {
+        display: flex;
+        gap: 8px;
+        color: var(--muted);
+      }
+      .fix-row .sha {
+        font-family: var(--mono);
+        color: var(--working);
+        cursor: pointer;
+      }
+
+      /* ---- ambient fleet strip ---- */
+      .ambient {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        padding: 10px 26px;
+        border-top: 1px solid var(--border-soft);
+        background: color-mix(in oklab, var(--bg) 88%, transparent);
+        overflow-x: auto;
+      }
+      .ambient-label {
+        flex: none;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        color: var(--dim);
+        padding-right: 3px;
+      }
+      .amb {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex: none;
+        padding: 6px 11px 6px 10px;
+        background: var(--panel);
+        border: 1px solid var(--border-soft);
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .amb:hover {
+        border-color: color-mix(in oklab, var(--tone-color, var(--neutral)) 50%, var(--border));
+      }
+      .amb.exited {
+        opacity: 0.5;
+      }
+      .amb-name {
+        font-size: 11.5px;
+        font-weight: 600;
+        color: var(--muted);
+        max-width: 150px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .amb-state {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--tone-color, var(--neutral));
+      }
+      .amb.tone-working .amb-state {
+        animation: breathe 1.8s ease-in-out infinite;
+      }
+      .amb-rail {
+        display: flex;
+        gap: 2px;
+        width: 26px;
+      }
+      .amb-rail span {
+        flex: 1;
+        height: 3px;
+        border-radius: 2px;
+        background: var(--border);
+      }
+      .amb-rail .nm-done {
+        background: var(--idle);
+      }
+      .amb-rail .nm-run {
+        background: var(--working);
+      }
+      .amb-rail .nm-gate {
+        background: var(--attention);
+      }
+      .amb-tick {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--dim);
+        max-width: 160px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      @media (max-width: 900px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+        .queue {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="data.js"></script>
+    <script>
+      // The stack: everything that wants you, in the order the grid already ranks them.
+      const STACK = sorted.filter((s) => s.tone === "attention");
+      const AMBIENT = sorted.filter((s) => s.tone !== "attention");
+      let cursor = 0;
+      let handled = new Set();
+
+      function askFor(s) {
+        if (s.note && s.note.disposition === "escalated")
+          return { kind: "◆ Foreman escalated a decision", text: s.note.text, acts: ["Approve Foreman's draft", "Answer myself", "Snooze"] };
+        if (s.nm && s.nm.gate)
+          return {
+            kind: `▮ no-mistakes parked at ${s.nm.gate.replace("_", " ")}`,
+            text: s.nm.findings.length
+              ? `${s.nm.findings.length} findings to triage before this branch can push: ${s.nm.findings[0]}`
+              : s.nm.line,
+            acts: ["Approve", "Send back to fix", "Skip this step"],
+          };
+        return { kind: "● Waiting on your reply", text: s.transcript[s.transcript.length - 1].text, acts: ["Reply", "Snooze"] };
+      }
+      function shortAsk(s) {
+        if (s.note && s.note.disposition === "escalated") return "Foreman escalated a decision";
+        if (s.nm && s.nm.gate) return `parked at ${s.nm.gate.replace("_", " ")}`;
+        return "asked you a question";
+      }
+
+      function queuePane() {
+        return `<div class="queue-head"><h2>Up next</h2><span class="n">${STACK.length - handled.size} left</span></div>
+        ${STACK.map(
+          (s, i) => `<button class="qrow${i === cursor ? " on" : ""}${handled.has(s.id) ? " done" : ""}" onclick="go(${i})">
+            <span class="qnum">${handled.has(s.id) ? "✓" : i + 1}</span>
+            <span class="qname">${s.name}</span>
+            <span class="qask">${shortAsk(s)}</span>
+          </button>`,
+        ).join("")}
+        <p class="queue-rest">${AMBIENT.filter((s) => s.tone === "working").length} working · ${AMBIENT.filter((s) => s.tone === "idle").length} idle · ${AMBIENT.filter((s) => s.tone === "exited").length} gone<br />None of them need you. They're on the strip below.</p>`;
+      }
+
+      function focusPane() {
+        const s = STACK[cursor];
+        if (!s)
+          return `<div class="focus"><div class="focus-body" style="place-content:center;text-align:center">
+            <p style="font-size:17px;font-weight:640;margin:0">Nothing needs you</p>
+            <p style="font-size:13px;color:var(--muted);margin:0">${AMBIENT.filter((s) => s.tone === "working").length} sessions are still working. The strip below has them.</p>
+          </div></div>`;
+        const ask = askFor(s);
+        return `<div class="focus tone-${s.tone}">
+          <div class="focus-head">
+            <span class="agent-dot agent-${s.agent}"></span>
+            <h2>${s.name}</h2>
+            <span class="rename-pencil" style="color:var(--dim);font-size:12px;cursor:text" title="Rename (n)">✎</span>
+            <span class="name-source">${s.nameSource}</span>
+            ${prChip(s)} ${badge(s)}
+            <span style="flex:1"></span>
+            ${runtimeRow(s)}
+          </div>
+          ${s.goal ? `<p class="focus-goal ${s.goal.source}">${s.goal.text}</p>` : `<p class="focus-goal none">No goal · Codex sessions don't expose their prompts</p>`}
+          <div class="focus-meta">
+            <span class="mono">${s.cwd}</span>
+            ${s.branch ? `<span>·</span><span class="mono branch">${s.branch}</span>` : ""}
+            ${s.gated ? `<span>·</span><span class="gated">◇ gated</span>` : ""}
+            ${s.task ? `<span class="task-chip"><span class="task-kind">${s.task.kind}</span><span class="task-title">${s.task.title}</span></span>` : ""}
+          </div>
+          <div class="ask">
+            <span class="ask-kind">${ask.kind}</span>
+            <p>${ask.text}</p>
+            <div class="ask-acts">${ask.acts
+              .map((a, i) => `<button class="ask-btn${i ? " ghost" : ""}" onclick="advance()">${a}</button>`)
+              .join("")}</div>
+          </div>
+          <div class="focus-body">
+            ${s.activity ? `<p class="activity">${s.activity}</p>` : ""}
+            ${s.queue ? `<span class="queue-chip"><span class="qc-count">${s.queue.open} queued</span><span class="qc-intent">${s.queue.intent}</span></span>` : ""}
+            ${s.nm ? nmStrip(s, true) : ""}
+            ${s.fixes && s.fixes.length ? `<div class="fix-log"><b>no-mistakes fixes</b>${s.fixes.map((f) => `<span class="fix-row"><span class="sha">${f.sha}</span>${f.msg}</span>`).join("")}</div>` : ""}
+            <span class="section-label">conversation</span>
+            ${transcript(s)}
+            ${composeBox(s)}
+          </div>
+          <div class="focus-foot">
+            <span>${AGENT_LABEL[s.agent]}</span>
+            ${s.mode ? `<button class="mode-pick">${s.mode} ▾</button>` : ""}
+            <span class="mono dim">pid ${s.pid}</span>
+            ${!s.instrumented ? `<span>uninstrumented</span>` : ""}
+            <span class="spacer"></span>
+            <button class="act"><kbd>f</kbd> focus pane</button>
+            <button class="act"><kbd>d</kbd> diff</button>
+            <button class="act"><kbd>^r</kbd> reset</button>
+            <button class="act act-danger"><kbd>k</kbd> kill</button>
+            <button class="next-btn" onclick="advance()">Next <kbd>↵</kbd></button>
+          </div>
+        </div>`;
+      }
+
+      function ambientStrip() {
+        return `<div class="ambient"><span class="ambient-label">Fleet</span>${AMBIENT.map(
+          (s) => `<button class="amb tone-${s.tone}${s.tone === "exited" ? " exited" : ""}" title="${s.state} · ${s.activity || s.seen}">
+            <span class="agent-dot agent-${s.agent}"></span>
+            <span class="amb-name">${s.name}</span>
+            <span class="amb-state"></span>
+            ${s.nm ? `<span class="amb-rail">${s.nm.steps.map((st) => `<span class="${NM_TONE[st]}"></span>`).join("")}</span>` : ""}
+            ${s.activity ? `<span class="amb-tick">${s.activity}</span>` : `<span class="amb-tick">${s.seen}</span>`}
+          </button>`,
+        ).join("")}</div>`;
+      }
+
+      function render() {
+        document.getElementById("app").innerHTML =
+          mockbar("4 · Triage") +
+          topbar("Triage") +
+          `<div class="shell"><nav class="queue">${queuePane()}</nav>${focusPane()}${ambientStrip()}</div>`;
+      }
+      function go(i) {
+        cursor = i;
+        render();
+      }
+      function advance() {
+        const s = STACK[cursor];
+        if (s) handled.add(s.id);
+        const next = STACK.findIndex((x) => !handled.has(x.id));
+        cursor = next === -1 ? STACK.length : next;
+        render();
+      }
+      document.addEventListener("keydown", (e) => {
+        if (e.target.matches("input, textarea")) return;
+        if (e.key === "Enter") {
+          e.preventDefault();
+          advance();
+        }
+        if (e.key === "ArrowDown" && cursor < STACK.length - 1) go(cursor + 1);
+        if (e.key === "ArrowUp" && cursor > 0) go(cursor - 1);
+      });
+      render();
+    </script>
+  </body>
+</html>

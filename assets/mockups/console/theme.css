@@ -1,0 +1,765 @@
+/*
+ * Shared theme for the Mission Control layout mockups.
+ *
+ * Tokens are lifted verbatim from src/web/styles.css so every mockup reads as the
+ * same product as the shipping dashboard - only the LAYOUT is up for debate here,
+ * not the palette. Anything below the token block is chrome common to all four
+ * mockups (badges, dots, chips, pills); each mockup owns its own layout CSS.
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #0a0c0f;
+  --bg-2: #0e1116;
+  --panel: #14181e;
+  --panel-2: #171c23;
+  --border: #232a33;
+  --border-soft: #1b2129;
+  --fg: #e7ebf1;
+  --muted: #939eae;
+  --dim: #5d6775;
+
+  --working: #4a9eff;
+  --idle: #35c08a;
+  --attention: #f6a733;
+  --danger: #f85149;
+  --exited: #707a88;
+  --neutral: #8b94a3;
+  --select: #35c08a;
+
+  --claude: #d97757;
+  --codex: #10a37f;
+
+  --pr-open: #3fb950;
+  --pr-merged: #a371f7;
+
+  --radius: 13px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+/* The live-status dots breathe on an infinite loop. Honour a reduced-motion
+   preference by holding them at full opacity - the colour still carries the
+   state, so nothing is lost by standing the animation down. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+body {
+  font-family: var(--sans);
+  color: var(--fg);
+  background:
+    radial-gradient(1200px 600px at 80% -10%, #12202f 0%, transparent 55%),
+    radial-gradient(900px 500px at 0% 0%, #1a1424 0%, transparent 50%),
+    var(--bg);
+  /* A flex column so a layout's shell can claim the leftover height with `flex: 1`
+     rather than a calc() against a hard-coded topbar height - which silently lies
+     the moment the topbar wraps to a second row on a narrow viewport. */
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+#app {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+button {
+  font-family: inherit;
+}
+
+.tone-working {
+  --tone-color: var(--working);
+}
+.tone-idle {
+  --tone-color: var(--idle);
+}
+.tone-attention {
+  --tone-color: var(--attention);
+}
+.tone-exited {
+  --tone-color: var(--exited);
+}
+.tone-neutral {
+  --tone-color: var(--neutral);
+}
+
+/* ---- mockup switcher ----
+   A strip ABOVE the topbar rather than a floating pill: every one of these
+   layouts pins something to the bottom of the screen (a command footer, the
+   ambient fleet strip), and a floating pill sat right on top of it. */
+.mockbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 20px;
+  font-size: 11.5px;
+  color: var(--dim);
+  background: #06080b;
+  border-bottom: 1px solid var(--border-soft);
+}
+.mockbar b {
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.mockbar .sep {
+  flex: 1;
+}
+.mockbar a {
+  color: var(--muted);
+  text-decoration: none;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+.mockbar a:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel);
+}
+.mockbar a.on {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+  background: color-mix(in oklab, var(--working) 12%, var(--panel));
+}
+
+/* ---- topbar (shared across mockups; each may reorder it) ---- */
+.topbar {
+  position: sticky;
+  top: 38px; /* clears the mockup switcher above it */
+  z-index: 10;
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  padding: 14px 20px;
+  background: linear-gradient(var(--bg), rgba(10, 12, 15, 0.72));
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-soft);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: conic-gradient(from 210deg, var(--working), var(--claude), var(--idle), var(--working));
+  filter: drop-shadow(0 0 6px rgba(74, 158, 255, 0.35));
+}
+.brand h1 {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+  margin: 0;
+  white-space: nowrap;
+}
+.brand .layout-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--working);
+  padding: 2px 7px;
+  border: 1px solid color-mix(in oklab, var(--working) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  white-space: nowrap;
+}
+
+.filter-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 10px;
+  height: 30px;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+.filter-box:focus-within {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+}
+.filter-icon {
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1;
+}
+.filter-input {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  outline: none;
+  width: 150px;
+  padding: 0;
+}
+.filter-input::placeholder {
+  color: var(--dim);
+}
+
+.summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+}
+.stat-n {
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+.stat-label {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.stat-attention {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 12%, var(--panel));
+}
+.stat-attention .stat-n {
+  color: var(--attention);
+}
+.stat-working {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+  background: color-mix(in oklab, var(--working) 10%, var(--panel));
+}
+.stat-working .stat-n {
+  color: var(--working);
+}
+.stat-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ghost-btn:hover {
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.ghost-key {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.ghost-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--attention);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+.dispatch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #06121f;
+  background: linear-gradient(var(--working), #2f83e0);
+  border: 1px solid color-mix(in oklab, var(--working) 70%, #000);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.dispatch-btn:hover {
+  filter: brightness(1.08);
+}
+.link {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.link-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--idle);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--idle) 22%, transparent);
+  animation: breathe 2.6s ease-in-out infinite;
+}
+@keyframes breathe {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---- atoms shared by every layout ---- */
+.agent-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.agent-claude {
+  background: var(--claude);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--claude) 60%, transparent);
+}
+.agent-codex {
+  background: var(--codex);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--codex) 60%, transparent);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--tone-color, var(--neutral)) 45%, var(--border));
+  background: color-mix(in oklab, var(--tone-color, var(--neutral)) 13%, transparent);
+  color: color-mix(in oklab, var(--tone-color, var(--neutral)) 75%, var(--fg));
+}
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone-color, var(--neutral));
+}
+.badge-btn {
+  cursor: pointer;
+}
+.badge-attention {
+  --tone-color: var(--attention);
+}
+.badge-working {
+  --tone-color: var(--working);
+}
+.badge-idle {
+  --tone-color: var(--idle);
+}
+.badge-neutral {
+  --tone-color: var(--neutral);
+}
+.badge-exited {
+  --tone-color: var(--exited);
+}
+.tone-working .badge-dot,
+.badge-working .badge-dot {
+  animation: breathe 1.8s ease-in-out infinite;
+}
+
+.pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--pr-open) 45%, var(--border));
+  background: color-mix(in oklab, var(--pr-open) 12%, transparent);
+  color: var(--pr-open);
+}
+.pr-merged {
+  border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));
+  background: color-mix(in oklab, var(--pr-merged) 12%, transparent);
+  color: var(--pr-merged);
+}
+.pr-checks-alert {
+  display: inline-flex;
+  flex: none;
+  color: var(--danger);
+  text-decoration: none;
+}
+
+.goal {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+.goal-heuristic {
+  color: var(--muted);
+  font-style: italic;
+}
+.goal-none {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+.dim {
+  color: var(--dim);
+}
+
+.rt-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+}
+.rt-1m {
+  font-size: 9px;
+  color: var(--working);
+  border: 1px solid color-mix(in oklab, var(--working) 40%, transparent);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.rt-think-glyph {
+  color: var(--attention);
+}
+.rt-ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.rt-meter {
+  display: block;
+  width: 42px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+.rt-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--idle);
+}
+.rt-ctx-warn .rt-meter-fill {
+  background: var(--attention);
+}
+.rt-ctx-warn .rt-ctx-num {
+  color: var(--attention);
+}
+.rt-ctx-danger .rt-meter-fill {
+  background: var(--danger);
+}
+.rt-ctx-danger .rt-ctx-num {
+  color: var(--danger);
+}
+
+.queue-chip,
+.task-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  font-size: 11.5px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+.queue-chip {
+  border-color: color-mix(in oklab, var(--working) 35%, var(--border));
+}
+.qc-count {
+  font-weight: 650;
+  color: var(--working);
+}
+.qc-intent,
+.task-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qc-round {
+  font-size: 10px;
+  color: var(--attention);
+}
+.task-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.task-outcome {
+  color: var(--idle);
+  text-decoration: none;
+}
+
+.foreman-flag {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid color-mix(in oklab, var(--attention) 50%, var(--border));
+  background: color-mix(in oklab, var(--attention) 14%, transparent);
+  color: var(--attention);
+}
+.ff-pending {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  background: color-mix(in oklab, var(--working) 12%, transparent);
+  color: var(--working);
+}
+
+.gated {
+  font-size: 11px;
+  color: var(--idle);
+}
+.activity {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--dim);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- no-mistakes strip ---- */
+.nm-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+.nm-strip.needs-you {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border));
+  background: color-mix(in oklab, var(--attention) 7%, var(--bg-2));
+}
+.nm-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.nm-brand {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--idle);
+  letter-spacing: 0.2px;
+}
+.nm-dots {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+}
+.nm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.nm-done {
+  background: var(--idle);
+}
+.nm-run {
+  background: var(--working);
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.nm-gate {
+  background: var(--attention);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 22%, transparent);
+}
+.nm-fail {
+  background: var(--danger);
+}
+.nm-skip {
+  background: var(--dim);
+}
+.nm-line {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.nm-gate-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.nm-gate-label {
+  font-size: 11.5px;
+  color: var(--attention);
+  font-weight: 600;
+  margin-right: auto;
+}
+.nm-btn {
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.nm-btn:hover {
+  border-color: color-mix(in oklab, var(--idle) 50%, var(--border));
+}
+
+/* ---- action buttons ---- */
+.act {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.act:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--working) 45%, var(--border));
+}
+.act-danger:hover {
+  color: var(--danger);
+  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+}
+.act kbd {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+/* ---- transcript ---- */
+.xcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.msg {
+  display: flex;
+  gap: 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.msg-role {
+  flex: none;
+  width: 52px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding-top: 2px;
+}
+.msg-user .msg-role {
+  color: var(--working);
+}
+.msg-body {
+  min-width: 0;
+  color: var(--muted);
+}
+.msg-user .msg-body {
+  color: var(--fg);
+}
+.msg-tool .msg-body {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.compose {
+  display: flex;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-2);
+}
+.compose textarea {
+  flex: 1;
+  min-height: 40px;
+  resize: vertical;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  outline: none;
+}
+.compose textarea::placeholder {
+  color: var(--dim);
+}
+.send-btn {
+  align-self: flex-end;
+  padding: 5px 13px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #06121f;
+  background: var(--working);
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+}

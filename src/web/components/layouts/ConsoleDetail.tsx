@@ -180,6 +180,7 @@ export function ConsoleDetail({
               agent={session.agent}
               canSend={canSend}
               onReplyBox={setHasReply}
+              resetNonce={view.resetNonces[session.id] ?? 0}
             />
           </div>
         )}

@@ -74,6 +74,7 @@ export function SessionCard({
   onOpenReviews,
   onOpenDiff,
   onReset,
+  resetNonce = 0,
   selected = false,
   onSelect,
   expanded = false,
@@ -97,6 +98,10 @@ export function SessionCard({
   /** Opens the diff viewer: the whole branch, or one commit when given a sha. */
   onOpenDiff?: (commit?: string) => void;
   onReset?: () => void;
+  /** Bumped each time this session is reset, so the reply box remounts and drops the
+   *  text the reset discarded (it's an uncontrolled box; clearing the draft map alone
+   *  wouldn't empty one that's open). */
+  resetNonce?: number;
   selected?: boolean;
   onSelect?: () => void;
   expanded?: boolean;
@@ -418,6 +423,7 @@ export function SessionCard({
               agent={session.agent}
               canSend={canSend}
               onReplyBox={setHasReply}
+              resetNonce={resetNonce}
             />
           )}
         </div>

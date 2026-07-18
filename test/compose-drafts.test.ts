@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   clearDraft,
+  dropMessageDrafts,
   dropSessionDrafts,
   readDraft,
   resetDrafts,
@@ -123,6 +124,47 @@ test("dropping a session nobody typed into is a no-op, not a wipe", () => {
   writeDraft("s1", "reply", "keep me");
   dropSessionDrafts("never-typed-in");
   assert.equal(readDraft("s1", "reply"), "keep me");
+});
+
+// ---- reset forgets the message you were about to send ----
+
+test("a reset drops the send and reply drafts - they were about the wiped task", () => {
+  // A reset discards the branch and clears the agent's context, so a half-typed message
+  // aimed at that task is stale, the same way the work queue is. This is the map half of
+  // the fix; the reply box's remount key is the other half (an open box on screen).
+  writeDraft("s1", "send", "half a message");
+  writeDraft("s1", "reply", "half a reply");
+  dropMessageDrafts("s1");
+  assert.equal(readDraft("s1", "send"), "");
+  assert.equal(readDraft("s1", "reply"), "");
+});
+
+test("a reset keeps the queue add-box draft - it composes new work, not a stale reply", () => {
+  // The queue box drafts the NEXT thing to queue; the reset didn't discard that. Only the
+  // send/reply boxes, which speak to the task the reset threw away, get forgotten.
+  writeDraft("s1", "queue", "queue this next");
+  dropMessageDrafts("s1");
+  assert.equal(readDraft("s1", "queue"), "queue this next");
+});
+
+test("resetting one session leaves another session's message drafts alone", () => {
+  // The reset names one session; a neighbour's unsent reply is none of its business.
+  writeDraft("s1", "reply", "gets wiped");
+  writeDraft("s2", "reply", "keep me");
+  dropMessageDrafts("s1");
+  assert.equal(readDraft("s1", "reply"), "");
+  assert.equal(readDraft("s2", "reply"), "keep me");
+});
+
+test("after a reset the reply box re-hydrates empty, not to the wiped text", () => {
+  // The remount (its key is the session's reset nonce) re-reads the draft; with the draft
+  // dropped, static markup - which IS a remount - must carry no trace of the old reply.
+  writeDraft("s1", "reply", "text from before the reset");
+  dropMessageDrafts("s1");
+  const html = renderToStaticMarkup(
+    createElement(TranscriptPanel, { sessionId: "s1", agent: "claude", canSend: true }),
+  );
+  assert.ok(!html.includes("text from before the reset"), html);
 });
 
 // ---- the boxes, re-mounting ----

@@ -12,9 +12,13 @@ import { api, fetchResetPreview } from "../lib/api.ts";
  */
 export function ResetModal({
   session,
+  onReset,
   onClose,
 }: {
   session: Session;
+  /** Fired once the reset succeeds (before the modal closes) so the app can retire
+   *  the session's client-side state - its parked send / reply drafts. */
+  onReset?: () => void;
   onClose: () => void;
 }): React.JSX.Element {
   const [preview, setPreview] = useState<ResetPreview | null>(null);
@@ -56,8 +60,10 @@ export function ResetModal({
     setError(null);
     const r = await api.reset(session.id, true);
     setBusy(false);
-    if (r.ok) onClose();
-    else setError(r.error ?? "reset failed");
+    if (r.ok) {
+      onReset?.();
+      onClose();
+    } else setError(r.error ?? "reset failed");
   }
 
   return (

@@ -25,6 +25,9 @@ export interface SessionViewProps {
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
   onReset: (id: string) => void;
+  /** Per-session counter bumped on each reset, so a card can remount its (uncontrolled)
+   *  reply box and clear the text a reset discarded. Absent id means never reset (0). */
+  resetNonces: Record<string, number>;
   registerEl: (id: string, el: HTMLElement | null) => void;
   registerActions: (id: string, handle: ActionBarHandle | null) => void;
   renamingId: string | null;
@@ -53,6 +56,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onOpenReviews: () => p.onOpenReviews(s.id),
     onOpenDiff: (commit?: string) => p.onOpenDiff(s.id, commit),
     onReset: () => p.onReset(s.id),
+    resetNonce: p.resetNonces[s.id] ?? 0,
     registerEl: p.registerEl,
     registerActions: p.registerActions,
     renaming: p.renamingId === s.id,

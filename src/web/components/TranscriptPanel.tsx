@@ -36,11 +36,20 @@ export function TranscriptPanel({
   agent,
   canSend,
   onReplyBox,
+  resetNonce = 0,
   ref,
 }: {
   sessionId: string;
   agent: AgentType;
   canSend: boolean;
+  /**
+   * Bumped whenever this session is reset. The reply box is uncontrolled - its text
+   * lives in the draft map, re-read only on mount - so a reset that clears the draft
+   * wouldn't empty a box that's open on screen. Keying the textarea on this remounts
+   * it, re-hydrating from the (now-empty) draft, so reset visibly clears the reply the
+   * same way it clears the queue.
+   */
+  resetNonce?: number;
   /**
    * Whether this panel is currently rendering a reply box, reported as it changes.
    * The card's send box may only be open when there is none, and whether there is one
@@ -208,6 +217,9 @@ export function TranscriptPanel({
           <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
           <div className="compose-row">
             <textarea
+              // Remount on reset so an open box drops the text the reset discarded;
+              // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.
+              key={resetNonce}
               ref={inputRef}
               className="transcript-input"
               placeholder={

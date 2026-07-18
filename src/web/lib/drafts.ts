@@ -63,6 +63,23 @@ export function clearDraft(sessionId: string, kind: DraftKind): void {
 }
 
 /**
+ * Forget this session's unsent message text - the send box and the transcript reply -
+ * because it was just reset.
+ *
+ * A reset discards the task those messages were about (the branch is wiped and the
+ * agent's context cleared), so text still parked for it is stale - the same reason the
+ * reset clears the work queue. Deliberately leaves the "queue" add-box draft: that box
+ * composes NEW work to queue, not a reply to the task that was thrown away.
+ *
+ * Distinct from `clearDraft`, which a send calls for one delivered box, and from
+ * `dropSessionDrafts`, which wipes ALL of a departed session's boxes.
+ */
+export function dropMessageDrafts(sessionId: string): void {
+  clearDraft(sessionId, "send");
+  clearDraft(sessionId, "reply");
+}
+
+/**
  * Forget every box on one session, because that session is gone for good.
  *
  * Without some collection the map is a slow leak in a tab left open for days, and

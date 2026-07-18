@@ -583,10 +583,14 @@ card, and **Cancel** / <kbd>Esc</kbd> on the send box. Glance at the grid mid-se
 come back - your text is still there, exactly as the [dispatch form](#dispatch-an-agent)
 treats a half-written task.
 
-A draft is forgotten only on **successful delivery**: a send that lands for the reply and
-send boxes, an **Add** that lands for the queue box. A send that *fails* deliberately keeps
-your text - it's all you have and you're about to retry it. Drafts are per session and never
-bleed from one card into another.
+A draft is forgotten on **successful delivery**: a send that lands for the reply and
+send boxes, an **Add** that lands for the queue box. **Resetting the session** also forgets
+the reply and send drafts - a reset discards the task those boxes were replying to, so their
+half-written text goes with it, and an open reply box empties on the spot rather than keeping
+stale text behind the closing modal. The **queue add box is kept** through a reset, since it
+composes new work rather than a reply to the discarded task. A send that *fails* deliberately
+keeps your text - it's all you have and you're about to retry it. Drafts are per session and
+never bleed from one card into another.
 
 Two things worth knowing:
 

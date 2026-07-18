@@ -5209,16 +5209,24 @@ kbd {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 14px;
   padding: 16px 20px 20px;
   overflow-x: auto;
+}
+/* Inter-column spacing lives on the columns, not the flex `gap`: the always-rendered
+   zero-width detail track would otherwise draw a phantom gap after the last column and
+   skew the overview's right edge. */
+.board-col + .board-col {
+  margin-left: 14px;
 }
 /* Focused (a session open): the shell goes edge-to-edge like the console, and the
    tracks below rearrange into rail + detail. */
 .board:not([data-focus="none"]) {
-  gap: 0;
   padding: 0;
   overflow-x: hidden;
+}
+/* Collapsed columns and the rail sit flush against the detail pane. */
+.board:not([data-focus="none"]) .board-col + .board-col {
+  margin-left: 0;
 }
 .board-col {
   display: flex;
@@ -5242,7 +5250,6 @@ kbd {
   min-width: 0;
   opacity: 0;
   border-width: 0;
-  pointer-events: none;
 }
 /* The clicked column, now a console rail pinned to the left: a fixed width, flush
    rows, and only the divider border the console rail carries. */
@@ -5250,7 +5257,6 @@ kbd {
   flex-grow: 0;
   min-width: 320px;
   opacity: 1;
-  pointer-events: auto;
   border-radius: 0;
   border-color: transparent;
   border-right: 1px solid var(--border-soft);
@@ -5301,9 +5307,7 @@ kbd {
 }
 @media (prefers-reduced-motion: no-preference) {
   .board {
-    transition:
-      gap 0.34s ease,
-      padding 0.34s ease;
+    transition: padding 0.34s ease;
   }
   .board-col,
   .board-detail {
@@ -5311,7 +5315,8 @@ kbd {
       flex-grow 0.34s ease,
       min-width 0.34s ease,
       opacity 0.26s ease,
-      border-width 0.34s ease;
+      border-width 0.34s ease,
+      margin-left 0.34s ease;
   }
 }
 .board-col.tone-attention {
@@ -5407,12 +5412,6 @@ kbd {
   box-shadow:
     var(--shadow),
     0 0 20px color-mix(in oklab, var(--attention) 13%, transparent);
-}
-.tile.open {
-  border-color: color-mix(in oklab, var(--select) 70%, var(--border));
-  box-shadow:
-    var(--shadow),
-    0 0 0 2px color-mix(in oklab, var(--select) 55%, transparent);
 }
 .tile.tone-exited {
   opacity: 0.62;

@@ -39,7 +39,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
           <section
             key={g.tone}
             className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}`}
-            aria-hidden={focusedTone != null && !isRail}
+            inert={focusedTone != null && !isRail}
           >
             <header className="board-col-head">
               {isRail && (

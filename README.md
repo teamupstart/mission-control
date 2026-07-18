@@ -696,7 +696,7 @@ without reaching for the mouse. Every shortcut works in every layout:
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box | Anywhere |
-| <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded) | Selected session |
+| <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded; expanding drops the cursor in its reply box, ready to type) | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |

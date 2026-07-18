@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   computeRuntimeMeta,
+  computeSessionActivity,
   latestEffortLevel,
   latestTodoNarration,
   parseLines,
@@ -345,4 +346,75 @@ test("resolveTranscriptPath ignores non-claude, id-less, and cwd-less sessions",
   assert.equal(resolveTranscriptPath(session({ agent: "codex" }), root), null);
   assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);
   assert.equal(resolveTranscriptPath(session({ cwd: null }), root), null);
+});
+
+// ---- computeSessionActivity (hook-free idle/working) -----------------------
+
+/** A main-chain record with the given role/stop_reason/timestamp. */
+const rec = (over: Record<string, unknown>): string =>
+  JSON.stringify({
+    type: over.role ?? "assistant",
+    isSidechain: false,
+    timestamp: "2026-07-11T02:00:00.000Z",
+    ...over,
+    message: {
+      role: over.role ?? "assistant",
+      stop_reason: over.stop_reason ?? null,
+      content: over.content ?? [{ type: "text", text: "x" }],
+    },
+  });
+
+test("computeSessionActivity reads idle off a cleanly-ended assistant turn", () => {
+  const a = computeSessionActivity([
+    rec({ role: "user", content: "go" }),
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:05:00.000Z" }),
+  ]);
+  assert.deepEqual(a, { state: "idle", lastActivity: Date.parse("2026-07-11T02:05:00.000Z") });
+});
+
+test("computeSessionActivity reads working off a pending tool call", () => {
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn" }),
+    rec({
+      role: "assistant",
+      stop_reason: "tool_use",
+      timestamp: "2026-07-11T02:06:00.000Z",
+      content: [{ type: "tool_use", name: "Bash", input: {} }],
+    }),
+  ]);
+  assert.equal(a?.state, "working");
+  assert.equal(a?.lastActivity, Date.parse("2026-07-11T02:06:00.000Z"));
+});
+
+test("computeSessionActivity reads working off an unanswered tool result", () => {
+  // The interrupted-mid-turn tail (a /clear right after a tool returned): the last
+  // main-chain record is a user tool_result with no assistant continuation. Ambiguous
+  // by content, so it falls to `working` - the settle-gap age is what proves it idle.
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "tool_use" }),
+    rec({ role: "user", content: [{ type: "tool_result", content: "ok" }] }),
+  ]);
+  assert.equal(a?.state, "working");
+});
+
+test("computeSessionActivity scans newest-first and skips sidechains + undatable tails", () => {
+  const a = computeSessionActivity([
+    rec({ role: "assistant", stop_reason: "end_turn", timestamp: "2026-07-11T02:01:00.000Z" }),
+    rec({ role: "assistant", isSidechain: true, stop_reason: "tool_use" }), // subagent noise
+    JSON.stringify({ type: "system", timestamp: "2026-07-11T02:09:00.000Z" }), // no role
+    JSON.stringify({ type: "bridge-session" }), // no timestamp, no role
+  ]);
+  // The newest datable main-chain record is the end_turn assistant - the sidechain and
+  // the role-less system/bridge tails are skipped.
+  assert.deepEqual(a, { state: "idle", lastActivity: Date.parse("2026-07-11T02:01:00.000Z") });
+});
+
+test("computeSessionActivity returns null when nothing datable is found", () => {
+  assert.equal(computeSessionActivity([]), null);
+  assert.equal(computeSessionActivity(["", "not json", "{}"]), null);
+  assert.equal(
+    computeSessionActivity([rec({ role: "assistant", stop_reason: "end_turn", timestamp: 42 })]),
+    null,
+    "a non-string timestamp is not datable",
+  );
 });

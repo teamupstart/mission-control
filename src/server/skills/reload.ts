@@ -146,9 +146,11 @@ export function reloadNeeded(
 
   // `settledIdle` and NOT `reportBucket(s) === "idle"`: idle is that function's
   // catch-all fallthrough, so it's true for UNINSTRUMENTED sessions, where idleness is
-  // a default rather than a report. `settledIdle` insists the state is hook-sourced and
-  // CURRENT, which is the only version of "idle" worth typing into a live pane on - and
-  // it's the one transient gate here, which is why it isn't in `reloadOwed`.
+  // a default rather than a report. `settledIdle` insists on `state === "idle"`, a claim
+  // only ever made by a real source - a fresh hook OR the transcript-derived passive
+  // state - so it holds for a healthy session whose hook merely lapsed (the transcript
+  // still proves it parked) while refusing the `working` rebuild default. It's the one
+  // transient gate here, which is why it isn't in `reloadOwed`.
   return settledIdle(s, now, settleMs);
 }
 

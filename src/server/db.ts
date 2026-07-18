@@ -1132,6 +1132,37 @@ export function deleteQueue(noteKey: string): void {
 }
 
 /**
+ * Clear a whole queue on demand - every item AND the row - in ONE transaction.
+ *
+ * The bulk clear a session RESET needs, and deliberately unlike its two neighbours:
+ * `deleteQueue` drops only the row, and `pruneDeadQueues` only ever collects a queue
+ * whose session is already gone AND whose items are all terminal. This drops OPEN and
+ * even IN-FLIGHT items too, because a reset is the explicit "discard this task" action
+ * - the branch the items targeted is gone and the agent's context is /cleared, so
+ * there is nothing left to run them against. (A bare /clear is the opposite case: its
+ * backlog survives, orphaned, for the re-attach affordance.)
+ *
+ * All-or-nothing, like `pruneDeadQueues`: a row outliving its items is a card claiming
+ * a batch it can't show, and items outliving their row are invisible to every reader
+ * here (all of which start from the row). Returns true when anything was cleared.
+ */
+export function clearQueue(noteKey: string): boolean {
+  const db = openDb();
+  db.exec("BEGIN");
+  try {
+    const items = db.prepare(`DELETE FROM foreman_queue_items WHERE note_key = ?`).run(noteKey);
+    const queue = db.prepare(`DELETE FROM foreman_queues WHERE note_key = ?`).run(noteKey);
+    db.exec("COMMIT");
+    return Number(items.changes) + Number(queue.changes) > 0;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
+}
+
+/**
  * Move a whole queue onto a new note key, in ONE transaction: write the target
  * row, re-key every item, drop the source row.
  *

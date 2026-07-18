@@ -82,26 +82,26 @@ export interface QueueTickInput {
 /**
  * True when a session is genuinely parked and its work has settled.
  *
- * `instrumented` is load-bearing, not decoration: `bucket === 'idle'` ALSO means
- * "uninstrumented" (it's the catch-all return in reportBucket), so gating on the
- * bucket alone would fire an entire queue into a session whose idleness is a
- * default rather than a report.
+ * The gate is `state === "idle"`, and that is enough on its own because `state` is
+ * only ever `idle` from a REAL source - a fresh hook overlay, or the transcript-
+ * derived passive state. The base rebuild default is `working`, so nothing sets
+ * `idle` without evidence: an `idle` here is always a claim someone made, never an
+ * absence of data. (This is the distinction `reportBucket` can't make, where `idle`
+ * is also its catch-all for an uninstrumented session - so don't be tempted to gate
+ * this on the bucket instead.)
  *
- * And `instrumented` is the RIGHT flag here, where step 3 wants `hooksSeen` - the
- * two are not interchangeable and this is the case that shows why. The question
- * here is "is this session's `state` hook-sourced and CURRENT?", which is exactly
- * the overlay's freshness window: a stale session rebuilds with the base default
- * (`working`), so its `idle` is not a claim anyone made. Step 3 asks a different
- * question - "do hooks exist at all?" - and a freshness window is a terrible answer
- * to that one. The failure modes are opposite, too: being conservative here merely
- * makes a quiet queue WAIT, which is why this one is safe to leave strict.
+ * We used to also require `instrumented` (a fresh hook within 30 min). That was
+ * redundant while hooks were the only source of `idle`, and became WRONG once the
+ * transcript became a second source: it gated out exactly the hook-free idle this
+ * predicate now exists to honour, stranding the queue of any session whose hooks
+ * lapsed or whose daemon had just restarted. `instrumented` stays a real field for
+ * the UI badge and `reportBucket`; it is simply not what settled-idle turns on.
  *
  * The `settleMs` age absorbs hook reordering (hooks are independent HTTP posts, so
  * a PostToolUse can land after a Stop and briefly un-idle the session) and covers
  * the pause between turns of a multi-turn flow.
  */
 export function settledIdle(s: Session, now: number, settleMs: number): boolean {
-  if (!s.instrumented) return false;
   if (s.state !== "idle") return false;
   const since = s.lastActivity ?? s.firstSeen;
   return now - since >= settleMs;

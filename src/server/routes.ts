@@ -12,6 +12,7 @@ import {
   ForemanConfigPatchSchema,
   ForemanHeartbeatSchema,
   GateReplySchema,
+  HarnessesConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -55,6 +56,7 @@ import {
   releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -945,6 +947,14 @@ export function buildApp(
     const synced = applySkillsConfig(parsed.data);
     if (synced.refused.length > 0) return c.json({ error: synced.refused.join("; ") }, 409);
     return c.json(skillsView());
+  });
+
+  // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
+  app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));
+  app.put("/api/harnesses/config", async (c) => {
+    const parsed = await parseBody(c, HarnessesConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setHarnessesConfig(parsed.data));
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

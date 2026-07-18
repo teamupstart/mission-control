@@ -400,6 +400,37 @@ export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, 
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 
+// ---- Harnesses (dispatch-time defaults for launched sessions) ----
+
+/**
+ * Defaults the harness applies to the sessions IT dispatches - never to the
+ * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
+ * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
+ *
+ * The scoping is the whole contract: `autoModeOnDispatch` drives a session to `auto`
+ * permission mode only on the dispatch path (see `Dispatcher.applyAutoMode`), so a
+ * session the operator started themselves keeps whatever mode they chose. Ships off
+ * because flipping a session into `auto` lets it act without stopping for prompts,
+ * which is a posture the operator opts into, not a default.
+ */
+export const HarnessesConfigSchema = z.object({
+  /**
+   * When on, every Claude session dispatched from Mission Control is driven to `auto`
+   * permission mode once it's ready, before its first prompt lands - so it works
+   * through its task without pausing on permission prompts. Codex has no permission
+   * mode, so it's untouched today; the setting is worded to admit codex support later.
+   */
+  autoModeOnDispatch: z.boolean().default(false),
+});
+export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
+
+/** Partial update of the harnesses config from the dashboard. */
+export const HarnessesConfigPatchSchema = HarnessesConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
 // ---- Foreman session work queues ----
 
 /**

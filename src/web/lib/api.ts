@@ -10,6 +10,8 @@ import type {
 import type {
   ForemanConfig,
   ForemanConfigPatch,
+  HarnessesConfig,
+  HarnessesConfigPatch,
   SetNote,
   SkillsConfigPatch,
 } from "@shared/protocol.ts";
@@ -35,6 +37,8 @@ async function fetchJson<T>(path: string): Promise<T | null> {
 
 export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/config");
 export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
+/** Dispatch-time defaults the harness applies to the sessions it launches. */
+export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
 /** The skills catalog, what's on, and how many sessions are behind - one read. */
 export const fetchSkills = () => fetchJson<SkillsView>("/api/skills");
 
@@ -229,6 +233,9 @@ export const api = {
   // --- Foreman (auto-responder) ---
   setForemanConfig: (cfg: ForemanConfigPatch) => put(`/api/foreman/config`, cfg),
   setSkillsConfig: (cfg: SkillsConfigPatch) => put(`/api/skills/config`, cfg),
+
+  // --- Harnesses (dispatch-time defaults) ---
+  setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
   setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
 
   // --- Foreman session work queues ---

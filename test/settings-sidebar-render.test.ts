@@ -36,6 +36,7 @@ function render(initialCategory?: SettingsCategoryId): string {
 const KEYBOARD_ONLY = /Anywhere/; // a keyboard action group label
 const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
 const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
+const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -76,9 +77,17 @@ test("the layout picker offers every layout, with the live one checked", () => {
 });
 
 test("the layout panel is absent from every other category", () => {
-  for (const id of ["keyboard", "skills", "foreman"] as const) {
+  for (const id of ["keyboard", "skills", "harnesses", "foreman"] as const) {
     assert.doesNotMatch(render(id), LAYOUT_ONLY, `layout picker leaked into ${id}`);
   }
+});
+
+test("Harnesses is a category of its own: its panel shows, the others don't", () => {
+  const html = render("harnesses");
+  assert.match(html, HARNESSES_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, SKILLS_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⚙<\/span>Harnesses/);
 });
 
 test("initialCategory swaps the panel: skills shows, keyboard does not", () => {

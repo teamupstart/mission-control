@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import type { Session, Task, WorktreeProvider } from "@shared/types.ts";
+import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
-import { injectPrompt } from "./actions.ts";
+import { injectPrompt, setPermissionMode } from "./actions.ts";
+import { getHarnessesConfig } from "./harnesses.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
@@ -77,6 +78,11 @@ export class Dispatcher {
       const { session, instrumented } = await this.awaitReady(wt.path, discovered);
       if (await this.abortIfSettled(taskId)) return;
 
+      // Set the mode BEFORE the first prompt, so the task runs in it from the start -
+      // see `applyAutoMode`.
+      await this.applyAutoMode(session, task.agent);
+      if (await this.abortIfSettled(taskId)) return;
+
       await this.deliverIntent(session, task.intent, wt.path, instrumented);
 
       if (await this.abortIfSettled(taskId)) return;
@@ -147,6 +153,34 @@ export class Dispatcher {
       session: this.registry.getSession(discovered.id) ?? discovered,
       instrumented: false,
     };
+  }
+
+  /**
+   * When the "auto mode on dispatch" harness setting is on, drive a freshly-ready
+   * Claude session to `auto` before its first prompt lands, so the whole task runs
+   * autonomously instead of pausing on permission prompts.
+   *
+   * Scoped to the dispatch path on purpose: this only ever touches sessions the
+   * harness launched, never one the operator started themselves and the harness
+   * merely discovered - the contract the setting promises.
+   *
+   * Best-effort by design. `setPermissionMode` walks the Shift+Tab cycle, which can
+   * legitimately fall short - `auto` isn't enabled for every account, and a dialog
+   * over the mode line makes it unreadable (though a fresh, pre-prompt Claude has
+   * neither) - and none of that should sink a dispatch that otherwise launched
+   * cleanly: the agent simply stays in whatever mode it booted in. Codex has no
+   * permission mode, so it's skipped entirely (the setting admits codex later).
+   */
+  private async applyAutoMode(session: Session, agent: AgentType): Promise<void> {
+    if (agent !== "claude") return;
+    if (!getHarnessesConfig().autoModeOnDispatch) return;
+    const r = await setPermissionMode(session, "auto");
+    if (!r.ok) {
+      console.warn(
+        `[mission-control] could not put dispatched session ${session.id} into auto mode: ` +
+          `${r.error ?? "unknown"} - it will run in its default mode`,
+      );
+    }
   }
 
   /**

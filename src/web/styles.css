@@ -3960,6 +3960,19 @@ kbd {
   cursor: default;
 }
 
+/* ---- Harnesses (dispatch-time defaults) ----
+   Reuses the skills panel's row shape: a `.kb-row` with a `.skill-switch` control.
+   Only the label's badge alignment and the blurb spacing are section-specific. */
+.harnesses-blurb {
+  margin: 0 0 12px;
+}
+.harnesses-row .kb-row-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
 /* ---- Foreman (auto-responder) ---- */
 .foremanbar {
   position: relative;

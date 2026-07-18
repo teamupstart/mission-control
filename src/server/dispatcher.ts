@@ -450,11 +450,13 @@ export function slugify(title: string): string {
  *
  * Unlike `slugify` (which the git branch needs, so it's lowercase and hyphenated), this
  * keeps the title's spaces and capitals so the card reads like a heading rather than a
- * slug. It only strips what a tmux name genuinely can't hold - the same rules
- * `validateSessionName` enforces for a manual rename: control characters, the `.` and
- * `:` that separate a tmux target (`session:window.pane`), and a leading `$` (tmux's
- * session-ID sigil). Focus / kill / teardown all pass this as a single argv, so interior
- * spaces are safe.
+ * slug. It only strips what a tmux name genuinely can't hold: control characters and the
+ * `.` and `:` that separate a tmux target (`session:window.pane`), plus any leading run
+ * of the target-spec sigils `=` (exact-match), `$` (session ID) and `{` (special token).
+ * A name that led with one of those would make `-t` targets - `has-session`,
+ * `kill-session`, the `name:0.0` split/select - resolve to the wrong session or to none.
+ * That last guard reaches slightly past `validateSessionName`, which bars only a leading
+ * `$`. Focus / kill / teardown all pass this as a single argv, so interior spaces are safe.
  */
 export function sessionLabel(title: string): string {
   const out = title
@@ -462,7 +464,7 @@ export function sessionLabel(title: string): string {
     .replace(/[.:]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/^\$+/, "")
+    .replace(/^[=${]+/, "")
     .trim()
     .slice(0, 60)
     .trim();

@@ -23,6 +23,12 @@ test("sessionLabel keeps a title readable but tmux-safe", () => {
   assert.equal(sessionLabel("Fix bug: retry.now"), "Fix bug retry now");
   // A leading '$' is tmux's session-ID sigil, so it can't lead the name.
   assert.equal(sessionLabel("$HOME cleanup"), "HOME cleanup");
+  // Nor can any other target-spec sigil lead it: '=' (exact-match), '$' (session ID) and
+  // '{' (special token) would each make a `-t` target resolve to the wrong session or none.
+  for (const title of ["=Foo", "$bar", "{last}", "={$mixed"]) {
+    assert.equal(/^[=${]/.test(sessionLabel(title)), false);
+  }
+  assert.equal(sessionLabel("=Foo"), "Foo");
   // Control characters (a pasted tab / newline) collapse to spaces.
   assert.equal(sessionLabel("a\tb\nc"), "a b c");
   // Nothing usable falls back rather than spawning an unnamed session.

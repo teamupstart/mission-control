@@ -119,6 +119,16 @@ export function TranscriptPanel({
   attachRef.current = attachments;
   useEffect(() => () => revokeAttachments(attachRef.current), []);
 
+  // A reset discards the task, so the reply's pending images go with its text: the
+  // textarea's remount drops the words, this drops the chips (and frees their previews).
+  // Read through the ref so it sees the list as it stands at reset, and depend on the
+  // nonce alone so an ordinary drop can't wipe itself. On the first mount the list is
+  // empty, so both calls no-op.
+  useEffect(() => {
+    revokeAttachments(attachRef.current);
+    setAttachments([]);
+  }, [resetNonce]);
+
   useEffect(() => {
     setMessages([]);
     setStatus("connecting");

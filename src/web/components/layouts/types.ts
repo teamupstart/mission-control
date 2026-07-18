@@ -17,7 +17,7 @@ export interface SessionViewProps {
   gateAlerts: ReadonlySet<string>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  /** Drop the selection (closes the board's drawer, empties the console's detail). */
+  /** Drop the selection (reverses the board's drill-in, empties the console's detail). */
   onDeselect: () => void;
   /** Grid focus mode. Meaningless where the detail is always open (console, board). */
   expandedId: string | null;
@@ -38,9 +38,9 @@ export interface SessionViewProps {
 }
 
 /**
- * The props for one session's card, spelled once. Views spread this and override
- * only what their shape demands - the console and board pass `expanded` because
- * their detail pane is, by definition, always the expanded card.
+ * The props for one session's card, spelled once. Only the grid (Cards) renders a
+ * SessionCard now, so it's the sole caller - the console and board drill into a bespoke
+ * ConsoleDetail built from the same leaf pieces instead.
  */
 export function cardProps(p: SessionViewProps, s: Session) {
   return {

@@ -5198,24 +5198,121 @@ kbd {
   background: none;
 }
 
-/* ---- board: a column per state, detail in a drawer ---- */
+/* ---- board: a column per state, drilling into the console ----
+   Flex, not grid, so the drill-in can animate: every column plus a trailing detail
+   track is a flex item, and opening a session morphs the board into the console by
+   animating each item's width. The columns either side of the focused one collapse to
+   nothing, the focused one narrows to a rail, and the detail grows to fill. Only
+   flex-grow / min-width / opacity move (all numbers or px), so it interpolates cleanly
+   both ways with no measuring - see `.board:not([data-focus="none"])` below. */
 .board {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(250px, 1fr);
+  display: flex;
   gap: 14px;
   padding: 16px 20px 20px;
   overflow-x: auto;
+}
+/* Focused (a session open): the shell goes edge-to-edge like the console, and the
+   tracks below rearrange into rail + detail. */
+.board:not([data-focus="none"]) {
+  gap: 0;
+  padding: 0;
+  overflow-x: hidden;
 }
 .board-col {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* One equal track per column in the overview; the min keeps columns readable and
+     lets the board scroll sideways rather than crushing them, exactly as before. */
+  flex-grow: 1;
+  flex-shrink: 1;
+  flex-basis: 0;
+  min-width: 250px;
+  overflow: hidden;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius);
   background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+/* Non-focused columns fold away to nothing - border width included, so no 1px sliver
+   survives to hold a gap between the rail and the detail. */
+.board:not([data-focus="none"]) .board-col {
+  flex-grow: 0;
+  min-width: 0;
+  opacity: 0;
+  border-width: 0;
+  pointer-events: none;
+}
+/* The clicked column, now a console rail pinned to the left: a fixed width, flush
+   rows, and only the divider border the console rail carries. */
+.board:not([data-focus="none"]) .board-col.is-rail {
+  flex-grow: 0;
+  min-width: 320px;
+  opacity: 1;
+  pointer-events: auto;
+  border-radius: 0;
+  border-color: transparent;
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in oklab, var(--bg-2) 55%, transparent);
+}
+.board-col.is-rail .board-col-body {
+  gap: 0;
+  padding: 0;
+}
+/* Back to the overview - the rail's counterpart to the console having no "close". */
+.board-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 2px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.board-back:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel);
+}
+/* The detail track: collapsed to nothing until a session is open, then grows to fill.
+   Kept in the tree across the morph so it animates both ways; hosts the same
+   ConsoleDetail the console layout does. */
+.board-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-grow: 0;
+  flex-shrink: 1;
+  flex-basis: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.board:not([data-focus="none"]) .board-detail {
+  flex-grow: 1;
+  min-width: 440px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .board {
+    transition:
+      gap 0.34s ease,
+      padding 0.34s ease;
+  }
+  .board-col,
+  .board-detail {
+    transition:
+      flex-grow 0.34s ease,
+      min-width 0.34s ease,
+      opacity 0.26s ease,
+      border-width 0.34s ease;
+  }
 }
 .board-col.tone-attention {
   border-color: color-mix(in oklab, var(--attention) 32%, var(--border));
@@ -5436,66 +5533,13 @@ kbd {
   white-space: nowrap;
 }
 
-/* ---- board drawer ---- */
-.board-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-  background: rgba(4, 6, 9, 0.5);
-  backdrop-filter: blur(2px);
-}
-.board-drawer {
-  position: fixed;
-  z-index: 31;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(620px, 94vw);
-  display: flex;
-  flex-direction: column;
-  background: linear-gradient(var(--bg-2), var(--bg));
-  border-left: 1px solid var(--border);
-  box-shadow: -24px 0 60px rgba(0, 0, 0, 0.5);
-  animation: drawer-in 0.16s ease;
-}
-@keyframes drawer-in {
-  from {
-    transform: translateX(20px);
-    opacity: 0;
-  }
-}
-.board-drawer-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: none;
-  padding: 12px 14px 10px 18px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.board-drawer-title {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.board-drawer-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  padding: 12px 14px 14px;
-}
-
 /* ---- hosting an expanded card inside a pane ----
    `.card.expanded` is sized for focus mode in the grid: it spans every column, jumps to
    the top of the grid, and measures itself against the viewport minus the topbar and the
-   command bar. Inside a detail pane or a drawer every one of those is wrong - the pane
-   already has a size, and the card's job is simply to fill it. */
-.app-console .card.expanded,
-.app-board .card.expanded {
+   command bar. Inside the console's detail pane every one of those is wrong - the pane
+   already has a size, and the card's job is simply to fill it. (The board no longer hosts
+   a card at all: it drills into the same ConsoleDetail the console opens.) */
+.app-console .card.expanded {
   grid-column: auto;
   order: 0;
   flex: 1;
@@ -5511,26 +5555,13 @@ kbd {
    NOTHING rather than refusing. The no-mistakes fix log came out as a 3px sliver of a
    32px chip on a card with 265px of conversation below it.
 
-   Scoped to these two layouts on purpose. The grid's focus mode is a different
-   bargain, tuned against a full-width card and a viewport-derived height (see
-   `.card.expanded`), and it hits its limits from the other direction: forbidding the
-   shrink there takes the compose box from 6px inside the card to 11px below it. This
-   pane sizes the card itself, so the rows can keep their height honestly. */
-.app-console .card.expanded > *:not(.card-panels):not(.foreman-note),
-.app-board .card.expanded > *:not(.card-panels):not(.foreman-note) {
+   Scoped to the console on purpose. The grid's focus mode is a different bargain, tuned
+   against a full-width card and a viewport-derived height (see `.card.expanded`), and it
+   hits its limits from the other direction: forbidding the shrink there takes the compose
+   box from 6px inside the card to 11px below it. This pane sizes the card itself, so the
+   rows can keep their height honestly. */
+.app-console .card.expanded > *:not(.card-panels):not(.foreman-note) {
   flex-shrink: 0;
-}
-/* The drawer is ~620px. The expanded card puts the queue and the conversation side by
-   side above an 820px VIEWPORT - which the viewport is, while the container isn't - so
-   they'd share 620px and neither would be writable in. Stack them back up. */
-.app-board .card.expanded .card-panels {
-  flex-direction: column;
-}
-.app-board .card.expanded .card-panels > .work-queue {
-  flex: 0 0 auto;
-}
-.app-board .card.expanded .card-panels > .work-queue.wq-collapsed {
-  align-self: stretch;
 }
 
 /* ---- settings: layout picker ---- */

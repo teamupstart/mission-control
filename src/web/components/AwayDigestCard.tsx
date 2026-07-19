@@ -48,9 +48,13 @@ export function AwayDigestCard({
         <div className="away-digest-body">
           {/* The model's prose when it landed; the deterministic rollup is always
               there beneath it, so a missing or logged-out claude costs the wording,
-              never the summary. */}
+              never the summary. Without the prose the rollup IS the summary, so it
+              is promoted out of its micro-label styling rather than left as a
+              caption with nothing to caption. */}
           {digest.narrative && <p className="away-digest-narrative">{digest.narrative}</p>}
-          <p className="away-digest-rollup">{digest.rollup}</p>
+          <p className={`away-digest-rollup${digest.narrative ? "" : " is-lead"}`}>
+            {digest.rollup}
+          </p>
 
           <ul className="away-digest-list">
             {digest.lines.map((line, i) => (

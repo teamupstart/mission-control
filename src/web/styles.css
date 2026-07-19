@@ -6113,6 +6113,15 @@ kbd {
   font-weight: 650;
   color: var(--muted);
 }
+/* No narrative (claude missing or logged out): the rollup carries the summary on
+   its own, so it reads as prose rather than as a caption for absent prose. */
+.away-digest-rollup.is-lead {
+  font-size: 13.5px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--text);
+}
 .away-digest-list {
   margin: 0;
   padding: 0;

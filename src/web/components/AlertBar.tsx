@@ -122,10 +122,17 @@ export function AlertBar({
             />
             Away mode
           </label>
+          {/* The promise "only things blocked on you get through" is only true if
+              anything can get through at all. With notifications off, away mode
+              cannot interrupt for a blocker - it can only hand you the digest when
+              you get back - and saying otherwise would be a claim the app does not
+              honour. */}
           <p className="alert-hint">
-            {isAway
-              ? "Only things blocked on you get through. Everything else is waiting in your digest."
-              : "Buffers the noise and only interrupts you for things that are blocked on you."}
+            {!isAway
+              ? "Buffers the noise and only interrupts you for things that are blocked on you."
+              : on || settings.sound
+                ? "Only things blocked on you get through. Everything else is waiting in your digest."
+                : "Nothing can reach you - notifications and sound are both off. You'll still get a digest when you're back."}
           </p>
           {isAway && away?.awaySince != null && (
             <p className="alert-hint">Away for {since(now - away.awaySince)}.</p>

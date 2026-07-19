@@ -38,7 +38,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import type { NomistakesRespond } from "@shared/protocol.ts";
-import { capturePaneText } from "./discovery/pane-mode.ts";
+import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";

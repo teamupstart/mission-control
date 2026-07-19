@@ -123,6 +123,13 @@ export function runInFlight(s: Session): boolean {
 export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
   if (s.pendingReviews > 0) return "needs-you";
+  // A menu on the screen is DIRECT evidence the session has stopped and cannot move
+  // until someone answers - and unlike the state checks below, it needs no hooks to see.
+  // That gap is the whole reason this is here: an uninstrumented session parked on a
+  // permission prompt has `state: "idle"` forever, so it reported as idle while being
+  // the single most blocked thing on the board. Read off the pane every poll and cleared
+  // the moment the menu closes, so nothing can get stuck here.
+  if (s.paneDialog) return "needs-you";
   if (gateParked(s, sessions)) return "needs-you";
   if (s.instrumented) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
@@ -138,6 +145,10 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
 /** A one-line reason a session needs you, or null when it doesn't. */
 export function needsYouReason(s: Session, sessions: Session[] = [s]): string | null {
   if (s.pendingReviews > 0) return s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review";
+  // Ahead of `awaiting_input`, which is the same fact reported more vaguely: when we can
+  // see the menu we can say how many ways out of it there are, and the count is what tells
+  // a permission prompt (2-3 rows) from a question worth opening the card for.
+  if (s.paneDialog) return `${s.paneDialog.options.length} options to pick from`;
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
   if (gateParked(s, sessions)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;

@@ -7,6 +7,7 @@ import { ModePicker } from "../ModePicker.tsx";
 import { NomistakesStrip } from "../NomistakesStrip.tsx";
 import { NomistakesFixLog } from "../NomistakesFixLog.tsx";
 import { ForemanNote } from "../ForemanNote.tsx";
+import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "../TranscriptPanel.tsx";
 import {
@@ -169,6 +170,9 @@ export function ConsoleDetail({
           <div className="detail-conv">
             <GoalLine session={session} />
             {session.activity && <p className="activity">{session.activity}</p>}
+            {session.paneDialog && (
+              <PaneDialogPrompt sessionId={session.id} dialog={session.paneDialog} />
+            )}
             {session.note && (
               <ForemanNote
                 session={session}
@@ -200,6 +204,7 @@ export function ConsoleDetail({
               sessionId={session.id}
               agent={session.agent}
               canSend={canSend}
+              dialogOpen={Boolean(session.paneDialog)}
               onReplyBox={setHasReply}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />

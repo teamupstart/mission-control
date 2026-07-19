@@ -47,6 +47,7 @@ export function TranscriptPanel({
   sessionId,
   agent,
   canSend,
+  dialogOpen = false,
   onReplyBox,
   resetNonce = 0,
   ref,
@@ -54,6 +55,17 @@ export function TranscriptPanel({
   sessionId: string;
   agent: AgentType;
   canSend: boolean;
+  /**
+   * Whether the session is parked on an option menu right now.
+   *
+   * Typing is CLOSED while one is up, and this is a correctness guard rather than a
+   * nicety: a dialog swallows pasted text entirely - nothing is focused to receive it -
+   * and the Enter that follows confirms whichever row was already highlighted. So a reply
+   * sent at a menu doesn't fail, it silently answers a question with the default and
+   * attributes it to the human (see `pane-dialog.ts`). The rows are offered as buttons
+   * just above this box; that is the only safe way to answer one.
+   */
+  dialogOpen?: boolean;
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -197,7 +209,10 @@ export function TranscriptPanel({
     // An image mid-upload has no path yet, and sending now would quietly leave it
     // out of the very prompt it was dropped on. The button says so; this guards the
     // Enter key, which doesn't.
-    if (drop.uploading || sending || (!text && ready.length === 0)) return;
+    // `dialogOpen` is re-checked here and not only on the disabled textarea, because the
+    // menu can open in the gap between reading the box and sending it. Everything else in
+    // this guard is a nuisance if it slips; this one silently answers a question.
+    if (dialogOpen || drop.uploading || sending || (!text && ready.length === 0)) return;
     setSending(true);
     const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
     setSending(false);
@@ -243,12 +258,14 @@ export function TranscriptPanel({
             ref={inputRef}
             className="transcript-input"
             placeholder={
-              canSend
-                ? "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
-                : "No pane to send to"
+              !canSend
+                ? "No pane to send to"
+                : dialogOpen
+                  ? "Waiting on a menu - pick an option above to answer it"
+                  : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
             }
             rows={2}
-            disabled={!canSend}
+            disabled={!canSend || dialogOpen}
             // Stays uncontrolled - that's why typing here has never re-rendered the
             // log above it, and a reply written against a streaming transcript can't
             // afford to start. `defaultValue` re-hydrates whatever the last mount was
@@ -273,7 +290,7 @@ export function TranscriptPanel({
           />
           <button
             className="btn btn-send"
-            disabled={!canSend || sending || drop.uploading}
+            disabled={!canSend || dialogOpen || sending || drop.uploading}
             onClick={() => void send()}
           >
             {drop.uploading ? "Uploading…" : "Send"}

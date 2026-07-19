@@ -256,3 +256,43 @@ test("optionRowMiss names how the screen failed, so each caller can word it", ()
   assert.equal(optionRowMiss(menu, { number: 9, label: "Yes, I trust this folder" }), "no-such-row");
   assert.equal(optionRowMiss(menu, { number: 2, label: "Yes, I trust this folder" }), "label-differs");
 });
+
+// The question and the per-row descriptions. Both are DISPLAY-only reads, added so the
+// dashboard can render a dialog the human can actually answer: `optionRowMiss` still
+// verifies a selection by label alone, so nothing below can widen what a click confirms.
+
+test("the question above the rows is read, so the dashboard shows what is being asked", () => {
+  assert.equal(parsePaneDialog(ASK_USER_QUESTION)?.prompt, "Which database would you like to use?");
+  assert.equal(parsePaneDialog(PERMISSION)?.prompt, "Do you want to proceed?");
+  assert.equal(parsePaneDialog(CURSOR_ON_THIRD)?.prompt, "Which holder policy do you want?");
+});
+
+test("the question wins over nearer text that isn't one", () => {
+  // The trust check renders a "Security guide" line BETWEEN the question and the rows.
+  // Taking the closest block would label the control with it - confident and wrong.
+  assert.equal(
+    parsePaneDialog(TRUST)?.prompt,
+    "Quick safety check: Is this a project you created or one you trust?",
+  );
+});
+
+test("a row's description is carried alongside its label, never folded into it", () => {
+  const d = parsePaneDialog(ASK_USER_QUESTION);
+  assert.equal(d?.options[0]?.label, "Postgres");
+  assert.match(d?.options[0]?.detail ?? "", /^Open-source relational database/);
+  // The label stays exactly the row's own text - it is what a selection is checked against.
+  assert.equal(optionRowMiss(d!, { number: 1, label: "Postgres" }), null);
+});
+
+test("the trailing rows carry no description, and the footer is not mistaken for one", () => {
+  const d = parsePaneDialog(ASK_USER_QUESTION);
+  // "Type something." is followed by a rule, "Chat about this" by the blank line above
+  // the footer - neither has prose of its own, and the footer belongs to no row.
+  assert.equal(d?.options[3]?.detail, undefined);
+  assert.equal(d?.options[4]?.detail, undefined);
+});
+
+test("a dialog with no descriptions reports none rather than inventing them", () => {
+  const d = parsePaneDialog(PERMISSION);
+  assert.ok(d?.options.every((o) => o.detail === undefined));
+});

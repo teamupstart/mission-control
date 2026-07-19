@@ -10,6 +10,7 @@ import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
+import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
 import {
   AGENT_LABEL,
@@ -386,6 +387,13 @@ export function SessionCard({
         />
       )}
 
+      {/* Not gated on `expanded`, unlike the note below it: a session parked on a menu is
+          blocked until someone answers, which is the one thing a collapsed card most needs
+          to say. Burying it behind a click is how it gets missed. */}
+      {session.paneDialog && (
+        <PaneDialogPrompt sessionId={session.id} dialog={session.paneDialog} />
+      )}
+
       {expanded && session.note && (
         <ForemanNote
           session={session}
@@ -421,6 +429,7 @@ export function SessionCard({
               sessionId={session.id}
               agent={session.agent}
               canSend={canSend}
+              dialogOpen={Boolean(session.paneDialog)}
               onReplyBox={setHasReply}
               resetNonce={resetNonce}
             />

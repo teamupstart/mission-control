@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
+import { AgentDot } from "../session-bits.tsx";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -45,7 +46,7 @@ export function RailRow({
       aria-current={selected}
       onClick={onSelect}
     >
-      <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+      <AgentDot agent={session.agent} />
       <span className="rail-name">{session.name || "(unnamed)"}</span>
       <span className="rail-sub">{session.goal?.text ?? session.activity ?? ""}</span>
       {/* Two lines, never four: the state, then everything else on one line. Given a

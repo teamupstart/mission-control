@@ -12,6 +12,7 @@ import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
+import { AgentDot } from "./components/session-bits.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
@@ -744,7 +745,7 @@ function CommandBar({
   return (
     <div ref={barRef} className="cmdbar" role="toolbar" aria-label="Selected session actions">
       <span className="cmdbar-name">
-        <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+        <AgentDot agent={session.agent} />
         {session.name || "(unnamed)"}
       </span>
       <span className="cmdbar-keys">

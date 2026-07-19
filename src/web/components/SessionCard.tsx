@@ -15,11 +15,12 @@ import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
 import {
   AGENT_LABEL,
-  ChecksFailedIcon,
+  AgentDot,
   GoalLine,
-  PrStateIcon,
-  RenameEditor,
+  PrChip,
   RuntimeMetaRow,
+  SessionTitle,
+  StateBadge,
   subtitle,
 } from "./session-bits.tsx";
 
@@ -169,77 +170,19 @@ export function SessionCard({
       onClick={onSelect}
     >
       <header className="card-head">
-        <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+        <AgentDot agent={session.agent} />
         <div className="card-title">
-          {renaming ? (
-            <RenameEditor session={session} onClose={() => onRenameClose?.()} />
-          ) : canRename ? (
-            <h2>
-              <button
-                type="button"
-                className="card-title-edit"
-                title={`Rename "${session.name}"`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRenameStart?.();
-                }}
-              >
-                <span className="card-title-name">{session.name || "(unnamed)"}</span>
-                <span className="rename-pencil" aria-hidden>
-                  ✎
-                </span>
-              </button>
-            </h2>
-          ) : (
-            <h2 title={session.name}>{session.name || "(unnamed)"}</h2>
-          )}
+          <SessionTitle
+            session={session}
+            canRename={canRename}
+            renaming={renaming}
+            onRenameStart={onRenameStart}
+            onRenameClose={onRenameClose}
+          />
           {!renaming && <span className="name-source">{subtitle(session)}</span>}
         </div>
-        {session.prUrl && (
-          <Tooltip
-            label={
-              session.prState === "merged"
-                ? "Pull request merged - open on GitHub"
-                : "Open pull request - open on GitHub"
-            }
-          >
-            <a
-              className={`pr-chip pr-${session.prState ?? "open"}`}
-              href={session.prUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <PrStateIcon state={session.prState ?? "open"} />
-              <span className="pr-num">{session.prNumber ? `#${session.prNumber}` : "PR"}</span>
-            </a>
-          </Tooltip>
-        )}
-        {session.prUrl && session.prChecks === "failing" && (
-          <Tooltip label="A CI check failed on this PR - open on GitHub">
-            <a
-              className="pr-checks-alert"
-              href={session.prUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label="A CI check failed on this pull request - open on GitHub"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ChecksFailedIcon />
-            </a>
-          </Tooltip>
-        )}
-        {session.pendingReviews > 0 ? (
-          <button className={`badge badge-${st.tone} badge-btn`} onClick={onOpenReviews}>
-            <span className="badge-dot" />
-            {st.label} →
-          </button>
-        ) : (
-          <span className={`badge badge-${st.tone}`}>
-            <span className="badge-dot" />
-            {st.label}
-          </span>
-        )}
+        <PrChip session={session} />
+        <StateBadge session={session} onOpenReviews={onOpenReviews} />
         {attention &&
           session.note &&
           (session.note.disposition === "escalated" ||

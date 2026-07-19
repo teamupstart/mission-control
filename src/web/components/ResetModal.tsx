@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ResetPreview, Session } from "@shared/types.ts";
 import { api, fetchResetPreview } from "../lib/api.ts";
+import { AgentDot } from "./session-bits.tsx";
 
 /**
  * Confirm-and-execute a hard reset of a session's checkout to origin's default
@@ -83,7 +84,7 @@ export function ResetModal({
 
         <div className="reset-body">
           <p className="reset-lead">
-            <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+            <AgentDot agent={session.agent} />
             <span className="reset-name">{session.name || "(unnamed)"}</span>
           </p>
 

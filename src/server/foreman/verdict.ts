@@ -1,9 +1,9 @@
 import { z } from "zod";
-import type { ForemanConfig, SetNote } from "@shared/protocol.ts";
+import type { ForemanConfig, RecordEpisode, SetNote } from "@shared/protocol.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
-import type { GateRef } from "./pending.ts";
+import type { GateRef, Pending } from "./pending.ts";
 
 // The Foreman review verdict + the deterministic mapping from a verdict to the
 // concrete actions the worker takes. Kept pure and free of I/O so it's unit
@@ -282,6 +282,72 @@ export function planFromVerdict(
       lastAction: "drafted a reply (awaiting you)",
     },
     send: null,
+  };
+}
+
+/**
+ * Everything worth remembering about one decision, from the state that is about to
+ * be dropped.
+ *
+ * Pure, and extracted from `processSession` for the same reason `classifyPending`
+ * was: `worker.ts` calls `main()` at import, so anything left inline there can never
+ * be unit-tested. This mapping decides what the record says about an act that has
+ * already happened and cannot be replayed, so it is exactly the wrong thing to leave
+ * untestable.
+ *
+ * Call it only AFTER the plan has been executed. `plan.send` describes what was
+ * *intended* until then, and a send that throws must leave no episode at all - the
+ * same rule `applyVerdict` already applies to the note.
+ */
+export function episodeFromPlan(p: {
+  pending: Pending;
+  ctx: ReviewContext;
+  /** The child's screen, captured once by the worker before the review. */
+  pane: string | null;
+  verdict: Verdict;
+  tier: number;
+  plan: VerdictPlan;
+}): RecordEpisode {
+  const { pending, ctx, pane, verdict, tier, plan } = p;
+  const send = plan.send;
+  return {
+    marker: pending.marker,
+    situation: pending.situation,
+    surface: pending.surface,
+    question: pending.question,
+    // Terminal surfaces only. An `input` review's question is already durable in
+    // `reviews.body`, so a copy here could only drift from it - and a pane captured
+    // for a review is a screen that happens to be behind the ask, not the ask.
+    pane: pending.surface === "terminal" ? pane : null,
+    menu: ctx.menu ?? null,
+    reviewId: pending.inputReviewId,
+    purpose: verdict.purpose,
+    // The brief comes from the VERDICT, the recommendation from the PLAN, and the
+    // asymmetry is the point.
+    //
+    // `brief` is Foreman's reasoning, which the plan nulls on the paths where it is
+    // no longer live (skip, answer). Keeping the verdict's copy is the whole reason
+    // this table exists - the record must outlive what the card stops showing.
+    //
+    // `recommendation` is different: the plan RESOLVES which text is being
+    // recommended for this disposition, and they are not the same string. An
+    // escalation recommends `verdict.recommendation`; a draft recommends the answer
+    // it would have sent (`answer.text`). Reading the verdict's field for a draft
+    // would file a recommendation the human was never shown, next to a purpose and a
+    // brief that were.
+    brief: verdict.brief ?? null,
+    recommendation: plan.note.recommendation ?? null,
+    classification: verdict.classification,
+    confidence: verdict.confidence ?? null,
+    tier,
+    disposition: plan.note.disposition ?? "skipped",
+    lastAction: plan.note.lastAction ?? null,
+    // What actually reached the child. A menu send types NOTHING - the row's label is
+    // the whole of what it received, and `text` rides along only as the rationale -
+    // so the label is the sent text there, exactly as the gate byline reads it.
+    sentText: send ? (send.option ? send.option.label : send.text) : null,
+    sentOption: send?.option ?? null,
+    sentBy: send ? "foreman" : null,
   };
 }
 

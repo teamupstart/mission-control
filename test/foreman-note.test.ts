@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session, SessionNoteSummary } from "../src/shared/types.ts";
 import { ForemanNote } from "../src/web/components/ForemanNote.tsx";
+import { closeForemanNote } from "../src/web/lib/foreman.ts";
 
 // Rendered rather than checked as a pure rule, because the bug WAS the render: the
 // hint's condition (`mode !== "live"`) suppressed the explanation in the one state
@@ -97,4 +98,78 @@ test("ForemanNote: a session with no cwd says so instead of blaming the allowlis
     allowlist: [REPO],
   });
   assert.match(html, /can&#x27;t tell which directory/);
+});
+
+// --- closing a note: the order that keeps the record ---
+//
+// `setNote` nulls `recommendation` and `brief`, which is correct for a live pointer
+// and destructive for evidence. Before the episode log existed that null was the end
+// of the text: approving erased the very words just sent to the child. So the episode
+// has to be stamped FIRST, and that ordering is invisible unless something asserts it.
+
+/** Records the calls `closeForemanNote` makes, in order. */
+function recorder(): {
+  calls: string[];
+  writer: Parameters<typeof closeForemanNote>[0];
+  payloads: Record<string, unknown>[];
+} {
+  const calls: string[] = [];
+  const payloads: Record<string, unknown>[] = [];
+  return {
+    calls,
+    payloads,
+    writer: {
+      resolveEpisode: (_id, p) => {
+        calls.push("resolveEpisode");
+        payloads.push(p as unknown as Record<string, unknown>);
+        return Promise.resolve(null);
+      },
+      setNote: (_id, n) => {
+        calls.push("setNote");
+        payloads.push(n as unknown as Record<string, unknown>);
+        return Promise.resolve(null);
+      },
+    },
+  };
+}
+
+test("closeForemanNote stamps the episode BEFORE the note nulls the evidence", async () => {
+  const r = recorder();
+  await closeForemanNote(r.writer, "s1", {
+    marker: "await:1",
+    disposition: "answered",
+    lastAction: "approved by you",
+    sentText: "Yes, remove the stale lease files.",
+  });
+  assert.deepEqual(r.calls, ["resolveEpisode", "setNote"], "record first, then clear");
+  assert.equal(r.payloads[0]!.sentText, "Yes, remove the stale lease files.");
+  assert.equal(r.payloads[1]!.recommendation, null, "the note still clears - it is current state");
+  assert.equal(r.payloads[1]!.brief, null);
+});
+
+test("closeForemanNote records a dismissal as decided but unanswered", async () => {
+  const r = recorder();
+  await closeForemanNote(r.writer, "s1", {
+    marker: "await:1",
+    disposition: "skipped",
+    lastAction: "dismissed by you",
+    sentText: null,
+  });
+  assert.deepEqual(r.calls, ["resolveEpisode", "setNote"]);
+  assert.equal(r.payloads[0]!.disposition, "skipped");
+  assert.equal(r.payloads[0]!.sentText, null, "nothing was sent, so nothing is claimed");
+});
+
+test("a note with no marker still writes the note - the audit row never blocks you", async () => {
+  // A note from before the episode log, or from a path that sets no marker. There is
+  // nothing to stamp; failing the human's decision over a missing audit row would be
+  // strictly worse than the gap it is complaining about.
+  const r = recorder();
+  await closeForemanNote(r.writer, "s1", {
+    marker: null,
+    disposition: "answered",
+    lastAction: "approved by you",
+    sentText: "ok",
+  });
+  assert.deepEqual(r.calls, ["setNote"]);
 });

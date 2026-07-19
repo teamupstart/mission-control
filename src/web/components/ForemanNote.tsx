@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Markdown } from "./Markdown.tsx";
 import type { NoteDisposition, Session, SessionNoteSummary } from "@shared/types.ts";
-import { allowlistSuggestion, sessionSendBlock } from "../lib/foreman.ts";
+import { allowlistSuggestion, closeForemanNote, sessionSendBlock } from "../lib/foreman.ts";
 import { api } from "../lib/api.ts";
 import { relativeTime } from "../lib/format.ts";
 
@@ -85,11 +85,11 @@ export function ForemanNote({
         ? await api.resolveReview(target.reviewId, "answer", note.recommendation)
         : await api.sendText(sessionId, note.recommendation);
     if (res.ok) {
-      await api.setNote(sessionId, {
+      await closeForemanNote(api, sessionId, {
+        marker: note.handledMarker,
         disposition: "answered",
         lastAction: "approved by you",
-        recommendation: null,
-        brief: null,
+        sentText: note.recommendation,
       });
       setDone(true);
     }
@@ -98,11 +98,12 @@ export function ForemanNote({
 
   async function dismiss(): Promise<void> {
     setBusy(true);
-    await api.setNote(sessionId, {
+    // No sent text: dismissing decides the episode without answering the child.
+    await closeForemanNote(api, sessionId, {
+      marker: note.handledMarker,
       disposition: "skipped",
       lastAction: "dismissed by you",
-      recommendation: null,
-      brief: null,
+      sentText: null,
     });
     setDone(true);
     setBusy(false);

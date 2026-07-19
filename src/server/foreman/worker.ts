@@ -9,7 +9,14 @@ import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import { parsePaneDialog } from "../discovery/pane-dialog.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { applyVerdict, foremanMayActLive, menuBlocksAnswer, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
+import {
+  applyVerdict,
+  episodeFromPlan,
+  foremanMayActLive,
+  menuBlocksAnswer,
+  planFromVerdict,
+  ReviewFailureTracker,
+} from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
 import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
@@ -958,6 +965,24 @@ async function processSession(
   }
 
   await applyVerdict(client, ctx, plan);
+
+  // Record what this decision WAS, now that we know how it ended.
+  //
+  // After `applyVerdict`, not before, for two reasons that point the same way. A send
+  // that fails throws out of it, so nothing is recorded for a reply that never landed
+  // - matching the note, which is also left unstamped there. And `plan.send` is only
+  // truthful about what reached the child once it has been executed.
+  //
+  // This is the only place the pane is durable. It was captured at the top of this
+  // function for the reviewer, and for a terminal ask it is the ONLY copy of the
+  // question in existence - a blocked tool call is not yet a transcript turn (see
+  // `prompt.ts`), so a tick that ends without writing it here loses that question for
+  // good. Everything else here could be reconstructed later; that cannot.
+  await client.recordEpisode(
+    session.id,
+    episodeFromPlan({ pending, ctx, pane, verdict, tier, plan }),
+  );
+
   log(
     `${session.name}: [tier ${tier}] ${verdict.action}/${verdict.classification} -> ${plan.note.disposition}` +
       (plan.send ? " (sent)" : ""),

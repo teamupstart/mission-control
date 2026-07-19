@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: Foreman log</title>
+<style>
+  :root {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --border: #e2ded7;
+    --border-soft: #efece7;
+    --fg: #1c1e21;
+    --muted: #5a6068;
+    --dim: #8b9199;
+    --accent: #b06a1f;
+    --accent-soft: #f6efe4;
+    --good: #1f7a55;
+    --code-bg: #f4f1ec;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #14181e;
+      --border: #232a33;
+      --border-soft: #1b2129;
+      --fg: #e7ebf1;
+      --muted: #939eae;
+      --dim: #5d6775;
+      --accent: #f6a733;
+      --accent-soft: #1d1a13;
+      --good: #35c08a;
+      --code-bg: #0a0c0f;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0e1116;
+    --panel: #14181e;
+    --border: #232a33;
+    --border-soft: #1b2129;
+    --fg: #e7ebf1;
+    --muted: #939eae;
+    --dim: #5d6775;
+    --accent: #f6a733;
+    --accent-soft: #1d1a13;
+    --good: #35c08a;
+    --code-bg: #0a0c0f;
+  }
+
+  :root[data-theme="light"] {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --border: #e2ded7;
+    --border-soft: #efece7;
+    --fg: #1c1e21;
+    --muted: #5a6068;
+    --dim: #8b9199;
+    --accent: #b06a1f;
+    --accent-soft: #f6efe4;
+    --good: #1f7a55;
+    --code-bg: #f4f1ec;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; padding: 56px 24px 110px; }
+
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    line-height: 1.1;
+    letter-spacing: -0.022em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+
+  h2 {
+    font-size: 21px;
+    letter-spacing: -0.012em;
+    margin: 52px 0 16px;
+    padding-bottom: 9px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h3 {
+    font-size: 16px;
+    margin: 34px 0 12px;
+    letter-spacing: -0.005em;
+  }
+
+  p, li { color: var(--muted); }
+  p { margin: 0 0 14px; }
+  li { margin-bottom: 7px; }
+  strong { color: var(--fg); font-weight: 620; }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 18px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 9px;
+    font-size: 13.5px;
+    color: var(--muted);
+    margin-bottom: 34px;
+  }
+
+  .meta b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.87em;
+    background: var(--code-bg);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--fg);
+  }
+
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 15px 17px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+  }
+
+  pre code {
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--fg);
+  }
+
+  .tbl { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--border); border-radius: 9px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 13.5px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  td {
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--border-soft);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td:first-child { color: var(--fg); }
+
+  .callout {
+    background: var(--accent-soft);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 9px;
+    padding: 16px 20px;
+    margin: 0 0 20px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+
+  .phase {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    display: block;
+    margin-bottom: 3px;
+  }
+
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Plan: Foreman log</h1>
+
+<div class="meta">
+  <div><b>Status</b>implemented (all five phases)</div>
+  <div><b>Owner</b>ai-harness</div>
+  <div><b>Related</b><code>ForemanNote</code> (<code>src/web/components/ForemanNote.tsx</code>), which shows the one note that currently exists. This makes notes durable, puts them in the conversation, and reduces the always-on card to a single line.</div>
+</div>
+
+<h2>Goal</h2>
+
+<p>Three things, in one feature, because they share one missing record:</p>
+
+<ol>
+  <li><strong>The Foreman card stops covering the chat window.</strong> Today it is an uncapped block pinned above the transcript; a long escalation fills the pane.</li>
+  <li><strong>Foreman speaks in the live chat</strong>, as a turn in the conversation at the point it spoke, rather than as furniture above it.</li>
+  <li><strong>Every Foreman note is reviewable afterwards, with its context</strong> - the question the agent was blocked on, what Foreman concluded, and what was actually sent back.</li>
+</ol>
+
+<h2>Why this shape</h2>
+
+<p>The card conflates a <strong>record</strong> ("here is what Foreman concluded") with an <strong>action</strong> ("you need to decide"), and pins both. Those two have opposite layout needs: a record wants to be as long as it needs to be and to scroll away; an action wants to be tiny and never move. Welded together and pinned, the record's length is inflicted on the action's position.</p>
+
+<p>So: the record goes into the transcript at full length, and the action becomes a one-line strip above the composer. The strip cannot eat the window because the prose is not in it.</p>
+
+<h3>The record does not exist yet</h3>
+
+<p><code>session_notes</code> is <code>note_key TEXT PRIMARY KEY</code>, upserted (<code>db.ts:120</code>, <code>db.ts:763</code>). There is one row per session, ever. Every Foreman write destroys the previous one, and <code>approve()</code> / <code>dismiss()</code> explicitly null <code>recommendation</code> and <code>brief</code> (<code>ForemanNote.tsx:88-93</code>, <code>:101-106</code>). There is no history to show, and the moment the human acts, the text that was sent is erased.</p>
+
+<h3>The question is <em>more</em> ephemeral than the note</h3>
+
+<div class="callout">
+<p>For a terminal ask - a permission prompt, an <code>AskUserQuestion</code> menu - the question exists in exactly one place: the pane capture at <code>worker.ts:624</code>. <code>prompt.ts:36-48</code> says so outright: Claude appends the assistant turn only when the tool call <em>completes</em>, so a blocked dialog is <strong>not in the transcript</strong>. The pane is read once, handed to the model, and discarded.</p>
+<p>This is what forces the ordering below. Everything else here can be built later against data that still exists. The pane cannot: every tick that runs without capturing it loses that episode's question permanently.</p>
+</div>
+
+<h3>What Foreman already computes and throws away</h3>
+
+<p>All of it is live in memory at <code>worker.ts:642-684</code>, at the moment the note is written:</p>
+
+<div class="tbl">
+<table>
+<thead><tr><th>Value</th><th>Where it is</th><th>Fate today</th></tr></thead>
+<tbody>
+<tr><td><code>pending.question</code></td><td><code>classifyPending</code>, <code>pending.ts:143</code></td><td>discarded</td></tr>
+<tr><td><code>pending.marker</code></td><td>same</td><td>sent as <code>handledMarker</code> - <strong>already a stable episode id</strong></td></tr>
+<tr><td><code>pending.situation</code></td><td>same</td><td>discarded</td></tr>
+<tr><td><code>pane</code></td><td><code>paneFor</code>, <code>worker.ts:624</code></td><td>discarded</td></tr>
+<tr><td><code>ctx.menu</code> (<code>PaneDialog</code>)</td><td><code>parsePaneDialog</code>, <code>worker.ts:635</code></td><td>discarded</td></tr>
+<tr><td><code>verdict.classification</code></td><td><code>VerdictSchema</code>, <code>verdict.ts:78</code></td><td>branches <code>autoApproveAccess</code>, then discarded</td></tr>
+<tr><td><code>verdict.confidence</code></td><td><code>verdict.ts:92</code></td><td>Tier 2 never reads it</td></tr>
+<tr><td><code>decision.tier</code></td><td><code>worker.ts:644</code></td><td>log line only</td></tr>
+<tr><td><code>plan.send.text</code> / <code>.option</code></td><td><code>verdict.ts:265-271</code></td><td>delivered, then discarded</td></tr>
+</tbody>
+</table>
+</div>
+
+<p><code>marker</code> is the important one: episode identity costs nothing, because it is already computed and already sent over the wire.</p>
+
+<h3>Why an episode table, not columns on <code>session_notes</code></h3>
+
+<p>Same reasoning <code>gate_replies</code> records for itself (<code>db.ts:66-77</code>). <code>session_notes</code> is a <strong>current state</strong> row with one <code>disposition</code> and one <code>updated_at</code> meaning "what Foreman decided, and when". An append-only history has a different cardinality, a different key, and a different retention rule. Sharing the row would corrupt both, and <code>CREATE TABLE IF NOT EXISTS</code> gives a new table a free upgrade path where new columns would need ALTERs.</p>
+
+<p><code>session_notes</code> stays exactly as it is - the live pointer. Nothing that reads it changes.</p>
+
+<h2>Schema</h2>
+
+<pre><code>CREATE TABLE IF NOT EXISTS foreman_episodes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_key       TEXT NOT NULL,     -- noteKeyFor(session): same key as session_notes
+  session_id     TEXT NOT NULL,     -- provenance only, never joined on (ids re-mint)
+  marker         TEXT NOT NULL,     -- Pending.marker: this waiting episode's identity
+  situation      TEXT NOT NULL,     -- PendingSituation
+  surface        TEXT NOT NULL,     -- input-review | terminal
+  question       TEXT NOT NULL,     -- the ask, verbatim
+  pane           TEXT,              -- the child's screen at decision time (terminal only)
+  menu           TEXT,              -- JSON PaneDialog: the rows the model chose among
+  review_id      TEXT,              -- reviews.id when the ask arrived as a review
+  purpose        TEXT,
+  brief          TEXT,
+  recommendation TEXT,
+  classification TEXT,
+  confidence     REAL,
+  tier           INTEGER,
+  disposition    TEXT NOT NULL,
+  last_action    TEXT,
+  sent_text      TEXT,              -- what was actually delivered
+  sent_option    TEXT,              -- JSON {number,label} for a menu selection
+  sent_by        TEXT,              -- foreman | you
+  created_at     INTEGER NOT NULL,
+  resolved_at    INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_foreman_episodes_marker
+  ON foreman_episodes(note_key, marker);
+CREATE INDEX IF NOT EXISTS idx_foreman_episodes_key
+  ON foreman_episodes(note_key, created_at DESC);</code></pre>
+
+<p>The unique index on <code>(note_key, marker)</code> is what makes the write idempotent: the worker's own idempotency check already refuses to re-handle a marker, and a human's later Approve updates that same row rather than appending a second one.</p>
+
+<p><code>pane</code> is stored <strong>only when the surface is terminal</strong>. An <code>input</code> review's question is already durable in <code>reviews.body</code>, and storing a screen capture for it would be a second copy that can drift.</p>
+
+<p>Retention: swept alongside the existing <code>gate_replies</code> sweep, same cutoff.</p>
+
+<h2>Phases</h2>
+
+<h3><span class="phase">Phase 1</span>Capture (no UI)</h3>
+
+<p>The only lossy-in-one-direction step. Worth landing alone.</p>
+
+<ul>
+  <li><code>foreman_episodes</code> table + <code>recordEpisode</code> / <code>listEpisodes</code> / <code>resolveEpisode</code> in <code>db.ts</code>.</li>
+  <li><code>RecordEpisodeSchema</code> in <code>protocol.ts</code>.</li>
+  <li><code>POST /api/sessions/:id/foreman-episode</code> and <code>GET /api/sessions/:id/foreman-episodes</code> in <code>routes.ts</code>; <code>recordEpisode</code> on <code>ForemanClient</code>.</li>
+  <li><code>processSession</code> (<code>worker.ts:684</code>) records the episode after <code>applyVerdict</code> resolves. Everything it needs is already in scope: <code>pending</code>, <code>ctx</code>, <code>pane</code>, <code>decision.verdict</code>, <code>decision.tier</code>, <code>plan</code>.</li>
+</ul>
+
+<p>Recorded <strong>after</strong> <code>applyVerdict</code>, not before, so <code>sent_text</code> reflects what was actually delivered. A failed send throws out of <code>applyVerdict</code> and writes no episode, matching how it already writes no <code>answered</code> note - a send that did not land is not an episode that happened.</p>
+
+<h3><span class="phase">Phase 2</span>Stop erasing on Approve</h3>
+
+<p><code>ForemanNote.approve()</code> nulls <code>recommendation</code> and <code>brief</code>. With Phase 1 in place the episode row already holds Foreman's text, but not the human's act. Add <code>api.resolveEpisode(sessionId, {marker, sentText, sentBy, disposition})</code>, called before <code>setNote</code>, stamping <code>sent_by: "you"</code>, <code>sent_text</code> and <code>resolved_at</code>. Same for <code>dismiss()</code>, with no <code>sent_text</code>.</p>
+
+<p>The <code>setNote</code> nulling stays: <code>session_notes</code> is current state, and after you answer, there is no current recommendation. The record lives in the episode now.</p>
+
+<h3><span class="phase">Phase 3</span>Notes in the transcript</h3>
+
+<p><code>TranscriptMessage</code> carries <code>ts</code> (<code>types.ts:1009</code>), so episodes merge into the stream by timestamp.</p>
+
+<ul>
+  <li><code>ConsoleDetail</code> passes the session's episodes to <code>TranscriptPanel</code>.</li>
+  <li><code>TranscriptPanel</code> merges them into its rendered rows by <code>created_at</code>, rendering each as a <code>ForemanNote</code>-styled block at full length, no clamp.</li>
+  <li>Episodes with <code>created_at === 0</code> (shouldn't happen; defensive) sort last rather than first.</li>
+</ul>
+
+<h3><span class="phase">Phase 4</span>The strip</h3>
+
+<p><code>ForemanStrip.tsx</code> replaces <code>ForemanNote</code> in <code>ConsoleDetail</code>'s leading block: one line, badge + disposition + one-line purpose + <code>Approve &amp; send</code> + a chevron. Expanding reveals the recommendation and the actions; a "Jump to note in chat" scrolls the transcript to the inline entry.</p>
+
+<p>Rendered <strong>only</strong> for <code>escalated</code> and <code>pending</code>. On <code>answered</code> / <code>skipped</code> it unmounts entirely - the inline entry is the whole story, and nothing is owed.</p>
+
+<p>The grid card (<code>SessionCard.tsx:389</code>) keeps the full <code>ForemanNote</code>: it has no transcript to inline into, and its <code>max-height: 30%</code> cap (<code>styles.css:2559</code>) already bounds it there.</p>
+
+<h3><span class="phase">Phase 5</span>The drawer</h3>
+
+<p><code>ForemanDrawer.tsx</code>, opened from a rail on the right edge of the detail pane, dot = unanswered count.</p>
+
+<ul>
+  <li><strong>List</strong>: episodes newest-first, each row leading with the <em>question</em> (two-line clamp), then the verdict. Live episode amber, answered green, skipped neutral.</li>
+  <li><strong>Detail</strong>: the ask verbatim (monospace - for a terminal episode the <code>❯</code> marker and column alignment are load-bearing), with the sent row marked; then purpose + brief; then the resolution with <code>sent_by</code> and <code>sent_text</code>. Metadata chips: situation, classification, confidence, tier.</li>
+</ul>
+
+<p>A rail rather than a fifth tab: Work queue / Gate / Diff are things the session <em>has</em>; Foreman is an observer talking <em>about</em> the session.</p>
+
+<h2>Learned while building</h2>
+
+<p><strong>Two extractions the plan didn't anticipate, both forced by testability.</strong> <code>worker.ts</code> calls <code>main()</code> at import, so anything left inline in <code>processSession</code> can never be unit-tested - which is exactly wrong for a mapping that decides what survives an unrepeatable act. <code>episodeFromPlan</code> (<code>verdict.ts</code>) is now pure, beside <code>planFromVerdict</code>, the same move <code>pending.ts</code> documents making for the same reason. Likewise <code>closeForemanNote</code> (<code>web/lib/foreman.ts</code>): <code>ForemanNote</code> and <code>ForemanStrip</code> had the record-then-clear sequence written out twice, two copies of an ordering constraint that is invisible unless you know why it exists.</p>
+
+<p><strong>Writing that test found a real bug.</strong> The episode recorded <code>verdict.recommendation</code> while the note records the <em>resolved</em> one, and for a draft those are different strings - an escalation recommends <code>verdict.recommendation</code>, a draft recommends the <code>answer.text</code> it would have sent. The record would have shown a recommendation the human was never shown, beside a purpose and brief that were. It now reads <code>plan.note.recommendation</code>. The <code>brief</code> deliberately still comes from the verdict: the plan nulls it on the paths where it stops being live, and outliving that is the whole point of the table.</p>
+
+<p>Three more the plan had wrong or missing, found by driving the real UI:</p>
+
+<p><strong>An unavailable transcript hid the episodes entirely.</strong> <code>TranscriptPanel</code> returns early with the reason line when the stream reports <code>unavailable</code>, so the merge below it never ran. That is exactly backwards: a session whose JSONL can't be resolved is the one where Foreman's record is the <em>only</em> account of what happened. The reason line now renders <em>above</em> the episodes rather than instead of them.</p>
+
+<p><strong><code>answered</code> doesn't say who answered.</strong> The note's label is "answered for you", which is true because only Foreman ever writes a note. An episode outlives that: an escalation you approve also ends up <code>answered</code>, and the note's wording then credits Foreman with your decision. <code>episodeLabel</code> reads <code>sentBy</code>, not the disposition alone.</p>
+
+<p><strong>Every naive source for a row's preview is wrong on a terminal ask.</strong> <code>question</code> is the notification line ("Claude needs your permission to use Bash"), identical on every such row; the menu rows are the choices, not the question; the pane is mostly scrollback. What a reader remembers is the sentence <em>between</em> the permission header and the first numbered row, so <code>askPreview</code> reaches for that first. This is what turns a row from "a decision was needed" into <code>rm -rf node_modules/.vite</code>.</p>
+
+<h2>Testing</h2>
+
+<ul>
+  <li><code>test/foreman-episodes.test.ts</code> - the DB layer: append, the <code>(note_key, marker)</code> upsert, list ordering, the sweep.</li>
+  <li><code>test/foreman-episode-capture.test.ts</code> - <code>processSession</code> records the pane, menu and verdict fields for a terminal ask; records <code>review_id</code> and no pane for an input review; records nothing when the send throws.</li>
+  <li>Extend the existing <code>ForemanNote</code> tests for <code>resolveEpisode</code> firing before <code>setNote</code>.</li>
+  <li>Render tests for the merge ordering in <code>TranscriptPanel</code>.</li>
+</ul>
+
+<h2>Open risks</h2>
+
+<ul>
+  <li><strong>Pane size.</strong> A capture is a full screen; at one row per episode this is bounded by the sweep, but worth watching. Cap at a sane byte length on write.</li>
+  <li><strong><code>/clear</code> re-mints <code>note_key</code></strong>, orphaning an episode history the same way it orphans a note. Acceptable for now - the drawer is session-scoped, and a cleared session is a new session.</li>
+  <li><strong>Fleet-wide view</strong> is the obvious next step once episodes are durable (same list, unfiltered by session). Deliberately out of scope here.</li>
+</ul>
+
+</div>
+</body>
+</html>

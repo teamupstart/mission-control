@@ -1,5 +1,6 @@
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import type { Session } from "@shared/types.ts";
+import type { ResolveEpisode, SetNote } from "@shared/protocol.ts";
 
 // Why Foreman isn't sending for a session - the one rule behind every "why is this
 // still asking me?" the dashboard has to answer. Pure, and out of the components,
@@ -72,4 +73,60 @@ export function sessionSendBlock(
  */
 export function allowlistSuggestion(session: Session): string | null {
   return session.repoRoot ?? session.cwd;
+}
+
+/**
+ * The minimum of `api` this module calls, so a test can hand it a recorder.
+ *
+ * Narrowed to two methods rather than taking the whole client: what is being pinned
+ * here is an ORDER between exactly these two writes, and a wider surface would invite
+ * a caller to slip a third one in between them.
+ */
+export interface ForemanWriter {
+  resolveEpisode: (id: string, p: ResolveEpisode) => Promise<unknown>;
+  setNote: (id: string, note: SetNote) => Promise<unknown>;
+}
+
+/**
+ * Close out a Foreman note you just acted on, in the one order that keeps the record.
+ *
+ * The episode is stamped FIRST and this is not stylistic. The `setNote` below nulls
+ * `recommendation` and `brief` - correctly, because after you answer there is no
+ * current recommendation - and before the episode log existed that null was the end of
+ * the text: approving erased the very words that had just been sent to the child.
+ * Writing the record afterwards would read a recommendation that had already been
+ * cleared, and file the decision with the evidence missing.
+ *
+ * `marker` identifies the episode, and a note without one predates the log (or came
+ * from a path that sets no marker). That is a no-op, deliberately: a missing audit row
+ * must never be able to fail the human's actual decision.
+ *
+ * Shared by `ForemanNote` (the grid card) and `ForemanStrip` (the console), which
+ * otherwise had this sequence written out twice - two copies of an ordering
+ * constraint that is invisible unless you know why it exists.
+ */
+export async function closeForemanNote(
+  writer: ForemanWriter,
+  sessionId: string,
+  o: {
+    marker: string | null;
+    disposition: "answered" | "skipped";
+    lastAction: string;
+    /** What was actually delivered; null when the note was dismissed unanswered. */
+    sentText: string | null;
+  },
+): Promise<void> {
+  if (o.marker) {
+    await writer.resolveEpisode(sessionId, {
+      marker: o.marker,
+      disposition: o.disposition,
+      sentText: o.sentText,
+    });
+  }
+  await writer.setNote(sessionId, {
+    disposition: o.disposition,
+    lastAction: o.lastAction,
+    recommendation: null,
+    brief: null,
+  });
 }

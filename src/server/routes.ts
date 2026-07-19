@@ -26,6 +26,8 @@ import {
   ResolveReviewSchema,
   SelectOptionSchema,
   SendTextSchema,
+  RecordEpisodeSchema,
+  ResolveEpisodeSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
   SetWorkItemStateSchema,
@@ -716,6 +718,49 @@ export function buildApp(
     const note = registry.upsertNote(session.id, parsed.data);
     if (!note) return c.json({ error: "no such session" }, 404);
     return c.json(note);
+  });
+
+  // --- Foreman episodes: the append-only record behind the note ---
+
+  // Written by the worker (a separate process with no DB access of its own) once it
+  // has acted, carrying the context it is about to drop - above all the pane, which
+  // for a terminal ask is the only copy of the question that ever exists.
+  app.post("/api/sessions/:id/foreman-episode", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, RecordEpisodeSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      registry.recordEpisode(session.id, parsed.data);
+    } catch (err) {
+      // Fail soft, on the same reasoning as the gate byline above: by the time the
+      // worker posts this it has already delivered its answer and stamped the note.
+      // The episode is the audit trail for an act that already happened, so a DB
+      // failure must cost the record and nothing else - 500ing would make the worker
+      // log an error for work that succeeded.
+      console.error("[foreman] could not record the episode:", err);
+    }
+    return c.json({ ok: true });
+  });
+
+  // Stamped by the dashboard when the human answers an episode Foreman left open.
+  app.post("/api/sessions/:id/foreman-episode/resolve", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ResolveEpisodeSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      registry.resolveEpisode(session.id, parsed.data);
+    } catch (err) {
+      console.error("[foreman] could not stamp the episode:", err);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/sessions/:id/foreman-episodes", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(registry.listEpisodes(session.id));
   });
 
   // --- Foreman session work queues (localhost only) ---

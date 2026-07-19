@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type {
+  ForemanEpisode,
   MetaSource,
   NmFixSummary,
   NmRunSummary,
@@ -23,7 +24,14 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
-import type { HookIngest, SetGoal, SetNote, StatusLineIngest } from "@shared/protocol.ts";
+import type {
+  HookIngest,
+  RecordEpisode,
+  ResolveEpisode,
+  SetGoal,
+  SetNote,
+  StatusLineIngest,
+} from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
 import {
@@ -61,6 +69,10 @@ import {
   countOpenQueueItems,
   pruneDeadQueues,
   pruneGateReplies,
+  pruneEpisodes,
+  recordEpisode as dbRecordEpisode,
+  resolveEpisode as dbResolveEpisode,
+  episodesFor,
   reorderQueueItems,
   upsertQueue,
   upsertQueueItem,
@@ -106,6 +118,17 @@ const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * rather than scoped to a session.
  */
 const GATE_REPLY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long a Foreman episode is kept.
+ *
+ * Shorter than a gate byline and longer than a queue, because it is read for a
+ * different span than either: the drawer answers "what has Foreman been deciding on
+ * this session", which is a question about recent judgment, not about a branch that
+ * may sit open for months. The rows are also the fattest of the three - each can
+ * carry a whole pane capture - so generosity costs more here than it does there.
+ */
+const EPISODE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
 const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
@@ -331,6 +354,12 @@ export class Registry extends EventEmitter {
       pruneGateReplies(now - GATE_REPLY_RETENTION_MS);
     } catch (err) {
       console.error("[registry] gate reply prune failed:", err);
+    }
+    // And its own again, for the same reason.
+    try {
+      pruneEpisodes(now - EPISODE_RETENTION_MS);
+    } catch (err) {
+      console.error("[registry] foreman episode prune failed:", err);
     }
   }
 
@@ -1336,6 +1365,71 @@ export class Registry extends EventEmitter {
     upsertSessionNote(next);
     this.syncSessionsForNote(key);
     return next;
+  }
+
+  // ---- Foreman episodes (the append-only record behind the note) ----
+
+  /**
+   * Record one Foreman decision against this session's note key.
+   *
+   * Keyed the same way the note is, and deliberately so: the episode IS the note's
+   * history, so a session whose key re-mints (a `/clear`) starts a fresh log for the
+   * same reason it starts a fresh note. Unlike the note, nothing is denormalized onto
+   * the session - the list is fetched by the panel that shows it, because a card
+   * carrying every pane it ever saw would put a screen capture into every SSE frame.
+   */
+  recordEpisode(id: string, e: RecordEpisode, now = Date.now()): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    dbRecordEpisode({
+      noteKey: noteKeyFor(s),
+      sessionId: s.id,
+      marker: e.marker,
+      situation: e.situation,
+      surface: e.surface,
+      question: e.question,
+      pane: e.pane ?? null,
+      menu: e.menu ?? null,
+      reviewId: e.reviewId ?? null,
+      purpose: e.purpose ?? null,
+      brief: e.brief ?? null,
+      recommendation: e.recommendation ?? null,
+      classification: e.classification ?? null,
+      confidence: e.confidence ?? null,
+      tier: e.tier ?? null,
+      disposition: e.disposition,
+      lastAction: e.lastAction ?? null,
+      sentText: e.sentText ?? null,
+      sentOption: e.sentOption ?? null,
+      sentBy: e.sentBy ?? null,
+      createdAt: now,
+      // An episode Foreman closed itself is resolved the moment it is recorded;
+      // one it handed over stays open until a human acts on it.
+      resolvedAt: e.disposition === "answered" || e.disposition === "skipped" ? now : null,
+    });
+    return true;
+  }
+
+  /** Stamp the human's answer onto an open episode. */
+  resolveEpisode(id: string, p: ResolveEpisode, now = Date.now()): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    dbResolveEpisode({
+      noteKey: noteKeyFor(s),
+      marker: p.marker,
+      disposition: p.disposition,
+      sentText: p.sentText ?? null,
+      sentBy: "you",
+      resolvedAt: now,
+    });
+    return true;
+  }
+
+  /** Every episode recorded for this session's key, newest first. */
+  listEpisodes(id: string): ForemanEpisode[] {
+    const s = this.sessions.get(id);
+    if (!s) return [];
+    return episodesFor(noteKeyFor(s));
   }
 
   // ---- goals (what a session is attempting to solve) ----

@@ -1,4 +1,5 @@
 import type {
+  ForemanEpisode,
   ForemanStatus,
   NmFixDetail,
   PermissionMode,
@@ -14,6 +15,7 @@ import type {
   ForemanConfigPatch,
   HarnessesConfig,
   HarnessesConfigPatch,
+  ResolveEpisode,
   SetNote,
   SkillsConfigPatch,
 } from "@shared/protocol.ts";
@@ -275,6 +277,20 @@ export const api = {
   // --- Away mode ---
   setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),
   setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
+
+  // --- Foreman episodes: the append-only record behind the note ---
+  /**
+   * Stamp your answer onto the episode Foreman left open.
+   *
+   * Paired with `setNote`, not replaced by it. The note is current state, so
+   * answering correctly clears its recommendation; the episode is the record, so it
+   * keeps what was sent and who sent it. Before this existed, Approve nulled the
+   * recommendation and the words that went to the child survived nowhere at all.
+   */
+  resolveEpisode: (id: string, p: ResolveEpisode) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/foreman-episode/resolve`, p),
+  episodes: (id: string) =>
+    fetchJson<ForemanEpisode[]>(`/api/sessions/${encodeURIComponent(id)}/foreman-episodes`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

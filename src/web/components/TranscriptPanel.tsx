@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type {
   AgentType,
+  ForemanEpisode,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -10,6 +11,8 @@ import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
+import { mergeEpisodes } from "../lib/episodes.ts";
+import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { useRichText } from "../lib/rich-text.tsx";
 import { Markdown } from "./Markdown.tsx";
 import {
@@ -34,6 +37,8 @@ export interface TranscriptHandle {
   /** Focus the reply box, reporting whether there was one (a collapsed card has no
    *  panel mounted at all, and the caller then owns the send flow itself). */
   focusReply: () => boolean;
+  /** Scroll to the inline Foreman entry for this episode marker, if it's rendered. */
+  scrollToEpisode: (marker: string | null) => void;
 }
 
 /**
@@ -48,6 +53,7 @@ export function TranscriptPanel({
   agent,
   canSend,
   dialogOpen = false,
+  episodes = [],
   onReplyBox,
   resetNonce = 0,
   ref,
@@ -66,6 +72,15 @@ export function TranscriptPanel({
    * just above this box; that is the only safe way to answer one.
    */
   dialogOpen?: boolean;
+  /**
+   * Foreman's decisions on this session, interleaved into the log by timestamp.
+   *
+   * They arrive as a prop rather than being fetched here because they are not part of
+   * the transcript: the JSONL knows nothing about them, and the SSE stream this panel
+   * opens would have no way to carry them. The owner fetches them and re-renders when
+   * the note moves.
+   */
+  episodes?: ForemanEpisode[];
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -122,6 +137,15 @@ export function TranscriptPanel({
       const end = el.value.length;
       el.setSelectionRange(end, end);
       return true;
+    },
+    scrollToEpisode: (marker) => {
+      if (!marker) return;
+      // Queried out of the DOM rather than tracked in a ref map, because the target
+      // may not be mounted: the episode list and the transcript load independently,
+      // and the strip is clickable before either has settled. A missing node is a
+      // no-op, which is the right outcome for "scroll to something not on screen".
+      const el = logRef.current?.querySelector(`[data-episode-marker="${CSS.escape(marker)}"]`);
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
     },
   }), []);
 
@@ -233,18 +257,34 @@ export function TranscriptPanel({
     // Stop clicks inside the panel from re-selecting / collapsing the card.
     <div className="transcript" onClick={(e) => e.stopPropagation()}>
       <div className="transcript-log" ref={logRef} onScroll={onScroll}>
-        {status === "unavailable" ? (
+        {/* An unavailable transcript still shows Foreman's record, and this is the
+            case that most needs it: a session with no resolvable JSONL is exactly
+            where its decisions are the ONLY account of what happened. The reason
+            line stays above them, so "no transcript" is still said rather than
+            implied by its absence. */}
+        {status === "unavailable" && episodes.length === 0 ? (
           <p className="transcript-empty">{note}</p>
-        ) : messages.length === 0 ? (
+        ) : messages.length === 0 && episodes.length === 0 ? (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         ) : (
-          transcriptRows(messages).map((row) =>
-            row.kind === "tools" ? (
-              <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_LABEL[agent]} />
-            ) : (
-              <Turn key={row.id} m={row.message} agentLabel={AGENT_LABEL[agent]} />
-            ),
-          )
+          <>
+            {status === "unavailable" && <p className="transcript-empty">{note}</p>}
+            {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
+              row.kind === "episode" ? (
+                <div
+                  key={`ep-${row.episode.id}`}
+                  className="transcript-episode"
+                  data-episode-marker={row.episode.marker}
+                >
+                  <ForemanEpisodeCard episode={row.episode} />
+                </div>
+              ) : row.kind === "tools" ? (
+                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_LABEL[agent]} />
+              ) : (
+                <Turn key={row.id} m={row.message} agentLabel={AGENT_LABEL[agent]} />
+              ),
+            )}
+          </>
         )}
       </div>
 

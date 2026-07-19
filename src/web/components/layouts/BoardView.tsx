@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { backlogTasks } from "@shared/session.ts";
-import { contextTone, relativeTime, stateDisplay, uptime, type Tone } from "../../lib/format.ts";
+import { gateStepView, relativeTime, stateDisplay, uptime, type Tone } from "../../lib/format.ts";
 import { boardColumnModes, groupByTone } from "../../lib/tone.ts";
+import { RuntimeMetaRow } from "../session-bits.tsx";
 import { BacklogColumn, canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
@@ -197,9 +198,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 }
 
 /**
- * A session shrunk to what you'd triage by: who it is, what it's for, how far its
- * gate has got, and whether it wants something. Everything else is one click away
- * in the console detail the tile opens.
+ * A session shrunk to what you'd triage by, without opening it: who it is, what it's
+ * for, what it's doing this second, where its gate is parked, how much context it has
+ * left, and whether it wants something. The conversation, the diff, and the gate's
+ * buttons are all one click away in the console detail the tile opens.
  *
  * An idle tile is also a drop target for a backlog card - see BacklogColumn.
  */
@@ -219,7 +221,7 @@ function SessionTile({
   onDropError: (message: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
-  const ctx = session.meta?.contextPct;
+  const gate = session.nomistakes ? gateStepView(session.nomistakes) : null;
   const [over, setOver] = useState(false);
 
   const droppable = canAcceptTask(session, draggingRepo);
@@ -259,13 +261,38 @@ function SessionTile({
 
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
 
-      {/* The gate compressed to a hairline the tile can always afford. The full strip,
-          with its findings and buttons, is in the console detail. */}
-      {session.nomistakes && (
-        <span className="tile-rail" aria-hidden>
-          {session.nomistakes.steps.map((step) => (
-            <span key={step.step} className={`tr-${step.status}`} />
-          ))}
+      {/* What it's doing right now - the board's only live signal past "6s ago", and what
+          tells an actively-editing session apart from one stalled on a prompt. */}
+      {session.activity && (
+        <span className="tile-activity">
+          <span className="ta-glyph" aria-hidden>
+            ⟳
+          </span>
+          <span className="ta-txt">{session.activity}</span>
+        </span>
+      )}
+
+      {/* The gate as a named hairline: the segment bar the tile always afforded, now with
+          the stage a glance should land on spelled out above it (gateStepView picks it).
+          The full strip - findings and buttons - stays in the console detail. */}
+      {session.nomistakes && gate && (
+        <span className="tile-gate">
+          <span className="tile-gate-row">
+            <span className="gate-brand" aria-hidden>
+              ◇
+            </span>
+            <span className={`gate-step gate-${gate.tone}`}>{gate.label}</span>
+            {!gate.done && gate.pos != null && (
+              <span className="gate-pos">
+                step {gate.pos} / {gate.total}
+              </span>
+            )}
+          </span>
+          <span className="tile-rail" aria-hidden>
+            {session.nomistakes.steps.map((step) => (
+              <span key={step.step} className={`tr-${step.status}`} />
+            ))}
+          </span>
         </span>
       )}
 
@@ -292,15 +319,13 @@ function SessionTile({
           nothing the rest of the time. */}
       {droppable && <span className="tile-drop-hint">↳ drop to hand this over</span>}
 
+      {/* The same runtime row the card shows - model, thinking level, and a context meter
+          that now carries its number. The board used to draw only the bare meter here; the
+          percentage is the triage signal (a session near full is about to compact). */}
+      {session.meta && <RuntimeMetaRow meta={session.meta} />}
+
       <span className="tile-foot">
         <span className="tile-branch">{session.gitBranch ?? session.nameSource}</span>
-        {ctx != null && (
-          <span className={`rt-ctx rt-ctx-${contextTone(ctx)}`} title={`${ctx}% of the context window used`}>
-            <span className="rt-meter" aria-hidden>
-              <span className="rt-meter-fill" style={{ width: `${Math.min(100, Math.max(0, ctx))}%` }} />
-            </span>
-          </span>
-        )}
         <span className="tile-seen">
           {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
         </span>

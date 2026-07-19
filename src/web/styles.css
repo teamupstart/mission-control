@@ -5868,6 +5868,93 @@ kbd {
   white-space: nowrap;
 }
 
+/* ---- board tile: live detail (activity · gate step · runtime) ----
+   The three things a board tile now surfaces without being opened. All rendered as
+   inline content because the tile is a <button>. */
+
+/* What the session is doing this second. The glyph spins while it works, and stands
+   still for anyone who asked for less motion. */
+.tile-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tile-activity .ta-glyph {
+  flex: none;
+  font-size: 10px;
+  color: var(--working);
+  animation: tile-activity-spin 1.6s linear infinite;
+}
+.tile-activity .ta-txt {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes tile-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile-activity .ta-glyph {
+    animation: none;
+  }
+}
+
+/* The gate hairline, now with a name above it. The label wears the tone its live
+   segment carries, so the word and the bar can't disagree. */
+.tile-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.tile-gate-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10.5px;
+}
+.gate-brand {
+  flex: none;
+  color: var(--dim);
+}
+.gate-step {
+  min-width: 0;
+  font-weight: 640;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gate-step.gate-working {
+  color: var(--working);
+}
+.gate-step.gate-attention {
+  color: var(--attention);
+}
+.gate-step.gate-idle {
+  color: var(--idle);
+}
+.gate-step.gate-danger {
+  color: var(--danger);
+}
+.gate-pos {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The shared runtime row sits in the tile's own flex column; drop its card margins so
+   the tile's gap does the spacing. */
+.tile .card-runtime {
+  margin: 0;
+}
+
 /* ---- hosting an expanded card inside a pane ----
    `.card.expanded` is sized for focus mode in the grid: it spans every column, jumps to
    the top of the grid, and measures itself against the viewport minus the topbar and the

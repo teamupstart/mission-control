@@ -1,5 +1,5 @@
 import { runInFlight } from "@shared/session.ts";
-import type { PermissionMode, Session, SessionState } from "@shared/types.ts";
+import type { NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
   if (!ms) return "";
@@ -111,6 +111,62 @@ export function stateDisplay(session: Session): StateDisplay {
     exited: { label: "exited", tone: "exited" },
   };
   return map[session.state];
+}
+
+export interface GateStepView {
+  /** The step to name above the tile's hairline, e.g. "review" - or the outcome once landed. */
+  label: string;
+  /** 1-based position of that step in the pipeline, or null when it can't be placed. */
+  pos: number | null;
+  /** How many steps the pipeline has. */
+  total: number;
+  /** Tone for the label - the same scale the hairline segment carries. */
+  tone: "working" | "attention" | "idle" | "danger";
+  /** True once the run has finished cleanly (label is the outcome, not a step). */
+  done: boolean;
+}
+
+/**
+ * The one step worth naming above the board tile's gate hairline.
+ *
+ * The hairline colours every step but names none, so "which stage is it at" is
+ * unreadable without knowing the pipeline's order by heart. This picks the step a
+ * glance should land on and dresses it in the same tone the segment carries, so the
+ * word and the bar can't disagree. Precedence mirrors what you'd triage by: a failure
+ * first, then a gate parked on your decision, then whatever is running, then - with
+ * nothing in flight - the outcome if the run has landed, else the next step up.
+ *
+ * Pure, so the rule is tested without a DOM (see gate-step-view.test.ts).
+ */
+export function gateStepView(nm: NmRunSummary): GateStepView {
+  const total = nm.steps.length;
+  const at = (i: number, tone: GateStepView["tone"]): GateStepView => ({
+    label: nm.steps[i]!.step,
+    pos: i + 1,
+    total,
+    tone,
+    done: false,
+  });
+
+  const failed = nm.steps.findIndex((s) => s.status === "failed");
+  if (failed >= 0) return at(failed, "danger");
+
+  // Parked on a decision: trust no-mistakes' own gateStep, falling back to the parked status.
+  const gated = nm.gateStep
+    ? nm.steps.findIndex((s) => s.step === nm.gateStep)
+    : nm.steps.findIndex((s) => s.status === "awaiting_approval" || s.status === "fix_review");
+  if (gated >= 0) return at(gated, "attention");
+
+  const running = nm.steps.findIndex((s) => s.status === "running");
+  if (running >= 0) return at(running, "working");
+
+  // Nothing in flight: the run has either landed, or is between steps.
+  if (nm.outcome) return { label: nm.outcome, pos: total || null, total, tone: "idle", done: true };
+  const settled = nm.steps.filter((s) => s.status === "completed" || s.status === "skipped").length;
+  const next = nm.steps[settled];
+  return next
+    ? { label: next.step, pos: settled + 1, total, tone: "working", done: false }
+    : { label: nm.status, pos: null, total, tone: "working", done: false };
 }
 
 /** Card presentation for a Claude permission mode: chip label, tone, tooltip. */

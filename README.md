@@ -496,12 +496,31 @@ approve access/permission asks - turn it off and those escalate to you instead.
 Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
 safety check) are **always** escalated, never auto-approved.
 
-Everything Foreman does surfaces on the card: a needs-you session it acted on shows a
+Everything Foreman does surfaces where you're already looking. On a **card**: a needs-you
+session it acted on shows a
 **◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
 brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
 session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
+
+In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
+arranged differently, because a permanent conversation gives it somewhere better to sit:
+Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
+you still *owe* is a one-line strip above it - badge, disposition, purpose, **Approve &
+send** - that expands for the recommendation and **Dismiss**. It can't cover the chat,
+because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
+the inline entry stays.
+
+Every decision is also **kept**, which the note alone never was - a note is one upserted row,
+so each write erased the last one and approving erased the words that had just been sent.
+Foreman now records each decision it faces: the question the session was blocked on, what it
+concluded, and what actually went back. That question is the part worth recording - for a
+terminal ask (a permission prompt, a menu) the child's screen is the only place it ever
+exists, per the transcript gap above. The **Foreman · N** rail at the end of the detail's tab
+row opens that history: rows lead with the *ask* rather than the verdict, and opening one
+shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
+actually made the call. Records age out after a retention window.
 
 Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the
@@ -771,13 +790,19 @@ switches between them live, and the choice persists per machine:
 
 Nothing is lost by switching. Every layout draws from the *same* leaf pieces - the
 transcript, the work queue, the gate strip, the action bar, the goal and runtime pills -
-so no chip, strip or control goes missing. What changes is how they're arranged:
+so no chip, strip or control goes missing. What changes is how they're arranged - and the
+console's permanent conversation earns two surfaces a card has nowhere to put:
 
 - **Cards** renders the full session card. The **Console** gives
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
   Gate / Diff** - because a split pane has room a card doesn't: the conversation is
   permanent, and the sections that share a card's height in the grid get a tab each. The
   **Board** drills into that same detail when you open a card.
+- **The console's two extras are Foreman's**, and both need a conversation to exist:
+  its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
+  the tab row opens their history. The rail is deliberately *not* a fifth tab - Work queue,
+  Gate and Diff are things the session *has*, while Foreman is an observer talking *about*
+  it. A card keeps the full note block instead, since it has no transcript to inline into.
 - **Cards** is the only layout with a focus mode, so <kbd>e</kbd> (expand) and the floating
   command bar are unique to it. In the console and the board the selected session is
   *already* the open detail, so there is nothing to expand, and its controls are on screen

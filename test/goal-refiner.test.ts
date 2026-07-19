@@ -49,7 +49,14 @@ setMode("good");
 
 process.env.MISSION_CLAUDE_BIN = fake;
 process.env.MISSION_GOAL_POLL_MS = "20";
-process.env.MISSION_GOAL_TIMEOUT_MS = "5000";
+/**
+ * The ceiling on ONE `claude -p` run. Named so the deadlines below can be DERIVED from it
+ * rather than guessed: a wait that expires sooner than the run it is waiting on turns a
+ * momentarily starved machine into a red test, which is what a bare multiple of the floor
+ * did here - 1800ms spent waiting on a spawn the refiner is willing to give 5000ms.
+ */
+const RUN_TIMEOUT_MS = 5000;
+process.env.MISSION_GOAL_TIMEOUT_MS = String(RUN_TIMEOUT_MS);
 /**
  * The per-session floor, scaled down from its 60s default so the tests below can cross it
  * without waiting a minute. Real time, not a fake clock: the refiner builds its own
@@ -188,7 +195,13 @@ test("a new prompt gets a fresh attempt after an earlier one failed", async () =
     await until(
       () => r.getGoal(s.id)?.source === "model",
       "the new prompt to be refined",
-      FLOOR_MS * 6, // the floor applies to the retry too - it is one refresh like any other
+      // The floor applies to the retry too - it is one refresh like any other. Budgeted for
+      // the slowest LEGITIMATE path, not the typical one (~350ms): the tick that lands as the
+      // wait above ends can still see the OLD prompt, because the first attempt's failure has
+      // not necessarily been recorded yet, and a claim spent there makes the retry sit out a
+      // SECOND floor before it even spawns. What follows is a real subprocess, so nothing
+      // shorter than the refiner's own per-run ceiling can tell "starved" from "broken".
+      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
     );
     assert.equal(r.getGoal(s.id)?.text, "Ship the Goal feature end to end");
   } finally {
@@ -220,7 +233,10 @@ test("a burst of prompts costs one refinement, not one per prompt", async () => 
     await until(
       () => r.getGoal(s.id)?.source === "model",
       "the burst to collapse into one refine",
-      FLOOR_MS * 6,
+      // Same derivation as the retry above: one floor to wait out, then a real spawn. The
+      // assertion is that the burst collapses into ONE refine, and that is proved by the
+      // `heuristic` check above, never by how tight this ceiling is.
+      FLOOR_MS * 2 + RUN_TIMEOUT_MS,
     );
     assert.equal(r.getGoal(s.id)?.prompt, "fourth");
   } finally {

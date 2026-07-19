@@ -261,8 +261,8 @@ export function toolChip(t: ToolCall): ToolChip {
 
 /** A transcript row: a real turn, or a run of tool-only turns folded into one line. */
 export type TranscriptRow =
-  | { kind: "turn"; id: string; message: TranscriptMessage }
-  | { kind: "tools"; id: string; tools: ToolCall[] };
+  | { kind: "turn"; id: string; ts: number; message: TranscriptMessage }
+  | { kind: "tools"; id: string; ts: number; tools: ToolCall[] };
 
 /**
  * Fold consecutive tool-only assistant turns into one row.
@@ -275,17 +275,21 @@ export type TranscriptRow =
  *
  * The row keeps the FIRST folded turn's id, so a run that grows as new turns stream
  * in keeps its React key (and the reader's scroll position) instead of remounting.
+ * Its `ts` comes from that same first turn, for the same reason and one more: a run
+ * that keeps absorbing turns would otherwise walk forward in time while the reader
+ * looks at it, and anything interleaved by timestamp (a Foreman episode) would jump
+ * position as it did.
  */
 export function transcriptRows(messages: TranscriptMessage[]): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
   for (const m of messages) {
     if (m.role !== "assistant" || m.text || m.tools.length === 0) {
-      rows.push({ kind: "turn", id: m.id, message: m });
+      rows.push({ kind: "turn", id: m.id, ts: m.ts, message: m });
       continue;
     }
     const last = rows[rows.length - 1];
     if (last?.kind === "tools") last.tools = [...last.tools, ...m.tools];
-    else rows.push({ kind: "tools", id: m.id, tools: [...m.tools] });
+    else rows.push({ kind: "tools", id: m.id, ts: m.ts, tools: [...m.tools] });
   }
   return rows;
 }

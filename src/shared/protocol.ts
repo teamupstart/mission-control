@@ -270,6 +270,61 @@ export const SetNoteSchema = z
 export type SetNote = z.infer<typeof SetNoteSchema>;
 
 /**
+ * Record one Foreman decision, with the context that produced it.
+ *
+ * The append-only counterpart to `SetNoteSchema`, and unlike it NOT a patch: an
+ * episode is written once, whole, by the worker at the moment it acted, from state
+ * it is about to drop. A merge-patch shape would invite a caller to fill it in over
+ * several calls, and the fields that matter most (`pane`, `question`) have no second
+ * chance to arrive - the pane is read once and discarded.
+ *
+ * `marker` is required and is the identity: paired with the session's note key it is
+ * unique, so re-posting the same marker updates that episode rather than adding one.
+ */
+export const RecordEpisodeSchema = z.object({
+  marker: z.string().min(1),
+  situation: z.string().min(1),
+  surface: z.enum(["input-review", "terminal"]),
+  question: z.string(),
+  pane: z.string().nullable().optional(),
+  menu: z
+    .object({
+      options: z.array(z.object({ number: z.number(), label: z.string() })),
+      highlighted: z.number(),
+    })
+    .nullable()
+    .optional(),
+  reviewId: z.string().nullable().optional(),
+  purpose: z.string().nullable().optional(),
+  brief: z.string().nullable().optional(),
+  recommendation: z.string().nullable().optional(),
+  classification: z.string().nullable().optional(),
+  confidence: z.number().nullable().optional(),
+  tier: z.number().nullable().optional(),
+  disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
+  lastAction: z.string().nullable().optional(),
+  sentText: z.string().nullable().optional(),
+  sentOption: z.object({ number: z.number(), label: z.string() }).nullable().optional(),
+  sentBy: z.enum(["foreman", "you"]).nullable().optional(),
+});
+export type RecordEpisode = z.infer<typeof RecordEpisodeSchema>;
+
+/**
+ * Stamp the human's answer onto an episode Foreman left open.
+ *
+ * Deliberately narrow: the dashboard knows which episode it is answering and what it
+ * just did, and nothing else. It never saw the pane or the question, so it is given
+ * no way to write them - which is what keeps the captured context immutable once the
+ * worker has recorded it.
+ */
+export const ResolveEpisodeSchema = z.object({
+  marker: z.string().min(1),
+  disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
+  sentText: z.string().nullable().optional(),
+});
+export type ResolveEpisode = z.infer<typeof ResolveEpisodeSchema>;
+
+/**
  * Patch a session's Goal. Separate from SetNoteSchema because the two records have
  * different writers and different lifecycles (see `SessionGoal`); merged the same way, so
  * capturing a prompt never clears the sentence derived from an earlier one.

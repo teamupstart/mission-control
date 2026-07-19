@@ -3,6 +3,7 @@ import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type {
   ForemanConfig,
   ForemanLeaseResult,
+  RecordEpisode,
   SetNote,
   SetWorkItemState,
 } from "@shared/protocol.ts";
@@ -361,6 +362,25 @@ export class ForemanClient implements ForemanActions {
     const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, { action, response });
     if (!res.ok) throw new Error(`resolveReview ${reviewId} -> ${res.status}`);
     return res.json();
+  }
+
+  /**
+   * Record the episode behind a note: what the child was asked, and what we did.
+   *
+   * Never throws. It runs after the answer has been delivered and the note stamped,
+   * so by then the work has SUCCEEDED - letting a failed audit write surface as an
+   * error would have the worker log a failure for a session it handled correctly,
+   * and (worse) leave the loop looking like it should retry an act it must not
+   * repeat. The daemon side fails soft for the same reason; this closes the other
+   * half, where the request never arrives at all.
+   */
+  async recordEpisode(id: string, episode: RecordEpisode): Promise<void> {
+    try {
+      const res = await send("POST", `/api/sessions/${enc(id)}/foreman-episode`, episode);
+      if (!res.ok) console.error(`[foreman] episode not recorded: ${id} -> ${res.status}`);
+    } catch (err) {
+      console.error("[foreman] could not record the episode:", err);
+    }
   }
 
   async logGateReply(id: string, gate: GateRef, text: string): Promise<unknown> {

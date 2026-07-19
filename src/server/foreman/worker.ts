@@ -9,7 +9,14 @@ import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import { parsePaneDialog } from "../discovery/pane-dialog.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { applyVerdict, foremanMayActLive, menuBlocksAnswer, planFromVerdict, ReviewFailureTracker } from "./verdict.ts";
+import {
+  applyVerdict,
+  episodeFromPlan,
+  foremanMayActLive,
+  menuBlocksAnswer,
+  planFromVerdict,
+  ReviewFailureTracker,
+} from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
 import { classifyDivergence, triagePosture, triageSession } from "./triage.ts";
 import type { TriageDeps, TriageOutcome } from "./triage.ts";
@@ -942,6 +949,35 @@ async function processSession(
       await client
         .putNote(session.id, { purpose: verdict.purpose, disposition: "skipped" })
         .catch(() => {});
+      // Record it anyway, even though nothing was sent. This return is the one exit
+      // from `processSession` that reaches a decision and writes no episode, and the
+      // pane captured above is the ONLY copy of a terminal ask - so leaving without it
+      // is exactly the loss the table was built to prevent, on a path where the note
+      // says "left for you" and the drawer would then have no matching entry to open.
+      //
+      // `send: null` because nothing reached the child, which leaves `sentText` and
+      // `sentBy` null through `episodeFromPlan`: a stale send is a decision that
+      // delivered nothing, and attributing one to it would be a lie in the record.
+      await client
+        .recordEpisode(
+          session.id,
+          episodeFromPlan({
+            pending,
+            ctx,
+            pane,
+            verdict,
+            tier,
+            plan: {
+              note: {
+                ...plan.note,
+                disposition: "skipped",
+                lastAction: "left for you (the session moved on during review)",
+              },
+              send: null,
+            },
+          }),
+        )
+        .catch(() => {});
       log(`${session.name}: skipped stale send (session changed during review)`);
       return true;
     }
@@ -958,6 +994,24 @@ async function processSession(
   }
 
   await applyVerdict(client, ctx, plan);
+
+  // Record what this decision WAS, now that we know how it ended.
+  //
+  // After `applyVerdict`, not before, for two reasons that point the same way. A send
+  // that fails throws out of it, so nothing is recorded for a reply that never landed
+  // - matching the note, which is also left unstamped there. And `plan.send` is only
+  // truthful about what reached the child once it has been executed.
+  //
+  // This is the only place the pane is durable. It was captured at the top of this
+  // function for the reviewer, and for a terminal ask it is the ONLY copy of the
+  // question in existence - a blocked tool call is not yet a transcript turn (see
+  // `prompt.ts`), so a tick that ends without writing it here loses that question for
+  // good. Everything else here could be reconstructed later; that cannot.
+  await client.recordEpisode(
+    session.id,
+    episodeFromPlan({ pending, ctx, pane, verdict, tier, plan }),
+  );
+
   log(
     `${session.name}: [tier ${tier}] ${verdict.action}/${verdict.classification} -> ${plan.note.disposition}` +
       (plan.send ? " (sent)" : ""),

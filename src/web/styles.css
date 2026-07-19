@@ -6514,3 +6514,510 @@ kbd {
   line-height: 1.45;
   color: var(--danger);
 }
+
+/* ---------------------------------------------------------------------------
+   Foreman: the strip, the inline episode, and the history drawer.
+
+   Replaces the single `.foreman-note` block in the detail pane, which carried the
+   record and the action together and pinned both - so a long escalation covered the
+   conversation it was about. The prose now scrolls with the chat (`.transcript-
+   episode`), the decision stays pinned as one line (`.foreman-strip`), and the
+   archive lives behind a rail (`.foreman-drawer`).
+
+   `.foreman-note` itself is untouched: the grid card still uses it, where there is no
+   transcript to inline into and its own max-height cap already bounds it.
+   --------------------------------------------------------------------------- */
+
+/* --- the pinned one-liner --- */
+
+.foreman-strip {
+  flex: none;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.foreman-strip.fs-escalated {
+  border-left-color: var(--attention);
+}
+.foreman-strip.fs-pending {
+  border-left-color: var(--working);
+}
+
+.fs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+/* The toggle takes all the slack so the ellipsis lands on the summary and never on
+   the badge or the disposition, which are the two things that must always be legible. */
+.fs-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+}
+.fs-toggle:hover .fs-summary {
+  color: var(--fg);
+}
+.fs-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.fs-disp {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* The one rule that makes the strip un-growable: one line, clipped. However much
+   Foreman writes, this is the same height. */
+.fs-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-caret {
+  flex: none;
+  font-size: 10px;
+  color: var(--dim);
+  transition: transform 0.18s ease;
+}
+.fs-toggle[aria-expanded="true"] .fs-caret {
+  transform: rotate(180deg);
+}
+
+.fs-go {
+  flex: none;
+}
+
+/* Expanding must not re-create the bug the strip exists to fix. The collapsed row is
+   already un-growable (`.fs-summary`); this bounds the OPEN state, where the
+   recommendation is the one child with no length limit and would otherwise push the
+   transcript, the composer and its own buttons off the bottom of the pane. */
+.fs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+  max-height: 50vh;
+  min-height: 0;
+}
+/* Only the recommendation gives ground, mirroring `.card.expanded .fn-brief`: the
+   actions stay pinned outside the scrolling region, because a note you have to scroll
+   to reach Dismiss in is a note that reads as broken. `min-height` is spelled out
+   because a non-visible overflow zeroes a flex item's automatic minimum. */
+.fs-body .fn-rec {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.fs-body .fn-hint {
+  flex: none;
+}
+.fs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+}
+.fs-jump {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.fs-jump:hover {
+  color: var(--working);
+}
+
+/* --- an episode, wherever it is rendered --- */
+
+.foreman-episode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.foreman-episode.fe-escalated {
+  border-left-color: var(--attention);
+}
+.foreman-episode.fe-pending {
+  border-left-color: var(--working);
+}
+.foreman-episode.fe-answered {
+  border-left-color: var(--idle);
+}
+.foreman-episode.fe-skipped {
+  border-left-color: var(--neutral);
+}
+
+.fe-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fe-disp {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.fe-time {
+  margin-left: auto;
+  font-size: 11px;
+}
+.fe-purpose {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+
+/* No max-height, deliberately. In the scroller a long brief is just a long message;
+   the height cap belonged to the old pinned card and left with it. */
+.fe-brief {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+.fe-brief :first-child {
+  margin-top: 0;
+}
+.fe-brief :last-child {
+  margin-bottom: 0;
+}
+
+.fe-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fe-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.fe-label span {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+/* Monospace and pre-wrapped because a terminal ask is a literal screen capture: the
+   `❯` cursor marks where an Enter would have landed, and the rows are aligned by
+   column. Proportional type would misrepresent what the model was looking at. */
+.fe-ask {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--claude);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.fe-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.fe-meta span {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  border: 1px solid var(--border-soft);
+  background: var(--bg-2);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.fe-resolution {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--idle);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.fe-res-who {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--idle);
+}
+.fe-res-option {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.fe-res-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  border-left: 2px solid var(--border);
+  padding-left: 9px;
+}
+
+/* --- the inline entry in the conversation --- */
+
+.transcript-episode {
+  margin: 4px 0;
+}
+.transcript-episode .foreman-episode {
+  background: color-mix(in oklab, var(--panel-2) 90%, var(--attention) 4%);
+}
+
+/* --- the rail + drawer --- */
+
+/* Sits in the tab row, pushed to its far end - see the comment at its call site.
+   Not a tab: no underline, no selected state, and it opens a surface rather than
+   switching the body, so it must not read as a peer of Conversation/Gate/Diff. */
+.foreman-rail {
+  margin-left: auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.foreman-rail:hover {
+  color: var(--fg);
+  border-color: var(--neutral);
+}
+.foreman-rail[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 10%, transparent);
+}
+.foreman-rail:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.fr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--attention);
+  flex: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 22%, transparent);
+}
+
+/* Anchored to the detail pane rather than the viewport: it is this session's record,
+   so it must not float over the fleet when the console's other panes are in view. */
+.cdetail {
+  position: relative;
+}
+.foreman-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, 70%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.32);
+}
+
+.fd-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 15px;
+  border-bottom: 1px solid var(--border);
+}
+.fd-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fd-back,
+.fd-close {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fd-close {
+  margin-left: auto;
+  border-color: var(--border);
+}
+.fd-back:hover,
+.fd-close:hover {
+  color: var(--fg);
+  border-color: var(--neutral);
+}
+.fd-back:focus-visible,
+.fd-close:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.fd-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fd-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.fd-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.fd-row:hover {
+  border-color: var(--neutral);
+}
+.fd-row:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.fd-row-open {
+  border-left-color: var(--attention);
+  background: color-mix(in oklab, var(--panel-2) 88%, var(--attention) 6%);
+}
+.fd-row-done {
+  border-left-color: var(--idle);
+}
+.fd-row-skip {
+  border-left-color: var(--neutral);
+}
+
+.fd-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fd-row-state {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fd-row-open .fd-row-state {
+  color: var(--attention);
+}
+.fd-row-done .fd-row-state {
+  color: var(--idle);
+}
+.fd-row-when {
+  margin-left: auto;
+  font-size: 10.5px;
+}
+
+/* The question leads the row, in the pane's own typeface, clamped to two lines: it is
+   what a reader scans for when they are looking for a particular past decision. */
+.fd-row-q {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.fd-row-verdict {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-caret {
+    transition: none;
+  }
+}

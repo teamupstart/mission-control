@@ -75,7 +75,10 @@ channel (the `PushNotification` capability already exists).
 
 ### 3. Learning loop from accept/reject decisions — quality compounds
 Every review starts cold from the same `POLICY` string. Foreman already produces the signals —
-Approve/Dismiss on `ForemanNote`, resolved reviews — but throws them away. Capture them into a
+Approve/Dismiss on a note, resolved reviews — and since the Foreman log
+(`docs/plans/foreman-log/plan.md`) it also *keeps* them: `foreman_episodes` records each
+decision with the ask, the verdict and who resolved it. Nothing reads them back into a review.
+Route them into a
 per-repo/global learnings store and inject the relevant entries into `buildReviewPrompt`. e.g.
 "in repo X, dependency installs are always approved," "this user prefers a unified abstraction
 over per-case picks." Foreman gets more right per week without prompt edits. firstmate's `/stow`

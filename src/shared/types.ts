@@ -352,6 +352,80 @@ export interface SessionNote {
   updatedAt: number;
 }
 
+/** Who delivered an episode's answer: Foreman on its own, or the human via Approve. */
+export type EpisodeAuthor = "foreman" | "you";
+
+/**
+ * One decision Foreman faced on a session, with the context that produced it.
+ *
+ * The append-only counterpart to `SessionNote`. The note says what Foreman decided
+ * *now*; an episode says what it was asked, what it concluded, and what reached the
+ * child - and survives the next decision, which the note does not.
+ *
+ * `question` and `pane` are the fields the record exists for. A terminal ask lives
+ * on the child's screen and nowhere else (a blocked tool call is not yet a
+ * transcript turn), so unless it is captured at decision time it is unrecoverable
+ * afterwards - unlike an `input` review, whose body is durable in `reviews`.
+ */
+export interface ForemanEpisode {
+  id: number;
+  /** Same key as the note: `agentSessionId` when known, else the synthetic id. */
+  noteKey: string;
+  sessionId: string;
+  /** `Pending.marker` - the stable id of this waiting episode. */
+  marker: string;
+  situation: string;
+  surface: "input-review" | "terminal";
+  /** The ask, verbatim: a review body, an activity line, or a framed gate. */
+  question: string;
+  /** The child's screen when the reviewer read it. Terminal surfaces only. */
+  pane: string | null;
+  /** The option rows on screen, when the ask was a menu. */
+  menu: PaneDialogSummary | null;
+  /** `reviews.id`, when the ask arrived as a review. */
+  reviewId: string | null;
+  purpose: string | null;
+  brief: string | null;
+  recommendation: string | null;
+  /** The verdict's own fields, which the note has never carried. */
+  classification: string | null;
+  confidence: number | null;
+  /** Which tier produced the verdict (0 structural, 1 cheap, 2 full review). */
+  tier: number | null;
+  disposition: NoteDisposition;
+  lastAction: string | null;
+  /** What was actually delivered - null when nothing was sent. */
+  sentText: string | null;
+  /** The menu row selected, when the answer was a selection rather than typing. */
+  sentOption: { number: number; label: string } | null;
+  /** Who authored what reached the child - null when nothing was delivered. */
+  sentBy: EpisodeAuthor | null;
+  createdAt: number;
+  resolvedAt: number | null;
+  /**
+   * Who DECIDED this episode, which is not the same question as who sent the text.
+   *
+   * A dismissal resolves an episode without delivering a word, so `sentBy` is null on
+   * exactly the paths where a human still made the call. Reading authorship off
+   * `sentBy` alone made a dismissal read back as an approval; the two answers are
+   * kept apart so the record can say "you dismissed this" without inventing a send.
+   * Null while the episode is still waiting on someone.
+   */
+  resolvedBy: EpisodeAuthor | null;
+}
+
+/**
+ * The menu rows an episode's pane was showing, as stored. A structural echo of the
+ * server's `PaneDialog` rather than a re-export: this crosses the wire and is read
+ * back from JSON written by an older daemon, so it must stay loose about fields the
+ * parser may add.
+ */
+export interface PaneDialogSummary {
+  options: Array<{ number: number; label: string }>;
+  /** The row the `❯` cursor sat on - where an Enter would have landed. */
+  highlighted: number;
+}
+
 /**
  * A session's Goal: one sentence saying what it is currently attempting to solve, written
  * by the DAEMON on every instrumented Claude session whether or not Foreman ever runs.

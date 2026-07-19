@@ -9,6 +9,7 @@ import {
   foldAlerts,
   hasAnything,
   mergeBuffers,
+  refreshAlerts,
   rollupLine,
   tally,
 } from "../src/shared/away-buffer.ts";
@@ -76,6 +77,51 @@ test("a repeat takes the NEWEST wording - a longer stall supersedes a shorter on
     200,
   );
   assert.equal(buf.events[0]?.body, "silent for 40m");
+});
+
+test("a refresh re-words an event WITHOUT counting it as happening again", () => {
+  // The distinction the digest depends on: a stall that has been quiet for 40
+  // minutes is one continuous stall described more accurately, not forty stalls.
+  let buf = foldAlerts(
+    emptyBuffer(0),
+    [mkAlert({ id: "stuck:a:silent-working", kind: "stuck", body: "silent for 10m" })],
+    100,
+  );
+  buf = refreshAlerts(buf, [
+    mkAlert({ id: "stuck:a:silent-working", kind: "stuck", body: "silent for 40m" }),
+  ]);
+  assert.equal(buf.events.length, 1);
+  assert.equal(buf.events[0]?.body, "silent for 40m");
+  assert.equal(buf.events[0]?.count, 1);
+  assert.deepEqual(digestLines(buf), ["auth went idle - silent for 40m"]);
+});
+
+test("a refresh leaves the event's own timestamps alone", () => {
+  // lastAt means "when this last happened", and re-reading a stall is not it
+  // happening again - the digest orders lines by it.
+  let buf = foldAlerts(emptyBuffer(0), [mkAlert()], 100);
+  buf = refreshAlerts(buf, [mkAlert({ body: "reworded" })]);
+  assert.equal(buf.events[0]?.firstAt, 100);
+  assert.equal(buf.events[0]?.lastAt, 100);
+});
+
+test("a refresh never INSERTS - a stall that cleared is not resurrected", () => {
+  // refreshAlerts is fed the live stall set, so an event absent from it has
+  // resolved. It must not be dragged back into a window it never belonged to.
+  const buf = refreshAlerts(emptyBuffer(0), [mkAlert({ id: "stuck:b:silent-working" })]);
+  assert.deepEqual(buf.events, []);
+  assert.equal(hasAnything(buf), false);
+});
+
+test("an event nobody refreshed keeps the wording it had while it was real", () => {
+  let buf = foldAlerts(emptyBuffer(0), [mkAlert({ body: "silent for 10m" })], 100);
+  buf = refreshAlerts(buf, [mkAlert({ id: "idle:other", body: "something else" })]);
+  assert.equal(buf.events[0]?.body, "silent for 10m");
+});
+
+test("refreshing against nothing returns the buffer untouched", () => {
+  const buf = foldAlerts(emptyBuffer(0), [mkAlert()], 100);
+  assert.equal(refreshAlerts(buf, []), buf);
 });
 
 test("different subjects stay separate", () => {

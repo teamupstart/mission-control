@@ -93,6 +93,27 @@ function stallKeys(scope: AlertScope): Set<string> {
 }
 
 /**
+ * The alert one stall implies, whether or not it is new.
+ *
+ * Split out because the away watcher re-derives it every tick to refresh the wording
+ * already sitting in the buffer (see refreshAlerts): a stall alerts ONCE, so without
+ * a second reading the digest would describe it in the words it had when the
+ * threshold tripped. Deriving both from here means the refreshed line and the alert
+ * that announced it can never diverge.
+ */
+export function stuckAlert(st: Stall, sessions: Session[]): Alert {
+  const s = sessions.find((x) => x.id === st.sessionId);
+  return {
+    id: `stuck:${st.sessionId}:${st.kind}`,
+    kind: "stuck",
+    title: `${s ? sessionLabel(s) : "a session"} looks stuck`,
+    body: st.reason,
+    sessionId: st.sessionId,
+    severity: "attention",
+  };
+}
+
+/**
  * The NEW alerts implied by the transition prev -> next. Each attention cause is
  * detected from session FIELDS directly (not the coarse bucket or a reason string),
  * edge-triggered per cause - so a review landing on a session that's already
@@ -207,17 +228,8 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
   // legitimately alerts again, because that is new information.
   const before = stallKeys(prev);
   for (const st of next.stalls ?? []) {
-    const key = `${st.sessionId}:${st.kind}`;
-    if (before.has(key)) continue;
-    const s = next.sessions.find((x) => x.id === st.sessionId);
-    alerts.push({
-      id: `stuck:${key}`,
-      kind: "stuck",
-      title: `${s ? sessionLabel(s) : "a session"} looks stuck`,
-      body: st.reason,
-      sessionId: st.sessionId,
-      severity: "attention",
-    });
+    if (before.has(`${st.sessionId}:${st.kind}`)) continue;
+    alerts.push(stuckAlert(st, next.sessions));
   }
 
   const prevTasks = new Map(prev.tasks.map((t) => [t.id, t]));

@@ -1,10 +1,16 @@
 import { envVar } from "../config.ts";
 import { unref } from "../util/timers.ts";
-import { detectAlerts } from "@shared/alerts.ts";
+import { detectAlerts, stuckAlert } from "@shared/alerts.ts";
 import type { AlertScope } from "@shared/alerts.ts";
 import { detectStalls, trackParked } from "@shared/stall.ts";
 import type { Stall } from "@shared/stall.ts";
-import { closeBuffer, emptyBuffer, foldAlerts, mergeBuffers } from "@shared/away-buffer.ts";
+import {
+  closeBuffer,
+  emptyBuffer,
+  foldAlerts,
+  mergeBuffers,
+  refreshAlerts,
+} from "@shared/away-buffer.ts";
 import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
@@ -128,6 +134,18 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
       const base = opened ? { ...(prev ?? scope), stalls: [] } : prev;
       if (base && buffer) {
         buffer = foldAlerts(buffer, detectAlerts(base, scope), t);
+      }
+
+      // Stalls are the one buffered thing that keeps getting WORSE after it is
+      // announced, and the edge-trigger above deliberately announces each one only
+      // once - so its line would otherwise still read "silent for 10m" an hour
+      // later. Re-read the live stalls into what is already buffered: wording only,
+      // no new alert, no second notification, no repeat count.
+      if (buffer) {
+        buffer = refreshAlerts(
+          buffer,
+          stalls.map((st) => stuckAlert(st, snap.sessions)),
+        );
       }
       prev = scope;
     } catch (err) {

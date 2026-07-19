@@ -102,6 +102,25 @@ export function closeBuffer(buf: AwayBuffer, at: number): AwayBuffer {
 }
 
 /**
+ * How an entry absorbs a fresh sighting of the same event.
+ *
+ * The newest wording always wins - "silent for 40m" supersedes "silent for 10m" -
+ * but `at` decides whether this sighting was a new OCCURRENCE (a timestamp) or the
+ * same one described again (null). Only an occurrence moves `lastAt` and the repeat
+ * count; a re-reading must not claim a session went stuck forty times when it was
+ * one continuous stall.
+ */
+function absorb(existing: AwayEvent, a: Alert, at: number | null): AwayEvent {
+  return {
+    ...existing,
+    title: a.title,
+    body: a.body,
+    lastAt: at ?? existing.lastAt,
+    count: at === null ? existing.count : existing.count + 1,
+  };
+}
+
+/**
  * Fold new alerts into the buffer, coalescing repeats.
  *
  * Takes ALL alerts, not just the bufferable ones. An attention alert that broke
@@ -118,15 +137,7 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
   for (const a of alerts) {
     const existing = byKey.get(a.id);
     if (existing) {
-      // Replace the wording as well as bumping the count: the newest occurrence is
-      // the truest ("silent for 40m" supersedes "silent for 10m").
-      byKey.set(a.id, {
-        ...existing,
-        title: a.title,
-        body: a.body,
-        lastAt: now,
-        count: existing.count + 1,
-      });
+      byKey.set(a.id, absorb(existing, a, now));
       continue;
     }
     if (byKey.size >= AWAY_BUFFER_CAP) {
@@ -146,6 +157,32 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
   }
 
   return { ...buf, events: [...byKey.values()], dropped };
+}
+
+/**
+ * Re-read the wording of events ALREADY buffered, without recording an occurrence.
+ *
+ * Exists for stalls, which are edge-triggered per (session, kind) so that a wedged
+ * session notifies once rather than every poll. That is right for delivery and wrong
+ * for the digest: the single alert freezes the wording at the moment the threshold
+ * tripped, so a session that went quiet at 09:12 and is still quiet when you sit
+ * back down at 10:00 would be reported as "silent for 10m". Re-reading the live
+ * stall each tick makes the line true at the moment you read it.
+ *
+ * Never inserts, so a stall that has since CLEARED - and is therefore absent from
+ * the live set - is neither resurrected nor pinned; it keeps the last wording it had
+ * while real, which is what actually happened while you were gone.
+ */
+export function refreshAlerts(buf: AwayBuffer, alerts: Alert[]): AwayBuffer {
+  if (alerts.length === 0) return buf;
+  const byId = new Map(alerts.map((a) => [a.id, a]));
+  return {
+    ...buf,
+    events: buf.events.map((e) => {
+      const a = byId.get(e.key);
+      return a ? absorb(e, a, null) : e;
+    }),
+  };
 }
 
 /**

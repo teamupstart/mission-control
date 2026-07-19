@@ -16,7 +16,7 @@ process.env.HARNESS_HOME = join(home, "state");
 const { openDb } = await import("../src/server/db.ts");
 const { setAwayConfig } = await import("../src/server/away/config.ts");
 const { startAwayWatcher } = await import("../src/server/away/watcher.ts");
-const { rollupLine } = await import("../src/shared/away-buffer.ts");
+const { digestLines, rollupLine } = await import("../src/shared/away-buffer.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 beforeEach(() => {
@@ -263,6 +263,119 @@ test("a stall carried into a window is reported ONCE, not once per tick", () => 
   const events = w.buffer()?.events ?? [];
   assert.equal(events.length, 1);
   assert.equal(events[0]?.count, 1);
+  w.stop();
+});
+
+test("a stall's digest line ages with it - you read how long it has been stuck NOW", () => {
+  // The whole point of the refresh: trip the threshold at 09:12, come back at
+  // 10:00, and the line must not still claim the ten minutes it had when it fired.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
+  let clock = 1000;
+  const w = startAwayWatcher(reg.src, () => clock);
+  setAwayConfig({ away: true }, 500);
+  w.tick(); // baseline, not yet stalled
+
+  clock = 10 * MIN; // trips the working threshold
+  w.tick();
+  assert.match(w.buffer()?.events[0]?.body ?? "", /silent for 10m/);
+
+  clock = 58 * MIN; // still silent, and you are only now back at the desk
+  w.tick();
+  const events = w.buffer()?.events ?? [];
+  assert.equal(events.length, 1);
+  assert.match(events[0]?.body ?? "", /silent for 58m/);
+  w.stop();
+});
+
+test("ageing a stall's wording is not a second occurrence - no x2 in the digest", () => {
+  // A refresh describes one continuous stall more accurately. Counting it would
+  // have the card claim the session went stuck once per poll.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
+  let clock = 1000;
+  const w = startAwayWatcher(reg.src, () => clock);
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+
+  for (const t of [10 * MIN, 20 * MIN, 30 * MIN, 58 * MIN]) {
+    clock = t;
+    w.tick();
+  }
+
+  const buf = w.buffer()!;
+  assert.equal(buf.events.length, 1);
+  assert.equal(buf.events[0]?.count, 1);
+  assert.match(rollupLine(buf), /^1 stuck$/);
+  assert.deepEqual(
+    digestLines(buf).map((l) => /\(x\d+\)/.test(l)),
+    [false],
+  );
+  w.stop();
+});
+
+test("a stall that CLEARS keeps its last real wording and is not refreshed onward", () => {
+  // It genuinely happened, so it stays in the digest - but frozen at the moment it
+  // resolved, never re-worded from a stall that no longer exists.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
+  let clock = 1000;
+  const w = startAwayWatcher(reg.src, () => clock);
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+
+  clock = 10 * MIN;
+  w.tick();
+  assert.equal(w.stalls().length, 1);
+
+  // The agent wakes up: a fresh hook event, so nothing is silent any more.
+  clock = 58 * MIN;
+  reg.set([mkSession({ id: "a", state: "working", lastActivity: 58 * MIN })]);
+  w.tick();
+
+  assert.deepEqual(w.stalls(), []);
+  const events = w.buffer()?.events ?? [];
+  assert.equal(events.length, 1);
+  assert.match(events[0]?.body ?? "", /silent for 10m/);
+  w.stop();
+});
+
+test("a stall that changes KIND is genuinely new information, and alerts again", () => {
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
+  let clock = 1000;
+  const w = startAwayWatcher(reg.src, () => clock);
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+
+  clock = 10 * MIN;
+  w.tick();
+  assert.deepEqual(w.stalls().map((s) => s.kind), ["silent-working"]);
+
+  // Foreman escalates: the same session, stuck for a different and more urgent
+  // reason, which outranks the silence rule.
+  clock = 20 * MIN;
+  reg.set([
+    mkSession({
+      id: "a",
+      state: "working",
+      lastActivity: 0,
+      note: {
+        purpose: null,
+        brief: null,
+        recommendation: null,
+        disposition: "escalated",
+        lastAction: null,
+        handledMarker: null,
+        updatedAt: 0,
+      },
+    }),
+  ]);
+  w.tick();
+
+  assert.deepEqual(w.stalls().map((s) => s.kind), ["escalated"]);
+  const stuck = (w.buffer()?.events ?? []).filter((e) => e.kind === "stuck");
+  assert.deepEqual(stuck.map((e) => e.key).sort(), [
+    "stuck:a:escalated",
+    "stuck:a:silent-working",
+  ]);
+  assert.deepEqual(stuck.map((e) => e.count), [1, 1]);
   w.stop();
 });
 

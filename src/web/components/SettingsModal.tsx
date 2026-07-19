@@ -5,18 +5,20 @@ import { useSkills } from "../useSkills.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
+import { AppearancePanel } from "./AppearancePanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 
 /**
  * The settings categories, in rail order. Each is a peer destination in the left nav,
- * so adding one - Notifications, Foreman, Appearance - is appending an entry here plus a
+ * so adding one - Notifications, Appearance - is appending an entry here plus a
  * `case` in `renderCategory`, never lengthening a scroll. Keeping the list as data (not
  * inlined JSX) is also what the render test walks to prove every category is reachable.
  */
 export const SETTINGS_CATEGORIES = [
   { id: "layout", label: "Layout", icon: "▦" },
+  { id: "appearance", label: "Appearance", icon: "◐" },
   { id: "keyboard", label: "Keyboard", icon: "⌨" },
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "harnesses", label: "Harnesses", icon: "⚙" },
@@ -38,8 +40,8 @@ function tabDomId(id: SettingsCategoryId): string {
  * Skills is one click from open, not the tail of a scroll. The panels themselves are
  * unchanged; this component only arranges them and owns which one is showing.
  *
- * `LayoutPanel` and `KeyboardPanel` are the modal's local-only, synchronous settings
- * (localStorage). Skills is the one that leaves this machine: it writes to the daemon,
+ * `LayoutPanel`, `AppearancePanel`, and `KeyboardPanel` are the modal's local-only,
+ * synchronous settings (localStorage). Skills is the one that leaves this machine: it writes to the daemon,
  * and through it to `~/.claude/skills`, so it is also the first that can fail
  * asynchronously. `SkillsPanel` owns that error path. `useSkills` lives here rather than
  * inside the Skills panel so the catalog keeps polling (and `pending` keeps moving) while
@@ -129,6 +131,8 @@ export function SettingsModal({
     switch (id) {
       case "layout":
         return <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />;
+      case "appearance":
+        return <AppearancePanel />;
       case "keyboard":
         return <KeyboardPanel />;
       case "skills":

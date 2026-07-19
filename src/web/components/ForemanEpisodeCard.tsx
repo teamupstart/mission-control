@@ -159,6 +159,10 @@ function EpisodeResolution({ episode }: { episode: ForemanEpisode }): React.JSX.
           ? "Foreman left this for you"
           : "Foreman answered"
         : (lastAction ?? "Recorded");
+  // An episode still waiting on a human has no `resolvedBy`, so `who` above already IS
+  // `lastAction`. Tracking that keeps the trailing line from printing it a second time -
+  // which is every escalated episode, i.e. the ones a reader opens the drawer to read.
+  const whoIsLastAction = !resolvedBy && lastAction !== null;
   return (
     <div className="fe-block">
       <div className="fe-label">Resolution</div>
@@ -176,7 +180,9 @@ function EpisodeResolution({ episode }: { episode: ForemanEpisode }): React.JSX.
             nothing, so `sentText` IS the label there, and printing both reads as two
             separate things having happened. */}
         {sentText && sentText !== sentOption?.label && <p className="fe-res-text">{sentText}</p>}
-        {!sentText && !sentOption && lastAction && <p className="fe-res-text dim">{lastAction}</p>}
+        {!sentText && !sentOption && lastAction && !whoIsLastAction && (
+          <p className="fe-res-text dim">{lastAction}</p>
+        )}
       </div>
     </div>
   );

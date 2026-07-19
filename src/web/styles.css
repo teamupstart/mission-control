@@ -6611,6 +6611,10 @@ kbd {
   flex: none;
 }
 
+/* Expanding must not re-create the bug the strip exists to fix. The collapsed row is
+   already un-growable (`.fs-summary`); this bounds the OPEN state, where the
+   recommendation is the one child with no length limit and would otherwise push the
+   transcript, the composer and its own buttons off the bottom of the pane. */
 .fs-body {
   display: flex;
   flex-direction: column;
@@ -6618,12 +6622,29 @@ kbd {
   padding: 0 10px 10px;
   border-top: 1px solid var(--border-soft);
   padding-top: 10px;
+  max-height: 50vh;
+  min-height: 0;
+}
+/* Only the recommendation gives ground, mirroring `.card.expanded .fn-brief`: the
+   actions stay pinned outside the scrolling region, because a note you have to scroll
+   to reach Dismiss in is a note that reads as broken. `min-height` is spelled out
+   because a non-visible overflow zeroes a flex item's automatic minimum. */
+.fs-body .fn-rec {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.fs-body .fn-hint {
+  flex: none;
 }
 .fs-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  flex: none;
 }
 .fs-jump {
   margin-left: auto;

@@ -156,11 +156,10 @@ const OPTION_ROW = /^\s*❯?\s*(\d{1,2})\.\s+\S/u;
  * identically on every such row. The option rows say what the CHOICES were but not
  * what was being decided. And the pane is a whole screen, mostly scrollback.
  *
- * What a reader actually remembers is the sentence above the options, so that is what
- * this reaches for: the prose between the permission header and the first numbered
- * row. Falling back to the options, then the question, then the pane's tail - the
- * tail rather than the head because the dialog is the foreground and sits at the
- * BOTTOM of a capture (see `parsePaneDialog`).
+ * What a reader actually remembers is the sentence the dialog was built around, so that
+ * is what this reaches for (see `panePrompt`). Falling back to the options, then the
+ * question, then the pane's tail - the tail rather than the head because the dialog is
+ * the foreground and sits at the BOTTOM of a capture (see `parsePaneDialog`).
  */
 export function askPreview(e: ForemanEpisode): string {
   const prompt = panePrompt(e.pane);
@@ -203,27 +202,57 @@ function dialogTop(lines: string[]): number | null {
 }
 
 /**
- * The prose a pane showed immediately above its option rows, or null when it had none.
+ * How far above the dialog the walk may reach, in blank-line-separated paragraphs.
  *
- * Bounded to the paragraph directly above the dialog - blank lines above it end the
- * walk once any prose has been collected - because the rest of a capture is scrollback
- * that has nothing to do with the ask. Stops at the permission header too, and drops
- * it: "Claude needs your permission to use Bash" reads identically on every such row.
+ * Four is what the widest real capture needs (a Bash permission prompt: the tool chip,
+ * the command, "This command requires approval", "Do you want to proceed?"). A cap is
+ * what stops scrollback further up - the child's own output - from being weighed as if
+ * it were part of the dialog.
+ */
+const MAX_PROSE_PARAGRAPHS = 4;
+
+/**
+ * The prose a pane's dialog was built around, or null when it showed none.
+ *
+ * Takes the LONGEST paragraph above the option rows rather than the nearest one. BOTH
+ * ends of that region are boilerplate in real captures: a Claude dialog opens with a
+ * short chip naming the tool ("Bash command", "☐ Database") and closes with a generic
+ * confirmation ("Do you want to proceed?") or a bare affordance label ("Security
+ * guide"), and none of those identify the ask. Picking by position gets two of the three
+ * verbatim captures in `foreman-pane-dialog.test.ts` wrong whichever end you pick from,
+ * so length is the discriminator instead - the substantive line is the one with
+ * something to say. Ties keep the paragraph nearest the dialog.
+ *
+ * Stops at the permission header and drops it: "Claude needs your permission to use
+ * Bash" reads identically on every such row.
  */
 function panePrompt(pane: string | null): string | null {
   if (!pane) return null;
   const lines = pane.split("\n");
   const top = dialogTop(lines);
   if (top === null) return null;
-  const prose: string[] = [];
+  const paragraphs: string[] = [];
+  // Collected bottom-up, so each paragraph is reversed back into reading order.
+  let current: string[] = [];
+  const flush = () => {
+    const text = current.reverse().join(" ").trim();
+    current = [];
+    if (text) paragraphs.push(text);
+  };
   for (let i = top - 1; i >= 0; i--) {
     const line = lines[i]!.trim();
     if (!line) {
-      if (prose.length > 0) break;
+      flush();
+      if (paragraphs.length >= MAX_PROSE_PARAGRAPHS) break;
       continue;
     }
     if (PERMISSION_HEADER.test(line)) break;
-    prose.push(line);
+    current.push(line);
   }
-  return prose.reverse().join(" ").trim() || null;
+  flush();
+  let best: string | null = null;
+  for (const p of paragraphs) {
+    if (best === null || p.length > best.length) best = p;
+  }
+  return best;
 }

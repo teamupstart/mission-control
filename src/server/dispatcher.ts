@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.ts";
+import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt, setPermissionMode } from "./actions.ts";
 import { getHarnessesConfig } from "./harnesses.ts";
@@ -530,12 +531,18 @@ function titleCase(line: string): string {
 
 /**
  * A sensible default task title from the intent: its first non-empty line, title-cased
- * so a dispatch left untitled still names its card like a heading, capped at 60.
+ * so a dispatch left untitled still names its card like a heading, capped at
+ * `TITLE_MAX_CHARS` - the same bound the model tier clamps to, taken from the same
+ * constant so the two tiers cannot drift apart.
+ *
+ * Keeps its own slice-based clamp rather than adopting `titleLine`'s word-boundary cut:
+ * this is the fallback, and changing where it cuts is a behaviour change the model tier
+ * does not need.
  */
 export function deriveTitle(intent: string): string {
   const line = intent.split("\n").map((l) => l.trim()).find(Boolean) ?? "task";
   const titled = titleCase(line);
-  return titled.length > 60 ? titled.slice(0, 59) + "…" : titled;
+  return titled.length > TITLE_MAX_CHARS ? titled.slice(0, TITLE_MAX_CHARS - 1) + "…" : titled;
 }
 
 async function uniqueTmuxSessionName(baseName: string, shortId: string): Promise<string> {

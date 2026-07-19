@@ -28,6 +28,17 @@ export interface Ok {
  */
 export class TaskManager {
   private dispatcher: Dispatcher;
+  /**
+   * In-flight titling runs, by task id.
+   *
+   * A backlogged untitled task is on the board - and dispatchable - the instant `create`
+   * returns, while its title is still being decided. Dispatching in that window would cut
+   * the branch and the tmux session from the heuristic title and then rename only the card,
+   * which is the exact mismatch the awaited-titling ordering exists to prevent. `dispatch`
+   * awaits this first, so an early click waits a beat and gets the model's title instead.
+   * Held here rather than checked at the route so the invariant holds on every path.
+   */
+  private titling = new Map<string, Promise<void>>();
 
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
@@ -90,7 +101,12 @@ export class TaskManager {
     if (explicitTitle) {
       if (!input.backlog) void this.dispatcher.dispatch(task.id);
     } else {
-      void this.autoTitleThenDispatch(task.id, input.intent, input.backlog);
+      // Registered synchronously, before this returns, so no caller can observe the task
+      // without also observing that its title is still in flight.
+      const settled = this.autoTitleThenDispatch(task.id, input.intent, input.backlog)
+        .catch(() => {})
+        .finally(() => this.titling.delete(task.id));
+      this.titling.set(task.id, settled);
     }
     return task;
   }
@@ -104,12 +120,14 @@ export class TaskManager {
    * the life of the task and neither of which can be renamed afterwards from the dashboard.
    * Dispatching first and patching the title after would leave every untitled task with a
    * card whose name no longer matches its branch or its terminal, which is worse than the
-   * rough title this feature exists to replace. The wait is bounded by `TITLE_TIMEOUT_MS`
-   * and typically a couple of seconds, against a dispatch that spends far longer cutting a
-   * worktree and waiting for the agent to boot.
+   * rough title this feature exists to replace. The wait is bounded by two attempts at
+   * `TITLE_TIMEOUT_MS` each (`runStructured` retries once on a parse miss), so ~16s worst
+   * case and typically a couple of seconds, against a dispatch that spends far longer
+   * cutting a worktree and waiting for the agent to boot.
    *
-   * Never throws: `summariseTaskTitle` reports failure as null, and a null simply leaves the
-   * heuristic title standing - the dispatch below happens either way.
+   * Never throws: `summariseTaskTitle` reports failure as null, and the title write is
+   * guarded, so a failure of either simply leaves the heuristic title standing - the
+   * dispatch below happens either way.
    */
   private async autoTitleThenDispatch(id: string, intent: string, backlog: boolean): Promise<void> {
     const title = await summariseTaskTitle(intent);
@@ -118,7 +136,14 @@ export class TaskManager {
     const cur = this.registry.getTask(id);
     if (!cur) return;
     if (title && title !== cur.title) {
-      this.registry.upsertTask({ ...cur, title, updatedAt: Date.now() });
+      try {
+        this.registry.upsertTask({ ...cur, title, updatedAt: Date.now() });
+      } catch (err) {
+        // A failed write must not cost the dispatch. Throwing here would strand the task in
+        // `dispatching` forever - no error on the card, and `remove` refuses that status -
+        // over a cosmetic rename. The heuristic title stands and we fall through.
+        console.error("[title] could not store the title:", err);
+      }
     }
     if (backlog) return;
     // A task cancelled mid-title is withdrawn, not merely renamed - launching an agent for it
@@ -132,8 +157,14 @@ export class TaskManager {
    * cleanly torn down (no lingering worktree). A failed task that still holds a
    * worktree means its agent may still be running; the user should Cancel it first
    * (which reclaims the tree) rather than dispatch a second agent onto it.
+   *
+   * Waits out any in-flight titling first: the branch and the tmux session are cut from
+   * `task.title` and can never be renamed afterwards, so dispatching mid-titling would
+   * name them after the heuristic title and leave the card disagreeing with both.
    */
-  dispatch(id: string): Task | null {
+  async dispatch(id: string): Promise<Task | null> {
+    await this.titling.get(id);
+    // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
     if (!t) return null;
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {

@@ -117,6 +117,42 @@ test("a whitespace-only title is rejected rather than stamped onto the card", as
   await until(() => callCount() >= before + 2, "both attempts to be rejected");
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(tasks.get(t.id)?.title, "Add a Dark Mode Toggle");
+  // EXACTLY two, not "at least two": TITLE_TIMEOUT_MS is a per-attempt budget, so the
+  // number of attempts is what sets the ceiling a dispatch can wait behind. A third
+  // attempt would silently make that ceiling 3x its documented value.
+  assert.equal(callCount(), before + 2, "a parse miss is retried exactly once");
+});
+
+test("the wait in front of a dispatch is bounded by two attempts at the per-attempt budget", async () => {
+  const { TITLE_TIMEOUT_MS } = await import("../src/server/task-title.ts");
+  // The knob feeds ONE attempt (see the constant's doc block), and the blank case above
+  // pins the attempt count at two - so this is the real ceiling on the dispatch path.
+  assert.equal(TITLE_TIMEOUT_MS, 5000, "the per-attempt budget is what the env var sets");
+});
+
+test("dispatching while titling is in flight still cuts the branch from the model's title", async () => {
+  setMode("good");
+  const tasks = new TaskManager(new Registry());
+  const t = create(tasks, "hey, could you please look at the flaky worktree cleanup on Reset?");
+  // The heuristic title is on the card right now, and the operator can click Dispatch on it
+  // immediately - this is that click, landing inside the titling window.
+  assert.match(t.title, /^Hey, Could You Please/);
+
+  const dispatched = await tasks.dispatch(t.id);
+
+  // `Dispatcher.dispatch` reads the title once, synchronously, to build the branch and the
+  // tmux session. By the time dispatch returns, that read must have seen the model's title.
+  assert.equal(dispatched?.title, "Fix flaky worktree cleanup");
+  assert.equal(tasks.get(t.id)?.title, "Fix flaky worktree cleanup");
+});
+
+test("dispatching a task removed during titling is refused rather than resurrecting it", async () => {
+  setMode("good");
+  const tasks = new TaskManager(new Registry());
+  const t = create(tasks, "add a dark mode toggle to the settings pane");
+  const gone = tasks.dispatch(t.id);
+  await tasks.remove(t.id);
+  assert.equal(await gone, null, "the post-wait re-read must see the removal");
 });
 
 test("a long model title is clamped at a word boundary, not rejected", async () => {

@@ -19,12 +19,17 @@ import { createLimiter, parseModelJson, runStructured } from "./claude-cli.ts";
  *  both the priciest and the least predictable choice. */
 const TITLE_MODEL = envVar("TASK_TITLE_MODEL") ?? "claude-haiku-4-5";
 /**
+ * PER-ATTEMPT budget, not the total: `runStructured` retries once on a parse miss (a
+ * clean exit whose output won't validate), so the worst case in front of a dispatch is
+ * roughly TWICE this - about 16s. A non-zero exit is not retried and costs one budget.
+ *
  * Sized for Haiku emitting one short object from one prompt - tighter than the goal
  * refiner's 30s, because this one is in front of the operator rather than behind them:
  * dispatch waits on it (see `TaskManager.create`), so every second here is a second the
- * worktree isn't being cut.
+ * worktree isn't being cut. Halved from 15s for exactly that reason: the number that
+ * matters to the operator is the two-attempt ceiling, not one attempt's.
  */
-const TITLE_TIMEOUT_MS = Number(envVar("TASK_TITLE_TIMEOUT_MS") ?? 15_000);
+export const TITLE_TIMEOUT_MS = Number(envVar("TASK_TITLE_TIMEOUT_MS") ?? 8_000);
 /**
  * Concurrent `claude -p` runs for titling. Dispatch is human-paced, so this is a ceiling
  * rather than a queue - it exists so that pasting a backlog in one burst can't fork a

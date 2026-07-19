@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Board → Console drill-in</title>
+<style>
+  :root {
+    --bg: #fbfcfe;
+    --bg-2: #f1f4f9;
+    --panel: #ffffff;
+    --fg: #1a2230;
+    --muted: #55637a;
+    --dim: #8a95a8;
+    --border: #dfe4ec;
+    --border-soft: #eaeef4;
+    --accent: #2f7df6;
+    --accent-soft: #e6f0ff;
+    --attention: #e0693b;
+    --working: #2f7df6;
+    --code-bg: #f3f5f9;
+    --shadow: 0 1px 2px rgba(20, 30, 50, 0.06), 0 8px 24px rgba(20, 30, 50, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0f14;
+      --bg-2: #12161d;
+      --panel: #161b23;
+      --fg: #e7ecf3;
+      --muted: #9aa6ba;
+      --dim: #67728a;
+      --border: #262d38;
+      --border-soft: #1c222b;
+      --accent: #5b9bff;
+      --accent-soft: #17253d;
+      --attention: #f0805a;
+      --working: #5b9bff;
+      --code-bg: #10151c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.35);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 40px 20px 96px;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+
+  .eyebrow {
+    font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
+    color: var(--accent); margin: 0 0 8px;
+  }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.4px; }
+  h2 {
+    font-size: 20px; margin: 40px 0 12px; padding-top: 18px;
+    border-top: 1px solid var(--border-soft); letter-spacing: -0.2px;
+  }
+  h3 { font-size: 15.5px; margin: 22px 0 6px; color: var(--fg); }
+  p { margin: 12px 0; color: var(--fg); }
+  .lead { font-size: 17px; color: var(--muted); }
+  strong { color: var(--fg); font-weight: 650; }
+  em { color: var(--muted); }
+  a { color: var(--accent); }
+  ul, ol { margin: 12px 0; padding-left: 22px; }
+  li { margin: 6px 0; }
+  li::marker { color: var(--dim); }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.86em; background: var(--code-bg);
+    border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px;
+  }
+  .scroll-x { overflow-x: auto; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 14px 16px; margin: 14px 0; font-size: 13px; line-height: 1.55;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--dim); font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td code { white-space: nowrap; }
+
+  .callout {
+    display: flex; gap: 12px; margin: 18px 0; padding: 14px 16px;
+    background: var(--bg-2); border: 1px solid var(--border-soft);
+    border-left: 3px solid var(--accent); border-radius: 10px;
+  }
+  .callout .mark { font-size: 18px; line-height: 1.3; }
+  .callout p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .callout strong { color: var(--fg); }
+
+  .choice-grid { display: grid; gap: 14px; margin: 16px 0; }
+  @media (min-width: 620px) { .choice-grid { grid-template-columns: 1fr 1fr; } }
+  .choice {
+    border: 1px solid var(--border); border-radius: 12px; padding: 16px 16px 4px;
+    background: var(--panel); box-shadow: var(--shadow);
+  }
+  .choice.rec { border-color: color-mix(in oklab, var(--accent) 55%, var(--border)); }
+  .choice h4 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .pill {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 8px;
+  }
+  .choice p { font-size: 14px; color: var(--muted); }
+
+  figure { margin: 22px 0; }
+  .diagram {
+    background: var(--panel); border: 1px solid var(--border-soft); border-radius: 14px;
+    padding: 18px; box-shadow: var(--shadow);
+  }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  figcaption { margin-top: 10px; font-size: 13px; color: var(--dim); text-align: center; }
+
+  /* SVG theme hooks */
+  .d-frame { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  .d-col { fill: var(--bg-2); stroke: var(--border-soft); stroke-width: 1; }
+  .d-col-hi { fill: var(--accent-soft); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.5; }
+  .d-tile { fill: var(--panel); stroke: var(--border); stroke-width: 1; }
+  .d-tile-hi { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 55%, var(--border)); stroke-width: 1.5; }
+  .d-bar { fill: var(--bg-2); }
+  .d-tab-on { fill: var(--accent); }
+  .d-tab { fill: var(--border); }
+  .d-line { fill: var(--border); }
+  .d-reply { fill: var(--panel); stroke: color-mix(in oklab, var(--accent) 45%, var(--border)); stroke-width: 1.5; }
+  .d-arrow { fill: none; stroke: var(--accent); stroke-width: 2; }
+  .d-arrow-head { fill: var(--accent); }
+  .d-lbl { fill: var(--muted); font: 600 12px -apple-system, system-ui, sans-serif; }
+  .d-lbl-sm { fill: var(--dim); font: 500 9.5px -apple-system, system-ui, sans-serif; }
+  .d-lbl-acc { fill: var(--accent); font: 700 10px -apple-system, system-ui, sans-serif; }
+  .d-title { fill: var(--fg); font: 700 13px -apple-system, system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<main>
+  <p class="eyebrow">Implementation plan · board layout</p>
+  <h1>Board → Console drill-in</h1>
+  <p class="lead">
+    Click a card on the <strong>board</strong> and, instead of a narrow right-hand drawer sliding over
+    the columns, the board <strong>morphs into the console view</strong>: the column you clicked slides
+    to the left edge and becomes a console-style rail, and a full detail pane - the tabbed conversation
+    with its pinned reply box - grows into the space the other columns vacate.
+  </p>
+
+  <div class="callout">
+    <span class="mark">↩</span>
+    <p><strong>A drill-in, not a layout switch.</strong> The board stays your chosen layout. Escape (or a
+    back control) reverses the morph, and you pop back to the exact board you left - nothing reflowed.</p>
+  </div>
+
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 900 330" role="img" aria-label="The board overview morphs into a rail plus detail pane when a working tile is clicked.">
+        <!-- LEFT: board overview -->
+        <text x="30" y="28" class="d-title">Board - overview</text>
+        <rect x="20" y="40" width="380" height="270" rx="12" class="d-frame" />
+        <!-- five columns -->
+        <!-- col 1 needs you -->
+        <rect x="34" y="58" width="60" height="238" rx="7" class="d-col" />
+        <text x="64" y="76" text-anchor="middle" class="d-lbl-sm">needs you</text>
+        <rect x="42" y="86" width="44" height="20" rx="4" class="d-tile" />
+        <!-- col 2 working (highlighted) -->
+        <rect x="102" y="58" width="60" height="238" rx="7" class="d-col-hi" />
+        <text x="132" y="76" text-anchor="middle" class="d-lbl-acc">working</text>
+        <rect x="110" y="86" width="44" height="20" rx="4" class="d-tile-hi" />
+        <rect x="110" y="112" width="44" height="20" rx="4" class="d-tile" />
+        <rect x="110" y="138" width="44" height="20" rx="4" class="d-tile" />
+        <!-- col 3 idle -->
+        <rect x="170" y="58" width="60" height="238" rx="7" class="d-col" />
+        <text x="200" y="76" text-anchor="middle" class="d-lbl-sm">idle</text>
+        <rect x="178" y="86" width="44" height="20" rx="4" class="d-tile" />
+        <rect x="178" y="112" width="44" height="20" rx="4" class="d-tile" />
+        <!-- col 4 unconfirmed -->
+        <rect x="238" y="58" width="60" height="238" rx="7" class="d-col" />
+        <text x="268" y="76" text-anchor="middle" class="d-lbl-sm">unconfirmed</text>
+        <rect x="246" y="86" width="44" height="20" rx="4" class="d-tile" />
+        <!-- col 5 gone -->
+        <rect x="306" y="58" width="60" height="238" rx="7" class="d-col" />
+        <text x="336" y="76" text-anchor="middle" class="d-lbl-sm">gone</text>
+        <rect x="314" y="86" width="44" height="20" rx="4" class="d-tile" />
+
+        <!-- ARROW -->
+        <path d="M 418 165 L 470 165" class="d-arrow" />
+        <path d="M 470 165 l -9 -5 l 0 10 z" class="d-arrow-head" />
+        <text x="444" y="150" text-anchor="middle" class="d-lbl-acc">click a tile</text>
+
+        <!-- RIGHT: focused console drill-in -->
+        <text x="500" y="28" class="d-title">Focused - console drill-in</text>
+        <rect x="490" y="40" width="390" height="270" rx="12" class="d-frame" />
+        <!-- rail (working column, now on the left) -->
+        <rect x="504" y="58" width="96" height="238" rx="7" class="d-col-hi" />
+        <text x="552" y="76" text-anchor="middle" class="d-lbl-acc">working</text>
+        <rect x="512" y="86" width="80" height="22" rx="4" class="d-tile-hi" />
+        <rect x="512" y="114" width="80" height="22" rx="4" class="d-tile" />
+        <rect x="512" y="142" width="80" height="22" rx="4" class="d-tile" />
+        <!-- detail pane -->
+        <rect x="612" y="58" width="256" height="238" rx="7" class="d-col" />
+        <!-- head bar -->
+        <rect x="612" y="58" width="256" height="30" rx="7" class="d-bar" />
+        <text x="626" y="77" class="d-lbl">session · conversation</text>
+        <!-- tabs -->
+        <rect x="626" y="98" width="46" height="9" rx="4" class="d-tab-on" />
+        <rect x="680" y="98" width="40" height="9" rx="4" class="d-tab" />
+        <rect x="728" y="98" width="30" height="9" rx="4" class="d-tab" />
+        <rect x="766" y="98" width="26" height="9" rx="4" class="d-tab" />
+        <!-- transcript lines -->
+        <rect x="626" y="122" width="228" height="7" rx="3" class="d-line" />
+        <rect x="626" y="136" width="200" height="7" rx="3" class="d-line" />
+        <rect x="626" y="150" width="214" height="7" rx="3" class="d-line" />
+        <rect x="626" y="164" width="168" height="7" rx="3" class="d-line" />
+        <rect x="626" y="188" width="228" height="7" rx="3" class="d-line" />
+        <rect x="626" y="202" width="188" height="7" rx="3" class="d-line" />
+        <!-- reply box pinned -->
+        <rect x="626" y="252" width="228" height="34" rx="7" class="d-reply" />
+        <text x="640" y="273" class="d-lbl-sm">Reply…</text>
+      </svg>
+    </div>
+    <figcaption>
+      Same DOM, one animated flex track: non-selected columns close to zero width and fade out, the selected
+      column becomes a fixed-width rail, and the detail track grows to fill.
+    </figcaption>
+  </figure>
+
+  <h2>Why</h2>
+  <ul>
+    <li>The board's job is the at-a-glance <em>shape</em> of the fleet - how many need you, how many are
+      working. That's a great overview and a poor place to read a conversation and type a reply.</li>
+    <li>The console's detail pane is the good surface for that work. Today the board answers a click with a
+      cramped 620px drawer that overlays (and hides) the board behind a scrim. Handing off to the real
+      console detail is roomier <em>and</em> one less bespoke surface to maintain.</li>
+    <li>Because it's a drill-in, the overview is never lost - closing returns you to the same board, so you
+      keep using the board <em>as</em> the board.</li>
+  </ul>
+
+  <h2>The interaction</h2>
+  <ol>
+    <li><strong>Board overview</strong> - a column per state (needs you / working / idle / unconfirmed /
+      gone), tiles stacked in each.</li>
+    <li><strong>Click a tile</strong> in, say, <em>working</em>.</li>
+    <li><strong>The morph</strong> (skipped under <code>prefers-reduced-motion</code>):
+      <ul>
+        <li>The columns to the left and right of <em>working</em> collapse to zero width and fade out.</li>
+        <li><em>working</em> slides to the left edge and narrows to rail width (~320px); its tiles restyle
+          to the console's dense rail-rows.</li>
+        <li>A <strong>detail pane grows in from the right</strong>, showing the selected session's
+          <code>ConsoleDetail</code> - the <em>Conversation / Work queue / Gate / Diff</em> tabs, with the
+          pinned reply box + action bar.</li>
+      </ul>
+    </li>
+    <li><strong>While focused</strong> - click another row in the rail to swap the detail pane; press
+      <strong>Esc</strong> or the rail's back control to reverse the morph to the full board.</li>
+  </ol>
+
+  <h2>The one decision: what does the rail list?</h2>
+  <p>
+    When you drill into <em>working</em>, the left rail can show <strong>only that column's sessions</strong>,
+    or <strong>every session grouped by state</strong> (exactly the console rail). This is the load-bearing
+    choice - it's presented as options in the question prompt. The rest of the plan assumes the recommended
+    <strong>"only that column"</strong> and notes where the alternative differs.
+  </p>
+  <div class="choice-grid">
+    <div class="choice rec">
+      <h4>Only that column <span class="pill">recommended</span></h4>
+      <p>The clicked column <em>is</em> the rail - it matches "all items in that column show up in the left
+        column," and gives the cleanest morph: the thing you clicked slides over and becomes the rail. To
+        work a different column, Esc back to the board and open one there.</p>
+    </div>
+    <div class="choice">
+      <h4>Every session, grouped</h4>
+      <p>Identical to the console layout - you can jump to any session without leaving focus - but the rail
+        then holds more than the column you clicked, so the morph reads as "the column expands into the whole
+        rail" and is built as a board→console cross-dissolve.</p>
+    </div>
+  </div>
+
+  <h2>Architecture</h2>
+
+  <h3>The morph is one animated flex track</h3>
+  <p>
+    <code>.board</code> is a <code>display: flex</code> row whose items are <strong>one per tone column plus
+    one trailing detail track</strong>. The entire transition animates only per-item <code>flex-grow</code>,
+    <code>min-width</code> and <code>opacity</code> - all interpolable:
+  </p>
+  <ul>
+    <li><strong>Overview:</strong> every column is <code>flex-grow: 1; flex-basis: 0; min-width: 250px</code>
+      - equal columns - and the detail track sits at <code>flex-grow: 0; min-width: 0</code>, collapsed to
+      nothing.</li>
+    <li><strong>Focused on column <em>i</em>:</strong> every column goes to <code>flex-grow: 0; min-width: 0;
+      opacity: 0</code> except column <em>i</em>, which holds <code>min-width: 320px; opacity: 1</code>; the
+      detail track becomes <code>flex-grow: 1; min-width: 440px</code>.</li>
+  </ul>
+  <p>
+    Because those properties are plain numbers and lengths, the columns slide closed and the detail pane
+    grows open with <strong>no JS measuring, no FLIP, and it reverses for free</strong>. Each column sets
+    <code>overflow: hidden</code> so its tiles clip cleanly as it closes, and collapsed columns animate
+    <code>border-width</code> to 0 so no 1px sliver survives between the rail and the detail.
+  </p>
+  <div class="callout">
+    <span class="mark">◇</span>
+    <p><strong>Why not FLIP across the two layouts' DOM trees:</strong> it would have to measure element
+    positions across a React remount, fight the rail's independent scroll, and re-break every time either
+    layout's markup changes. One flex track whose items animate is stable, reversible, and reduced-motion is
+    a single media query.</p>
+  </div>
+
+  <h3>DOM - one stable tree, mounted across the morph</h3>
+  <div class="scroll-x">
+<pre><code>&lt;main class="board" data-focus={focusedTone ?? "none"}&gt;
+  &lt;section class="board-col" data-tone="attention"&gt; …tiles / rail-rows… &lt;/section&gt;
+  … one &lt;section&gt; per tone …
+  &lt;aside class="board-detail"&gt;
+    {selected &amp;&amp; &lt;ConsoleDetail key={selected.id} view={props} session={selected} /&gt;}
+  &lt;/aside&gt;
+&lt;/main&gt;</code></pre>
+  </div>
+  <p>
+    Every column <strong>and</strong> the detail aside stay mounted through the morph, so both directions
+    animate. The detail track is collapsed to zero width in overview; its <code>ConsoleDetail</code> child
+    mounts only when a session is selected and is clipped while the track is closed.
+  </p>
+
+  <h3>Reuse over rebuild</h3>
+  <ul>
+    <li><strong>Detail pane = the existing <code>ConsoleDetail</code>, verbatim.</strong> It already is "the
+      other view from the console," and <code>BoardView</code> already receives <code>SessionViewProps</code>
+      - exactly what <code>ConsoleDetail</code> needs. No new detail code.</li>
+    <li><strong>Rail rows = the console's <code>RailRow</code>.</strong> Extract it from
+      <code>ConsoleView.tsx</code> into a small shared module so the focused column reads identically to the
+      console rail, instead of a second copy that can drift.</li>
+    <li><strong>Delete the board drawer.</strong> <code>board-scrim</code>, <code>board-drawer</code>, and the
+      <code>.app-board .card.expanded</code> hosting rules all retire - the full <code>SessionCard</code> is
+      no longer hosted inside the board.</li>
+  </ul>
+
+  <h3>Selection &amp; state - nothing new</h3>
+  <p>
+    <code>props.selectedId</code> already drives board selection.
+    <code>focusedTone = selected ? stateDisplay(selected).tone : null</code> derives the focused column.
+    Clicking a tile calls the existing <code>onSelect</code>; Esc / back calls the existing
+    <code>onDeselect</code>.
+  </p>
+  <div class="callout">
+    <span class="mark">⚠</span>
+    <p><strong>Edge - the selected session changes tone while focused</strong> (e.g. <em>working → needs
+    input</em>): <code>focusedTone</code> follows the session, so the focused column re-scopes to its new tone
+    and the rail's contents shift. The detail pane is keyed by session id, so it stays put. Coherent under
+    "only that column"; a no-op under "full rail."</p>
+  </div>
+
+  <h3>Keyboard</h3>
+  <p>
+    No <code>layoutNav.ts</code> change was needed: the existing 2-D board arrow-key navigation maps cleanly
+    onto the focused rail - Up/Down walk the rail, Left/Right jump to the adjacent column's console. Esc
+    deselects back to the overview (already wired).
+  </p>
+
+  <h2>Files touched</h2>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>File</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr><td><code>layouts/BoardView.tsx</code></td><td>Overview + focused in one tree; host <code>ConsoleDetail</code>; remove the drawer.</td></tr>
+      <tr><td><code>layouts/ConsoleView.tsx</code></td><td>Export <code>RailRow</code> (move to a shared bits module) for reuse.</td></tr>
+      <tr><td><code>styles.css</code></td><td>Board flex track + focus-state <code>flex-grow</code> / <code>min-width</code> / <code>opacity</code> transition; rail-in-board styles; remove drawer rules; <code>prefers-reduced-motion</code> guard.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Verification</h2>
+  <ul>
+    <li><strong>E2E in the real app</strong> (vite on my own port, not <code>:5173</code>): board overview →
+      click a <em>working</em> tile → watch the morph → detail pane with a working reply box → click another
+      rail row (detail swaps) → <strong>Esc</strong> back to the board.</li>
+    <li><strong>Reduced motion:</strong> the state change is instant, no transition.</li>
+    <li><strong>Narrow window:</strong> rail + detail still fit; overview still scrolls horizontally.</li>
+    <li><strong>Empty column:</strong> a state column with no tiles can't be focused - the empty "needs you"
+      column still reads as information.</li>
+    <li><strong>Regression:</strong> console and grid layouts untouched; drawer removal leaves no dead CSS.</li>
+  </ul>
+
+  <h2>Out of scope</h2>
+  <ul>
+    <li><strong>Switching the persisted layout preference.</strong> This is a drill-in; the board stays the board.</li>
+    <li><strong>Animating the Settings layout switcher (board ↔ console).</strong> The same flex machinery
+      could later power that transition, but it's a separate change.</li>
+  </ul>
+</main>
+</body>
+</html>

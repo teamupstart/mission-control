@@ -1,32 +1,57 @@
-import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
-import { SessionCard } from "../SessionCard.tsx";
 import { contextTone, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { groupByTone } from "../../lib/tone.ts";
-import { cardProps, type SessionViewProps } from "./types.ts";
+import { ConsoleDetail } from "./ConsoleDetail.tsx";
+import { RailRow } from "./RailRow.tsx";
+import type { SessionViewProps } from "./types.ts";
 
 /**
- * Kanban by state: a column per tone, the detail in a slide-over drawer.
+ * Kanban by state that drills into the console.
  *
- * The ranking the grid spends on an invisible sort becomes the structure - "how
- * many need me" is answered by a column's height instead of by reading eight
- * badges. Tiles carry only what you'd triage by; the drawer carries the same
- * SessionCard the grid renders, so nothing is lost by shrinking the tile.
+ * With nothing open the board is a column per tone: the ranking the grid spends on
+ * an invisible sort becomes structure you can read - "how many need me" is answered
+ * by a column's height instead of eight badges.
  *
- * The drawer opens over the board rather than in it: expanding a card in place is
- * what makes the grid reflow around you, and a board whose columns jump when you
- * open something would give up the one thing it's for.
+ * Opening a tile doesn't slide a cramped drawer over the board; it morphs the board
+ * INTO the console. The clicked column collapses everything either side of it, slides
+ * to the left edge and becomes a console rail of exactly that column's sessions, and
+ * the ConsoleDetail - the same tabbed conversation the console layout opens, with its
+ * pinned reply box - grows into the freed space. The whole move is one animated flex
+ * track (see styles.css), so it reverses for free: Escape, or the rail's back button,
+ * returns you to the board you left with nothing reflowed.
+ *
+ * The board stays your chosen layout - this is a drill-in, not a layout switch. So the
+ * overview is never lost: you use the board as the board, and the console as the desk.
  */
 export function BoardView(props: SessionViewProps): React.JSX.Element {
   const groups = groupByTone(props.sessions);
-  const open = props.sessions.find((s) => s.id === props.selectedId) ?? null;
+  const selected = props.sessions.find((s) => s.id === props.selectedId) ?? null;
+  // The focused column follows the session, not the click: if the open session moves
+  // tone (working -> needs input), its column re-scopes with it, and the rail's rows
+  // change under a detail that - keyed by id in the aside - stays put.
+  const focusedTone = selected ? stateDisplay(selected).tone : null;
 
   return (
-    <>
-      <main className="board">
-        {groups.map((g) => (
-          <section key={g.tone} className={`board-col tone-${g.tone}`}>
+    <main className="board" data-focus={focusedTone ?? "none"}>
+      {groups.map((g) => {
+        const isRail = focusedTone === g.tone;
+        return (
+          <section
+            key={g.tone}
+            className={`board-col tone-${g.tone}${isRail ? " is-rail" : ""}`}
+            inert={focusedTone != null && !isRail}
+          >
             <header className="board-col-head">
+              {isRail && (
+                <button
+                  className="board-back"
+                  aria-label="Back to the board"
+                  title="Back to the board (Esc)"
+                  onClick={props.onDeselect}
+                >
+                  ‹
+                </button>
+              )}
               <span className="board-swatch" aria-hidden />
               <h2>{g.label}</h2>
               <span className="board-col-n">{g.sessions.length}</span>
@@ -34,12 +59,23 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             <div className="board-col-body">
               {g.sessions.length === 0 ? (
                 <p className="board-col-empty">Nothing here</p>
+              ) : isRail ? (
+                // The clicked column, now a console rail: the same RailRow the console
+                // uses, so opening a column and switching to the console read alike.
+                g.sessions.map((s) => (
+                  <RailRow
+                    key={s.id}
+                    session={s}
+                    selected={s.id === props.selectedId}
+                    gateNeedsYou={props.gateAlerts.has(s.id)}
+                    onSelect={() => props.onSelect(s.id)}
+                  />
+                ))
               ) : (
                 g.sessions.map((s) => (
                   <SessionTile
                     key={s.id}
                     session={s}
-                    open={s.id === props.selectedId}
                     gateNeedsYou={props.gateAlerts.has(s.id)}
                     onOpen={() => props.onSelect(s.id)}
                   />
@@ -47,58 +83,41 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
               )}
             </div>
           </section>
-        ))}
-      </main>
+        );
+      })}
 
-      {open && (
-        <>
-          <div className="board-scrim" onClick={props.onDeselect} />
-          <aside className="board-drawer" aria-label={`${open.name} detail`}>
-            <div className="board-drawer-head">
-              <span className="board-drawer-title">{open.name || "(unnamed)"}</span>
-              <button className="icon-btn" aria-label="Close detail" onClick={props.onDeselect}>
-                ✕
-              </button>
-            </div>
-            <div className="board-drawer-body">
-              <SessionCard {...cardProps(props, open)} selected={false} canExpand={false} />
-            </div>
-          </aside>
-        </>
-      )}
-    </>
+      {/* A flex track that's collapsed to nothing until a session is open, then grows to
+          fill the board. Kept in the tree across the morph so both directions animate;
+          the ConsoleDetail inside mounts only when there's a session to read, and is
+          clipped while the track is closed. Keyed by id so switching sessions remounts,
+          exactly as the console does. */}
+      <aside className="board-detail" aria-hidden={selected == null}>
+        {selected && <ConsoleDetail key={selected.id} view={props} session={selected} />}
+      </aside>
+    </main>
   );
 }
 
 /**
  * A session shrunk to what you'd triage by: who it is, what it's for, how far its
  * gate has got, and whether it wants something. Everything else is one click away
- * in the drawer.
+ * in the console detail the tile opens.
  */
 function SessionTile({
   session,
-  open,
   gateNeedsYou,
   onOpen,
 }: {
   session: Session;
-  open: boolean;
   gateNeedsYou: boolean;
   onOpen: () => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
-  const ref = useRef<HTMLButtonElement>(null);
   const ctx = session.meta?.contextPct;
-
-  useEffect(() => {
-    if (open) ref.current?.scrollIntoView({ block: "nearest" });
-  }, [open]);
 
   return (
     <button
-      ref={ref}
-      className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${open ? " open" : ""}`}
-      aria-current={open}
+      className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}`}
       onClick={onOpen}
     >
       <span className="tile-head">
@@ -114,7 +133,7 @@ function SessionTile({
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
 
       {/* The gate compressed to a hairline the tile can always afford. The full strip,
-          with its findings and buttons, is in the drawer. */}
+          with its findings and buttons, is in the console detail. */}
       {session.nomistakes && (
         <span className="tile-rail" aria-hidden>
           {session.nomistakes.steps.map((step) => (

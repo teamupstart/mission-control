@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
  *
  * - `grid`    the original: every session a card, one expands in place to focus.
  * - `console` split-pane: a rail of every session, one always-open detail beside it.
- * - `board`   kanban by state: a column per tone, the detail in a slide-over drawer.
+ * - `board`   kanban by state: a column per tone, drilling into the console detail on click.
  *
  * Persisted per-machine, like alert settings and keybindings - it's a preference
  * about this screen, not a fact about the fleet, so it never goes near the daemon.
@@ -29,7 +29,7 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
     id: "board",
     label: "Board",
     description:
-      "A column per state, so the fleet's shape reads at a glance. Opening a session slides its detail over, without reflowing the board.",
+      "A column per state, so the fleet's shape reads at a glance. Opening a session drills into the console - that column becomes the rail, the full detail fills the rest, and Esc returns you to the board.",
   },
 ];
 

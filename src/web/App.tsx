@@ -172,7 +172,7 @@ export function App(): React.JSX.Element {
   // than leaving each view to force the prop:
   //   grid    - focus mode: at most one card, toggled, usually none.
   //   console - the detail pane IS the expanded card, so it's whatever is selected.
-  //   board   - same, for the card inside the drawer.
+  //   board   - same: selecting drills into the console detail, so it's whatever is selected.
   // Keeping the state honest (rather than overriding `expanded` at the call site) is
   // what lets Escape, the expand chord and the card's own toggle all agree.
   const expandedForView = layout === "grid" ? expandedId : selectedId;
@@ -644,7 +644,7 @@ export function App(): React.JSX.Element {
 
       {/* Grid only. The bar floats fixed over the bottom of the page, which is empty
           space under a scrolling grid but is exactly where the console's detail pane and
-          the board's drawer keep their reply box - it would sit on top of the control it
+          the board's drill-in keep their reply box - it would sit on top of the control it
           is advertising. Both of those layouts show the selected session's ActionBar
           permanently instead, and every shortcut still works. */}
       {selected && layout === "grid" && (

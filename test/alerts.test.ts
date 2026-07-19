@@ -2,14 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   batchSeverity,
+  bufferable,
+  deliverable,
   detectAlerts,
   digestLine,
   hasReportable,
   summarizeAlerts,
   type Alert,
-  type AlertSettings,
   type AlertScope,
-} from "../src/web/lib/alerts.ts";
+} from "../src/shared/alerts.ts";
+import type { Stall } from "../src/shared/stall.ts";
 import { chimeGate } from "../src/web/lib/chime.ts";
 import type {
   NmRunSummary,
@@ -87,28 +89,30 @@ function mkTask(over: Partial<Task> = {}): Task {
   };
 }
 
-const WATCHING: AlertSettings = { notifications: true, sound: true, afk: false, digestMinutes: 15 };
-const AFK: AlertSettings = { ...WATCHING, afk: true };
-const scope = (sessions: Session[], tasks: Task[] = []): AlertScope => ({ sessions, tasks });
+const scope = (sessions: Session[], tasks: Task[] = [], stalls: Stall[] = []): AlertScope => ({
+  sessions,
+  tasks,
+  stalls,
+});
 
 test("a session entering awaiting_input alerts once (attention), then stays quiet", () => {
   const working = mkSession({ id: "a", state: "working" });
   const waiting = mkSession({ id: "a", state: "awaiting_input" });
 
-  const first = detectAlerts(scope([working]), scope([waiting]), WATCHING);
+  const first = detectAlerts(scope([working]), scope([waiting]));
   assert.equal(first.length, 1);
   assert.equal(first[0]?.kind, "needs-input");
   assert.equal(first[0]?.severity, "attention");
   assert.equal(first[0]?.body, "needs input");
 
   // Same state on the next tick -> no repeat.
-  assert.equal(detectAlerts(scope([waiting]), scope([waiting]), WATCHING).length, 0);
+  assert.equal(detectAlerts(scope([waiting]), scope([waiting])).length, 0);
 });
 
 test("a new pending review alerts as a review, a parked gate as a gate", () => {
   const idle = mkSession({ id: "a", state: "idle" });
   const review = mkSession({ id: "a", state: "idle", pendingReviews: 2 });
-  const r = detectAlerts(scope([idle]), scope([review]), WATCHING);
+  const r = detectAlerts(scope([idle]), scope([review]));
   assert.equal(r[0]?.kind, "review");
   assert.equal(r[0]?.body, "2 to review");
 
@@ -129,7 +133,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
     outcome: null,
   };
   const parked = mkSession({ id: "b", state: "idle", nomistakes: gate });
-  const g = detectAlerts(scope([mkSession({ id: "b" })]), scope([parked]), WATCHING);
+  const g = detectAlerts(scope([mkSession({ id: "b" })]), scope([parked]));
   assert.equal(g[0]?.kind, "gate");
   assert.match(g[0]?.body ?? "", /gate parked at review/);
 });
@@ -137,7 +141,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
 test("a session entering awaiting_review alerts too (needs a decision)", () => {
   const working = mkSession({ id: "a", state: "working" });
   const review = mkSession({ id: "a", state: "awaiting_review" });
-  const r = detectAlerts(scope([working]), scope([review]), WATCHING);
+  const r = detectAlerts(scope([working]), scope([review]));
   assert.equal(r.length, 1);
   assert.equal(r[0]?.kind, "needs-input");
   assert.equal(r[0]?.body, "needs review");
@@ -146,7 +150,7 @@ test("a session entering awaiting_review alerts too (needs a decision)", () => {
 test("a review landing on an already-waiting session still alerts (stacked causes)", () => {
   const waiting = mkSession({ id: "a", state: "awaiting_input", pendingReviews: 0 });
   const plusReview = mkSession({ id: "a", state: "awaiting_input", pendingReviews: 1 });
-  const r = detectAlerts(scope([waiting]), scope([plusReview]), WATCHING);
+  const r = detectAlerts(scope([waiting]), scope([plusReview]));
   // Still awaiting input (no new input alert), but a fresh review alert fires.
   assert.equal(r.length, 1);
   assert.equal(r[0]?.kind, "review");
@@ -156,30 +160,30 @@ test("a review landing on an already-waiting session still alerts (stacked cause
 test("a task reaching failed alerts (attention) in any mode", () => {
   const running = mkTask({ id: "t1", status: "running" });
   const failed = mkTask({ id: "t1", status: "failed", error: "boom" });
-  const r = detectAlerts(scope([], [running]), scope([], [failed]), WATCHING);
+  const r = detectAlerts(scope([], [running]), scope([], [failed]));
   assert.equal(r.length, 1);
   assert.equal(r[0]?.kind, "task-failed");
   assert.equal(r[0]?.body, "boom");
 });
 
-test("idle + task-done alerts are AFK-only", () => {
+test("idle + task-done are always DETECTED, as info - delivery decides who hears them", () => {
+  // These used to be gated on an `afk` flag, which made away mode louder than
+  // being at the desk. Detection is now unconditional and the severity carries
+  // the meaning: info is digest material, never an interruption.
   const busy = mkSession({ id: "a", state: "working" });
   const idle = mkSession({ id: "a", state: "idle" });
   const running = mkTask({ id: "t1", status: "running" });
   const done = mkTask({ id: "t1", status: "done", outcome: "shipped" });
 
-  // Watching: neither idle nor done fire.
-  assert.equal(detectAlerts(scope([busy], [running]), scope([idle], [done]), WATCHING).length, 0);
-
-  // AFK: both fire (info).
-  const r = detectAlerts(scope([busy], [running]), scope([idle], [done]), AFK);
-  const kinds = r.map((a) => a.kind).sort();
-  assert.deepEqual(kinds, ["idle", "task-done"]);
+  const r = detectAlerts(scope([busy], [running]), scope([idle], [done]));
+  assert.deepEqual(r.map((a) => a.kind).sort(), ["idle", "task-done"]);
   assert.ok(r.every((a) => a.severity === "info"));
+  // ...and none of them is deliverable, at the desk or away.
+  assert.equal(r.filter(deliverable).length, 0);
 });
 
 test("backgrounding a no-mistakes run is not 'went idle'", () => {
-  // The AFK alert fires on a working -> idle bucket transition. An agent that
+  // The idle alert fires on a working -> idle bucket transition. An agent that
   // backgrounds its no-mistakes run and ends its turn goes `working` -> `idle` in
   // hook state, but it hasn't finished a burst of work and it isn't waiting on
   // you - the run is still going and will re-invoke it. Alerting here trains you
@@ -202,11 +206,11 @@ test("backgrounding a no-mistakes run is not 'went idle'", () => {
   };
   const driving = mkSession({ id: "a", state: "working", nomistakes: running });
   const backgrounded = mkSession({ id: "a", state: "idle", nomistakes: running });
-  assert.equal(detectAlerts(scope([driving]), scope([backgrounded]), AFK).length, 0);
+  assert.equal(detectAlerts(scope([driving]), scope([backgrounded])).length, 0);
 
   // Once the run finishes and the agent is genuinely parked, it does fire.
   const finished = mkSession({ id: "a", state: "idle", nomistakes: { ...running, status: "completed" } });
-  const r = detectAlerts(scope([driving]), scope([finished]), AFK);
+  const r = detectAlerts(scope([driving]), scope([finished]));
   assert.deepEqual(r.map((a) => a.kind), ["idle"]);
 });
 
@@ -291,18 +295,18 @@ test("an item escalating alerts once, and a SECOND escalation alerts again", () 
   const before = mkSession({ id: "a", queue: mkQueue() });
   const stuck = mkSession({ id: "a", queue: mkQueue({ escalatedCount: 1 }) });
 
-  const first = detectAlerts(scope([before]), scope([stuck]), WATCHING);
+  const first = detectAlerts(scope([before]), scope([stuck]));
   assert.equal(first.length, 1);
   assert.equal(first[0]?.kind, "foreman");
   assert.equal(first[0]?.id, "queue:a");
   assert.equal(first[0]?.severity, "attention");
 
   // Same count next tick -> quiet.
-  assert.equal(detectAlerts(scope([stuck]), scope([stuck]), WATCHING).length, 0);
+  assert.equal(detectAlerts(scope([stuck]), scope([stuck])).length, 0);
 
   // A second item escalating is a second thing needing you, so it speaks again.
   const worse = mkSession({ id: "a", queue: mkQueue({ escalatedCount: 2 }) });
-  assert.equal(detectAlerts(scope([stuck]), scope([worse]), WATCHING).length, 1);
+  assert.equal(detectAlerts(scope([stuck]), scope([worse])).length, 1);
 });
 
 test("a queue's first sight with an escalation already in it still alerts", () => {
@@ -310,7 +314,7 @@ test("a queue's first sight with an escalation already in it still alerts", () =
   // appears (or that the panel sees for the first time) already needing you must not
   // be silently swallowed just because there is no `before` to compare against.
   const stuck = mkSession({ id: "a", queue: mkQueue({ escalatedCount: 1 }) });
-  const r = detectAlerts(scope([]), scope([stuck]), WATCHING);
+  const r = detectAlerts(scope([]), scope([stuck]));
   assert.equal(r.length, 1);
   assert.equal(r[0]?.id, "queue:a");
 });
@@ -324,12 +328,12 @@ test("the drain-time wrap-up ask alerts once, when it first appears", () => {
     queue: mkQueue({ openCount: 0, drained: true, wrapupAskedAt: 123 }),
   });
 
-  const r = detectAlerts(scope([draining]), scope([asked]), WATCHING);
+  const r = detectAlerts(scope([draining]), scope([asked]));
   assert.equal(r.length, 1);
   assert.equal(r[0]?.id, "wrapup:a");
   assert.equal(r[0]?.kind, "foreman");
 
-  assert.equal(detectAlerts(scope([asked]), scope([asked]), WATCHING).length, 0);
+  assert.equal(detectAlerts(scope([asked]), scope([asked])).length, 0);
 });
 
 test("an escalation and a wrap-up ask on one tick are two separate alerts", () => {
@@ -340,6 +344,79 @@ test("an escalation and a wrap-up ask on one tick are two separate alerts", () =
     id: "a",
     queue: mkQueue({ escalatedCount: 1, wrapupAskedAt: 123, drained: true }),
   });
-  const r = detectAlerts(scope([before]), scope([both]), WATCHING);
+  const r = detectAlerts(scope([before]), scope([both]));
   assert.deepEqual(r.map((a: Alert) => a.id).sort(), ["queue:a", "wrapup:a"]);
+});
+
+// ---- stuck (from the daemon's stall detector) ----
+
+const stall = (over: Partial<Stall> = {}): Stall => ({
+  sessionId: "a",
+  kind: "silent-working",
+  forMs: 600_000,
+  reason: "working but silent for 10m",
+  ...over,
+});
+
+test("a newly-stalled session alerts once, as attention", () => {
+  const s = mkSession({ id: "a", name: "auth-refactor" });
+  const r = detectAlerts(scope([s]), scope([s], [], [stall()]));
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "stuck");
+  assert.equal(r[0]?.severity, "attention");
+  assert.match(r[0]!.title, /auth-refactor looks stuck/);
+  assert.equal(r[0]?.body, "working but silent for 10m");
+});
+
+test("a stall that PERSISTS does not re-alert every tick", () => {
+  // The detector reports a stall as long as it lasts; without edge-triggering this
+  // would fire a notification on every poll for as long as the session stayed wedged.
+  const s = mkSession({ id: "a" });
+  const stalled = scope([s], [], [stall()]);
+  assert.equal(detectAlerts(stalled, stalled).length, 0);
+});
+
+test("a stall that CHANGES kind alerts again - that is new information", () => {
+  const s = mkSession({ id: "a" });
+  const quiet = scope([s], [], [stall({ kind: "silent-working" })]);
+  const escalated = scope([s], [], [stall({ kind: "escalated", reason: "escalated to you 5m ago" })]);
+  const r = detectAlerts(quiet, escalated);
+  assert.deepEqual(r.map((a: Alert) => a.kind), ["stuck"]);
+  assert.equal(r[0]?.body, "escalated to you 5m ago");
+});
+
+test("a stall that RESOLVES alerts nothing", () => {
+  const s = mkSession({ id: "a" });
+  assert.equal(detectAlerts(scope([s], [], [stall()]), scope([s])).length, 0);
+});
+
+test("stuck alerts break through while away - they are attention, not digest material", () => {
+  const s = mkSession({ id: "a" });
+  const r = detectAlerts(scope([s]), scope([s], [], [stall()]));
+  assert.equal(r.filter(deliverable).length, 1);
+  assert.equal(r.filter(bufferable).length, 0);
+});
+
+test("a scope with no stalls (the client's) emits no stuck alerts", () => {
+  // The client cannot compute stalls - sessionEqual keeps lastActivity off the
+  // wire - so its scope simply carries none rather than guessing.
+  const s = mkSession({ id: "a" });
+  const noStalls: AlertScope = { sessions: [s], tasks: [] };
+  assert.equal(detectAlerts(noStalls, noStalls).length, 0);
+});
+
+test("deliverable and bufferable partition a batch exactly", () => {
+  const busy = mkSession({ id: "a", state: "working" });
+  const idle = mkSession({ id: "a", state: "idle" });
+  const waiting = mkSession({ id: "b", state: "awaiting_input" });
+  const r = detectAlerts(scope([busy, mkSession({ id: "b", state: "working" })]), scope([idle, waiting]));
+  assert.equal(r.filter(deliverable).length + r.filter(bufferable).length, r.length);
+  assert.deepEqual(r.filter(deliverable).map((a: Alert) => a.kind), ["needs-input"]);
+  assert.deepEqual(r.filter(bufferable).map((a: Alert) => a.kind), ["idle"]);
+});
+
+test("digestLine counts stalled sessions", () => {
+  const s = mkSession({ id: "a", state: "working" });
+  assert.match(digestLine(scope([s], [], [stall()])), /1 stuck/);
+  assert.doesNotMatch(digestLine(scope([s])), /stuck/);
 });

@@ -19,6 +19,7 @@ import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
+import { useAwayMode } from "./lib/awayMode.ts";
 import { useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
@@ -29,6 +30,7 @@ import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
+  const { away, setAway } = useAwayMode();
   useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
@@ -550,7 +552,7 @@ export function App(): React.JSX.Element {
           >
             <span aria-hidden>⚙</span>
           </button>
-          <AlertBar settings={alertSettings} update={updateAlerts} />
+          <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
         </div>
         <div className={`link ${connected ? "up" : "down"}`}>
           <span className="link-dot" />

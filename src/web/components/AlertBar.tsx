@@ -1,24 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import type { AlertSettings } from "../lib/alerts.ts";
+import type { AwayConfig } from "@shared/protocol.ts";
+import type { AlertSettings } from "../lib/alertSettings.ts";
 import { playChime, unlockAudio } from "../lib/chime.ts";
 
 const notifyApi = typeof Notification !== "undefined";
 
+/** "for 25m" / "for 1h 05m" - how long you've been away, for the popover. */
+function since(ms: number): string {
+  const mins = Math.max(0, Math.floor(ms / 60_000));
+  if (mins < 60) return `${mins}m`;
+  return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
+}
+
 /**
  * Topbar control for the alert layer: enable desktop notifications, toggle sound,
- * and flip AFK mode (alert on everything + periodic digests). The "Enable" click
- * doubles as the user gesture that unlocks audio for the chime.
+ * and flip away mode. The "Enable" click doubles as the user gesture that unlocks
+ * audio for the chime.
+ *
+ * Away mode is server state, not a local preference - it survives this tab closing
+ * and the daemon keeps detecting while you're gone - so it is passed in rather than
+ * read from localStorage, and its control is disabled until the first read lands.
  */
 export function AlertBar({
   settings,
   update,
+  away,
+  setAway,
 }: {
   settings: AlertSettings;
   update: (patch: Partial<AlertSettings>) => void;
+  away: AwayConfig | null;
+  setAway: (patch: Partial<AwayConfig>) => Promise<void>;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const [perm, setPerm] = useState<NotificationPermission>(notifyApi ? Notification.permission : "denied");
   const ref = useRef<HTMLDivElement>(null);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     function onDoc(e: MouseEvent): void {
@@ -27,6 +44,14 @@ export function AlertBar({
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  // Only ticks while the popover is open and you're away - the one place the
+  // elapsed time is actually rendered.
+  useEffect(() => {
+    if (!open || !away?.away) return;
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, [open, away?.away]);
 
   async function enable(): Promise<void> {
     unlockAudio(); // this click satisfies the browser autoplay gesture
@@ -37,10 +62,11 @@ export function AlertBar({
   }
 
   const on = settings.notifications && perm === "granted";
-  const icon = settings.afk ? "🌙" : on ? "🔔" : "🔕";
+  const isAway = Boolean(away?.away);
+  const icon = isAway ? "🌙" : on ? "🔔" : "🔕";
   // The glyph already distinguishes the three states, so the button carries no
   // text; the state it used to spell out rides along in the label instead.
-  const label = `Alerts & AFK mode - ${settings.afk ? "AFK" : on ? "on" : "muted"}`;
+  const label = `Alerts & away mode - ${isAway ? "away" : on ? "on" : "muted"}`;
 
   return (
     <div className="alertbar" ref={ref}>
@@ -86,31 +112,23 @@ export function AlertBar({
           <label className="alert-row">
             <input
               type="checkbox"
-              checked={settings.afk}
+              checked={isAway}
+              disabled={away === null}
               onChange={(e) => {
-                update({ afk: e.target.checked });
+                void setAway({ away: e.target.checked });
                 unlockAudio();
                 if (settings.sound) playChime(e.target.checked ? "attention" : "info");
               }}
             />
-            AFK mode
+            Away mode
           </label>
           <p className="alert-hint">
-            AFK also alerts on idle sessions + finished tasks, and sends a digest.
+            {isAway
+              ? "Only things blocked on you get through. Everything else is waiting in your digest."
+              : "Buffers the noise and only interrupts you for things that are blocked on you."}
           </p>
-          {settings.afk && (
-            <label className="alert-row">
-              Digest every
-              <select
-                value={settings.digestMinutes}
-                onChange={(e) => update({ digestMinutes: Number(e.target.value) })}
-              >
-                <option value={5}>5 min</option>
-                <option value={15}>15 min</option>
-                <option value={30}>30 min</option>
-                <option value={60}>60 min</option>
-              </select>
-            </label>
+          {isAway && away?.awaySince != null && (
+            <p className="alert-hint">Away for {since(now - away.awaySince)}.</p>
           )}
         </div>
       )}

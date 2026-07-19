@@ -299,7 +299,7 @@ function DispatchModal({
           </span>
           <input
             className="field-input"
-            placeholder="auto from the task if left blank"
+            placeholder="summarized from the task if left blank"
             value={draft.title}
             onChange={(e) => update({ title: e.target.value })}
           />

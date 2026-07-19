@@ -3,6 +3,7 @@ import type { AgentType, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
 import { injectPrompt, kill } from "./actions.ts";
+import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -53,12 +54,20 @@ export class TaskManager {
     return this.registry.getTask(id);
   }
 
+  /**
+   * Create a task, and - when the operator left the title blank - name it with a model
+   * before anything downstream reads that name.
+   *
+   * Stays synchronous so the POST returns a task immediately: the card must appear the
+   * instant it is dispatched, not after a subprocess. It appears under the heuristic title,
+   * which `autoTitleThenDispatch` replaces over SSE a beat later.
+   */
   create(input: CreateTaskInput): Task {
     const now = Date.now();
-    const title = input.title?.trim() || deriveTitle(input.intent);
+    const explicitTitle = input.title?.trim();
     const task: Task = {
       id: randomUUID(),
-      title,
+      title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
       agent: input.agent,
@@ -78,8 +87,44 @@ export class TaskManager {
       completedAt: null,
     };
     this.registry.upsertTask(task);
-    if (!input.backlog) void this.dispatcher.dispatch(task.id);
+    if (explicitTitle) {
+      if (!input.backlog) void this.dispatcher.dispatch(task.id);
+    } else {
+      void this.autoTitleThenDispatch(task.id, input.intent, input.backlog);
+    }
     return task;
+  }
+
+  /**
+   * Replace an auto-derived title with a model's, THEN dispatch.
+   *
+   * The ordering is the whole point, and it is why dispatch waits on a cosmetic call.
+   * `Dispatcher.dispatch` reads `task.title` once, at the top, to build the git branch
+   * (`slugify`) and the tmux session name (`sessionLabel`) - both of which are permanent for
+   * the life of the task and neither of which can be renamed afterwards from the dashboard.
+   * Dispatching first and patching the title after would leave every untitled task with a
+   * card whose name no longer matches its branch or its terminal, which is worse than the
+   * rough title this feature exists to replace. The wait is bounded by `TITLE_TIMEOUT_MS`
+   * and typically a couple of seconds, against a dispatch that spends far longer cutting a
+   * worktree and waiting for the agent to boot.
+   *
+   * Never throws: `summariseTaskTitle` reports failure as null, and a null simply leaves the
+   * heuristic title standing - the dispatch below happens either way.
+   */
+  private async autoTitleThenDispatch(id: string, intent: string, backlog: boolean): Promise<void> {
+    const title = await summariseTaskTitle(intent);
+    // Re-read rather than closing over the created task: the operator can cancel or remove a
+    // task while the model is thinking, and both of those are decisions this must not undo.
+    const cur = this.registry.getTask(id);
+    if (!cur) return;
+    if (title && title !== cur.title) {
+      this.registry.upsertTask({ ...cur, title, updatedAt: Date.now() });
+    }
+    if (backlog) return;
+    // A task cancelled mid-title is withdrawn, not merely renamed - launching an agent for it
+    // now would strand a worktree and a tmux session behind a card that says "cancelled".
+    if ((this.registry.getTask(id) ?? cur).status !== "dispatching") return;
+    void this.dispatcher.dispatch(id);
   }
 
   /**

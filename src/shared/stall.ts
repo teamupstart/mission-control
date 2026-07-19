@@ -80,6 +80,36 @@ function quietSince(s: Session): number {
   return s.lastActivity ?? s.firstSeen;
 }
 
+/**
+ * When each parked gate was FIRST OBSERVED parked, keyed by session id.
+ *
+ * A parked gate carries no timestamp of its own - `axi status` dates nothing, and
+ * `awaitingAgent` is a rendered duration string, not a clock - so the only honest
+ * measure of how long it has been waiting on you is how long WE have seen it
+ * waiting. Threaded through rather than derived per call because it is the one
+ * thing a single snapshot cannot answer.
+ */
+export type ParkedSince = ReadonlyMap<string, number>;
+
+/**
+ * Carry the parked-gate observations forward one poll.
+ *
+ * A session that is no longer parked drops out, so a gate that parks, gets answered
+ * and parks again is timed from the SECOND park rather than the first.
+ */
+export function trackParked(
+  prev: ParkedSince | null,
+  sessions: Session[],
+  now: number,
+): Map<string, number> {
+  const next = new Map<string, number>();
+  for (const s of sessions) {
+    if (s.state === "exited" || !gateParked(s, sessions)) continue;
+    next.set(s.id, prev?.get(s.id) ?? now);
+  }
+  return next;
+}
+
 function mins(ms: number): number {
   return Math.floor(ms / 60_000);
 }
@@ -93,12 +123,17 @@ function mins(ms: number): number {
  *
  * `sessions` is passed through to `gateParked` for its cross-session check (a gate
  * one session parked may still be driven by a sibling on the same run).
+ *
+ * `parkedSince` is the caller's record of when it first saw each gate park (see
+ * trackParked); without it the gate rule cannot fire, because there is no honest
+ * clock to measure the wait against.
  */
 export function detectStall(
   s: Session,
   sessions: Session[],
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
+  parkedSince?: ParkedSince,
 ): Stall | null {
   if (s.state === "exited") return null;
 
@@ -118,8 +153,16 @@ export function detectStall(
 
   // 2. A no-mistakes gate parked with no agent driving it. gateParked already did
   //    the work of proving no sibling session will answer it.
-  if (gateParked(s, sessions)) {
-    const age = now - quietSince(s);
+  //
+  //    Timed from when the gate was first SEEN parked, never from `quietSince`: an
+  //    agent can background an `axi run` that parks a gate long after its last hook
+  //    event, so `now - quietSince` would call a gate that parked a minute ago
+  //    "parked for 31m" - and a hookless session, whose clock falls back to
+  //    `firstSeen`, would trip the threshold the instant it parked. A park nobody
+  //    has observed yet is not a stall; the next poll has a baseline to measure from.
+  const parkedAt = parkedSince?.get(s.id);
+  if (parkedAt != null && gateParked(s, sessions)) {
+    const age = now - parkedAt;
     if (age >= th.gateMs) {
       return {
         sessionId: s.id,
@@ -176,10 +219,11 @@ export function detectStalls(
   sessions: Session[],
   now: number,
   th: StallThresholds = DEFAULT_STALL_THRESHOLDS,
+  parkedSince?: ParkedSince,
 ): Stall[] {
   const out: Stall[] = [];
   for (const s of sessions) {
-    const stall = detectStall(s, sessions, now, th);
+    const stall = detectStall(s, sessions, now, th, parkedSince);
     if (stall) out.push(stall);
   }
   return out;

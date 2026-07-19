@@ -50,6 +50,23 @@ test("a client cannot set away without a timestamp, nor backdate its own", () =>
   assert.equal(next.awaySince, 5000);
 });
 
+test("a patch carrying awaySince ALONE cannot backdate the window", () => {
+  // The one the transition guard used to miss: with no `away` alongside it, the
+  // caller's timestamp merged straight through. The watcher reads a changed
+  // awaySince as a NEW away window and replaces the open buffer with an empty one,
+  // so this backdate would have emptied the return digest.
+  setAwayConfig({ away: true }, 1000);
+  const next = setAwayConfig({ awaySince: 0 }, 9000);
+  assert.equal(next.away, true);
+  assert.equal(next.awaySince, 1000);
+});
+
+test("awaySince cannot be conjured while you are at the desk either", () => {
+  const next = setAwayConfig({ awaySince: 500 }, 9000);
+  assert.equal(next.away, false);
+  assert.equal(next.awaySince, null);
+});
+
 test("returning clears awaySince", () => {
   setAwayConfig({ away: true }, 1000);
   const back = setAwayConfig({ away: false }, 2000);

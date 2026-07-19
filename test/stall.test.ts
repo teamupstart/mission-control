@@ -4,6 +4,7 @@ import {
   DEFAULT_STALL_THRESHOLDS,
   detectStall,
   detectStalls,
+  trackParked,
   type StallThresholds,
 } from "../src/shared/stall.ts";
 import type {
@@ -244,23 +245,71 @@ test("escalation age is measured from the note, not from session activity", () =
 });
 
 // ---- gate-parked ----
+//
+// Timed from when the gate was first SEEN parked (trackParked), never from the
+// session's own quiet clock: an agent can background an `axi run` that parks a gate
+// long after its last hook event, and a hookless session has no usable clock at all.
+
+/** The watcher's record, as if the gate had been seen parked at `at`. */
+const parkedAt = (id: string, at: number) => new Map([[id, at]]);
 
 test("a gate parked past the threshold with no agent driving it is stuck", () => {
   const s = mkSession({ state: "idle", lastActivity: 0, nomistakes: mkGate() });
-  const stall = one(s, TH.gateMs);
+  const stall = detectStall(s, [s], TH.gateMs, TH, parkedAt("s", 0));
   assert.equal(stall?.kind, "gate-parked");
   assert.match(stall!.reason, /gate parked at review for 5m/);
 });
 
+test("a gate is timed from when it PARKED, not from the session's last hook event", () => {
+  // The failure this rules out: a session quiet since 10:00 whose agent backgrounds a
+  // run that parks at 10:30 was reported as "parked for 31m" one minute later.
+  const s = mkSession({ state: "idle", lastActivity: 0, nomistakes: mkGate() });
+  const justParked = detectStall(s, [s], 30 * MIN + 60_000, TH, parkedAt("s", 30 * MIN));
+  assert.equal(justParked, null);
+
+  const later = detectStall(s, [s], 30 * MIN + TH.gateMs, TH, parkedAt("s", 30 * MIN));
+  assert.match(later!.reason, /for 5m/);
+  assert.equal(later!.forMs, TH.gateMs);
+});
+
+test("a gate nobody has seen park yet is not stuck, however old the session is", () => {
+  // A hookless session has a null lastActivity, so the old clock fell back to
+  // firstSeen - the session's whole lifetime - and flagged it the instant it parked.
+  const s = mkSession({ state: "idle", instrumented: false, firstSeen: 0, nomistakes: mkGate() });
+  assert.equal(detectStall(s, [s], 999 * MIN, TH, new Map()), null);
+  assert.equal(one(s, 999 * MIN), null); // no record supplied at all
+});
+
+test("trackParked dates a gate from first sight and holds it across polls", () => {
+  const s = mkSession({ state: "idle", nomistakes: mkGate() });
+  const first = trackParked(null, [s], 10 * MIN);
+  assert.equal(first.get("s"), 10 * MIN);
+  assert.equal(trackParked(first, [s], 20 * MIN).get("s"), 10 * MIN);
+});
+
+test("trackParked restarts the clock when a gate is answered and parks again", () => {
+  // Otherwise the second park inherits the first one's age and is stuck on arrival.
+  const parked = mkSession({ state: "idle", nomistakes: mkGate() });
+  const answered = mkSession({ state: "idle", nomistakes: null });
+  const first = trackParked(null, [parked], 10 * MIN);
+  const cleared = trackParked(first, [answered], 20 * MIN);
+  assert.equal(cleared.size, 0);
+  assert.equal(trackParked(cleared, [parked], 30 * MIN).get("s"), 30 * MIN);
+});
+
 test("a gate the agent is still driving is not stuck", () => {
   const s = mkSession({ state: "working", lastActivity: 0, nomistakes: mkGate() });
+  // Not tracked either - trackParked only records gates that need a human.
+  assert.equal(trackParked(null, [s], 0).size, 0);
   assert.equal(one(s, 999 * MIN)?.kind, "silent-working"); // silent, but not gate-parked
 });
 
 test("a gate a SIBLING session is driving is not a gate stall", () => {
   const parked = mkSession({ id: "a", state: "idle", lastActivity: 0, nomistakes: mkGate() });
   const sibling = mkSession({ id: "b", state: "working", lastActivity: 0, nomistakes: mkGate() });
-  const stall = detectStall(parked, [parked, sibling], 999 * MIN);
+  const both = [parked, sibling];
+  assert.equal(trackParked(null, both, 0).size, 0);
+  const stall = detectStall(parked, both, 999 * MIN, TH, parkedAt("a", 0));
   assert.notEqual(stall?.kind, "gate-parked");
 });
 

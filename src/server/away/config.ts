@@ -17,19 +17,19 @@ export function getAwayConfig(): AwayConfig {
 /**
  * Merge a patch over the current config, persist, and return the result.
  *
- * `awaySince` is derived here rather than trusted from the caller: entering away
- * stamps it, leaving clears it, and a patch that doesn't touch `away` leaves it
- * alone. That keeps "when did you leave" owned by the one place that knows the
- * transition happened, so a client cannot set `away` without a timestamp (which
- * would leave the digest with no window to summarise) or backdate its own.
+ * `awaySince` is DERIVED here and never merged from the patch, whether or not that
+ * patch also flips `away`: entering stamps it, leaving clears it, and anything else
+ * leaves it exactly where it was. That keeps "when did you leave" owned by the one
+ * place that knows the transition happened, so a client can neither set `away`
+ * without a timestamp (leaving the digest with no window to summarise) nor backdate
+ * one - a backdated stamp reads to the watcher as a NEW away window and would
+ * discard the buffer accumulated so far.
  */
 export function setAwayConfig(patch: AwayConfigPatch, now = Date.now()): AwayConfig {
   const cur = getAwayConfig();
-  const merged = { ...cur, ...patch };
-  if (patch.away !== undefined && patch.away !== cur.away) {
-    merged.awaySince = patch.away ? now : null;
-  }
-  const next = AwayConfigSchema.parse(merged);
+  const away = patch.away ?? cur.away;
+  const awaySince = away === cur.away ? cur.awaySince : away ? now : null;
+  const next = AwayConfigSchema.parse({ ...cur, ...patch, away, awaySince });
   setAppConfig(CONFIG_KEY, next);
   return next;
 }

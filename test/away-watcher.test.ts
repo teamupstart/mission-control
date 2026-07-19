@@ -231,6 +231,82 @@ test("a session going stuck while away is buffered as attention-worthy", () => {
   w.stop();
 });
 
+test("a session ALREADY stuck when you leave still makes the digest", () => {
+  // The one you most want reported, and the one a plain edge-trigger is silent
+  // about: the stall predates the window, so it is already in the baseline.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
+  let clock = 30 * MIN;
+  const w = startAwayWatcher(reg.src, () => clock);
+  w.tick(); // at the desk: the stall is detected and becomes the baseline
+  assert.equal(w.stalls().length, 1);
+
+  clock = 31 * MIN;
+  setAwayConfig({ away: true }, 31 * MIN);
+  w.tick();
+
+  const events = w.buffer()?.events ?? [];
+  assert.deepEqual(events.map((e) => e.kind), ["stuck"]);
+  w.stop();
+});
+
+test("a stall carried into a window is reported ONCE, not once per tick", () => {
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working", lastActivity: 0 })]);
+  let clock = 30 * MIN;
+  const w = startAwayWatcher(reg.src, () => clock);
+  w.tick();
+  setAwayConfig({ away: true }, 31 * MIN);
+  clock = 31 * MIN;
+  w.tick();
+  clock = 32 * MIN;
+  w.tick();
+
+  const events = w.buffer()?.events ?? [];
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.count, 1);
+  w.stop();
+});
+
+test("seeding known stalls does not re-open the history gate for sessions and tasks", () => {
+  // The stall seed strips only `stalls` from the baseline; a session that went idle
+  // before you left is still pre-existing history and must stay out of the buffer.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working" })]);
+  const w = startAwayWatcher(reg.src, () => 1000);
+  w.tick(); // at the desk
+  reg.set([mkSession({ id: "a", state: "idle" })]);
+  w.tick(); // still at the desk: it finished before you stood up
+
+  setAwayConfig({ away: true }, 2000);
+  w.tick();
+  assert.equal(w.buffer()?.events.length, 0);
+  w.stop();
+});
+
+test("a second window does not destroy a digest nobody has read yet", () => {
+  // Read-once means there is nowhere to recover it from: go away, come back with no
+  // dashboard open to claim it, go away again, and the first window would be gone.
+  const reg = fakeRegistry([mkSession({ id: "a", state: "working" })]);
+  const w = startAwayWatcher(reg.src, () => 1000);
+  setAwayConfig({ away: true }, 500);
+  w.tick();
+  reg.set([mkSession({ id: "a", state: "idle" })]);
+  w.tick();
+  setAwayConfig({ away: false }, 2000);
+  w.tick(); // first digest is pending, unread
+
+  setAwayConfig({ away: true }, 3000);
+  reg.set([mkSession({ id: "b", state: "working" })]);
+  w.tick();
+  reg.set([mkSession({ id: "b", state: "idle" })]);
+  w.tick();
+  setAwayConfig({ away: false }, 4000);
+  w.tick();
+
+  const pending = w.takePending();
+  assert.deepEqual(pending?.events.map((e) => e.sessionId).sort(), ["a", "b"]);
+  assert.equal(pending?.since, 500); // the merged window covers from the first exit
+  w.stop();
+});
+
 test("stop() halts the loop", () => {
   const reg = fakeRegistry([mkSession()]);
   const w = startAwayWatcher(reg.src, () => 1000);

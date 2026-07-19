@@ -121,6 +121,40 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
   return { since: buf.since, events: [...byKey.values()], dropped };
 }
 
+/**
+ * Fold one closed window into another, coalescing across both.
+ *
+ * Needed because a window can close while the last one's digest is still unread (no
+ * dashboard was open to claim it). Merging keeps the read-once contract honest -
+ * dropping either buffer would silently lose a window nothing can recover.
+ */
+export function mergeBuffers(older: AwayBuffer, newer: AwayBuffer): AwayBuffer {
+  const byKey = new Map(older.events.map((e) => [e.key, e]));
+  let dropped = older.dropped + newer.dropped;
+
+  for (const e of newer.events) {
+    const prior = byKey.get(e.key);
+    if (prior) {
+      // The newer wording wins for the same reason it does in foldAlerts, but the
+      // span stretches across both windows.
+      byKey.set(e.key, {
+        ...e,
+        firstAt: Math.min(prior.firstAt, e.firstAt),
+        lastAt: Math.max(prior.lastAt, e.lastAt),
+        count: prior.count + e.count,
+      });
+      continue;
+    }
+    if (byKey.size >= AWAY_BUFFER_CAP) {
+      dropped++;
+      continue;
+    }
+    byKey.set(e.key, e);
+  }
+
+  return { since: Math.min(older.since, newer.since), events: [...byKey.values()], dropped };
+}
+
 /** Counts by kind, for the rollup line. */
 export function tally(buf: AwayBuffer): Record<string, number> {
   const out: Record<string, number> = {};
@@ -168,14 +202,20 @@ export function hasAnything(buf: AwayBuffer): boolean {
  *
  * Attention-level things first regardless of recency: a digest that leads with six
  * finished sessions and buries the one that needs you has failed at its job.
+ *
+ * What doesn't fit is COUNTED rather than dropped, for the same reason `dropped` is
+ * surfaced (see AwayBuffer): twelve lines with nothing said about the other
+ * eighteen reads as "that's all that happened". The count takes the last slot
+ * rather than an extra one, so `limit` stays a hard cap on lines rendered.
  */
 export function digestLines(buf: AwayBuffer, limit = 12): string[] {
   const rank = (e: AwayEvent): number => KIND_ORDER.findIndex((k) => k.kind === e.kind);
-  return [...buf.events]
-    .sort((a, b) => rank(a) - rank(b) || b.lastAt - a.lastAt)
-    .slice(0, limit)
-    .map((e) => {
-      const times = e.count > 1 ? ` (x${e.count})` : "";
-      return `${e.title}${e.body ? ` - ${e.body}` : ""}${times}`;
-    });
+  const sorted = [...buf.events].sort((a, b) => rank(a) - rank(b) || b.lastAt - a.lastAt);
+  const overflow = sorted.length > limit ? sorted.length - (limit - 1) : 0;
+  const lines = sorted.slice(0, overflow > 0 ? limit - 1 : limit).map((e) => {
+    const times = e.count > 1 ? ` (x${e.count})` : "";
+    return `${e.title}${e.body ? ` - ${e.body}` : ""}${times}`;
+  });
+  if (overflow > 0) lines.push(`+${overflow} more`);
+  return lines;
 }

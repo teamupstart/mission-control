@@ -21,6 +21,7 @@ import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
+import { useStalls } from "./lib/stalls.ts";
 import { useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
@@ -32,7 +33,12 @@ export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest } = useAwayMode();
-  useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
+  // Stalls come from the daemon (only it has the clock), but only the browser can
+  // raise a notification - so they are polled back in here to give the `stuck` alert
+  // a delivery path instead of leaving it to the return digest.
+  const stalls = useStalls();
+  const alertScope = useMemo(() => ({ sessions, tasks, stalls }), [sessions, tasks, stalls]);
+  useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
   const foreman = useForeman();

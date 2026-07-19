@@ -6,6 +6,7 @@ import {
   emptyBuffer,
   foldAlerts,
   hasAnything,
+  mergeBuffers,
   rollupLine,
   tally,
 } from "../src/shared/away-buffer.ts";
@@ -181,6 +182,66 @@ test("digest lines show a repeat count and respect the limit", () => {
     100,
   );
   assert.equal(digestLines(many, 5).length, 5);
+});
+
+test("what doesn't fit is COUNTED, not silently dropped", () => {
+  // Twelve lines that say nothing about the other eighteen read as "that's all that
+  // happened" - the same reason `dropped` is surfaced at all.
+  const buf = foldAlerts(
+    emptyBuffer(0),
+    Array.from({ length: 30 }, (_, i) => mkAlert({ id: `idle:s${i}` })),
+    100,
+  );
+  const lines = digestLines(buf);
+  assert.equal(lines.length, 12); // the cap stays a cap
+  assert.equal(lines.at(-1), "+19 more"); // the 11 shown, and every one that isn't
+});
+
+test("a window that fits says nothing about overflow", () => {
+  const buf = foldAlerts(
+    emptyBuffer(0),
+    Array.from({ length: 12 }, (_, i) => mkAlert({ id: `idle:s${i}` })),
+    100,
+  );
+  assert.equal(digestLines(buf).length, 12);
+  assert.doesNotMatch(digestLines(buf).join("\n"), /more/);
+});
+
+// ---- merging two closed windows ----
+
+test("merging two windows coalesces repeats across both", () => {
+  const first = foldAlerts(emptyBuffer(0), [mkAlert()], 100);
+  const second = foldAlerts(emptyBuffer(500), [mkAlert()], 600);
+  const merged = mergeBuffers(first, second);
+  assert.equal(merged.events.length, 1);
+  assert.equal(merged.events[0]?.count, 2);
+  assert.equal(merged.events[0]?.firstAt, 100);
+  assert.equal(merged.events[0]?.lastAt, 600);
+});
+
+test("a merged window covers from the EARLIER window's start", () => {
+  const merged = mergeBuffers(emptyBuffer(100), emptyBuffer(500));
+  assert.equal(merged.since, 100);
+});
+
+test("merging keeps distinct events from both windows, and their dropped counts", () => {
+  const first = { ...foldAlerts(emptyBuffer(0), [mkAlert({ id: "idle:a" })], 100), dropped: 2 };
+  const second = { ...foldAlerts(emptyBuffer(0), [mkAlert({ id: "idle:b" })], 200), dropped: 3 };
+  const merged = mergeBuffers(first, second);
+  assert.deepEqual(merged.events.map((e) => e.key).sort(), ["idle:a", "idle:b"]);
+  assert.equal(merged.dropped, 5);
+});
+
+test("merging respects the buffer cap rather than growing without bound", () => {
+  const full = foldAlerts(
+    emptyBuffer(0),
+    Array.from({ length: AWAY_BUFFER_CAP }, (_, i) => mkAlert({ id: `idle:a${i}` })),
+    100,
+  );
+  const more = foldAlerts(emptyBuffer(0), [mkAlert({ id: "idle:new" })], 200);
+  const merged = mergeBuffers(full, more);
+  assert.equal(merged.events.length, AWAY_BUFFER_CAP);
+  assert.equal(merged.dropped, 1);
 });
 
 test("the window the buffer covers survives folding", () => {

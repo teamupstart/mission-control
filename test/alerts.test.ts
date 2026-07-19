@@ -397,9 +397,9 @@ test("stuck alerts break through while away - they are attention, not digest mat
   assert.equal(r.filter(bufferable).length, 0);
 });
 
-test("a scope with no stalls (the client's) emits no stuck alerts", () => {
-  // The client cannot compute stalls - sessionEqual keeps lastActivity off the
-  // wire - so its scope simply carries none rather than guessing.
+test("a scope with no stalls omits the field rather than guessing", () => {
+  // Nothing but the daemon can compute stalls - sessionEqual keeps lastActivity off
+  // the wire - so a scope built before the client's read of them lands carries none.
   const s = mkSession({ id: "a" });
   const noStalls: AlertScope = { sessions: [s], tasks: [] };
   assert.equal(detectAlerts(noStalls, noStalls).length, 0);

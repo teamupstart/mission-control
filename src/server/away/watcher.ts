@@ -2,9 +2,9 @@ import { envVar } from "../config.ts";
 import { unref } from "../util/timers.ts";
 import { detectAlerts } from "@shared/alerts.ts";
 import type { AlertScope } from "@shared/alerts.ts";
-import { detectStalls } from "@shared/stall.ts";
+import { detectStalls, trackParked } from "@shared/stall.ts";
 import type { Stall } from "@shared/stall.ts";
-import { emptyBuffer, foldAlerts } from "@shared/away-buffer.ts";
+import { emptyBuffer, foldAlerts, mergeBuffers } from "@shared/away-buffer.ts";
 import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
@@ -66,11 +66,16 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
   let pending: AwayBuffer | null = null;
   /** The `awaySince` the buffer was opened for, so a NEW away window starts fresh. */
   let bufferedSince: number | null = null;
+  /** When each parked gate was first seen parked - the gate rule's only honest clock. */
+  let parked = new Map<string, number>();
 
   /** Close the open window into `pending`. Idempotent - a second call is a no-op. */
   const closeWindow = (): void => {
     if (buffer === null) return;
-    pending = buffer;
+    // Merge rather than overwrite: leaving twice before any dashboard claimed the
+    // first digest must not silently destroy it - `takePending` is read-once, so
+    // there is nowhere else to recover it from.
+    pending = pending ? mergeBuffers(pending, buffer) : buffer;
     buffer = null;
     bufferedSince = null;
   };
@@ -82,8 +87,12 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
       const t = now();
       const snap = registry.snapshot();
 
+      // Tracked even when detection is off, so switching it on doesn't date every
+      // parked gate from the moment of the switch.
+      parked = trackParked(parked, snap.sessions, t);
+
       stalls = cfg.detectStalls
-        ? detectStalls(snap.sessions, t, stallThresholds(cfg))
+        ? detectStalls(snap.sessions, t, stallThresholds(cfg), parked)
         : [];
 
       const scope: AlertScope = { sessions: snap.sessions, tasks: snap.tasks, stalls };
@@ -91,19 +100,33 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
       // Open a buffer when you leave; on return, CLOSE it into `pending` rather than
       // dropping it, because the digest that renders it is necessarily read after you
       // are no longer away.
+      let opened = false;
       if (cfg.away && cfg.awaySince != null) {
         if (buffer === null || bufferedSince !== cfg.awaySince) {
           buffer = emptyBuffer(cfg.awaySince);
           bufferedSince = cfg.awaySince;
+          opened = true;
         }
       } else {
         closeWindow();
       }
 
-      // Seed silently on the first tick: with no baseline, every live session would
-      // read as a brand-new transition and the buffer would open full of history.
-      if (prev && buffer) {
-        buffer = foldAlerts(buffer, detectAlerts(prev, scope), t);
+      // What this pass diffs against.
+      //
+      // Normally the previous scope. On the pass that OPENS a window its stalls are
+      // stripped first, so a session that wedged BEFORE you stood up is reported
+      // too: it is already in the baseline, so a plain edge-trigger stays silent
+      // about it - and it is precisely the session you most want to hear about.
+      // Stripping only `stalls` leaves the session/task diff untouched, so history
+      // still cannot flood the buffer.
+      //
+      // Null on the very first tick, where the scope stands in for itself: with no
+      // baseline every live session would read as a brand-new transition and the
+      // buffer would open full of history, while anything ALREADY stuck (a daemon
+      // restarted mid-away) is still reported.
+      const base = opened ? { ...(prev ?? scope), stalls: [] } : prev;
+      if (base && buffer) {
+        buffer = foldAlerts(buffer, detectAlerts(base, scope), t);
       }
       prev = scope;
     } catch (err) {

@@ -43,8 +43,9 @@ export interface AlertScope {
   tasks: Task[];
   /**
    * Currently-stalled sessions, from the daemon's stall detector. Optional because
-   * the client cannot compute it - the elapsed-time signal never reaches it - so a
-   * client-side scope simply carries no stalls and emits no `stuck` alerts.
+   * nothing but the daemon can COMPUTE it - the elapsed-time signal never reaches
+   * the client, which fetches the result instead (see useStalls) - so a scope built
+   * before that read lands simply carries no stalls and emits no `stuck` alerts.
    */
   stalls?: Stall[];
 }

@@ -19,6 +19,7 @@ import type {
 } from "@shared/protocol.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayDigest } from "@shared/away-buffer.ts";
+import type { Stall } from "@shared/stall.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -50,6 +51,12 @@ export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
  * which is the common case: you were never away, or nothing happened.
  */
 export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
+/**
+ * The sessions the daemon currently reads as stuck. Fetched rather than derived:
+ * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the
+ * SSE change comparison, so the session stream cannot carry the signal.
+ */
+export const fetchAwayStalls = () => fetchJson<Stall[]>("/api/away/stalls");
 /** The skills catalog, what's on, and how many sessions are behind - one read. */
 export const fetchSkills = () => fetchJson<SkillsView>("/api/skills");
 

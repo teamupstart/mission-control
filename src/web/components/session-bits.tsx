@@ -291,6 +291,9 @@ export function RenameEditor({
 /**
  * The runtime row: model, thinking level, and a context-window pressure meter - the same
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
+ *
+ * A `<span>` (styled `display:flex`), not a `<div>`, so it's phrasing content: the board's
+ * tile is a `<button>`, and this row has to live inside one there without being invalid HTML.
  */
 export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Element | null {
   const hasCtx = meta.contextPct != null;
@@ -301,7 +304,7 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
       ? `${compactTokens(meta.contextTokens)} / ${compactTokens(meta.contextWindow)} tokens in context`
       : `${meta.contextPct}% of the context window used`;
   return (
-    <div className="card-runtime">
+    <span className="card-runtime">
       {meta.model && (
         <span className="rt-pill rt-model" title={meta.modelId ?? undefined}>
           {meta.model}
@@ -330,7 +333,7 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
           <span className="rt-ctx-num">{meta.contextPct}%</span>
         </span>
       )}
-    </div>
+    </span>
   );
 }
 

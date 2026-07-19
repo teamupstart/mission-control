@@ -751,7 +751,7 @@ export interface NmRunSummary {
    */
   activeSteps: NmActiveStep[];
   findings: NmFinding[];
-  outcome: string | null; // "passed" once complete
+  outcome: string | null; // once landed: checks-passed | passed | failed | cancelled
 }
 
 // ---- no-mistakes fix log ----

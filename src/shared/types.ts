@@ -1007,7 +1007,22 @@ export interface TranscriptMessage {
   tools: ToolCall[];
   /** epoch ms of the turn, 0 when the record had no timestamp. */
   ts: number;
+  /**
+   * Who typed a user turn, when it wasn't the human. Absent on assistant turns, and on
+   * anything we can't attribute - which reads as the human, the way it always has.
+   */
+  origin?: TurnOrigin;
 }
+
+/**
+ * The non-human authors of a "user" turn.
+ *
+ * A session Foreman is driving is mostly Foreman talking, and the dashboard types
+ * `/reload-skills` into idle sessions on its own account. The transcript file records
+ * both exactly as it records a person's typing, so without this the log credits the human
+ * with instructions they never wrote - and hides the machinery doing its job.
+ */
+export type TurnOrigin = "foreman" | "harness";
 
 /**
  * Messages on the per-session transcript SSE stream

@@ -1,5 +1,11 @@
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { AgentType, ToolCall, TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
+import type {
+  AgentType,
+  ToolCall,
+  TranscriptMessage,
+  TranscriptStreamMsg,
+  TurnOrigin,
+} from "@shared/types.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -14,13 +20,17 @@ import {
 
 const AGENT_LABEL: Record<AgentType, string> = { claude: "claude", codex: "codex" };
 
+/** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
+ *  because that's the name on the window the reader is looking at. */
+const ORIGIN_LABEL: Record<TurnOrigin, string> = { foreman: "foreman", harness: "mission control" };
+
 /**
  * Imperative surface the card holds onto so the send shortcut can reach this panel's
  * reply box - the card's single compose box while it's expanded.
  */
 export interface TranscriptHandle {
-  /** Focus the reply box, reporting whether there was one (an unavailable transcript
-   *  renders no compose row, and the caller then owns the send flow itself). */
+  /** Focus the reply box, reporting whether there was one (a collapsed card has no
+   *  panel mounted at all, and the caller then owns the send flow itself). */
   focusReply: () => boolean;
 }
 
@@ -51,10 +61,9 @@ export function TranscriptPanel({
    */
   resetNonce?: number;
   /**
-   * Whether this panel is currently rendering a reply box, reported as it changes.
-   * The card's send box may only be open when there is none, and whether there is one
-   * is this panel's fact alone - an unavailable transcript has no reply row, and the
-   * stream can hand one back at any time (see the compose gate below).
+   * Whether this panel is currently rendering a reply box, reported as it mounts and
+   * unmounts. The card's send box may only be open when there is none, and whether
+   * there is one is this panel's fact alone.
    */
   onReplyBox?: (present: boolean) => void;
   ref?: React.Ref<TranscriptHandle>;
@@ -70,25 +79,25 @@ export function TranscriptPanel({
   const atBottom = useRef(true);
   const drop = useImageDrop({ attachments, onChange: setAttachments, disabled: !canSend });
 
-  // The single source of truth for "is there a reply box here?" - read by the render
-  // below AND reported to the card, so the two can't disagree about a box the card is
-  // deciding against.
-  const replyBox = status !== "unavailable";
-
-  // Report through a ref so a caller passing a fresh closure each render doesn't
-  // re-fire this, and so the unmount cleanup can retract the box without depending on
-  // the callback identity - a card whose transcript has gone owns its send box again.
+  // The reply box is deliberately NOT conditioned on the transcript. Replying needs a
+  // pane to paste into (`canSend`) and nothing else - the transcript is how you READ a
+  // session, not how you write to it. An auto-discovered session whose JSONL we can't
+  // resolve is exactly the one you most want to answer from here, and gating the box on
+  // the stream left it with only the action bar's cramped fallback input, which can't
+  // take newlines or images. So: mounted panel, reply box - reported as such.
   const notifyRef = useRef(onReplyBox);
   notifyRef.current = onReplyBox;
   useEffect(() => {
-    notifyRef.current?.(replyBox);
-  }, [replyBox]);
-  useEffect(() => () => notifyRef.current?.(false), []);
+    notifyRef.current?.(true);
+    // Retract on unmount without depending on the callback identity - a card whose
+    // transcript has gone owns its send box again.
+    return () => notifyRef.current?.(false);
+  }, []);
 
   // The panel deliberately never takes focus on its own (see below), but the send
   // shortcut is an explicit "I want to type now" - so it gets a way in. Reported as a
-  // boolean rather than assumed: an unavailable transcript renders no reply box at
-  // all, and the card must know that to fall back to its own send box.
+  // boolean rather than assumed: a collapsed card has no panel mounted at all, and the
+  // card must know that to fall back to its own send box.
   useImperativeHandle(ref, () => ({
     focusReply: () => {
       const el = inputRef.current;
@@ -222,65 +231,68 @@ export function TranscriptPanel({
         )}
       </div>
 
-      {replyBox && (
-        <div className="transcript-compose" {...drop.dropProps}>
-          <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
-          <div className="compose-row">
-            <textarea
-              // Remount on reset so an open box drops the text the reset discarded;
-              // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.
-              key={resetNonce}
-              ref={inputRef}
-              className="transcript-input"
-              placeholder={
-                canSend
-                  ? "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
-                  : "No pane to send to"
+      <div className="transcript-compose" {...drop.dropProps}>
+        <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
+        <div className="compose-row">
+          <textarea
+            // Remount on reset so an open box drops the text the reset discarded;
+            // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.
+            key={resetNonce}
+            ref={inputRef}
+            className="transcript-input"
+            placeholder={
+              canSend
+                ? "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
+                : "No pane to send to"
+            }
+            rows={2}
+            disabled={!canSend}
+            // Stays uncontrolled - that's why typing here has never re-rendered the
+            // log above it, and a reply written against a streaming transcript can't
+            // afford to start. `defaultValue` re-hydrates whatever the last mount was
+            // holding when the card collapsed; `onChange` keeps that copy current at
+            // the cost of a Map set per keystroke.
+            defaultValue={readDraft(sessionId, "reply")}
+            onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
+            onPaste={drop.onPaste}
+            onKeyDown={(e) => {
+              // The Enter that commits an IME candidate (Japanese/Chinese/Korean) is
+              // the same keystroke as the one that sends, and the browser tells them
+              // apart only by `isComposing`. Without this, picking a candidate fires
+              // off the half-composed reply.
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void send();
+              } else if (e.key === "Escape") {
+                // Blur back to the grid so card keyboard nav (e to collapse) works.
+                e.currentTarget.blur();
               }
-              rows={2}
-              disabled={!canSend}
-              // Stays uncontrolled - that's why typing here has never re-rendered the
-              // log above it, and a reply written against a streaming transcript can't
-              // afford to start. `defaultValue` re-hydrates whatever the last mount was
-              // holding when the card collapsed; `onChange` keeps that copy current at
-              // the cost of a Map set per keystroke.
-              defaultValue={readDraft(sessionId, "reply")}
-              onChange={(e) => writeDraft(sessionId, "reply", e.currentTarget.value)}
-              onPaste={drop.onPaste}
-              onKeyDown={(e) => {
-                // The Enter that commits an IME candidate (Japanese/Chinese/Korean) is
-                // the same keystroke as the one that sends, and the browser tells them
-                // apart only by `isComposing`. Without this, picking a candidate fires
-                // off the half-composed reply.
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  void send();
-                } else if (e.key === "Escape") {
-                  // Blur back to the grid so card keyboard nav (e to collapse) works.
-                  e.currentTarget.blur();
-                }
-              }}
-            />
-            <button
-              className="btn btn-send"
-              disabled={!canSend || sending || drop.uploading}
-              onClick={() => void send()}
-            >
-              {drop.uploading ? "Uploading…" : "Send"}
-            </button>
-          </div>
-          {flash && <span className="action-flash">{flash}</span>}
-          {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
+            }}
+          />
+          <button
+            className="btn btn-send"
+            disabled={!canSend || sending || drop.uploading}
+            onClick={() => void send()}
+          >
+            {drop.uploading ? "Uploading…" : "Send"}
+          </button>
         </div>
-      )}
+        {flash && <span className="action-flash">{flash}</span>}
+        {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
+      </div>
     </div>
   );
 }
 
 function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): React.JSX.Element {
+  // A turn the human didn't type says who did. Much of the "user" side of a supervised
+  // session is Foreman delivering work or the dashboard reloading skills, and reading
+  // those back as "you" makes the log claim the human asked for things they never asked
+  // for - while hiding the machinery that did.
+  const who = m.role === "assistant" ? agentLabel : m.origin ? ORIGIN_LABEL[m.origin] : "you";
   return (
-    <div className={`turn turn-${m.role}`}>
-      <div className="turn-role">{m.role === "assistant" ? agentLabel : "you"}</div>
+    <div className={`turn turn-${m.origin ?? m.role}`}>
+      <div className="turn-role">{who}</div>
       {m.text && <div className="turn-text">{m.text}</div>}
       {m.tools.length > 0 && <ToolChips tools={m.tools} />}
     </div>

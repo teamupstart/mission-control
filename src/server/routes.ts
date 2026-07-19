@@ -42,6 +42,7 @@ import type { NmRunSummary, Session, SkillsView, WorkItem } from "@shared/types.
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
+import { recordInjection } from "./injections.ts";
 import {
   readTranscriptSince,
   readTranscriptWindow,
@@ -477,6 +478,9 @@ export function buildApp(
     const parsed = await parseBody(c, InjectPromptSchema);
     if (!parsed.ok) return c.json({ error: parsed.error, pasted: false }, 400);
     const r = await injectPrompt(session, parsed.data.text);
+    // Only once it landed: a refused or failed delivery is not a turn anybody will read,
+    // and claiming it would mis-attribute a LATER turn that happens to repeat the text.
+    if (r.ok && parsed.data.origin !== "human") recordInjection(session.id, parsed.data.text, parsed.data.origin);
     return c.json(r, r.ok ? 200 : 500);
   });
 

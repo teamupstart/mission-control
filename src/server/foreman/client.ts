@@ -244,7 +244,9 @@ export class ForemanClient implements ForemanActions {
   async inject(id: string, text: string): Promise<void> {
     let res: Response;
     try {
-      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text });
+      // `origin` is what lets the conversation log say who typed this. Every inject from
+      // this client is Foreman's: the human's own replies go through the dashboard.
+      res = await send("POST", `/api/sessions/${enc(id)}/inject`, { text, origin: "foreman" });
     } catch (err) {
       throw new InjectError(`inject ${id} -> ${String(err)}`, true);
     }

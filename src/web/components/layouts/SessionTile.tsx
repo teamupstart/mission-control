@@ -5,6 +5,18 @@ import { RuntimeMetaRow } from "../session-bits.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
+ * Whether a click only marks the end of a drag-select rather than a click on the thing
+ * underneath it. Copying a branch name off a tile is a fair thing to want on a triage
+ * board, and the mouseup that ends that drag lands on the tile as a click - which should
+ * not navigate you into a session you were only reading.
+ *
+ * Takes the selection rather than reading it, so the decision can be tested without a DOM.
+ */
+export function isDragSelection(sel: { isCollapsed: boolean } | null): boolean {
+  return sel != null && !sel.isCollapsed;
+}
+
+/**
  * A session shrunk to what you'd triage by, without opening it: who it is, what it's
  * for, what it's doing this second, where its gate is parked, how much context it has
  * left, and whether it wants something. The conversation, the diff, and the gate's
@@ -54,11 +66,7 @@ export function SessionTile({
         setOver(true);
       }}
       onClick={() => {
-        // Copying a branch name off a tile is a fair thing to want on a triage board,
-        // and the mouseup that ends that drag lands here as a click on the root. Opening
-        // a session out from under the selection you just made is not what you asked for.
-        const sel = typeof window === "undefined" ? null : window.getSelection();
-        if (sel && !sel.isCollapsed) return;
+        if (isDragSelection(window.getSelection())) return;
         onOpen();
       }}
       onDragLeave={() => setOver(false)}

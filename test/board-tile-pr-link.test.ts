@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
-import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
+import { isDragSelection, SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 
 /**
  * The board tile's PR flag has to be a real link, and the tile is not allowed to be a
@@ -132,13 +132,14 @@ test("the stretched open button does not eat the pointer, so tile tooltips survi
   assert.match(rule, /pointer-events:\s*none/);
 });
 
-test("the tile renders where there is no window, which its selection guard reads", () => {
-  // The root's onClick declines a click that only ends a drag-selection, which means
-  // reaching for window.getSelection() during a handler. Server rendering never runs
-  // that handler, but the guard has to stay written so it cannot throw here either -
-  // this pins the `typeof window` check that makes that true.
-  assert.equal(typeof (globalThis as { window?: unknown }).window, "undefined");
-  assert.match(render(withPr), /^<div class="tile /);
+test("a click that only ends a drag-select does not open the session", () => {
+  // The tile root opens the console on click, so the mouseup ending a drag-select over
+  // a branch name would too. Asserted on the predicate rather than through a click,
+  // because that is the whole decision - the handler around it just supplies the
+  // browser's selection.
+  assert.equal(isDragSelection({ isCollapsed: false }), true, "a live selection is not a click");
+  assert.equal(isDragSelection({ isCollapsed: true }), false, "an ordinary click still opens");
+  assert.equal(isDragSelection(null), false, "no selection at all still opens");
 });
 
 test("a PR number with no URL yet stays a plain flag rather than a dead link", () => {

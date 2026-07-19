@@ -1,10 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { optionRowMiss, parsePaneDialog, sameOptionLabel } from "../src/server/discovery/pane-dialog.ts";
+import {
+  hasUnansweredWarning,
+  optionRowMiss,
+  parsePaneDialog,
+  sameOptionLabel,
+  submitAnswersRow,
+} from "../src/server/discovery/pane-dialog.ts";
+import { dialogIdentity } from "../src/shared/session.ts";
 import {
   ASK_USER_QUESTION,
   CURSOR_ON_THIRD,
+  MULTI_SELECT,
   PERMISSION,
+  REVIEW_UNANSWERED,
   TRUST,
   TRUST_QUESTION,
   TRUST_UNWRAPPED,
@@ -49,6 +58,91 @@ test("reads the two-row trust check", () => {
 
 test("the cursor is read, never assumed to be row 1", () => {
   assert.equal(parsePaneDialog(CURSOR_ON_THIRD)?.highlighted, 3);
+});
+
+test("a multi-select is read as a form, box state separate from the label", () => {
+  const d = parsePaneDialog(MULTI_SELECT);
+  assert.ok(d);
+  assert.equal(d.multiSelect, true);
+  assert.deepEqual(
+    d.options.map((o) => [o.label, o.checked]),
+    [
+      ["Alpha", true],
+      ["Beta", true],
+      ["Gamma", false],
+      // Claude's free-text row RENDERS a box and is not one - see below.
+      ["Type something", undefined],
+      // Its trailing row carries no box at all, so it is a press and not a tick.
+      ["Chat about this", undefined],
+    ],
+  );
+});
+
+test("the free-text row is not one of the form's boxes, though it renders as one", () => {
+  // Measured live: a form submitted with "Type something" ticked and nothing typed still
+  // met "You have not answered all questions". So it is not an answer, and offering it as a
+  // tickable box lets a human submit what looks like a choice and get the question back.
+  // It also cannot be WALKED to - pressing it opens a field that eats the arrows the submit
+  // walk needs - so it is excluded at the parse, where every caller inherits it.
+  const d = parsePaneDialog(MULTI_SELECT)!;
+  const free = d.options.find((o) => o.label === "Type something")!;
+  assert.equal(free.checked, undefined, "not a checkbox");
+  assert.equal(free.label, "Type something", "and the box it renders is still out of the label");
+  // Still a form, and still the same boxes: the row counts toward recognizing a form
+  // without being answerable on one.
+  assert.equal(d.multiSelect, true);
+  assert.deepEqual(
+    d.options.filter((o) => o.checked !== undefined).map((o) => o.number),
+    [1, 2, 3],
+  );
+});
+
+test("ticking a box does not change what the row IS", () => {
+  // The bug this closes: with the box inside the label, a row rendered to the human as
+  // "[ ] Gamma" read back as "[✔] Gamma" the moment anything ticked it - including their
+  // own previous click - so every later click was refused as a changed screen, and a form
+  // that had been sitting there became permanently unanswerable.
+  const before = parsePaneDialog(MULTI_SELECT)!;
+  const after = parsePaneDialog(MULTI_SELECT.replace("3. [ ] Gamma", "3. [✔] Gamma"))!;
+  assert.equal(after.options[2]?.checked, true);
+  assert.equal(optionRowMiss(after, { number: 3, label: before.options[2]!.label }), null);
+  assert.equal(dialogIdentity(after), dialogIdentity(before));
+});
+
+test("a single-select menu is not a form, and parses exactly as it always did", () => {
+  for (const capture of [ASK_USER_QUESTION, PERMISSION, TRUST, CURSOR_ON_THIRD]) {
+    const d = parsePaneDialog(capture);
+    assert.equal(d?.multiSelect, undefined);
+    assert.ok(d?.options.every((o) => o.checked === undefined));
+  }
+});
+
+test("a lone bracketed row is text, not a checkbox", () => {
+  // A permission prompt quoting a command that contains brackets must not have them
+  // stripped out of the label the human is asked to confirm, nor be routed to the form
+  // path. One box is not a form; a real one always renders several.
+  const d = parsePaneDialog(`
+Run this command?
+
+❯ 1. [ ] is a test builtin
+  2. No
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+`);
+  assert.equal(d?.multiSelect, undefined);
+  assert.equal(d?.options[0]?.label, "[ ] is a test builtin");
+  assert.equal(d?.options[0]?.checked, undefined);
+});
+
+test("the form's Submit tab is recognized, and its warning read", () => {
+  const review = parsePaneDialog(REVIEW_UNANSWERED);
+  assert.ok(review);
+  assert.equal(submitAnswersRow(review)?.number, 1);
+  assert.ok(hasUnansweredWarning(REVIEW_UNANSWERED));
+  // The question tab is not the Submit tab - stepping onto the next question must not be
+  // mistaken for arriving at the send.
+  assert.equal(submitAnswersRow(parsePaneDialog(MULTI_SELECT)!), null);
+  assert.equal(hasUnansweredWarning(MULTI_SELECT), false);
 });
 
 test("the foreground menu wins over an earlier one left in scrollback", () => {

@@ -13,6 +13,7 @@ import type {
   AwayConfigPatch,
   ForemanConfig,
   ForemanConfigPatch,
+  FormOutcome,
   HarnessesConfig,
   HarnessesConfigPatch,
   ResolveEpisode,
@@ -247,6 +248,20 @@ export const api = {
    */
   selectOption: (id: string, number: number, label: string) =>
     post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label }),
+  /**
+   * Fill in and SEND a multi-select `AskUserQuestion`, which `selectOption` cannot do:
+   * pressing a row of one ticks its box and answers nothing, so the whole form goes at
+   * once and the daemon walks Claude's own Submit tab (see `submitPaneForm`).
+   *
+   * Send every checkbox row with the state the human left it in - not just the ones they
+   * changed - so the daemon diffs against the live pane rather than replaying clicks onto
+   * a form that may have been ticked in the terminal since.
+   */
+  submitOptions: (
+    id: string,
+    options: Array<{ number: number; label: string; checked: boolean }>,
+  ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { options }),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
   nomistakesRespond: (

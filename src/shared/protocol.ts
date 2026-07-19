@@ -95,6 +95,48 @@ export const SelectOptionSchema = z.object({
 export type SelectOption = z.infer<typeof SelectOptionSchema>;
 
 /**
+ * Fill in and send a multi-select `AskUserQuestion` - the form that `SelectOptionSchema`
+ * cannot express, because a form is answered by its whole state rather than by one row.
+ *
+ * Every checkbox row is sent, ticked or not, not just the ones the human changed. The
+ * daemon diffs that against a fresh read of the pane and toggles only what differs, so
+ * what crosses the wire is the ANSWER ("Alpha and Gamma, nothing else") rather than a list
+ * of keystrokes to replay - which is what keeps a box someone ticked in the terminal
+ * meanwhile from being silently inverted by a click made before it.
+ *
+ * `label` carries the same weight as it does above, and each row is re-checked against the
+ * screen before anything is typed.
+ */
+export const SubmitOptionsSchema = z.object({
+  options: z
+    .array(
+      z.object({
+        number: z.number().int().min(1).max(99),
+        label: z.string().min(1),
+        checked: z.boolean(),
+      }),
+    )
+    .min(1)
+    .max(99),
+});
+export type SubmitOptions = z.infer<typeof SubmitOptionsSchema>;
+
+/**
+ * How far a submitted form actually got, returned alongside `ok`.
+ *
+ * A success here is not always a send, and the difference is the human's to see: the boxes
+ * are ticked in all three, but only `submitted` reached Claude. The other two are Claude
+ * having more to ask ("next-question") or refusing to call the form complete
+ * ("unanswered"), both of which leave it on screen with something still to do.
+ *
+ * WHERE it is left on screen is the daemon's to say, not the outcome's - an `unanswered`
+ * that could be walked back to the question and one stranded on the review tab are the
+ * same outcome and different situations - so the response may also carry a `note` that
+ * replaces the sentence the outcome alone would produce.
+ */
+export type FormOutcome = "submitted" | "next-question" | "unanswered";
+
+/**
  * Rename a session from the dashboard - renames the underlying tmux session or
  * wezterm tab, which the next discovery sweep reads back as the card's name. The
  * length cap keeps a stray paste from becoming an unwieldy tmux session name; the

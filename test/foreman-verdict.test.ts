@@ -369,6 +369,35 @@ test("a row whose label disagrees with the screen is escalated", () => {
   assert.match(plan.note.lastAction ?? "", /isn't what that row says/);
 });
 
+test("a multi-select form is declined, not planned as a send that will throw", () => {
+  // A form is not answerable by picking a row - Enter ticks a box and the answers reach
+  // Claude only when its Submit tab is confirmed - so `selectPaneOption` REFUSES these rows.
+  // Its labels parse clean, though, so every other guard here passes and the planner would
+  // route a perfectly well-formed verdict into that refusal. The throw is the harm: it exits
+  // `processSession` before `recordEpisode`, and the pane capture is the only copy of a
+  // terminal ask, so each sweep would spend a review, lose the question, and repeat.
+  const form = {
+    options: [
+      { number: 1, label: "Alpha", checked: false },
+      { number: 2, label: "Beta", checked: false },
+    ],
+    highlighted: 1,
+    multiSelect: true as const,
+  };
+  const v: Verdict = {
+    ...MENU_ANSWER,
+    answer: { ...MENU_ANSWER.answer!, option: { number: 1, label: "Alpha" } },
+  };
+  const plan = planFromVerdict(v, ctx({ menu: form }), true);
+  assert.equal(plan.send, null, "nothing may be sent at a form");
+  assert.equal(plan.note.disposition, "escalated");
+  assert.match(plan.note.lastAction ?? "", /multi-select form/);
+  // The judgment still reaches the human, who can actually fill the form in.
+  assert.equal(plan.note.recommendation, v.answer?.text);
+  // And the tier ladder routes up rather than the cheap tier declaring this handled.
+  assert.equal(menuBlocksAnswer(v, ctx({ menu: form })), true);
+});
+
 test("a hard-wrapped label still matches the row it names", () => {
   // The pane cut the row at the terminal's width; the reviewer copied what it could see. The
   // prefix compare exists for exactly this, and the ambiguity rule below must not cost it.

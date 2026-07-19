@@ -510,6 +510,16 @@ function menuMismatch(
   option: { number: number; label: string } | undefined,
 ): string | null {
   if (!menu) return null;
+  // A multi-select is a FORM, and no row of one is an answer: pressing a row ticks a box,
+  // and the answers reach Claude only when its Submit tab is confirmed. `selectPaneOption`
+  // refuses those rows outright, so without this the planner routes a well-formed verdict
+  // to a send that THROWS - and the throw exits `processSession` before `recordEpisode`,
+  // dropping the only copy of the ask (the pane capture) on every sweep, forever. Declining
+  // here makes the refusal what it was meant to be: an escalation, spent once, with the
+  // reviewer's reasoning kept as the recommendation for the human who can fill the form in.
+  if (menu.multiSelect) {
+    return "the pane is showing a multi-select form, which is submitted as a whole rather than answered by picking a row";
+  }
   if (!option) return "a menu is open and the reviewer named no option to select";
   const miss = optionRowMiss(menu, option);
   if (!miss) return null;

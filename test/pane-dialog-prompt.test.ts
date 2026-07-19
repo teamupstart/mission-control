@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PaneDialogPrompt } from "../src/web/components/PaneDialogPrompt.tsx";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
 import { parsePaneDialog } from "../src/server/discovery/pane-dialog.ts";
+import { MULTI_SELECT } from "./fixtures/claude-panes.ts";
 import { activePaneDialog, reportBucket, needsYouReason } from "../src/shared/session.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
 import type { PaneDialog, Session } from "../src/shared/types.ts";
@@ -71,6 +72,60 @@ test("a menu with no question renders its rows rather than nothing", () => {
   const html = render({ options: [{ number: 1, label: "Yes" }], highlighted: 1 });
   assert.ok(html.includes("Yes"));
   assert.ok(!html.includes("pd-prompt"));
+});
+
+// ---- A multi-select is a FORM, and must not be dressed as a menu ----
+
+const form = parsePaneDialog(MULTI_SELECT)!;
+
+test("a multi-select renders checkboxes carrying the terminal's own ticks", () => {
+  const html = render(form);
+  // Alpha and Beta are ticked on the pane, Gamma is not - the human starts from the state
+  // the terminal is actually in, not from an empty form that would silently clear it.
+  assert.equal((html.match(/aria-checked="true"/g) ?? []).length, 2);
+  assert.equal((html.match(/aria-checked="false"/g) ?? []).length, 1, "Gamma, and only Gamma");
+  for (const label of ["Alpha", "Beta", "Gamma", "Type something"]) {
+    assert.ok(html.includes(label), `missing row: ${label}`);
+  }
+});
+
+test("the free-text row is shown, but as a press rather than a box", () => {
+  // It renders a box on the pane and is not one: ticked with nothing typed, Claude still
+  // calls the question unanswered. Rendering it as a checkbox would let a human tick it,
+  // submit, and be told they answered nothing - so it stays visible and reachable (it is
+  // how they ask to type an answer instead) and is simply never part of the answer set.
+  const row = render(form)
+    .split("<li>")
+    .find((li) => li.includes("Type something"))!;
+  assert.ok(!row.includes("aria-checked"), row);
+  assert.ok(row.includes("pd-num"));
+});
+
+test("a form offers one Submit, because ticking a box answers nothing", () => {
+  // The bug this closes: every row rendered as a button that looked like an answer, while
+  // pressing one only toggled its box in the terminal - so a human clicked an option,
+  // nothing was sent, and the same question sat there. The send is its own control now.
+  const html = render(form);
+  assert.ok(html.includes("Submit answers"));
+  assert.ok(html.includes("pd-submit"));
+  assert.ok(!html.includes("pd-current"), "a form has no default row to press");
+});
+
+test("a form's unboxed row stays a press, not a tick", () => {
+  // "Chat about this" is not part of the answer set - it is the way out of the question.
+  const row = render(form)
+    .split("<li>")
+    .find((li) => li.includes("Chat about this"))!;
+  assert.ok(!row.includes("aria-checked"), row);
+  // Rendered as the numbered row it is on the pane, which is also how it is pressed.
+  assert.ok(row.includes("pd-num"));
+});
+
+test("a menu is still a menu - the split does not reach single-select", () => {
+  const html = render();
+  assert.ok(!html.includes("aria-checked"));
+  assert.ok(!html.includes("pd-submit"));
+  assert.ok(html.includes("pd-current"));
 });
 
 // ---- The board has to SHOW that the session is blocked ----

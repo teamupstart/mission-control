@@ -264,8 +264,9 @@ export interface Session {
    * Deliberately NOT sticky across polls, unlike `permissionMode`: a dialog that has been
    * dismissed must clear from the card, and a stale one would be a button that answers a
    * question nobody is asking. It is up to one poll (1.5s) old regardless, which is why
-   * clicking a row goes through `POST /api/sessions/:id/select-option` - that re-reads the
-   * pane and refuses unless the row still reads as the label the human was shown.
+   * answering goes through the daemon - `POST /api/sessions/:id/select-option`, or
+   * `submit-options` for a form (see `multiSelect`) - which re-reads the pane and refuses
+   * unless the rows still read as the labels the human was shown.
    */
   paneDialog: PaneDialog | null;
 }
@@ -288,6 +289,16 @@ export interface PaneOption {
    * repaints between poll and click cannot make a click miss.
    */
   detail?: string;
+  /**
+   * Whether this row's checkbox is ticked, on the multi-select form rows that have one.
+   * Absent on every row of a dialog that isn't a form, and on a form's unboxed rows
+   * ("Chat about this").
+   *
+   * Deliberately NOT part of `label` (nor of `dialogIdentity`): it is the one thing about
+   * a row that changes while the row stays the same question, so folding it into either
+   * would make every tick read as a different menu.
+   */
+  checked?: boolean;
 }
 
 /** An option dialog as read off a pane. */
@@ -303,6 +314,18 @@ export interface PaneDialog {
    * those has not been shown what they are approving.
    */
   prompt?: string;
+  /**
+   * Set when the rows carry checkboxes - a multi-select `AskUserQuestion`, which is a FORM
+   * rather than a menu and must be answered as one.
+   *
+   * The distinction is the whole point of the flag: on a menu, Enter on a row IS the
+   * answer. On a form, Enter only TOGGLES that row's box - the form stays up and nothing
+   * reaches Claude until its "Submit" tab is confirmed. So a click here routes to
+   * `submitPaneForm` (tick the boxes, then send) instead of `selectPaneOption` (press the
+   * row), and the dashboard renders checkboxes and a Submit button instead of buttons that
+   * each look like they answer.
+   */
+  multiSelect?: true;
 }
 
 // ---- Foreman session notes (auto-responder) ----

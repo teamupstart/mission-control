@@ -266,10 +266,20 @@ rows as **buttons**, with the question above them and each row's description ben
 Click one and the daemon answers it in the terminal. Not just plan mode, and not only the
 ones Foreman declined: **every** menu a session is parked on is offered.
 
+A **multi-select** `AskUserQuestion` renders as **checkboxes with a Submit button** instead,
+because it is a form rather than a menu: in the terminal, Enter on one of its rows only
+ticks that row's box, and nothing reaches Claude until its `✔ Submit` tab is confirmed. Tick
+any number of rows, press **Submit answers**, and the daemon ticks what differs and walks
+Claude's own submit path. If Claude has further questions, the next one takes the card's
+place and you answer it the same way; if its review tab reports a question still unanswered,
+the form is left up rather than sent half-filled.
+
 The menu is read straight off the pane on the same ~1.5s sweep that reads the permission
 mode, so it needs **no hooks** and costs no extra work - and it clears the moment the menu
-does. The card also marks the row the terminal's own cursor is on, so this view and a tab
-open on the same session never disagree about what Enter would do.
+does. On a menu the card also marks the row the terminal's own cursor is on, so this view
+and a tab open on the same session never disagree about what Enter would do. A dialog whose
+pane stops being readable - the window closed, the tmux server restarted - clears within a
+few sweeps rather than lingering as rows nothing can reach.
 
 **The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
 discards typed characters, and the Enter that follows confirms whichever row was already

@@ -11,6 +11,7 @@ import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
 import { AgentDot } from "./session-bits.tsx";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
  * The Sitrep panel (`/api/report`): who needs you, who's working, what's idle, the
@@ -38,15 +39,9 @@ export function ReportPanel({
   const [outcome, setOutcome] = useState("");
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
 
-  // Close on Escape, consistent with the dispatch modal (App.tsx suppresses the
-  // grid's global keys while this panel is open, so it must handle Escape itself).
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Escape is handled by the Overlay this panel renders into, NOT by App - App
+  // suppresses the grid's global keys while any overlay is up, so the overlay layer
+  // has to close itself. That invariant is unchanged; it just lives in one place now.
 
   const { needsYou, working, idle } = useMemo(() => {
     const nY: Session[] = [];
@@ -127,161 +122,166 @@ export function ReportPanel({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <aside className="report-panel" role="dialog" aria-label="Sitrep" onClick={(e) => e.stopPropagation()}>
-        <header className="report-head">
-          <h2>Sitrep</h2>
-          {/* The topbar button that opens this is a bare glyph, so the shortcut
-              is spelled out here instead - where you can read it while the panel
-              is up, and act on it next time. */}
-          <kbd aria-hidden>{formatChord(bindings.roundup)}</kbd>
-          <button className="btn btn-ghost report-copy" onClick={() => void copyMarkdown()}>
-            {copied ? "Copied ✓" : "Copy as markdown"}
-          </button>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
-        </header>
+    <Overlay
+      id={OVERLAY_IDS.sitrep}
+      onClose={onClose}
+      as="aside"
+      className="report-panel"
+      role="dialog"
+      ariaLabel="Sitrep"
+    >
+      <header className="report-head">
+        <h2>Sitrep</h2>
+        {/* The topbar button that opens this is a bare glyph, so the shortcut
+            is spelled out here instead - where you can read it while the panel
+            is up, and act on it next time. */}
+        <kbd aria-hidden>{formatChord(bindings.roundup)}</kbd>
+        <button className="btn btn-ghost report-copy" onClick={() => void copyMarkdown()}>
+          {copied ? "Copied ✓" : "Copy as markdown"}
+        </button>
+        <button className="icon-btn" aria-label="Close" onClick={onClose}>
+          ✕
+        </button>
+      </header>
 
-        <div className="report-body">
-          <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
-            {needsYou.map((s) => (
-              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>
-                {s.pendingReviews > 0 && (
-                  <button className="btn" onClick={() => onOpenReviews(s.id)}>
-                    Review
-                  </button>
-                )}
-                {s.task && cancelControl(s.task)}
-                <button className="btn" onClick={() => void api.focus(s.id)}>
-                  Focus
+      <div className="report-body">
+        <Section title="Needs you" tone="attention" count={needsYou.length} empty="Nothing blocked on you.">
+          {needsYou.map((s) => (
+            <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={needsYouReason(s, sessions) ?? "needs you"}>
+              {s.pendingReviews > 0 && (
+                <button className="btn" onClick={() => onOpenReviews(s.id)}>
+                  Review
                 </button>
-              </SessionRow>
-            ))}
-          </Section>
+              )}
+              {s.task && cancelControl(s.task)}
+              <button className="btn" onClick={() => void api.focus(s.id)}>
+                Focus
+              </button>
+            </SessionRow>
+          ))}
+        </Section>
 
-          <Section title="Working" tone="working" count={working.length} empty="No agents running.">
-            {working.map((s) => (
-              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={s.activity ?? ""}>
-                {s.task && (s.task.status === "running" || s.task.status === "dispatching") ? (
-                  marking === s.task.id ? (
-                    <span className="report-mark">
-                      <input
-                        className="field-input"
-                        autoFocus
-                        placeholder="outcome, e.g. opened PR #123"
-                        value={outcome}
-                        onChange={(e) => setOutcome(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void markDone(s.task!.id);
-                          if (e.key === "Escape") setMarking(null);
-                        }}
-                      />
-                      <button className="btn btn-send" onClick={() => void markDone(s.task!.id)}>
-                        Save
+        <Section title="Working" tone="working" count={working.length} empty="No agents running.">
+          {working.map((s) => (
+            <SessionRow key={s.id} s={s} branch={branchOf(s)} reason={s.activity ?? ""}>
+              {s.task && (s.task.status === "running" || s.task.status === "dispatching") ? (
+                marking === s.task.id ? (
+                  <span className="report-mark">
+                    <input
+                      className="field-input"
+                      autoFocus
+                      placeholder="outcome, e.g. opened PR #123"
+                      value={outcome}
+                      onChange={(e) => setOutcome(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void markDone(s.task!.id);
+                        if (e.key === "Escape") setMarking(null);
+                      }}
+                    />
+                    <button className="btn btn-send" onClick={() => void markDone(s.task!.id)}>
+                      Save
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    className="btn"
+                    title="Record an outcome. The worktree + agent stay until you Clean up."
+                    onClick={() => setMarking(s.task!.id)}
+                  >
+                    Mark done…
+                  </button>
+                )
+              ) : null}
+              {s.task && cancelControl(s.task)}
+              <button className="btn" onClick={() => void api.focus(s.id)}>
+                Focus
+              </button>
+            </SessionRow>
+          ))}
+        </Section>
+
+        <Section title="Idle" tone="idle" count={idle.length} empty="Nothing sitting idle.">
+          {idle.map((s) => (
+            <SessionRow key={s.id} s={s} branch={branchOf(s)} reason="">
+              <button className="btn" onClick={() => void api.focus(s.id)}>
+                Focus
+              </button>
+            </SessionRow>
+          ))}
+        </Section>
+
+        <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
+          {backlog.map((t) => (
+            <div className="report-row" key={t.id}>
+              <div className="report-row-main">
+                <span className="report-name">{t.title}</span>
+                <span className="task-kind">{t.kind}</span>
+                <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
+              </div>
+              <div className="report-row-actions">
+                <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
+                  Dispatch
+                </button>
+                <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(t.id)}>
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </Section>
+
+        <Section title="Recent outcomes" tone="neutral" count={recent.length} empty="No finished tasks yet.">
+          {recent.map((t) => (
+            <div className="report-row" key={t.id}>
+              <div className="report-row-main">
+                <span className="report-name">{t.title}</span>
+                <span className={`report-status status-${t.status}`}>{t.status}</span>
+                {t.outcome &&
+                  (t.outcomeUrl ? (
+                    <a className="task-outcome" href={t.outcomeUrl} target="_blank" rel="noreferrer">
+                      {t.outcome}
+                    </a>
+                  ) : (
+                    <span className="report-sub">{t.outcome}</span>
+                  ))}
+                {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
+              </div>
+              {/* A cleanly-failed task (torn down, no worktree) can be retried in
+                  place - it re-provisions from scratch. */}
+              {t.status === "failed" && !t.worktreePath && (
+                <div className="report-row-actions">
+                  <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              {/* A terminal task that still holds a worktree - a done task
+                  awaiting reclaim, or a failed-but-alive dispatch whose agent may
+                  still be running - is freed here (keeping its status + outcome). */}
+              {t.worktreePath && (
+                <div className="report-row-actions">
+                  {confirmCancel === t.id ? (
+                    <span className="report-cancel">
+                      <span className="report-sub">reclaim worktree &amp; stop agent?</span>
+                      <button className="btn btn-danger" onClick={() => void reclaim(t.id)}>
+                        Clean up
+                      </button>
+                      <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
+                        ✕
                       </button>
                     </span>
                   ) : (
-                    <button
-                      className="btn"
-                      title="Record an outcome. The worktree + agent stay until you Clean up."
-                      onClick={() => setMarking(s.task!.id)}
-                    >
-                      Mark done…
+                    <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
+                      Clean up
                     </button>
-                  )
-                ) : null}
-                {s.task && cancelControl(s.task)}
-                <button className="btn" onClick={() => void api.focus(s.id)}>
-                  Focus
-                </button>
-              </SessionRow>
-            ))}
-          </Section>
-
-          <Section title="Idle" tone="idle" count={idle.length} empty="Nothing sitting idle.">
-            {idle.map((s) => (
-              <SessionRow key={s.id} s={s} branch={branchOf(s)} reason="">
-                <button className="btn" onClick={() => void api.focus(s.id)}>
-                  Focus
-                </button>
-              </SessionRow>
-            ))}
-          </Section>
-
-          <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
-            {backlog.map((t) => (
-              <div className="report-row" key={t.id}>
-                <div className="report-row-main">
-                  <span className="report-name">{t.title}</span>
-                  <span className="task-kind">{t.kind}</span>
-                  <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
+                  )}
                 </div>
-                <div className="report-row-actions">
-                  <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
-                    Dispatch
-                  </button>
-                  <button className="btn btn-danger-ghost" onClick={() => void api.deleteTask(t.id)}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
-          </Section>
-
-          <Section title="Recent outcomes" tone="neutral" count={recent.length} empty="No finished tasks yet.">
-            {recent.map((t) => (
-              <div className="report-row" key={t.id}>
-                <div className="report-row-main">
-                  <span className="report-name">{t.title}</span>
-                  <span className={`report-status status-${t.status}`}>{t.status}</span>
-                  {t.outcome &&
-                    (t.outcomeUrl ? (
-                      <a className="task-outcome" href={t.outcomeUrl} target="_blank" rel="noreferrer">
-                        {t.outcome}
-                      </a>
-                    ) : (
-                      <span className="report-sub">{t.outcome}</span>
-                    ))}
-                  {!t.outcome && t.error && <span className="report-sub dim">{t.error}</span>}
-                </div>
-                {/* A cleanly-failed task (torn down, no worktree) can be retried in
-                    place - it re-provisions from scratch. */}
-                {t.status === "failed" && !t.worktreePath && (
-                  <div className="report-row-actions">
-                    <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>
-                      Retry
-                    </button>
-                  </div>
-                )}
-                {/* A terminal task that still holds a worktree - a done task
-                    awaiting reclaim, or a failed-but-alive dispatch whose agent may
-                    still be running - is freed here (keeping its status + outcome). */}
-                {t.worktreePath && (
-                  <div className="report-row-actions">
-                    {confirmCancel === t.id ? (
-                      <span className="report-cancel">
-                        <span className="report-sub">reclaim worktree &amp; stop agent?</span>
-                        <button className="btn btn-danger" onClick={() => void reclaim(t.id)}>
-                          Clean up
-                        </button>
-                        <button className="btn btn-ghost" onClick={() => setConfirmCancel(null)}>
-                          ✕
-                        </button>
-                      </span>
-                    ) : (
-                      <button className="btn btn-danger-ghost" onClick={() => setConfirmCancel(t.id)}>
-                        Clean up
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </Section>
-        </div>
-      </aside>
-    </div>
+              )}
+            </div>
+          ))}
+        </Section>
+      </div>
+    </Overlay>
   );
 }
 

@@ -6,6 +6,7 @@ import { SettingsModal, SETTINGS_CATEGORIES } from "../src/web/components/Settin
 import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx";
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
 // connection open, which hangs headless automation (same reason as plan-decisions-render).
@@ -20,14 +21,18 @@ const FOREMAN: ForemanState = { config: null, status: null, update: async () => 
 // The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
 // modal renders it, so the panel only edits what it's handed.
 function render(initialCategory?: SettingsCategoryId): string {
+  // Wrapped in a host because the modal is an <Overlay>, and an overlay outside a host
+  // refuses to render - being counted as open is not optional. See helpers/overlay-host.
   return renderToStaticMarkup(
-    createElement(SettingsModal, {
-      onClose: () => {},
-      foreman: FOREMAN,
-      layout: "grid",
-      onLayoutChange: () => {},
-      initialCategory,
-    }),
+    withOverlayHost(
+      createElement(SettingsModal, {
+        onClose: () => {},
+        foreman: FOREMAN,
+        layout: "grid",
+        onLayoutChange: () => {},
+        initialCategory,
+      }),
+    ),
   );
 }
 

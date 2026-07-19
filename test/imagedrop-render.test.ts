@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -80,13 +81,19 @@ test("every chip can be taken back off, by name", () => {
 });
 
 test("the dispatch task box advertises that it takes images", () => {
-  const html = renderToStaticMarkup(createElement(DispatchLayer, { open: true, onClose: () => {} }));
+  // Hosted because the modal is an <Overlay>; see helpers/overlay-host.
+  const html = renderToStaticMarkup(
+    withOverlayHost(createElement(DispatchLayer, { open: true, onClose: () => {} })),
+  );
   assert.match(html, /drop or paste images to attach them/);
   assert.match(html, /drop-zone/);
 });
 
 test("a closed dispatch layer renders nothing", () => {
-  assert.equal(renderToStaticMarkup(createElement(DispatchLayer, { open: false, onClose: () => {} })), "");
+  const html = renderToStaticMarkup(
+    withOverlayHost(createElement(DispatchLayer, { open: false, onClose: () => {} })),
+  );
+  assert.equal(html, "");
 });
 
 // ---- the work queue's add box ----

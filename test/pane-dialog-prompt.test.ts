@@ -83,10 +83,22 @@ test("a multi-select renders checkboxes carrying the terminal's own ticks", () =
   // Alpha and Beta are ticked on the pane, Gamma is not - the human starts from the state
   // the terminal is actually in, not from an empty form that would silently clear it.
   assert.equal((html.match(/aria-checked="true"/g) ?? []).length, 2);
-  assert.equal((html.match(/aria-checked="false"/g) ?? []).length, 2);
+  assert.equal((html.match(/aria-checked="false"/g) ?? []).length, 1, "Gamma, and only Gamma");
   for (const label of ["Alpha", "Beta", "Gamma", "Type something"]) {
     assert.ok(html.includes(label), `missing row: ${label}`);
   }
+});
+
+test("the free-text row is shown, but as a press rather than a box", () => {
+  // It renders a box on the pane and is not one: ticked with nothing typed, Claude still
+  // calls the question unanswered. Rendering it as a checkbox would let a human tick it,
+  // submit, and be told they answered nothing - so it stays visible and reachable (it is
+  // how they ask to type an answer instead) and is simply never part of the answer set.
+  const row = render(form)
+    .split("<li>")
+    .find((li) => li.includes("Type something"))!;
+  assert.ok(!row.includes("aria-checked"), row);
+  assert.ok(row.includes("pd-num"));
 });
 
 test("a form offers one Submit, because ticking a box answers nothing", () => {

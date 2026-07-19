@@ -128,6 +128,11 @@ export type SubmitOptions = z.infer<typeof SubmitOptionsSchema>;
  * are ticked in all three, but only `submitted` reached Claude. The other two are Claude
  * having more to ask ("next-question") or refusing to call the form complete
  * ("unanswered"), both of which leave it on screen with something still to do.
+ *
+ * WHERE it is left on screen is the daemon's to say, not the outcome's - an `unanswered`
+ * that could be walked back to the question and one stranded on the review tab are the
+ * same outcome and different situations - so the response may also carry a `note` that
+ * replaces the sentence the outcome alone would produce.
  */
 export type FormOutcome = "submitted" | "next-question" | "unanswered";
 

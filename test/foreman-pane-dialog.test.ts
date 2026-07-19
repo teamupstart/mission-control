@@ -70,10 +70,30 @@ test("a multi-select is read as a form, box state separate from the label", () =
       ["Alpha", true],
       ["Beta", true],
       ["Gamma", false],
-      ["Type something", false],
-      // Claude's trailing row carries no box, so it is a press and not a tick.
+      // Claude's free-text row RENDERS a box and is not one - see below.
+      ["Type something", undefined],
+      // Its trailing row carries no box at all, so it is a press and not a tick.
       ["Chat about this", undefined],
     ],
+  );
+});
+
+test("the free-text row is not one of the form's boxes, though it renders as one", () => {
+  // Measured live: a form submitted with "Type something" ticked and nothing typed still
+  // met "You have not answered all questions". So it is not an answer, and offering it as a
+  // tickable box lets a human submit what looks like a choice and get the question back.
+  // It also cannot be WALKED to - pressing it opens a field that eats the arrows the submit
+  // walk needs - so it is excluded at the parse, where every caller inherits it.
+  const d = parsePaneDialog(MULTI_SELECT)!;
+  const free = d.options.find((o) => o.label === "Type something")!;
+  assert.equal(free.checked, undefined, "not a checkbox");
+  assert.equal(free.label, "Type something", "and the box it renders is still out of the label");
+  // Still a form, and still the same boxes: the row counts toward recognizing a form
+  // without being answerable on one.
+  assert.equal(d.multiSelect, true);
+  assert.deepEqual(
+    d.options.filter((o) => o.checked !== undefined).map((o) => o.number),
+    [1, 2, 3],
   );
 });
 

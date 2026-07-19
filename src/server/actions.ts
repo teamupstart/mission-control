@@ -775,6 +775,12 @@ export interface FormTarget extends OptionTarget {
 
 export interface FormResult extends ActionResult {
   outcome?: FormOutcome;
+  /**
+   * What to tell the human instead of the sentence the outcome alone implies, on the paths
+   * where the daemon knows something the outcome can't carry - it is set when the walk left
+   * the form somewhere other than where a plain reading of the outcome would put it.
+   */
+  note?: string;
 }
 
 /**
@@ -867,9 +873,7 @@ async function submitFormLocked(
   // the next one from whichever surface they are on.
   const submit = submitAnswersRow(next);
   if (!submit) return { ok: true, outcome: "next-question" };
-  if (hasUnansweredWarning(await deps.capture(session))) {
-    return { ok: true, outcome: "unanswered" };
-  }
+  if (hasUnansweredWarning(await deps.capture(session))) return stepBackFromReview(session, next, deps);
 
   const onSubmit = await walkCursorTo(session, next, submit.number, deps);
   if (!onSubmit.ok) return onSubmit;
@@ -883,6 +887,36 @@ async function submitFormLocked(
 }
 
 const NOT_A_FORM = "this session's screen is not a multi-select form";
+
+/**
+ * Back off the review tab with `←`, having refused to send a half-filled form.
+ *
+ * Refusing the Enter is only half the guard. The review tab is, to every other reader in
+ * this system, an ordinary two-row menu - "Submit answers" / "Cancel", no checkboxes - so
+ * a form abandoned on it is re-parsed on the next poll as a MENU, rendered as two buttons,
+ * and one click sends exactly the half-filled form this refusal exists to stop. Walking
+ * back to the question is what makes the refusal hold past the request that made it.
+ *
+ * Verified the same way the forward step is, and reported honestly when it can't be: an
+ * unverified step back means the pane may still be sitting on the review tab, and telling
+ * the human "it's back on your questions" when it isn't is the class of lie the whole
+ * module is written against. `←` commits nothing either way, so the failure is safe.
+ */
+async function stepBackFromReview(
+  session: Session,
+  review: PaneDialog,
+  deps: PaneDeps,
+): Promise<FormResult> {
+  const back = await injectArrow(session, "Left", deps);
+  const returned = back.ok && (await awaitDialogChange(session, dialogIdentity(review), deps));
+  return returned
+    ? { ok: true, outcome: "unanswered" }
+    : {
+        ok: true,
+        outcome: "unanswered",
+        note: "Saved, but Claude says a question is still unanswered - and the form is stuck on its review tab, so finish it in the terminal.",
+      };
+}
 
 /** Wait for a form row's box to reach `want`, or null if it never does. */
 async function awaitChecked(

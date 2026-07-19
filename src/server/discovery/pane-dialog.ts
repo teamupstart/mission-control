@@ -123,10 +123,13 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
       // A checkbox is only READ as one on a form that has several - see MIN_CHECKBOX_ROWS.
       // Anywhere else the brackets are the row's own text and belong in the label, which
       // keeps every single-select dialog parsing byte-for-byte as it did before.
-      const boxed = multiSelect && o.box !== undefined;
+      const onForm = multiSelect && o.box !== undefined;
+      // ...and the free-text row is on a form without being answerable on one, so it comes
+      // out of the label like any other box but is reported with no `checked` at all.
+      const boxed = onForm && !FREE_TEXT_ROW.test(o.label);
       return {
         number: o.number,
-        label: boxed ? o.label : restoreBox(o),
+        label: onForm ? o.label : restoreBox(o),
         ...(detail ? { detail } : {}),
         ...(boxed ? { checked: CHECKED_BOX.test(o.box!) } : {}),
       };
@@ -145,6 +148,10 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
  * while a lone `[ ]` is as likely to be a permission prompt quoting a command that
  * contains one. Getting that wrong is not cosmetic: it would strip the brackets out of a
  * label the human is asked to confirm, and route their click down the form path.
+ *
+ * That trailing row is counted here and only here: it is what proves the screen is a form,
+ * but `FREE_TEXT_ROW` keeps it out of the form's ANSWERABLE rows, so a one-option question
+ * still parses as a form with exactly one box to tick.
  */
 const MIN_CHECKBOX_ROWS = 2;
 
@@ -278,9 +285,22 @@ function readDetail(lines: string[], row: number, nextRow: number): string | und
  * on the next question's tab) and whether it may press the row when it has. Both are
  * matched on Claude's own words, like everything else in this file, because the tab is a
  * screen we can see and not a state we can query - recapture them here when its chrome
- * moves.
+ * moves. `FREE_TEXT_ROW` below is read off the same words and belongs to the same list.
  */
 const SUBMIT_ROW = /^submit answers$/i;
+
+/**
+ * Claude's own trailing row on a multi-select - the one that opens a text field.
+ *
+ * It renders a box like every other row, and it is NOT a box: ticking it selects nothing.
+ * Measured live, a form with it ticked and no text typed still met "You have not answered
+ * all questions" on the review tab. So offering it as a checkbox lets a human tick what
+ * looks like a choice, submit, and be told they answered nothing - and the submit walk
+ * would meanwhile press Enter on the row, opening a field that eats the arrows the walk
+ * needs (see `submitPaneForm`'s park step). Excluded from the form's answerable rows at
+ * the parse, so it stays a plain numbered row that `selectPaneOption` may still press.
+ */
+const FREE_TEXT_ROW = /^type something\.?$/i;
 
 /** The review tab's send row, or null when this dialog is not the review tab. */
 export function submitAnswersRow(dialog: PaneDialog): PaneOption | null {

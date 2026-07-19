@@ -92,8 +92,13 @@ export function PaneDialogPrompt({
     // `submitted` needs no message - the form closes and this unmounts. The other two are
     // successes that did NOT send, and saying nothing about them is how a human concludes
     // their answer went through when Claude is still waiting on the rest of it.
-    if (r.outcome === "next-question") setNote("Saved - Claude has another question below.");
-    if (r.outcome === "unanswered") setNote("Saved, but Claude says a question is still unanswered.");
+    //
+    // The daemon's own `note` wins where it has one: it walked the pane and knows where the
+    // form was actually left, which the outcome by itself cannot say.
+    if (r.outcome === "next-question") setNote(r.note ?? "Saved - Claude has another question below.");
+    if (r.outcome === "unanswered") {
+      setNote(r.note ?? "Saved, but Claude says a question is still unanswered - the form is back on its questions.");
+    }
   }
 
   const checkboxes = boxes(dialog);

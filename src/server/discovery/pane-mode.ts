@@ -123,9 +123,10 @@ export async function readPaneModeLine(session: PaneHandles): Promise<PaneModeLi
  */
 export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<void> {
   const claude = sessions.filter((s) => s.agent === "claude" && (s.tmux || s.wezterm));
+  forgetPanesExcept(new Set(claude.map(paneKey)));
   await Promise.all(
     claude.map(async (s) => {
-      const key = s.tmux ? `tmux:${s.tmux.paneId}` : `wezterm:${s.wezterm!.paneId}`;
+      const key = paneKey(s);
       const text = await capturePaneText(s);
       // A failed capture is not "no dialog" - it is no information, and saying null here
       // would clear a live menu off the card on one flaky tmux call. So the last dialog
@@ -180,4 +181,28 @@ export function paneReadLost(key: string): boolean {
 /** Record a successful capture of `key` - one good read forgives every miss before it. */
 export function paneReadOk(key: string): void {
   captureMisses.delete(key);
+}
+
+/** The counter's key for a session, which is the pane and not the session. */
+function paneKey(s: Pick<DiscoveredSession, "tmux" | "wezterm">): string {
+  return s.tmux ? `tmux:${s.tmux.paneId}` : `wezterm:${s.wezterm!.paneId}`;
+}
+
+/**
+ * Drop the miss counts of every pane not in `live`, at the top of each sweep.
+ *
+ * A pane whose handle vanishes mid-run is filtered out of `claude` above, so it is never
+ * annotated again and never reaches the miss/ok calls that would clear it - its count sits
+ * in the map for the life of the process. That leaks, but the reason it is a BUG is that
+ * the key is a tmux pane id and tmux reuses those: after a restart a brand-new `%1`
+ * inherits the dead one's two strikes and is one flaky capture away from having a dialog
+ * dropped out from under the human on the first tick it ever showed one.
+ */
+function forgetPanesExcept(live: Set<string>): void {
+  for (const key of captureMisses.keys()) if (!live.has(key)) captureMisses.delete(key);
+}
+
+/** Whether a pane is currently carrying failed-capture strikes. For the counter's test. */
+export function paneMissCount(key: string): number {
+  return captureMisses.get(key) ?? 0;
 }

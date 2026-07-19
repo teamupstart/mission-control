@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PaneDialog } from "../src/shared/types.ts";
-import { paneReadLost, paneReadOk } from "../src/server/discovery/pane-mode.ts";
+import { annotatePaneState, paneMissCount, paneReadLost, paneReadOk } from "../src/server/discovery/pane-mode.ts";
 
 // How long a dialog nobody can read any more goes on being offered.
 //
@@ -89,6 +89,20 @@ test("one good read forgives every miss before it", () => {
   paneReadOk("tmux:%78");
   assert.equal(paneReadLost("tmux:%78"), false);
   assert.equal(paneReadLost("tmux:%78"), false);
+});
+
+test("a pane that vanishes takes its strikes with it, rather than willing them to the next %1", async () => {
+  // The counter is keyed by tmux PANE ID, and tmux reuses those. A pane that disappears at
+  // one or two strikes is filtered out of the sweep, so it never reads again and never
+  // clears - and the next `%1` to exist would start life two strikes down, one flaky
+  // capture from having a dialog dropped out from under the human on the tick it opened.
+  assert.equal(paneReadLost("tmux:%81"), false);
+  assert.equal(paneMissCount("tmux:%81"), 1);
+
+  // A sweep in which that pane is not among the ones we can see. No handles here, so
+  // nothing is captured - this is the prune alone.
+  await annotatePaneState([mkDiscovered({ syntheticId: "handle-less", tmux: null, wezterm: null })]);
+  assert.equal(paneMissCount("tmux:%81"), 0, "the count went with the pane");
 });
 
 test("a menu does not outlive the pane it was read from", () => {

@@ -1,6 +1,6 @@
 import { envVar } from "../config.ts";
 import { resultText, runClaudeText } from "../claude-cli.ts";
-import { digestLines, hasAnything, rollupLine } from "@shared/away-buffer.ts";
+import { digestLines, eventLines, hasAnything, rollupLine } from "@shared/away-buffer.ts";
 import type { AwayBuffer, AwayDigest } from "@shared/away-buffer.ts";
 
 // The return digest: what you read when you come back.
@@ -31,12 +31,23 @@ function minutes(ms: number): number {
  * worst a crafted session name can do is skew the wording of a summary.
  */
 async function narrate(buf: AwayBuffer, awayMs: number): Promise<string | null> {
-  const lines = digestLines(buf, PROMPT_LINE_CAP);
+  const lines = eventLines(buf, PROMPT_LINE_CAP);
   if (lines.length === 0) return null;
+  // The remainder is stated as context, never as a line inside the fence: the model
+  // is told everything in there is something that happened, so a "+6 more" entry
+  // would be narrated as an event of its own.
+  const omitted = buf.events.length - lines.length;
   const prompt = [
     "You are writing a two-or-three sentence summary for a developer who just came",
     `back to their desk after ${minutes(awayMs)} minutes away. Below is a list of what`,
     "their coding-agent sessions did while they were gone.",
+    ...(omitted > 0
+      ? [
+          `Only the ${lines.length} most important are listed; ${omitted} less urgent`,
+          "ones are omitted. You may say there were others, but say nothing about what",
+          "they were.",
+        ]
+      : []),
     "",
     "Write plain prose. Lead with anything that is stuck or waiting on them, then say",
     "what finished. Do not use bullet points, headings, or markdown. Do not invent",
@@ -77,9 +88,14 @@ export async function buildDigest(
   now: number,
   opts: { narrative?: boolean } = {},
 ): Promise<AwayDigest> {
+  // A buffer still open has banked no away time yet, so it is measured to now; a
+  // closed one already knows exactly how long it covered (see closeBuffer), which is
+  // the honest figure once two windows have been merged into it.
+  const awayMs = buf.awayMs > 0 ? buf.awayMs : Math.max(0, now - buf.since);
   const base: AwayDigest = {
     since: buf.since,
     until: now,
+    awayMs,
     rollup: rollupLine(buf),
     lines: digestLines(buf),
     narrative: null,
@@ -89,5 +105,5 @@ export async function buildDigest(
   // to "0 finished" is a notification that says nothing.
   if (base.empty) return base;
   if (opts.narrative === false) return base;
-  return { ...base, narrative: await narrate(buf, now - buf.since) };
+  return { ...base, narrative: await narrate(buf, awayMs) };
 }

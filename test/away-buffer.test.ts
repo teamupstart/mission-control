@@ -2,8 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   AWAY_BUFFER_CAP,
+  closeBuffer,
   digestLines,
   emptyBuffer,
+  eventLines,
   foldAlerts,
   hasAnything,
   mergeBuffers,
@@ -207,6 +209,19 @@ test("a window that fits says nothing about overflow", () => {
   assert.doesNotMatch(digestLines(buf).join("\n"), /more/);
 });
 
+test("the raw event lines carry no overflow marker - the model must not narrate one", () => {
+  // The digest prompt fences these as data and says every line is something that
+  // happened, so a synthetic "+N more" in there reads to the model as an event.
+  const buf = foldAlerts(
+    emptyBuffer(0),
+    Array.from({ length: 30 }, (_, i) => mkAlert({ id: `idle:s${i}` })),
+    100,
+  );
+  const lines = eventLines(buf, 12);
+  assert.equal(lines.length, 12);
+  assert.doesNotMatch(lines.join("\n"), /more/);
+});
+
 // ---- merging two closed windows ----
 
 test("merging two windows coalesces repeats across both", () => {
@@ -222,6 +237,23 @@ test("merging two windows coalesces repeats across both", () => {
 test("a merged window covers from the EARLIER window's start", () => {
   const merged = mergeBuffers(emptyBuffer(100), emptyBuffer(500));
   assert.equal(merged.since, 100);
+});
+
+test("merged away time is SUMMED, so the desk time between two breaks isn't billed as away", () => {
+  const first = closeBuffer(emptyBuffer(0), 10 * 60_000);
+  const second = closeBuffer(emptyBuffer(60 * 60_000), 70 * 60_000);
+  assert.equal(mergeBuffers(first, second).awayMs, 20 * 60_000);
+});
+
+test("closing a window banks exactly what it covered", () => {
+  assert.equal(closeBuffer(emptyBuffer(1000), 5000).awayMs, 4000);
+  // An open window has banked nothing yet - callers measure it to now instead.
+  assert.equal(emptyBuffer(1000).awayMs, 0);
+});
+
+test("folding events into an open window leaves its away time alone", () => {
+  const buf = foldAlerts(closeBuffer(emptyBuffer(0), 4000), [mkAlert()], 100);
+  assert.equal(buf.awayMs, 4000);
 });
 
 test("merging keeps distinct events from both windows, and their dropped counts", () => {

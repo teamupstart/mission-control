@@ -285,25 +285,32 @@ test("a second window does not destroy a digest nobody has read yet", () => {
   // Read-once means there is nowhere to recover it from: go away, come back with no
   // dashboard open to claim it, go away again, and the first window would be gone.
   const reg = fakeRegistry([mkSession({ id: "a", state: "working" })]);
-  const w = startAwayWatcher(reg.src, () => 1000);
+  let clock = 1000;
+  const w = startAwayWatcher(reg.src, () => clock);
   setAwayConfig({ away: true }, 500);
   w.tick();
   reg.set([mkSession({ id: "a", state: "idle" })]);
   w.tick();
   setAwayConfig({ away: false }, 2000);
+  clock = 2000;
   w.tick(); // first digest is pending, unread
 
-  setAwayConfig({ away: true }, 3000);
+  clock = 60_000;
+  setAwayConfig({ away: true }, 60_000);
   reg.set([mkSession({ id: "b", state: "working" })]);
   w.tick();
   reg.set([mkSession({ id: "b", state: "idle" })]);
   w.tick();
-  setAwayConfig({ away: false }, 4000);
+  setAwayConfig({ away: false }, 61_000);
+  clock = 61_000;
   w.tick();
 
   const pending = w.takePending();
   assert.deepEqual(pending?.events.map((e) => e.sessionId).sort(), ["a", "b"]);
   assert.equal(pending?.since, 500); // the merged window covers from the first exit
+  // 1.5s away, then 1s away - NOT the 60.5s between leaving the first time and
+  // coming back the second, most of which was spent at the desk.
+  assert.equal(pending?.awayMs, 2500);
   w.stop();
 });
 

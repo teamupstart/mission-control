@@ -1,6 +1,6 @@
 import type { AwayDigest } from "@shared/away-buffer.ts";
 
-/** "12 minutes" / "1 hour 5 minutes" - how long the window covered. */
+/** "12 minutes" / "1 hour 5 minutes" - how long you were away. */
 function span(ms: number): string {
   const mins = Math.max(1, Math.round(ms / 60_000));
   if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"}`;
@@ -39,7 +39,7 @@ export function AwayDigestCard({
       >
         <header className="away-digest-head">
           <h2>While you were away</h2>
-          <span className="away-digest-span">{span(digest.until - digest.since)}</span>
+          <span className="away-digest-span">{span(digest.awayMs)}</span>
           <button className="icon-btn" aria-label="Dismiss" onClick={onDismiss}>
             ✕
           </button>

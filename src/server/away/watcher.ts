@@ -4,7 +4,7 @@ import { detectAlerts } from "@shared/alerts.ts";
 import type { AlertScope } from "@shared/alerts.ts";
 import { detectStalls, trackParked } from "@shared/stall.ts";
 import type { Stall } from "@shared/stall.ts";
-import { emptyBuffer, foldAlerts, mergeBuffers } from "@shared/away-buffer.ts";
+import { closeBuffer, emptyBuffer, foldAlerts, mergeBuffers } from "@shared/away-buffer.ts";
 import type { AwayBuffer } from "@shared/away-buffer.ts";
 import { getAwayConfig, stallThresholds } from "./config.ts";
 import type { Session, Task } from "@shared/types.ts";
@@ -75,7 +75,8 @@ export function startAwayWatcher(registry: AwaySource, now = () => Date.now()): 
     // Merge rather than overwrite: leaving twice before any dashboard claimed the
     // first digest must not silently destroy it - `takePending` is read-once, so
     // there is nowhere else to recover it from.
-    pending = pending ? mergeBuffers(pending, buffer) : buffer;
+    const closed = closeBuffer(buffer, now());
+    pending = pending ? mergeBuffers(pending, closed) : closed;
     buffer = null;
     bufferedSince = null;
   };

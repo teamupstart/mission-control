@@ -1,6 +1,12 @@
 import { useEffect, useRef } from "react";
 import type { AlertScope } from "@shared/alerts.ts";
-import { batchSeverity, deliverable, detectAlerts, summarizeAlerts } from "@shared/alerts.ts";
+import {
+  batchSeverity,
+  deliverable,
+  detectAlerts,
+  summarizeAlerts,
+  withKnownStalls,
+} from "@shared/alerts.ts";
 import type { AlertSettings } from "./lib/alertSettings.ts";
 import { playChime, unlockAudio } from "./lib/chime.ts";
 
@@ -34,6 +40,11 @@ function notify(title: string, body: string, tag: string): void {
  * the daemon's away buffer instead. This is what stops away mode from being louder
  * than being at the desk - the old behaviour, where flipping AFK on ADDED two alert
  * kinds and fired one notification each.
+ *
+ * Stalls are the one part of the scope that does NOT arrive with the snapshot (they
+ * are polled separately - see useStalls), so the first batch of them is adopted into
+ * the baseline rather than treated as news; see withKnownStalls for why that matters
+ * on every page load.
  *
  * `ready` (the SSE snapshot has landed) gates alerting. `useEventStream` returns
  * empty state on the first render and drops `ready` on disconnect, re-raising it on
@@ -78,7 +89,7 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
       if (!prev) return;
       // Reconnect: summarize the attention-level events that happened during the
       // gap (coalesced so a long disconnect doesn't storm) instead of dropping them.
-      const missed = detectAlerts(prev, scope).filter(deliverable);
+      const missed = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
       if (missed.length === 0) return;
       if (settings.notifications && canNotify()) {
         notify("While the dashboard was disconnected", summarizeAlerts(missed), "reconnect-catchup");
@@ -90,7 +101,7 @@ export function useNotifier(scope: AlertScope, settings: AlertSettings, ready: b
     const prev = prevRef.current ?? scope;
     prevRef.current = scope;
 
-    const alerts = detectAlerts(prev, scope).filter(deliverable);
+    const alerts = detectAlerts(withKnownStalls(prev, scope), scope).filter(deliverable);
     if (alerts.length === 0) return;
     if (settings.notifications && canNotify()) {
       for (const a of alerts) notify(a.title, a.body, a.id);

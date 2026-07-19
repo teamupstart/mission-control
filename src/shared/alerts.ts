@@ -70,6 +70,23 @@ function sessionLabel(s: Session): string {
   return s.task?.title || s.name || "a session";
 }
 
+/**
+ * The baseline `next` should be diffed against, given that stalls arrive on their
+ * own channel and may land after the one the rest of the scope came in on.
+ *
+ * An absent `stalls` means NOT READ YET, which is not the same as read-and-empty -
+ * and the difference decides whether a stall is news. Without this, the dashboard
+ * would re-announce every already-stuck session on page load whenever the SSE
+ * snapshot won its race against the stalls fetch (and stay quiet when it lost),
+ * making a "looks stuck" notification a coin flip on every refresh. Absent stalls
+ * are therefore adopted into the baseline rather than read as N new stalls, which is
+ * exactly what the snapshot does for every other alert kind.
+ */
+export function withKnownStalls(prev: AlertScope, next: AlertScope): AlertScope {
+  if (prev.stalls !== undefined || next.stalls === undefined) return prev;
+  return { ...prev, stalls: next.stalls };
+}
+
 /** Stalls keyed for edge-triggering, so a stall that persists doesn't re-alert. */
 function stallKeys(scope: AlertScope): Set<string> {
   return new Set((scope.stalls ?? []).map((x) => `${x.sessionId}:${x.kind}`));

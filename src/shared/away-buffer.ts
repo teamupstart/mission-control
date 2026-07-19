@@ -33,6 +33,16 @@ export interface AwayEvent {
 export interface AwayBuffer {
   /** When away mode was entered - the window this buffer covers. */
   since: number;
+  /**
+   * Away time this buffer accounts for: 0 while the window is still open, its own
+   * duration once closed, and the SUM of both once two windows are merged.
+   *
+   * Tracked apart from `since` because a merged buffer covers two breaks with time
+   * AT THE DESK between them. `until - since` would bill that desk time as away and
+   * tell you that you were gone for 70 minutes when you were gone for 20 - the same
+   * overstatement `dropped` exists to avoid, pointed the other way.
+   */
+  awayMs: number;
   events: AwayEvent[];
   /**
    * Events dropped because the buffer hit its cap. Surfaced rather than silently
@@ -49,9 +59,15 @@ export interface AwayBuffer {
  * dashboard's return panel renders exactly this.
  */
 export interface AwayDigest {
-  /** The window this covers. */
+  /** The window this covers - its start, and when it was read. */
   since: number;
   until: number;
+  /**
+   * How long you were ACTUALLY away, which is `until - since` for a single window
+   * and less than it for a merged one (see AwayBuffer.awayMs). This is what the card
+   * and the model are told, so neither can claim a break you didn't take.
+   */
+  awayMs: number;
   /** Deterministic one-liner, e.g. "1 stuck · 3 finished". Always present. */
   rollup: string;
   /** Per-event lines, most urgent first. Always present. */
@@ -71,7 +87,18 @@ export interface AwayDigest {
 export const AWAY_BUFFER_CAP = 200;
 
 export function emptyBuffer(since: number): AwayBuffer {
-  return { since, events: [], dropped: 0 };
+  return { since, awayMs: 0, events: [], dropped: 0 };
+}
+
+/**
+ * Bank an open window's duration as away time, at the moment it closes.
+ *
+ * Done on close rather than measured at read time because the digest is read after
+ * you are back at the desk - sometimes long after, if no dashboard was open - and
+ * the walk back to your chair is not time you were away.
+ */
+export function closeBuffer(buf: AwayBuffer, at: number): AwayBuffer {
+  return { ...buf, awayMs: buf.awayMs + Math.max(0, at - buf.since) };
 }
 
 /**
@@ -118,7 +145,7 @@ export function foldAlerts(buf: AwayBuffer, alerts: Alert[], now: number): AwayB
     });
   }
 
-  return { since: buf.since, events: [...byKey.values()], dropped };
+  return { ...buf, events: [...byKey.values()], dropped };
 }
 
 /**
@@ -152,7 +179,13 @@ export function mergeBuffers(older: AwayBuffer, newer: AwayBuffer): AwayBuffer {
     byKey.set(e.key, e);
   }
 
-  return { since: Math.min(older.since, newer.since), events: [...byKey.values()], dropped };
+  return {
+    since: Math.min(older.since, newer.since),
+    // Summed, never spanned: the gap between the two breaks was time at the desk.
+    awayMs: older.awayMs + newer.awayMs,
+    events: [...byKey.values()],
+    dropped,
+  };
 }
 
 /** Counts by kind, for the rollup line. */
@@ -209,13 +242,28 @@ export function hasAnything(buf: AwayBuffer): boolean {
  * rather than an extra one, so `limit` stays a hard cap on lines rendered.
  */
 export function digestLines(buf: AwayBuffer, limit = 12): string[] {
-  const rank = (e: AwayEvent): number => KIND_ORDER.findIndex((k) => k.kind === e.kind);
-  const sorted = [...buf.events].sort((a, b) => rank(a) - rank(b) || b.lastAt - a.lastAt);
-  const overflow = sorted.length > limit ? sorted.length - (limit - 1) : 0;
-  const lines = sorted.slice(0, overflow > 0 ? limit - 1 : limit).map((e) => {
-    const times = e.count > 1 ? ` (x${e.count})` : "";
-    return `${e.title}${e.body ? ` - ${e.body}` : ""}${times}`;
-  });
+  const lines = eventLines(buf, buf.events.length > limit ? limit - 1 : limit);
+  const overflow = buf.events.length - lines.length;
   if (overflow > 0) lines.push(`+${overflow} more`);
   return lines;
+}
+
+/**
+ * The same lines WITHOUT the overflow marker - one string per real event.
+ *
+ * Separate from digestLines because the digest prompt fences these as data and tells
+ * the model that every line is something that happened. A synthetic "+6 more" inside
+ * that fence is an invitation to narrate the truncation as an event, so callers that
+ * are describing events rather than rendering a list take this and say what is
+ * missing in their own words.
+ */
+export function eventLines(buf: AwayBuffer, limit: number): string[] {
+  const rank = (e: AwayEvent): number => KIND_ORDER.findIndex((k) => k.kind === e.kind);
+  return [...buf.events]
+    .sort((a, b) => rank(a) - rank(b) || b.lastAt - a.lastAt)
+    .slice(0, Math.max(0, limit))
+    .map((e) => {
+      const times = e.count > 1 ? ` (x${e.count})` : "";
+      return `${e.title}${e.body ? ` - ${e.body}` : ""}${times}`;
+    });
 }

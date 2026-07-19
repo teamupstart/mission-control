@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildDigest } from "../src/server/away/digest.ts";
-import { emptyBuffer, foldAlerts } from "../src/shared/away-buffer.ts";
+import { closeBuffer, emptyBuffer, foldAlerts, mergeBuffers } from "../src/shared/away-buffer.ts";
 import type { Alert } from "../src/shared/alerts.ts";
 
 // The digest's two tiers. Only the deterministic one is exercised here
@@ -54,6 +54,34 @@ test("the digest carries the window it covers", async () => {
   const d = await buildDigest(buf, 9000, NO_MODEL);
   assert.equal(d.since, 42);
   assert.equal(d.until, 9000);
+});
+
+test("a merged digest reports the time you were AWAY, not the span it covers", async () => {
+  // Away 10:00-10:10, back at the desk for the next fifty minutes, away again
+  // 11:00-11:10. The card must say 20 minutes, not 70.
+  const MIN = 60_000;
+  const first = closeBuffer(foldAlerts(emptyBuffer(0), [mkAlert({ id: "idle:a" })], MIN), 10 * MIN);
+  const second = closeBuffer(
+    foldAlerts(emptyBuffer(60 * MIN), [mkAlert({ id: "idle:b" })], 61 * MIN),
+    70 * MIN,
+  );
+  const d = await buildDigest(mergeBuffers(first, second), 70 * MIN, NO_MODEL);
+  assert.equal(d.awayMs, 20 * MIN);
+  assert.equal(d.since, 0); // the events still date from the first window
+});
+
+test("a single window's away time is what it covered, not how late the digest was read", async () => {
+  // The digest is read after you are back - sometimes much later, if no dashboard was
+  // open to claim it - and the walk back to your chair is not time you were away.
+  const buf = closeBuffer(foldAlerts(emptyBuffer(0), [mkAlert()], 100), 600_000);
+  const d = await buildDigest(buf, 3_600_000, NO_MODEL);
+  assert.equal(d.awayMs, 600_000);
+});
+
+test("an open window is still measured to now, so it has an honest span before closing", async () => {
+  const buf = foldAlerts(emptyBuffer(0), [mkAlert()], 100);
+  const d = await buildDigest(buf, 300_000, NO_MODEL);
+  assert.equal(d.awayMs, 300_000);
 });
 
 test("an empty buffer never reaches the model at all", async () => {

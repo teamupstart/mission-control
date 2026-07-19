@@ -8,6 +8,7 @@ import {
   digestLine,
   hasReportable,
   summarizeAlerts,
+  withKnownStalls,
   type Alert,
   type AlertScope,
 } from "../src/shared/alerts.ts";
@@ -395,6 +396,45 @@ test("stuck alerts break through while away - they are attention, not digest mat
   const r = detectAlerts(scope([s]), scope([s], [], [stall()]));
   assert.equal(r.filter(deliverable).length, 1);
   assert.equal(r.filter(bufferable).length, 0);
+});
+
+// ---- stalls arriving after the snapshot (the notifier's baseline) ----
+//
+// Stalls are polled on their own channel, so they can land either side of the SSE
+// snapshot the rest of the scope arrives in. These pin the property that ordering
+// cannot change what you hear: a session stuck BEFORE the page loaded is never
+// announced, and one that goes stuck after it is announced exactly once.
+
+test("a session already stuck when the page loads alerts ZERO times", () => {
+  // The race this rules out: snapshot first, so the baseline is captured with no
+  // stalls, then the stalls fetch resolves and every pre-existing stall reads as new.
+  const s = mkSession({ id: "a" });
+  const snapshotOnly: AlertScope = { sessions: [s], tasks: [] }; // stalls not read yet
+  const withStalls = scope([s], [], [stall()]);
+  const r = detectAlerts(withKnownStalls(snapshotOnly, withStalls), withStalls);
+  assert.equal(r.length, 0);
+});
+
+test("a stall that BEGINS after the first read still alerts exactly once", () => {
+  const s = mkSession({ id: "a" });
+  const quiet = scope([s], [], []); // read, and nothing was stuck
+  const stuck = scope([s], [], [stall()]);
+  assert.equal(detectAlerts(withKnownStalls(quiet, stuck), stuck).length, 1);
+  assert.equal(detectAlerts(withKnownStalls(stuck, stuck), stuck).length, 0);
+});
+
+test("read-and-empty is not the same as never-read", () => {
+  // The distinction the whole guard rests on: [] is knowledge, undefined is not.
+  const s = mkSession({ id: "a" });
+  const stuck = scope([s], [], [stall()]);
+  assert.deepEqual(withKnownStalls({ sessions: [s], tasks: [] }, stuck).stalls, stuck.stalls);
+  assert.deepEqual(withKnownStalls(scope([s], [], []), stuck).stalls, []);
+});
+
+test("a baseline that never read stalls is left alone when the next scope hasn't either", () => {
+  const s = mkSession({ id: "a" });
+  const bare: AlertScope = { sessions: [s], tasks: [] };
+  assert.equal(withKnownStalls(bare, bare).stalls, undefined);
 });
 
 test("a scope with no stalls omits the field rather than guessing", () => {

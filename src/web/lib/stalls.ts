@@ -23,10 +23,16 @@ const NONE: Stall[] = [];
  *
  * The reference is held stable while the stalls are unchanged - the common case by
  * far - so a poll that finds nothing new doesn't re-render the dashboard.
+ *
+ * `undefined` until the first read lands, and deliberately NOT an empty array: this
+ * arrives on its own channel, so it can land either side of the SSE snapshot, and
+ * "not read yet" has to stay distinguishable from "read, nothing stuck" or the
+ * consumer cannot tell a stall that is news from one that was there all along (see
+ * withKnownStalls).
  */
-export function useStalls(): Stall[] {
-  const [stalls, setStalls] = useState<Stall[]>(NONE);
-  const seen = useRef("");
+export function useStalls(): Stall[] | undefined {
+  const [stalls, setStalls] = useState<Stall[] | undefined>(undefined);
+  const seen = useRef<string | null>(null);
 
   useEffect(() => {
     let alive = true;

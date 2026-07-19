@@ -1,4 +1,4 @@
-import type { Session } from "@shared/types.ts";
+import type { Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 
 /**
@@ -13,6 +13,8 @@ import type { ActionBarHandle } from "../ActionBar.tsx";
 export interface SessionViewProps {
   /** The visible, sorted sessions - already filtered; layouts render exactly these. */
   sessions: Session[];
+  /** Every known task. The board reads the backlog out of it for its dispatch column. */
+  tasks: Task[];
   /** Sessions whose parked no-mistakes gate actually needs you (computed cross-session). */
   gateAlerts: ReadonlySet<string>;
   selectedId: string | null;

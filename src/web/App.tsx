@@ -196,6 +196,7 @@ export function App(): React.JSX.Element {
   // one owner of session state; a view only arranges what it's handed.
   const viewProps: SessionViewProps = {
     sessions: visible,
+    tasks,
     gateAlerts,
     selectedId,
     onSelect: setSelectedId,

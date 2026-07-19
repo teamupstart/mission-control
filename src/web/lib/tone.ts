@@ -37,13 +37,54 @@ export interface ToneGroup {
  * The sessions split into their tone groups, in TONE_GROUPS order, preserving the
  * order they arrive in within each group.
  *
- * Every group is returned even when empty: the board draws a column per state, and
- * a column that vanishes when it empties would make the board's shape jump around
- * as sessions move - the empty "needs you" column IS the information.
+ * Every group is returned even when empty. That is NOT the same as every group being
+ * drawn - the board hides most empty columns (see `boardColumnModes`) - but the
+ * decision of what to do with an empty group belongs to the view, and one consumer
+ * needs them all regardless: App derives the board's arrow-key columns from this, and
+ * `moveSelection` relies on the indices lining up with the tone order whether or not
+ * a column happens to be on screen.
  */
 export function groupByTone(sessions: readonly Session[]): ToneGroup[] {
   const groups: ToneGroup[] = TONE_GROUPS.map((g) => ({ ...g, sessions: [] }));
   const byTone = new Map(groups.map((g) => [g.tone, g]));
   for (const s of sessions) byTone.get(stateDisplay(s).tone)?.sessions.push(s);
   return groups;
+}
+
+/** What the board does with one tone column, given how full it is. */
+export type ColumnMode =
+  /** Has sessions in it: an ordinary column. */
+  | "sessions"
+  /** Empty "needs you": kept, but narrowed, and reading as an all-clear. */
+  | "calm"
+  /** Empty and stowed in the rail; the board doesn't render it at all. */
+  | "stashed"
+  /** Empty, but pulled back out of the rail by the operator. */
+  | "revealed";
+
+/**
+ * How each column is treated, given what's in it and what the operator has revealed.
+ *
+ * Pulled out of BoardView because it's the one genuinely rule-bound part of the
+ * board's shape, and the rules are the sort that read as obviously right while being
+ * wrong in exactly one state (a drill-in, an "attention" column that empties while
+ * you're inside it). Pure, so those states can be asserted without a dashboard.
+ *
+ * `focused` is whether a session is open - during the drill-in NOTHING is stashed,
+ * because the morph animates every column's width and they must all stay mounted
+ * across it. See BoardView.
+ */
+export function boardColumnModes(
+  groups: readonly ToneGroup[],
+  revealed: ReadonlySet<Tone>,
+  focused: boolean,
+): Map<Tone, ColumnMode> {
+  const out = new Map<Tone, ColumnMode>();
+  for (const g of groups) {
+    if (g.sessions.length > 0) out.set(g.tone, "sessions");
+    else if (g.tone === "attention") out.set(g.tone, "calm");
+    else if (revealed.has(g.tone) || focused) out.set(g.tone, "revealed");
+    else out.set(g.tone, "stashed");
+  }
+  return out;
 }

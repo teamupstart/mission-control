@@ -4,6 +4,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
   AddWorkItemSchema,
+  AssignTaskSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
@@ -971,6 +972,17 @@ export function buildApp(
     const t = tasks.dispatch(c.req.param("id"));
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
+  });
+
+  // Assign a backlog task to an already-running agent. A refusal here is a 409, not a
+  // 500: every way it fails (task already dispatched, agent busy, agent in another
+  // repo, pane locked) is a state conflict the operator can see and resolve on the
+  // board - and in none of them was anything typed at the agent.
+  app.post("/api/tasks/:id/assign", async (c) => {
+    const parsed = await parseBody(c, AssignTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/api/tasks/:id/cancel", async (c) => {

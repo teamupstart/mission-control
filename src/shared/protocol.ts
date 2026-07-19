@@ -244,6 +244,12 @@ export const CompleteTaskSchema = z.object({
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
+/** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
+export const AssignTaskSchema = z.object({
+  sessionId: z.string().min(1),
+});
+export type AssignTask = z.infer<typeof AssignTaskSchema>;
+
 // ---- Foreman (auto-responder) ----
 
 /**

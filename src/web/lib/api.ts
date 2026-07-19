@@ -224,6 +224,9 @@ export const api = {
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
+  /** Hand a backlog task to an agent that is already running, rather than launching one. */
+  assignTask: (id: string, sessionId: string) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>

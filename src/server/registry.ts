@@ -2092,7 +2092,7 @@ const alwaysEqual = (): boolean => true;
  */
 export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // Invariant for the life of a map entry, not state: sessions are keyed by
-  // `proc:<tty>:<pid>:<startMs>` (see `correlate.ts`) and both call sites compare a
+  // `proc:<tty>:<pid>:<startMs>` (see `discovery/correlate.ts`) and both call sites compare a
   // session against its own prior value under that key. These cannot differ, so
   // comparing them would only cost work.
   id: alwaysEqual,

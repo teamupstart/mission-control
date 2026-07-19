@@ -94,7 +94,12 @@ export interface TmuxInfo {
 }
 
 export interface Session {
-  /** Stable identity: agent session id when known, else synthetic from tty+pid+start. */
+  /**
+   * Stable identity for the life of the process: the synthetic discovery id
+   * `proc:<tty>:<pid>:<startMs>` (minted in `discovery/correlate.ts`), which is also
+   * the registry's map key. Distinct from `agentSessionId`, which the agent mints and
+   * rotates on `/clear`; this one never changes under a given entry.
+   */
   id: string;
   agent: AgentType;
   /** Display name: tmux session name, else wezterm tab title, else a process fallback. */

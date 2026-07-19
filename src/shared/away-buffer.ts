@@ -43,6 +43,26 @@ export interface AwayBuffer {
 }
 
 /**
+ * What you read when you come back: the rendered form of a closed away window.
+ *
+ * Lives here rather than beside the builder because it crosses the wire - the
+ * dashboard's return panel renders exactly this.
+ */
+export interface AwayDigest {
+  /** The window this covers. */
+  since: number;
+  until: number;
+  /** Deterministic one-liner, e.g. "1 stuck · 3 finished". Always present. */
+  rollup: string;
+  /** Per-event lines, most urgent first. Always present. */
+  lines: string[];
+  /** Model-written summary, or null when the model was unavailable or declined. */
+  narrative: string | null;
+  /** True when nothing happened - callers should say nothing at all. */
+  empty: boolean;
+}
+
+/**
  * Cap on distinct events held. Coalescing already bounds this by
  * (kinds x subjects), so hitting the cap means a genuinely enormous session count -
  * but a cap that only triggers in the pathological case is still cheaper than an

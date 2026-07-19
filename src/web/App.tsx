@@ -7,6 +7,7 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
+import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
@@ -30,7 +31,7 @@ import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
-  const { away, setAway } = useAwayMode();
+  const { away, setAway, digest, dismissDigest } = useAwayMode();
   useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
@@ -589,6 +590,17 @@ export function App(): React.JSX.Element {
           onOpenReviews={(id) => {
             setReportOpen(false);
             setReviewSessionId(id);
+          }}
+        />
+      )}
+
+      {digest && (
+        <AwayDigestCard
+          digest={digest}
+          onDismiss={dismissDigest}
+          onOpenReport={() => {
+            dismissDigest();
+            setReportOpen(true);
           }}
         />
       )}

@@ -420,3 +420,16 @@ test("digestLine counts stalled sessions", () => {
   assert.match(digestLine(scope([s], [], [stall()])), /1 stuck/);
   assert.doesNotMatch(digestLine(scope([s])), /stuck/);
 });
+
+test("an idle alert carries no redundant body when the activity is just 'idle'", () => {
+  // The Stop hook sets activity to the literal string "idle", so using it
+  // unconditionally produced "X went idle - idle" - noise in the digest, and
+  // enough to make the digest model report that nothing had happened.
+  const busy = mkSession({ id: "a", state: "working" });
+  const stopped = mkSession({ id: "a", state: "idle", activity: "idle" });
+  assert.equal(detectAlerts(scope([busy]), scope([stopped]))[0]?.body, "");
+
+  // A real last-activity line still rides along, because that DOES add something.
+  const withWork = mkSession({ id: "a", state: "idle", activity: "npm test done" });
+  assert.equal(detectAlerts(scope([busy]), scope([withWork]))[0]?.body, "npm test done");
+});

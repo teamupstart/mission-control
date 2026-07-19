@@ -172,7 +172,11 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         id: `idle:${s.id}`,
         kind: "idle",
         title: `${label} went idle`,
-        body: s.activity ?? "idle",
+        // `activity` is the last hook one-liner, which on a Stop is literally
+        // "idle" - so using it unconditionally yields "X went idle - idle", which
+        // adds nothing and reads as noise in the digest (and, fed to the digest
+        // model, as though nothing happened at all).
+        body: s.activity && s.activity !== "idle" ? s.activity : "",
         sessionId: s.id,
         severity: "info",
       });

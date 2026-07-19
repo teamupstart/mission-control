@@ -18,6 +18,7 @@ import type {
   SkillsConfigPatch,
 } from "@shared/protocol.ts";
 import type { Attachment } from "@shared/attachments.ts";
+import type { AwayDigest } from "@shared/away-buffer.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -43,6 +44,12 @@ export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/s
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
+/**
+ * The return digest, read once - the daemon drops it as it hands it over, so a
+ * refresh doesn't re-announce it. Null when there is nothing to report (a 204),
+ * which is the common case: you were never away, or nothing happened.
+ */
+export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
 /** The skills catalog, what's on, and how many sessions are behind - one read. */
 export const fetchSkills = () => fetchJson<SkillsView>("/api/skills");
 

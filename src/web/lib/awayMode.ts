@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AwayConfig } from "@shared/protocol.ts";
-import { api, fetchAwayConfig } from "./api.ts";
+import type { AwayDigest } from "@shared/away-buffer.ts";
+import { api, fetchAwayConfig, fetchAwayDigest } from "./api.ts";
 
 /** How often to re-read away state, so a toggle from another window/tray lands here too. */
 const POLL_MS = 5000;
@@ -19,14 +20,39 @@ const POLL_MS = 5000;
 export function useAwayMode(): {
   away: AwayConfig | null;
   setAway: (patch: Partial<AwayConfig>) => Promise<void>;
+  /** The digest for the window you just ended, until dismissed. */
+  digest: AwayDigest | null;
+  dismissDigest: () => void;
 } {
   const [away, setAwayState] = useState<AwayConfig | null>(null);
+  const [digest, setDigest] = useState<AwayDigest | null>(null);
+  /** The last `away` we saw, to spot the transition back. */
+  const wasAway = useRef(false);
+
+  /**
+   * Claim the digest when away goes true -> false.
+   *
+   * Driven off the observed transition rather than off the toggle handler, so a
+   * return triggered from another dashboard window (or later, a tray toggle) still
+   * surfaces the digest here. The daemon drops it as it hands it over, so whichever
+   * window asks first is the one that shows it - exactly once, never twice.
+   */
+  const claimIfReturned = useCallback((cfg: AwayConfig) => {
+    const returned = wasAway.current && !cfg.away;
+    wasAway.current = cfg.away;
+    if (!returned) return;
+    void fetchAwayDigest().then((d) => {
+      if (d && !d.empty) setDigest(d);
+    });
+  }, []);
 
   useEffect(() => {
     let alive = true;
     const read = async (): Promise<void> => {
       const cfg = await fetchAwayConfig();
-      if (alive && cfg) setAwayState(cfg);
+      if (!alive || !cfg) return;
+      setAwayState(cfg);
+      claimIfReturned(cfg);
     };
     void read();
     const id = setInterval(() => void read(), POLL_MS);
@@ -34,18 +60,24 @@ export function useAwayMode(): {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [claimIfReturned]);
 
-  const setAway = useCallback(async (patch: Partial<AwayConfig>) => {
-    // Optimistic, then reconciled: the server owns `awaySince`, so the response is
-    // authoritative over whatever we guessed locally.
-    setAwayState((cur) => (cur ? { ...cur, ...patch } : cur));
-    const res = await api.setAwayConfig(patch);
-    if (res.ok) {
+  const setAway = useCallback(
+    async (patch: Partial<AwayConfig>) => {
+      // Optimistic, then reconciled: the server owns `awaySince`, so the response is
+      // authoritative over whatever we guessed locally.
+      setAwayState((cur) => (cur ? { ...cur, ...patch } : cur));
+      const res = await api.setAwayConfig(patch);
+      if (!res.ok) return;
       const cfg = await fetchAwayConfig();
-      if (cfg) setAwayState(cfg);
-    }
-  }, []);
+      if (!cfg) return;
+      setAwayState(cfg);
+      claimIfReturned(cfg);
+    },
+    [claimIfReturned],
+  );
 
-  return { away, setAway };
+  const dismissDigest = useCallback(() => setDigest(null), []);
+
+  return { away, setAway, digest, dismissDigest };
 }

@@ -1,5 +1,6 @@
 import { Markdown } from "./Markdown.tsx";
 import type { ForemanEpisode, NoteDisposition } from "@shared/types.ts";
+import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { relativeTime } from "../lib/format.ts";
 
 // One recorded Foreman decision, rendered whole: what it concluded, and - on the
@@ -11,13 +12,6 @@ import { relativeTime } from "../lib/format.ts";
 // context, the drawer has none), not in how a verdict is written down - so they share
 // the verdict and diverge on the ask.
 
-const DISPOSITION_LABEL: Record<NoteDisposition, string> = {
-  answered: "answered for you",
-  pending: "drafted a reply",
-  escalated: "needs your decision",
-  skipped: "left for you",
-};
-
 /**
  * What the header says happened.
  *
@@ -25,11 +19,13 @@ const DISPOSITION_LABEL: Record<NoteDisposition, string> = {
  * because the note is only ever written by Foreman. An episode outlives that: an
  * escalation you approved ends up `answered` too, and labelling it "answered for
  * you" credits Foreman with your decision. The record is the one place that must get
- * the author right, so it reads `sentBy` rather than the disposition alone.
+ * the author right, so it reads `resolvedBy` rather than the disposition alone -
+ * and `resolvedBy` rather than `sentBy`, because a dismissal is a decision you made
+ * that sent nothing, so it has no author to read.
  */
 function episodeLabel(e: ForemanEpisode): string {
-  if (e.disposition === "answered" && e.sentBy === "you") return "you answered";
-  if (e.disposition === "skipped" && e.sentBy === "you") return "you dismissed";
+  if (e.disposition === "answered" && e.resolvedBy === "you") return "you answered";
+  if (e.disposition === "skipped" && e.resolvedBy === "you") return "you dismissed";
   return DISPOSITION_LABEL[e.disposition];
 }
 
@@ -148,13 +144,20 @@ function EpisodeMeta({ episode }: { episode: ForemanEpisode }): React.JSX.Elemen
  * recommendation, leaving `lastAction: "approved by you"` and no record of the words.
  */
 function EpisodeResolution({ episode }: { episode: ForemanEpisode }): React.JSX.Element | null {
-  const { sentBy, sentText, sentOption, lastAction, resolvedAt } = episode;
-  if (!sentBy && !lastAction) return null;
+  const { disposition, resolvedBy, sentText, sentOption, lastAction, resolvedAt } = episode;
+  if (!resolvedBy && !lastAction) return null;
+  // Branches on the disposition as well as the author, for the same reason
+  // `episodeLabel` does: "You approved" over a header reading "you dismissed" is the
+  // block contradicting the two lines above it about what the human actually did.
   const who =
-    sentBy === "you"
-      ? "You approved"
-      : sentBy === "foreman"
-        ? "Foreman answered"
+    resolvedBy === "you"
+      ? disposition === "skipped"
+        ? "You dismissed this"
+        : "You approved"
+      : resolvedBy === "foreman"
+        ? disposition === "skipped"
+          ? "Foreman left this for you"
+          : "Foreman answered"
         : (lastAction ?? "Recorded");
   return (
     <div className="fe-block">

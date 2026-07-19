@@ -53,6 +53,7 @@ function mkEpisode(over: Partial<EpisodeWrite> = {}): EpisodeWrite {
     sentBy: null,
     createdAt: 1000,
     resolvedAt: null,
+    resolvedBy: null,
     ...over,
   };
 }
@@ -145,12 +146,13 @@ test("resolveEpisode stamps the human's answer without touching the captured ask
     marker: "await:5",
     disposition: "answered",
     sentText: "SQLite. Keep CI dependency-free.",
-    sentBy: "you",
+    resolvedBy: "you",
     resolvedAt: 9000,
   });
   const got = first(episodesFor("res-1"));
   assert.equal(got.disposition, "answered");
   assert.equal(got.sentBy, "you");
+  assert.equal(got.resolvedBy, "you");
   assert.equal(got.sentText, "SQLite. Keep CI dependency-free.");
   assert.equal(got.resolvedAt, 9000);
   assert.equal(got.question, "Claude needs your permission to use AskUserQuestion");
@@ -167,10 +169,31 @@ test("resolving an unknown marker is a no-op, not a throw", () => {
       marker: "await:404",
       disposition: "answered",
       sentText: "x",
-      sentBy: "you",
+      resolvedBy: "you",
       resolvedAt: 1,
     }),
   );
+});
+
+test("dismissing records who decided it without inventing a send", () => {
+  // The bug this pins: `sent_by` was stamped "you" for a dismissal as well as an
+  // approval, so the card's Resolution block read "You approved" two lines under a
+  // header saying you dismissed it. A dismissal delivers nothing, so there is no
+  // author to name - but it IS still your decision, which `resolved_by` carries.
+  recordEpisode(mkEpisode({ noteKey: "dis-1", marker: "await:6" }));
+  resolveEpisode({
+    noteKey: "dis-1",
+    marker: "await:6",
+    disposition: "skipped",
+    sentText: null,
+    resolvedBy: "you",
+    resolvedAt: 9100,
+  });
+  const got = first(episodesFor("dis-1"));
+  assert.equal(got.disposition, "skipped");
+  assert.equal(got.sentBy, null, "nothing was sent, so nothing is attributed");
+  assert.equal(got.resolvedBy, "you", "you still made the call");
+  assert.equal(got.sentText, null);
 });
 
 test("a disposition an older build can't read falls back to skipped, not escalated", () => {

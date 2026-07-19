@@ -34,15 +34,15 @@ export function ForemanDrawer({
     function onKey(ev: KeyboardEvent): void {
       if (ev.key !== "Escape") return;
       ev.stopPropagation();
-      setSelected((cur) => {
-        if (cur !== null) return null;
-        onClose();
-        return null;
-      });
+      // Branch on `selected` out here rather than inside a `setSelected` updater:
+      // updaters must be pure, and StrictMode double-invokes them, so closing from
+      // within one fires `onClose` twice per keypress.
+      if (selected !== null) setSelected(null);
+      else onClose();
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, selected]);
 
   // Closing forgets the selection, so re-opening lands on the list. A drawer that
   // reopened onto whichever episode was last read would hide the newest one, which is
@@ -124,8 +124,8 @@ function EpisodeRow({
   onOpen: () => void;
 }): React.JSX.Element {
   const answeredBy =
-    episode.disposition === "answered" && episode.sentBy
-      ? `answered by ${episode.sentBy === "you" ? "you" : "foreman"}`
+    episode.disposition === "answered" && episode.resolvedBy
+      ? `answered by ${episode.resolvedBy === "you" ? "you" : "foreman"}`
       : (ROW_LABEL[episode.disposition] ?? episode.disposition);
   return (
     <button className={`fd-row ${ROW_CLASS[episode.disposition] ?? ""}`} onClick={onOpen}>
@@ -145,7 +145,7 @@ function EpisodeRow({
 const PERMISSION_HEADER = /needs your permission to use/i;
 
 /** A numbered option row, as `parsePaneDialog` recognises one. */
-const OPTION_ROW = /^\s*❯?\s*\d{1,2}\.\s+\S/u;
+const OPTION_ROW = /^\s*❯?\s*(\d{1,2})\.\s+\S/u;
 
 /**
  * A one-glance version of the ask.
@@ -175,16 +175,55 @@ export function askPreview(e: ForemanEpisode): string {
   return pane.split("\n").slice(-3).join(" ").trim();
 }
 
-/** The prose a pane showed above its option rows, or null when it showed none. */
+/**
+ * Where the pane's option block begins, or null when it is showing none.
+ *
+ * Mirrors `parsePaneDialog`: scans UPWARD from the end and takes the first complete
+ * block, requiring the numbers to run down to 1 so two unrelated numberings can't be
+ * spliced into one. The direction is the whole point - a pane is a full screen and the
+ * dialog is the foreground at the BOTTOM of it, so anything numbered above it is
+ * scrollback (an earlier menu, or a numbered list in the child's own output).
+ */
+function dialogTop(lines: string[]): number | null {
+  let last: number | null = null;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = OPTION_ROW.exec(lines[i]!);
+    if (!m) continue;
+    const number = Number(m[1]);
+    // The next row up must continue the run downward (N, N-1, ...); anything else
+    // means this block never reached 1, so restart it here rather than splice.
+    if (number !== (last === null ? number : last - 1)) {
+      last = null;
+      if (number !== 1) continue;
+    }
+    if (number === 1) return i;
+    last = number;
+  }
+  return null;
+}
+
+/**
+ * The prose a pane showed immediately above its option rows, or null when it had none.
+ *
+ * Bounded to the paragraph directly above the dialog - blank lines above it end the
+ * walk once any prose has been collected - because the rest of a capture is scrollback
+ * that has nothing to do with the ask. Stops at the permission header too, and drops
+ * it: "Claude needs your permission to use Bash" reads identically on every such row.
+ */
 function panePrompt(pane: string | null): string | null {
   if (!pane) return null;
-  const lines: string[] = [];
-  for (const raw of pane.split("\n")) {
-    if (OPTION_ROW.test(raw)) break;
-    const line = raw.trim();
-    if (!line || PERMISSION_HEADER.test(line)) continue;
-    lines.push(line);
+  const lines = pane.split("\n");
+  const top = dialogTop(lines);
+  if (top === null) return null;
+  const prose: string[] = [];
+  for (let i = top - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line) {
+      if (prose.length > 0) break;
+      continue;
+    }
+    if (PERMISSION_HEADER.test(line)) break;
+    prose.push(line);
   }
-  const text = lines.join(" ").trim();
-  return text || null;
+  return prose.reverse().join(" ").trim() || null;
 }

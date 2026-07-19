@@ -1,5 +1,5 @@
 import { foremanAllowlisted } from "@shared/foreman.ts";
-import type { Session } from "@shared/types.ts";
+import type { NoteDisposition, Session } from "@shared/types.ts";
 import type { ResolveEpisode, SetNote } from "@shared/protocol.ts";
 
 // Why Foreman isn't sending for a session - the one rule behind every "why is this
@@ -73,6 +73,56 @@ export function sessionSendBlock(
  */
 export function allowlistSuggestion(session: Session): string | null {
   return session.repoRoot ?? session.cwd;
+}
+
+/**
+ * What each disposition says the note is, in the human's terms.
+ *
+ * One copy, read by every live surface (the grid card, the console strip) and by the
+ * episode record. The drawer's rows word two of these differently on purpose - they
+ * print the author beside the state - so they keep their own map rather than bending
+ * this one to serve both.
+ */
+export const DISPOSITION_LABEL: Record<NoteDisposition, string> = {
+  answered: "answered for you",
+  pending: "drafted a reply",
+  escalated: "needs your decision",
+  skipped: "left for you",
+};
+
+/** Where an approved draft should be delivered, or that it can no longer be. */
+export type DeliveryTarget =
+  | { kind: "review"; reviewId: string }
+  | { kind: "send" }
+  | { kind: "stale" };
+
+/**
+ * Deliver to the channel the draft was actually made FOR, read from the note's
+ * `handledMarker` rather than from the live review map (which can drift while a draft
+ * sits pending). A `review:<id>` draft resolves *that* review; if it is no longer
+ * pending the draft is stale and must be dismissed, never redirected elsewhere - the
+ * text was written to answer a question that is now closed, and sending it at whatever
+ * review happens to be open next answers the wrong one in the human's name.
+ *
+ * A terminal marker types into the session; a marker-less draft falls back to the live
+ * input review, else the terminal.
+ *
+ * Pure, and out here with `foremanSendBlock`, because that stale rule is invisible
+ * unless you know why it exists and it was previously written out once per surface.
+ */
+export function deliveryTarget(o: {
+  handledMarker: string | null;
+  inputReviewId: string | null;
+  pendingReviewIds: ReadonlySet<string> | undefined;
+}): DeliveryTarget {
+  const marker = o.handledMarker;
+  if (marker?.startsWith("review:")) {
+    const reviewId = marker.slice("review:".length);
+    if (o.pendingReviewIds?.has(reviewId) ?? false) return { kind: "review", reviewId };
+    return { kind: "stale" };
+  }
+  if (marker) return { kind: "send" };
+  return o.inputReviewId ? { kind: "review", reviewId: o.inputReviewId } : { kind: "send" };
 }
 
 /**

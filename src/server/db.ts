@@ -167,9 +167,16 @@ export function openDb(): DatabaseSync {
       last_action    TEXT,
       sent_text      TEXT,           -- what was actually delivered
       sent_option    TEXT,           -- JSON {number,label} for a menu selection
-      sent_by        TEXT,           -- foreman | you
+      sent_by        TEXT,           -- foreman | you: who authored what was delivered
       created_at     INTEGER NOT NULL,
-      resolved_at    INTEGER
+      resolved_at    INTEGER,
+      -- Who DECIDED the episode, which is a different question from who sent the text
+      -- and has a different answer on every path where nothing was sent. A dismissal
+      -- resolves an episode without delivering a word, so sent_by is null there while
+      -- resolved_by is 'you'; folding the two together made a dismissal indistinguishable
+      -- from an approval, and the card read "You approved" over a header saying you
+      -- dismissed it. Null while the episode is still open.
+      resolved_by    TEXT            -- foreman | you
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_foreman_episodes_marker
       ON foreman_episodes(note_key, marker);
@@ -321,6 +328,15 @@ function migrate(d: DatabaseSync): void {
   // this ALTER. Nullable with no default: every existing review, and every review of
   // another kind, reads as "no decisions" - which is exactly what they are.
   addColumn(d, "reviews", "decisions", "TEXT");
+
+  // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
+  // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
+  // is new enough that the only dbs carrying it are the ones this feature was developed
+  // against - but the CREATE TABLE above still won't add the column to them, and every
+  // episode write would fail on a db that has the table without it. Nullable with no
+  // default, so an episode written before the split reads as "still open", which is the
+  // only honest answer: its `sent_by` cannot say whether a human dismissed it.
+  addColumn(d, "foreman_episodes", "resolved_by", "TEXT");
 
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
   // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
@@ -649,9 +665,12 @@ export interface EpisodeWrite {
   lastAction: string | null;
   sentText: string | null;
   sentOption: { number: number; label: string } | null;
+  /** Who authored what reached the child; null when nothing was delivered. */
   sentBy: EpisodeAuthor | null;
   createdAt: number;
   resolvedAt: number | null;
+  /** Who decided the episode; null while it is still waiting on someone. */
+  resolvedBy: EpisodeAuthor | null;
 }
 
 /** Clamp a nullable free-text field to what the DB carries. */
@@ -682,8 +701,8 @@ export function recordEpisode(e: EpisodeWrite): number {
       `INSERT INTO foreman_episodes
          (note_key, session_id, marker, situation, surface, question, pane, menu, review_id,
           purpose, brief, recommendation, classification, confidence, tier, disposition,
-          last_action, sent_text, sent_option, sent_by, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          last_action, sent_text, sent_option, sent_by, created_at, resolved_at, resolved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key, marker) DO UPDATE SET
          session_id     = excluded.session_id,
          situation      = excluded.situation,
@@ -703,7 +722,8 @@ export function recordEpisode(e: EpisodeWrite): number {
          sent_text      = excluded.sent_text,
          sent_option    = excluded.sent_option,
          sent_by        = excluded.sent_by,
-         resolved_at    = excluded.resolved_at`,
+         resolved_at    = excluded.resolved_at,
+         resolved_by    = excluded.resolved_by`,
     )
     .run(
       e.noteKey,
@@ -728,6 +748,7 @@ export function recordEpisode(e: EpisodeWrite): number {
       e.sentBy,
       e.createdAt,
       e.resolvedAt,
+      e.resolvedBy,
     );
   return Number(res.lastInsertRowid);
 }
@@ -750,20 +771,27 @@ export function resolveEpisode(p: {
   marker: string;
   disposition: NoteDisposition;
   sentText: string | null;
-  sentBy: EpisodeAuthor;
+  /** Who decided it. Whether they SENT anything is read off `sentText`, not asserted. */
+  resolvedBy: EpisodeAuthor;
   resolvedAt: number;
 }): void {
+  const sent = episodeText(p.sentText);
   openDb()
     .prepare(
       `UPDATE foreman_episodes
-          SET disposition = ?, sent_text = ?, sent_by = ?, resolved_at = ?
+          SET disposition = ?, sent_text = ?, sent_by = ?, resolved_at = ?, resolved_by = ?
         WHERE note_key = ? AND marker = ?`,
     )
     .run(
       p.disposition,
-      episodeText(p.sentText),
-      p.sentBy,
+      sent,
+      // Derived, never taken from the caller: a dismissal resolves the episode without
+      // delivering anything, so there is no author to name. Attributing a send that
+      // never happened is how the record came to claim the human had approved something
+      // they had in fact thrown away.
+      sent === null ? null : p.resolvedBy,
       p.resolvedAt,
+      p.resolvedBy,
       p.noteKey,
       p.marker,
     );
@@ -775,7 +803,8 @@ export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
     .prepare(
       `SELECT id, note_key, session_id, marker, situation, surface, question, pane, menu,
               review_id, purpose, brief, recommendation, classification, confidence, tier,
-              disposition, last_action, sent_text, sent_option, sent_by, created_at, resolved_at
+              disposition, last_action, sent_text, sent_option, sent_by, created_at,
+              resolved_at, resolved_by
          FROM foreman_episodes WHERE note_key = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
     )
     .all(noteKey, limit) as unknown as Array<Record<string, unknown>>;
@@ -804,6 +833,7 @@ export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
       sentBy: r.sent_by === "foreman" || r.sent_by === "you" ? r.sent_by : null,
       createdAt: Number(r.created_at ?? 0),
       resolvedAt: typeof r.resolved_at === "number" ? r.resolved_at : null,
+      resolvedBy: r.resolved_by === "foreman" || r.resolved_by === "you" ? r.resolved_by : null,
     }),
   );
 }

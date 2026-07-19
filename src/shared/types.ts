@@ -398,9 +398,20 @@ export interface ForemanEpisode {
   sentText: string | null;
   /** The menu row selected, when the answer was a selection rather than typing. */
   sentOption: { number: number; label: string } | null;
+  /** Who authored what reached the child - null when nothing was delivered. */
   sentBy: EpisodeAuthor | null;
   createdAt: number;
   resolvedAt: number | null;
+  /**
+   * Who DECIDED this episode, which is not the same question as who sent the text.
+   *
+   * A dismissal resolves an episode without delivering a word, so `sentBy` is null on
+   * exactly the paths where a human still made the call. Reading authorship off
+   * `sentBy` alone made a dismissal read back as an approval; the two answers are
+   * kept apart so the record can say "you dismissed this" without inventing a send.
+   * Null while the episode is still waiting on someone.
+   */
+  resolvedBy: EpisodeAuthor | null;
 }
 
 /**

@@ -1406,6 +1406,12 @@ export class Registry extends EventEmitter {
       // An episode Foreman closed itself is resolved the moment it is recorded;
       // one it handed over stays open until a human acts on it.
       resolvedAt: e.disposition === "answered" || e.disposition === "skipped" ? now : null,
+      // Derived from the same test, and deliberately not from `sentBy`: Foreman
+      // resolves an episode by skipping it as well as by answering it, and only the
+      // latter sends anything. A `skipped` episode with no author is one Foreman left
+      // for the human; the human's own dismissal comes through `resolveEpisode` and
+      // stamps `you` here, which is what keeps the two legible apart in the record.
+      resolvedBy: e.disposition === "answered" || e.disposition === "skipped" ? "foreman" : null,
     });
     return true;
   }
@@ -1419,7 +1425,7 @@ export class Registry extends EventEmitter {
       marker: p.marker,
       disposition: p.disposition,
       sentText: p.sentText ?? null,
-      sentBy: "you",
+      resolvedBy: "you",
       resolvedAt: now,
     });
     return true;

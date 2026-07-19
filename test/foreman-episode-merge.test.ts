@@ -38,6 +38,7 @@ function ep(id: number, createdAt: number): ForemanEpisode {
     sentBy: null,
     createdAt,
     resolvedAt: null,
+    resolvedBy: null,
   };
 }
 

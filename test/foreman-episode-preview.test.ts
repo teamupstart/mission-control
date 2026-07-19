@@ -35,6 +35,7 @@ function ep(over: Partial<ForemanEpisode> = {}): ForemanEpisode {
     sentBy: null,
     createdAt: 1,
     resolvedAt: null,
+    resolvedBy: null,
     ...over,
   };
 }
@@ -71,6 +72,50 @@ test("a menu leads with the sentence above the options, not the options", () => 
     }),
   );
   assert.equal(preview, "The migration can target Postgres or SQLite. Which should I write against?");
+});
+
+test("scrollback above the dialog is not mistaken for the question", () => {
+  // A real capture is a whole screen: the dialog is the foreground at the BOTTOM, and
+  // everything above it is the child's own output. This fixture carries the case a
+  // top-down scan gets wrong twice over - it would return the build log as the ask,
+  // and a NUMBERED LIST in that output would truncate it at "1. Rename the column"
+  // long before reaching the real dialog.
+  const preview = askPreview(
+    ep({
+      question: "Claude needs your permission to use AskUserQuestion",
+      pane: [
+        "$ npm run build",
+        "vite v5.4.2 building for production...",
+        "✓ 412 modules transformed",
+        "",
+        "I can do this in three ways:",
+        "1. Rename the column and backfill",
+        "2. Add a new column and dual-write",
+        "3. Leave it and map in the reader",
+        "",
+        "Let me check the migration history first.",
+        "",
+        "Claude needs your permission to use AskUserQuestion",
+        "",
+        "  The backfill will lock the table for about 40 seconds.",
+        "  Should I run it now or wait for the window?",
+        "",
+        "❯ 1. Run it now",
+        "  2. Wait for the maintenance window",
+      ].join("\n"),
+      menu: {
+        options: [
+          { number: 1, label: "Run it now" },
+          { number: 2, label: "Wait for the maintenance window" },
+        ],
+        highlighted: 1,
+      },
+    }),
+  );
+  assert.equal(
+    preview,
+    "The backfill will lock the table for about 40 seconds. Should I run it now or wait for the window?",
+  );
 });
 
 test("a pane that is nothing but options falls back to the option rows", () => {

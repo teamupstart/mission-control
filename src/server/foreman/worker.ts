@@ -949,6 +949,35 @@ async function processSession(
       await client
         .putNote(session.id, { purpose: verdict.purpose, disposition: "skipped" })
         .catch(() => {});
+      // Record it anyway, even though nothing was sent. This return is the one exit
+      // from `processSession` that reaches a decision and writes no episode, and the
+      // pane captured above is the ONLY copy of a terminal ask - so leaving without it
+      // is exactly the loss the table was built to prevent, on a path where the note
+      // says "left for you" and the drawer would then have no matching entry to open.
+      //
+      // `send: null` because nothing reached the child, which leaves `sentText` and
+      // `sentBy` null through `episodeFromPlan`: a stale send is a decision that
+      // delivered nothing, and attributing one to it would be a lie in the record.
+      await client
+        .recordEpisode(
+          session.id,
+          episodeFromPlan({
+            pending,
+            ctx,
+            pane,
+            verdict,
+            tier,
+            plan: {
+              note: {
+                ...plan.note,
+                disposition: "skipped",
+                lastAction: "left for you (the session moved on during review)",
+              },
+              send: null,
+            },
+          }),
+        )
+        .catch(() => {});
       log(`${session.name}: skipped stale send (session changed during review)`);
       return true;
     }

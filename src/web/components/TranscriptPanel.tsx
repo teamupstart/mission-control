@@ -301,7 +301,7 @@ function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): 
         // tint are the same either way. Only what's inside it changes, and `markdown` swaps
         // the `pre-wrap` raw text for parsed blocks.
         <div className={`turn-text${richText ? " markdown" : ""}`}>
-          {richText ? <Markdown>{m.text}</Markdown> : m.text}
+          {richText ? <Markdown breaks>{m.text}</Markdown> : m.text}
         </div>
       )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} />}

@@ -8,10 +8,13 @@ import rehypeHighlight from "rehype-highlight";
  * The one markdown renderer in the app - plans, Foreman briefs, and chat turns all
  * come through here, so a fence looks the same wherever you read it.
  *
- * `remarkBreaks` is load-bearing, not cosmetic. Agent prose is full of single
- * newlines that markdown would otherwise fold into one paragraph, and the surfaces
- * this replaced were `white-space: pre-wrap` - so without it, switching to markdown
- * would silently reflow every message that already exists.
+ * `breaks` turns on `remarkBreaks`, and it is a chat-turn concern specifically. Chat
+ * turns used to render as `white-space: pre-wrap`, so their single newlines were real
+ * line breaks; without `remarkBreaks` the switch to markdown would silently reflow
+ * every message that already exists. Plans and Foreman briefs were never pre-wrap -
+ * they have always rendered through markdown's own reflow - so the prop defaults to
+ * off and only `TranscriptPanel` opts in. Turning it on everywhere would put a `<br>`
+ * at every newline of hard-wrapped plan prose.
  *
  * `rehypeHighlight` runs with `detect: false` on purpose. Auto-detection guesses a
  * language for every unlabelled fence, and agents emit plenty of fences that aren't
@@ -22,10 +25,16 @@ import rehypeHighlight from "rehype-highlight";
  * re-renders on every SSE frame. Turns are append-only (see `mergeById`), so an
  * existing message's text never changes and this stays a hit for the whole session.
  */
-export const Markdown = memo(function Markdown({ children }: { children: string }): React.JSX.Element {
+export const Markdown = memo(function Markdown({
+  children,
+  breaks = false,
+}: {
+  children: string;
+  breaks?: boolean;
+}): React.JSX.Element {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
+      remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
       rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
     >
       {children}

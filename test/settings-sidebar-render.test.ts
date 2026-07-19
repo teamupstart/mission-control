@@ -92,10 +92,10 @@ test("Appearance is a category of its own: its panel shows, the others don't", (
 });
 
 test("message formatting is on unless it has been turned off", () => {
-  // The default the panel shows and the default the transcript renders under are the same
-  // value (`rich-text`'s DEFAULT), so a checked box here is the honest report of what the
-  // conversation is doing. Static render never runs effects, so this is the load-time
-  // default rather than anything this test wrote to storage.
+  // `render` mounts the modal with no `RichTextProvider`, so `useRichText` returns its
+  // out-of-provider fallback and `load` never runs. What this pins is that fallback: the
+  // panel shows a checked box, not an unchecked one or no box at all. It says nothing
+  // about what `load` reads from storage; that path is not covered here.
   const html = render("appearance");
   const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
   assert.ok(toggle, "the appearance panel has a checkbox");

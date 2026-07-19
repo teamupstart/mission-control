@@ -9,8 +9,8 @@ import { Markdown } from "../src/web/components/Markdown.tsx";
 // automation. Static markup is the whole surface anyway - this component's entire job is
 // turning a string into HTML, and every claim below is about that HTML.
 
-function render(md: string): string {
-  return renderToStaticMarkup(createElement(Markdown, { children: md }));
+function render(md: string, breaks = false): string {
+  return renderToStaticMarkup(createElement(Markdown, { children: md, breaks }));
 }
 
 test("a fenced block becomes a highlighted <pre><code>, tagged with its language", () => {
@@ -44,11 +44,19 @@ test("a fence naming a language highlight.js doesn't ship still renders as code"
   assert.match(html, /some text/);
 });
 
-test("single newlines inside a paragraph survive as breaks", () => {
-  // `remarkBreaks`. The surfaces this replaced were `white-space: pre-wrap`, so without
-  // it every existing message would silently reflow into one run-on paragraph.
-  const html = render("first line\nsecond line");
+test("with `breaks`, single newlines inside a paragraph survive as breaks", () => {
+  // `remarkBreaks`. Chat turns used to be `white-space: pre-wrap`, so without it every
+  // existing message would silently reflow into one run-on paragraph.
+  const html = render("first line\nsecond line", true);
   assert.match(html, /first line<br\/?>\s*second line/);
+});
+
+test("without `breaks` - the default - a single newline reflows instead", () => {
+  // Plans and Foreman briefs were never pre-wrap, so they must keep markdown's own
+  // reflow. A `<br>` here would break every paragraph of hard-wrapped plan prose.
+  const html = render("first line\nsecond line");
+  assert.doesNotMatch(html, /<br/);
+  assert.match(html, /first line\s*second line/);
 });
 
 test("GFM still applies: tables and strikethrough parse", () => {

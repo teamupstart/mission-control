@@ -5900,7 +5900,7 @@ kbd {
 
 /* ---- board tile: live detail (activity · gate step · runtime) ----
    The three things a board tile now surfaces without being opened. All rendered as
-   inline content because the tile is a <button>. */
+   inline content, laid out with flex - the tile draws its whole body as spans. */
 
 /* What the session is doing this second. The glyph spins while it works, and stands
    still for anyone who asked for less motion. */

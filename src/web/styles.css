@@ -3593,7 +3593,7 @@ kbd {
 .dl-hunk .dl-text {
   color: color-mix(in oklab, var(--working) 55%, var(--muted));
 }
-/* ---- alerts / AFK control ---- */
+/* ---- alerts / away control ---- */
 .alertbar {
   position: relative;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { Session, Task, TaskSummary } from "@shared/types.ts";
 import {
   RECENT_TASKS_CAP,

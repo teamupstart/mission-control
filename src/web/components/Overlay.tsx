@@ -1,4 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 /**
  * The shared overlay primitive, and the single source of truth for "is an overlay open".
@@ -42,12 +51,12 @@ export const OVERLAY_IDS = {
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];
 
 /** One live registration. The token, not the id, identifies it - see `register`. */
-interface OverlayEntry {
+export interface OverlayEntry {
   token: symbol;
   id: string;
 }
 
-type RegisterFn = (id: string) => () => void;
+type RegisterFn = (token: symbol, id: string) => () => void;
 
 /**
  * Split in two on purpose. `register` must be referentially stable or the registration
@@ -55,9 +64,23 @@ type RegisterFn = (id: string) => () => void;
  * change, and so would never settle. The stack is read during render, where churn is fine.
  */
 const OverlayRegisterContext = createContext<RegisterFn | null>(null);
-const OverlayStackContext = createContext<readonly string[]>([]);
+const OverlayStackContext = createContext<readonly OverlayEntry[]>([]);
+
+/**
+ * Registration has to be visible to the guards before the browser can dispatch another
+ * input event, so it runs in a LAYOUT effect (React flushes those synchronously during
+ * commit). A passive `useEffect` is flushed at the start of the NEXT render instead,
+ * which leaves a window where the overlay is on screen but `anyOpen` is still false - and
+ * a keydown arriving in that window runs App's global handler and drives, or acts on, the
+ * card behind the overlay. That is the exact bug this whole primitive exists to prevent,
+ * so do not "tidy" this back to `useEffect`. Falls back to `useEffect` with no DOM, where
+ * effects never run anyway and `useLayoutEffect` would only warn.
+ */
+const useRegistrationEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export interface OverlayHostValue {
+  /** Ordered registrations; the last one is topmost. Tokens, not ids, identify them. */
+  openEntries: readonly OverlayEntry[];
   /** Ordered ids of every open overlay; the last one is topmost. */
   openIds: readonly string[];
   /** True when any overlay owns the screen - the stand-down condition. */
@@ -77,18 +100,17 @@ export interface OverlayHostValue {
 export function useOverlayHost(): OverlayHostValue {
   const [entries, setEntries] = useState<OverlayEntry[]>([]);
 
-  // Keyed by a fresh token rather than by id so a double-invoked effect (StrictMode
-  // mounts, cleans up, and mounts again) can only ever remove its own registration, and
-  // two overlays sharing an id can't delete each other's.
-  const register = useCallback<RegisterFn>((id) => {
-    const token = Symbol(id);
+  // Keyed by the caller's per-instance token rather than by id so a double-invoked effect
+  // (StrictMode mounts, cleans up, and mounts again) can only ever remove its own
+  // registration, and two overlays sharing an id can't delete each other's.
+  const register = useCallback<RegisterFn>((token, id) => {
     setEntries((es) => [...es, { token, id }]);
     return () => setEntries((es) => es.filter((e) => e.token !== token));
   }, []);
 
   return useMemo(() => {
     const openIds = entries.map((e) => e.id);
-    return { openIds, ...overlayGuards(openIds), register };
+    return { openEntries: entries, openIds, ...overlayGuards(openIds), register };
   }, [entries, register]);
 }
 
@@ -118,7 +140,9 @@ export function OverlayHost({
 }): React.JSX.Element {
   return (
     <OverlayRegisterContext.Provider value={value.register}>
-      <OverlayStackContext.Provider value={value.openIds}>{children}</OverlayStackContext.Provider>
+      <OverlayStackContext.Provider value={value.openEntries}>
+        {children}
+      </OverlayStackContext.Provider>
     </OverlayRegisterContext.Provider>
   );
 }
@@ -161,6 +185,11 @@ export function Overlay({
 }): React.JSX.Element {
   const register = useContext(OverlayRegisterContext);
   const stack = useContext(OverlayStackContext);
+  // One token per Overlay INSTANCE, so identity survives re-renders but is never shared
+  // with another overlay that happens to carry the same id.
+  const tokenRef = useRef<symbol | null>(null);
+  tokenRef.current ??= Symbol(id);
+  const token = tokenRef.current;
   if (!register) {
     throw new Error(
       `<Overlay id="${id}"> was rendered outside <OverlayHost>. An overlay that isn't ` +
@@ -169,12 +198,13 @@ export function Overlay({
     );
   }
 
-  useEffect(() => register(id), [register, id]);
+  useRegistrationEffect(() => register(token, id), [register, token, id]);
 
   // Last registered wins. Nothing in the app stacks overlays today (opening one closes
   // the other in the same commit), but nothing PREVENTED it either, and a stray second
-  // listener would close two layers on one Escape.
-  const isTop = stack.length > 0 && stack[stack.length - 1] === id;
+  // listener would close two layers on one Escape. Compared by token, not id: ids are not
+  // guaranteed unique, and two overlays sharing one would otherwise both be "topmost".
+  const isTop = stack.length > 0 && stack[stack.length - 1]?.token === token;
 
   useEffect(() => {
     if (!isTop) return;

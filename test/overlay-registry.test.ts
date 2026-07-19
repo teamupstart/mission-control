@@ -27,8 +27,10 @@ import { mkSession } from "./helpers/session-fixture.ts";
  *
  * Being counted is not a list anyone maintains - `<Overlay>` registers itself. So the
  * property to lock down is that every overlay actually goes through `<Overlay>`, which
- * is what the two suites below check from opposite directions: no component may
- * hand-roll a backdrop, and every known overlay must fail without a host.
+ * is what the suites below check from opposite directions: no component may hand-roll a
+ * backdrop, no component may own the screen with a `role="dialog"` outside the registry
+ * (bar a declared list of known exceptions), and every known overlay must fail without a
+ * host.
  *
  * This repo's runner has no DOM, so effects (and therefore registration itself) can't be
  * exercised here; `renderToStaticMarkup` runs render only. That is why the check is
@@ -47,11 +49,25 @@ function tsxFiles(dir: string): string[] {
   });
 }
 
+/**
+ * Comments are stripped before any source scan below. Otherwise a comment that merely
+ * MENTIONS `modal-backdrop` or `role="dialog"` fails the scan while proving nothing,
+ * and - the same defect from the other side - a real offender could be excused by the
+ * scan matching prose rather than code.
+ */
+function code(file: string): string {
+  return readFileSync(file, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
 test("only the Overlay primitive renders a backdrop", () => {
-  // The catch-all. A new overlay hand-rolling `modal-backdrop` is exactly the change
-  // that used to need four edits to App.tsx and silently got fewer.
+  // Narrow by construction: this catches a new overlay that hand-rolls the `modal-backdrop`
+  // class, which is the shape every overlay here happens to use. It does NOT catch an
+  // overlay built with a different backdrop class or with no backdrop at all - the
+  // role="dialog" scan below covers the screen-owning surfaces that escape this one.
   const offenders = tsxFiles(WEB)
-    .filter((f) => readFileSync(f, "utf8").includes("modal-backdrop"))
+    .filter((f) => code(f).includes("modal-backdrop"))
     .map((f) => path.relative(WEB, f));
   assert.deepEqual(
     offenders,
@@ -61,14 +77,42 @@ test("only the Overlay primitive renders a backdrop", () => {
   );
 });
 
+/**
+ * Known-unregistered `role="dialog"` surfaces, listed so the gap is findable rather than
+ * invisible. Both are anchored popovers, not screen-owning overlays, so they were left
+ * out of the registry deliberately - but the consequence is real and NOT yet fixed: while
+ * either is open, focus sits on a button (so the `typing` guard is false) and `anyOpen` is
+ * false, so the grid shortcuts - INCLUDING kill and reset - still act on the card behind
+ * the popover. A follow-up needs to decide whether anchored popovers register too.
+ */
+const UNREGISTERED_DIALOGS = ["components/AlertBar.tsx", "components/ForemanBar.tsx"];
+
+test("every role=\"dialog\" surface is registered, or is a declared exception", () => {
+  // A new dialog fails here until someone decides which side of the line it is on:
+  // route it through <Overlay>, or add it to UNREGISTERED_DIALOGS with the reason.
+  const unregistered = tsxFiles(WEB)
+    .filter((f) => {
+      const src = code(f);
+      return /role=["{]"?dialog/.test(src) && !/from "\.[./]*(components\/)?Overlay\.tsx"/.test(src);
+    })
+    .map((f) => path.relative(WEB, f))
+    .sort();
+  assert.deepEqual(
+    unregistered,
+    [...UNREGISTERED_DIALOGS].sort(),
+    "a component declares role=\"dialog\" without routing through <Overlay>, so it is not " +
+      "counted as open and the global key handler stays live behind it",
+  );
+});
+
 test("every overlay routes through the primitive", () => {
   // Source-derived, so it covers overlays the runtime suite can't import - and so a NEW
   // overlay is covered the moment it exists, without being added to a list here.
   const files = tsxFiles(WEB).filter((f) => f !== path.join(WEB, "components/Overlay.tsx"));
-  const overlayFiles = files.filter((f) => /from "\.[./]*(components\/)?Overlay\.tsx"/.test(readFileSync(f, "utf8")));
+  const overlayFiles = files.filter((f) => /from "\.[./]*(components\/)?Overlay\.tsx"/.test(code(f)));
   assert.ok(overlayFiles.length >= 6, `expected the known overlays, found ${overlayFiles.length}`);
   for (const f of overlayFiles) {
-    const src = readFileSync(f, "utf8");
+    const src = code(f);
     const rel = path.relative(WEB, f);
     // App is the host, not an overlay - it wires the registry rather than rendering one.
     if (rel === "App.tsx") {

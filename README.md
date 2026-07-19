@@ -689,6 +689,26 @@ so no chip, strip or control goes missing. What changes is how they're arranged:
   with them, and <kbd>Esc</kbd> deselects (emptying the console's pane, or reversing the board's drill-in).
 - **The arrow keys follow the shape** - see below.
 
+## Message formatting
+
+Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced
+code blocks with syntax highlighting drawn from the dashboard's own palette. The same
+renderer draws shared plans and Foreman's briefs, so a fence looks the same wherever you
+read it.
+
+**Settings → Appearance → Format messages** turns it off, and the choice persists per
+machine. Off shows the literal text an agent emitted, backticks and all - useful when
+you're checking exactly what was said before pasting it somewhere that isn't a markdown
+renderer. Formatting is display-only either way: it never changes what the agent wrote or
+what gets sent when you reply, and copying a code block still yields exactly the
+characters inside the fence.
+
+Two deliberate limits. A fence with **no language tag is left uncoloured** rather than
+guessed at - agents emit plenty of fences that aren't code (log tails, file trees, error
+dumps), and a confident wrong guess reads worse than no colour. And **single newlines stay
+line breaks** in chat turns, which is what the transcript did before it parsed markdown,
+so no existing message reflows into a run-on paragraph.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - select a session with the arrow keys and act on it

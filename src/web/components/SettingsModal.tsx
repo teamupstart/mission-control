@@ -12,7 +12,7 @@ import type { ForemanState } from "../useForeman.ts";
 
 /**
  * The settings categories, in rail order. Each is a peer destination in the left nav,
- * so adding one - Notifications, Appearance - is appending an entry here plus a
+ * so adding one - Notifications, General - is appending an entry here plus a
  * `case` in `renderCategory`, never lengthening a scroll. Keeping the list as data (not
  * inlined JSX) is also what the render test walks to prove every category is reachable.
  */
@@ -41,11 +41,11 @@ function tabDomId(id: SettingsCategoryId): string {
  * unchanged; this component only arranges them and owns which one is showing.
  *
  * `LayoutPanel`, `AppearancePanel`, and `KeyboardPanel` are the modal's local-only,
- * synchronous settings (localStorage). Skills is the one that leaves this machine: it writes to the daemon,
- * and through it to `~/.claude/skills`, so it is also the first that can fail
- * asynchronously. `SkillsPanel` owns that error path. `useSkills` lives here rather than
- * inside the Skills panel so the catalog keeps polling (and `pending` keeps moving) while
- * you're on another category.
+ * synchronous settings (localStorage). Skills is the one that leaves this machine: it
+ * writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
+ * that can fail asynchronously. `SkillsPanel` owns that error path. `useSkills` lives
+ * here rather than inside the Skills panel so the catalog keeps polling (and `pending`
+ * keeps moving) while you're on another category.
  */
 export function SettingsModal({
   onClose,

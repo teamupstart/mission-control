@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
+import { activePaneDialog } from "@shared/session.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -76,6 +77,7 @@ export function ConsoleDetail({
   const live = session.state !== "exited";
   const canSend = Boolean(session.tmux || session.wezterm);
   const canRename = canRenameSession(session);
+  const dialog = activePaneDialog(session);
   const gateNeedsYou = view.gateAlerts.has(session.id);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
@@ -170,9 +172,7 @@ export function ConsoleDetail({
           <div className="detail-conv">
             <GoalLine session={session} />
             {session.activity && <p className="activity">{session.activity}</p>}
-            {session.paneDialog && (
-              <PaneDialogPrompt sessionId={session.id} dialog={session.paneDialog} />
-            )}
+            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
             {session.note && (
               <ForemanNote
                 session={session}
@@ -204,7 +204,7 @@ export function ConsoleDetail({
               sessionId={session.id}
               agent={session.agent}
               canSend={canSend}
-              dialogOpen={Boolean(session.paneDialog)}
+              dialogOpen={Boolean(dialog)}
               onReplyBox={setHasReply}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />

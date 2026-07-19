@@ -2,6 +2,11 @@ import { useState } from "react";
 import type { PaneDialog } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
 
+/** What makes this the SAME question as the last poll's: the prompt and the rows offered. */
+function dialogIdentity(dialog: PaneDialog): string {
+  return JSON.stringify([dialog.prompt ?? "", dialog.options.map((o) => [o.number, o.label])]);
+}
+
 /**
  * The option menu a session's terminal is parked on, rendered as buttons the human can
  * answer from the dashboard.
@@ -29,6 +34,20 @@ export function PaneDialogPrompt({
 }): React.JSX.Element {
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // A 409 says "the screen changed" - and the screen changing is precisely what replaces
+  // the question above it. Without this the failure message outlives the menu it was
+  // about and renders under a different question with different rows, reporting a
+  // failure on an attempt nobody made. Done here rather than by keying at the two call
+  // sites so neither can forget it, and on identity rather than object equality because
+  // the dialog is re-parsed from the pane every poll. `highlighted` is left out: the
+  // cursor moving in the terminal is the same question, not a new one.
+  const identity = dialogIdentity(dialog);
+  const [shownFor, setShownFor] = useState(identity);
+  if (shownFor !== identity) {
+    setShownFor(identity);
+    setError(null);
+  }
 
   async function choose(option: { number: number; label: string }): Promise<void> {
     if (busy !== null) return;

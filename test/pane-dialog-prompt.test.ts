@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { PaneDialogPrompt } from "../src/web/components/PaneDialogPrompt.tsx";
 import { TranscriptPanel } from "../src/web/components/TranscriptPanel.tsx";
 import { parsePaneDialog } from "../src/server/discovery/pane-dialog.ts";
-import { reportBucket, needsYouReason } from "../src/shared/session.ts";
+import { activePaneDialog, reportBucket, needsYouReason } from "../src/shared/session.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
 import type { PaneDialog, Session } from "../src/shared/types.ts";
 
@@ -111,6 +111,13 @@ test("an exited session is not resurrected by a menu left on its screen", () => 
   const dead = { ...base, state: "exited", paneDialog: dialog } as Session;
   assert.equal(reportBucket(dead), "exited");
   assert.equal(stateDisplay(dead).tone, "exited");
+  // The field outlives the pane: a vanished session is marked exited field-by-field, so
+  // the last menu rides along for the whole exit-linger window. Every reader that offers
+  // to ACT on one goes through this, which is what keeps the card from showing buttons
+  // aimed at a dead pane (and the composer from staying shut against it).
+  assert.equal(activePaneDialog(dead), null);
+  assert.equal(needsYouReason(dead), null);
+  assert.equal(activePaneDialog({ ...base, paneDialog: dialog } as Session), dialog);
 });
 
 // ---- The reply box has to be SHUT while a menu is up ----

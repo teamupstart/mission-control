@@ -1,4 +1,4 @@
-import { runInFlight } from "@shared/session.ts";
+import { activePaneDialog, runInFlight } from "@shared/session.ts";
 import type { NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
@@ -103,7 +103,7 @@ export function stateDisplay(session: Session): StateDisplay {
   // so an uninstrumented session parked on a permission prompt belongs in "needs you"
   // rather than in "unconfirmed", where it read as merely unknown while being the most
   // definitively blocked session on the board. Mirrors `reportBucket`.
-  if (session.paneDialog) {
+  if (activePaneDialog(session)) {
     return { label: "needs an answer", tone: "attention" };
   }
   const validating: StateDisplay = { label: "validating", tone: "working" };

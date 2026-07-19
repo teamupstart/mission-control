@@ -3,7 +3,7 @@
 // never disagree about who "needs you". Keep this in sync conceptually with the
 // card's `stateDisplay` in src/web/lib/format.ts (same attention precedence).
 
-import type { Session, Task } from "./types.ts";
+import type { PaneDialog, Session, Task } from "./types.ts";
 
 export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 
@@ -33,6 +33,19 @@ export function finishedTasks(tasks: Task[]): Task[] {
  */
 export function agentActive(s: Session): boolean {
   return s.state === "starting" || s.state === "working";
+}
+
+/**
+ * The menu this session is parked on and can still be answered, or null.
+ *
+ * `paneDialog` outlives the pane it was read from: a session that vanishes is marked
+ * `exited` field-by-field, so the last menu we saw rides along for the whole exit-linger
+ * window. Every reader wants the same thing from that - nothing - so they ask here rather
+ * than reading the field, which is what kept the buckets honest while the card still
+ * offered buttons aimed at a dead pane.
+ */
+export function activePaneDialog(s: Session): PaneDialog | null {
+  return s.state === "exited" ? null : s.paneDialog;
 }
 
 /** True while a no-mistakes run is parked at a gate, awaiting the agent's decision. */
@@ -129,7 +142,12 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
   // permission prompt has `state: "idle"` forever, so it reported as idle while being
   // the single most blocked thing on the board. Read off the pane every poll and cleared
   // the moment the menu closes, so nothing can get stuck here.
-  if (s.paneDialog) return "needs-you";
+  //
+  // This also widens Foreman's `tickTargets` (src/server/foreman/queue-machine.ts), which
+  // selects on this bucket, to sessions parked on a dialog it has not been told about by a
+  // hook. That is deliberate: answering routine prompts is Foreman's job, a visible menu is
+  // exactly the case it exists for, and `decideQueueTick` still escalates on `!hooksSeen`.
+  if (activePaneDialog(s)) return "needs-you";
   if (gateParked(s, sessions)) return "needs-you";
   if (s.instrumented) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
@@ -148,7 +166,8 @@ export function needsYouReason(s: Session, sessions: Session[] = [s]): string | 
   // Ahead of `awaiting_input`, which is the same fact reported more vaguely: when we can
   // see the menu we can say how many ways out of it there are, and the count is what tells
   // a permission prompt (2-3 rows) from a question worth opening the card for.
-  if (s.paneDialog) return `${s.paneDialog.options.length} options to pick from`;
+  const dialog = activePaneDialog(s);
+  if (dialog) return `${dialog.options.length} options to pick from`;
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
   if (gateParked(s, sessions)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;

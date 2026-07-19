@@ -14,7 +14,7 @@
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
 import type { Session, Task } from "./types.ts";
-import { gateParked, reportBucket } from "./session.ts";
+import { activePaneDialog, gateParked, needsYouReason, reportBucket } from "./session.ts";
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 
@@ -136,6 +136,25 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         kind: "needs-input",
         title: `${label} needs you`,
         body: s.state === "awaiting_review" ? "needs review" : "needs input",
+        sessionId: s.id,
+        severity: "attention",
+      });
+    } else if (activePaneDialog(s) && !(before && activePaneDialog(before))) {
+      // The same "blocked on you" alert, reached the other way: the states above are
+      // hook-reported and therefore blank for exactly the uninstrumented session a menu
+      // is the only evidence for - the case `reportBucket` and `stateDisplay` were taught
+      // to see and this was not, so the board badged it and nothing rang. Edge-triggered
+      // on the menu APPEARING, so it doesn't re-fire while the same one stays up.
+      //
+      // `else if` rather than its own block: an instrumented session hits both paths on
+      // the same tick (the Notification hook flips the state as the dialog is captured),
+      // and one blocked session is one alert. Same id for the same reason - kind and
+      // subject match, so a repeat replaces its toast rather than stacking a second.
+      alerts.push({
+        id: `input:${s.id}`,
+        kind: "needs-input",
+        title: `${label} needs you`,
+        body: needsYouReason(s) ?? "needs an answer",
         sessionId: s.id,
         severity: "attention",
       });

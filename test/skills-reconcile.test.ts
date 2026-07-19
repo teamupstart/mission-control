@@ -13,8 +13,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SkillCatalogEntry } from "../src/shared/types.ts";
 import type { Catalog } from "../src/server/skills/catalog.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
@@ -338,4 +340,59 @@ test("an absent ~/.claude/skills is created only when there's something to put i
 
   reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
   assert.deepEqual(entries(), ["mission-alpha"]);
+});
+
+test("a daemon on an isolated home never touches another home's skill links", () => {
+  // The one test here that runs a CHILD process, because the bug is in what the daemon
+  // RESOLVES at startup, and this file pins CLAUDE_SKILLS_DIR at module scope - which is
+  // precisely the override the buggy path still honoured. In-process it would prove
+  // nothing. So: a fake $HOME standing in for the operator's machine, a real installed
+  // symlink in it, and a second daemon brought up on its own MISSION_HOME.
+  //
+  // Observed for real before the fix: that second daemon read its own empty DB, concluded
+  // the live install's `mission-html-plans` was no longer wanted, and unlinked it. Silent,
+  // and triggered by nothing more exotic than starting a daemon - which this suite does
+  // routinely.
+  const fakeHome = join(home, "isolation", "operator-home");
+  const shared = join(fakeHome, ".claude", "skills");
+  const source = join(home, "isolation", "their-skill");
+  const isolated = join(home, "isolation", "second-daemon-state");
+  mkdirSync(shared, { recursive: true });
+  mkdirSync(source, { recursive: true });
+  mkdirSync(isolated, { recursive: true });
+  symlinkSync(source, join(shared, "mission-html-plans"), "dir");
+
+  const env = { ...process.env, HOME: fakeHome, MISSION_HOME: isolated };
+  // The reason the bug reached production: the isolated daemon inherits no skills dir of
+  // its own, so it fell through to the shared one. Leave it that way here.
+  delete env.CLAUDE_SKILLS_DIR;
+  const out = execFileSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      'const c = await import("./src/server/skills/config.ts");' +
+        'const r = await import("./src/server/skills/reconcile.ts");' +
+        "c.reconcileSkills(); console.log(r.claudeSkillsDir());",
+    ],
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), env, encoding: "utf8" },
+  );
+
+  assert.deepEqual(
+    readdirSync(shared),
+    ["mission-html-plans"],
+    "the other home's skill link must survive a second daemon's startup reconcile",
+  );
+  assert.equal(
+    readlinkSync(join(shared, "mission-html-plans")),
+    source,
+    "and still point where its own install put it",
+  );
+  assert.equal(
+    out.trim().split("\n").filter(Boolean).at(-1),
+    join(isolated, "claude-skills"),
+    "an isolated home reconciles a directory inside itself, not the machine's",
+  );
 });

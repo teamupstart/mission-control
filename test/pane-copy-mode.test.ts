@@ -9,7 +9,7 @@ import {
   type PaneDeps,
 } from "../src/server/actions.ts";
 import { readTmuxPaneMode } from "../src/server/discovery/tmux.ts";
-import type { RunResult } from "../src/server/util/exec.ts";
+import { run, type RunResult } from "../src/server/util/exec.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
 
 // A tmux pane in copy-mode routes every key to tmux's OWN key table. `send-keys` and
@@ -48,7 +48,7 @@ function harness(inMode: string, mode = "copy-mode", screen = ""): { deps: Injec
     deps: {
       exec: async (bin, args) => {
         const line = [bin, ...args].join(" ");
-        if (args.includes("display-message")) return ok(`${inMode}\x1f${mode}`);
+        if (args.includes("display-message")) return ok(`${inMode} ${mode}`);
         argv.push(line);
         return ok("");
       },
@@ -71,9 +71,9 @@ test("the probe reads a mode only from an explicit in-mode flag", async () => {
   const probe = (out: string, code = 0) =>
     readTmuxPaneMode("%1", async () => ({ stdout: out, stderr: "", code }));
 
-  assert.equal(await probe("1\x1fcopy-mode"), "copy-mode");
-  assert.equal(await probe("1\x1fview-mode"), "view-mode");
-  assert.equal(await probe("0\x1f"), null, "a pane in no mode takes keystrokes normally");
+  assert.equal(await probe("1 copy-mode"), "copy-mode");
+  assert.equal(await probe("1 view-mode"), "view-mode");
+  assert.equal(await probe("0 "), null, "a pane in no mode takes keystrokes normally");
 });
 
 test("a probe that cannot answer reads as 'not in a mode', not as 'blocked'", async () => {
@@ -91,7 +91,7 @@ test("a probe that cannot answer reads as 'not in a mode', not as 'blocked'", as
 
 test("a pane in a mode tmux won't name is still refused", async () => {
   // `pane_mode` predates neither flag on every tmux; an empty name must not read as "free".
-  const mode = await readTmuxPaneMode("%1", async () => ok("1\x1f"));
+  const mode = await readTmuxPaneMode("%1", async () => ok("1 "));
   assert.ok(mode, "in-mode with no name is still in a mode");
 });
 
@@ -183,7 +183,7 @@ test("an Enter swallowed AFTER the paste says so, and does not claim nothing hap
   const argv: string[] = [];
   const deps: InjectDeps = {
     exec: async (bin, args) => {
-      if (args.includes("display-message")) return ok(pasted ? "1\x1fcopy-mode" : "0\x1f");
+      if (args.includes("display-message")) return ok(pasted ? "1 copy-mode" : "0 ");
       if (args.includes("paste-buffer")) pasted = true;
       argv.push([bin, ...args].join(" "));
       return ok("");
@@ -215,6 +215,15 @@ function tmuxAvailable(): boolean {
 
 const skip = tmuxAvailable() ? false : "tmux not available";
 
+/** Run a tmux command with no locale at all, as a launchd daemon or a CI runner does. */
+function noLocale(bin: string, args: string[]): Promise<RunResult> {
+  const env = { ...process.env };
+  delete env.LANG;
+  delete env.LC_ALL;
+  delete env.LC_CTYPE;
+  return run(bin, args, { env });
+}
+
 test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", { skip }, async () => {
   // The whole fix rests on a claim about tmux's behavior, not about our code: that
   // `send-keys` exits 0 while the child gets nothing. If that were ever false the guard
@@ -227,7 +236,12 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
     // `parsePaneDialog` reads, so the `selectPaneOption` case below has something real to
     // be refused at - see that assertion for why a menu-less pane would prove nothing.
     const sink = `/tmp/${sessName}.out`;
-    const paint = 'printf "Which way should this go?\\n\\n\\xe2\\x9d\\xaf 1. Ship it\\n  2. Hold it\\n"';
+    // The `❯` is written as OCTAL, and both halves of that matter. It cannot be the
+    // literal character: tmux strips non-ASCII out of its own argv when the locale isn't
+    // UTF-8, so on a runner with no LANG the pane would paint `_` and the menu would not
+    // parse. And `\xe2` is a bashism - `/bin/sh` is dash on Debian, which prints those
+    // four characters verbatim - whereas `\342` is the escape POSIX printf specifies.
+    const paint = 'printf "Which way should this go?\\n\\n\\342\\235\\257 1. Ship it\\n  2. Hold it\\n"';
     execFileSync("tmux", [
       "new-session", "-d", "-s", sessName, "-x", "120", "-y", "30",
       `sh -c '${paint}; while IFS= read -r l; do echo "$l" >> ${sink}; done'`,
@@ -242,6 +256,14 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
 
     execFileSync("tmux", ["copy-mode", "-t", paneId]);
     assert.equal(await readTmuxPaneMode(paneId), "copy-mode", "the probe sees the real mode");
+
+    // The probe must survive a machine with no locale set. tmux sanitizes non-printable
+    // bytes out of its own argv unless the client's LC_CTYPE is UTF-8, so a separator
+    // like `\x1f` comes back as `_` and the answer parses as "not in a mode" - the guard
+    // silently stops guarding. That is not a hypothetical environment: it is a launchd
+    // daemon, and it is the CI runner this test file first went red on, where every
+    // assertion above still passed because they all read the fail-open direction.
+    assert.equal(await readTmuxPaneMode(paneId, noLocale), "copy-mode", "an unset LANG does not blind the probe");
 
     // The refusal - and, crucially, that the child is left untouched by it.
     const during = await sendText(session, "DURING", true);

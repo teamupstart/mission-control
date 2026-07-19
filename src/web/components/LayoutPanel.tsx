@@ -81,9 +81,10 @@ export function LayoutPanel({
         ))}
       </div>
       <p className="settings-hint">
-        Every layout renders the same session card, so nothing is hidden by the choice. Only the
-        card grid has a focus mode - in the console and the board the selected session is already
-        the open detail, so <kbd>e</kbd> and the floating command bar don't apply there.
+        Every layout reaches the same sessions and the same actions, so nothing is hidden by the
+        choice - only the shape around them changes. Only the card grid has a focus mode; in the
+        console and the board the selected session is already the open detail, so <kbd>e</kbd> and
+        the floating command bar don't apply there.
       </p>
     </section>
   );

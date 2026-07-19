@@ -34,29 +34,42 @@ Two consequences worth stating outright:
 
 ## The changes that fail silently
 
-Ranked by how quietly they break. The first two produce no error, no failing test, and a UI
-that is simply wrong.
+Ranked by how quietly they break.
 
-### 1. A new `Session` field must be added to `sessionEqual`
+The first two used to be the worst traps in the repo and are now **enforced by the
+compiler**. They are documented here not as things to remember but so you recognize the
+type error when you hit it, and know what the right answer is.
 
-`src/server/registry.ts` - `sessionEqual()`.
+### 1. A new `Session` field forces a decision in `SESSION_FIELD_COMPARATORS`
 
-Sessions are emitted over SSE only when `sessionEqual` returns false. **A field added to the
-`Session` interface but not to `sessionEqual` will never reach the UI when it changes.** It
-renders correctly on first load, from the snapshot, and then never updates again.
+`src/server/registry.ts` - `SESSION_FIELD_COMPARATORS` and `sessionEqual()`.
 
-Convention: scalars with `===`, nested objects with `JSON.stringify`. Read the comment above
-the `queue` / `orphanedQueue` comparisons before adding a denormalized field. It records a
-real instance of this bug where the changed value depended on *other* sessions, so the
-session that needed to re-emit was itself unchanged by every other measure.
+Sessions are emitted over SSE only when `sessionEqual` returns false, so a field the
+comparison ignores never reaches the UI when it changes: it renders once from the snapshot
+and then never updates again.
+
+The comparator table is typed `{ [K in keyof Session]-?: FieldEqual<K> }`, so **adding a
+field to `Session` fails typecheck until you give it a comparator.** Pick deliberately:
+
+- `byValue` for scalars, `byJson` for nested objects - the old `===` / `JSON.stringify`
+  convention, now named.
+- `alwaysEqual` only for fields that genuinely cannot change for the life of a map entry
+  (`id`, `agent`, `tty`, `startedAt`, `firstSeen`). **Each one carries a comment saying why.**
+  Do not reach for it to silence the error.
+
+The table also records a `KNOWN GAP` on the no-mistakes remote field, and the reasoning
+behind the `queue` / `orphanedQueue` entries - a real bug where the changed value depended on
+*other* sessions, so the session that needed to re-emit was unchanged by every other measure.
+Read those before adding a denormalized field. Guarded by `test/session-contracts.test.ts`.
 
 ### 2. A new `ServerEvent` variant must get a `case` in the web switch
 
 `src/web/useEventStream.ts` - the `switch (msg.type)`.
 
-**There is no `default` branch.** An event the daemon emits and the switch does not handle
-is silently dropped. If the variant adds a top-level collection, also extend the `snapshot`
-case, `registry.snapshot()`, and `MissionState`.
+The switch now ends in a `default` branch that assigns the narrowed value to `never`, so **an
+unhandled variant fails typecheck** rather than being silently dropped at runtime. If the
+variant adds a top-level collection, also extend the `snapshot` case, `registry.snapshot()`,
+and `MissionState`.
 
 ### 3. Layout parity: one behavior set, four rendering surfaces
 
@@ -76,26 +89,29 @@ and only one of them is `SessionCard`:**
 |---|---|
 | `SessionCard.tsx` | Cards only. It is the sole caller. |
 | `layouts/ConsoleDetail.tsx` | Console and Board detail pane (tabbed: conversation / queue / gate / diff) |
-| `layouts/BoardView.tsx` `SessionTile` | The board overview tile |
+| `layouts/SessionTile.tsx` | The board overview tile |
 | `layouts/RailRow.tsx` | The console rail, and the board's drilled-in column |
 
 So **an affordance added to `SessionCard.tsx` appears in exactly one of three layouts.**
 Before calling a card-level change done, open all three and look. This has come back as a bug
 report from the running app more than once ("compare the cards on the board layout to the
-ones in the cards layout"; "this send box in console view makes no sense").
+ones in the cards layout"; "this send box in console view makes no sense"). It is still the
+live pattern: `PaneDialogPrompt`, for instance, is rendered by the card and the console detail
+but not the board tile.
 
-Three specific traps inside that:
+**The shared leaf pieces now come from one place.** `session-bits.tsx` owns `AgentDot`,
+`PrChip`, `StateBadge`, `SessionTitle`, `RuntimeMetaRow`, `GoalLine` and friends, and all four
+surfaces import them rather than keeping private copies. `test/session-leaf-parity.test.ts`
+fails if a surface starts drawing its own. Put a new shared leaf there and use it everywhere;
+do not inline a variant.
 
-- **`SessionCard` re-implements three components that already exist in `session-bits.tsx`.**
-  It imports `AGENT_LABEL`, `ChecksFailedIcon`, `GoalLine`, `PrStateIcon`, `RenameEditor`,
-  `RuntimeMetaRow`, `subtitle` - but **not** `PrChip`, `StateBadge`, or `SessionTitle`, which
-  it inlines its own copies of. Fixing one of those three in `session-bits.tsx` fixes the
-  console and board and **leaves the card broken**. If you touch them, touch both.
-- **There are three separate vocabularies for "what does this session want?"** - `RailRow`'s
-  glyph strings, `BoardView`'s `.tile-flag` chips, and `SessionCard`'s chips (plus
-  `queueChipView` in `lib/queue.ts`). They encode the same underlying facts with no shared
-  module. A new session-level signal must be added to all three or it is invisible in two
-  layouts.
+Two things it does **not** cover:
+
+- **There are still three separate vocabularies for "what does this session want?"** -
+  `RailRow`'s glyph strings, `SessionTile`'s `.tile-flag` chips, and `SessionCard`'s chips
+  (plus `queueChipView` in `lib/queue.ts`). They encode the same underlying facts with no
+  shared module. A new session-level signal must be added to all three or it is invisible in
+  two layouts. This is known, deliberate for now, and the next thing worth unifying.
 - **The console detail styles reach into shared components with descendant selectors**
   (`.detail-conv > .transcript`, `.detail-foot .actions`, `.detail-head .agent-dot`, and
   more). Changing the DOM of `TranscriptPanel` or `ActionBar` can break the console and board
@@ -162,18 +178,21 @@ A reset must leave nothing from the session's previous life: work queue, compose
 attachments, message log. Each of those was originally missed and reported separately. If you
 add anything else scoped to a session that survives across prompts, clear it on reset too.
 
-### 6. Overlays must be registered in App's two guard lists
+### 6. A new overlay is one registration, not four edits
 
-There is **no shared `<Modal>` component**. `ReviewModal`, `ResetModal`, `DispatchModal`,
-`SettingsModal`, `ReportPanel`, and `DiffViewer` each hand-roll backdrop,
-`stopPropagation`, and their own Escape handler, sharing only the `.modal-*` class
-vocabulary.
+Overlays go through `src/web/components/Overlay.tsx` - `OverlayHost`, `useOverlayHost`, and
+`OVERLAY_IDS` (currently `reviews`, `dispatch`, `sitrep`, `settings`, `diff`, `reset`).
 
-Because App stands down while an overlay is up, **the overlay owns its own Escape**. And a new
-overlay must be added to **both** hand-enumerated lists in `App.tsx`'s global key handler -
-the sitrep-toggle guard and the stand-down guard - plus that effect's dependency array, plus
-the "session disappeared" reconciliation effect if it is session-bound. Miss one and grid
-shortcuts drive a card behind the open overlay.
+`App.tsx` used to hand-enumerate the open overlays in four separate places, and an overlay
+missing from one of them let grid shortcuts drive the card behind it. That is now a single
+registration: App asks `overlays.anyOpen` to stand down and `overlays.onlyOpen(OVERLAY_IDS.sitrep)`
+for the one chord that toggles its own overlay. **Add the id to `OVERLAY_IDS` and register with
+the host; do not reintroduce a hand-kept list.** Guarded by `test/overlay-registry.test.ts`.
+
+The invariant that survived the refactor: because App stands down while an overlay is up,
+**the overlay owns its own Escape**. The host exposes a hook for the keys an overlay wants
+beyond Escape (the diff viewer walks its file list). A session-bound overlay still needs the
+"session disappeared" reconciliation effect in `App.tsx`.
 
 ### 7. An Electron capability is four files
 
@@ -188,10 +207,18 @@ subscribe/unsubscribe pair in preload.
 
 ### 8. Claude hook events are declared in two places
 
+**Still hand-duplicated.** Rules 8 and 9 are the two contracts in this repo that a human has
+to keep in sync by remembering; everything else above has been made structural. Treat them
+accordingly.
+
 `hooks/install.mjs` and `src/main/integrations.ts` each hold their own `EVENTS` and
 `MATCHER_EVENTS` - one for `npm run install-hooks`, one for the packaged app. They are in sync
 today. **Adding an event means editing both arrays**, plus handling in `hooks/harness-hook.mjs`
 and `hookToState` in `registry.ts`.
+
+The fix, when someone gets to it, is the pattern already used by
+`src/shared/harness-runtime.mjs`: plain `.mjs` with hand-written `.d.mts` types, because
+`install.mjs` runs under bare node while `integrations.ts` is bundled into Electron main.
 
 ### 9. MCP tool arguments are validated twice
 

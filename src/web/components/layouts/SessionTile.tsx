@@ -24,9 +24,9 @@ export function isDragSelection(sel: { isCollapsed: boolean } | null): boolean {
  *
  * An idle tile is also a drop target for a backlog card - see BacklogColumn.
  *
- * Lives beside BoardView rather than inside it so it can be rendered by a test:
- * BoardView reaches ConsoleDetail, and that reaches a component importing CSS,
- * which node --test cannot load.
+ * Lives beside BoardView rather than inside it for consistency with the rest of the
+ * board layout - BacklogColumn, RailRow and ConsoleDetail are each their own file, and
+ * the tile was the one piece still inline. BoardView is left composing the board.
  */
 export function SessionTile({
   session,

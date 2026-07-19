@@ -6,6 +6,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
 import { isDragSelection, SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
+import { mkSession } from "./helpers/session-fixture.ts";
 
 /**
  * The board tile's PR flag has to be a real link, and the tile is not allowed to be a
@@ -21,54 +22,10 @@ import { isDragSelection, SessionTile } from "../src/web/components/layouts/Sess
  * connection open, which hangs headless automation.
  */
 
-function session(over: Partial<Session> = {}): Session {
-  return {
-    id: "s1",
-    agent: "claude",
-    name: "s1",
-    nameSource: "tmux",
-    state: "idle",
-    cwd: "/repo",
-    gitBranch: null,
-    gitRoot: "/repo",
-    repoRoot: "/repo",
-    nomistakesGated: false,
-    pid: 1,
-    tty: null,
-    permissionMode: null,
-    wezterm: null,
-    tmux: null,
-    agentSessionId: null,
-    transcriptPath: null,
-    instrumented: true,
-    hooksSeen: true,
-    activity: null,
-    startedAt: null,
-    firstSeen: 0,
-    lastSeen: 0,
-    lastActivity: null,
-    pendingReviews: 0,
-    nomistakes: null,
-    nomistakesFixes: [],
-    task: null,
-    nomistakesNarration: null,
-    prUrl: null,
-    prNumber: null,
-    prState: null,
-    prChecks: null,
-    meta: null,
-    note: null,
-    goal: null,
-    queue: null,
-    orphanedQueue: null,
-    ...over,
-  } as Session;
-}
-
 function render(over: Partial<Session> = {}): string {
   return renderToStaticMarkup(
     createElement(SessionTile, {
-      session: session(over),
+      session: mkSession(over),
       gateNeedsYou: false,
       onOpen: () => {},
       draggingRepo: null,

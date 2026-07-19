@@ -53,6 +53,7 @@ export function SessionTile({
         e.dataTransfer.dropEffect = "move";
         setOver(true);
       }}
+      onClick={onOpen}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => {
         setOver(false);
@@ -64,10 +65,19 @@ export function SessionTile({
         void dropTaskOnSession(e, session, onDropError);
       }}
     >
-      {/* Opening the session is a button stretched under the tile's content rather than
-          a wrapper around it, so the PR flag can be a real link to GitHub. Nested inside
-          a <button> it could only ever have been a span, which is what made clicking it
-          open the console and cost you a second click on the chip in there. */}
+      {/* The tile is not a <button> around its content, because the PR flag has to be a
+          real link and a link cannot live inside a button - nested there it could only
+          ever have been a span, which is what made clicking a PR open the console and
+          cost you a second click on the chip in there.
+
+          So the open action is split. The pointer half lives on the tile root above:
+          clicks land on whatever content you aimed at and bubble up, which keeps the
+          `title` tooltips on the model, effort, context meter and gate diamonds
+          hoverable. This stretched button is the keyboard half - focusable, labelled,
+          Enter/Space-activatable, which a bare div with onClick would not be. It takes
+          no pointer events, so it can never swallow a click meant for the content. The
+          PR flag is a real link that stops propagation, so it navigates instead of
+          opening the console. */}
       <button
         type="button"
         className="tile-open"
@@ -143,27 +153,36 @@ export function SessionTile({
             through the console. Only a link when there is somewhere to go: a number
             with no URL yet stays the flag it always was. */}
         {session.prNumber &&
-          (session.prUrl ? (
-            <a
-              className={`tile-flag tile-flag-link pr-${session.prState ?? "open"}`}
-              href={session.prUrl}
-              target="_blank"
-              rel="noreferrer"
-              title={
-                session.prChecks === "failing"
-                  ? "A CI check failed on this pull request - open on GitHub"
-                  : `Pull request #${session.prNumber} - open on GitHub`
-              }
-            >
-              #{session.prNumber}
-              {session.prChecks === "failing" && " ⚠"}
-            </a>
-          ) : (
-            <span className={`tile-flag pr-${session.prState ?? "open"}`}>
-              #{session.prNumber}
-              {session.prChecks === "failing" && " ⚠"}
-            </span>
-          ))}
+          (() => {
+            const tone = `pr-${session.prState ?? "open"}`;
+            const label = (
+              <>
+                #{session.prNumber}
+                {session.prChecks === "failing" && " ⚠"}
+              </>
+            );
+            return session.prUrl ? (
+              <a
+                className={`tile-flag tile-flag-link ${tone}`}
+                href={session.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                // Without this the click also reaches the root's onClick and opens the
+                // console behind the new tab - the exact second click this fix removes.
+                // stopPropagation only: the link still has to navigate.
+                onClick={(e) => e.stopPropagation()}
+                title={
+                  session.prChecks === "failing"
+                    ? "A CI check failed on this pull request - open on GitHub"
+                    : `Pull request #${session.prNumber} - open on GitHub`
+                }
+              >
+                {label}
+              </a>
+            ) : (
+              <span className={`tile-flag ${tone}`}>{label}</span>
+            );
+          })()}
       </span>
 
       {/* Only rendered while a compatible card is in the air, so it costs the tile

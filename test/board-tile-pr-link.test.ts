@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
@@ -116,6 +118,18 @@ test("the tile does not wrap its content in a button, which a link cannot live i
 test("the open affordance is still reachable, and says which session it opens", () => {
   const html = render({ ...withPr, name: "auth-refactor" });
   assert.match(html, /<button[^>]+aria-label="Open auth-refactor"/);
+});
+
+test("the stretched open button does not eat the pointer, so tile tooltips survive", () => {
+  // The tile's own `title` attributes - model, effort, context meter, gate diamonds -
+  // sit on plain in-flow spans, which an absolutely positioned sibling hit-tests over
+  // even at z-index 0. The button stays for the keyboard; the mouse falls through it to
+  // the content and on to the root's onClick. Asserted against the stylesheet because
+  // that is where the contract lives - the markup cannot show it.
+  const css = readFileSync(fileURLToPath(new URL("../src/web/styles.css", import.meta.url)), "utf8");
+  const rule = css.match(/\.tile-open \{([^}]*)\}/)?.[1];
+  assert.ok(rule != null, "expected a .tile-open rule");
+  assert.match(rule, /pointer-events:\s*none/);
 });
 
 test("a PR number with no URL yet stays a plain flag rather than a dead link", () => {

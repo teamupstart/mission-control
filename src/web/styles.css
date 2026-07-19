@@ -5741,8 +5741,9 @@ kbd {
 }
 /* The whole tile opens the session, but the tile is not itself a button - the PR flag
    is a link, and a link cannot live inside one. So the open action is a transparent
-   button stretched under the content, and anything meant to be clickable in its own
-   right lifts above it. */
+   button stretched over the tile, kept there purely to be focusable and labelled for
+   the keyboard. It takes no pointer events: mouse clicks hit the content and bubble to
+   the tile root, which leaves every `title` underneath it hoverable. */
 .tile-open {
   position: absolute;
   inset: 0;
@@ -5751,7 +5752,7 @@ kbd {
   border: 0;
   background: none;
   border-radius: inherit;
-  cursor: pointer;
+  pointer-events: none;
 }
 .tile-open:focus-visible {
   outline: 2px solid var(--select);

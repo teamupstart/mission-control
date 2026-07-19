@@ -519,7 +519,9 @@ session has queued anything at all - not just while work is still waiting. It re
 the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they've all
 landed, and **"1 done · 2 escalated · 1 stopped"** in the attention tone when some of them
 didn't - *escalated* being work Foreman gave up on and handed back, *stopped* being work
-that ended without landing at all.
+that ended without landing at all. A session with no queued work gets a chip too, but only
+while a wrap-up question is outstanding: a **"ship it?"** in the attention tone, which is
+how the *prompted* trigger's ask stays reachable on a card that has no batch to show.
 
 Only work that actually **verified** is ever counted as done, and that's the point of the
 wording rather than a detail of it. Every ending is *finished* in the sense that nothing
@@ -567,8 +569,35 @@ Foreman:
    and re-checks - escalating to you only once an issue looks beyond it;
 5. releases the next item.
 
-When the queue drains it asks whether to open a PR and run no-mistakes. It always **asks**;
-it never launches those itself.
+When Foreman decides a session is finished it can **wrap it up**. Two independent choices in
+the popover: **Trigger on**, one or more moments that count as finished, and **Then**, the
+single action to take at whichever one fires.
+
+| Trigger on | Fires when |
+|---|---|
+| **Queue drain** (default) | every item in the session's queue reached a terminal state |
+| **Prompted work complete** | you typed straight into the pane, the agent worked, and it parked - no queue involved |
+
+The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
+the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
+against your captured prompt - and acts only on a **complete** verdict; an empty diff
+decides itself without a model call. A session that still needs you is left alone, and a
+checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
+per prompt: a new prompt from you re-arms it, and an incomplete verdict retires the
+episode rather than sending the agent back - Foreman didn't commission that work. Untick
+both triggers and Foreman never wraps up on its own.
+
+The action is the same whichever trigger fired:
+
+| Then | What it does |
+|---|---|
+| **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
+| **Run /no-mistakes** | types that instruction into the session itself |
+| **Straight to PR** | commit, push, open a PR |
+
+The two automated actions type something that *pushes*, so they only fire in **live** mode
+on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than
+letting a selected radio quietly do nothing.
 
 **Verification is evidence-only by design.** It reads the diff and the transcript - it does
 not run tests. `/no-mistakes` remains the gate that actually executes things; Foreman's job

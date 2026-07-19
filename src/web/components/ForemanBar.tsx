@@ -6,8 +6,8 @@ import type { ForemanState } from "../useForeman.ts";
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
 // worker is running; the popover flips the in-the-moment knobs - the mode, the
-// access-approval switch, the work queues, and the wrap-up triggers + action. The set-once
-// posture (cheap tier - off / shadow / on, see docs/plans/foreman-watcher/plan.md -
+// access-approval switch, the work queues, and the wrap-up triggers + action. The
+// set-once posture (cheap tier - off / shadow / on, see docs/plans/foreman-watcher/plan.md -
 // and the live repo allowlist) lives in Settings → Foreman, which the popover
 // deep-links. Mirrors AlertBar's popover pattern.
 

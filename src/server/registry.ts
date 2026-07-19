@@ -2085,7 +2085,11 @@ const byJson = <T>(a: T, b: T): boolean => JSON.stringify(a) === JSON.stringify(
  */
 const alwaysEqual = (): boolean => true;
 
-/** Declared in `Session`'s own field order, so the two can be diffed by eye. */
+/**
+ * The identity fields (`id`, `agent`, `tty`, `startedAt`, `firstSeen`) are grouped
+ * into a deliberate block up top since they share one reason; everything after
+ * follows `Session`'s own field order, so the two can be diffed by eye.
+ */
 export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // Invariant for the life of a map entry, not state: sessions are keyed by
   // `proc:<tty>:<pid>:<startMs>` (see `correlate.ts`) and both call sites compare a

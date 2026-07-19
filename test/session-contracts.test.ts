@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SESSION_FIELD_COMPARATORS, sessionEqual } from "../src/server/registry.ts";
+import { sessionEqual } from "../src/server/registry.ts";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import type { NmFixSummary, OrphanedQueueHint, Session } from "../src/shared/types.ts";
 
@@ -126,39 +126,21 @@ test("meta compares displayed values, not the reading behind them", () => {
   );
 });
 
-// ---- coverage: the record and the interface agree at runtime too ----
-
-test("every Session field has a comparator, and none is orphaned", () => {
-  // The fixture is typed `Session` with no Partial, so it carries every field -
-  // which makes its key set the interface's key set.
-  const fields = Object.keys(mkSession()).sort();
-  const comparators = Object.keys(SESSION_FIELD_COMPARATORS).sort();
-  assert.deepEqual(comparators, fields);
-});
-
 // ---- enforcement: prove the compiler actually rejects a gap ----
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * Inherits the real `compilerOptions` so a future strictness flag reaches the
+ * probes too, but re-declares `baseUrl`/`paths` deliberately: inherited paths
+ * resolve against the config that declared them, which would send `@shared/*`
+ * back to the real `src` and typecheck the unpatched tree - every probe would
+ * pass vacuously. Re-declaring both re-roots resolution at the copy. `include`
+ * narrows to `src` because the copy has no `hooks`/`test`/`vite.config.ts`.
+ */
 const PROBE_TSCONFIG = {
+  extends: path.join(REPO, "tsconfig.json"),
   compilerOptions: {
-    target: "ES2023",
-    lib: ["ES2023", "DOM", "DOM.Iterable"],
-    module: "ESNext",
-    moduleResolution: "bundler",
-    moduleDetection: "force",
-    jsx: "react-jsx",
-    types: ["node"],
-    strict: true,
-    noUncheckedIndexedAccess: true,
-    noImplicitOverride: true,
-    verbatimModuleSyntax: true,
-    isolatedModules: true,
-    esModuleInterop: true,
-    skipLibCheck: true,
-    resolveJsonModule: true,
-    allowImportingTsExtensions: true,
-    noEmit: true,
     baseUrl: ".",
     paths: { "@shared/*": ["src/shared/*"] },
   },
@@ -205,6 +187,17 @@ function edit(dir: string, rel: string, from: string, to: string): void {
 const SESSION_END = "  paneDialog: PaneDialog | null;\n}";
 const SERVER_EVENT_END = `  | { type: "task_remove"; id: string };`;
 
+/**
+ * Matched on error CODES plus the identifiers involved, never on diagnostic
+ * prose: TypeScript rewords its messages between releases, and a probe that goes
+ * red on a routine tsc upgrade is exactly the false "the guard broke" signal
+ * these tests exist to be trustworthy about. Codes and symbol names are stable.
+ * Each diagnostic is one line, so `[^\n]*` keeps a match from spanning two.
+ */
+const missingComparator = (field: string): RegExp =>
+  new RegExp(`registry\\.ts[^\\n]*error TS2741:[^\\n]*${field}[^\\n]*SessionFieldComparators`);
+const UNHANDLED_EVENT = /useEventStream\.ts[^\n]*error TS2322:[^\n]*never/;
+
 test("the probe harness compiles a clean copy", () => {
   // Without this, a probe that failed to compile for some UNRELATED reason would
   // still satisfy "typechecking failed" and the guard could rot untested.
@@ -217,7 +210,7 @@ test("a Session field with no comparator fails typecheck", () => {
   );
   assert.match(
     out,
-    /Property 'probeField' is missing[\s\S]*?required in type 'SessionFieldComparators'/,
+    missingComparator("probeField"),
     `adding a Session field should break SESSION_FIELD_COMPARATORS, got:\n${out}`,
   );
 });
@@ -231,7 +224,7 @@ test("an OPTIONAL Session field with no comparator also fails typecheck", () => 
   );
   assert.match(
     out,
-    /Property 'probeOptional' is missing[\s\S]*?required in type 'SessionFieldComparators'/,
+    missingComparator("probeOptional"),
     `an optional Session field should still be required in the record, got:\n${out}`,
   );
 });
@@ -247,7 +240,7 @@ test("a ServerEvent variant the stream doesn't handle fails typecheck", () => {
   );
   assert.match(
     out,
-    /useEventStream\.ts.*not assignable to type 'never'/,
+    UNHANDLED_EVENT,
     `an unhandled ServerEvent variant should break the exhaustiveness check, got:\n${out}`,
   );
 });

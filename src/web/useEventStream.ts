@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import type { ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 
+/**
+ * Unknown event types already warned about. A version-skewed daemon emitting an
+ * unknown variant emits it repeatedly - often once per sweep - so warning on every
+ * message would grow the console without end for as long as the skew lasts. One
+ * line per distinct type carries the same diagnostic.
+ */
+const warnedUnknownEventTypes = new Set<string>();
+
 export interface MissionState {
   sessions: Session[];
   reviews: ReviewItem[];
@@ -98,7 +106,12 @@ export function useEventStream(): MissionState {
           // daemon is a separate process, so a newer one can emit a variant this
           // build has never heard of. Ignoring it is right (there is nothing
           // sensible to do with it), but it should not be invisible.
-          console.warn("Ignoring unknown server event", unhandled);
+          const type = (unhandled as { type?: unknown }).type;
+          const key = typeof type === "string" ? type : String(type);
+          if (!warnedUnknownEventTypes.has(key)) {
+            warnedUnknownEventTypes.add(key);
+            console.warn("Ignoring unknown server event", unhandled);
+          }
         }
       }
     };

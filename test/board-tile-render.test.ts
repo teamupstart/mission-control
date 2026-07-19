@@ -133,6 +133,15 @@ test("the tile shows what the session is doing right now", () => {
   assert.match(html, /editing SessionCard\.tsx/);
 });
 
+test("a settled session omits the ticker rather than animating over a still session", () => {
+  // Once a session settles, `activity` holds a status label ("idle", "ended (logout)"),
+  // not a live action - and the ticker's glyph spins, which would misreport it as busy.
+  for (const state of ["idle", "awaiting_input", "exited"] as const) {
+    const html = render(mkSession({ state, activity: "idle" }));
+    assert.doesNotMatch(html, /tile-activity/, `${state} should not carry a live ticker`);
+  }
+});
+
 test("the gate hairline carries a named, positioned step", () => {
   const html = render(mkSession());
   assert.match(html, /gate-step gate-working/); // "test" is running

@@ -83,6 +83,41 @@ test("a landed run names its outcome in idle tone, with no step position", () =>
   assert.equal(v.pos, 6); // pos is present but the tile hides it while done
 });
 
+test("gateStep naming no step we hold still falls back to the parked status", () => {
+  // gateStep and steps[] are parsed from separate blocks, so they can disagree. A name
+  // that doesn't place must not drop the run to working tone and lose the attention signal.
+  const v = gateStepView(
+    nm({ gateStep: "deploy", steps: build({ review: "completed", test: "awaiting_approval" }) }),
+  );
+  assert.equal(v.label, "test");
+  assert.equal(v.tone, "attention");
+  assert.equal(v.pos, 2);
+});
+
+test("a run that landed failed or cancelled keeps the danger tone", () => {
+  for (const outcome of ["failed", "cancelled", "canceled"]) {
+    const v = gateStepView(nm({ status: "completed", outcome, steps: build({}) }));
+    assert.equal(v.label, outcome);
+    assert.equal(v.tone, "danger", `${outcome} should not read as a clean landing`);
+    assert.equal(v.done, true);
+  }
+});
+
+test("checks-passed is a clean landing, in idle tone", () => {
+  const v = gateStepView(nm({ status: "completed", outcome: "checks-passed", steps: build({}) }));
+  assert.equal(v.tone, "idle");
+  assert.equal(v.done, true);
+});
+
+test("a skip out of order doesn't move the frontier past a pending step", () => {
+  // `--step <name> --action skip` can settle a later step while an earlier one still owes
+  // work, so the settled steps are not always a prefix.
+  const v = gateStepView(nm({ steps: build({ review: "completed", lint: "skipped" }) }));
+  assert.equal(v.label, "test");
+  assert.equal(v.pos, 2);
+  assert.equal(v.tone, "working");
+});
+
 test("between steps, names the next unsettled step (skipped counts as settled)", () => {
   const v = gateStepView(nm({ steps: build({ review: "completed", test: "skipped" }) }));
   assert.equal(v.label, "lint");

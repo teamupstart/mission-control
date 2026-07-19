@@ -222,6 +222,7 @@ function SessionTile({
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const gate = session.nomistakes ? gateStepView(session.nomistakes) : null;
+  const isRunning = session.state === "working" || session.state === "starting";
   const [over, setOver] = useState(false);
 
   const droppable = canAcceptTask(session, draggingRepo);
@@ -252,18 +253,16 @@ function SessionTile({
       <span className="tile-head">
         <span className={`agent-dot agent-${session.agent}`} aria-hidden />
         <span className="tile-name">{session.name || "(unnamed)"}</span>
-        {session.nomistakesGated && (
-          <span className="gated" title="Gated by no-mistakes" aria-hidden>
-            ◇
-          </span>
-        )}
       </span>
 
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
 
       {/* What it's doing right now - the board's only live signal past "6s ago", and what
-          tells an actively-editing session apart from one stalled on a prompt. */}
-      {session.activity && (
+          tells an actively-editing session apart from one stalled on a prompt. Only a
+          running session has a live action to report: once it settles, activity holds a
+          status label ("idle", "ended (logout)") the column and badge already carry, and
+          a ticker there would animate over a session that isn't moving. */}
+      {isRunning && session.activity && (
         <span className="tile-activity">
           <span className="ta-glyph" aria-hidden>
             ⟳

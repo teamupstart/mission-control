@@ -126,6 +126,9 @@ export interface GateStepView {
   done: boolean;
 }
 
+/** Outcomes that mean the run landed badly - the calm idle tone would misreport these. */
+const FAILED_OUTCOMES = new Set(["failed", "cancelled", "canceled"]);
+
 /**
  * The one step worth naming above the board tile's gate hairline.
  *
@@ -134,7 +137,8 @@ export interface GateStepView {
  * glance should land on and dresses it in the same tone the segment carries, so the
  * word and the bar can't disagree. Precedence mirrors what you'd triage by: a failure
  * first, then a gate parked on your decision, then whatever is running, then - with
- * nothing in flight - the outcome if the run has landed, else the next step up.
+ * nothing in flight - the outcome if the run has landed, else the next step up. A run
+ * that landed failed or cancelled keeps the danger tone; only a clean landing reads calm.
  *
  * Pure, so the rule is tested without a DOM (see gate-step-view.test.ts).
  */
@@ -151,21 +155,29 @@ export function gateStepView(nm: NmRunSummary): GateStepView {
   const failed = nm.steps.findIndex((s) => s.status === "failed");
   if (failed >= 0) return at(failed, "danger");
 
-  // Parked on a decision: trust no-mistakes' own gateStep, falling back to the parked status.
-  const gated = nm.gateStep
-    ? nm.steps.findIndex((s) => s.step === nm.gateStep)
-    : nm.steps.findIndex((s) => s.status === "awaiting_approval" || s.status === "fix_review");
+  // Parked on a decision: trust no-mistakes' own gateStep, but fall back to the parked
+  // status when it names no step we hold. gateStep and steps[] are parsed from separate
+  // blocks, so a name that doesn't place must not cost the tile its attention tone.
+  const named = nm.gateStep ? nm.steps.findIndex((s) => s.step === nm.gateStep) : -1;
+  const gated =
+    named >= 0
+      ? named
+      : nm.steps.findIndex((s) => s.status === "awaiting_approval" || s.status === "fix_review");
   if (gated >= 0) return at(gated, "attention");
 
   const running = nm.steps.findIndex((s) => s.status === "running");
   if (running >= 0) return at(running, "working");
 
   // Nothing in flight: the run has either landed, or is between steps.
-  if (nm.outcome) return { label: nm.outcome, pos: total || null, total, tone: "idle", done: true };
-  const settled = nm.steps.filter((s) => s.status === "completed" || s.status === "skipped").length;
-  const next = nm.steps[settled];
-  return next
-    ? { label: next.step, pos: settled + 1, total, tone: "working", done: false }
+  if (nm.outcome) {
+    const tone = FAILED_OUTCOMES.has(nm.outcome.toLowerCase()) ? "danger" : "idle";
+    return { label: nm.outcome, pos: total || null, total, tone, done: true };
+  }
+  // The frontier is the first step still owing work. Counting settled steps would assume
+  // they form a prefix, which `--step <name> --action skip` can break.
+  const next = nm.steps.findIndex((s) => s.status !== "completed" && s.status !== "skipped");
+  return next >= 0
+    ? { label: nm.steps[next]!.step, pos: next + 1, total, tone: "working", done: false }
     : { label: nm.status, pos: null, total, tone: "working", done: false };
 }
 

@@ -1,4 +1,5 @@
 import type { AwayDigest } from "@shared/away-buffer.ts";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /** "12 minutes" / "1 hour 5 minutes" - how long you were away. */
 function span(ms: number): string {
@@ -30,48 +31,46 @@ export function AwayDigestCard({
   onOpenReport: () => void;
 }): React.JSX.Element {
   return (
-    <div className="modal-backdrop" onClick={onDismiss}>
-      <aside
-        className="away-digest"
-        role="dialog"
-        aria-label="While you were away"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="away-digest-head">
-          <h2>While you were away</h2>
-          <span className="away-digest-span">{span(digest.awayMs)}</span>
-          <button className="icon-btn" aria-label="Dismiss" onClick={onDismiss}>
-            ✕
-          </button>
-        </header>
+    <Overlay
+      id={OVERLAY_IDS.digest}
+      onClose={onDismiss}
+      as="aside"
+      className="away-digest"
+      role="dialog"
+      ariaLabel="While you were away"
+    >
+      <header className="away-digest-head">
+        <h2>While you were away</h2>
+        <span className="away-digest-span">{span(digest.awayMs)}</span>
+        <button className="icon-btn" aria-label="Dismiss" onClick={onDismiss}>
+          ✕
+        </button>
+      </header>
 
-        <div className="away-digest-body">
-          {/* The model's prose when it landed; the deterministic rollup is always
-              there beneath it, so a missing or logged-out claude costs the wording,
-              never the summary. Without the prose the rollup IS the summary, so it
-              is promoted out of its micro-label styling rather than left as a
-              caption with nothing to caption. */}
-          {digest.narrative && <p className="away-digest-narrative">{digest.narrative}</p>}
-          <p className={`away-digest-rollup${digest.narrative ? "" : " is-lead"}`}>
-            {digest.rollup}
-          </p>
+      <div className="away-digest-body">
+        {/* The model's prose when it landed; the deterministic rollup is always
+            there beneath it, so a missing or logged-out claude costs the wording,
+            never the summary. Without the prose the rollup IS the summary, so it
+            is promoted out of its micro-label styling rather than left as a
+            caption with nothing to caption. */}
+        {digest.narrative && <p className="away-digest-narrative">{digest.narrative}</p>}
+        <p className={`away-digest-rollup${digest.narrative ? "" : " is-lead"}`}>{digest.rollup}</p>
 
-          <ul className="away-digest-list">
-            {digest.lines.map((line, i) => (
-              <li key={i}>{line}</li>
-            ))}
-          </ul>
-        </div>
+        <ul className="away-digest-list">
+          {digest.lines.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+      </div>
 
-        <footer className="away-digest-foot">
-          <button className="btn" onClick={onOpenReport}>
-            Open sitrep
-          </button>
-          <button className="btn btn-primary" onClick={onDismiss}>
-            Got it
-          </button>
-        </footer>
-      </aside>
-    </div>
+      <footer className="away-digest-foot">
+        <button className="btn" onClick={onOpenReport}>
+          Open sitrep
+        </button>
+        <button className="btn btn-primary" onClick={onDismiss}>
+          Got it
+        </button>
+      </footer>
+    </Overlay>
   );
 }

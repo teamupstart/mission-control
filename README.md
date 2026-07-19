@@ -839,7 +839,7 @@ without reaching for the mouse. Every shortcut works in every layout:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection. Around the grid in **Cards**; up and down the rail in **Console**; along and across the columns in **Board** | Anywhere |
-| <kbd>Esc</kbd> | Peel back a layer - leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
+| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box | Anywhere |

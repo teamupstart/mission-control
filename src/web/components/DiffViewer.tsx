@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session, SessionDiff } from "@shared/types.ts";
 import { fetchSessionDiff } from "../lib/api.ts";
 import { parsePatch, type DiffFile } from "../lib/diff.ts";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
  * Full-screen viewer for a session's changes against its source branch. Fetches
@@ -51,11 +52,13 @@ export function DiffViewer({
   const activeIdx = files.length > 0 ? Math.min(selected, files.length - 1) : -1;
   const active = activeIdx >= 0 ? files[activeIdx] : null;
 
-  // Own Escape + file navigation, like the other overlays (App suppresses grid
-  // keys while open). ↑/↓ and j/k walk the file list without leaving the keyboard.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") return onClose();
+  // Escape belongs to the Overlay (App suppresses grid keys while one is open, so the
+  // overlay layer closes itself). The file navigation is this viewer's own: ↑/↓ and j/k
+  // walk the list without leaving the keyboard. Handed to Overlay so it only fires while
+  // this viewer is the topmost overlay, and memoised so the listener isn't re-subscribed
+  // on every render.
+  const onViewerKey = useCallback(
+    (e: KeyboardEvent) => {
       if (files.length === 0) return;
       if (e.key === "ArrowDown" || e.key === "j") {
         e.preventDefault();
@@ -64,10 +67,9 @@ export function DiffViewer({
         e.preventDefault();
         setSelected((i) => Math.max(0, i - 1));
       }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, files.length]);
+    },
+    [files.length],
+  );
 
   // Keep the picked file visible in the list, and show its diff from the top.
   useEffect(() => {
@@ -76,89 +78,89 @@ export function DiffViewer({
   }, [activeIdx]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="diff-viewer"
-        role="dialog"
-        aria-label="Session diff"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="diff-head">
-          <div className="diff-title">
-            <h2 title={session.name}>{session.name}</h2>
-            {/* A commit diff is ONE commit, so it must not borrow the range
-                wording below: "<branch> vs <base>" would read as everything since
-                that parent, which is the larger diff and the wrong one. */}
-            {commit ? (
-              // Not `.branch`: that prepends a ⌥ branch glyph, and this is a commit.
-              <span className="diff-sub mono">
-                fix <span className="diff-sha">{diff?.headSha ?? commit}</span>
-              </span>
-            ) : diff?.branch && diff.base && diff.branch !== diff.base ? (
-              <span className="diff-sub mono">
-                <span className="branch">{diff.branch}</span> vs{" "}
-                <span className="branch">{diff.base}</span>
-              </span>
-            ) : diff?.base ? (
-              <span className="diff-sub mono">
-                working tree vs <span className="branch">{diff.base}</span>
-              </span>
-            ) : (
-              <span className="diff-sub mono">uncommitted changes</span>
-            )}
-            {diff?.ok && (
-              <span className="diff-stat">
-                {diff.filesChanged} {diff.filesChanged === 1 ? "file" : "files"}
-                <span className="diff-add"> +{diff.insertions}</span>
-                <span className="diff-del"> −{diff.deletions}</span>
-              </span>
-            )}
-          </div>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
-        </header>
-
-        <div className="diff-body">
-          {loading && <p className="diff-empty">Loading diff…</p>}
-          {!loading && diff && !diff.ok && (
-            <p className="diff-empty">Couldn't load a diff: {diff.error ?? "unknown error"}.</p>
+    <Overlay
+      id={OVERLAY_IDS.diff}
+      onClose={onClose}
+      className="diff-viewer"
+      role="dialog"
+      ariaLabel="Session diff"
+      onKeyDown={onViewerKey}
+    >
+      <header className="diff-head">
+        <div className="diff-title">
+          <h2 title={session.name}>{session.name}</h2>
+          {/* A commit diff is ONE commit, so it must not borrow the range
+              wording below: "<branch> vs <base>" would read as everything since
+              that parent, which is the larger diff and the wrong one. */}
+          {commit ? (
+            // Not `.branch`: that prepends a ⌥ branch glyph, and this is a commit.
+            <span className="diff-sub mono">
+              fix <span className="diff-sha">{diff?.headSha ?? commit}</span>
+            </span>
+          ) : diff?.branch && diff.base && diff.branch !== diff.base ? (
+            <span className="diff-sub mono">
+              <span className="branch">{diff.branch}</span> vs{" "}
+              <span className="branch">{diff.base}</span>
+            </span>
+          ) : diff?.base ? (
+            <span className="diff-sub mono">
+              working tree vs <span className="branch">{diff.base}</span>
+            </span>
+          ) : (
+            <span className="diff-sub mono">uncommitted changes</span>
           )}
-          {/* An empty fix commit is a real thing to open, and "against <branch>"
-              is the wrong frame for one commit - it has no base branch, only a parent. */}
-          {!loading && diff?.ok && files.length === 0 && (
-            <p className="diff-empty">
-              {commit
-                ? "No changes in this commit."
-                : `No changes against ${diff.base ?? "the source branch"}.`}
-            </p>
-          )}
-          {!loading && diff?.ok && files.length > 0 && (
-            <>
-              <nav className="diff-filelist" aria-label="Changed files">
-                {files.map((f, i) => (
-                  <FileItem
-                    key={`${f.path}-${i}`}
-                    file={f}
-                    active={i === activeIdx}
-                    ref={i === activeIdx ? activeItemRef : undefined}
-                    onSelect={() => setSelected(i)}
-                  />
-                ))}
-                {diff.truncated && (
-                  <p className="diff-trunc">
-                    Diff truncated for size - some files may be missing. The header stats are complete.
-                  </p>
-                )}
-              </nav>
-              <div className="diff-detail" ref={detailRef}>
-                {active && <FileDiff file={active} />}
-              </div>
-            </>
+          {diff?.ok && (
+            <span className="diff-stat">
+              {diff.filesChanged} {diff.filesChanged === 1 ? "file" : "files"}
+              <span className="diff-add"> +{diff.insertions}</span>
+              <span className="diff-del"> −{diff.deletions}</span>
+            </span>
           )}
         </div>
+        <button className="icon-btn" aria-label="Close" onClick={onClose}>
+          ✕
+        </button>
+      </header>
+
+      <div className="diff-body">
+        {loading && <p className="diff-empty">Loading diff…</p>}
+        {!loading && diff && !diff.ok && (
+          <p className="diff-empty">Couldn't load a diff: {diff.error ?? "unknown error"}.</p>
+        )}
+        {/* An empty fix commit is a real thing to open, and "against <branch>"
+            is the wrong frame for one commit - it has no base branch, only a parent. */}
+        {!loading && diff?.ok && files.length === 0 && (
+          <p className="diff-empty">
+            {commit
+              ? "No changes in this commit."
+              : `No changes against ${diff.base ?? "the source branch"}.`}
+          </p>
+        )}
+        {!loading && diff?.ok && files.length > 0 && (
+          <>
+            <nav className="diff-filelist" aria-label="Changed files">
+              {files.map((f, i) => (
+                <FileItem
+                  key={`${f.path}-${i}`}
+                  file={f}
+                  active={i === activeIdx}
+                  ref={i === activeIdx ? activeItemRef : undefined}
+                  onSelect={() => setSelected(i)}
+                />
+              ))}
+              {diff.truncated && (
+                <p className="diff-trunc">
+                  Diff truncated for size - some files may be missing. The header stats are complete.
+                </p>
+              )}
+            </nav>
+            <div className="diff-detail" ref={detailRef}>
+              {active && <FileDiff file={active} />}
+            </div>
+          </>
+        )}
       </div>
-    </div>
+    </Overlay>
   );
 }
 

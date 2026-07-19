@@ -222,8 +222,8 @@
       </svg>
     </div>
     <figcaption>
-      Same DOM, one animated <code>grid-template-columns</code>: non-selected column tracks close to
-      <code>0fr</code>, the selected column becomes a fixed-width rail, and the detail track opens to <code>1fr</code>.
+      Same DOM, one animated flex track: non-selected columns close to zero width and fade out, the selected
+      column becomes a fixed-width rail, and the detail track grows to fill.
     </figcaption>
   </figure>
 
@@ -281,30 +281,32 @@
 
   <h2>Architecture</h2>
 
-  <h3>The morph is one animated CSS grid</h3>
+  <h3>The morph is one animated flex track</h3>
   <p>
-    <code>.board</code> becomes an explicit <code>display: grid</code> whose tracks are <strong>one per tone
-    column plus one trailing detail track</strong>. The entire transition is a single <code>transition</code>
-    on <code>grid-template-columns</code>:
+    <code>.board</code> is a <code>display: flex</code> row whose items are <strong>one per tone column plus
+    one trailing detail track</strong>. The entire transition animates only per-item <code>flex-grow</code>,
+    <code>min-width</code> and <code>opacity</code> - all interpolable:
   </p>
   <ul>
-    <li><strong>Overview:</strong> <code>repeat(5, minmax(250px, 1fr)) 0fr</code> - five equal columns, the
-      detail track collapsed to nothing.</li>
-    <li><strong>Focused on column <em>i</em>:</strong> every column track goes to <code>0fr</code> except
-      column <em>i</em> at <code>320px</code>, and the detail track becomes <code>minmax(440px, 1fr)</code>.</li>
+    <li><strong>Overview:</strong> every column is <code>flex-grow: 1; flex-basis: 0; min-width: 250px</code>
+      - equal columns - and the detail track sits at <code>flex-grow: 0; min-width: 0</code>, collapsed to
+      nothing.</li>
+    <li><strong>Focused on column <em>i</em>:</strong> every column goes to <code>flex-grow: 0; min-width: 0;
+      opacity: 0</code> except column <em>i</em>, which holds <code>min-width: 320px; opacity: 1</code>; the
+      detail track becomes <code>flex-grow: 1; min-width: 440px</code>.</li>
   </ul>
   <p>
-    Browsers interpolate <code>grid-template-columns</code> between two track lists of the same length
-    (<code>fr</code> and <code>px</code> are animatable), so the columns slide closed and the detail pane
+    Because those properties are plain numbers and lengths, the columns slide closed and the detail pane
     grows open with <strong>no JS measuring, no FLIP, and it reverses for free</strong>. Each column sets
-    <code>overflow: hidden</code> so its tiles clip cleanly as the track closes.
+    <code>overflow: hidden</code> so its tiles clip cleanly as it closes, and collapsed columns animate
+    <code>border-width</code> to 0 so no 1px sliver survives between the rail and the detail.
   </p>
   <div class="callout">
     <span class="mark">◇</span>
     <p><strong>Why not FLIP across the two layouts' DOM trees:</strong> it would have to measure element
     positions across a React remount, fight the rail's independent scroll, and re-break every time either
-    layout's markup changes. One grid whose template animates is stable, reversible, and reduced-motion is a
-    single media query.</p>
+    layout's markup changes. One flex track whose items animate is stable, reversible, and reduced-motion is
+    a single media query.</p>
   </div>
 
   <h3>DOM - one stable tree, mounted across the morph</h3>
@@ -319,8 +321,8 @@
   </div>
   <p>
     Every column <strong>and</strong> the detail aside stay mounted through the morph, so both directions
-    animate. The detail track is <code>0fr</code> in overview; its <code>ConsoleDetail</code> child mounts
-    only when a session is selected and is clipped while the track is closed.
+    animate. The detail track is collapsed to zero width in overview; its <code>ConsoleDetail</code> child
+    mounts only when a session is selected and is clipped while the track is closed.
   </p>
 
   <h3>Reuse over rebuild</h3>
@@ -353,9 +355,9 @@
 
   <h3>Keyboard</h3>
   <p>
-    When the board is focused, arrow keys walk the <strong>rail</strong> vertically (like the console) rather
-    than the 2-D board. <code>layoutNav.ts</code> gains a focused-board branch; Esc deselects back to the
-    overview (already wired).
+    No <code>layoutNav.ts</code> change was needed: the existing 2-D board arrow-key navigation maps cleanly
+    onto the focused rail - Up/Down walk the rail, Left/Right jump to the adjacent column's console. Esc
+    deselects back to the overview (already wired).
   </p>
 
   <h2>Files touched</h2>
@@ -365,8 +367,7 @@
     <tbody>
       <tr><td><code>layouts/BoardView.tsx</code></td><td>Overview + focused in one tree; host <code>ConsoleDetail</code>; remove the drawer.</td></tr>
       <tr><td><code>layouts/ConsoleView.tsx</code></td><td>Export <code>RailRow</code> (move to a shared bits module) for reuse.</td></tr>
-      <tr><td><code>styles.css</code></td><td>Board grid template + focus-state <code>grid-template-columns</code> transition; rail-in-board styles; remove drawer rules; <code>prefers-reduced-motion</code> guard.</td></tr>
-      <tr><td><code>lib/layoutNav.ts</code></td><td>Focused board navigates vertically within the column.</td></tr>
+      <tr><td><code>styles.css</code></td><td>Board flex track + focus-state <code>flex-grow</code> / <code>min-width</code> / <code>opacity</code> transition; rail-in-board styles; remove drawer rules; <code>prefers-reduced-motion</code> guard.</td></tr>
     </tbody>
   </table>
   </div>
@@ -386,7 +387,7 @@
   <h2>Out of scope</h2>
   <ul>
     <li><strong>Switching the persisted layout preference.</strong> This is a drill-in; the board stays the board.</li>
-    <li><strong>Animating the Settings layout switcher (board ↔ console).</strong> The same grid machinery
+    <li><strong>Animating the Settings layout switcher (board ↔ console).</strong> The same flex machinery
       could later power that transition, but it's a separate change.</li>
   </ul>
 </main>

@@ -29,7 +29,7 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
     id: "board",
     label: "Board",
     description:
-      "A column per state, so the fleet's shape reads at a glance. Opening a session slides its detail over, without reflowing the board.",
+      "A column per state, so the fleet's shape reads at a glance. Opening a session drills into the console - that column becomes the rail, the full detail fills the rest, and Esc returns you to the board.",
   },
 ];
 

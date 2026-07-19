@@ -2056,56 +2056,124 @@ export function hookToState(evt: HookIngest): { state: SessionState; activity: s
   }
 }
 
+/** How one `Session` field decides whether a change is worth an emit. */
+type FieldEqual<K extends keyof Session> = (a: Session[K], b: Session[K]) => boolean;
+
 /**
- * Compare user-visible fields; `lastSeen`/`lastActivity` excluded so a still-alive
- * session doesn't spam the UI every poll. Only real changes emit.
+ * A comparator for EVERY field of `Session`, with no gaps allowed: the mapped type
+ * makes a missing key and a stray key both compile errors, so growing `Session`
+ * breaks the build until the new field says how it participates here.
+ *
+ * That enforcement is the whole point, because the failure it replaces is silent.
+ * Sessions reach the dashboard only when `sessionEqual` returns false, so a field
+ * added to `Session` and forgotten here renders once from the initial snapshot and
+ * then never updates again - no error, no failing test, just a card that quietly
+ * goes stale while the daemon holds the fresh value. See `orphanedQueue` below for
+ * an instance that actually shipped.
  */
-function sessionEqual(a: Session, b: Session): boolean {
-  return (
-    a.name === b.name &&
-    a.state === b.state &&
-    a.cwd === b.cwd &&
-    a.gitBranch === b.gitBranch &&
-    a.gitRoot === b.gitRoot &&
-    a.repoRoot === b.repoRoot &&
-    a.pid === b.pid &&
-    a.nameSource === b.nameSource &&
-    a.agentSessionId === b.agentSessionId &&
-    a.transcriptPath === b.transcriptPath &&
-    a.instrumented === b.instrumented &&
-    a.hooksSeen === b.hooksSeen &&
-    a.activity === b.activity &&
-    a.permissionMode === b.permissionMode &&
-    a.pendingReviews === b.pendingReviews &&
-    a.wezterm?.isActive === b.wezterm?.isActive &&
-    a.tmux?.window === b.tmux?.window &&
-    a.nomistakesNarration === b.nomistakesNarration &&
-    a.prUrl === b.prUrl &&
-    a.prNumber === b.prNumber &&
-    a.prState === b.prState &&
-    a.prChecks === b.prChecks &&
-    metaDisplayEqual(a.meta, b.meta) &&
-    JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
-    JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
-    JSON.stringify(a.task) === JSON.stringify(b.task) &&
-    JSON.stringify(a.note) === JSON.stringify(b.note) &&
-    // The other denormalized fields `mergeDiscovered` resolves next to `note`.
-    // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
-    // particular depends on OTHER sessions (a queue is orphaned only once its own
-    // session is evicted), so the session whose hint changes need not have changed
-    // in any way of its own - an idle sibling is equal by every field above, stays
-    // quiet, and never surfaces the stranded batch.
-    JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
-    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue) &&
-    JSON.stringify(a.goal) === JSON.stringify(b.goal) &&
-    // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
-    // `permissionMode` is sticky and so doesn't flip when the menu covers the
-    // footer, and a session parked on a question is by definition not doing
-    // anything to move the other fields - so leaving this out doesn't merely delay
-    // the buttons, it withholds them until some unrelated change happens to shake
-    // the card loose. That reads as a flaky parser rather than a missing compare.
-    JSON.stringify(a.paneDialog) === JSON.stringify(b.paneDialog)
-  );
+type SessionFieldComparators = { [K in keyof Session]-?: FieldEqual<K> };
+
+/** Scalar identity - the default for a field the card renders directly. */
+const byValue = <T>(a: T, b: T): boolean => a === b;
+
+/** Structural compare, for a nested object the card renders as a unit. */
+const byJson = <T>(a: T, b: T): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Never triggers an emit on its own. Only valid with a reason at the use site -
+ * "I did not think about this one" is exactly what the record exists to prevent.
+ */
+const alwaysEqual = (): boolean => true;
+
+/** Declared in `Session`'s own field order, so the two can be diffed by eye. */
+export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
+  // Invariant for the life of a map entry, not state: sessions are keyed by
+  // `proc:<tty>:<pid>:<startMs>` (see `correlate.ts`) and both call sites compare a
+  // session against its own prior value under that key. These cannot differ, so
+  // comparing them would only cost work.
+  id: alwaysEqual,
+  agent: alwaysEqual,
+  tty: alwaysEqual,
+  startedAt: alwaysEqual,
+  // Set once, on first sight (`prev?.firstSeen ?? now`), and never rewritten.
+  firstSeen: alwaysEqual,
+
+  name: byValue,
+  nameSource: byValue,
+  state: byValue,
+  cwd: byValue,
+  gitBranch: byValue,
+  gitRoot: byValue,
+  repoRoot: byValue,
+  // KNOWN GAP, carried over rather than endorsed. Unlike the identity fields above
+  // this is re-read every sweep (`hasNoMistakesRemote`) and IS rendered - the ◇ rail
+  // mark and the gated chip - so adding the no-mistakes remote to a live session's
+  // repo can go unshown until some other field happens to move. Rare enough to have
+  // never been noticed, and left alone here only because closing it would change
+  // what gets emitted, which this fail-closed refactor deliberately does not do.
+  nomistakesGated: alwaysEqual,
+  pid: byValue,
+  permissionMode: byValue,
+  // Narrower than the whole object on purpose: only focus is rendered, and the pane
+  // geometry around it churns without the card ever looking different.
+  wezterm: (a, b) => a?.isActive === b?.isActive,
+  tmux: (a, b) => a?.window === b?.window,
+  agentSessionId: byValue,
+  transcriptPath: byValue,
+  instrumented: byValue,
+  hooksSeen: byValue,
+  activity: byValue,
+  // Excluded so a still-alive session doesn't spam the UI every poll: `lastSeen`
+  // moves on every sweep and `lastActivity` on every hook, both by definition. The
+  // stall detector consumes `lastActivity` server-side for this exact reason - see
+  // the note in `shared/stall.ts`. `applyHook` re-checks `lastActivity` itself at
+  // its call site when it needs the timestamp to force an emit.
+  lastSeen: alwaysEqual,
+  lastActivity: alwaysEqual,
+  pendingReviews: byValue,
+  nomistakes: byJson,
+  nomistakesFixes: byJson,
+  task: byJson,
+  nomistakesNarration: byValue,
+  prUrl: byValue,
+  prNumber: byValue,
+  prState: byValue,
+  // Only the *visible* fields of SessionMeta, so re-reading an identical model /
+  // context% doesn't re-render the meter. See `metaDisplayEqual`.
+  meta: metaDisplayEqual,
+  note: byJson,
+  goal: byJson,
+  // The other denormalized fields `mergeDiscovered` resolves next to `note`.
+  // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
+  // particular depends on OTHER sessions (a queue is orphaned only once its own
+  // session is evicted), so the session whose hint changes need not have changed
+  // in any way of its own - an idle sibling is equal by every other field, stays
+  // quiet, and never surfaces the stranded batch.
+  queue: byJson,
+  orphanedQueue: byJson,
+  prChecks: byValue,
+  // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
+  // `permissionMode` is sticky and so doesn't flip when the menu covers the
+  // footer, and a session parked on a question is by definition not doing
+  // anything to move the other fields - so leaving this out doesn't merely delay
+  // the buttons, it withholds them until some unrelated change happens to shake
+  // the card loose. That reads as a flaky parser rather than a missing compare.
+  paneDialog: byJson,
+};
+
+/**
+ * Compare the fields that decide whether the UI would look different. Only real
+ * changes emit; see `SESSION_FIELD_COMPARATORS` for what each field contributes
+ * and why the excluded ones are excluded.
+ */
+export function sessionEqual(a: Session, b: Session): boolean {
+  for (const key of Object.keys(SESSION_FIELD_COMPARATORS) as (keyof Session)[]) {
+    // The record's type pins each comparator to its own field; that per-key
+    // correlation just isn't expressible while iterating a union of keys.
+    const equal = SESSION_FIELD_COMPARATORS[key] as (a: unknown, b: unknown) => boolean;
+    if (!equal(a[key], b[key])) return false;
+  }
+  return true;
 }
 
 /**

@@ -88,6 +88,18 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        default: {
+          // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
+          // grows a variant this switch doesn't handle. Without it the new variant
+          // would be dropped on the floor here in total silence - the daemon emits,
+          // nothing throws, no test fails, and the UI just never reflects it.
+          const unhandled: never = msg;
+          // Reachable at RUNTIME even while unreachable to the type system: the
+          // daemon is a separate process, so a newer one can emit a variant this
+          // build has never heard of. Ignoring it is right (there is nothing
+          // sensible to do with it), but it should not be invisible.
+          console.warn("Ignoring unknown server event", unhandled);
+        }
       }
     };
 

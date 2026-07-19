@@ -520,7 +520,7 @@ terminal ask (a permission prompt, a menu) the child's screen is the only place 
 exists, per the transcript gap above. The **Foreman · N** rail at the end of the detail's tab
 row opens that history: rows lead with the *ask* rather than the verdict, and opening one
 shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
-actually made the call. Records age out after 30 days.
+actually made the call. Records age out after a retention window.
 
 Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the

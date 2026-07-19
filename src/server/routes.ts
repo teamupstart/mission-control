@@ -289,12 +289,12 @@ export function buildApp(
   // exists (see `ReviewInput.pane`). Foreman's reviewer reads it alongside the transcript.
   //
   // Captured on demand rather than served off the poll's snapshot, even though
-  // `annotatePermissionModes` already captures every pane each tick and throws the text
-  // away. A review fires after a settle debounce, so a snapshot would be up to a tick stale
-  // - and "stale by one tick" here is not a slightly-old screen, it is the wrong question:
-  // the menu the reviewer is about to answer may have replaced the one the poll saw. The
-  // cost is one `tmux capture-pane` per review, which is noise beside the `claude -p` it
-  // feeds.
+  // `annotatePaneState` already captures every pane each tick, parsing the mode line and the
+  // dialog out of it. A review fires after a settle debounce, so a snapshot would be up to a
+  // tick stale - and "stale by one tick" here is not a slightly-old screen, it is the wrong
+  // question: the menu the reviewer is about to answer may have replaced the one the poll
+  // saw. The cost is one `tmux capture-pane` per review, which is noise beside the
+  // `claude -p` it feeds.
   app.get("/api/sessions/:id/pane", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);

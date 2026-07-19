@@ -221,7 +221,11 @@ function SessionTile({
   onDropError: (message: string) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
-  const gate = session.nomistakes ? gateStepView(session.nomistakes) : null;
+  // A run always produces a gate line, and the line always carries the run's segments:
+  // pairing them here is what lets the tile head drop its own diamond (below) on the
+  // strength of a single guard rather than re-deriving the invariant at each use.
+  const nm = session.nomistakes;
+  const gate = nm ? { ...gateStepView(nm), steps: nm.steps } : null;
   const isRunning = session.state === "working" || session.state === "starting";
   const [over, setOver] = useState(false);
 
@@ -266,8 +270,11 @@ function SessionTile({
           tells an actively-editing session apart from one stalled on a prompt. Only a
           running session has a live action to report: once it settles, activity holds a
           status label ("idle", "ended (logout)") the column and badge already carry, and
-          a ticker there would animate over a session that isn't moving. */}
-      {isRunning && session.activity && (
+          a ticker there would animate over a session that isn't moving. `instrumented`
+          is the freshness half of that: when hooks lapse past the overlay TTL the passive
+          poller refreshes `state` from the transcript but leaves `activity` at its stale
+          overlay value, so only a live hook makes the label worth animating. */}
+      {session.instrumented && isRunning && session.activity && (
         <span className="tile-activity">
           <span className="ta-glyph" aria-hidden>
             ⟳
@@ -279,10 +286,10 @@ function SessionTile({
       {/* The gate as a named hairline: the segment bar the tile always afforded, now with
           the stage a glance should land on spelled out above it (gateStepView picks it).
           The full strip - findings and buttons - stays in the console detail. */}
-      {session.nomistakes && gate && (
+      {gate && (
         <span className="tile-gate">
           <span className="tile-gate-row">
-            <span className="gate-brand" aria-hidden>
+            <span className="gate-brand" title="Gated by no-mistakes" aria-hidden>
               ◇
             </span>
             <span className={`gate-step gate-${gate.tone}`}>{gate.label}</span>
@@ -293,7 +300,7 @@ function SessionTile({
             )}
           </span>
           <span className="tile-rail" aria-hidden>
-            {session.nomistakes.steps.map((step) => (
+            {gate.steps.map((step) => (
               <span key={step.step} className={`tr-${step.status}`} />
             ))}
           </span>

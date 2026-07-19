@@ -178,7 +178,7 @@ export function gateStepView(nm: NmRunSummary): GateStepView {
   const next = nm.steps.findIndex((s) => s.status !== "completed" && s.status !== "skipped");
   return next >= 0
     ? { label: nm.steps[next]!.step, pos: next + 1, total, tone: "working", done: false }
-    : { label: nm.status, pos: null, total, tone: "working", done: false };
+    : { label: nm.status || "queued", pos: null, total, tone: "working", done: false };
 }
 
 /** Card presentation for a Claude permission mode: chip label, tone, tooltip. */

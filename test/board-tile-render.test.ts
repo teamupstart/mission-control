@@ -100,6 +100,7 @@ function mkSession(over: Partial<Session> = {}): Session {
 function props(sessions: Session[]): SessionViewProps {
   return {
     sessions,
+    tasks: [],
     gateAlerts: new Set<string>(),
     selectedId: null,
     onSelect: () => {},
@@ -209,4 +210,12 @@ test("a session with no meta and no gate simply omits those rows", () => {
   assert.doesNotMatch(html, /tile-activity/);
   // ...but the tile itself still renders.
   assert.match(html, /App Bugfixes/);
+});
+
+test("a lapsed-hook session omits the ticker rather than animating a stale label", () => {
+  // When hooks lapse past the overlay TTL the passive poller refreshes `state` from the
+  // transcript but leaves `activity` at its stale overlay value, so a session can read
+  // working with a settled label. `instrumented` is false in exactly that case.
+  const html = render(mkSession({ instrumented: false, state: "working", activity: "idle" }));
+  assert.doesNotMatch(html, /tile-activity/);
 });

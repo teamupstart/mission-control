@@ -131,3 +131,13 @@ test("an empty pipeline can't be placed - pos is null, and it never throws", () 
   assert.equal(v.total, 0);
   assert.equal(v.done, false);
 });
+
+test("a run with no steps and no status still names something", () => {
+  // The parser initialises `status` to "" and only fills it from a `status:` line, so a
+  // run summary that carries neither leaves the label empty - and since the tile head
+  // drops its own diamond whenever a run exists, the row would be a lone ◇ and no word.
+  const v = gateStepView(nm({ status: "", steps: [] }));
+  assert.notEqual(v.label, "");
+  assert.equal(v.tone, "working");
+  assert.equal(v.pos, null);
+});

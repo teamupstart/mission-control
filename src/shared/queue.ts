@@ -1,4 +1,4 @@
-import type { WorkItem, WorkItemState } from "./types.ts";
+import type { SessionQueueSummary, WorkItem, WorkItemState } from "./types.ts";
 
 // The work item lifecycle's two load-bearing state sets, defined ONCE.
 //
@@ -135,6 +135,49 @@ export function wrapupAskCopy(hasQueuedWork: boolean): { card: string; alert: st
   return hasQueuedWork
     ? { card: "The queue is drained. Ship it?", alert: "the work queue drained" }
     : { card: "The work you asked for looks done. Ship it?", alert: "the work you asked for looks done" };
+}
+
+/**
+ * An outstanding wrap-up question: raised, and not yet sent or dismissed.
+ *
+ * Both halves are required. `wrapupAskedAt` is never cleared - on the drain path it
+ * doubles as the once-only guard - so on its own it means "a question was asked here
+ * once", which stays true forever after it is answered.
+ */
+export function wrapupAskPending(q: SessionQueueSummary): boolean {
+  return q.wrapupAskedAt !== null && !q.wrapupAnswered;
+}
+
+/**
+ * A GENUINELY NEW open question - the edge the wrap-up notification fires on.
+ *
+ * Keyed on the ask's timestamp MOVING rather than on it appearing from null, because
+ * "appearing" is a property of the drain path's lifecycle alone: `addItem` clears
+ * `wrapupAskedAt` back to null whenever new work is queued, so consecutive drains
+ * really do pass through null. The prompted path never does - it re-stamps `now` over
+ * an already-set timestamp - so a null-transition test is silent for every episode
+ * after the first, which on a trigger re-armed by a NEW HUMAN PROMPT is the mainline
+ * case rather than an edge: the human works, Foreman decides it is shippable, and says
+ * nothing.
+ *
+ * Still gated on the ask being OPEN, so a frame that carries a new ask and its answer
+ * together (the human answering between two SSE pushes) does not announce a question
+ * that is already settled. That also keeps this in step with `wrapupAskPending`, which
+ * is what the card chip reads - the two surfaces must never disagree about whether
+ * there is a question outstanding.
+ *
+ * Drain keeps firing exactly once per drain: null -> T alerts, T -> T does not, and
+ * the clear back to null on the next `addItem` is not an ask.
+ *
+ * Lives here rather than beside the card's presentation helpers because away mode made
+ * the DAEMON an alert consumer too (see alerts.ts), and shared/ must not reach into web/.
+ */
+export function newWrapupAsk(
+  now: SessionQueueSummary | null | undefined,
+  before: SessionQueueSummary | null | undefined,
+): boolean {
+  if (!now || !wrapupAskPending(now)) return false;
+  return now.wrapupAskedAt !== (before?.wrapupAskedAt ?? null);
 }
 
 /**

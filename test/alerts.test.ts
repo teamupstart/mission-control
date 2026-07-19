@@ -321,9 +321,10 @@ test("a queue's first sight with an escalation already in it still alerts", () =
   assert.equal(r[0]?.id, "queue:a");
 });
 
-test("the drain-time wrap-up ask alerts once, when it first appears", () => {
-  // `wrapupAskedAt` is stamped once and then stays, so this has to trigger on it
-  // APPEARING - not on it being set, which is true forever afterwards.
+test("the drain-time wrap-up ask alerts once per drain", () => {
+  // Once per DRAIN, not once ever: the ask is edge-detected on its timestamp moving,
+  // so a repeat drain (which clears `wrapupAskedAt` back to null when the new items
+  // are queued, then stamps a fresh one) speaks again while a re-render does not.
   const draining = mkSession({ id: "a", queue: mkQueue({ openCount: 0, drained: true }) });
   const asked = mkSession({
     id: "a",
@@ -473,4 +474,51 @@ test("an idle alert carries no redundant body when the activity is just 'idle'",
   // A real last-activity line still rides along, because that DOES add something.
   const withWork = mkSession({ id: "a", state: "idle", activity: "npm test done" });
   assert.equal(detectAlerts(scope([busy]), scope([withWork]))[0]?.body, "npm test done");
+});
+
+test("a RE-ARMED prompted wrap-up alerts again, though the ask was never null", () => {
+  // The regression this pins. The prompted trigger re-stamps `wrapupAskedAt` over an
+  // already-set value - only the drain path passes back through null, because
+  // `addItem` clears it when new work is queued. Edge-detecting on the timestamp
+  // appearing therefore went silent for every prompted episode after the first, which
+  // is the mainline case: re-arm requires a NEW HUMAN PROMPT, so the human does more
+  // work, Foreman decides it is shippable, and nothing says so.
+  const answered = mkSession({
+    id: "a",
+    queue: mkQueue({ openCount: 0, totalCount: 0, wrapupAskedAt: 100, wrapupAnswered: true }),
+  });
+  const reArmed = mkSession({
+    id: "a",
+    queue: mkQueue({ openCount: 0, totalCount: 0, wrapupAskedAt: 200, wrapupAnswered: false }),
+  });
+
+  const r = detectAlerts(scope([answered]), scope([reArmed]));
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.id, "wrapup:a");
+  // ...and it is worded as a prompted wrap-up, not as a queue that drained.
+  assert.doesNotMatch(r[0]?.title ?? "", /queue/i);
+
+  // Still edge-triggered: the same episode re-rendered says nothing more.
+  assert.equal(detectAlerts(scope([reArmed]), scope([reArmed])).length, 0);
+});
+
+test("answering an ask is not itself an alert", () => {
+  // The answer lands on the same timestamp, so nothing new was asked. Without the
+  // pending check a frame carrying a new ask AND its answer together would announce a
+  // question that is already settled.
+  const asked = mkSession({
+    id: "a",
+    queue: mkQueue({ openCount: 0, totalCount: 0, wrapupAskedAt: 200 }),
+  });
+  const done = mkSession({
+    id: "a",
+    queue: mkQueue({ openCount: 0, totalCount: 0, wrapupAskedAt: 200, wrapupAnswered: true }),
+  });
+  assert.equal(detectAlerts(scope([asked]), scope([done])).length, 0);
+
+  const fresh = mkSession({
+    id: "a",
+    queue: mkQueue({ openCount: 0, totalCount: 0, wrapupAskedAt: 300, wrapupAnswered: true }),
+  });
+  assert.equal(detectAlerts(scope([done]), scope([fresh])).length, 0);
 });

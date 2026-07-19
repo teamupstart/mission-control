@@ -15,7 +15,7 @@
 
 import type { Session, Task } from "./types.ts";
 import { gateParked, reportBucket } from "./session.ts";
-import { wrapupAskCopy } from "./queue.ts";
+import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 
 export type AlertKind =
@@ -199,11 +199,15 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
     // zero-item row is a wrap-up about a prompt, not about a batch. `wrapupAskCopy` is
     // the same call the Ship it? card makes, so the toast and the card it points at
     // cannot describe the same ask two different ways.
-    if (s.queue?.wrapupAskedAt && !before?.queue?.wrapupAskedAt) {
+    //
+    // Edge-detected per EPISODE by `newWrapupAsk`, not on the timestamp appearing from
+    // null - see there for why the null transition is the drain path's property alone
+    // and silently drops every prompted episode after the first.
+    if (newWrapupAsk(s.queue, before?.queue)) {
       alerts.push({
         id: `wrapup:${s.id}`,
         kind: "foreman",
-        title: `${label} - ${wrapupAskCopy(s.queue.totalCount > 0).alert}`,
+        title: `${label} - ${wrapupAskCopy((s.queue?.totalCount ?? 0) > 0).alert}`,
         body: "ship it? Foreman is waiting on you",
         sessionId: s.id,
         severity: "attention",

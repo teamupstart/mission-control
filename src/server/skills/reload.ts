@@ -7,6 +7,7 @@ import type { InjectResult } from "../actions.ts";
 import { POLL_INTERVAL_MS, envVar } from "../config.ts";
 import { getSkillsAcks, setSkillsAck } from "../db.ts";
 import { readPaneModeLine } from "../discovery/pane-mode.ts";
+import { recordInjection } from "../injections.ts";
 import type { PaneModeLine } from "../discovery/pane-mode.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
@@ -244,7 +245,13 @@ export async function reloadOne(
   // failure the plan disqualified codex over.
   deps.ack(noteKeyFor(session), generation);
   const sent = await deps.inject(session, RELOAD_SKILLS_COMMAND);
-  if (sent.ok) return true;
+  if (sent.ok) {
+    // Nobody asked for this one - the dashboard typed it because a skill changed on
+    // disk. Say so, or the conversation log shows the human interrupting their agent
+    // with a slash command they've never heard of.
+    recordInjection(session.id, RELOAD_SKILLS_COMMAND, "harness");
+    return true;
+  }
 
   // `pasted: false` is the codebase's one definition of positive evidence that
   // nothing reached the pane (the lock refused, or tmux rejected the target before

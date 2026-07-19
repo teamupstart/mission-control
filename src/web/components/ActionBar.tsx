@@ -49,9 +49,8 @@ export function ActionBar({
   onDiff?: () => void;
   /**
    * Whether the card is currently carrying the transcript's reply box - the live
-   * answer to "is there already a compose box here?", reported by the panel itself.
-   * Deliberately NOT `expanded`: an expanded card whose transcript is unavailable
-   * renders no reply row, and one that recovers mounts it without expanding again.
+   * answer to "is there already a compose box here?", reported by the panel itself
+   * rather than inferred from whatever the caller thinks it is showing.
    */
   hasReply?: boolean;
   /** Whether the work-queue panel is currently showing, so Queue can read as pressed. */
@@ -113,17 +112,16 @@ export function ActionBar({
     if (!canSend) return;
     setConfirmKill(false);
     // An expanded card already has a compose box - the transcript's reply. Send means
-    // "let me type", not "give me another box", so put the cursor in that one. Only if
-    // there is none (an unavailable transcript has no reply box) do we open our own.
+    // "let me type", not "give me another box", so put the cursor in that one. Only a
+    // collapsed card, with no transcript panel mounted at all, opens our own.
     if (onFocusReply?.()) return;
     setComposing(true);
   }
 
   // A card has at most ONE send input, and the transcript's reply box wins whenever it
-  // exists: this box may only be open while there is genuinely no other. So close it
-  // the moment a reply box appears - whether that's the card expanding, or a transcript
-  // that was `unavailable` reconnecting and mounting its reply row under a box already
-  // open here. The text is in the draft map, so reopening Send brings it straight back.
+  // exists: this box may only be open while there is genuinely no other. So close it the
+  // moment a reply box appears - the card expanding under a box already open here.
+  // The text is in the draft map, so reopening Send brings it straight back.
   useEffect(() => {
     if (hasReply) setComposing(false);
   }, [hasReply]);
@@ -206,7 +204,11 @@ export function ActionBar({
         // conversation's reply box and Queue is a tab, so neither is drawn here - but the
         // handle above still carries startSend and toggleQueue, so `s` and `q` work.
         <>
-          <button className="act" onClick={focusPane} title="Bring this session's terminal pane to the front">
+          <button
+            className="act act-focus"
+            onClick={focusPane}
+            title="Bring this session's terminal pane to the front"
+          >
             <kbd>{formatChord(bindings.focus)}</kbd> focus
           </button>
           {onDiff && session.cwd && (
@@ -216,7 +218,7 @@ export function ActionBar({
           )}
           {session.cwd && onReset && (
             <button
-              className="act"
+              className="act act-reset"
               onClick={onReset}
               title={`Reset checkout to origin's default branch and clear context (${formatChord(bindings.reset)})`}
             >

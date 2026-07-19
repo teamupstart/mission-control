@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
@@ -49,6 +49,27 @@ export function ConsoleDetail({
   const [tab, setTab] = useState<Tab>("conversation");
   const [hasReply, setHasReply] = useState(false);
   const transcriptRef = useRef<TranscriptHandle>(null);
+  // Set when the send shortcut arrives on another tab: the reply box exists, it's just
+  // not mounted yet, so the focus has to wait for the conversation to come back.
+  const focusPending = useRef(false);
+
+  /**
+   * The console's one compose box lives in the conversation tab, so "I want to type
+   * now" means going there - not opening a second, lesser send box in the footer, which
+   * would take the place of the whole action row on its way past.
+   */
+  function focusReply(): boolean {
+    if (transcriptRef.current?.focusReply()) return true;
+    focusPending.current = true;
+    setTab("conversation");
+    return true;
+  }
+
+  useEffect(() => {
+    if (tab !== "conversation" || !focusPending.current) return;
+    focusPending.current = false;
+    transcriptRef.current?.focusReply();
+  }, [tab]);
 
   const st = stateDisplay(session);
   const live = session.state !== "exited";
@@ -266,7 +287,7 @@ export function ConsoleDetail({
             hasReply={hasReply}
             queueOpen={tab === "queue"}
             onToggleQueue={() => setTab((t) => (t === "queue" ? "conversation" : "queue"))}
-            onFocusReply={() => transcriptRef.current?.focusReply() ?? false}
+            onFocusReply={focusReply}
             onDiff={() => view.onOpenDiff(session.id)}
             registerActions={view.registerActions}
             onReset={() => view.onReset(session.id)}

@@ -24,8 +24,13 @@
   --claude: #d97757;
   --codex: #10a37f;
 
+  /* The off-palette tone, for things that are neither a session state nor a warning:
+     the focus control, a merged PR, and Foreman speaking in a conversation log where
+     blue is already the human and orange is already the agent. */
+  --purple: #a371f7;
+
   --pr-open: #3fb950;
-  --pr-merged: #a371f7;
+  --pr-merged: var(--purple);
 
   --radius: 13px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
@@ -2512,6 +2517,29 @@ kbd {
 .turn-user .turn-text {
   background: color-mix(in oklab, var(--working) 10%, var(--bg-2));
   border-color: color-mix(in oklab, var(--working) 22%, var(--border-soft));
+}
+/* Foreman's turns, told apart from the human's at a glance - in a supervised session
+   most of the "user" side of the conversation is Foreman, and a reader who can't see
+   which is which can't tell what they themselves asked for. Purple because the two
+   voices either side of it are spoken for: blue is the human, orange is the agent.
+   (Foreman wears --claude elsewhere, where it never has to sit next to Claude.) */
+.turn-foreman .turn-role {
+  color: color-mix(in oklab, var(--purple) 78%, var(--muted));
+}
+.turn-foreman .turn-text {
+  background: color-mix(in oklab, var(--purple) 9%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--purple) 24%, var(--border-soft));
+}
+/* The dashboard's own `/reload-skills`. Deliberately the quietest turn on the page: it
+   is plumbing the reader never asked for and needn't act on - it earns a label so it
+   stops being mistaken for the human, and no more attention than that. */
+.turn-harness .turn-role {
+  color: var(--dim);
+}
+.turn-harness .turn-text {
+  color: var(--muted);
+  background: var(--bg-2);
+  border-color: var(--border-soft);
 }
 .turn-tools {
   display: flex;
@@ -5197,9 +5225,37 @@ kbd {
   color: var(--fg);
   border-color: color-mix(in oklab, var(--working) 45%, var(--border));
 }
+/* Coloured by consequence, at rest rather than on hover - four identical grey pills
+   make you read the labels to find the one you want, and the destructive one sits
+   inches from the harmless one. Focus is benign navigation (purple, matching nothing
+   in the status palette), diff stays neutral because it only opens a viewer, reset
+   carries the cards' cautionary amber, and kill is red before you reach for it. */
+.act-focus {
+  color: color-mix(in oklab, var(--purple) 82%, var(--fg));
+  border-color: color-mix(in oklab, var(--purple) 36%, var(--border));
+}
+.act-focus:hover {
+  color: var(--purple);
+  border-color: color-mix(in oklab, var(--purple) 60%, var(--border));
+  background: color-mix(in oklab, var(--purple) 13%, var(--panel-2));
+}
+.act-reset {
+  color: color-mix(in oklab, var(--attention) 82%, var(--fg));
+  border-color: color-mix(in oklab, var(--attention) 36%, var(--border));
+}
+.act-reset:hover {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 60%, var(--border));
+  background: color-mix(in oklab, var(--attention) 13%, var(--panel-2));
+}
+.act-danger {
+  color: color-mix(in oklab, var(--danger) 82%, var(--fg));
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--border));
+}
 .act-danger:hover {
   color: var(--danger);
-  border-color: color-mix(in oklab, var(--danger) 50%, var(--border));
+  border-color: color-mix(in oklab, var(--danger) 60%, var(--border));
+  background: color-mix(in oklab, var(--danger) 13%, var(--panel-2));
 }
 .act kbd {
   font-family: var(--mono);

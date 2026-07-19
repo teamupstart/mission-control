@@ -148,9 +148,8 @@ export function SessionCard({
   // which is exactly when this card's own send box is the right answer).
   const transcriptRef = useRef<TranscriptHandle>(null);
   // Whether that reply box is actually on screen right now - the panel's own report,
-  // not `expanded`. An expanded card can be carrying an unavailable transcript with no
-  // reply row at all, and can grow one later when the stream reconnects; the bar has to
-  // hear about both or it ends up as the second send box on the card.
+  // not this card's guess at it. The bar has to hear when it comes and goes, or it ends
+  // up as the second send box on the card.
   const [hasReply, setHasReply] = useState(false);
 
   // Stable per-session ref callback so the element map isn't churned each render.

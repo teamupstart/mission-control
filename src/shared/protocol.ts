@@ -629,5 +629,16 @@ export type Wrapup = z.infer<typeof WrapupSchema>;
  */
 export const InjectPromptSchema = z.object({
   text: z.string().min(1).max(INTENT_MAX),
+  /**
+   * Who is typing. Defaults to the human, because that's who almost every caller is and
+   * because claiming to be Foreman is the answer that colours a turn - a caller that
+   * forgets the field should under-claim, not over-claim.
+   *
+   * The daemon is the only place this is knowable at all: by the time the text reaches
+   * the pane it's just keystrokes, and the transcript records it as a plain user turn
+   * indistinguishable from one a person typed. Round 0 of a work item is the human's
+   * intent delivered VERBATIM, so no marker can be added to the text itself.
+   */
+  origin: z.enum(["human", "foreman"]).default("human"),
 });
 export type InjectPrompt = z.infer<typeof InjectPromptSchema>;

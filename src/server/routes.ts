@@ -1109,8 +1109,8 @@ export function buildApp(
     return c.json(task);
   });
 
-  app.post("/api/tasks/:id/dispatch", (c) => {
-    const t = tasks.dispatch(c.req.param("id"));
+  app.post("/api/tasks/:id/dispatch", async (c) => {
+    const t = await tasks.dispatch(c.req.param("id"));
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
   });

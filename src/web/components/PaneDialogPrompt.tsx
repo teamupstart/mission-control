@@ -97,7 +97,10 @@ export function PaneDialogPrompt({
     // form was actually left, which the outcome by itself cannot say.
     if (r.outcome === "next-question") setNote(r.note ?? "Saved - Claude has another question below.");
     if (r.outcome === "unanswered") {
-      setNote(r.note ?? "Saved, but Claude says a question is still unanswered - the form is back on its questions.");
+      setNote(
+        r.note ??
+          "Saved, but Claude says a question is still unanswered. The form is back on the question you just answered - if the gap is an earlier one, finish it in the terminal.",
+      );
     }
   }
 

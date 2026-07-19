@@ -901,6 +901,16 @@ const NOT_A_FORM = "this session's screen is not a multi-select form";
  * unverified step back means the pane may still be sitting on the review tab, and telling
  * the human "it's back on your questions" when it isn't is the class of lie the whole
  * module is written against. `←` commits nothing either way, so the failure is safe.
+ *
+ * ONE step back, which reaches only the LAST question - the one they just submitted from.
+ * On a multi-question form the gap Claude is reporting may be an earlier one, and we cannot
+ * tell: a plain `capture-pane` gives us the header's per-question answered/unanswered marks
+ * but not which tab is current (that is colour, and reading it would mean `-e` and parsing
+ * escape sequences). Guessing a tab position from the marks would mean firing `←` a counted
+ * number of times at a screen we can't confirm we're on - arrows into the dark, and the
+ * dashboard would report arriving somewhere it never checked. So the note says where the
+ * pane actually is and that an earlier gap needs the terminal, which is the true thing we
+ * can say without another blind walk.
  */
 async function stepBackFromReview(
   session: Session,

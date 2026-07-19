@@ -10,6 +10,7 @@ import {
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
+import { AgentDot } from "./session-bits.tsx";
 
 /**
  * The Sitrep panel (`/api/report`): who needs you, who's working, what's idle, the
@@ -322,7 +323,7 @@ function SessionRow({
   return (
     <div className="report-row">
       <div className="report-row-main">
-        <span className={`agent-dot agent-${s.agent}`} aria-hidden />
+        <AgentDot agent={s.agent} />
         <span className="report-name" title={label}>
           {label}
         </span>

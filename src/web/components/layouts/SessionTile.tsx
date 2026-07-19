@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { RuntimeMetaRow } from "../session-bits.tsx";
+import { AgentDot, RuntimeMetaRow } from "../session-bits.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
@@ -109,7 +109,7 @@ export function SessionTile({
       />
 
       <span className="tile-head">
-        <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+        <AgentDot agent={session.agent} />
         <span className="tile-name">{session.name || "(unnamed)"}</span>
         {session.nomistakesGated && !session.nomistakes && (
           <span className="gated" title="Gated by no-mistakes" aria-hidden>

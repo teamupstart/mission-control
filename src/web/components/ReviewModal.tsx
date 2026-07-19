@@ -4,6 +4,7 @@ import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { DecisionForm } from "./PlanDecisions.tsx";
+import { AgentDot } from "./session-bits.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -36,7 +37,7 @@ export function ReviewModal({
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <div>
-            <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+            <AgentDot agent={session.agent} />
             <strong>{session.name}</strong>
             <span className="dim"> · {reviews.length} pending</span>
           </div>

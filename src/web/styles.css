@@ -5778,7 +5778,9 @@ kbd {
   overflow: hidden;
 }
 /* The no-mistakes pipeline as a hairline: one segment per step, same tones as the
-   dots on the card. Enough to see a gate parked; the drawer has the detail. */
+   dots on the card. On a board tile it sits under the step name `.tile-gate` draws,
+   so the bar carries the shape and the label carries the stage; the drawer has the
+   findings and the buttons. */
 .tile-rail {
   display: flex;
   gap: 2px;

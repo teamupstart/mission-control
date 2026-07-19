@@ -6514,6 +6514,67 @@ kbd {
   line-height: 1.45;
   color: var(--danger);
 }
+.pd-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+/* A multi-select row. Aligned to the box rather than the baseline so a wrapped label's
+   second line doesn't drift out from under its own checkbox. */
+.pd-check {
+  align-items: flex-start;
+}
+/* The number sits on the label's first line, not on the box's centre. */
+.pd-check .pd-num {
+  line-height: 1.4;
+  font-size: 11px;
+}
+.pd-box {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--bg);
+}
+.pd-checked {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border-soft));
+  background: color-mix(in oklab, var(--attention) 8%, var(--bg-2));
+}
+.pd-checked .pd-box {
+  border-color: var(--attention);
+  background: var(--attention);
+}
+.pd-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.pd-submit {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--attention);
+  background: var(--attention);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.pd-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.pd-submit:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 
 /* ---------------------------------------------------------------------------
    Foreman: the strip, the inline episode, and the history drawer.

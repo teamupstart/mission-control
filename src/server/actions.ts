@@ -1,9 +1,18 @@
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
+import type { FormOutcome } from "@shared/protocol.ts";
 import { resolveWeztermBin } from "./config.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingPaste } from "./discovery/pane-paste.ts";
-import { optionRowMiss, parsePaneDialog, type OptionRowMiss, type PaneDialog } from "./discovery/pane-dialog.ts";
+import {
+  hasUnansweredWarning,
+  optionRowMiss,
+  parsePaneDialog,
+  submitAnswersRow,
+  type OptionRowMiss,
+  type PaneDialog,
+} from "./discovery/pane-dialog.ts";
+import { dialogIdentity } from "@shared/session.ts";
 import { listTmuxClients, readTmuxPaneMode } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
@@ -607,16 +616,29 @@ export interface OptionTarget {
 /** How many arrow presses one selection may spend. A menu's rows are few; this is a backstop. */
 const MAX_ARROW_STEPS = 12;
 
+/** The CSI sequence each arrow sends, for the wezterm path (tmux takes the key name). */
+const ARROW_SEQ = { Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D" } as const;
+
 /** Send one arrow key to a pane. tmux takes the key name; wezterm takes the raw CSI sequence. */
-async function injectArrow(session: Session, dir: "Up" | "Down", deps: PaneDeps): Promise<ActionResult> {
+async function injectArrow(
+  session: Session,
+  dir: keyof typeof ARROW_SEQ,
+  deps: PaneDeps,
+): Promise<ActionResult> {
   if (session.tmux) {
     // No -l: `Up`/`Down` are tmux key names, not literal text to type.
     return tmuxSendKeys(session.tmux.paneId, [dir], `tmux send-keys ${dir} failed`, deps.exec);
   }
   if (session.wezterm) {
     const bin = resolveWeztermBin();
-    const seq = dir === "Down" ? "\x1b[B" : "\x1b[A";
-    const args = ["cli", "send-text", "--pane-id", String(session.wezterm.paneId), "--no-paste", seq];
+    const args = [
+      "cli",
+      "send-text",
+      "--pane-id",
+      String(session.wezterm.paneId),
+      "--no-paste",
+      ARROW_SEQ[dir],
+    ];
     return step(bin, args, `wezterm send-text (${dir}) failed`, deps.exec);
   }
   return { ok: false, error: NO_HANDLE };
@@ -673,7 +695,7 @@ async function selectOptionLocked(
   target: OptionTarget,
   deps: PaneDeps,
 ): Promise<ActionResult> {
-  let dialog = parsePaneDialog(await deps.capture(session));
+  const dialog = parsePaneDialog(await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
   // The number alone is a position; the label is what makes it an ANSWER. If the screen
   // doesn't read as the row we were told to answer, the menu on it isn't that menu, and
@@ -681,17 +703,17 @@ async function selectOptionLocked(
   const miss = optionRowMiss(dialog, target);
   if (miss) return { ok: false, error: describeMiss(miss, dialog, target) };
 
-  for (let i = 0; dialog.highlighted !== target.number; i++) {
-    if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
-    const dir = target.number > dialog.highlighted ? "Down" : "Up";
-    const sent = await injectArrow(session, dir, deps);
-    if (!sent.ok) return sent;
-    const moved = await awaitCursorMove(session, dialog.highlighted, deps);
-    // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
-    // way we no longer know what Enter would confirm, so we don't press it.
-    if (!moved) return { ok: false, error: "Claude ignored the arrow key - the menu may have closed" };
-    dialog = moved;
-  }
+  // A checkbox row is not answerable by pressing it: Enter TOGGLES it and the form stays
+  // up, so this would report a delivered answer for a keystroke that sent nothing. That is
+  // the same shape as the incident `pane-dialog.ts` opens with - a caller told "answered"
+  // while the child sat on the question - so it is refused here rather than at the edges,
+  // where the dashboard, Foreman and the MCP tool would each have to remember to.
+  // Unboxed rows on a form ("Chat about this") are real presses and stay allowed.
+  const row = dialog.options.find((o) => o.number === target.number)!;
+  if (row.checked !== undefined) return { ok: false, error: IS_A_FORM };
+
+  const walked = await walkCursorTo(session, dialog, target.number, deps);
+  if (!walked.ok) return walked;
 
   // Read once more rather than trusting the walk: this is the last look before the only
   // irreversible keystroke in the function.
@@ -700,6 +722,201 @@ async function selectOptionLocked(
     return { ok: false, error: "the menu changed before the selection could be confirmed" };
   }
   return injectEnter(session, deps);
+}
+
+const IS_A_FORM =
+  "that row is a checkbox on a multi-select form - ticking it answers nothing, so it has to be submitted as a form";
+
+/**
+ * A cursor walk that either parked on `number` or explains why it couldn't.
+ *
+ * The failure arm is a whole `ActionResult` rather than a bare string so a refusal made
+ * further down keeps its FLAGS on the way up - `paneBlocked` above all, which tells a
+ * caller the walk stopped because a human is in copy-mode and not because anything is
+ * broken. Flattened to `{ error }`, a blocked arrow reads as a plain failure and the work
+ * queue spends a rationed attempt on it.
+ */
+type WalkResult = { ok: true; dialog: PaneDialog } | (ActionResult & { ok: false });
+
+/**
+ * Walk the menu cursor onto a row, verifying every step against the screen.
+ *
+ * Shared by the two things that drive a dialog - pressing a row and ticking a form's boxes
+ * - because the rule they must agree on is that arrows are COUNTED OUT BY THE SCREEN and
+ * not by us: the cursor may not start where we last saw it, an arrow may be swallowed, and
+ * the child may repaint under the walk. Arrows commit nothing, so every failure here
+ * leaves the dialog exactly as it was found.
+ */
+async function walkCursorTo(
+  session: Session,
+  from: PaneDialog,
+  number: number,
+  deps: PaneDeps,
+): Promise<WalkResult> {
+  let dialog = from;
+  for (let i = 0; dialog.highlighted !== number; i++) {
+    if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
+    const dir = number > dialog.highlighted ? "Down" : "Up";
+    const sent = await injectArrow(session, dir, deps);
+    if (!sent.ok) return { ...sent, ok: false, error: sent.error ?? "could not send an arrow key" };
+    const moved = await awaitCursorMove(session, dialog.highlighted, deps);
+    // The cursor didn't move: the dialog closed under us, or it ate the arrow. Either
+    // way we no longer know what Enter would confirm, so we don't press it.
+    if (!moved) return { ok: false, error: "Claude ignored the arrow key - the menu may have closed" };
+    dialog = moved;
+  }
+  return { ok: true, dialog };
+}
+
+/** A form row as the human left it: the row they were shown, and whether they want it ticked. */
+export interface FormTarget extends OptionTarget {
+  checked: boolean;
+}
+
+export interface FormResult extends ActionResult {
+  outcome?: FormOutcome;
+}
+
+/**
+ * Fill in and SEND a multi-select `AskUserQuestion` - the form half of answering a dialog.
+ *
+ * A form is not a menu, and the difference is the whole reason this exists. On a menu,
+ * Enter on a row is the answer. On a form, Enter on a row only ticks its box: the form
+ * stays up, the cursor stays put, and NOTHING has reached Claude. So the dashboard's
+ * per-row press - correct for every menu - was a no-op that reported success on every
+ * multi-select ever shown, which is a human clicking an option, watching the same question
+ * sit there, and clicking it again. (The second click then failed outright, because the
+ * row it was aiming at now rendered "[✔] Beta" against the "[ ] Beta" they were shown. The
+ * checkbox is out of the label now, so that half is gone too.)
+ *
+ * Sending it means walking Claude's own submit path: tick the boxes that differ, step `→`
+ * onto the next tab, and confirm "Submit answers" when that tab is the review one. Each
+ * step is verified against a fresh read, on the same rule the menu walk holds to - the
+ * only irreversible keystroke is the last one, and it is pressed only while the screen
+ * still reads as what the human was shown.
+ *
+ * It stops short of that Enter in the two cases where pressing on would be answering
+ * something nobody was asked. `next-question` is Claude having more questions, so `→`
+ * landed on the next one rather than on the review tab: the ticks are safe on screen, the
+ * next poll renders the new question, and the human answers it the same way. `unanswered`
+ * is the review tab itself reporting a gap - Claude will send a half-filled form, and a
+ * walk that pressed through that would put answers the human never gave under their name.
+ * Both leave the form up, which is the state a human can finish from either surface.
+ */
+export async function submitPaneForm(
+  session: Session,
+  targets: FormTarget[],
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<FormResult> {
+  if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  if (targets.length === 0) return { ok: false, error: "no rows to submit" };
+  return withPaneLock<FormResult>(
+    session,
+    () => ({ ok: false, error: PANE_BUSY }),
+    () => submitFormLocked(session, targets, deps),
+  );
+}
+
+async function submitFormLocked(
+  session: Session,
+  targets: FormTarget[],
+  deps: PaneDeps,
+): Promise<FormResult> {
+  let dialog = parsePaneDialog(await deps.capture(session));
+  if (!dialog) return { ok: false, error: NO_MENU };
+  if (!dialog.multiSelect) return { ok: false, error: NOT_A_FORM };
+
+  // Every target is checked against the screen BEFORE anything is typed, so a form that
+  // has moved on is refused whole rather than half-ticked.
+  for (const t of targets) {
+    const miss = optionRowMiss(dialog, t);
+    if (miss) return { ok: false, error: describeMiss(miss, dialog, t) };
+    if (dialog.options.find((o) => o.number === t.number)!.checked === undefined) {
+      return { ok: false, error: `option ${t.number} is not a checkbox on this form` };
+    }
+  }
+
+  for (const t of targets) {
+    const row = dialog.options.find((o) => o.number === t.number)!;
+    if (row.checked === t.checked) continue;
+    const walked = await walkCursorTo(session, dialog, t.number, deps);
+    if (!walked.ok) return walked;
+    const sent = await injectEnter(session, deps);
+    if (!sent.ok) return sent;
+    // The box is the receipt. Without this the walk would type Enters into a form that
+    // stopped responding and call the result a filled-in answer.
+    const ticked = await awaitChecked(session, t.number, t.checked, deps);
+    if (!ticked) return { ok: false, error: `"${t.label}" did not tick - the form may have closed` };
+    dialog = ticked;
+  }
+
+  // Park on the first row before stepping tabs. `→` is a tab move only while the cursor is
+  // on an ordinary row: on Claude's trailing "Type something" row it opens a text field
+  // that EATS left/right, so a walk that happened to finish there would press `→` into an
+  // input and sit on the same tab believing it had moved.
+  const parked = await walkCursorTo(session, dialog, dialog.options[0]!.number, deps);
+  if (!parked.ok) return parked;
+
+  const before = dialogIdentity(parked.dialog);
+  const stepped = await injectArrow(session, "Right", deps);
+  if (!stepped.ok) return stepped;
+  const next = await awaitDialogChange(session, before, deps);
+  if (!next) return { ok: false, error: "Claude did not move on from this question" };
+
+  // Another question rather than the review tab: the ticks stand, and the human answers
+  // the next one from whichever surface they are on.
+  const submit = submitAnswersRow(next);
+  if (!submit) return { ok: true, outcome: "next-question" };
+  if (hasUnansweredWarning(await deps.capture(session))) {
+    return { ok: true, outcome: "unanswered" };
+  }
+
+  const onSubmit = await walkCursorTo(session, next, submit.number, deps);
+  if (!onSubmit.ok) return onSubmit;
+  const final = parsePaneDialog(await deps.capture(session));
+  const stillThere = final && submitAnswersRow(final);
+  if (!final || !stillThere || final.highlighted !== stillThere.number) {
+    return { ok: false, error: "the review screen changed before the answers could be sent" };
+  }
+  const done = await injectEnter(session, deps);
+  return done.ok ? { ok: true, outcome: "submitted" } : done;
+}
+
+const NOT_A_FORM = "this session's screen is not a multi-select form";
+
+/** Wait for a form row's box to reach `want`, or null if it never does. */
+async function awaitChecked(
+  session: Session,
+  number: number,
+  want: boolean,
+  deps: PaneDeps,
+): Promise<PaneDialog | null> {
+  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  for (;;) {
+    const d = parsePaneDialog(await deps.capture(session));
+    if (d?.options.find((o) => o.number === number)?.checked === want) return d;
+    if (Date.now() >= deadline) return null;
+    await sleep(REPAINT_POLL_MS);
+  }
+}
+
+/**
+ * Wait for the pane to show a DIFFERENT dialog than the one identified by `from`, or null
+ * if it never does. Keyed on `dialogIdentity` (prompt plus rows) rather than on the cursor,
+ * because what a tab step changes is the question, and the cursor lands on row 1 of both.
+ */
+async function awaitDialogChange(
+  session: Session,
+  from: string,
+  deps: PaneDeps,
+): Promise<PaneDialog | null> {
+  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  for (;;) {
+    const d = parsePaneDialog(await deps.capture(session));
+    if (d && dialogIdentity(d) !== from) return d;
+    if (Date.now() >= deadline) return null;
+    await sleep(REPAINT_POLL_MS);
+  }
 }
 
 /** Say which way the screen failed to be the menu we were told to answer. */

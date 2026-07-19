@@ -107,6 +107,54 @@ export const TRUST_QUESTION =
   "review what's in this folder first.";
 
 /**
+ * A multi-select `AskUserQuestion`, captured live. This is a FORM, not a menu: Enter on a
+ * row toggles that row's box and the form stays up - measured, by pressing it - so nothing
+ * here answers anything until the "✔ Submit" tab is confirmed.
+ *
+ * The tab strip on the first line is what makes that reachable, and Claude appends its own
+ * boxed "Type something" row plus an unnumbered "Submit" button under it.
+ */
+export const MULTI_SELECT = `
+←  ☒ Features  ✔ Submit  →
+
+Which features would you like to enable?
+
+❯ 1. [✔] Alpha
+  Enable the Alpha feature.
+  2. [✔] Beta
+  Enable the Beta feature.
+  3. [ ] Gamma
+  Enable the Gamma feature.
+  4. [ ] Type something
+     Submit
+────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+`;
+
+/**
+ * The form's "✔ Submit" tab, captured live from a TWO-question form with one question left
+ * blank - so it carries both the row that actually sends the answers and the warning that
+ * says sending now would send a half-filled form.
+ */
+export const REVIEW_UNANSWERED = `
+←  ☒ Database  ☐ Features  ✔ Submit  →
+
+Review your answers
+
+⚠ You have not answered all questions
+
+ ● Which database should we use?
+   → Postgres
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+`;
+
+/**
  * A live-fleet menu whose cursor rests on the LAST row, not the first. Claude does not
  * always default to row 1, which is why navigation is computed from the cursor we read
  * rather than assumed to start at the top.

@@ -26,6 +26,7 @@ import {
   ResolveReviewSchema,
   SelectOptionSchema,
   SendTextSchema,
+  SubmitOptionsSchema,
   RecordEpisodeSchema,
   ResolveEpisodeSchema,
   SetNoteSchema,
@@ -87,6 +88,7 @@ import {
   selectPaneOption,
   sendText,
   setPermissionMode,
+  submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -444,6 +446,21 @@ export function buildApp(
     const parsed = await parseBody(c, SelectOptionSchema);
     if (!parsed.ok) return parsed.res;
     const r = await selectPaneOption(session, parsed.data);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  // Fill in and send a multi-select `AskUserQuestion`. Separate from select-option because
+  // pressing a row of one of these answers nothing - it ticks a box, and the answers reach
+  // Claude only when the form's Submit tab is confirmed (see `submitPaneForm`).
+  //
+  // 409 on refusal for the same reason as above: every failure is the pane declining, and
+  // the walk stops before the send rather than half-way through it.
+  app.post("/api/sessions/:id/submit-options", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, SubmitOptionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await submitPaneForm(session, parsed.data.options);
     return c.json(r, r.ok ? 200 : 409);
   });
 

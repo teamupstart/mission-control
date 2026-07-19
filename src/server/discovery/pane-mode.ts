@@ -125,13 +125,59 @@ export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<
   const claude = sessions.filter((s) => s.agent === "claude" && (s.tmux || s.wezterm));
   await Promise.all(
     claude.map(async (s) => {
+      const key = s.tmux ? `tmux:${s.tmux.paneId}` : `wezterm:${s.wezterm!.paneId}`;
       const text = await capturePaneText(s);
       // A failed capture is not "no dialog" - it is no information, and saying null here
-      // would clear a live menu off the card on one flaky tmux call.
-      if (text === null) return;
+      // would clear a live menu off the card on one flaky tmux call. So the last dialog
+      // rides forward (the registry keeps it when this leaves the field undefined) - but
+      // only for a few ticks. Unbounded, one pane that never reads again pins its menu
+      // for the life of the session, and the card goes on offering rows against a screen
+      // nobody can see: the click is refused every time, and the refusal is the only
+      // place it shows. Better to admit we have lost the pane than to keep drawing it.
+      if (text === null) {
+        if (paneReadLost(key)) s.paneDialog = null;
+        return;
+      }
+      paneReadOk(key);
       const line = parsePaneModeLine(text);
       if (line?.mode) s.permissionMode = line.mode;
       s.paneDialog = parsePaneDialog(text);
     }),
   );
+}
+
+/**
+ * How many consecutive unreadable captures a remembered dialog survives.
+ *
+ * Three, at the poller's 1.5s tick: long enough to ride out the flaky `tmux capture-pane`
+ * this tolerance exists for (a loaded box timing out at `CAPTURE_TIMEOUT_MS` is the common
+ * one), short enough that a pane which is really gone stops being drawn within seconds.
+ */
+const CAPTURE_MISS_TOLERANCE = 3;
+
+/** Consecutive failed captures per pane. Cleared the moment one succeeds. */
+const captureMisses = new Map<string, number>();
+
+/**
+ * Record a failed capture of `key`, and say whether to stop believing what it last showed.
+ *
+ * Exported for its own test: the rule is a counter with two ways to be wrong in opposite
+ * directions (drop a live menu on one flake, or keep a dead one forever), and it is
+ * otherwise reachable only through a real `tmux` subprocess.
+ */
+export function paneReadLost(key: string): boolean {
+  const missed = (captureMisses.get(key) ?? 0) + 1;
+  if (missed < CAPTURE_MISS_TOLERANCE) {
+    captureMisses.set(key, missed);
+    return false;
+  }
+  // Given up: the count goes with the dialog, so a pane that comes back is trusted from a
+  // clean slate rather than one strike from being dropped again.
+  captureMisses.delete(key);
+  return true;
+}
+
+/** Record a successful capture of `key` - one good read forgives every miss before it. */
+export function paneReadOk(key: string): void {
+  captureMisses.delete(key);
 }

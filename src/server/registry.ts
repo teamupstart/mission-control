@@ -395,7 +395,21 @@ export class Registry extends EventEmitter {
       // means the pane couldn't be read at all (no capture, no information), and
       // only then do we keep what we had; a successful read that found no menu is
       // an explicit null and clears it.
-      paneDialog: d.paneDialog !== undefined ? d.paneDialog : (prev?.paneDialog ?? null),
+      //
+      // And only while there is still a pane to read it from. A session whose handle
+      // has gone is never annotated at all (`annotatePaneState` skips it), so its
+      // dialog would ride `prev` forward for as long as the session lives - a card
+      // still offering rows that no keystroke can reach, because the answer would
+      // have nowhere to land. That is the exact shape of "it has been sitting there
+      // for ages and clicking does nothing", and it gets quieter, not louder, the
+      // longer it lasts. `annotatePaneState` bounds the other half: a capture that
+      // keeps failing on a pane that IS still there eventually clears too.
+      paneDialog:
+        d.paneDialog !== undefined
+          ? d.paneDialog
+          : d.tmux || d.wezterm
+            ? (prev?.paneDialog ?? null)
+            : null,
       wezterm: d.wezterm,
       tmux: d.tmux,
       // Seeded from the DB for the same reason `hooksSeen` below is: only a live

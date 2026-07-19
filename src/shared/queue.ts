@@ -62,6 +62,38 @@ export type WrapupMode = "ask" | "no-mistakes" | "pr";
 export const WRAPUP_MODES = ["ask", "no-mistakes", "pr"] as const satisfies readonly WrapupMode[];
 
 /**
+ * WHEN a wrap-up fires, as opposed to WHAT it sends (`WrapupMode`).
+ *
+ * The two axes are independent by design: the human picks one or more moments that
+ * count as "this session is finished", and one action to take at whichever fires.
+ *
+ *  - `drain`  - every item in the session's work queue reached a terminal state. The
+ *               original behaviour, and the only one with a per-ITEM verdict behind
+ *               it: each item was already judged complete on its way to `verified`.
+ *  - `prompted` - the human typed straight into the pane (no queue involved), the
+ *               agent worked, and it has parked. There is no item and therefore no
+ *               existing verdict, so this trigger has to EARN the same confidence -
+ *               see `decidePromptedWrapup`, which verifies the session diff against
+ *               the captured goal before anything is typed.
+ *
+ * An empty list is a legitimate, fully-off state: it means "never wrap up
+ * automatically", which is what someone who wants the queue but not the shipping
+ * would choose. Nothing may treat empty as "fall back to the default".
+ */
+export type WrapupTrigger = "drain" | "prompted";
+
+/** The enum's values, for the config schema. Spelled once so zod can't drift from the type. */
+export const WRAPUP_TRIGGERS = ["drain", "prompted"] as const satisfies readonly WrapupTrigger[];
+
+/** Whether a trigger is armed. The one reader of the config list, so it can't be spelled two ways. */
+export function wrapupTriggerOn(
+  triggers: readonly WrapupTrigger[],
+  which: WrapupTrigger,
+): boolean {
+  return triggers.includes(which);
+}
+
+/**
  * The two instructions a wrap-up can send.
  *
  * `/no-mistakes` is a slash command and MUST stay a single line: `sendText` submits on
@@ -92,4 +124,28 @@ export function autoWrapupPayload(mode: WrapupMode): string | null {
   if (mode === "no-mistakes") return WRAPUP_NO_MISTAKES;
   if (mode === "pr") return WRAPUP_PR;
   return null;
+}
+
+/**
+ * Whether some text IS one of the wrap-up instructions - i.e. whether a session's
+ * captured goal is really just Foreman hearing its own voice come back.
+ *
+ * This is what stops the `prompted` trigger looping forever, and the loop it closes
+ * is not hypothetical. The goal is captured from `UserPromptSubmit`, which fires for
+ * an INJECTED prompt exactly as it does for a typed one, and `substantivePrompt`
+ * filters only `/clear` and `/compact` - so `/no-mistakes` lands as the session's new
+ * goal. The prompted trigger re-arms on a new goal, so without this check the cycle
+ * is: fire -> type `/no-mistakes` -> goal becomes `/no-mistakes` -> the run finishes
+ * and the session parks -> re-armed -> fire again. Forever, on a live repo, each pass
+ * opening another PR.
+ *
+ * Deliberately a comparison against the two payloads rather than a general
+ * "did Foreman type this" lookup: turn authorship (see `injections.ts`) is in-memory,
+ * unpersisted, and annotated only on the browser's SSE stream, so the worker cannot
+ * read it. These two strings are the only things this trigger can ever have sent, and
+ * a constant it emitted itself is something it can always recognise.
+ */
+export function isWrapupPayload(text: string | null | undefined): boolean {
+  const t = text?.trim();
+  return t === WRAPUP_NO_MISTAKES || t === WRAPUP_PR;
 }

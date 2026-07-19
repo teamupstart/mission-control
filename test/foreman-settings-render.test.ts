@@ -22,6 +22,7 @@ const BASE: ForemanConfig = {
   triage: "shadow",
   maxFixAttempts: 3,
   maxFixRounds: 10,
+  wrapupTriggers: ["drain"],
   wrapup: "ask",
 };
 
@@ -98,7 +99,36 @@ test("the popover keeps the in-the-moment knobs", () => {
   assert.match(html, /Enable Foreman/);
   assert.match(html, /<legend>Mode<\/legend>/);
   assert.match(html, /<legend>Work queues<\/legend>/);
-  assert.match(html, /<legend>On drain<\/legend>/);
+  assert.match(html, /<legend>Trigger on<\/legend>/);
+  assert.match(html, /<legend>Then<\/legend>/);
+});
+
+test("the wrap-up trigger group is a multi-select, and the action stays a radio group", () => {
+  // The whole point of the split: any number of moments, exactly one action. A regression
+  // to radios for the triggers would silently make the two mutually exclusive, and a
+  // regression to checkboxes for the action would let someone pick both `/no-mistakes`
+  // and `pr` - two pushes racing on one branch.
+  const html = renderPopover(mkState({ wrapupTriggers: ["drain", "prompted"] }));
+  // Scoped to the trigger fieldset: counting checkboxes across the whole popover also
+  // catches Enable Foreman and Auto-approve, which would make this pass for the wrong
+  // reason (and did).
+  const group = html.slice(html.indexOf("<legend>Trigger on"), html.indexOf("<legend>Then"));
+  assert.equal(
+    (group.match(/type="checkbox"[^>]*checked=""/g) ?? []).length,
+    2,
+    "both triggers tick independently",
+  );
+  assert.doesNotMatch(group, /type="radio"/, "triggers are never mutually exclusive");
+  assert.equal((html.match(/name="foreman-wrapup"/g) ?? []).length, 3, "one radio group of 3");
+});
+
+test("with no trigger armed the action group is disabled and says so", () => {
+  // An empty list is a real choice, not an unset value, so the UI has to render it as
+  // one: radios that still look live would promise an action at a moment that never
+  // arrives.
+  const html = renderPopover(mkState({ wrapupTriggers: [] }));
+  assert.match(html, /Foreman never wraps up on its own/);
+  assert.match(html, /<fieldset class="foreman-wrapup-action" disabled=""/);
 });
 
 test("the popover no longer holds Tier or a paste-a-path allowlist", () => {

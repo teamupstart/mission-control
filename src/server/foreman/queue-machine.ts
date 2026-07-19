@@ -8,8 +8,14 @@ import type {
 } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import type { ReportBucket } from "@shared/session.ts";
-import { autoWrapupPayload, inFlightItem, isTerminalState } from "@shared/queue.ts";
-import type { WrapupMode } from "@shared/queue.ts";
+import {
+  autoWrapupPayload,
+  inFlightItem,
+  isTerminalState,
+  isWrapupPayload,
+  wrapupTriggerOn,
+} from "@shared/queue.ts";
+import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
 
 // The lifecycle predicates are defined in @shared/queue.ts, not here: the DB's
 // partial unique index is built from the same constant, so the set of in-flight
@@ -37,7 +43,14 @@ export interface QueueConfig {
   settleMs: number;
   /** How long to wait for the agent to ingest a delivered prompt before resending. */
   pickupTimeoutMs: number;
-  /** What to do when the queue drains: ask the human, or type the instruction ourselves. */
+  /**
+   * Which wrap-up moments are armed. The queue only cares whether `drain` is among
+   * them; `prompted` is decided elsewhere (see prompted-wrapup.ts) and is deliberately
+   * invisible to this machine, so the two triggers cannot start reading each other's
+   * state.
+   */
+  wrapupTriggers: readonly WrapupTrigger[];
+  /** What to do when a wrap-up fires: ask the human, or type the instruction ourselves. */
   wrapup: WrapupMode;
 }
 
@@ -178,15 +191,64 @@ export function blockingGaps(gaps: TrackedGap[]): TrackedGap[] {
  * `openCount === 0`, and no test could see it while this was buried in a script
  * that starts a daemon loop on import.
  */
-export function tickTargets(sessions: Session[]): Session[] {
+export function tickTargets(
+  sessions: Session[],
+  /**
+   * Which wrap-up triggers are armed. REQUIRED, with no default, because both halves
+   * of this selector now depend on it and either default would be a lie: `[]` silently
+   * stops selecting drained queues (the drain ask never fires), while `["drain"]`
+   * silently arms a trigger the operator may have turned off. A caller that has to say
+   * which triggers it means cannot get this wrong by omission.
+   */
+  triggers: readonly WrapupTrigger[],
+): Session[] {
   const needsYou = sessions
     .filter((s) => s.agent === "claude" && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
   const seen = new Set(needsYou.map((s) => s.id));
-  const withQueues = sessions.filter(
-    (s) => s.agent === "claude" && s.state !== "exited" && !seen.has(s.id) && queueWantsATick(s),
+  const rest = sessions.filter(
+    (s) =>
+      s.agent === "claude" &&
+      s.state !== "exited" &&
+      !seen.has(s.id) &&
+      (queueWantsATick(s, triggers) || promptedWantsATick(s, triggers)),
   );
-  return [...needsYou, ...withQueues];
+  return [...needsYou, ...rest];
+}
+
+/**
+ * True when a session might be a `prompted` wrap-up candidate - the selector half of
+ * `decidePromptedWrapup`, and the ONLY reason a session with no work queue is ever
+ * looked at by this worker at all.
+ *
+ * A deliberately loose UPPER BOUND, for the reason `queueWantsATick` documents about
+ * itself: this reads `Session`, whose `queue` field is the compact card summary, and
+ * the summary carries no `promptedGoal` - so "already wrapped up this prompt" is
+ * invisible from here and every finished session stays selected. The machine sees the
+ * full queue and answers `skip`; the loop's `advanced` flag then sleeps IDLE_MS, which
+ * is the same latency an idle set of sessions already accepts. Guessing tighter would
+ * risk stranding a session that genuinely is ready, which costs a human a wrap-up
+ * rather than costing us a poll.
+ *
+ * What it DOES cheaply exclude is everything structural: sessions with items (the
+ * drain trigger's), sessions with no hooks or no fresh signal, sessions still working,
+ * and sessions that have never taken a real prompt.
+ *
+ * Note it checks the goal's SENTENCE, while the machine checks the verbatim PROMPT.
+ * That asymmetry is forced - the card summary carries no prompt - and it is safe in
+ * this direction only: a session with a derived sentence always has a prompt behind it,
+ * so this over-selects and never under-selects. Nothing here may be tightened by
+ * reading `goal.text` for meaning; the refiner rewrites it on its own schedule.
+ */
+function promptedWantsATick(s: Session, triggers: readonly WrapupTrigger[]): boolean {
+  if (!wrapupTriggerOn(triggers, "prompted")) return false;
+  // A queue with items belongs to the drain trigger. `totalCount`, not `openCount`: a
+  // DRAINED queue is still the drain trigger's, and its `wrapupAskedAt` guard - not
+  // this one - decides whether it has more to say.
+  if ((s.queue?.totalCount ?? 0) > 0) return false;
+  if (!s.hooksSeen || !s.instrumented) return false;
+  if (s.state !== "idle") return false;
+  return Boolean(s.goal?.text);
 }
 
 /** How long a session has been waiting - the needs-you ordering. */
@@ -217,11 +279,17 @@ export function waitedSince(s: Session): number {
  * data isn't here, and a selector that guesses wrong stalls a queue rather than
  * merely costing a poll.
  */
-function queueWantsATick(s: Session): boolean {
+function queueWantsATick(s: Session, triggers: readonly WrapupTrigger[]): boolean {
   const q = s.queue;
   if (!q) return false;
   if (q.openCount > 0) return true;
-  return s.hooksSeen && q.drained && q.wrapupAskedAt === null;
+  // The drained half is additionally gated on the `drain` trigger being armed, to stay
+  // in step with step 5 - which now returns `none` when it isn't. Both halves must
+  // agree or the selector loses its ability to say "nothing here": an unarmed drained
+  // queue would be selected on every pass, forever, to be told `none` every time.
+  return (
+    s.hooksSeen && q.drained && q.wrapupAskedAt === null && wrapupTriggerOn(triggers, "drain")
+  );
 }
 
 /**
@@ -289,6 +357,14 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   const head = nextSendable(items);
   if (!head) {
     if (!queueDrained(items) || queue.wrapupAskedAt !== null) return { kind: "none" };
+
+    // The drain trigger is unticked: a drained queue is simply the end of the batch,
+    // and the human ships it themselves. Note this returns before `markWrapupAsked` is
+    // ever reached, so `wrapupAskedAt` stays null and the ask is not CONSUMED - re-tick
+    // the box later and the next drain asks normally. `queueWantsATick` makes the same
+    // check, so an unarmed drained queue also stops being a target rather than sitting
+    // selected forever deciding `none`.
+    if (!wrapupTriggerOn(cfg.wrapupTriggers, "drain")) return { kind: "none" };
 
     const payload = autoWrapupPayload(cfg.wrapup);
 

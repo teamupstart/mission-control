@@ -4193,8 +4193,38 @@ kbd {
   color: var(--muted);
   padding: 0 4px;
 }
-.foreman-modes .alert-row input[type="radio"] {
+.foreman-modes .alert-row input[type="radio"],
+.foreman-modes .alert-row input[type="checkbox"] {
   accent-color: var(--idle);
+}
+/* The wrap-up ACTION, nested inside the trigger group it depends on. Indented and
+   rule-marked rather than boxed: a second border inside the first reads as a sibling
+   panel, while the rule + indent reads as "these belong to the above". */
+.foreman-wrapup-action {
+  border: 0;
+  /* Mixed toward --fg rather than plain --border-soft: at 1px on the popover's dark
+     fill that token is effectively invisible, and an indent with no rule reads as a
+     ragged margin instead of a hierarchy. */
+  border-left: 1px solid color-mix(in oklab, var(--fg) 16%, transparent);
+  border-radius: 0;
+  margin: 2px 0 0 6px;
+  padding: 0 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0; /* a fieldset defaults to min-content and would refuse to shrink */
+}
+/* Disabled when no trigger is armed. Deeper than the parent's 0.5 so a fully
+   disabled Foreman doesn't stack the two into near-invisibility. */
+.foreman-wrapup-action:disabled {
+  opacity: 0.55;
+}
+.foreman-wrapup-action legend {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 4px 0 0;
 }
 /* The Live-mode read-only summary in the popover: a deep-link to Settings → Foreman,
    where the trusted-repo list is now edited. Not an editor - a status line you can click. */

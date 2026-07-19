@@ -161,6 +161,7 @@ export function openDb(): DatabaseSync {
       branch          TEXT,
       wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
       wrapup_answer   TEXT,
+      prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
       updated_at      INTEGER NOT NULL
     );
 
@@ -242,6 +243,19 @@ function migrate(d: DatabaseSync): void {
   // default, so an existing row reads as "never crash-recovered" - which is the
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
+
+  // `prompted_goal`: the session goal the `prompted` wrap-up trigger last fired on -
+  // its once-per-episode guard, and what re-arms it when a genuinely new prompt lands.
+  // Same exposure as the two ALTERs above: added to the CREATE TABLE after
+  // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
+  // an existing table, so without this every queue write on an upgraded db would fail.
+  //
+  // Nullable with no default, and that reads correctly rather than merely harmlessly:
+  // NULL means "this checkout has never had a prompted wrap-up", which is the truthful
+  // answer for every row written before the trigger existed. It leaves the trigger
+  // ARMED on those checkouts, which is right - the whole point is to fire once the
+  // human turns it on - and the verify step still has to agree before anything types.
+  addColumn(d, "foreman_queues", "prompted_goal", "TEXT");
 
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
@@ -883,7 +897,28 @@ interface QueueRow {
   branch: string | null;
   wrapup_asked_at: number | null;
   wrapup_answer: string | null;
+  prompted_goal: string | null;
   updated_at: number;
+}
+
+/**
+ * One row -> object mapping, for the four readers that need it.
+ *
+ * Spelled once because it was spelled four times, and a column added to the table
+ * reached whichever copies its author happened to grep: a `prompted_goal` missing
+ * from `listQueueRows` alone would leave the orphan sweep reading every queue as
+ * never-wrapped-up, which is the state that FIRES the trigger.
+ */
+function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
+  return {
+    noteKey: r.note_key,
+    cwd: r.cwd,
+    branch: r.branch,
+    wrapupAskedAt: r.wrapup_asked_at,
+    wrapupAnswer: r.wrapup_answer,
+    promptedGoal: r.prompted_goal,
+    updatedAt: r.updated_at,
+  };
 }
 
 interface QueueItemRow {
@@ -950,27 +985,21 @@ function parseGaps(raw: string | null): TrackedGap[] {
 export function upsertQueue(q: Omit<SessionQueue, "items">): void {
   openDb()
     .prepare(
-      `INSERT INTO foreman_queues (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO foreman_queues
+         (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
-         wrapup_answer=excluded.wrapup_answer, updated_at=excluded.updated_at`,
+         wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
+         updated_at=excluded.updated_at`,
     )
-    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.updatedAt);
+    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.promptedGoal, q.updatedAt);
 }
 
 export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | undefined {
   const r = openDb().prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`).get(noteKey) as
     | unknown as QueueRow | undefined;
-  if (!r) return undefined;
-  return {
-    noteKey: r.note_key,
-    cwd: r.cwd,
-    branch: r.branch,
-    wrapupAskedAt: r.wrapup_asked_at,
-    wrapupAnswer: r.wrapup_answer,
-    updatedAt: r.updated_at,
-  };
+  return r ? toQueueRow(r) : undefined;
 }
 
 /** Every stored queue (without items) - for the orphan sweep + the session list. */
@@ -978,14 +1007,7 @@ export function listQueueRows(): Omit<SessionQueue, "items">[] {
   const rows = openDb()
     .prepare(`SELECT * FROM foreman_queues ORDER BY updated_at DESC`)
     .all() as unknown as QueueRow[];
-  return rows.map((r) => ({
-    noteKey: r.note_key,
-    cwd: r.cwd,
-    branch: r.branch,
-    wrapupAskedAt: r.wrapup_asked_at,
-    wrapupAnswer: r.wrapup_answer,
-    updatedAt: r.updated_at,
-  }));
+  return rows.map(toQueueRow);
 }
 
 /** Queues recorded at one cwd - the re-attach hint's question, asked as a lookup. */
@@ -993,14 +1015,7 @@ export function listQueueRowsForCwd(cwd: string): Omit<SessionQueue, "items">[] 
   const rows = openDb()
     .prepare(`SELECT * FROM foreman_queues WHERE cwd = ? ORDER BY updated_at DESC`)
     .all(cwd) as unknown as QueueRow[];
-  return rows.map((r) => ({
-    noteKey: r.note_key,
-    cwd: r.cwd,
-    branch: r.branch,
-    wrapupAskedAt: r.wrapup_asked_at,
-    wrapupAnswer: r.wrapup_answer,
-    updatedAt: r.updated_at,
-  }));
+  return rows.map(toQueueRow);
 }
 
 /**

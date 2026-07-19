@@ -22,6 +22,8 @@ import {
   tickTargets,
 } from "./queue-machine.ts";
 import type { QueueConfig } from "./queue-machine.ts";
+import { decidePromptedWrapup, planPromptedWrapup } from "./prompted-wrapup.ts";
+import type { PromptedConfig } from "./prompted-wrapup.ts";
 import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
 import { verifyItem } from "./queue-verify.ts";
@@ -171,7 +173,7 @@ async function main(): Promise<void> {
     try {
       const sessions = await client.sessions();
       reviews = await client.reviews();
-      targets = tickTargets(sessions);
+      targets = tickTargets(sessions, cfg.wrapupTriggers);
       await sweepOrphanedQueues(client);
     } catch (err) {
       log(`snapshot failed (${String(err)})`);
@@ -301,11 +303,14 @@ async function processTarget(
   const queue = await client.queue(fresh.id).catch(() => null);
 
   if (!queue || queue.items.length === 0) {
-    // No queue: this session is here because it needs you.
+    // No queue: this session is here because it needs you...
     if (reportBucket(fresh, live) === "needs-you" || fresh.state === "awaiting_input") {
       return await processSession(client, cfg, fresh, reviews);
     }
-    return false;
+    // ...or because it took a prompt straight into the pane, worked, and parked, and
+    // the `prompted` wrap-up trigger is armed. Below the needs-you check on purpose:
+    // an unanswered question is not a finished session, and triage owns that case.
+    return await processPromptedWrapup(client, cfg, fresh, live, queue);
   }
 
   const qcfg = queueConfig(cfg);
@@ -355,8 +360,184 @@ function queueConfig(cfg: ForemanConfig): QueueConfig {
     maxFixRounds: cfg.maxFixRounds,
     settleMs: SETTLE_MS,
     pickupTimeoutMs: PICKUP_TIMEOUT_MS,
+    wrapupTriggers: cfg.wrapupTriggers,
     wrapup: cfg.wrapup,
   };
+}
+
+/** The same projection for the prompted trigger. Same `settleMs`, deliberately. */
+function promptedConfig(cfg: ForemanConfig): PromptedConfig {
+  return {
+    triggers: cfg.wrapupTriggers,
+    wrapup: cfg.wrapup,
+    settleMs: SETTLE_MS,
+  };
+}
+
+/**
+ * The `prompted` wrap-up trigger's tick: has this session finished the work a human
+ * asked it for in the pane, and if so, ship it?
+ *
+ * Structured as decide -> verify -> plan -> act, mirroring `decideQueueTick` ->
+ * `runVerify` -> `planFromVerify`. All the policy is in the two pure functions; this
+ * only does I/O and ordering.
+ *
+ * THE ORDERING IS THE SAFETY ARGUMENT, and it is the same one `auto-wrapup` makes:
+ * the write that RETIRES the episode lands BEFORE the irreversible act. `/no-mistakes`
+ * pushes and opens a PR, so a crash between "typed" and "recorded that we typed" must
+ * leave the trigger disarmed, never re-armed. Concretely:
+ *
+ *   verify -> stamp `promptedGoal` -> type -> record the answer
+ *
+ * Every failure degrades toward the human: a stamp that fails aborts before typing
+ * (nothing happened, we retry next tick); a type that fails leaves the episode retired
+ * with the Ship it? card as the recovery; a record that fails has the instruction
+ * visibly in the pane with a human looking at it.
+ */
+async function processPromptedWrapup(
+  client: ForemanClient,
+  cfg: ForemanConfig,
+  session: Session,
+  live: Session[],
+  queue: SessionQueue | null,
+): Promise<boolean> {
+  const pcfg = promptedConfig(cfg);
+
+  // The goal is fetched BEFORE the decision because the decision needs it, but it is
+  // one loopback GET and every cheap structural gate is inside `decidePromptedWrapup`
+  // - so on a session that isn't a candidate this costs one request and no model call.
+  // A failed read is not evidence of anything: decide nothing and retry next tick.
+  const goal = await client.goal(session.id).catch(() => null);
+
+  const candidate = decidePromptedWrapup({
+    session,
+    bucket: reportBucket(session, live),
+    queue,
+    goalPrompt: goal?.prompt ?? null,
+    cfg: pcfg,
+    now: Date.now(),
+  });
+  if (candidate.kind === "skip") return false;
+
+  // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
+  // failure and must never reach the verifier, which would otherwise find no proof the
+  // work was done and answer "incomplete" about work that is finished. Here that
+  // mistake is cheap in the right direction (we hold, and type nothing), so each of
+  // these returns WITHOUT stamping - the episode stays armed and retries next tick.
+
+  // No base sha: the whole branch since it diverged is the unit of work, because a
+  // pane-typed session has no per-item scope to anchor to. That is also why
+  // `diffMayIncludeOtherWork` is true below - it always may.
+  const diff = await client.diff(session.id).catch(() => null);
+  if (!diff || !diff.ok) {
+    log(`${session.name}: prompted wrap-up held - could not read the diff`);
+    return false;
+  }
+
+  // An empty diff decides itself, and decides it WITHOUT a model call: the session
+  // changed nothing, so there is nothing to commit, push or open a PR for. This is the
+  // common case for a question-and-answer session ("what does this function do?"), and
+  // it is exactly the case that would otherwise make this trigger obnoxious - a Ship
+  // it? card on every conversation. Stamped, because the answer will not change while
+  // the session sits idle.
+  if (!diff.patch.trim()) {
+    await client.markPromptedWrapup(session.id, candidate.goal).catch(() => {});
+    log(`${session.name}: prompted wrap-up held - the session changed nothing`);
+    return true;
+  }
+
+  const window = await client.transcript(session.id).catch(() => null);
+  if (!window || window.unavailable) {
+    log(`${session.name}: prompted wrap-up held - could not read the transcript`);
+    return false;
+  }
+
+  const standards = await client
+    .standards(session.id, changedPaths(diff.patch))
+    .catch(() => ({ docs: [], truncated: false }));
+
+  // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
+  // is one question, and a second prompt for it would be a second thing to keep true.
+  const result = await verifyItem({
+    session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
+    intent: candidate.goal,
+    round: 0,
+    diff: diff.patch,
+    diffTruncated: diff.truncated,
+    // Always true here: with no per-item base sha the diff is the whole branch, which
+    // may well carry work from before this prompt. Telling the verifier so is what
+    // stops it crediting - or blaming - this ask for someone else's commits.
+    diffMayIncludeOtherWork: true,
+    transcript: window.messages,
+    transcriptTruncated: window.truncated,
+    standards: standards.docs,
+    standardsTruncated: standards.truncated,
+    priorGaps: [],
+  });
+  if (result.kind === "failed") {
+    // Unlike the queue there is no item to escalate and no strike count to keep: a
+    // failed verify just means we learned nothing this tick. Leave the episode armed.
+    log(`${session.name}: prompted wrap-up held - verify failed (${result.reason})`);
+    return true;
+  }
+
+  const plan = planPromptedWrapup(
+    candidate.goal,
+    result.verdict,
+    pcfg,
+    foremanMayActLive(cfg, session.cwd, session.repoRoot),
+  );
+
+  // Retire the episode FIRST - before anything types - for the reason in the header.
+  // A failed stamp aborts: proceeding would be typing an instruction that pushes with
+  // nothing recording that we did, so the next tick would do it again.
+  try {
+    await client.markPromptedWrapup(session.id, plan.goal);
+  } catch (err) {
+    log(`${session.name}: prompted wrap-up aborted - could not retire the episode (${String(err)})`);
+    return true;
+  }
+
+  if (plan.kind === "hold") {
+    log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);
+    return true;
+  }
+
+  if (plan.kind === "ask-wrapup") {
+    // Raising the card IS the whole action here, so a failure to raise it is a dropped
+    // question, not a cosmetic miss: the episode is already retired, so nothing will ask
+    // again. Say so at the same volume as a failed send rather than swallowing it.
+    try {
+      await client.markWrapupAsked(session.id);
+      log(`${session.name}: prompted work looks complete - asked about wrapping up`);
+    } catch (err) {
+      log(`${session.name}: prompted work looks complete but the ask could not be raised (${String(err)})`);
+    }
+    return true;
+  }
+
+  try {
+    await client.inject(session.id, plan.payload);
+  } catch (err) {
+    // Never retry: a retry IS the double-push. Fall back to the card, which is exactly
+    // `ask` mode and puts this same text one click away.
+    log(`${session.name}: could not send the prompted wrap-up (${String(err)}) - asking instead`);
+    await client.markWrapupAsked(session.id).catch(() => {});
+    return true;
+  }
+
+  // Record WHAT was sent, but deliberately NOT `wrapupAskedAt`.
+  //
+  // The card renders on `wrapupAskedAt !== null && wrapupAnswer === null`, so stamping
+  // the ask here would open a window - however brief, and unbounded if the write below
+  // fails - in which the card offers to send an instruction the agent has already been
+  // given. On the drain path that window is accepted because `wrapupAskedAt` is also
+  // that trigger's once-only guard and has to be written. This trigger's guard is
+  // `promptedGoal`, already stamped above, so there is nothing forcing the same
+  // trade-off: leaving the ask unstamped means no card can ever double-offer.
+  await client.setWrapupAnswer(session.id, plan.payload).catch(() => {});
+  log(`${session.name}: prompted work complete - sent "${plan.payload}"`);
+  return true;
 }
 
 /** What triage needs to know about the item Foreman commissioned, if any. */

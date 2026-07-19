@@ -10,6 +10,7 @@ import type {
   ReviewItem,
   Session,
   SessionDiff,
+  SessionGoal,
   SessionNote,
   SessionQueue,
   ToolCall,
@@ -295,6 +296,25 @@ export class ForemanClient implements ForemanActions {
   async setWrapupAnswer(sessionId: string, answer: string): Promise<void> {
     const res = await send("PUT", `/api/sessions/${enc(sessionId)}/queue/wrapup`, { answer });
     if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
+  }
+
+  /**
+   * Retire one episode of the `prompted` trigger. Throws on failure, and the caller
+   * must treat that as fatal to the episode: this write is what stops the trigger
+   * re-firing, so proceeding to type after it failed is the double-push.
+   */
+  async markPromptedWrapup(sessionId: string, goal: string): Promise<void> {
+    const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
+      goal,
+    });
+    if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
+  }
+
+  /** The full goal record - the verbatim prompt, which the card summary never carries. */
+  async goal(sessionId: string): Promise<SessionGoal | null> {
+    const res = await send("GET", `/api/sessions/${enc(sessionId)}/goal`);
+    if (!res.ok) return null;
+    return (await res.json()) as SessionGoal;
   }
 
   note(id: string): Promise<SessionNote | null> {

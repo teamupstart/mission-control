@@ -453,6 +453,21 @@ export interface SessionQueue {
   /** The drain ask fires exactly once - cleared when new items arrive. */
   wrapupAskedAt: number | null;
   wrapupAnswer: string | null;
+  /**
+   * The session goal the `prompted` wrap-up trigger last fired on, or null if it never
+   * has. The trigger's once-per-episode guard: it fires only when the CURRENT goal
+   * differs from this, so a new human prompt re-arms it and an idle session that has
+   * already been wrapped up stays quiet.
+   *
+   * Stored as the goal text verbatim rather than a hash - it is capped at 4000 chars
+   * upstream (`clampPrompt`), so there is nothing to gain by hashing and a collision
+   * here would silently skip a wrap-up nobody could then explain.
+   *
+   * Deliberately separate from `wrapupAskedAt`, which stays the DRAIN trigger's guard.
+   * One field for both would mean a prompted wrap-up consumed the drain ask (or the
+   * reverse) on a checkout that later gets a work queue.
+   */
+  promptedGoal: string | null;
   updatedAt: number;
   items: WorkItem[];
 }

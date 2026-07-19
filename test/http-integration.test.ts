@@ -819,6 +819,48 @@ test("adding to a drained queue re-arms the wrap-up ask", async () => {
   }
 });
 
+test("the drain ask can be raised on a session that has NO queue items", async () => {
+  // The `prompted` trigger's whole premise is a session with no work queue, and the
+  // Ship it? card it raises renders off `wrapupAskedAt` on the queue ROW. This endpoint
+  // used to 404 without a row, which would have made the trigger verify the work,
+  // decide to ask, and then silently drop the question.
+  seedSession();
+  const asked = await app.request("/api/sessions/sess-1/queue/wrapup/asked", {
+    method: "POST",
+    headers: LOOPBACK,
+  });
+  assert.equal(asked.status, 200);
+  const queue = (await asked.json()) as { wrapupAskedAt: number | null; items: unknown[] };
+  assert.ok(queue.wrapupAskedAt, "the ask has somewhere to live");
+  assert.deepEqual(queue.items, [], "and creating that row invented no work");
+});
+
+test("the prompted trigger's episode guard round-trips, and is separate from the drain ask", async () => {
+  // One field for both guards would mean a prompted wrap-up consumed the drain ask (or
+  // the reverse) on a checkout that later gets a work queue. They must not interfere.
+  seedSession();
+  // Read the drain ask's current value rather than assuming null: these tests share one
+  // registry and one db, so an earlier case may have stamped it. UNCHANGED is the real
+  // invariant here anyway - "never null" would pass for a stamp that was already there.
+  const before = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  const askedBefore = ((await before.json()) as { wrapupAskedAt: number | null }).wrapupAskedAt;
+
+  const goal = "add retry handling to the uploader";
+  const res = await app.request("/api/sessions/sess-1/queue/wrapup/prompted", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ goal }),
+  });
+  assert.equal(res.status, 200);
+  const q = (await res.json()) as { promptedGoal: string | null; wrapupAskedAt: number | null };
+  assert.equal(q.promptedGoal, goal);
+  assert.equal(q.wrapupAskedAt, askedBefore, "retiring a prompted episode never touches the drain ask");
+
+  // And it survives a re-read, since it is the thing that stops the trigger re-firing.
+  const read = await app.request("/api/sessions/sess-1/queue", { headers: LOOPBACK });
+  assert.equal(((await read.json()) as { promptedGoal: string | null }).promptedGoal, goal);
+});
+
 test("a second in-flight item is refused with a clean 409, not a raw 500", async () => {
   // The single-flight index is the enforcement and must stay that way - but the
   // raw ERR_SQLITE_ERROR escaping the route meant the daemon logged a stack trace

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { wrapupTriggerOn } from "@shared/queue.ts";
+import type { WrapupTrigger } from "@shared/queue.ts";
 import type { ForemanState } from "../useForeman.ts";
 
 // Topbar control for Foreman, the auto-responder. Shows whether it's off /
 // drafting (dry-run) / acting (live), how deep its queue is, and whether the
 // worker is running; the popover flips the in-the-moment knobs - the mode, the
-// access-approval switch, the work queues, and the on-drain action. The set-once
+// access-approval switch, the work queues, and the wrap-up triggers + action. The set-once
 // posture (cheap tier - off / shadow / on, see docs/plans/foreman-watcher/plan.md -
 // and the live repo allowlist) lives in Settings → Foreman, which the popover
 // deep-links. Mirrors AlertBar's popover pattern.
@@ -14,6 +16,23 @@ const MODE_LABEL: Record<string, string> = {
   "semi-auto": "semi-auto",
   live: "live",
 };
+
+/**
+ * Add or remove one wrap-up trigger, preserving the rest.
+ *
+ * Filter-then-append rather than a toggle on the existing array, so the result is
+ * order-stable and free of duplicates no matter what the server last stored - the
+ * config is a plain persisted array, and a patch that appended blindly would grow
+ * `["drain","drain"]` on a double-click round trip.
+ */
+function toggleTrigger(
+  current: readonly WrapupTrigger[],
+  which: WrapupTrigger,
+  on: boolean,
+): WrapupTrigger[] {
+  const rest = current.filter((t) => t !== which);
+  return on ? [...rest, which] : rest;
+}
 
 /**
  * A bounded number setting that commits on BLUR, not per keystroke.
@@ -144,6 +163,7 @@ export function ForemanPopover({
   const { config, status, update, error } = state;
   if (!config) return null;
   const { enabled, mode, wrapup } = config;
+  const triggers = config.wrapupTriggers;
   const running = status?.running ?? false;
 
   return (
@@ -208,27 +228,58 @@ export function ForemanPopover({
       </fieldset>
 
       {/*
-        What Foreman does when a queue drains. Unlike every other knob here, the two
-        automated options make it TYPE something that pushes - so they are gated on
-        live + allowlist in the machine (step 5), and the hint below says so out loud
-        rather than letting a selected radio quietly do nothing.
+        WHEN a wrap-up fires, then WHAT it does. Two fieldsets rather than one because
+        they are two independent choices - any number of triggers, exactly one action -
+        and a single group would imply the radios belong to whichever box was last
+        ticked. The action group is nested and dimmed while nothing is armed, so the
+        subordination reads visually: with no trigger, there is no moment for an action
+        to happen at, and the radios genuinely do nothing.
+
+        Unlike every other knob here, the two automated actions make Foreman TYPE
+        something that pushes - so they are gated on live + allowlist in the machine,
+        and the hint says so out loud rather than letting a selected radio quietly do
+        nothing.
       */}
       <fieldset className="foreman-modes" disabled={!enabled}>
-        <legend>On drain</legend>
-        {(["ask", "no-mistakes", "pr"] as const).map((w) => (
-          <label className="alert-row" key={w}>
+        <legend>Trigger on</legend>
+        {(["drain", "prompted"] as const).map((t) => (
+          <label className="alert-row" key={t}>
             <input
-              type="radio"
-              name="foreman-wrapup"
-              checked={wrapup === w}
-              onChange={() => void update({ wrapup: w })}
+              type="checkbox"
+              checked={wrapupTriggerOn(triggers, t)}
+              onChange={(e) => void update({ wrapupTriggers: toggleTrigger(triggers, t, e.target.checked) })}
             />
-            {w === "ask" && "Ask me - show the Ship it? card"}
-            {w === "no-mistakes" && "Run /no-mistakes automatically"}
-            {w === "pr" && "Straight to PR - commit, push, open a PR"}
+            {t === "drain" && "Queue drain - every queued item finished"}
+            {t === "prompted" && "Prompted work complete - you asked, the agent finished"}
           </label>
         ))}
-        {enabled && wrapup !== "ask" && mode !== "live" && (
+        {enabled && wrapupTriggerOn(triggers, "prompted") && (
+          <p className="alert-hint dim">Verified against your prompt before it acts.</p>
+        )}
+
+        <fieldset className="foreman-wrapup-action" disabled={triggers.length === 0}>
+          <legend>Then</legend>
+          {(["ask", "no-mistakes", "pr"] as const).map((w) => (
+            <label className="alert-row" key={w}>
+              <input
+                type="radio"
+                name="foreman-wrapup"
+                checked={wrapup === w}
+                onChange={() => void update({ wrapup: w })}
+              />
+              {w === "ask" && "Ask me - show the Ship it? card"}
+              {w === "no-mistakes" && "Run /no-mistakes automatically"}
+              {w === "pr" && "Straight to PR - commit, push, open a PR"}
+            </label>
+          ))}
+        </fieldset>
+
+        {enabled && triggers.length === 0 && (
+          <p className="alert-hint dim">
+            No triggers - Foreman never wraps up on its own. Ship your work yourself.
+          </p>
+        )}
+        {enabled && triggers.length > 0 && wrapup !== "ask" && mode !== "live" && (
           <p className="alert-hint dim">
             Only fires in Live mode on an allowlisted repo - until then Foreman asks.
           </p>

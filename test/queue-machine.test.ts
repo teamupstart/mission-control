@@ -42,6 +42,7 @@ const CFG: QueueConfig = {
   maxFixRounds: 10,
   settleMs: 10_000,
   pickupTimeoutMs: 45_000,
+  wrapupTriggers: ["drain"],
   wrapup: "ask",
 };
 
@@ -136,6 +137,7 @@ function mkQueue(items: WorkItem[], over: Partial<SessionQueue> = {}): SessionQu
     branch: "feature",
     wrapupAskedAt: null,
     wrapupAnswer: null,
+    promptedGoal: null,
     updatedAt: 0,
     items,
     ...over,
@@ -280,7 +282,7 @@ test("tickTargets includes a DRAINED, unasked queue - or ask-wrapup can never fi
   // one queue shape which produces ask-wrapup was never handed to the machine.
   const s = mkSession({ id: "drained", queue: mkSummary({ drained: true, wrapupAskedAt: null }) });
   assert.deepEqual(
-    tickTargets([s]).map((t) => t.id),
+    tickTargets([s], ["drain"]).map((t) => t.id),
     ["drained"],
   );
   // And the machine, once asked about it, does ask about wrapping up.
@@ -289,7 +291,7 @@ test("tickTargets includes a DRAINED, unasked queue - or ask-wrapup can never fi
 
 test("tickTargets skips a drained queue whose wrap-up was already asked", () => {
   const s = mkSession({ queue: mkSummary({ drained: true, wrapupAskedAt: NOW - 5 }) });
-  assert.deepEqual(tickTargets([s]), [], "the ask fires once - don't wake for it again");
+  assert.deepEqual(tickTargets([s], ["drain"]), [], "the ask fires once - don't wake for it again");
 });
 
 test("tickTargets drops an UNINSTRUMENTED drained queue - the selector must be able to end", () => {
@@ -307,7 +309,7 @@ test("tickTargets drops an UNINSTRUMENTED drained queue - the selector must be a
     hooksSeen: false,
     queue: mkSummary({ drained: true, wrapupAskedAt: null }),
   });
-  assert.deepEqual(tickTargets([s]), [], "nothing can advance it, so stop waking for it");
+  assert.deepEqual(tickTargets([s], ["drain"]), [], "nothing can advance it, so stop waking for it");
 
   // The machine agrees: asked anyway, it has nothing to say - no ask-wrapup.
   assert.equal(
@@ -329,7 +331,7 @@ test("tickTargets keeps a merely QUIET session's drained queue - it can still be
     queue: mkSummary({ drained: true, wrapupAskedAt: null }),
   });
   assert.deepEqual(
-    tickTargets([s]).map((t) => t.id),
+    tickTargets([s], ["drain"]).map((t) => t.id),
     ["quiet"],
   );
 });
@@ -344,7 +346,7 @@ test("tickTargets still selects a hookless queue with OPEN work - it needs escal
     queue: mkSummary({ openCount: 1 }),
   });
   assert.deepEqual(
-    tickTargets([s]).map((t) => t.id),
+    tickTargets([s], ["drain"]).map((t) => t.id),
     ["hookless"],
   );
 });
@@ -353,7 +355,7 @@ test("tickTargets includes open work, and ignores a session with no queue", () =
   const open = mkSession({ id: "open", queue: mkSummary({ openCount: 2, totalCount: 2 }) });
   const bare = mkSession({ id: "bare", queue: null });
   assert.deepEqual(
-    tickTargets([open, bare]).map((t) => t.id),
+    tickTargets([open, bare], ["drain"]).map((t) => t.id),
     ["open"],
   );
 });
@@ -371,7 +373,7 @@ test("tickTargets takes needs-you first (oldest-waiting first), and never lists 
   const queued = mkSession({ id: "queued", queue: mkSummary({ openCount: 1 }) });
 
   assert.deepEqual(
-    tickTargets([recent, queued, oldest, both]).map((t) => t.id),
+    tickTargets([recent, queued, oldest, both], ["drain"]).map((t) => t.id),
     ["oldest", "both", "recent", "queued"],
   );
 });
@@ -379,7 +381,7 @@ test("tickTargets takes needs-you first (oldest-waiting first), and never lists 
 test("tickTargets ignores exited sessions and non-claude agents", () => {
   const gone = mkSession({ id: "gone", state: "exited", queue: mkSummary({ openCount: 1 }) });
   const codex = mkSession({ id: "codex", agent: "codex", queue: mkSummary({ openCount: 1 }) });
-  assert.deepEqual(tickTargets([gone, codex]), []);
+  assert.deepEqual(tickTargets([gone, codex], ["drain"]), []);
 });
 
 // ---- decideQueueTick: the precedence, in order ----
@@ -519,6 +521,36 @@ const DRAINED = () => [mkItem({ state: "verified" })];
 
 test("5. wrapup=ask is the original behaviour - Foreman asks and types nothing", () => {
   assert.equal(tick({ items: DRAINED(), cfg: { wrapup: "ask" } }).kind, "ask-wrapup");
+});
+
+test("5. an UNTICKED drain trigger fires nothing at all, whatever the action says", () => {
+  // "Trigger on: Queue drain" unchecked means the human ships their own batches. The
+  // action radio is still set to something - it always is - so this must not read as
+  // "no action configured" and fall through to it.
+  for (const w of ["ask", "no-mistakes", "pr"] as const) {
+    const a = tick({ items: DRAINED(), cfg: { wrapup: w, wrapupTriggers: [] } });
+    assert.equal(a.kind, "none", w);
+  }
+  // ...and `prompted` alone does not arm the drain path either. The two triggers are
+  // independent; a session with a queue is the drain trigger's business or nobody's.
+  assert.equal(
+    tick({ items: DRAINED(), cfg: { wrapupTriggers: ["prompted"] } }).kind,
+    "none",
+  );
+});
+
+test("5. an unticked drain trigger does not CONSUME the ask - re-ticking it still works", () => {
+  // The once-only guard is `wrapupAskedAt`, stamped by the apply step. Returning `none`
+  // above must happen before anything stamps it, or turning the trigger off for an
+  // afternoon would silently retire every queue that drained meanwhile - and re-ticking
+  // the box would fire for none of them.
+  const items = DRAINED();
+  assert.equal(tick({ items, cfg: { wrapupTriggers: [] } }).kind, "none");
+  assert.equal(
+    tick({ items, cfg: { wrapupTriggers: ["drain"] } }).kind,
+    "ask-wrapup",
+    "the ask was deferred, not spent",
+  );
 });
 
 test("5. wrapup=no-mistakes types it when live, instrumented, settled and paned", () => {

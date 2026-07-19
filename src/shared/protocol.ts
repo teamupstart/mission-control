@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { WRAPUP_MODES } from "./queue.ts";
+import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 
 /** Terminal env the hook / MCP client captures, used to bind an event to a session. */
 const EnvSchema = z
@@ -329,10 +329,23 @@ export const ForemanConfigSchema = z.object({
    */
   maxFixRounds: z.number().int().min(1).max(50).default(10),
   /**
-   * What happens when a queue drains (or the agent finishes and reports idle with
-   * nothing left to send).
+   * WHICH moments count as "this session has finished its work" and should wrap up.
+   * Independent of `wrapup`, which says what to DO at whichever moment fires.
    *
-   * `ask` is the shipped behaviour and the default: Foreman marks the drain and the
+   * Defaults to `["drain"]` alone - the shipped behaviour - so an existing install
+   * upgrades without silently arming a second, unattended trigger on every session
+   * it was never watching before. `prompted` is opt-in for exactly that reason.
+   *
+   * An empty list means "never wrap up automatically" and is honoured as written; it
+   * is NOT treated as unset. Someone running the work queue who wants to ship by hand
+   * has no other way to say so, and quietly restoring a default here would type into
+   * their sessions against an explicit choice.
+   */
+  wrapupTriggers: z.array(z.enum(WRAPUP_TRIGGERS)).default(["drain"]),
+  /**
+   * What happens when a wrap-up fires, whichever trigger fired it.
+   *
+   * `ask` is the shipped behaviour and the default: Foreman marks the moment and the
    * human picks from the Wrapup card. `no-mistakes` and `pr` let Foreman type that
    * instruction itself, unattended - the difference between the two is only which
    * text gets sent (see `autoWrapupPayload`).
@@ -668,6 +681,21 @@ export const WrapupSchema = z.object({
   answer: z.string().max(INTENT_MAX).nullable(),
 });
 export type Wrapup = z.infer<typeof WrapupSchema>;
+
+/**
+ * Retire one episode of the `prompted` wrap-up trigger: the goal it just decided on.
+ *
+ * INTENT_MAX is generous headroom here, not a tight fit: this carries a whole captured
+ * prompt, which `clampPrompt` has already bounded to ~4k upstream. The bound is about
+ * weight rather than safety - unlike `WrapupSchema.answer` this value is never
+ * delivered into a pane and is only ever compared for equality, so its content is
+ * inert. It still belongs at the boundary, since it is persisted and re-served on
+ * every queue read the worker polls.
+ */
+export const PromptedWrapupSchema = z.object({
+  goal: z.string().min(1).max(INTENT_MAX),
+});
+export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 
 /**
  * Deliver a whole (possibly multi-line) prompt into a session's input as ONE

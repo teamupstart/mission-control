@@ -19,17 +19,24 @@ import { createLimiter, parseModelJson, runStructured } from "./claude-cli.ts";
  *  both the priciest and the least predictable choice. */
 const TITLE_MODEL = envVar("TASK_TITLE_MODEL") ?? "claude-haiku-4-5";
 /**
- * PER-ATTEMPT budget, not the total: `runStructured` retries once on a parse miss (a
- * clean exit whose output won't validate), so the worst case in front of a dispatch is
- * roughly TWICE this - about 16s. A non-zero exit is not retried and costs one budget.
+ * PER-ATTEMPT budget, not a total.
  *
- * Sized for Haiku emitting one short object from one prompt - tighter than the goal
- * refiner's 30s, because this one is in front of the operator rather than behind them:
- * dispatch waits on it (see `TaskManager.create`), so every second here is a second the
- * worktree isn't being cut. Halved from 15s for exactly that reason: the number that
- * matters to the operator is the two-attempt ceiling, not one attempt's.
+ * A TIMEOUT is NOT retried: `runClaudeText` rejects, and `runStructured` returns
+ * `failed` on the first exception rather than trying the second prompt. So the usual
+ * bad case - a slow, missing or logged-out `claude` - costs exactly ONE budget, about
+ * 15s, in front of the dispatch. Only a PARSE MISS (exit 0, output that won't validate)
+ * reaches `runStructured`'s single retry, and only that rarer path costs roughly twice
+ * this.
+ *
+ * 15s and not less, measured rather than guessed. `claude -p` on Haiku with tools off
+ * answers in 6.9-8.5s on a warm machine, which is most of an 8s budget spent before the
+ * model has said anything. At 8s, 2 of 6 untitled dispatches got a model title and the
+ * other 4 paid the full wait and fell back to the first-line heuristic this whole file
+ * exists to replace; at 15s, 6 of 6 were titled. The ceiling is not the cost - a
+ * successful call returns as soon as the model does, so the typical dispatch waits ~7s
+ * whatever this number is. Lowering it only buys a faster failure.
  */
-export const TITLE_TIMEOUT_MS = Number(envVar("TASK_TITLE_TIMEOUT_MS") ?? 8_000);
+export const TITLE_TIMEOUT_MS = Number(envVar("TASK_TITLE_TIMEOUT_MS") ?? 15_000);
 /**
  * Concurrent `claude -p` runs for titling. Dispatch is human-paced, so this is a ceiling
  * rather than a queue - it exists so that pasting a backlog in one burst can't fork a

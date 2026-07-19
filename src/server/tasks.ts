@@ -120,9 +120,12 @@ export class TaskManager {
    * the life of the task and neither of which can be renamed afterwards from the dashboard.
    * Dispatching first and patching the title after would leave every untitled task with a
    * card whose name no longer matches its branch or its terminal, which is worse than the
-   * rough title this feature exists to replace. The wait is bounded by two attempts at
-   * `TITLE_TIMEOUT_MS` each (`runStructured` retries once on a parse miss), so ~16s worst
-   * case and typically a couple of seconds, against a dispatch that spends far longer
+   * rough title this feature exists to replace. The wait is `TITLE_TIMEOUT_MS` per attempt,
+   * and almost always exactly one attempt: a timeout or a missing `claude` makes
+   * `runStructured` return on the first exception rather than retry, so the slow path costs
+   * one budget (~15s) and the answered path costs however long Haiku takes (~7s measured).
+   * Only a parse miss - a clean exit whose output won't validate - takes the second attempt
+   * and so roughly twice the budget. All of it against a dispatch that spends far longer
    * cutting a worktree and waiting for the agent to boot.
    *
    * Never throws: `summariseTaskTitle` reports failure as null, and the title write is

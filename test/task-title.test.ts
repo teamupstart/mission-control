@@ -125,10 +125,22 @@ test("a whitespace-only title is rejected rather than stamped onto the card", as
   assert.equal(callCount(), before + 2, "a parse miss is retried exactly once");
 });
 
-test("the shipped per-attempt budget keeps the dispatch-path ceiling at ~16s", () => {
+test("the shipped per-attempt budget is above real model latency", () => {
+  // MEASURED, not guessed - do not lower this without re-measuring. Against the real
+  // `claude -p` (Haiku, tools off) a single call answered in 6908/7258/7422/7830/8459 ms.
+  // Six untitled intents through the real `summariseTaskTitle` at an 8s budget produced
+  // 2/6 model titles - the other four paid the full 8s and still fell back to the
+  // first-line heuristic this feature exists to replace. The identical six at 15s
+  // produced 6/6. 8s was tried, shipped, and reverted for exactly this reason.
+  //
+  // Nothing ABOVE this line can catch that class of bug: every other test in this file
+  // drives a fake `claude` that answers instantly, so the budget is never the binding
+  // constraint and any value at all would pass. Only a run against the real CLI
+  // exercises the latency, hence a measurement pinned in a comment.
+  //
   // Read from a CHILD process that never saw the override this file pins above. Read in-process
   // it would only prove the env var is wired, and would still pass if the shipped default
-  // regressed to the 15s that made the real ceiling 30s - which is the regression it guards.
+  // regressed - which is the regression it guards.
   const env = { ...process.env };
   delete env.MISSION_TASK_TITLE_TIMEOUT_MS;
   delete env.TASK_TITLE_TIMEOUT_MS;
@@ -144,8 +156,7 @@ test("the shipped per-attempt budget keeps the dispatch-path ceiling at ~16s", (
     { cwd: fileURLToPath(new URL("..", import.meta.url)), env, encoding: "utf8" },
   );
   const shipped = Number(out.trim().split("\n").filter(Boolean).at(-1));
-  // Per ATTEMPT, and the blank case above pins the attempt count at two.
-  assert.equal(shipped, 8000, "two attempts at this must total the documented ~16s ceiling");
+  assert.equal(shipped, 15000, "8s sat below measured model latency and lost 4 titles in 6");
 });
 
 test("dispatching while titling is in flight uses the model's title, not the heuristic one", async () => {

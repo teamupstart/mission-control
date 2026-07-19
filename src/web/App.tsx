@@ -15,6 +15,7 @@ import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
 import type { SessionViewProps } from "./components/layouts/types.ts";
+import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
@@ -51,6 +52,21 @@ export function App(): React.JSX.Element {
   /** When set, the diff viewer shows just this commit (a no-mistakes fix). */
   const [diffCommit, setDiffCommit] = useState<string | null>(null);
   const [resetSessionId, setResetSessionId] = useState<string | null>(null);
+  // Bumped for a session each time it's reset. The compose boxes are uncontrolled
+  // (their text is parked in the draft map, not React state), so clearing the map
+  // alone leaves a box that's OPEN at reset still showing the old text - the same
+  // way clearing the queue wouldn't empty an open panel if the panel weren't driven
+  // by pushed state. This nonce is the reply box's remount key, so a reset re-hydrates
+  // it from the now-empty draft, matching how reset visibly clears the queue.
+  const [resetNonces, setResetNonces] = useState<Record<string, number>>({});
+
+  // A session was reset: forget its half-written send and reply text (the reset
+  // discarded the task they were about), and bump its nonce so an open reply box
+  // remounts empty rather than keeping stale text behind the closing modal.
+  const onSessionReset = useCallback((id: string) => {
+    dropMessageDrafts(id);
+    setResetNonces((m) => ({ ...m, [id]: (m[id] ?? 0) + 1 }));
+  }, []);
   // Which card's title is being edited (its inline rename box is open). App owns
   // this so the rename shortcut and a title click drive the same one card.
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -192,6 +208,7 @@ export function App(): React.JSX.Element {
       setDiffSessionId(id);
     },
     onReset: setResetSessionId,
+    resetNonces,
     registerEl,
     registerActions,
     renamingId,
@@ -595,7 +612,11 @@ export function App(): React.JSX.Element {
       )}
 
       {resetSession && (
-        <ResetModal session={resetSession} onClose={() => setResetSessionId(null)} />
+        <ResetModal
+          session={resetSession}
+          onReset={() => onSessionReset(resetSession.id)}
+          onClose={() => setResetSessionId(null)}
+        />
       )}
 
       {sessions.length === 0 && (

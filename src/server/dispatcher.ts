@@ -52,7 +52,11 @@ export class Dispatcher {
       const agentBin = await resolveBinPath(configured);
       if (!agentBin) throw new Error(`agent binary "${configured}" not found on PATH`);
 
+      // The branch and worktree take the git-safe slug; the tmux session (which is what
+      // the card is named after) takes the human-readable label, so an untitled dispatch
+      // reads like a heading instead of `add-a-dark-mode-toggle`.
       const slug = slugify(task.title);
+      const label = sessionLabel(task.title);
       const shortId = taskId.slice(0, 6);
 
       const wt = await provisionWorktree(task.repoRoot, taskId, slug, shortId, () =>
@@ -62,7 +66,7 @@ export class Dispatcher {
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
 
-      const tmuxSession = await spawnUniquely(slug, shortId, wt.path, agentBin);
+      const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin);
       this.patch(taskId, { tmuxSession });
       if (await this.abortIfSettled(taskId)) return;
 
@@ -430,7 +434,7 @@ export async function spawnDetachedSession(
 
 // ---- pure helpers (unit-tested) ----
 
-/** A tmux-safe, human-readable slug from a task title. */
+/** A filesystem/git-safe slug from a task title - the branch and worktree name. */
 export function slugify(title: string): string {
   const out = title
     .toLowerCase()
@@ -441,37 +445,90 @@ export function slugify(title: string): string {
   return out || "task";
 }
 
-/** First non-empty line of the intent, trimmed - a sensible default task title. */
-export function deriveTitle(intent: string): string {
-  const line = intent.split("\n").map((l) => l.trim()).find(Boolean) ?? "task";
-  return line.length > 60 ? line.slice(0, 59) + "…" : line;
+/**
+ * A tmux-safe, human-readable session name from a task title - what the card shows.
+ *
+ * Unlike `slugify` (which the git branch needs, so it's lowercase and hyphenated), this
+ * keeps the title's spaces and capitals so the card reads like a heading rather than a
+ * slug. It only strips what a tmux name genuinely can't hold: control characters and the
+ * `.` and `:` that separate a tmux target (`session:window.pane`), plus any leading run
+ * of the target-spec sigils `=` (exact-match), `$` (session ID) and `{` (special token).
+ * A name that led with one of those would make `-t` targets - `has-session`,
+ * `kill-session`, the `name:0.0` split/select - resolve to the wrong session or to none.
+ * That last guard reaches slightly past `validateSessionName`, which bars only a leading
+ * `$`. Focus / kill / teardown all pass this as a single argv, so interior spaces are safe.
+ */
+export function sessionLabel(title: string): string {
+  const out = title
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/[.:]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[=${]+/, "")
+    .trim()
+    .slice(0, 60)
+    .trim();
+  return out || "task";
 }
 
-async function uniqueTmuxSessionName(slug: string, shortId: string): Promise<string> {
+// Small words a title leaves lowercase unless they lead it - so an auto-title reads the
+// way a person would write one, not Shouting Every Word.
+const TITLE_MINOR_WORDS = new Set([
+  "a", "an", "and", "as", "at", "but", "by", "for", "in", "nor", "of", "on", "or", "per",
+  "the", "to", "vs", "via", "with",
+]);
+
+/**
+ * Title-case a line so an auto-derived title reads like a heading. Words that already
+ * carry a capital are left exactly as typed - so acronyms, camelCase and file names
+ * (`API`, `useEffect`, `App.tsx`) survive rather than being flattened.
+ */
+function titleCase(line: string): string {
+  return line
+    .split(/\s+/)
+    .map((word, i) => {
+      if (!word || /[A-Z]/.test(word)) return word;
+      if (i > 0 && TITLE_MINOR_WORDS.has(word.toLowerCase())) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+}
+
+/**
+ * A sensible default task title from the intent: its first non-empty line, title-cased
+ * so a dispatch left untitled still names its card like a heading, capped at 60.
+ */
+export function deriveTitle(intent: string): string {
+  const line = intent.split("\n").map((l) => l.trim()).find(Boolean) ?? "task";
+  const titled = titleCase(line);
+  return titled.length > 60 ? titled.slice(0, 59) + "…" : titled;
+}
+
+async function uniqueTmuxSessionName(baseName: string, shortId: string): Promise<string> {
   const r = await run("tmux", ["list-sessions", "-F", "#{session_name}"]);
   const taken = new Set(
     r.code === 0 ? r.stdout.split("\n").map((s) => s.trim()).filter(Boolean) : [],
   );
-  return taken.has(slug) ? `${slug}-${shortId}` : slug;
+  return taken.has(baseName) ? `${baseName}-${shortId}` : baseName;
 }
 
 /**
  * Spawn the agent under a session name, closing the check-then-spawn race: if a
- * concurrent dispatch claimed the bare slug between our listing and our spawn,
- * retry once under the always-unique `slug-shortId`. Returns the name actually used.
+ * concurrent dispatch claimed the bare name between our listing and our spawn,
+ * retry once under the always-unique `name-shortId`. Returns the name actually used.
  */
 async function spawnUniquely(
-  slug: string,
+  baseName: string,
   shortId: string,
   cwd: string,
   agentBin: string,
 ): Promise<string> {
-  const name = await uniqueTmuxSessionName(slug, shortId);
+  const name = await uniqueTmuxSessionName(baseName, shortId);
   try {
     await spawnDetachedSession(name, cwd, agentBin);
     return name;
   } catch (err) {
-    const alt = `${slug}-${shortId}`;
+    const alt = `${baseName}-${shortId}`;
     if (name === alt) throw err;
     await spawnDetachedSession(alt, cwd, agentBin);
     return alt;

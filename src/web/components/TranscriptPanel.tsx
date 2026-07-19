@@ -36,11 +36,20 @@ export function TranscriptPanel({
   agent,
   canSend,
   onReplyBox,
+  resetNonce = 0,
   ref,
 }: {
   sessionId: string;
   agent: AgentType;
   canSend: boolean;
+  /**
+   * Bumped whenever this session is reset. The reply box is uncontrolled - its text
+   * lives in the draft map, re-read only on mount - so a reset that clears the draft
+   * wouldn't empty a box that's open on screen. Keying the textarea on this remounts
+   * it, re-hydrating from the (now-empty) draft, so reset visibly clears the reply the
+   * same way it clears the queue.
+   */
+  resetNonce?: number;
   /**
    * Whether this panel is currently rendering a reply box, reported as it changes.
    * The card's send box may only be open when there is none, and whether there is one
@@ -109,6 +118,16 @@ export function TranscriptPanel({
   const attachRef = useRef(attachments);
   attachRef.current = attachments;
   useEffect(() => () => revokeAttachments(attachRef.current), []);
+
+  // A reset discards the task, so the reply's pending images go with its text: the
+  // textarea's remount drops the words, this drops the chips (and frees their previews).
+  // Read through the ref so it sees the list as it stands at reset, and depend on the
+  // nonce alone so an ordinary drop can't wipe itself. On the first mount the list is
+  // empty, so both calls no-op.
+  useEffect(() => {
+    revokeAttachments(attachRef.current);
+    setAttachments([]);
+  }, [resetNonce]);
 
   useEffect(() => {
     setMessages([]);
@@ -208,6 +227,9 @@ export function TranscriptPanel({
           <AttachmentStrip attachments={attachments} onRemove={drop.remove} />
           <div className="compose-row">
             <textarea
+              // Remount on reset so an open box drops the text the reset discarded;
+              // `defaultValue` then re-hydrates from the emptied draft. See `resetNonce`.
+              key={resetNonce}
               ref={inputRef}
               className="transcript-input"
               placeholder={

@@ -22,11 +22,23 @@ import { foremanMayActLive } from "./verdict.ts";
  */
 export class InjectError extends Error {
   readonly mayHaveLanded: boolean;
+  /**
+   * True when the pane refused the write because it is in a tmux mode - see
+   * `ActionResult.paneBlocked`.
+   *
+   * Carried separately from `mayHaveLanded` because the two answer different
+   * questions, and the post-paste Enter is the case that proves it: nothing about
+   * "a person is in copy-mode" says whether text is already in the composer. This
+   * one is about the CAUSE (a human, who will leave) rather than the extent, and
+   * only the cause can say whether an attempt should be charged for it.
+   */
+  readonly paneBlocked: boolean;
 
-  constructor(message: string, mayHaveLanded: boolean) {
+  constructor(message: string, mayHaveLanded: boolean, paneBlocked = false) {
     super(message);
     this.name = "InjectError";
     this.mayHaveLanded = mayHaveLanded;
+    this.paneBlocked = paneBlocked;
   }
 }
 
@@ -63,6 +75,41 @@ export interface QueueActions {
 function mayHaveLanded(err: unknown): boolean {
   return !(err instanceof InjectError) || err.mayHaveLanded;
 }
+
+/**
+ * Whether a failed delivery was refused by a pane in a tmux mode - a human reading
+ * their own scrollback, and nothing else.
+ *
+ * Defaults to false, the opposite of `mayHaveLanded`, and for the same reason: each
+ * defaults to the answer that costs less when wrong. Guessing "might have landed"
+ * escalates to a human who can look at the pane; guessing "a human is blocking it"
+ * would retry a genuinely broken send forever, silently, with nobody looking.
+ */
+function paneBlocked(err: unknown): boolean {
+  return err instanceof InjectError && err.paneBlocked;
+}
+
+/**
+ * How long an item waits after a pane refused its delivery.
+ *
+ * Without it the send re-fires every `IDLE_MS` (4s) for as long as someone is scrolling
+ * - two item-state writes, a scope capture and a subprocess each time, plus a "held
+ * off" line in the log per tick - to re-learn the one fact that has not changed. 30s
+ * costs a person at most half a minute of extra wait after they leave the mode, which
+ * is invisible against a queue whose other latencies are settle windows and reviews.
+ */
+export const PANE_BLOCKED_BACKOFF_MS = 30_000;
+
+/**
+ * Items parked behind a pane in a tmux mode, and when each may be tried again.
+ *
+ * Deliberately in memory and NOT on the item. It is a rate limit, not a fact about the
+ * work: losing it on restart costs one extra probe, whereas persisting it would put a
+ * second, staler notion of "when may this send" beside the state machine's - and this
+ * module's whole discipline is that the machine owns every such decision. Entries are
+ * dropped as they expire, so the map holds only what is parked right now.
+ */
+const blockedUntil = new Map<string, number>();
 
 /** noteKeyFor, inlined so this module doesn't drag the whole registry in. */
 export function noteKeyOf(s: Session): string {
@@ -337,6 +384,15 @@ export async function applyQueueAction(
 
     case "send":
     case "resend": {
+      // Still parked behind someone's copy-mode. Say `noop` rather than `aborted`: an
+      // abort is a thing that went wrong and the loop logs it, while this is the
+      // backoff working exactly as intended.
+      const parkedUntil = blockedUntil.get(action.item.id);
+      if (parkedUntil !== undefined) {
+        if (parkedUntil > now) return { kind: "noop" };
+        blockedUntil.delete(action.item.id);
+      }
+
       const obs = observe(session, action.item);
       const guard = await queueSendStillValid(actions, obs, cfg, now);
       if (!guard.ok) {
@@ -389,6 +445,29 @@ export async function applyQueueAction(
           });
           return { kind: "aborted", why: "send failed and may have half-landed; escalated" };
         }
+
+        // A pane in a tmux mode refused it, and nothing was written. This is a PERSON
+        // reading their own scrollback, not a fault of the item, the session, or the
+        // daemon - so it must not spend the item's finite delivery budget. Charging it
+        // escalated an item permanently after three ticks, roughly twelve seconds of
+        // someone scrolling, with a "could not deliver this item" reason that named a
+        // condition which had already cleared by the time anyone read it.
+        //
+        // Rolling `sendAttempts` back to its pre-write value is what makes that true.
+        // The count is incremented BEFORE the inject (so a crash mid-send is visible),
+        // so merely declining to escalate here would still leave the attempt spent and
+        // the cap three refusals away. Note this cannot mask a real delivery problem:
+        // it is reached only for a refusal that positively reported writing nothing,
+        // and any other failure of the same send still counts normally.
+        if (paneBlocked(err)) {
+          blockedUntil.set(action.item.id, now + PANE_BLOCKED_BACKOFF_MS);
+          await actions.setItemState(target.id, action.item.id, {
+            state: "queued",
+            sendAttempts: action.item.sendAttempts,
+          });
+          return { kind: "aborted", why: `the pane is in a tmux mode - waiting (${String(err)})` };
+        }
+
         const attempts = action.item.sendAttempts + 1;
         if (attempts >= SEND_ATTEMPT_CAP) {
           await actions.setItemState(target.id, action.item.id, {

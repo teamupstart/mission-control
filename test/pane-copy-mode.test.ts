@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { injectPrompt, selectPaneOption, sendText, type InjectDeps } from "../src/server/actions.ts";
+import {
+  injectPrompt,
+  selectPaneOption,
+  sendText,
+  type InjectDeps,
+  type PaneDeps,
+} from "../src/server/actions.ts";
 import { readTmuxPaneMode } from "../src/server/discovery/tmux.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
@@ -27,8 +33,15 @@ const tmuxSession = (paneId = "%1"): Session =>
 
 const ok = (stdout: string): RunResult => ({ stdout, stderr: "", code: 0 });
 
-/** Answer the mode probe with `inMode`, and record everything else that was attempted. */
-function harness(inMode: string, mode = "copy-mode"): { deps: InjectDeps; argv: string[] } {
+/**
+ * Answer the mode probe with `inMode`, and record everything else that was attempted.
+ *
+ * `screen` is what a pane read returns, which is what makes the MENU writers drivable
+ * here: `selectPaneOption` reads the dialog off the pane before it touches a key, so
+ * without a screen showing one it refuses for want of a menu and never reaches the
+ * guard at all - an assertion that passes whether or not the guard exists.
+ */
+function harness(inMode: string, mode = "copy-mode", screen = ""): { deps: InjectDeps; argv: string[] } {
   const argv: string[] = [];
   return {
     argv,
@@ -39,11 +52,18 @@ function harness(inMode: string, mode = "copy-mode"): { deps: InjectDeps; argv: 
         argv.push(line);
         return ok("");
       },
-      capture: async () => "",
+      capture: async () => screen,
       sleep: async () => {},
     },
   };
 }
+
+/** The `PaneDeps` half, for the writers that need no clock. */
+const paneDeps = (h: { deps: InjectDeps }): PaneDeps => ({ exec: h.deps.exec, capture: h.deps.capture });
+
+/** A menu on screen, in the shape `parsePaneDialog` reads, with the cursor on `cursor`. */
+const menu = (cursor: number): string =>
+  ["Which way should this go?", "", ...["Ship it", "Hold it"].map((label, i) => `${cursor === i + 1 ? "❯" : " "} ${i + 1}. ${label}`)].join("\n");
 
 // ---- the probe ----
 
@@ -102,6 +122,86 @@ test("a pane in no mode is written to exactly as before", async () => {
   assert.ok(argv.some((a) => a.includes("paste-buffer")), "the paste still happens");
 });
 
+// Every writer below reaches tmux through the same `tmuxSendKeys` choke point, and each is
+// asserted through the injected exec rather than a live tmux. The real-tmux case at the
+// bottom is what proves the PREMISE (tmux really does swallow these), but it is skipped on
+// a runner without tmux - so if these were left to it, a change that dropped the probe from
+// `tmuxSendKeys` would go green on exactly the machines nobody is watching.
+
+test("sendText is refused, and types nothing, when the pane is in a mode", async () => {
+  const h = harness("1");
+  const r = await sendText(tmuxSession(), "hello", true, paneDeps(h));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.paneBlocked, true, "the caller can tell this from a broken send");
+  assert.match(r.error ?? "", /copy-mode/);
+  assert.deepEqual(h.argv, [], "neither the text nor the Enter was sent");
+});
+
+test("the Enter that answers a menu is refused when the pane is in a mode", async () => {
+  // The production shape of the original bug: a real menu IS on screen with the cursor
+  // already on the target row, so the walk is a no-op and Enter - the one irreversible
+  // keystroke - is all that remains. Nothing but the guard can stop it here.
+  const h = harness("1", "copy-mode", menu(1));
+  const r = await selectPaneOption(tmuxSession(), { number: 1, label: "Ship it" }, paneDeps(h));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.paneBlocked, true);
+  assert.match(r.error ?? "", /copy-mode/, "the refusal names the mode, not a missing menu");
+  assert.deepEqual(h.argv, [], "no Enter was pressed at a menu that would not have taken it");
+});
+
+test("the arrow that walks onto a menu row is refused when the pane is in a mode", async () => {
+  // Cursor on row 1, target row 2: the first keystroke is an arrow, so this covers the
+  // other half of the menu walk. An arrow commits nothing, but a swallowed one strands
+  // the walk into pressing Enter on whatever row it wrongly believes it reached.
+  const h = harness("1", "copy-mode", menu(1));
+  const r = await selectPaneOption(tmuxSession(), { number: 2, label: "Hold it" }, paneDeps(h));
+
+  assert.equal(r.ok, false);
+  assert.equal(r.paneBlocked, true);
+  assert.match(r.error ?? "", /copy-mode/);
+  assert.deepEqual(h.argv, [], "not even an arrow was sent");
+});
+
+test("a menu on a pane in no mode is still answered normally", async () => {
+  // The guard's counterpart: the three tests above must fail because of the MODE, not
+  // because the harness can't answer a menu at all.
+  const h = harness("0", "copy-mode", menu(1));
+  const r = await selectPaneOption(tmuxSession(), { number: 1, label: "Ship it" }, paneDeps(h));
+
+  assert.equal(r.ok, true);
+  assert.ok(h.argv.some((a) => a.includes("send-keys -t %1 Enter")), "the Enter still goes through");
+});
+
+test("an Enter swallowed AFTER the paste says so, and does not claim nothing happened", async () => {
+  // The one refusal that is not a clean no-op. The pane is free when the prompt is
+  // pasted and in copy-mode by the time the Enter goes, so the text really is sitting in
+  // the composer - and a caller told `pasted: false` here would paste a second copy on
+  // top of it. `pasted: true` is what routes it to a human instead.
+  let pasted = false;
+  const argv: string[] = [];
+  const deps: InjectDeps = {
+    exec: async (bin, args) => {
+      if (args.includes("display-message")) return ok(pasted ? "1\x1fcopy-mode" : "0\x1f");
+      if (args.includes("paste-buffer")) pasted = true;
+      argv.push([bin, ...args].join(" "));
+      return ok("");
+    },
+    capture: async () => "",
+    sleep: async () => {},
+  };
+
+  const r = await injectPrompt(tmuxSession(), "do the thing", deps);
+
+  assert.equal(r.ok, false);
+  assert.equal(r.pasted, true, "the text IS in the composer - re-pasting would double it");
+  assert.equal(r.paneBlocked, true);
+  assert.match(r.error ?? "", /unsubmitted/, "it says where the text actually is");
+  assert.match(r.error ?? "", /copy-mode/, "and names the mode to clear");
+  assert.ok(!argv.some((a) => a.includes("send-keys")), "no Enter was spent on a pane that would eat it");
+});
+
 // ---- against a real pane ----
 
 function tmuxAvailable(): boolean {
@@ -123,11 +223,14 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
   const tmux = (paneId: string): TmuxInfo => ({ session: sessName, window: "0", windowIndex: 0, paneId });
   try {
     // A pane that appends every line it receives, so "did the child see it" is a fact on
-    // disk rather than an inference from the screen.
+    // disk rather than an inference from the screen. It paints a menu first, in the shape
+    // `parsePaneDialog` reads, so the `selectPaneOption` case below has something real to
+    // be refused at - see that assertion for why a menu-less pane would prove nothing.
     const sink = `/tmp/${sessName}.out`;
+    const paint = 'printf "Which way should this go?\\n\\n\\xe2\\x9d\\xaf 1. Ship it\\n  2. Hold it\\n"';
     execFileSync("tmux", [
       "new-session", "-d", "-s", sessName, "-x", "120", "-y", "30",
-      `sh -c 'while IFS= read -r l; do echo "$l" >> ${sink}; done'`,
+      `sh -c '${paint}; while IFS= read -r l; do echo "$l" >> ${sink}; done'`,
     ]);
     const paneId = execFileSync("tmux", ["list-panes", "-t", sessName, "-F", "#{pane_id}"]).toString().trim();
     const session = { id: "real", agent: "claude", tmux: tmux(paneId), wezterm: null } as Session;
@@ -147,8 +250,14 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
 
     // The exact production shape: answering a menu row. Enter is the irreversible
     // keystroke, so this must refuse before pressing it.
-    const picked = await selectPaneOption(session, { number: 1, label: "anything" });
+    //
+    // The menu has to be REAL, printed onto the pane before copy-mode was entered, or
+    // this asserts nothing: `selectPaneOption` reads the dialog off the screen first and
+    // refuses a pane with no menu on it, which is a refusal the guard plays no part in
+    // and which passes identically with the guard deleted.
+    const picked = await selectPaneOption(session, { number: 1, label: "Ship it" });
     assert.equal(picked.ok, false, "a menu is not 'answered' by an Enter tmux ate");
+    assert.match(picked.error ?? "", /copy-mode/, "refused for the MODE, not for want of a menu");
 
     execFileSync("tmux", ["send-keys", "-X", "-t", paneId, "cancel"]);
     const after = await sendText(session, "AFTER", true);

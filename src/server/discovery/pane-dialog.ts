@@ -1,5 +1,4 @@
-import { capturePaneText } from "./pane-capture.ts";
-import type { PaneDialog, Session } from "@shared/types.ts";
+import type { PaneDialog } from "@shared/types.ts";
 
 /**
  * Read a Claude option dialog - a permission prompt, an `AskUserQuestion` menu, the
@@ -201,11 +200,6 @@ function readDetail(lines: string[], row: number, nextRow: number): string | und
     block.push(line);
   }
   return block.length ? block.join(" ") : undefined;
-}
-
-/** Read the option dialog a session's pane is showing, or null when it isn't showing one. */
-export async function readPaneDialog(session: Pick<Session, "tmux" | "wezterm">): Promise<PaneDialog | null> {
-  return parsePaneDialog(await capturePaneText(session));
 }
 
 /**

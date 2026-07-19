@@ -48,6 +48,29 @@ export function activePaneDialog(s: Session): PaneDialog | null {
   return s.state === "exited" ? null : s.paneDialog;
 }
 
+/**
+ * What makes two reads of the pane the SAME question: the prompt and the rows offered.
+ *
+ * The dialog is re-parsed from the screen every poll, so object identity says nothing and
+ * every consumer needs this same notion - the card to decide whether a failure message is
+ * still about the menu it was raised on, the alerter to decide whether a menu is news.
+ * `highlighted` is excluded on purpose: a cursor moving in the terminal is the same
+ * question being read again, not a new one to re-announce.
+ */
+export function dialogIdentity(dialog: PaneDialog): string {
+  return JSON.stringify([dialog.prompt ?? "", dialog.options.map((o) => [o.number, o.label])]);
+}
+
+/**
+ * How a menu describes itself in one line. The count is what tells a permission prompt
+ * (2-3 rows) from a question worth opening the card for. Shared so the wording lives in
+ * one place while each caller keeps its own view of how a menu RANKS against other
+ * reasons - which is not the same question, and the two disagree (see `needsYouReason`).
+ */
+export function paneDialogReason(dialog: PaneDialog): string {
+  return `${dialog.options.length} options to pick from`;
+}
+
 /** True while a no-mistakes run is parked at a gate, awaiting the agent's decision. */
 function gatePending(s: Session): boolean {
   return Boolean(s.nomistakes && (s.nomistakes.awaitingAgent || s.nomistakes.gateStep));
@@ -164,10 +187,12 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
 export function needsYouReason(s: Session, sessions: Session[] = [s]): string | null {
   if (s.pendingReviews > 0) return s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review";
   // Ahead of `awaiting_input`, which is the same fact reported more vaguely: when we can
-  // see the menu we can say how many ways out of it there are, and the count is what tells
-  // a permission prompt (2-3 rows) from a question worth opening the card for.
+  // see the menu we can say how many ways out of it there are. Below `pendingReviews`
+  // though - this ranks reasons for someone TRIAGING a board, where a review is the more
+  // specific ask. An alerter announcing a menu the moment it opens ranks them the other
+  // way round and so words itself from `paneDialogReason` directly.
   const dialog = activePaneDialog(s);
-  if (dialog) return `${dialog.options.length} options to pick from`;
+  if (dialog) return paneDialogReason(dialog);
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
   if (gateParked(s, sessions)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;

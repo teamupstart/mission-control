@@ -14,7 +14,13 @@
 // deliverable/bufferable below). That inversion is the whole point of away mode.
 
 import type { Session, Task } from "./types.ts";
-import { activePaneDialog, gateParked, needsYouReason, reportBucket } from "./session.ts";
+import {
+  activePaneDialog,
+  dialogIdentity,
+  gateParked,
+  paneDialogReason,
+  reportBucket,
+} from "./session.ts";
 import { newWrapupAsk, wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 
@@ -130,6 +136,8 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
 
     // needs-input: the agent is blocked on you (awaiting input or a review decision).
     const blocked = (st: Session["state"]) => st === "awaiting_input" || st === "awaiting_review";
+    const dialog = activePaneDialog(s);
+    const beforeDialog = before ? activePaneDialog(before) : null;
     if (blocked(s.state) && !(before && blocked(before.state))) {
       alerts.push({
         id: `input:${s.id}`,
@@ -139,22 +147,31 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         sessionId: s.id,
         severity: "attention",
       });
-    } else if (activePaneDialog(s) && !(before && activePaneDialog(before))) {
+    } else if (dialog && (!beforeDialog || dialogIdentity(beforeDialog) !== dialogIdentity(dialog))) {
       // The same "blocked on you" alert, reached the other way: the states above are
       // hook-reported and therefore blank for exactly the uninstrumented session a menu
       // is the only evidence for - the case `reportBucket` and `stateDisplay` were taught
-      // to see and this was not, so the board badged it and nothing rang. Edge-triggered
-      // on the menu APPEARING, so it doesn't re-fire while the same one stays up.
+      // to see and this was not, so the board badged it and nothing rang.
+      //
+      // Edge-triggered on a DIFFERENT question rather than on a dialog merely being
+      // present: answering a permission prompt only for the next one to open inside the
+      // same 1.5s poll leaves a menu on both sides of the transition, and a presence test
+      // reads that as "still parked" and says nothing about the new question.
       //
       // `else if` rather than its own block: an instrumented session hits both paths on
       // the same tick (the Notification hook flips the state as the dialog is captured),
       // and one blocked session is one alert. Same id for the same reason - kind and
       // subject match, so a repeat replaces its toast rather than stacking a second.
+      //
+      // Worded off the dialog rather than through `needsYouReason`, whose ranking is
+      // built for triage and puts an open review first: the event being announced here
+      // is the menu, so a session that also has reviews waiting must not get a toast
+      // that says "to review" about a question that just opened.
       alerts.push({
         id: `input:${s.id}`,
         kind: "needs-input",
         title: `${label} needs you`,
-        body: needsYouReason(s) ?? "needs an answer",
+        body: paneDialogReason(dialog),
         sessionId: s.id,
         severity: "attention",
       });

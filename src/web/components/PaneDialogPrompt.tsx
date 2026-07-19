@@ -1,11 +1,7 @@
 import { useState } from "react";
 import type { PaneDialog } from "@shared/types.ts";
+import { dialogIdentity } from "@shared/session.ts";
 import { api } from "../lib/api.ts";
-
-/** What makes this the SAME question as the last poll's: the prompt and the rows offered. */
-function dialogIdentity(dialog: PaneDialog): string {
-  return JSON.stringify([dialog.prompt ?? "", dialog.options.map((o) => [o.number, o.label])]);
-}
 
 /**
  * The option menu a session's terminal is parked on, rendered as buttons the human can
@@ -39,9 +35,8 @@ export function PaneDialogPrompt({
   // the question above it. Without this the failure message outlives the menu it was
   // about and renders under a different question with different rows, reporting a
   // failure on an attempt nobody made. Done here rather than by keying at the two call
-  // sites so neither can forget it, and on identity rather than object equality because
-  // the dialog is re-parsed from the pane every poll. `highlighted` is left out: the
-  // cursor moving in the terminal is the same question, not a new one.
+  // sites so neither can forget it, and on `dialogIdentity` because the dialog is
+  // re-parsed from the pane every poll, so object equality would fire on every tick.
   const identity = dialogIdentity(dialog);
   const [shownFor, setShownFor] = useState(identity);
   if (shownFor !== identity) {

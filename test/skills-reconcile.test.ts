@@ -362,7 +362,7 @@ test("a daemon on an isolated home never touches another home's skill links", ()
   mkdirSync(isolated, { recursive: true });
   symlinkSync(source, join(shared, "mission-html-plans"), "dir");
 
-  const env = { ...process.env, HOME: fakeHome, MISSION_HOME: isolated };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome, MISSION_HOME: isolated };
   // The reason the bug reached production: the isolated daemon inherits no skills dir of
   // its own, so it fell through to the shared one. Leave it that way here.
   delete env.CLAUDE_SKILLS_DIR;

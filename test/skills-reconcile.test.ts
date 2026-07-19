@@ -396,3 +396,41 @@ test("a daemon on an isolated home never touches another home's skill links", ()
     "an isolated home reconciles a directory inside itself, not the machine's",
   );
 });
+
+test("an ordinary daemon - no home override - still installs into ~/.claude/skills", () => {
+  // The other half of the scoping rule, and the more dangerous half to get wrong. Sending
+  // an isolated daemon somewhere private costs nothing; sending the DEFAULT one somewhere
+  // private disables every skill on every real install, because `claude` loads global
+  // skills from ~/.claude/skills and nowhere else. Nothing would error - sessions would
+  // just quietly stop seeing skills.
+  //
+  // A child process again, for the same reason as above: the directory is resolved from
+  // the environment at startup, and this file pins CLAUDE_SKILLS_DIR at module scope. The
+  // failure this pins is a refactor that makes the override branch unconditional, so the
+  // env has to be genuinely bare - every home prefix `envVar` reads, not just MISSION_.
+  const fakeHome = join(home, "default-install", "operator-home");
+  mkdirSync(fakeHome, { recursive: true });
+
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: fakeHome };
+  delete env.CLAUDE_SKILLS_DIR;
+  for (const prefix of ["MISSION", "FLEET", "HARNESS"]) delete env[`${prefix}_HOME`];
+
+  const out = execFileSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      'const r = await import("./src/server/skills/reconcile.ts");' +
+        "console.log(r.claudeSkillsDir());",
+    ],
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), env, encoding: "utf8" },
+  );
+
+  assert.equal(
+    out.trim().split("\n").filter(Boolean).at(-1),
+    join(fakeHome, ".claude", "skills"),
+    "only an explicit home override may redirect the skills dir - the default is where claude reads",
+  );
+});

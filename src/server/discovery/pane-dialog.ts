@@ -121,34 +121,67 @@ const PROMPT_SCAN_LINES = 8;
  * Anchored on the question mark rather than on proximity, because the nearest text above
  * the rows is routinely NOT the question. The folder-trust check renders
  *
- *     Quick safety check: Is this a project you created or one you trust?
+ *     Quick safety check: Is this a project you created or one you trust? (Like your own
+ *     code, a well-known open source project, or work from your team). If not, take a
+ *     moment to review what's in this folder first.
+ *
+ *     Claude Code'll be able to read, edit, and execute files here.
  *
  *     Security guide
  *
  *     ❯ 1. Yes, I trust this folder
  *
  * where a walk that simply took the closest non-blank block would announce "Security
- * guide" as the question - a confident, wrong label on the one control that matters. The
- * nearest `?` within the window is right on every shape captured here (`AskUserQuestion`,
- * permission prompts, folder-trust), and falling back to the adjacent block only when
- * there is no `?` keeps a question worded as an instruction from yielding nothing.
+ * guide" as the question - a confident, wrong label on the one control that matters.
+ *
+ * The `?` may sit ANYWHERE in the line, not just at its end, because the pane hard-wraps:
+ * on a real terminal the trust question breaks mid-sentence, so no line ends with `?` at
+ * all and an end-anchored scan finds nothing - falling through to the adjacent block and
+ * captioning the dialog "Security guide", the exact label this anchor exists to avoid.
+ * Matching anywhere finds the line; `joinBlock` is what makes it readable, because the
+ * line the `?` lands on is a FRAGMENT of the question rather than the question.
+ *
+ * Falling back to the adjacent block only when there is no `?` keeps a question worded as
+ * an instruction from yielding nothing.
  */
 function readPrompt(lines: string[], firstRow: number): string | undefined {
   const top = Math.max(0, firstRow - PROMPT_SCAN_LINES);
   for (let i = firstRow - 1; i >= top; i--) {
-    const line = lines[i]!.trim();
-    if (line.endsWith("?")) return line;
+    if (lines[i]!.includes("?")) return joinBlock(lines, i, top, firstRow) || undefined;
   }
   let i = firstRow - 1;
   while (i >= top && !lines[i]!.trim()) i--;
-  const block: string[] = [];
-  while (i >= top) {
-    const line = lines[i]!.trim();
-    if (!line || RULE.test(line)) break;
-    block.push(line);
-    i--;
-  }
-  return block.length ? block.reverse().join(" ") : undefined;
+  return i >= top ? joinBlock(lines, i, top, firstRow) || undefined : undefined;
+}
+
+/**
+ * The whole wrapped paragraph that line `at` belongs to, joined back into one string.
+ *
+ * Expanded in BOTH directions from the anchor, to the paragraph's own bounds - a blank line
+ * or a rule on either side. The pane is a viewport, so a question reaches us broken across
+ * however many lines the terminal's width forced; the `?` lands on whichever fragment
+ * happened to contain it, which is as likely to be "...take a moment to" as anything
+ * answerable. Reassembling the paragraph is what turns that back into the question a human
+ * is being asked.
+ *
+ * Bounded by `top` above and by the first option row below, so it can neither climb into
+ * the transcript nor swallow the menu it is captioning.
+ */
+function joinBlock(lines: string[], at: number, top: number, end: number): string {
+  let start = at;
+  while (start - 1 >= top && isProse(lines[start - 1]!)) start--;
+  let stop = at;
+  while (stop + 1 < end && isProse(lines[stop + 1]!)) stop++;
+  return lines
+    .slice(start, stop + 1)
+    .map((l) => l.trim())
+    .join(" ");
+}
+
+/** Whether a line is part of a paragraph rather than one of the bounds of one. */
+function isProse(line: string): boolean {
+  const trimmed = line.trim();
+  return Boolean(trimmed) && !RULE.test(trimmed);
 }
 
 /**

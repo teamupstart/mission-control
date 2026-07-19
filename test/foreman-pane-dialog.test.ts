@@ -48,9 +48,25 @@ const PERMISSION = `
  Esc to cancel · Tab to amend · ctrl+e to explain
 `;
 
-/** The folder-trust check, captured live - the two-row shape, cursor on the default. */
+/**
+ * The folder-trust check, captured live at tmux width 180 - the two-row shape, cursor on
+ * the default.
+ *
+ * The question WRAPS here, which is the point: the terminal breaks it mid-sentence, so the
+ * `?` sits in the middle of a line and the line itself trails off at "...take a moment to".
+ * An earlier hand-written version of this fixture put the question on one tidy line ending
+ * in `?`, which is exactly the fixture-agrees-with-the-parser failure the header above
+ * warns about - it passed while the real terminal captioned this dialog "Security guide".
+ */
 const TRUST = `
- Quick safety check: Is this a project you created or one you trust?
+ Accessing workspace:
+
+ /private/var/folders/1c/djbypfjn4px99pjhhdj8xhyc0000gn/T/tmp.FrDjmgBVzT
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to
+ review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
 
  Security guide
 
@@ -59,6 +75,37 @@ const TRUST = `
 
  Enter to confirm · Esc to cancel
 `;
+
+/**
+ * The same dialog captured at width 400, where the question fits on one line.
+ *
+ * Kept alongside the wrapped capture because the two ends of the range fail differently:
+ * this one never wrapped, and STILL does not end in `?` - the sentence continues past it
+ * to "...folder first." So the question mark being the last character on its line is not
+ * something either width delivers, and a scan anchored on the end of a line reads neither.
+ */
+const TRUST_UNWRAPPED = `
+ Accessing workspace:
+
+ /private/var/folders/1c/djbypfjn4px99pjhhdj8xhyc0000gn/T/tmp.soBSopFaYg
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+`;
+
+/** What both captures above are asking, however the terminal happened to break it. */
+const TRUST_QUESTION =
+  "Quick safety check: Is this a project you created or one you trust? (Like your own code, " +
+  "a well-known open source project, or work from your team). If not, take a moment to " +
+  "review what's in this folder first.";
 
 /**
  * A live-fleet menu whose cursor rests on the LAST row, not the first. Claude does not
@@ -268,12 +315,45 @@ test("the question above the rows is read, so the dashboard shows what is being 
 });
 
 test("the question wins over nearer text that isn't one", () => {
-  // The trust check renders a "Security guide" line BETWEEN the question and the rows.
-  // Taking the closest block would label the control with it - confident and wrong.
-  assert.equal(
-    parsePaneDialog(TRUST)?.prompt,
-    "Quick safety check: Is this a project you created or one you trust?",
-  );
+  // The trust check renders "Security guide" - and a whole sentence about what Claude will
+  // be able to do - BETWEEN the question and the rows. Taking the closest block would label
+  // the control with "Security guide": confident, wrong, and on the one control that most
+  // needs to say what it is agreeing to.
+  assert.equal(parsePaneDialog(TRUST)?.prompt, TRUST_QUESTION);
+});
+
+test("a question the terminal wrapped is put back together, not shown as its last fragment", () => {
+  // The defect this closes. The `?` falls mid-line at every width Claude renders this at, so
+  // an end-of-line anchor matched nothing and the fallback captioned the dialog "Security
+  // guide". Finding the line is only half of it: the line the `?` lands on trails off at
+  // "...take a moment to", so a caption taken from that line alone would be a sentence
+  // fragment where a security question belongs.
+  const prompt = parsePaneDialog(TRUST)?.prompt ?? "";
+  assert.ok(prompt.startsWith("Quick safety check:"), prompt);
+  assert.ok(prompt.endsWith("review what's in this folder first."), prompt);
+  assert.ok(!prompt.includes("Security guide"), "the link is never the question");
+  // The continuation line is joined in, rather than the caption stopping where the pane did.
+  assert.ok(prompt.includes("take a moment to review"), prompt);
+});
+
+test("wrapping is a viewport artifact - the same dialog asks the same thing at any width", () => {
+  // Width 180 breaks the question across two lines; width 400 does not. What is being asked
+  // did not change, so what the human is shown must not either.
+  assert.equal(parsePaneDialog(TRUST_UNWRAPPED)?.prompt, TRUST_QUESTION);
+  assert.equal(parsePaneDialog(TRUST_UNWRAPPED)?.prompt, parsePaneDialog(TRUST)?.prompt);
+});
+
+test("the rows and the cursor are unchanged by however the question wrapped", () => {
+  // The question is display-only; reading it must not disturb what a click is checked
+  // against. Both captures still offer the same two rows with the cursor on the default.
+  for (const capture of [TRUST, TRUST_UNWRAPPED]) {
+    const d = parsePaneDialog(capture)!;
+    assert.deepEqual(
+      d.options.map((o) => o.label),
+      ["Yes, I trust this folder", "No, exit"],
+    );
+    assert.equal(d.highlighted, 1);
+  }
 });
 
 test("a row's description is carried alongside its label, never folded into it", () => {

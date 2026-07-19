@@ -264,8 +264,9 @@ export interface Session {
    * Deliberately NOT sticky across polls, unlike `permissionMode`: a dialog that has been
    * dismissed must clear from the card, and a stale one would be a button that answers a
    * question nobody is asking. It is up to one poll (1.5s) old regardless, which is why
-   * clicking a row goes through `POST /api/sessions/:id/select-option` - that re-reads the
-   * pane and refuses unless the row still reads as the label the human was shown.
+   * answering goes through the daemon - `POST /api/sessions/:id/select-option`, or
+   * `submit-options` for a form (see `multiSelect`) - which re-reads the pane and refuses
+   * unless the rows still read as the labels the human was shown.
    */
   paneDialog: PaneDialog | null;
 }

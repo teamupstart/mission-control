@@ -55,7 +55,8 @@ export function activePaneDialog(s: Session): PaneDialog | null {
  * every consumer needs this same notion - the card to decide whether a failure message is
  * still about the menu it was raised on, the alerter to decide whether a menu is news.
  * `highlighted` is excluded on purpose: a cursor moving in the terminal is the same
- * question being read again, not a new one to re-announce.
+ * question being read again, not a new one to re-announce. So is a row's `checked`, for a
+ * reason of its own that this function must not undo - see `PaneOption.checked`.
  */
 export function dialogIdentity(dialog: PaneDialog): string {
   return JSON.stringify([dialog.prompt ?? "", dialog.options.map((o) => [o.number, o.label])]);

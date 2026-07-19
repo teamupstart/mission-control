@@ -53,7 +53,14 @@ export function SessionTile({
         e.dataTransfer.dropEffect = "move";
         setOver(true);
       }}
-      onClick={onOpen}
+      onClick={() => {
+        // Copying a branch name off a tile is a fair thing to want on a triage board,
+        // and the mouseup that ends that drag lands here as a click on the root. Opening
+        // a session out from under the selection you just made is not what you asked for.
+        const sel = typeof window === "undefined" ? null : window.getSelection();
+        if (sel && !sel.isCollapsed) return;
+        onOpen();
+      }}
       onDragLeave={() => setOver(false)}
       onDrop={(e) => {
         setOver(false);
@@ -77,11 +84,19 @@ export function SessionTile({
           Enter/Space-activatable, which a bare div with onClick would not be. It takes
           no pointer events, so it can never swallow a click meant for the content. The
           PR flag is a real link that stops propagation, so it navigates instead of
-          opening the console. */}
+          opening the console.
+
+          It opens the session itself rather than letting its click bubble to the root,
+          because the root declines clicks that merely end a text selection. Reaching a
+          session by keyboard must not depend on whether something happens to be selected
+          somewhere on the page. */}
       <button
         type="button"
         className="tile-open"
-        onClick={onOpen}
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpen();
+        }}
         aria-label={`Open ${session.name || "unnamed session"}`}
       />
 

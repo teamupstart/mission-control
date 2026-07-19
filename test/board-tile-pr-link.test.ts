@@ -132,6 +132,15 @@ test("the stretched open button does not eat the pointer, so tile tooltips survi
   assert.match(rule, /pointer-events:\s*none/);
 });
 
+test("the tile renders where there is no window, which its selection guard reads", () => {
+  // The root's onClick declines a click that only ends a drag-selection, which means
+  // reaching for window.getSelection() during a handler. Server rendering never runs
+  // that handler, but the guard has to stay written so it cannot throw here either -
+  // this pins the `typeof window` check that makes that true.
+  assert.equal(typeof (globalThis as { window?: unknown }).window, "undefined");
+  assert.match(render(withPr), /^<div class="tile /);
+});
+
 test("a PR number with no URL yet stays a plain flag rather than a dead link", () => {
   const html = render({ prNumber: 7, prState: "open", prUrl: null });
   assert.match(html, /<span class="tile-flag pr-open">#7<\/span>/);

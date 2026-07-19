@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentType, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
-import { kill } from "./actions.ts";
+import { injectPrompt, kill } from "./actions.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -98,17 +98,78 @@ export class TaskManager {
   }
 
   /**
+   * Hand a backlog task to an agent that is ALREADY running, instead of cutting a
+   * fresh worktree and launching one. This is what the board's drag-onto-an-idle-
+   * agent gesture calls: the operator has an agent sitting free in the right repo
+   * and would rather feed it than pay for another checkout.
+   *
+   * The critical difference from `dispatch`: an assigned task owns no worktree. The
+   * agent keeps its own checkout - very often the operator's real one - so
+   * `worktreePath` stays null, and that is precisely what keeps a later Cancel from
+   * running `git worktree remove --force` over a directory we did not create.
+   *
+   * Every refusal below is a state conflict the caller should surface, not retry.
+   */
+  async assign(id: string, sessionId: string): Promise<Ok> {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status !== "backlog") return { ok: false, error: `task is ${t.status}, not in the backlog` };
+
+    const s = this.registry.getSession(sessionId);
+    if (!s) return { ok: false, error: "no such session" };
+    if (s.state !== "idle") {
+      return { ok: false, error: `that agent is ${s.state.replace("_", " ")} - drop onto an idle one` };
+    }
+    // Reports idle, but something is already parked on it waiting for the human. The
+    // dashboard files such a session under "needs you" rather than "idle" and won't
+    // offer it as a target; refuse it here too, so the API can't route around a rule
+    // the operator can see being applied on screen.
+    if (s.pendingReviews > 0) {
+      return { ok: false, error: "that agent has a review waiting on you - clear it first" };
+    }
+    // Running a task's intent against the wrong checkout is the one way this gesture
+    // does damage you cannot undo from the dashboard, so a mismatch is refused rather
+    // than best-efforted. Compared on repoRoot, not cwd: a linked worktree of the
+    // task's repo is a legitimate home for it, a different repo never is.
+    if (!s.repoRoot || s.repoRoot !== t.repoRoot) {
+      return { ok: false, error: `that agent is in a different repo (${s.repoRoot ?? "no repo"})` };
+    }
+
+    // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
+    // the agent died between the drop and here) the task must stay in the backlog,
+    // droppable again, rather than sit marked `running` with nothing running it.
+    const r = await injectPrompt(s, t.intent);
+    if (!r.ok) return { ok: false, error: r.error ?? "could not type into the agent's pane" };
+
+    const now = Date.now();
+    this.registry.upsertTask({
+      ...t,
+      status: "running",
+      sessionId: s.id,
+      dispatchedAt: now,
+      updatedAt: now,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Stop a task's agent and reclaim its (ephemeral) worktree, marking it
    * cancelled. A dispatched agent's tree is throwaway - to preserve work you
    * Focus and commit/PR it before cancelling - so cancel always reclaims, which
    * keeps the teardown model simple and leak-free (no keep/remove ambiguity that
    * an in-flight dispatch could race).
+   *
+   * Cancel only kills agents we LAUNCHED. An assigned task (dropped onto an agent
+   * that was already running) never had a tmux session of ours, and killing it would
+   * take down the operator's own session - along with whatever else it was doing
+   * before we handed it this task. For those, cancel means "stop tracking it", and
+   * the human stops the agent themselves if they want it stopped.
    */
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
 
-    if (t.sessionId) {
+    if (t.sessionId && t.tmuxSession) {
       const s = this.registry.getSession(t.sessionId);
       if (s) await kill(s);
     }

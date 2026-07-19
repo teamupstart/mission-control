@@ -5280,6 +5280,8 @@ kbd {
   display: flex;
   padding: 16px 20px 20px;
   overflow-x: auto;
+  /* Anchors the refused-drop message to the board rather than the viewport. */
+  position: relative;
 }
 /* Inter-column spacing lives on the columns, not the flex `gap`: the always-rendered
    zero-width detail track would otherwise draw a phantom gap after the last column and
@@ -5316,6 +5318,10 @@ kbd {
    survives to hold a gap between the rail and the detail. */
 .board:not([data-focus="none"]) .board-col {
   flex-grow: 0;
+  /* flex-basis too, not just min-width: the backlog and an all-clear column are sized
+     by basis rather than by grow, so clearing min-width alone would leave them holding
+     232px / 250px of the rail's space open. */
+  flex-basis: 0;
   min-width: 0;
   opacity: 0;
   border-width: 0;
@@ -5382,6 +5388,7 @@ kbd {
   .board-detail {
     transition:
       flex-grow 0.34s ease,
+      flex-basis 0.34s ease,
       min-width 0.34s ease,
       opacity 0.26s ease,
       border-width 0.34s ease,
@@ -5440,6 +5447,266 @@ kbd {
   text-align: center;
   font-size: 11.5px;
   color: var(--dim);
+}
+
+/* ---- empty columns: all-clear, and the stash the rest fold into ----
+   An empty "needs you" keeps its column but not its share of the width: it has one
+   sentence to say, and 250px says it. Everything else that empties leaves the board
+   entirely (BoardView simply stops rendering it) and reappears as a chip in the
+   stash, so the columns that hold sessions get the whole board. */
+.board-col.is-calm {
+  flex-grow: 0;
+  flex-basis: 250px;
+  min-width: 218px;
+}
+.board-allclear {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 1;
+  margin: 0;
+  padding: 22px 10px;
+  text-align: center;
+}
+.board-allclear-tick {
+  font-size: 17px;
+  line-height: 1;
+  color: var(--idle);
+}
+.board-allclear b {
+  font-size: 12px;
+  font-weight: 640;
+  color: var(--muted);
+}
+.board-allclear span:last-child {
+  font-size: 11px;
+  color: var(--dim);
+}
+/* Put a revealed column back. Sits where the count does on a column that has one. */
+.board-restash {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.board-restash:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel);
+}
+.board-stash {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-left: 14px;
+  padding-top: 2px;
+}
+.board-stash-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--dim);
+  text-align: center;
+}
+.board-stash-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.board-stash-chip:hover {
+  color: var(--muted);
+  border-style: solid;
+  background: var(--panel);
+}
+.board-stash-chip .board-swatch {
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+/* ---- backlog column ----
+   Dashed and off-palette because it holds TASKS, not sessions: nothing in it is a
+   live agent, and it should never be mistaken for a sixth state. Never shrinks or
+   hides when empty - it is a drop target and an inbox, and one that vanishes when
+   empty is one you cannot drop into. */
+.board-backlog {
+  flex-grow: 0;
+  flex-basis: 232px;
+  min-width: 208px;
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--pr-merged) 30%, var(--border));
+  background: color-mix(in oklab, var(--pr-merged) 5%, transparent);
+}
+.board-backlog .board-swatch {
+  border-radius: 2px;
+  background: var(--pr-merged);
+}
+.board-backlog .board-col-head h2 {
+  color: color-mix(in oklab, var(--pr-merged) 65%, var(--fg));
+}
+.bl-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px 9px 13px;
+  background: linear-gradient(var(--panel), var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: grab;
+  transition:
+    transform 0.14s ease,
+    border-color 0.14s ease,
+    opacity 0.14s ease;
+}
+.bl-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: var(--pr-merged);
+  opacity: 0.75;
+}
+.bl-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));
+}
+.bl-card:active {
+  cursor: grabbing;
+}
+.bl-card.is-busy {
+  opacity: 0.55;
+  cursor: default;
+}
+.bl-title {
+  font-size: 12px;
+  line-height: 1.42;
+}
+.bl-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--dim);
+}
+.bl-kind,
+.bl-agent {
+  padding: 0 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+.bl-kind-ship {
+  color: var(--idle);
+}
+.bl-kind-scout {
+  color: var(--working);
+}
+.bl-added {
+  margin-left: auto;
+}
+.bl-launch {
+  align-self: flex-start;
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.bl-launch:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--select) 45%, var(--border));
+}
+.bl-launch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ---- dragging a backlog card over the board ----
+   While a card is in the air the board answers one question and no others: which
+   agents may take it. Everything that can't recedes; the ones that can are the only
+   lit things on screen. */
+.board[data-dragging="task"] .tile:not(.can-drop) {
+  opacity: 0.32;
+}
+.board[data-dragging="task"] .board-col:not(.tone-idle):not(.board-backlog) {
+  opacity: 0.6;
+}
+.tile.can-drop {
+  border-color: color-mix(in oklab, var(--select) 55%, var(--border));
+}
+.tile.drop-over {
+  border-color: var(--select);
+  box-shadow:
+    0 0 0 2px var(--select),
+    0 0 22px color-mix(in oklab, var(--select) 30%, transparent);
+  transform: translateY(-2px);
+}
+.tile-drop-hint {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--select);
+}
+/* A refused drop, reported where the drop happened. Not a toast that steals focus -
+   just a line the operator can read and dismiss. */
+.board-drop-error {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid color-mix(in oklab, var(--danger) 45%, var(--border));
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+}
+.board-drop-error button {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.board-drop-error button:hover {
+  color: var(--fg);
 }
 
 /* ---- board tile ---- */

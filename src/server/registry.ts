@@ -383,7 +383,7 @@ export class Registry extends EventEmitter {
       pendingReviews: this.countPending(d.syntheticId),
       nomistakes: prev?.nomistakes ?? null,
       nomistakesFixes: prev?.nomistakesFixes ?? [],
-      task: this.taskSummaryForCwd(d.cwd),
+      task: this.taskSummaryFor(d.syntheticId, d.cwd),
       nomistakesNarration: prev?.nomistakesNarration ?? null,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
@@ -1068,12 +1068,14 @@ export class Registry extends EventEmitter {
     return [...this.tasks.values()];
   }
 
-  /** Persist + broadcast a task, and refresh any session bound to its worktree. */
+  /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task): void {
     dbUpsertTask(task);
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
     this.syncSessionsForWorktree(task.worktreePath);
+    // An assigned task has no worktree to sync by, so refresh its agent directly.
+    if (task.sessionId) this.resyncSessionTask(task.sessionId);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
   }
 
@@ -1102,6 +1104,7 @@ export class Registry extends EventEmitter {
     dbDeleteTask(id);
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);
+    if (t?.sessionId) this.resyncSessionTask(t.sessionId);
   }
 
   /**
@@ -1202,12 +1205,33 @@ export class Registry extends EventEmitter {
     return undefined;
   }
 
-  /** The active task a session in `cwd` is executing, as a compact card summary. */
-  private taskSummaryForCwd(cwd: string | null): TaskSummary | null {
-    const t = this.activeTaskForCwd(cwd);
+  /** The active task a session is executing, as a compact card summary. */
+  private taskSummaryFor(sessionId: string, cwd: string | null): TaskSummary | null {
+    const t = this.activeTaskFor(sessionId, cwd);
     return t
       ? { id: t.id, title: t.title, kind: t.kind, status: t.status, outcome: t.outcome, outcomeUrl: t.outcomeUrl }
       : null;
+  }
+
+  /**
+   * The task this session is executing.
+   *
+   * Two ways a task reaches an agent, so two ways to correlate one back:
+   *  - ASSIGNED (dropped onto an already-running agent from the backlog). It owns no
+   *    worktree of its own - the agent keeps its existing checkout - so the only link
+   *    is the `sessionId` the assignment stamped on it. Checked first: it is the
+   *    stronger claim, being an explicit binding rather than a path coincidence.
+   *  - DISPATCHED (the daemon cut a worktree and launched an agent in it), which
+   *    correlates by that worktree path - see `activeTaskForCwd`.
+   */
+  private activeTaskFor(sessionId: string, cwd: string | null): Task | undefined {
+    let best: Task | undefined;
+    for (const t of this.tasks.values()) {
+      if (t.sessionId !== sessionId) continue;
+      if (t.status === "backlog" || t.status === "cancelled") continue;
+      if (!best || t.updatedAt > best.updatedAt) best = t;
+    }
+    return best ?? this.activeTaskForCwd(cwd);
   }
 
   /**
@@ -1229,14 +1253,24 @@ export class Registry extends EventEmitter {
 
   private syncSessionsForWorktree(cwd: string | null): void {
     if (!cwd) return;
-    const summary = this.taskSummaryForCwd(cwd);
-    for (const [id, s] of this.sessions) {
-      if (s.cwd !== cwd) continue;
-      if (JSON.stringify(s.task) === JSON.stringify(summary)) continue;
-      const next = { ...s, task: summary };
-      this.sessions.set(id, next);
-      this.emitSession(next);
+    for (const id of this.sessions.keys()) {
+      if (this.sessions.get(id)?.cwd === cwd) this.resyncSessionTask(id);
     }
+  }
+
+  /**
+   * Recompute one session's task chip and emit only if it actually changed.
+   * Per-session rather than per-worktree because an assigned task binds to a single
+   * session id, not to a directory that may hold several agents.
+   */
+  private resyncSessionTask(id: string): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    const summary = this.taskSummaryFor(id, s.cwd);
+    if (JSON.stringify(s.task) === JSON.stringify(summary)) return;
+    const next = { ...s, task: summary };
+    this.sessions.set(id, next);
+    this.emitSession(next);
   }
 
   // ---- Foreman notes (auto-responder) ----

@@ -206,18 +206,20 @@ export function ConsoleDetail({
           </div>
         )}
 
+        {/* Mounted unconditionally, exactly as the grid card does it. Gating this on
+            `session.queue` looked like an empty state but was a dead end: that summary is
+            null until a queue row exists, and the only thing that creates one is adding an
+            item - which happens in WorkQueue's own empty branch, along with the re-attach
+            hint an orphaned (post-`/clear`) queue needs. Hiding the component to say
+            "nothing queued" hid the sole way to queue anything. */}
         {tab === "queue" && (
           <div className="detail-pane">
-            {session.queue ? (
-              <WorkQueue
-                session={session}
-                foremanMode={view.foremanMode}
-                foremanEnabled={view.foremanEnabled}
-                allowlisted={allowlisted}
-              />
-            ) : (
-              <p className="detail-empty">Nothing queued for this session.</p>
-            )}
+            <WorkQueue
+              session={session}
+              foremanMode={view.foremanMode}
+              foremanEnabled={view.foremanEnabled}
+              allowlisted={allowlisted}
+            />
           </div>
         )}
 

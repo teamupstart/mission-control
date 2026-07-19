@@ -5,6 +5,7 @@ import type { TypeOf, ZodTypeAny } from "zod";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
+  AwayConfigPatchSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
@@ -58,6 +59,7 @@ import {
   releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -880,6 +882,14 @@ export function buildApp(
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+
+  // --- Away mode (localhost only) ---
+  app.get("/api/away", (c) => c.json(getAwayConfig()));
+  app.put("/api/away", async (c) => {
+    const parsed = await parseBody(c, AwayConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setAwayConfig(parsed.data));
+  });
 
   // A LEASED heartbeat: acquires when free/expired, renews when already ours, and
   // reports leader:false otherwise. The old bare heartbeat was one module-global

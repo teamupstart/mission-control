@@ -2041,7 +2041,7 @@ body {
   color: var(--fg) !important;
 }
 
-/* ---- markdown (plans) ---- */
+/* ---- markdown (plans, Foreman briefs, chat turns) ---- */
 .markdown {
   padding: 4px 16px 8px;
   font-size: 13.5px;
@@ -2082,6 +2082,13 @@ body {
   border-radius: 4px;
 }
 .markdown pre {
+  /* The mono font and colour belong here, not only on the inner `code`: a fenced block
+     that fails to parse - or arrives mid-stream without its closing fence - still has to
+     read as code rather than silently falling back to the sans body font. */
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg);
   background: var(--bg-2);
   border: 1px solid var(--border-soft);
   border-radius: 8px;
@@ -2091,6 +2098,7 @@ body {
 .markdown pre code {
   background: none;
   padding: 0;
+  font-size: inherit;
 }
 .markdown a {
   color: var(--working);
@@ -2110,6 +2118,130 @@ body {
   padding-left: 12px;
   border-left: 3px solid var(--border);
   color: var(--muted);
+}
+
+/* ---- syntax highlighting (highlight.js token classes) ----
+   Built from the dashboard's own palette rather than dropping in one of highlight.js's
+   stock themes. A stock theme carries its own background and its own idea of a
+   foreground, and a code block that ships a foreign grey into these panels reads as
+   pasted-in. These are the same six tones the rest of the UI already speaks in, so a
+   fence looks like part of the app that contains it.
+
+   Only hue carries meaning here; nothing is bolded. Code in a transcript is being
+   skimmed for shape - where the strings are, where the comments are - and weight
+   competes with the surrounding prose for attention it hasn't earned. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--dim);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-name,
+.hljs-subst {
+  color: var(--purple);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: var(--idle);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-selector-attr,
+.hljs-selector-pseudo,
+.hljs-template-variable {
+  color: var(--attention);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-built_in,
+.hljs-selector-id {
+  color: var(--working);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-class .hljs-title,
+.hljs-selector-class {
+  color: var(--claude);
+}
+.hljs-attr,
+.hljs-property,
+.hljs-variable,
+.hljs-params,
+.hljs-operator,
+.hljs-punctuation {
+  color: var(--fg);
+}
+.hljs-meta,
+.hljs-meta .hljs-keyword,
+.hljs-comment .hljs-doctag {
+  color: var(--muted);
+}
+.hljs-deletion {
+  color: var(--danger);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* ---- formatted chat turns ----
+   The bubble keeps its own padding, size, and per-role tint (see `.turn-text`); the
+   `markdown` class only governs what's inside it. So the shared block's page-level
+   padding and font-size are handed back here - a turn is a bubble, not a document. */
+.turn-text.markdown {
+  /* Undoing `.turn-text`'s `pre-wrap`, which is what makes RAW text readable and what
+     wrecks parsed text: the newlines between generated block elements would each render
+     as a real blank line, pushing every paragraph and fence ~28px apart. Parsed markdown
+     carries its own spacing in margins - `remark-breaks` is what preserves the single
+     newlines *inside* a paragraph that `pre-wrap` used to. */
+  white-space: normal;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* A turn's first and last blocks sit flush against the bubble. Markdown's outer margins
+   would otherwise pad every message unevenly depending on whether it opened with a
+   paragraph, a list, or a fence. */
+.turn-text.markdown > :first-child {
+  margin-top: 0;
+}
+.turn-text.markdown > :last-child {
+  margin-bottom: 0;
+}
+/* Fences sit on the page background rather than `--bg-2`: inside an already-tinted
+   bubble, a panel-coloured block on a panel-coloured bubble has nothing to separate it,
+   and the per-role tints (blue for you, purple for Foreman) make that worse. */
+.turn-text.markdown pre {
+  background: var(--bg);
+  margin: 8px 0;
+}
+.turn-text.markdown code {
+  background: color-mix(in oklab, var(--bg) 60%, transparent);
+}
+.turn-text.markdown pre code {
+  background: none;
+}
+/* Headings in a chat turn are a message's internal structure, not a document outline -
+   an agent's `##` shouldn't tower over the turn it lives in. */
+.turn-text.markdown h1,
+.turn-text.markdown h2,
+.turn-text.markdown h3 {
+  margin: 12px 0 6px;
+  font-size: 13.5px;
+}
+.turn-text.markdown table {
+  font-size: 12.5px;
 }
 
 /* ---- keyboard command bar ---- */
@@ -6039,6 +6171,51 @@ kbd {
   color: var(--working);
 }
 .layout-option-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ---- settings: toggle row ----
+   Deliberately the same card as `.layout-option`, minus the radio's exclusivity. A
+   setting shouldn't change shape depending on whether it's one of three answers or a
+   yes/no, and the two categories sit one click apart in the same rail. */
+.settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.settings-toggle:hover {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.settings-toggle.is-on {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.settings-toggle input {
+  margin: 2px 0 0;
+  accent-color: var(--working);
+}
+.settings-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.settings-toggle-label {
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--fg);
+}
+.settings-toggle-desc {
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--muted);

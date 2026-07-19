@@ -1,6 +1,5 @@
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Markdown } from "./Markdown.tsx";
 import type { NoteDisposition, Session, SessionNoteSummary } from "@shared/types.ts";
 import { allowlistSuggestion, sessionSendBlock } from "../lib/foreman.ts";
 import { api } from "../lib/api.ts";
@@ -124,7 +123,7 @@ export function ForemanNote({
 
       {showProposal && note.brief && (
         <div className="fn-brief markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{note.brief}</ReactMarkdown>
+          <Markdown>{note.brief}</Markdown>
         </div>
       )}
 

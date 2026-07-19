@@ -10,6 +10,8 @@ import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
+import { useRichText } from "../lib/rich-text.tsx";
+import { Markdown } from "./Markdown.tsx";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -285,6 +287,7 @@ export function TranscriptPanel({
 }
 
 function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): React.JSX.Element {
+  const [richText] = useRichText();
   // A turn the human didn't type says who did. Much of the "user" side of a supervised
   // session is Foreman delivering work or the dashboard reloading skills, and reading
   // those back as "you" makes the log claim the human asked for things they never asked
@@ -293,7 +296,14 @@ function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): 
   return (
     <div className={`turn turn-${m.origin ?? m.role}`}>
       <div className="turn-role">{who}</div>
-      {m.text && <div className="turn-text">{m.text}</div>}
+      {m.text && (
+        // Formatted turns still wear `turn-text` - the bubble's colour, padding, and per-role
+        // tint are the same either way. Only what's inside it changes, and `markdown` swaps
+        // the `pre-wrap` raw text for parsed blocks.
+        <div className={`turn-text${richText ? " markdown" : ""}`}>
+          {richText ? <Markdown breaks>{m.text}</Markdown> : m.text}
+        </div>
+      )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} />}
     </div>
   );

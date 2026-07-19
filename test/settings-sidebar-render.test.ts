@@ -37,6 +37,7 @@ const KEYBOARD_ONLY = /Anywhere/; // a keyboard action group label
 const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
 const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
+const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -77,9 +78,28 @@ test("the layout picker offers every layout, with the live one checked", () => {
 });
 
 test("the layout panel is absent from every other category", () => {
-  for (const id of ["keyboard", "skills", "harnesses", "foreman"] as const) {
+  for (const id of ["keyboard", "skills", "harnesses", "foreman", "appearance"] as const) {
     assert.doesNotMatch(render(id), LAYOUT_ONLY, `layout picker leaked into ${id}`);
   }
+});
+
+test("Appearance is a category of its own: its panel shows, the others don't", () => {
+  const html = render("appearance");
+  assert.match(html, APPEARANCE_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, LAYOUT_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>◐<\/span>Appearance/);
+});
+
+test("message formatting is on unless it has been turned off", () => {
+  // `render` mounts the modal with no `RichTextProvider`, so `useRichText` returns its
+  // out-of-provider fallback and `load` never runs. What this pins is that fallback: the
+  // panel shows a checked box, not an unchecked one or no box at all. It says nothing
+  // about what `load` reads from storage; that path is not covered here.
+  const html = render("appearance");
+  const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
+  assert.ok(toggle, "the appearance panel has a checkbox");
+  assert.match(toggle, /checked/);
 });
 
 test("Harnesses is a category of its own: its panel shows, the others don't", () => {

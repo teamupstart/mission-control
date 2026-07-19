@@ -22,7 +22,11 @@ import {
   tickTargets,
 } from "./queue-machine.ts";
 import type { QueueConfig } from "./queue-machine.ts";
-import { decidePromptedWrapup, planPromptedWrapup } from "./prompted-wrapup.ts";
+import {
+  PromptedFailureTracker,
+  decidePromptedWrapup,
+  planPromptedWrapup,
+} from "./prompted-wrapup.ts";
 import type { PromptedConfig } from "./prompted-wrapup.ts";
 import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
@@ -82,26 +86,32 @@ const reviewFailures = new ReviewFailureTracker();
 /** Per-session cooldown so a flapping marker can't trigger back-to-back reviews. */
 const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
-/**
- * Consecutive verify failures on the PROMPTED wrap-up path, per session, alongside the
- * episode they belong to. The queue path bounds the same failure with `failVerify` and
- * the item's durable `verifyFailures`; this path has no item to hold a count, so it
- * keeps one here - and without it a session whose diff permanently defeats the verifier
- * (oversized, malformed, a `claude` binary that always fails) spawns one `claude -p`
- * every tick, forever.
- *
- * In-memory like `ReviewFailureTracker` rather than durable like an item's count, and
- * keyed by SESSION with the goal stored beside it rather than by session+goal: a new
- * human prompt moves the goal, which is exactly when the strikes should reset, so
- * storing the goal makes the reset fall out of the comparison instead of needing a
- * sweep. One entry per session, so it cannot grow without bound.
- */
-const promptedVerifyFailures = new Map<string, { goal: string; failures: number }>();
+/** Consecutive prompted-wrap-up attempts that got nowhere - see PromptedFailureTracker. */
+const promptedFailures = new PromptedFailureTracker();
 
-/** Strikes against THIS episode - a different goal is a different episode, hence zero. */
-function promptedStrikes(sessionId: string, goal: string): number {
-  const seen = promptedVerifyFailures.get(sessionId);
-  return seen && seen.goal === goal ? seen.failures : 0;
+/**
+ * Retire one episode: the write that disarms the trigger, and the ONLY thing that clears
+ * the strikes. Answers whether it landed, because every caller must abort on false - a
+ * tick whose only write failed changed nothing, so reporting it as progress is what
+ * makes the loop skip its IDLE_MS sleep and come straight back.
+ */
+async function retirePromptedEpisode(
+  client: ForemanClient,
+  session: Session,
+  goal: string,
+): Promise<boolean> {
+  try {
+    await client.markPromptedWrapup(session.id, goal);
+    promptedFailures.onRetired(session.id);
+    return true;
+  } catch (err) {
+    const failures = promptedFailures.onFailure(session.id, goal);
+    log(
+      `${session.name}: prompted wrap-up aborted - could not retire the episode ` +
+        `(${failures}x): ${String(err)}`,
+    );
+    return false;
+  }
 }
 
 /** This process's identity for the lease. New per start, by design. */
@@ -422,9 +432,15 @@ function promptedConfig(cfg: ForemanConfig): PromptedConfig {
  *   verify -> stamp `promptedGoal` -> type -> record the answer
  *
  * Every failure degrades toward the human: a stamp that fails aborts before typing
- * (nothing happened, we retry next tick); a type that fails leaves the episode retired
- * with the Ship it? card as the recovery; a record that fails has the instruction
- * visibly in the pane with a human looking at it.
+ * (nothing happened, we retry next tick, and only so many times - see
+ * `promptedFailures`); a type that fails leaves the episode retired with the Ship it?
+ * card as the recovery; a record that fails has the instruction visibly in the pane with
+ * a human looking at it.
+ *
+ * A tick that aborts returns NOT advanced, always. The loop reads that as "nothing here
+ * right now" and sleeps IDLE_MS; claiming progress for a write that failed re-selects
+ * this same session every BETWEEN_MS instead, which on the paths below the verifier
+ * means a `claude -p` per 400ms for as long as one endpoint stays broken.
  */
 async function processPromptedWrapup(
   client: ForemanClient,
@@ -451,11 +467,11 @@ async function processPromptedWrapup(
   });
   if (candidate.kind === "skip") return false;
 
-  // Foreman already gave up on this episode - see the cap in the `failed` branch below.
-  // Checked HERE, above every read, because the whole point of the cap is to stop
-  // spending a `claude -p` on it: a check after the evidence gather would still pay for
-  // the verify it exists to prevent.
-  if (promptedStrikes(session.id, candidate.goal) >= VERIFY_FAILURE_CAP) return false;
+  // Foreman already gave up on this episode - see `promptedFailures`, which counts both
+  // the failures below that can repeat forever. Checked HERE, above every read, because
+  // the whole point of the cap is to stop spending on it: a check further down would
+  // still pay for the evidence gather and the `claude -p` it exists to prevent.
+  if (promptedFailures.gaveUp(session.id, candidate.goal)) return false;
 
   // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
   // failure and must never reach the verifier, which would otherwise find no proof the
@@ -479,7 +495,11 @@ async function processPromptedWrapup(
   // it? card on every conversation. Stamped, because the answer will not change while
   // the session sits idle.
   if (!diff.patch.trim()) {
-    await client.markPromptedWrapup(session.id, candidate.goal).catch(() => {});
+    // The stamp IS the whole tick here, so its result is the tick's result. Swallowing
+    // it and claiming progress anyway would re-process this session every BETWEEN_MS -
+    // four loopback reads a pass against the daemon's single synchronous handle, which
+    // also serves hook ingest and SSE - for as long as the write stays broken.
+    if (!(await retirePromptedEpisode(client, session, candidate.goal))) return false;
     log(`${session.name}: prompted wrap-up held - the session changed nothing`);
     return true;
   }
@@ -514,15 +534,14 @@ async function processPromptedWrapup(
   });
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
-    // same way and for the same reason - see `promptedVerifyFailures`. Under the cap
+    // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
     // the episode stays armed and retries next tick; at the cap Foreman gives up on it,
     // and only a new human prompt (which moves the goal, resetting the strikes) re-arms
     // it. Retired durably as well, so the give-up survives a worker restart; the
     // in-memory count is what holds the line when that write is the thing that's broken.
-    const failures = promptedStrikes(session.id, candidate.goal) + 1;
-    promptedVerifyFailures.set(session.id, { goal: candidate.goal, failures });
+    const failures = promptedFailures.onFailure(session.id, candidate.goal);
     if (failures >= VERIFY_FAILURE_CAP) {
-      await client.markPromptedWrapup(session.id, candidate.goal).catch(() => {});
+      await retirePromptedEpisode(client, session, candidate.goal);
       log(
         `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
       );
@@ -536,10 +555,6 @@ async function processPromptedWrapup(
     // calls separated only by BETWEEN_MS.
     return false;
   }
-  // A verdict is evidence about the work, so it clears the transient-failure count -
-  // the same "onSuccess" shape `runVerify` applies to an item's `verifyFailures`.
-  promptedVerifyFailures.delete(session.id);
-
   const plan = planPromptedWrapup(
     candidate.goal,
     result.verdict,
@@ -549,13 +564,11 @@ async function processPromptedWrapup(
 
   // Retire the episode FIRST - before anything types - for the reason in the header.
   // A failed stamp aborts: proceeding would be typing an instruction that pushes with
-  // nothing recording that we did, so the next tick would do it again.
-  try {
-    await client.markPromptedWrapup(session.id, plan.goal);
-  } catch (err) {
-    log(`${session.name}: prompted wrap-up aborted - could not retire the episode (${String(err)})`);
-    return true;
-  }
+  // nothing recording that we did, so the next tick would do it again. It also aborts
+  // as NOT advanced, and counts a strike: nothing was written, and the episode is still
+  // armed, so claiming progress would spend a full evidence gather plus a `claude -p`
+  // per BETWEEN_MS against a session whose only broken part is one endpoint.
+  if (!(await retirePromptedEpisode(client, session, plan.goal))) return false;
 
   if (plan.kind === "hold") {
     log(`${session.name}: prompted wrap-up held - ${oneLine(plan.why)}`);

@@ -2,7 +2,7 @@ import type { Session, SessionQueue } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
-import { hasPane, settledIdle } from "./queue-machine.ts";
+import { VERIFY_FAILURE_CAP, hasPane, settledIdle } from "./queue-machine.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
 // The `prompted` wrap-up trigger's decision core: the human typed straight into the
@@ -244,4 +244,55 @@ export function planPromptedWrapup(
   if (!payload || !mayActLive) return { kind: "ask-wrapup", goal };
 
   return { kind: "auto-wrapup", goal, payload };
+}
+
+/**
+ * Consecutive FAILED ATTEMPTS per session, alongside the episode they belong to, and the
+ * cap that ends one. The queue path bounds the same thing with `failVerify` and the
+ * item's durable `verifyFailures`; this path has no item to hold a count, so it keeps
+ * one here - in memory, exactly like `ReviewFailureTracker`, and for the same reason: a
+ * new human prompt moves the goal, which is precisely when the strikes should reset.
+ *
+ * WHAT COUNTS AS AN ATTEMPT is the load-bearing part, and it is deliberately wider than
+ * "the verifier failed". An episode stays armed until `promptedGoal` is stamped, so the
+ * two ways a tick can spend real work and leave the episode exactly where it found it
+ * are a failed verify AND a failed retire stamp. Counting only the first bounds only the
+ * cheaper loop: a daemon 500ing on the retire endpoint re-runs the whole evidence gather
+ * plus a `claude -p` every tick, and a counter that reset on each successful verdict
+ * would never see it. "This tick got nowhere" is the honest unit, and both failures are
+ * that - which is why the count is cleared only by `onRetired`, the one event that makes
+ * the next tick cheap (it is what `decidePromptedWrapup` step 10 reads to skip).
+ *
+ * Keyed by SESSION with the goal stored beside it rather than by session+goal, so the
+ * re-arm falls out of the comparison instead of needing a sweep, and the map holds one
+ * entry per session rather than one per episode ever seen.
+ */
+export class PromptedFailureTracker {
+  private bySession = new Map<string, { goal: string; failures: number }>();
+
+  /** Strikes against THIS episode - a different goal is a different episode, hence zero. */
+  strikes(sessionId: string, goal: string): number {
+    const seen = this.bySession.get(sessionId);
+    return seen && seen.goal === goal ? seen.failures : 0;
+  }
+
+  /** Record one attempt that got nowhere; answer how many in a row that makes. */
+  onFailure(sessionId: string, goal: string): number {
+    const failures = this.strikes(sessionId, goal) + 1;
+    this.bySession.set(sessionId, { goal, failures });
+    return failures;
+  }
+
+  /** The episode is retired, so the next tick is cheap: forget the strikes. */
+  onRetired(sessionId: string): void {
+    this.bySession.delete(sessionId);
+  }
+
+  /**
+   * Has Foreman given up on this episode? Read BEFORE any evidence is gathered - a check
+   * further down the tick would still pay for the work the cap exists to prevent.
+   */
+  gaveUp(sessionId: string, goal: string): boolean {
+    return this.strikes(sessionId, goal) >= VERIFY_FAILURE_CAP;
+  }
 }

@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  PromptedFailureTracker,
   decidePromptedWrapup,
   planPromptedWrapup,
 } from "../src/server/foreman/prompted-wrapup.ts";
 import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompted-wrapup.ts";
-import { tickTargets } from "../src/server/foreman/queue-machine.ts";
+import { VERIFY_FAILURE_CAP, tickTargets } from "../src/server/foreman/queue-machine.ts";
 import type { QueueVerdict } from "../src/server/foreman/queue-machine.ts";
 import { WRAPUP_NO_MISTAKES, WRAPUP_PR } from "../src/shared/queue.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
@@ -350,4 +351,59 @@ test("a needs-you session is selected ONCE, by the needs-you half", () => {
   const s = mkSession({ id: "dup", pendingReviews: 1, state: "awaiting_input" });
   const ids = tickTargets([s], ["prompted"]).map((t) => t.id);
   assert.deepEqual(ids, ["dup"]);
+});
+
+// ---- the failure cap ----
+//
+// The two ways a tick can spend real work and leave the episode exactly where it found
+// it: the verifier failed, or the retire stamp failed. Both keep the episode ARMED, so
+// both repeat forever without a bound - and the second is the expensive one, because it
+// happens AFTER the evidence gather and the `claude -p`.
+
+test("PromptedFailureTracker: strikes accumulate and the cap ends the episode", () => {
+  const t = new PromptedFailureTracker();
+  assert.equal(t.gaveUp("s1", GOAL), false, "a fresh episode is armed");
+
+  for (let n = 1; n < VERIFY_FAILURE_CAP; n++) {
+    assert.equal(t.onFailure("s1", GOAL), n);
+    assert.equal(t.gaveUp("s1", GOAL), false, `still retrying at ${n} strikes`);
+  }
+  assert.equal(t.onFailure("s1", GOAL), VERIFY_FAILURE_CAP);
+  assert.equal(t.gaveUp("s1", GOAL), true, "at the cap Foreman gives up");
+});
+
+test("PromptedFailureTracker: a NEW human prompt re-arms a given-up episode", () => {
+  // The whole re-arm contract. Strikes belong to an episode, not to a session: a human
+  // who types something new is owed a fresh attempt, however badly the last one went.
+  const t = new PromptedFailureTracker();
+  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("s1", GOAL);
+  assert.equal(t.gaveUp("s1", GOAL), true);
+
+  assert.equal(t.gaveUp("s1", "something else entirely"), false, "a new goal is a new episode");
+  assert.equal(t.strikes("s1", "something else entirely"), 0);
+});
+
+test("PromptedFailureTracker: only a RETIRE clears the strikes, not a mere verdict", () => {
+  // This is the bug the cap exists to catch. A tick that verifies fine but fails to
+  // stamp `promptedGoal` has made no progress: the episode is still armed, so the next
+  // tick pays for the whole evidence gather and another `claude -p`. If a successful
+  // verdict cleared the count, that loop would reset it every pass and never be bounded.
+  const t = new PromptedFailureTracker();
+  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) {
+    // Each pass: the verifier answers, then the retire stamp fails. Only the failure is
+    // recorded, because only the retire is progress.
+    t.onFailure("s1", GOAL);
+  }
+  assert.equal(t.gaveUp("s1", GOAL), true, "a persistently failing retire stamp IS bounded");
+
+  t.onRetired("s1");
+  assert.equal(t.strikes("s1", GOAL), 0, "retiring the episode is what forgets the strikes");
+  assert.equal(t.gaveUp("s1", GOAL), false);
+});
+
+test("PromptedFailureTracker: strikes are per session", () => {
+  const t = new PromptedFailureTracker();
+  for (let n = 0; n < VERIFY_FAILURE_CAP; n++) t.onFailure("s1", GOAL);
+  assert.equal(t.gaveUp("s1", GOAL), true);
+  assert.equal(t.gaveUp("s2", GOAL), false, "one session's broken episode strands no other");
 });

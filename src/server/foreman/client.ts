@@ -253,10 +253,19 @@ export class ForemanClient implements ForemanActions {
       throw new InjectError(`inject ${id} -> ${String(err)}`, true);
     }
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string; pasted?: boolean };
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        pasted?: boolean;
+        paneBlocked?: boolean;
+      };
+      // `paneBlocked` reads the opposite way round from `pasted`: a MISSING field means
+      // false, because only the daemon can know a human is in copy-mode and silence is
+      // not that claim. Reading it as true would let any malformed error response buy an
+      // item unlimited retries.
       throw new InjectError(
         `inject ${id} -> ${res.status}${body.error ? `: ${body.error}` : ""}`,
         body.pasted !== false,
+        body.paneBlocked === true,
       );
     }
   }

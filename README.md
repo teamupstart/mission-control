@@ -283,6 +283,23 @@ first - the click is **refused and nothing is pressed** rather than landing on t
 That also makes racing Foreman safe, which is why every menu is offered rather than waiting
 tens of seconds to see whether Foreman handles it.
 
+### Scrolling a pane back pauses writes into it
+
+Scroll a session's **tmux** pane back and tmux puts it in **copy-mode**, where it routes
+every keystroke to itself: `send-keys` and `paste-buffer` both report success while the
+agent receives nothing. So the daemon reads the pane's mode before it types and **refuses**
+the write instead, naming the mode - a reply, a menu click, a
+<kbd>⇧</kbd><kbd>Tab</kbd>, a queued item and a skills reload all wait rather than
+vanishing. It refuses rather than dropping you out of copy-mode, because a pane in it is a
+person reading their own scrollback. Leave it (<kbd>q</kbd>, or scroll back to the bottom)
+and the write goes through on the next attempt; Foreman retries a parked queue item on its
+own, and doesn't spend one of that item's delivery attempts on you.
+
+The one case that isn't a clean no-op is scrolling *while* an item is being delivered: the
+prompt is pasted, then the Enter that submits it is swallowed. The text is sitting in the
+composer unsubmitted, and the error says exactly that - leave copy-mode and press
+<kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
+
 ### Goal
 
 Every card carries a one-sentence **Goal**: what that session is currently trying to

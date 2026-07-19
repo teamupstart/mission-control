@@ -477,6 +477,9 @@ export function buildApp(
   // that never happened (retryable) from one that may be sitting unsubmitted in the
   // pane (must not be retyped over). Every refusal below reports it too, since
   // rejecting a request outright is the one case where we KNOW nothing was typed.
+  // It also carries `paneBlocked` when a pane in a tmux mode refused the write, which
+  // is what stops the worker charging an attempt for a human reading their scrollback.
+  // Both ride along on the ActionResult itself, so neither can be forgotten here.
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);

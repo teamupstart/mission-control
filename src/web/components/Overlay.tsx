@@ -67,22 +67,33 @@ const OverlayRegisterContext = createContext<RegisterFn | null>(null);
 const OverlayStackContext = createContext<readonly OverlayEntry[]>([]);
 
 /**
- * Registration has to be visible to the guards before the browser can dispatch another
- * input event, so it runs in a LAYOUT effect (React flushes those synchronously during
- * commit). A passive `useEffect` is flushed at the start of the NEXT render instead,
- * which leaves a window where the overlay is on screen but `anyOpen` is still false - and
- * a keydown arriving in that window runs App's global handler and drives, or acts on, the
- * card behind the overlay. That is the exact bug this whole primitive exists to prevent,
- * so do not "tidy" this back to `useEffect`. Falls back to `useEffect` with no DOM, where
- * effects never run anyway and `useLayoutEffect` would only warn.
+ * Registration runs in a LAYOUT effect, so it lands in the SAME commit that puts the
+ * overlay on screen: React runs layout effects during commit and flushes the state update
+ * they schedule before yielding to the event loop. A passive `useEffect` is flushed at the
+ * start of the next render instead, which leaves an interval where the overlay is on
+ * screen but the registry has not been told - so do not "tidy" this back to `useEffect`.
+ *
+ * This alone is not sufficient, and did not used to be: App's key handler read the
+ * registry through a closure re-subscribed by a passive effect, so it kept the PREVIOUS
+ * value across that interval even once the registry itself was correct. App therefore
+ * reads the registry through a ref (see `overlaysRef` in App.tsx); the two together are
+ * what make "on screen" and "counted as open" the same commit. Neither helps if a render
+ * is deferred - an overlay opened inside `startTransition` could be delayed before commit,
+ * and nothing here uses transitions.
+ *
+ * Falls back to `useEffect` with no DOM, where effects never run anyway and
+ * `useLayoutEffect` would only warn.
  */
 const useRegistrationEffect = typeof window !== "undefined" ? useLayoutEffect : useEffect;
 
 export interface OverlayHostValue {
-  /** Ordered registrations; the last one is topmost. Tokens, not ids, identify them. */
+  /**
+   * Ordered registrations; the last one is topmost. Tokens, not ids, identify them. The
+   * single carrier of what is open - ids are DERIVED from this rather than travelling
+   * alongside it, because two representations of one fact are a parallel list to keep in
+   * step, which is the failure this whole module exists to remove.
+   */
   openEntries: readonly OverlayEntry[];
-  /** Ordered ids of every open overlay; the last one is topmost. */
-  openIds: readonly string[];
   /** True when any overlay owns the screen - the stand-down condition. */
   anyOpen: boolean;
   /**
@@ -108,10 +119,10 @@ export function useOverlayHost(): OverlayHostValue {
     return () => setEntries((es) => es.filter((e) => e.token !== token));
   }, []);
 
-  return useMemo(() => {
-    const openIds = entries.map((e) => e.id);
-    return { openEntries: entries, openIds, ...overlayGuards(openIds), register };
-  }, [entries, register]);
+  return useMemo(
+    () => ({ openEntries: entries, ...overlayGuards(entries.map((e) => e.id)), register }),
+    [entries, register],
+  );
 }
 
 /**

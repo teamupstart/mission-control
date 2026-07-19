@@ -15,7 +15,6 @@ import { OverlayHost, type OverlayHostValue } from "../../src/web/components/Ove
  */
 export const INERT_OVERLAY_HOST: OverlayHostValue = {
   openEntries: [],
-  openIds: [],
   anyOpen: false,
   onlyOpen: () => true,
   register: () => () => {},

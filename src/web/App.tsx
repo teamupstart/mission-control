@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { gateParked } from "@shared/session.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -88,6 +88,17 @@ export function App(): React.JSX.Element {
   // of step with what is actually on screen - which is what used to happen when a new
   // overlay was added and one of the lists here was missed.
   const overlays = useOverlayHost();
+
+  // Read by the global key handler below instead of closing over `overlays` directly.
+  // That handler is installed by a passive effect, so a closure over `overlays` keeps the
+  // value from the render BEFORE the overlay opened until the next passive flush - and a
+  // keydown arriving in that interval drives the card behind the overlay. Synced in a
+  // layout effect, which runs in the same commit as the overlay's own registration
+  // (Overlay.tsx), so the guard is never behind what is on screen.
+  const overlaysRef = useRef(overlays);
+  useLayoutEffect(() => {
+    overlaysRef.current = overlays;
+  }, [overlays]);
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
@@ -331,7 +342,12 @@ export function App(): React.JSX.Element {
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
       // others. Asking the registry rather than listing overlays here is the point: a new
       // overlay is counted the moment it renders, with no edit to this guard.
-      if (!typing && !renamingId && overlays.onlyOpen(OVERLAY_IDS.sitrep) && chord === bindings.roundup) {
+      if (
+        !typing &&
+        !renamingId &&
+        overlaysRef.current.onlyOpen(OVERLAY_IDS.sitrep) &&
+        chord === bindings.roundup
+      ) {
         e.preventDefault();
         setReportOpen((v) => !v);
         return;
@@ -339,7 +355,7 @@ export function App(): React.JSX.Element {
 
       // Stand down while any overlay owns the screen (or a card's title is being
       // edited), so grid shortcuts don't drive a background card behind it.
-      if (overlays.anyOpen || renamingId || typing) return;
+      if (overlaysRef.current.anyOpen || renamingId || typing) return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
       // guard so dispatch still opens when there are no sessions yet.
@@ -460,11 +476,12 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // One `overlays` entry rather than the six booleans this used to list - the third
-    // place a new overlay used to have to be remembered, and the one with no visible
-    // symptom when it was missed (a stale closure keeps the guards reading the values
-    // from the render before the overlay opened).
-  }, [visible, selectedId, expandedId, overlays, renamingId, toggleExpand, bindings, layout]);
+    // No `overlays` entry: the guards read `overlaysRef`, so this listener does not need
+    // re-subscribing when an overlay opens - and, more to the point, its correctness no
+    // longer depends on that re-subscription having happened yet. This dependency array
+    // was the third place a new overlay used to have to be remembered, and the one with no
+    // visible symptom when it was missed.
+  }, [visible, selectedId, expandedId, renamingId, toggleExpand, bindings, layout]);
 
   // Land the cursor in a keyboard-expanded card's send box. The panel that renders
   // it mounts on the render this effect trails, so a synchronous focus in the chord

@@ -27,10 +27,19 @@ import { mkSession } from "./helpers/session-fixture.ts";
  *
  * Being counted is not a list anyone maintains - `<Overlay>` registers itself. So the
  * property to lock down is that every overlay actually goes through `<Overlay>`, which
- * is what the suites below check from opposite directions: no component may hand-roll a
- * backdrop, no component may own the screen with a `role="dialog"` outside the registry
- * (bar a declared list of known exceptions), and every known overlay must fail without a
- * host.
+ * the suites below approach from opposite directions: no file may mention the
+ * `modal-backdrop` class outside the primitive, no file that declares a `role="dialog"`
+ * may skip importing `Overlay.tsx` (bar a declared list of known exceptions), and every
+ * known overlay must fail without a host.
+ *
+ * Read those two source scans for exactly what they are: FILE-granular, import-based
+ * heuristics, not proof that each surface is inside an `<Overlay>`. A file that renders
+ * one registered overlay and hand-rolls a second passes, as does one that imports
+ * `Overlay.tsx` only for a type. The `role=` regex is literal, so a computed
+ * `role={isModal ? "dialog" : "region"}` is invisible to it, as is any screen-owning
+ * surface that declares no role at all. They catch the common shape - a new component
+ * copying an existing overlay - and nothing finer. The runtime suite below is what
+ * actually proves registration is required.
  *
  * This repo's runner has no DOM, so effects (and therefore registration itself) can't be
  * exercised here; `renderToStaticMarkup` runs render only. That is why the check is
@@ -88,8 +97,10 @@ test("only the Overlay primitive renders a backdrop", () => {
 const UNREGISTERED_DIALOGS = ["components/AlertBar.tsx", "components/ForemanBar.tsx"];
 
 test("every role=\"dialog\" surface is registered, or is a declared exception", () => {
-  // A new dialog fails here until someone decides which side of the line it is on:
-  // route it through <Overlay>, or add it to UNREGISTERED_DIALOGS with the reason.
+  // A new file declaring a literal role="dialog" fails here until someone decides which
+  // side of the line it is on: route it through <Overlay>, or add it to
+  // UNREGISTERED_DIALOGS with the reason. File-granular by design - see the header for
+  // what that does and does not prove.
   const unregistered = tsxFiles(WEB)
     .filter((f) => {
       const src = code(f);

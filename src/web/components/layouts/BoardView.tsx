@@ -253,6 +253,11 @@ function SessionTile({
       <span className="tile-head">
         <span className={`agent-dot agent-${session.agent}`} aria-hidden />
         <span className="tile-name">{session.name || "(unnamed)"}</span>
+        {session.nomistakesGated && !session.nomistakes && (
+          <span className="gated" title="Gated by no-mistakes" aria-hidden>
+            ◇
+          </span>
+        )}
       </span>
 
       {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}

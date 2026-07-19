@@ -142,6 +142,22 @@ test("a settled session omits the ticker rather than animating over a still sess
   }
 });
 
+test("exactly one gate diamond, whether or not a run has started", () => {
+  // Gating is a property of the repo, so a gated session shows the mark before its first
+  // run - but once the gate line exists it carries the diamond, and two would be noise.
+  const withRun = render(mkSession());
+  assert.doesNotMatch(withRun, /class="gated"/);
+  assert.match(withRun, /gate-brand/);
+
+  const noRun = render(mkSession({ nomistakes: null }));
+  assert.match(noRun, /class="gated"/);
+  assert.doesNotMatch(noRun, /gate-brand/);
+
+  const ungated = render(mkSession({ nomistakes: null, nomistakesGated: false }));
+  assert.doesNotMatch(ungated, /class="gated"/);
+  assert.doesNotMatch(ungated, /gate-brand/);
+});
+
 test("the gate hairline carries a named, positioned step", () => {
   const html = render(mkSession());
   assert.match(html, /gate-step gate-working/); // "test" is running

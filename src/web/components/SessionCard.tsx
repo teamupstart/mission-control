@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueueSummary } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
-import { queueChipView } from "../lib/queue.ts";
+import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
@@ -330,7 +330,7 @@ export function SessionCard({
         </div>
       )}
 
-      {session.queue && session.queue.totalCount > 0 && !queueOpen && (
+      {session.queue && queueChipVisible(session.queue) && !queueOpen && (
         <QueueChip queue={session.queue} onOpen={() => setQueueOpen(true)} />
       )}
 

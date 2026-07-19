@@ -10,6 +10,7 @@ import type {
   ReviewItem,
   Session,
   SessionDiff,
+  SessionGoal,
   SessionNote,
   SessionQueue,
   ToolCall,
@@ -281,8 +282,21 @@ export class ForemanClient implements ForemanActions {
     return (await res.json()) as WorkItem;
   }
 
-  async markWrapupAsked(sessionId: string): Promise<void> {
-    const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`);
+  /**
+   * Stamp the wrap-up ask, so the Ship it? card renders.
+   *
+   * `clearAnswer` is the PROMPTED trigger's flag and must stay opt-in: that trigger can
+   * raise a second ask on a row whose `wrapupAnswer` belongs to a previous episode, and
+   * the card hides on a non-null answer - so without clearing it the new question is
+   * stamped and then invisibly swallowed. The DRAIN path must never pass it: there the
+   * answer it would clobber is the answer to the ask being raised.
+   */
+  async markWrapupAsked(sessionId: string, opts?: { clearAnswer?: boolean }): Promise<void> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`,
+      opts?.clearAnswer ? { clearAnswer: true } : undefined,
+    );
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }
 
@@ -295,6 +309,25 @@ export class ForemanClient implements ForemanActions {
   async setWrapupAnswer(sessionId: string, answer: string): Promise<void> {
     const res = await send("PUT", `/api/sessions/${enc(sessionId)}/queue/wrapup`, { answer });
     if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
+  }
+
+  /**
+   * Retire one episode of the `prompted` trigger. Throws on failure, and the caller
+   * must treat that as fatal to the episode: this write is what stops the trigger
+   * re-firing, so proceeding to type after it failed is the double-push.
+   */
+  async markPromptedWrapup(sessionId: string, goal: string): Promise<void> {
+    const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
+      goal,
+    });
+    if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
+  }
+
+  /** The full goal record - the verbatim prompt, which the card summary never carries. */
+  async goal(sessionId: string): Promise<SessionGoal | null> {
+    const res = await send("GET", `/api/sessions/${enc(sessionId)}/goal`);
+    if (!res.ok) return null;
+    return (await res.json()) as SessionGoal;
   }
 
   note(id: string): Promise<SessionNote | null> {

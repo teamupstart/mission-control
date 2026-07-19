@@ -190,7 +190,8 @@ function mkSession(over: Partial<Session> = {}): Session {
 function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
   return {
     enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true,
-    triage: "on", maxFixAttempts: 3, maxFixRounds: 10, wrapup: "ask",
+    triage: "on", maxFixAttempts: 3, maxFixRounds: 10,
+    wrapupTriggers: ["drain"], wrapup: "ask",
     ...over,
   };
 }

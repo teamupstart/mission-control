@@ -352,9 +352,20 @@ export class QueueManager {
     return this.write(next);
   }
 
-  /** Record that the drain-time wrap-up was asked (it fires exactly once). */
-  markWrapupAsked(key: string, now = Date.now()): void {
-    this.registry.setQueueWrapup(key, { wrapupAskedAt: now }, now);
+  /**
+   * Record that a wrap-up was asked (each trigger asks exactly once per episode).
+   *
+   * `clearAnswer` drops any recorded answer in the SAME write, because a new ask is a
+   * new question and the card only renders while `wrapupAnswer` is null - see
+   * `WrapupAskedSchema`. Off by default: the drain path's answer is the answer to the
+   * ask it is raising, so clearing there would clobber a live one.
+   */
+  markWrapupAsked(key: string, now = Date.now(), opts?: { clearAnswer?: boolean }): void {
+    this.registry.setQueueWrapup(
+      key,
+      opts?.clearAnswer ? { wrapupAskedAt: now, wrapupAnswer: null } : { wrapupAskedAt: now },
+      now,
+    );
   }
 
   setWrapupAnswer(key: string, answer: string | null, now = Date.now()): void {

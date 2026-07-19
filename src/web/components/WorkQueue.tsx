@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
-import { composeWrapup } from "@shared/queue.ts";
+import { composeWrapup, wrapupAskCopy } from "@shared/queue.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
@@ -135,9 +135,23 @@ export function WorkQueue({
     );
   }
 
-  if (!queue && !blocked && (summary?.totalCount ?? 0) === 0) {
-    // Nothing queued and nothing to explain: the add box, and the re-attach hint if
-    // a queue here was orphaned.
+  // Nothing queued and nothing to explain.
+  //
+  // "No ROW" was the old test, and it stopped being the same question once the
+  // `prompted` trigger started stamping wrap-up state: `ensureQueue` mints a row the
+  // moment anything touches that state, which for an armed prompted trigger is
+  // essentially every idle conversational session. Those rows carry no work, but they
+  // turned this branch off - so the add box switched to "Queue more work…" about work
+  // nobody queued, and an empty `<ol className="wq-items">` (which flexes to fill an
+  // expanded card) opened a blank gap above everything below it. The ITEMS are the
+  // queue; the row is bookkeeping, and bookkeeping must not change what the human sees.
+  //
+  // The one thing such a row CAN carry is a wrap-up question, which is exactly how the
+  // `prompted` trigger asks - so the Ship it? card renders here too. It renders ABOVE
+  // the add box rather than below it as in the main render: there the items are the
+  // content and the card is the coda, here the question is the only content there is.
+  if (!blocked && (summary?.totalCount ?? 0) === 0 && (queue?.items.length ?? 0) === 0) {
+    // The add box, and the re-attach hint if a queue here was orphaned.
     //
     // The hint MUST render here, because this branch IS the orphaned state: a
     // `/clear` mints a new agent session id, which is the queue's key, so the new
@@ -150,6 +164,9 @@ export function WorkQueue({
       <section className={cls} onClick={(e) => e.stopPropagation()}>
         {head(0)}
         {session.orphanedQueue && <ReattachHint session={session} onDone={() => void refresh()} />}
+        {queue && queue.wrapupAskedAt !== null && (
+          <Wrapup sessionId={sessionId} queue={queue} onDone={() => void refresh()} />
+        )}
         <AddBox
           value={adding}
           onChange={setAdding}
@@ -902,7 +919,10 @@ function Wrapup({
 
   return (
     <div className="wq-wrapup">
-      <p className="wq-wrapup-title">The queue is drained. Ship it?</p>
+      {/* Worded for the trigger that raised it - a row with no items had no queue to
+          drain, so the drain sentence would state something that never happened. The
+          alert reads the same rule off the card summary's `totalCount`. */}
+      <p className="wq-wrapup-title">{wrapupAskCopy(queue.items.length > 0).card}</p>
       <label className="alert-row">
         <input type="checkbox" checked={pr} onChange={(e) => setPr(e.target.checked)} />
         Create a PR

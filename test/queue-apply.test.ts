@@ -22,6 +22,7 @@ const CFG: QueueConfig = {
   maxFixRounds: 10,
   settleMs: 10_000,
   pickupTimeoutMs: 45_000,
+  wrapupTriggers: ["drain"],
   wrapup: "ask",
 };
 
@@ -100,6 +101,7 @@ const LIVE_CFG: ForemanConfig = {
   mode: "live",
   repoAllowlist: ["/repo"],
   autoApproveAccess: true,
+  wrapupTriggers: ["drain"],
   wrapup: "ask",
   triage: "off",
   maxFixAttempts: 3,
@@ -162,6 +164,7 @@ function mkFake(
       branch: "feature",
       wrapupAskedAt: null,
       wrapupAnswer: null,
+      promptedGoal: null,
       updatedAt: 0,
       items,
     }),

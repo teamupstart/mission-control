@@ -29,6 +29,8 @@ import {
   SetNoteSchema,
   SetPermissionModeSchema,
   SetWorkItemStateSchema,
+  PromptedWrapupSchema,
+  WrapupAskedSchema,
   SkillsConfigPatchSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
@@ -825,13 +827,49 @@ export function buildApp(
   // The worker's "I've raised the ask" stamp - what makes it fire exactly once.
   // Separate from the answer above because they have different writers: this is
   // Foreman recording that it asked, that is the human recording what they said.
-  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => {
+  //
+  // `ensureQueue` rather than a 404 on a missing row, because the `prompted` trigger
+  // fires on sessions that have NO work queue - that is its entire premise - and the
+  // Ship it? card it raises renders off `wrapupAskedAt` on the queue row. Without a
+  // row to stamp there is nowhere for the ask to live and the trigger would verify the
+  // work, decide to ask, and then silently drop the question. Creating the row is not a
+  // side effect being smuggled in: `ensureQueue` writes cwd/branch and nothing else, an
+  // itemless queue renders no item list, and `addItem` already creates one this way.
+  app.post("/api/sessions/:id/queue/wrapup/asked", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const queue = queues.get(session.id);
-    if (!queue) return c.json({ error: "no queue for this session" }, 404);
-    queues.markWrapupAsked(queue.noteKey);
+    const parsed = await parseBody(c, WrapupAskedSchema);
+    if (!parsed.ok) return parsed.res;
+    const key = registry.ensureQueue(session.id);
+    if (!key) return c.json({ error: "no queue for this session" }, 404);
+    queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
     return c.json(queues.get(session.id));
+  });
+
+  // The `prompted` trigger's once-per-episode stamp: the goal it last fired (or held)
+  // on. A separate endpoint from the two above because it is a separate guard on a
+  // separate trigger - see `SessionQueue.promptedGoal` for why they must not share a
+  // field. Same `ensureQueue` reasoning: these sessions have no queue by definition.
+  app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedWrapupSchema);
+    if (!parsed.ok) return parsed.res;
+    const key = registry.ensureQueue(session.id);
+    if (!key) return c.json({ error: "no queue for this session" }, 404);
+    registry.setQueueWrapup(key, { promptedGoal: parsed.data.goal });
+    return c.json(queues.get(session.id));
+  });
+
+  // The full goal record, including the verbatim prompt the refiner derived from.
+  // Loopback-only like the rest of the worker's surface: `SessionGoal.prompt` is
+  // deliberately never denormalized onto a card (it can be 4KB of someone's paste),
+  // so this is the only way the out-of-process worker can read the ask it needs to
+  // verify work against.
+  app.get("/api/sessions/:id/goal", (c) => {
+    const goal = registry.getGoal(c.req.param("id"));
+    if (!goal) return c.json({ error: "no goal for this session" }, 404);
+    return c.json(goal);
   });
 
   // Re-attach an orphaned queue onto this live session. Always an explicit click:

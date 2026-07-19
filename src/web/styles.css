@@ -4193,8 +4193,48 @@ kbd {
   color: var(--muted);
   padding: 0 4px;
 }
-.foreman-modes .alert-row input[type="radio"] {
+.foreman-modes .alert-row input[type="radio"],
+.foreman-modes .alert-row input[type="checkbox"] {
   accent-color: var(--idle);
+}
+/* The wrap-up ACTION, nested inside the trigger group it depends on. Indented and
+   rule-marked rather than boxed: a second border inside the first reads as a sibling
+   panel, while the rule + indent reads as "these belong to the above". */
+.foreman-wrapup-action {
+  border: 0;
+  /* Mixed toward --fg rather than plain --border-soft: at 1px on the popover's dark
+     fill that token is effectively invisible, and an indent with no rule reads as a
+     ragged margin instead of a hierarchy. */
+  border-left: 1px solid color-mix(in oklab, var(--fg) 16%, transparent);
+  border-radius: 0;
+  margin: 2px 0 0 6px;
+  padding: 0 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0; /* a fieldset defaults to min-content and would refuse to shrink */
+}
+/* Disabled when no trigger is armed: deeper than the parent's 0.5, so "no moment for
+   this to happen at" reads as more-off than the group around it.
+
+   Scoped to an ENABLED parent, and paired with the rule below, because opacity
+   multiplies down the tree and a fieldset inside a disabled fieldset is itself matched
+   by :disabled - so an unscoped 0.55 lands at 0.5 x 0.55 = 0.275 the moment Foreman is
+   switched off, turning the radios from dimmed into all but invisible. With Foreman off
+   the whole group already carries the 0.5, and these radios should read exactly as
+   disabled as everything beside them, so the nested value is 1. */
+.foreman-modes:not(:disabled) > .foreman-wrapup-action:disabled {
+  opacity: 0.55;
+}
+.foreman-modes:disabled > .foreman-wrapup-action:disabled {
+  opacity: 1;
+}
+.foreman-wrapup-action legend {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 4px 0 0;
 }
 /* The Live-mode read-only summary in the popover: a deep-link to Settings → Foreman,
    where the trusted-repo list is now edited. Not an editor - a status line you can click. */
@@ -4215,6 +4255,14 @@ kbd {
 .foreman-live-repos:hover {
   background: color-mix(in oklab, var(--idle) 16%, transparent);
   border-color: color-mix(in oklab, var(--idle) 45%, var(--border-soft));
+}
+/* Foreman is switched off, so "Live in 3 repos" is not a live fact - it is what the mode
+   WOULD be. Dimmed to the same 0.5 as the fieldsets around it rather than disabled: this
+   is a deep-link to Settings, not a knob, and it stays worth following while Foreman is
+   off. A class rather than `:disabled` for exactly that reason - the button is not in a
+   fieldset and must keep working. */
+.foreman-live-repos.is-off {
+  opacity: 0.5;
 }
 
 /* ---- Foreman settings category (the panel behind the rail) ---- */
@@ -4914,6 +4962,13 @@ kbd {
   padding: 8px 10px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
+}
+/* Disabled with the rest of the popover, at the SAME 0.5 `.foreman-modes` uses. Without
+   this the two number inputs - mono, boxed, high-contrast - were the brightest things on
+   a switched-off panel, reading as the one control still live. Nothing nests inside this
+   fieldset, so there is no opacity to compound. */
+.foreman-knobs:disabled {
+  opacity: 0.5;
 }
 .foreman-knobs legend {
   padding: 0 4px;

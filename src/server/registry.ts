@@ -1475,7 +1475,11 @@ export class Registry extends EventEmitter {
     const row = getQueueRow(key);
     const items = listQueueItems(key);
     if (!row && items.length === 0) return null;
-    return summarizeQueue(items, row?.wrapupAskedAt ?? null, row?.updatedAt ?? 0);
+    return summarizeQueue(
+      items,
+      { askedAt: row?.wrapupAskedAt ?? null, answer: row?.wrapupAnswer ?? null },
+      row?.updatedAt ?? 0,
+    );
   }
 
   /**
@@ -1543,6 +1547,7 @@ export class Registry extends EventEmitter {
       branch: row?.branch ?? null,
       wrapupAskedAt: row?.wrapupAskedAt ?? null,
       wrapupAnswer: row?.wrapupAnswer ?? null,
+      promptedGoal: row?.promptedGoal ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -1631,6 +1636,7 @@ export class Registry extends EventEmitter {
       branch: s.gitBranch,
       wrapupAskedAt: prev?.wrapupAskedAt ?? null,
       wrapupAnswer: prev?.wrapupAnswer ?? null,
+      promptedGoal: prev?.promptedGoal ?? null,
       updatedAt: now,
     });
     return key;
@@ -1639,7 +1645,11 @@ export class Registry extends EventEmitter {
   /** Patch a queue's wrap-up state, then re-denormalize. */
   setQueueWrapup(
     key: string,
-    patch: { wrapupAskedAt?: number | null; wrapupAnswer?: string | null },
+    patch: {
+      wrapupAskedAt?: number | null;
+      wrapupAnswer?: string | null;
+      promptedGoal?: string | null;
+    },
     now = Date.now(),
   ): void {
     const prev = getQueueRow(key);
@@ -1648,6 +1658,7 @@ export class Registry extends EventEmitter {
       ...prev,
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
       wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
+      promptedGoal: patch.promptedGoal !== undefined ? patch.promptedGoal : prev.promptedGoal,
       updatedAt: now,
     });
     this.syncSessionsForQueue(key);
@@ -1815,6 +1826,7 @@ export class Registry extends EventEmitter {
         branch: s.gitBranch,
         wrapupAskedAt: row.wrapupAskedAt,
         wrapupAnswer: row.wrapupAnswer,
+        promptedGoal: row.promptedGoal,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
@@ -1865,7 +1877,12 @@ export const inFlightOf = inFlightItemOf;
 /** Project a queue's items into the compact card summary. Pure, for tests. */
 export function summarizeQueue(
   items: WorkItem[],
-  wrapupAskedAt: number | null,
+  /**
+   * The row's wrap-up state, taken as a pair rather than as two positional args: the
+   * card has to tell an OPEN question from an answered one, and passing only the
+   * timestamp is what made that undecidable at the call site.
+   */
+  wrapup: { askedAt: number | null; answer: string | null },
   updatedAt: number,
 ): SessionQueueSummary {
   const open = items.filter((i) => !isTerminalItem(i.state));
@@ -1880,7 +1897,8 @@ export function summarizeQueue(
     verifiedCount: items.filter((i) => i.state === "verified").length,
     escalatedCount: items.filter((i) => i.state === "escalated").length,
     drained: items.length > 0 && open.length === 0,
-    wrapupAskedAt,
+    wrapupAskedAt: wrapup.askedAt,
+    wrapupAnswered: wrapup.answer !== null,
     updatedAt,
   };
 }

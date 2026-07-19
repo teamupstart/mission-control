@@ -171,7 +171,7 @@ export function parseModelJson<S extends ZodTypeAny>(raw: string, schema: S): Ty
 }
 
 /** Unwrap the `claude -p --output-format json` envelope to its `result` text. */
-function resultText(raw: string): string {
+export function resultText(raw: string): string {
   const trimmed = raw.trim();
   try {
     const env = JSON.parse(trimmed) as { result?: unknown };

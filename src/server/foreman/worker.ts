@@ -333,25 +333,41 @@ async function processTarget(
   // machine needs gaps, baseSha, transcriptAnchor, round, revision and strikes.
   // One extra loopback round-trip per target per tick - noise next to a claude -p.
   //
-  // A FAILED read decides nothing, for the same reason the `sessions()` read above
-  // decides nothing - but here the distinction has to be made explicitly, because
-  // `null` is ALSO the legitimate answer for "this session has no queue". Coercing a
-  // throw to `null` hands `decidePromptedWrapup` a null queue on a transient daemon
-  // blip, which silently disarms both of its double-fire guards at once: the overlap
-  // rule that hands a queued session to the drain trigger, and the once-per-episode
-  // `promptedGoal` re-arm. The result is a second wrap-up pushing the same branch.
+  // A FAILED read has to stay distinguishable from a successful one, because `null` is
+  // ALSO the legitimate answer for "this session has no queue" - and the two mean
+  // opposite things to the prompted path. Coercing a throw to `null` hands
+  // `decidePromptedWrapup` a null queue on a transient daemon blip, which silently
+  // disarms both of its double-fire guards at once: the overlap rule that hands a queued
+  // session to the drain trigger, and the once-per-episode `promptedGoal` re-arm. The
+  // result is a second wrap-up pushing the same branch.
+  //
+  // Distinguishable, but NOT fatal to the whole tick - the bail belongs on the prompted
+  // path alone, and hoisting it above everything cost far more than it bought: triage
+  // needs the queue only for `queueItemContext`, which is optional by construction, so a
+  // flaky GET on this one endpoint left every session with an unanswered question
+  // untriaged for as long as it stayed broken. See the branch below.
   const read = await client.queue(fresh.id).then((queue) => ({ queue }), () => null);
-  if (!read) return false;
-  const queue = read.queue;
+  const queue = read?.queue ?? null;
 
   if (!queue || queue.items.length === 0) {
     // No queue: this session is here because it needs you...
+    //
+    // Reached on a failed read too, deliberately. Triage's evidence is the session list
+    // and the transcript, neither of which this read touches, and a human waiting on an
+    // answer is the case least able to afford a stall. Worst case the queue did have
+    // items, and triage runs without knowing what Foreman commissioned - which is
+    // exactly the `queueItemContext: undefined` path it already supports.
     if (reportBucket(fresh, live) === "needs-you" || fresh.state === "awaiting_input") {
       return await processSession(client, cfg, fresh, reviews);
     }
     // ...or because it took a prompt straight into the pane, worked, and parked, and
     // the `prompted` wrap-up trigger is armed. Below the needs-you check on purpose:
     // an unanswered question is not a finished session, and triage owns that case.
+    //
+    // THIS is what the failed read must not reach: an unread queue is not an empty one,
+    // and the trigger's guards both live in the row we failed to read. Decide nothing
+    // and re-decide next tick.
+    if (!read) return false;
     return await processPromptedWrapup(client, cfg, fresh, live, queue);
   }
 

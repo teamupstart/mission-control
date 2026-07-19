@@ -329,6 +329,7 @@ test("the selector skips sessions the machine would certainly reject", () => {
     escalatedCount: 0,
     drained: false,
     wrapupAskedAt: null,
+    wrapupAnswered: false,
     updatedAt: 0,
     ...over,
   });

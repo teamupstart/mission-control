@@ -1475,7 +1475,11 @@ export class Registry extends EventEmitter {
     const row = getQueueRow(key);
     const items = listQueueItems(key);
     if (!row && items.length === 0) return null;
-    return summarizeQueue(items, row?.wrapupAskedAt ?? null, row?.updatedAt ?? 0);
+    return summarizeQueue(
+      items,
+      { askedAt: row?.wrapupAskedAt ?? null, answer: row?.wrapupAnswer ?? null },
+      row?.updatedAt ?? 0,
+    );
   }
 
   /**
@@ -1873,7 +1877,12 @@ export const inFlightOf = inFlightItemOf;
 /** Project a queue's items into the compact card summary. Pure, for tests. */
 export function summarizeQueue(
   items: WorkItem[],
-  wrapupAskedAt: number | null,
+  /**
+   * The row's wrap-up state, taken as a pair rather than as two positional args: the
+   * card has to tell an OPEN question from an answered one, and passing only the
+   * timestamp is what made that undecidable at the call site.
+   */
+  wrapup: { askedAt: number | null; answer: string | null },
   updatedAt: number,
 ): SessionQueueSummary {
   const open = items.filter((i) => !isTerminalItem(i.state));
@@ -1888,7 +1897,8 @@ export function summarizeQueue(
     verifiedCount: items.filter((i) => i.state === "verified").length,
     escalatedCount: items.filter((i) => i.state === "escalated").length,
     drained: items.length > 0 && open.length === 0,
-    wrapupAskedAt,
+    wrapupAskedAt: wrapup.askedAt,
+    wrapupAnswered: wrapup.answer !== null,
     updatedAt,
   };
 }

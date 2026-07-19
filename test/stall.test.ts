@@ -85,6 +85,7 @@ function mkQueue(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary {
     escalatedCount: 0,
     drained: false,
     wrapupAskedAt: null,
+    wrapupAnswered: false,
     updatedAt: 0,
     ...over,
   };

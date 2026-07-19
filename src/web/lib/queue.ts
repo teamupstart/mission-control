@@ -69,6 +69,33 @@ export interface QueueChipView {
 }
 
 /**
+ * An outstanding wrap-up question: raised, and not yet sent or dismissed.
+ *
+ * Both halves are required. `wrapupAskedAt` is never cleared - on the drain path it
+ * doubles as the once-only guard - so on its own it means "a question was asked here
+ * once", which stays true forever after it is answered.
+ */
+export function wrapupAskPending(q: SessionQueueSummary): boolean {
+  return q.wrapupAskedAt !== null && !q.wrapupAnswered;
+}
+
+/**
+ * Whether the card's queue chip has anything to say.
+ *
+ * Item count alone was the gate, and it hid the `prompted` trigger's ask completely: a
+ * prompted wrap-up fires only on a checkout with no work queue, so its row has zero
+ * items by construction. The alert fired and pointed at a card carrying no queue
+ * affordance at all - the panel only mounts once the card is expanded - so the one
+ * question Foreman had was reachable only by going looking for it.
+ *
+ * Kept narrow deliberately: an ANSWERED ask must not keep the chip alive on an itemless
+ * row, or every session that ever wrapped up grows a permanent chip saying nothing.
+ */
+export function queueChipVisible(q: SessionQueueSummary): boolean {
+  return q.totalCount > 0 || wrapupAskPending(q);
+}
+
+/**
  * The chip's label and tone.
  *
  * The one rule: only work the agent actually LANDED may be counted as done. That's
@@ -87,6 +114,17 @@ export interface QueueChipView {
  * Queue button, which leaves this chip the last thing pointing at what the batch did.
  */
 export function queueChipView(q: SessionQueueSummary): QueueChipView {
+  // No items at all, which is the `prompted` trigger's row: every count below is zero,
+  // so the tally would render an empty chip. The open question IS the whole content
+  // here, and it is owed a human's eye by definition - the same reason its alert is
+  // raised at `attention`.
+  if (q.totalCount === 0) {
+    return {
+      label: "ship it?",
+      title: "Foreman thinks the work you asked for is finished - click to decide",
+      attention: true,
+    };
+  }
   const done = q.verifiedCount;
   const escalated = q.escalatedCount;
   const stopped = Math.max(0, q.totalCount - q.openCount - done - escalated);

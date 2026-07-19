@@ -292,7 +292,11 @@ export function ForemanPopover({
         read-only count that deep-links to where you edit it - not an editor itself.
       */}
       {mode === "live" && (
-        <button type="button" className="foreman-live-repos" onClick={onOpenSettings}>
+        <button
+          type="button"
+          className={`foreman-live-repos${enabled ? "" : " is-off"}`}
+          onClick={onOpenSettings}
+        >
           {config.repoAllowlist.length === 0
             ? "Live, but no repos trusted yet - add them in Settings →"
             : `Live in ${config.repoAllowlist.length} repo${

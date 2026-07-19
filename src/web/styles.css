@@ -4256,6 +4256,14 @@ kbd {
   background: color-mix(in oklab, var(--idle) 16%, transparent);
   border-color: color-mix(in oklab, var(--idle) 45%, var(--border-soft));
 }
+/* Foreman is switched off, so "Live in 3 repos" is not a live fact - it is what the mode
+   WOULD be. Dimmed to the same 0.5 as the fieldsets around it rather than disabled: this
+   is a deep-link to Settings, not a knob, and it stays worth following while Foreman is
+   off. A class rather than `:disabled` for exactly that reason - the button is not in a
+   fieldset and must keep working. */
+.foreman-live-repos.is-off {
+  opacity: 0.5;
+}
 
 /* ---- Foreman settings category (the panel behind the rail) ---- */
 .foreman-settings-blurb {
@@ -4954,6 +4962,13 @@ kbd {
   padding: 8px 10px;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
+}
+/* Disabled with the rest of the popover, at the SAME 0.5 `.foreman-modes` uses. Without
+   this the two number inputs - mono, boxed, high-contrast - were the brightest things on
+   a switched-off panel, reading as the one control still live. Nothing nests inside this
+   fieldset, so there is no opacity to compound. */
+.foreman-knobs:disabled {
+  opacity: 0.5;
 }
 .foreman-knobs legend {
   padding: 0 4px;

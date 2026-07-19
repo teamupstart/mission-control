@@ -504,6 +504,19 @@ export interface SessionQueueSummary {
   /** True when every item is terminal and the wrap-up ask is due/answered. */
   drained: boolean;
   wrapupAskedAt: number | null;
+  /**
+   * Whether the ask above has been answered (sent or dismissed) - projected as a
+   * boolean because the card only ever needs "is this question still open", never the
+   * instruction itself.
+   *
+   * Required here rather than left to be derived from `wrapupAskedAt`, because that
+   * field is never cleared: on the drain path it is also the once-only guard, so an
+   * answered ask keeps a timestamp forever. Anything reading `wrapupAskedAt` alone as
+   * "there is a question here" is right once and wrong every time after - which is
+   * exactly what the card chip needs to get right on a `prompted` ask, whose row has no
+   * items to make the chip render for any other reason.
+   */
+  wrapupAnswered: boolean;
   updatedAt: number;
 }
 

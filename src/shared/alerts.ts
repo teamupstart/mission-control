@@ -15,6 +15,7 @@
 
 import type { Session, Task } from "./types.ts";
 import { gateParked, reportBucket } from "./session.ts";
+import { wrapupAskCopy } from "./queue.ts";
 import type { Stall } from "./stall.ts";
 
 export type AlertKind =
@@ -193,11 +194,16 @@ export function detectAlerts(prev: AlertScope, next: AlertScope): Alert[] {
         severity: "attention",
       });
     }
+    // Which trigger raised this decides the wording, and the answer is the row itself:
+    // the `prompted` trigger fires only on a checkout with NO queued work, so a
+    // zero-item row is a wrap-up about a prompt, not about a batch. `wrapupAskCopy` is
+    // the same call the Ship it? card makes, so the toast and the card it points at
+    // cannot describe the same ask two different ways.
     if (s.queue?.wrapupAskedAt && !before?.queue?.wrapupAskedAt) {
       alerts.push({
         id: `wrapup:${s.id}`,
         kind: "foreman",
-        title: `${label} - the work queue drained`,
+        title: `${label} - ${wrapupAskCopy(s.queue.totalCount > 0).alert}`,
         body: "ship it? Foreman is waiting on you",
         sessionId: s.id,
         severity: "attention",

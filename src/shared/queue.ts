@@ -115,6 +115,29 @@ export function composeWrapup(pr: boolean, nm: boolean): string {
 }
 
 /**
+ * What the Ship it? question says, worded for the trigger that actually raised it.
+ *
+ * Both triggers share one card and one alert - deliberately, so there is a single ask
+ * to answer - but they are not the same event, and the drain wording states something
+ * that never happened on the other one: the `prompted` trigger fires only on a checkout
+ * with NO work queue (see `decidePromptedWrapup` step 3), so "the queue is drained"
+ * describes a batch that never existed.
+ *
+ * Both strings come out of ONE call so the card and the alert cannot drift into
+ * describing the same ask two different ways, which is the failure mode that put a
+ * queue-drain sentence on a queueless session in the first place.
+ *
+ * `hasQueuedWork` is read off the row's items - `items.length` for a caller holding the
+ * full queue, `totalCount` for one holding the card summary. They are the same number
+ * (see `summarizeQueue`), which is what lets the two callers agree without sharing state.
+ */
+export function wrapupAskCopy(hasQueuedWork: boolean): { card: string; alert: string } {
+  return hasQueuedWork
+    ? { card: "The queue is drained. Ship it?", alert: "the work queue drained" }
+    : { card: "The work you asked for looks done. Ship it?", alert: "the work you asked for looks done" };
+}
+
+/**
  * The instruction Foreman types itself on drain, or null when it must ask instead.
  *
  * Null is not "do nothing" - it's "fall back to the human", so the caller must still

@@ -3,7 +3,7 @@
 // never disagree about who "needs you". Keep this in sync conceptually with the
 // card's `stateDisplay` in src/web/lib/format.ts (same attention precedence).
 
-import type { Session, Task } from "./types.ts";
+import type { PaneDialog, Session, Task } from "./types.ts";
 
 export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 
@@ -33,6 +33,42 @@ export function finishedTasks(tasks: Task[]): Task[] {
  */
 export function agentActive(s: Session): boolean {
   return s.state === "starting" || s.state === "working";
+}
+
+/**
+ * The menu this session is parked on and can still be answered, or null.
+ *
+ * `paneDialog` outlives the pane it was read from: a session that vanishes is marked
+ * `exited` field-by-field, so the last menu we saw rides along for the whole exit-linger
+ * window. Every reader wants the same thing from that - nothing - so they ask here rather
+ * than reading the field, which is what kept the buckets honest while the card still
+ * offered buttons aimed at a dead pane.
+ */
+export function activePaneDialog(s: Session): PaneDialog | null {
+  return s.state === "exited" ? null : s.paneDialog;
+}
+
+/**
+ * What makes two reads of the pane the SAME question: the prompt and the rows offered.
+ *
+ * The dialog is re-parsed from the screen every poll, so object identity says nothing and
+ * every consumer needs this same notion - the card to decide whether a failure message is
+ * still about the menu it was raised on, the alerter to decide whether a menu is news.
+ * `highlighted` is excluded on purpose: a cursor moving in the terminal is the same
+ * question being read again, not a new one to re-announce.
+ */
+export function dialogIdentity(dialog: PaneDialog): string {
+  return JSON.stringify([dialog.prompt ?? "", dialog.options.map((o) => [o.number, o.label])]);
+}
+
+/**
+ * How a menu describes itself in one line. The count is what tells a permission prompt
+ * (2-3 rows) from a question worth opening the card for. Shared so the wording lives in
+ * one place while each caller keeps its own view of how a menu RANKS against other
+ * reasons - which is not the same question, and the two disagree (see `needsYouReason`).
+ */
+export function paneDialogReason(dialog: PaneDialog): string {
+  return `${dialog.options.length} options to pick from`;
 }
 
 /** True while a no-mistakes run is parked at a gate, awaiting the agent's decision. */
@@ -123,6 +159,18 @@ export function runInFlight(s: Session): boolean {
 export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucket {
   if (s.state === "exited") return "exited";
   if (s.pendingReviews > 0) return "needs-you";
+  // A menu on the screen is DIRECT evidence the session has stopped and cannot move
+  // until someone answers - and unlike the state checks below, it needs no hooks to see.
+  // That gap is the whole reason this is here: an uninstrumented session parked on a
+  // permission prompt has `state: "idle"` forever, so it reported as idle while being
+  // the single most blocked thing on the board. Read off the pane every poll and cleared
+  // the moment the menu closes, so nothing can get stuck here.
+  //
+  // This also widens Foreman's `tickTargets` (src/server/foreman/queue-machine.ts), which
+  // selects on this bucket, to sessions parked on a dialog it has not been told about by a
+  // hook. That is deliberate: answering routine prompts is Foreman's job, a visible menu is
+  // exactly the case it exists for, and `decideQueueTick` still escalates on `!hooksSeen`.
+  if (activePaneDialog(s)) return "needs-you";
   if (gateParked(s, sessions)) return "needs-you";
   if (s.instrumented) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
@@ -138,6 +186,13 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
 /** A one-line reason a session needs you, or null when it doesn't. */
 export function needsYouReason(s: Session, sessions: Session[] = [s]): string | null {
   if (s.pendingReviews > 0) return s.pendingReviews > 1 ? `${s.pendingReviews} to review` : "to review";
+  // Ahead of `awaiting_input`, which is the same fact reported more vaguely: when we can
+  // see the menu we can say how many ways out of it there are. Below `pendingReviews`
+  // though - this ranks reasons for someone TRIAGING a board, where a review is the more
+  // specific ask. An alerter announcing a menu the moment it opens ranks them the other
+  // way round and so words itself from `paneDialogReason` directly.
+  const dialog = activePaneDialog(s);
+  if (dialog) return paneDialogReason(dialog);
   if (s.state === "awaiting_input") return "needs input";
   if (s.state === "awaiting_review") return "needs review";
   if (gateParked(s, sessions)) return `gate parked at ${s.nomistakes?.gateStep ?? "a gate"}`;

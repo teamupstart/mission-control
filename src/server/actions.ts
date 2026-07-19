@@ -1,6 +1,7 @@
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
 import { resolveWeztermBin } from "./config.ts";
-import { capturePaneText, readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
+import { capturePaneText } from "./discovery/pane-capture.ts";
+import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingPaste } from "./discovery/pane-paste.ts";
 import { optionRowMiss, readPaneDialog, type OptionRowMiss, type PaneDialog } from "./discovery/pane-dialog.ts";
 import { listTmuxClients } from "./discovery/tmux.ts";

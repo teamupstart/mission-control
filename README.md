@@ -29,6 +29,10 @@ and get your decision back.
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
+- **Answers the menus** a session is parked on - a permission prompt, an
+  `AskUserQuestion` clarification, a folder-trust check - as
+  [clickable options on the card](#answer-a-sessions-menu-from-the-dashboard).
+  Read straight off the terminal, so it works with or without hooks.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + detached tmux session (or shelves it in a
   backlog for later).
@@ -128,7 +132,7 @@ Three layers, most-to-least automatic:
 
 | Layer | Setup | Gives you |
 |-------|-------|-----------|
-| **Passive discovery** | none | inventory + names + branch + uptime, live |
+| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on |
 | **Claude hooks** | `npm run install-hooks` | precise state (working / idle / needs-input) + activity |
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 
@@ -236,11 +240,16 @@ Each card's status badge and its left edge stripe encode the session's state:
 | 🔵 blue | **working** | agent is actively running a prompt or tool |
 | 🟢 green | **idle** | alive, waiting at an idle prompt |
 | 🟠 amber | **needs input / needs review** | the agent (or a review item) is blocked on you |
+| 🟠 amber | **needs an answer** | the session is parked on an [option menu](#answer-a-sessions-menu-from-the-dashboard) |
 | ⚪ grey | **running** | alive, but precise state unknown - hooks aren't reporting |
 | ⚫ dim | **exited** | the process is gone |
 
-Blue / green / amber require the **Claude hooks** above. Without them (or before
-you restart a session) every card shows grey **running**. The small colored dot
+Blue / green and **needs input / needs review** require the **Claude hooks** above.
+Without them (or before you restart a session) a card shows grey **running** - with one
+exception: **needs an answer** is read off the terminal itself, so a session sitting on a
+menu goes amber whether or not it's instrumented. That exception is the point: an
+uninstrumented session waiting on a permission prompt is the most blocked thing on the
+board, and it used to report as grey running forever. The small colored dot
 next to each title is *not* a status - it's the agent's brand color (terracotta
 for Claude Code, green for Codex).
 
@@ -248,6 +257,31 @@ A Claude card also carries a **permission mode** chip once a hook reports one - 
 `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for
 sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
 would in the session's own terminal.
+
+### Answer a session's menu from the dashboard
+
+When a session stops on an option menu - a **permission prompt**, an `AskUserQuestion`
+clarification, a **plan decision**, the folder-trust check - the card renders that menu's
+rows as **buttons**, with the question above them and each row's description beneath it.
+Click one and the daemon answers it in the terminal. Not just plan mode, and not only the
+ones Foreman declined: **every** menu a session is parked on is offered.
+
+The menu is read straight off the pane on the same ~1.5s sweep that reads the permission
+mode, so it needs **no hooks** and costs no extra work - and it clears the moment the menu
+does. The card also marks the row the terminal's own cursor is on, so this view and a tab
+open on the same session never disagree about what Enter would do.
+
+**The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
+discards typed characters, and the Enter that follows confirms whichever row was already
+highlighted - so a reply sent at a menu doesn't fail, it silently answers with the default
+under your name. The buttons are the only safe way to answer one.
+
+Because the card's copy of the menu is up to one sweep old, a click sends back the **label**
+you were shown and the daemon re-reads the pane before pressing anything: if the screen has
+moved on - the menu closed, the rows repainted, [Foreman](#foreman-auto-responder) got there
+first - the click is **refused and nothing is pressed** rather than landing on the wrong row.
+That also makes racing Foreman safe, which is why every menu is offered rather than waiting
+tens of seconds to see whether Foreman handles it.
 
 ### Goal
 
@@ -340,7 +374,8 @@ Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the dae
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
-gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
+gates, sessions sitting on an [option menu](#answer-a-sessions-menu-from-the-dashboard)),
+**who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a backlog task or drop it right from the panel, and **Mark
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
@@ -351,7 +386,9 @@ markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GE
 So you don't have to watch the grid, the dashboard can **alert you when a session
 needs you**. The daemon already streams every attention event over SSE; the browser
 turns those into a **desktop (Chrome) notification + a short sound** the moment a
-session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
+session goes to `needs-input`, a session stops on an
+[option menu](#answer-a-sessions-menu-from-the-dashboard) (which needs no hooks, and says
+how many options it's offering), a review lands, a no-mistakes gate parks, or a
 dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
 watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
 
@@ -419,6 +456,11 @@ the default, not the reply. So Foreman answers a menu the way you would, by walk
 cursor onto the row it picked and pressing Enter only while the pane still shows that row
 selected. An answer it can't pin to a row on screen is **escalated to you** - with its
 reasoning kept as the recommendation - rather than typed at a menu that would discard it.
+You get the same affordance for the same reason: a menu on any session is offered to you as
+[clickable rows](#answer-a-sessions-menu-from-the-dashboard) too, and whichever of you
+reaches it second is refused rather than pressing the wrong row. Because a visible menu puts
+a session in `needs-you` on its own, Foreman now also picks up sessions parked on one that
+no hook has told it about.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it

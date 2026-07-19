@@ -231,6 +231,20 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
+  /**
+   * Answer the option menu a session is showing by selecting one of its rows.
+   *
+   * `label` is not decoration: the card renders a snapshot up to one poll (1.5s) old, and
+   * the daemon re-reads the pane and refuses unless the row still reads as the label the
+   * human was actually shown. Always pass the label off the row that was clicked, never a
+   * remembered or re-derived one, or the check is checking our own guess.
+   *
+   * A 409 means the screen moved out from under the click (the menu closed, the rows
+   * repainted, Foreman answered first). Nothing was pressed - re-render and let the human
+   * look again rather than retrying blind.
+   */
+  selectOption: (id: string, number: number, label: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label }),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
   nomistakesRespond: (

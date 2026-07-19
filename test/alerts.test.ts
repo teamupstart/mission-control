@@ -61,6 +61,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     note: null, goal: null,
     queue: null,
     orphanedQueue: null,
+    paneDialog: null,
     ...over,
   };
 }
@@ -137,6 +138,86 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
   const g = detectAlerts(scope([mkSession({ id: "b" })]), scope([parked]));
   assert.equal(g[0]?.kind, "gate");
   assert.match(g[0]?.body ?? "", /gate parked at review/);
+});
+
+test("a menu appearing alerts, even with no hooks to report it", () => {
+  // The gap: `awaiting_input` is hook-reported, so the uninstrumented session a pane
+  // dialog is the ONLY evidence for got a correct board badge and no notification - the
+  // most definitively blocked session on the board, silent to someone away from it.
+  const menu = { options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 };
+  const quiet = mkSession({ id: "a", state: "idle" });
+  const parked = mkSession({ id: "a", state: "idle", paneDialog: menu });
+
+  const r = detectAlerts(scope([quiet]), scope([parked]));
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "needs-input");
+  assert.equal(r[0]?.severity, "attention");
+  assert.equal(r[0]?.body, "2 options to pick from");
+
+  // Edge-triggered: the same menu still up next tick is not news.
+  assert.equal(detectAlerts(scope([parked]), scope([parked])).length, 0);
+
+  // Nor is the cursor moving in the terminal - that is the same question, read again.
+  const moved = mkSession({ id: "a", state: "idle", paneDialog: { ...menu, highlighted: 2 } });
+  assert.equal(detectAlerts(scope([parked]), scope([moved])).length, 0);
+});
+
+test("a menu replaced by a DIFFERENT one with no observed gap still alerts", () => {
+  // Answering a permission prompt only for the next one to open inside the same 1.5s poll
+  // leaves a menu on both sides of the transition. Edge-triggering on presence reads that
+  // as "still parked" and never announces the new question, so the tightening is onto
+  // identity: prompt plus rows.
+  const first = mkSession({
+    id: "a",
+    state: "idle",
+    paneDialog: { prompt: "Run npm test?", options: [{ number: 1, label: "Yes" }], highlighted: 1 },
+  });
+  const second = mkSession({
+    id: "a",
+    state: "idle",
+    paneDialog: {
+      prompt: "Which database?",
+      options: [{ number: 1, label: "Postgres" }, { number: 2, label: "SQLite" }],
+      highlighted: 1,
+    },
+  });
+  const r = detectAlerts(scope([first]), scope([second]));
+  assert.equal(r.length, 1);
+  assert.equal(r[0]?.kind, "needs-input");
+  assert.equal(r[0]?.body, "2 options to pick from");
+});
+
+test("a menu opening on a session with reviews waiting announces the MENU", () => {
+  // `needsYouReason` puts an open review first - correct for triage, where a review is the
+  // more specific ask. An alert is the other question: what just happened. Routing the
+  // body through it made the one toast the human gets say "to review" about a menu, and
+  // the review alert can't correct that (it only fires when the count rises from zero).
+  const menu = { options: [{ number: 1, label: "Yes" }, { number: 2, label: "No" }], highlighted: 1 };
+  const reviewing = mkSession({ id: "a", state: "idle", pendingReviews: 3 });
+  const parked = mkSession({ id: "a", state: "idle", pendingReviews: 3, paneDialog: menu });
+
+  const r = detectAlerts(scope([reviewing]), scope([parked]));
+  const input = r.filter((a) => a.kind === "needs-input");
+  assert.equal(input.length, 1);
+  assert.equal(input[0]?.body, "2 options to pick from");
+});
+
+test("one blocked session is one alert, however many ways it says so", () => {
+  // An instrumented session hits both paths on the same tick - the Notification hook
+  // flips the state as the pane capture reads the menu - and two toasts for one prompt
+  // is how an alert stream teaches people to ignore it.
+  const menu = { options: [{ number: 1, label: "Yes" }], highlighted: 1 };
+  const working = mkSession({ id: "a", state: "working" });
+  const both = mkSession({ id: "a", state: "awaiting_input", paneDialog: menu });
+  const r = detectAlerts(scope([working]), scope([both]));
+  assert.equal(r.filter((a) => a.kind === "needs-input").length, 1);
+});
+
+test("a menu left on an exited session's screen alerts nobody", () => {
+  const menu = { options: [{ number: 1, label: "Yes" }], highlighted: 1 };
+  const live = mkSession({ id: "a", state: "working" });
+  const dead = mkSession({ id: "a", state: "exited", paneDialog: menu });
+  assert.equal(detectAlerts(scope([live]), scope([dead])).length, 0);
 });
 
 test("a session entering awaiting_review alerts too (needs a decision)", () => {

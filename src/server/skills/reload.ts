@@ -285,7 +285,7 @@ export function startSkillsReloader(registry: Registry): () => void {
       const acks = getSkillsAcks();
       const targets = reloadTargets(registry.snapshot().sessions, acks, cfg, Date.now());
 
-      // Concurrent, like `annotatePermissionModes` - which already spawns a
+      // Concurrent, like `annotatePaneState` - which already spawns a
       // capture-pane per claude session on every 1.5s discovery tick, so this is a
       // shape the dashboard is known to tolerate. Serially, one unreachable pane's 1s
       // capture timeout would delay every session behind it.

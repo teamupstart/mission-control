@@ -360,6 +360,13 @@ export class Registry extends EventEmitter {
       // one (Codex, no pane, or a dialog covering Claude's mode line) we keep the
       // last we knew rather than blanking the chip.
       permissionMode: d.permissionMode ?? prev?.permissionMode ?? null,
+      // Pointedly NOT sticky, unlike the mode above: a menu that has been answered
+      // must leave the card, and remembering the last one we saw would leave a
+      // button offering to answer a question nobody is asking any more. Undefined
+      // means the pane couldn't be read at all (no capture, no information), and
+      // only then do we keep what we had; a successful read that found no menu is
+      // an explicit null and clears it.
+      paneDialog: d.paneDialog !== undefined ? d.paneDialog : (prev?.paneDialog ?? null),
       wezterm: d.wezterm,
       tmux: d.tmux,
       // Seeded from the DB for the same reason `hooksSeen` below is: only a live
@@ -2090,7 +2097,14 @@ function sessionEqual(a: Session, b: Session): boolean {
     // quiet, and never surfaces the stranded batch.
     JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
     JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue) &&
-    JSON.stringify(a.goal) === JSON.stringify(b.goal)
+    JSON.stringify(a.goal) === JSON.stringify(b.goal) &&
+    // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
+    // `permissionMode` is sticky and so doesn't flip when the menu covers the
+    // footer, and a session parked on a question is by definition not doing
+    // anything to move the other fields - so leaving this out doesn't merely delay
+    // the buttons, it withholds them until some unrelated change happens to shake
+    // the card loose. That reads as a flaky parser rather than a missing compare.
+    JSON.stringify(a.paneDialog) === JSON.stringify(b.paneDialog)
   );
 }
 

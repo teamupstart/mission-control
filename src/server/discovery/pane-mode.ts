@@ -1,7 +1,7 @@
-import type { PermissionMode, Session } from "@shared/types.ts";
-import { resolveWeztermBin } from "../config.ts";
-import { run } from "../util/exec.ts";
+import type { PermissionMode } from "@shared/types.ts";
 import type { DiscoveredSession } from "./correlate.ts";
+import { capturePaneText, type PaneHandles } from "./pane-capture.ts";
+import { parsePaneDialog } from "./pane-dialog.ts";
 
 /**
  * Read a Claude session's permission mode off its terminal pane.
@@ -24,12 +24,6 @@ import type { DiscoveredSession } from "./correlate.ts";
  *   - a dialog or menu is foreground (it replaces the footer entirely), or
  *   - Claude is older than v2.1.203, which drew no line for `manual`.
  */
-
-/** The pane handles we can capture text from; both Session and DiscoveredSession have these. */
-type PaneHandles = Pick<Session, "tmux" | "wezterm">;
-
-/** Capturing a pane is on the poll path - keep it well under the tick interval. */
-const CAPTURE_TIMEOUT_MS = 1000;
 
 /**
  * How many trailing non-empty lines may hold the mode line. It is the last one
@@ -71,27 +65,6 @@ export interface PaneModeLine {
   mode: PermissionMode | null;
 }
 
-/** Capture a pane's visible text, or null when it has no handle / the capture fails. */
-export async function capturePaneText(session: PaneHandles): Promise<string | null> {
-  // tmux wins when both exist: the agent's real pane is the tmux pane, and the
-  // wezterm handle would be the outer client showing it. Mirrors `sendText`.
-  if (session.tmux) {
-    const r = await run("tmux", ["capture-pane", "-p", "-t", session.tmux.paneId], {
-      timeoutMs: CAPTURE_TIMEOUT_MS,
-    });
-    return r.code === 0 ? r.stdout : null;
-  }
-  if (session.wezterm) {
-    const r = await run(
-      resolveWeztermBin(),
-      ["cli", "get-text", "--pane-id", String(session.wezterm.paneId)],
-      { timeoutMs: CAPTURE_TIMEOUT_MS },
-    );
-    return r.code === 0 ? r.stdout : null;
-  }
-  return null;
-}
-
 /**
  * Find Claude's mode line in a pane capture, or null when it isn't showing one
  * (a dialog is up, or it's a pre-2.1.203 Claude sitting in `manual`).
@@ -128,19 +101,37 @@ export async function readPaneModeLine(session: PaneHandles): Promise<PaneModeLi
 }
 
 /**
- * Fill in `permissionMode` for every Claude session we can see a pane for, so a
- * card's chip reflects what the terminal actually shows rather than the last
- * value a hook happened to carry. Sessions we can't read are left undefined -
- * the registry keeps their hook-reported mode instead.
+ * Read what a Claude session's pane is showing, for every session we can see one of: its
+ * permission mode, so a card's chip reflects the terminal rather than the last value a
+ * hook happened to carry, and the option dialog it is parked on, so the dashboard can
+ * offer the rows as buttons.
  *
- * Codex has no permission-mode concept, so it's skipped entirely.
+ * ONE capture feeding both parses, deliberately. The capture is a `tmux capture-pane`
+ * subprocess per session per tick and was already being paid for the mode line alone,
+ * with the text thrown away straight after; the dialog is a second pure parse over that
+ * same string, so board-wide dialog buttons cost no new processes. Two captures would
+ * also be two different screens - the pair would disagree on any tick where a dialog
+ * opened between them, which is exactly the tick that matters.
+ *
+ * The two reads are complementary rather than redundant: a foreground dialog REPLACES
+ * Claude's footer, so the ticks where the mode line is missing are the ticks where the
+ * dialog is there. Mode is therefore only overwritten when actually read (a dialog must
+ * not blank the chip), while the dialog is written unconditionally on a successful
+ * capture - including as null, which is how a dismissed menu clears the card.
+ *
+ * Codex has no permission-mode concept and doesn't render these dialogs, so it's skipped.
  */
-export async function annotatePermissionModes(sessions: DiscoveredSession[]): Promise<void> {
+export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<void> {
   const claude = sessions.filter((s) => s.agent === "claude" && (s.tmux || s.wezterm));
   await Promise.all(
     claude.map(async (s) => {
-      const line = await readPaneModeLine(s);
+      const text = await capturePaneText(s);
+      // A failed capture is not "no dialog" - it is no information, and saying null here
+      // would clear a live menu off the card on one flaky tmux call.
+      if (text === null) return;
+      const line = parsePaneModeLine(text);
       if (line?.mode) s.permissionMode = line.mode;
+      s.paneDialog = parsePaneDialog(text);
     }),
   );
 }

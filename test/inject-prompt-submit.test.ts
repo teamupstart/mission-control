@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
 import { hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
-import { capturePaneText } from "../src/server/discovery/pane-mode.ts";
+import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
 
 // Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, Enter, read back -

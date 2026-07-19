@@ -1,5 +1,5 @@
-import { capturePaneText } from "./pane-mode.ts";
-import type { Session } from "@shared/types.ts";
+import { capturePaneText } from "./pane-capture.ts";
+import type { PaneDialog, Session } from "@shared/types.ts";
 
 /**
  * Read a Claude option dialog - a permission prompt, an `AskUserQuestion` menu, the
@@ -27,21 +27,13 @@ import type { Session } from "@shared/types.ts";
  * is on screen right now, in the order shown.
  */
 
-/** One selectable row of an option dialog, as rendered. */
-export interface PaneOption {
-  /** The number Claude prints on the row (1-based, and its position in the list). */
-  number: number;
-  /** The row's visible label, whitespace-collapsed. Never the description beneath it. */
-  label: string;
-}
-
-/** An option dialog as read off a pane. */
-export interface PaneDialog {
-  /** Every row, ascending. Includes Claude's own trailing rows ("Type something."). */
-  options: PaneOption[];
-  /** The row the `❯` cursor sits on - where an Enter would land right now. */
-  highlighted: number;
-}
+/**
+ * The shapes live in `@shared/types.ts` because the dashboard renders these rows for the
+ * human to click, so the browser needs them too; re-exported here because this module is
+ * where they are PARSED, and every server-side caller already reaches for them by this
+ * name.
+ */
+export type { PaneDialog, PaneOption } from "@shared/types.ts";
 
 /**
  * An option row: an optional cursor, the number Claude prints, then the label.
@@ -74,7 +66,7 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
   const lines = paneText.split("\n");
 
   // Collected bottom-up, so `rows` runs N..1 and reverses into the rendered order.
-  const rows: Array<{ number: number; label: string; cursor: boolean }> = [];
+  const rows: Array<{ number: number; label: string; cursor: boolean; line: number }> = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = OPTION_ROW.exec(lines[i]!);
     if (!m) continue;
@@ -87,7 +79,7 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
       rows.length = 0;
       if (number !== 1) continue;
     }
-    rows.push({ number, label: m[3]!.replace(/\s+/g, " "), cursor: Boolean(m[1]) });
+    rows.push({ number, label: m[3]!.replace(/\s+/g, " "), cursor: Boolean(m[1]), line: i });
     if (number === 1) break;
   }
 
@@ -95,10 +87,120 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
   const options = rows.reverse();
   const cursors = options.filter((o) => o.cursor);
   if (cursors.length !== 1) return null;
+  const prompt = readPrompt(lines, options[0]!.line);
   return {
-    options: options.map((o) => ({ number: o.number, label: o.label })),
+    options: options.map((o, k) => {
+      const detail = readDetail(lines, o.line, options[k + 1]?.line ?? lines.length);
+      return detail ? { number: o.number, label: o.label, detail } : { number: o.number, label: o.label };
+    }),
     highlighted: cursors[0]!.number,
+    ...(prompt ? { prompt } : {}),
   };
+}
+
+/** A horizontal rule - `AskUserQuestion` draws one above its trailing "Chat about this". */
+const RULE = /^[\s─━―—–_=-]+$/u;
+
+/**
+ * How far above the rows the question may sit. Bounded because everything further up is
+ * the transcript: an unbounded walk turns the agent's last paragraph into the "question",
+ * which is worse than showing none - it reads as authoritative and is merely nearby.
+ */
+const PROMPT_SCAN_LINES = 8;
+
+/**
+ * The question the rows are answering, read off the lines above them, or undefined when
+ * there is nothing that looks like one.
+ *
+ * Display only, and deliberately so - `optionRowMiss` verifies a selection by LABEL alone,
+ * so nothing here can widen or narrow what a click is allowed to confirm. It exists
+ * because the labels by themselves frequently aren't an answerable question: a permission
+ * prompt's rows read "Yes" / "Yes, and don't ask again" / "No", which tells a human
+ * nothing about what they'd be approving.
+ *
+ * Anchored on the question mark rather than on proximity, because the nearest text above
+ * the rows is routinely NOT the question. The folder-trust check renders
+ *
+ *     Quick safety check: Is this a project you created or one you trust? (Like your own
+ *     code, a well-known open source project, or work from your team). If not, take a
+ *     moment to review what's in this folder first.
+ *
+ *     Claude Code'll be able to read, edit, and execute files here.
+ *
+ *     Security guide
+ *
+ *     ❯ 1. Yes, I trust this folder
+ *
+ * where a walk that simply took the closest non-blank block would announce "Security
+ * guide" as the question - a confident, wrong label on the one control that matters.
+ *
+ * The `?` may sit ANYWHERE in the line, not just at its end, because the pane hard-wraps:
+ * on a real terminal the trust question breaks mid-sentence, so no line ends with `?` at
+ * all and an end-anchored scan finds nothing - falling through to the adjacent block and
+ * captioning the dialog "Security guide", the exact label this anchor exists to avoid.
+ * Matching anywhere finds the line; `joinBlock` is what makes it readable, because the
+ * line the `?` lands on is a FRAGMENT of the question rather than the question.
+ *
+ * Falling back to the adjacent block only when there is no `?` keeps a question worded as
+ * an instruction from yielding nothing.
+ */
+function readPrompt(lines: string[], firstRow: number): string | undefined {
+  const top = Math.max(0, firstRow - PROMPT_SCAN_LINES);
+  for (let i = firstRow - 1; i >= top; i--) {
+    if (lines[i]!.includes("?")) return joinBlock(lines, i, top, firstRow) || undefined;
+  }
+  let i = firstRow - 1;
+  while (i >= top && !lines[i]!.trim()) i--;
+  return i >= top ? joinBlock(lines, i, top, firstRow) || undefined : undefined;
+}
+
+/**
+ * The whole wrapped paragraph that line `at` belongs to, joined back into one string.
+ *
+ * Expanded in BOTH directions from the anchor, to the paragraph's own bounds - a blank line
+ * or a rule on either side. The pane is a viewport, so a question reaches us broken across
+ * however many lines the terminal's width forced; the `?` lands on whichever fragment
+ * happened to contain it, which is as likely to be "...take a moment to" as anything
+ * answerable. Reassembling the paragraph is what turns that back into the question a human
+ * is being asked.
+ *
+ * Bounded by `top` above and by the first option row below, so it can neither climb into
+ * the transcript nor swallow the menu it is captioning.
+ */
+function joinBlock(lines: string[], at: number, top: number, end: number): string {
+  let start = at;
+  while (start - 1 >= top && isProse(lines[start - 1]!)) start--;
+  let stop = at;
+  while (stop + 1 < end && isProse(lines[stop + 1]!)) stop++;
+  return lines
+    .slice(start, stop + 1)
+    .map((l) => l.trim())
+    .join(" ");
+}
+
+/** Whether a line is part of a paragraph rather than one of the bounds of one. */
+function isProse(line: string): boolean {
+  const trimmed = line.trim();
+  return Boolean(trimmed) && !RULE.test(trimmed);
+}
+
+/**
+ * The description Claude prints beneath a row, or undefined when it prints none.
+ *
+ * Bounded by the next row and by the first blank line, which is what keeps the LAST row's
+ * description from swallowing the footer ("Enter to select · ↑/↓ to navigate") - there is
+ * no next row to stop it. Rules are skipped rather than collected for the same reason they
+ * aren't rows: the one above "Chat about this" is chrome, not text about an option.
+ */
+function readDetail(lines: string[], row: number, nextRow: number): string | undefined {
+  const block: string[] = [];
+  for (let i = row + 1; i < nextRow; i++) {
+    const line = lines[i]!.trim();
+    if (!line) break;
+    if (RULE.test(line)) continue;
+    block.push(line);
+  }
+  return block.length ? block.join(" ") : undefined;
 }
 
 /** Read the option dialog a session's pane is showing, or null when it isn't showing one. */

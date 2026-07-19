@@ -18,7 +18,7 @@ function sess(cwd: string | null, branch: string | null = "main"): Session {
     instrumented: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, nomistakes: null, nomistakesFixes: [], task: null,
     nomistakesNarration: null, prUrl: null, prNumber: null, prState: null, prChecks: null,
-    meta: null, note: null, goal: null, queue: null, orphanedQueue: null,
+    meta: null, note: null, goal: null, queue: null, orphanedQueue: null, paneDialog: null,
   };
 }
 

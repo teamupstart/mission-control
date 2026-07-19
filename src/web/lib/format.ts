@@ -1,4 +1,4 @@
-import { runInFlight } from "@shared/session.ts";
+import { activePaneDialog, runInFlight } from "@shared/session.ts";
 import type { NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
@@ -97,6 +97,14 @@ export function stateDisplay(session: Session): StateDisplay {
   // A pending review always needs you, regardless of the agent's own state.
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
+  }
+  // Above the instrumentation split on purpose. A menu on the screen is something we can
+  // SEE, not something a hook has to tell us, and it means the session has stopped dead -
+  // so an uninstrumented session parked on a permission prompt belongs in "needs you"
+  // rather than in "unconfirmed", where it read as merely unknown while being the most
+  // definitively blocked session on the board. Mirrors `reportBucket`.
+  if (activePaneDialog(session)) {
+    return { label: "needs an answer", tone: "attention" };
   }
   const validating: StateDisplay = { label: "validating", tone: "working" };
   if (!session.instrumented) {

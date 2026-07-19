@@ -245,6 +245,59 @@ export interface Session {
    * `failing` is surfaced on the card - as an alert next to the PR chip.
    */
   prChecks: PrChecks | null;
+  /**
+   * The option dialog this session's pane is showing right now - a permission prompt, an
+   * `AskUserQuestion` clarification menu, the folder-trust check - or null when it isn't
+   * showing one. Read off the pane each poll by `annotatePaneState`.
+   *
+   * Carried to the browser so the dashboard can offer the rows as buttons, because prose
+   * is not an answer to a menu: text typed at a dialog is SWALLOWED and the trailing Enter
+   * confirms whatever row was already highlighted (the incident `pane-dialog.ts` opens
+   * with). Foreman was taught to answer these by cursor-walk; the human's only affordance
+   * was the composer, which is that same swallowed-text bug with a person behind it.
+   *
+   * Deliberately NOT sticky across polls, unlike `permissionMode`: a dialog that has been
+   * dismissed must clear from the card, and a stale one would be a button that answers a
+   * question nobody is asking. It is up to one poll (1.5s) old regardless, which is why
+   * clicking a row goes through `POST /api/sessions/:id/select-option` - that re-reads the
+   * pane and refuses unless the row still reads as the label the human was shown.
+   */
+  paneDialog: PaneDialog | null;
+}
+
+/** One selectable row of an option dialog, as rendered on the pane. */
+export interface PaneOption {
+  /** The number Claude prints on the row (1-based, and its position in the list). */
+  number: number;
+  /**
+   * The row's visible label, whitespace-collapsed. Never the description beneath it.
+   *
+   * This is the field a selection is VERIFIED against (`optionRowMiss`), so it must stay
+   * exactly what the row rendered - the browser echoes it back untouched when the human
+   * clicks, and the daemon refuses if the pane no longer agrees.
+   */
+  label: string;
+  /**
+   * The description `AskUserQuestion` prints under the row, absent when Claude prints
+   * none. Display only - it is never part of the selection check, so a description that
+   * repaints between poll and click cannot make a click miss.
+   */
+  detail?: string;
+}
+
+/** An option dialog as read off a pane. */
+export interface PaneDialog {
+  /** Every row, ascending. Includes Claude's own trailing rows ("Type something."). */
+  options: PaneOption[];
+  /** The row the `❯` cursor sits on - where an Enter would land right now. */
+  highlighted: number;
+  /**
+   * The question the rows answer, read off the lines above them; absent when nothing
+   * above them reads like one. Display only, like `detail` - but load-bearing for the
+   * feature, because a permission prompt's rows are "Yes" / "No" and a human reading only
+   * those has not been shown what they are approving.
+   */
+  prompt?: string;
 }
 
 // ---- Foreman session notes (auto-responder) ----

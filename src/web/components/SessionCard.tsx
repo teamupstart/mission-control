@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueueSummary } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
+import { activePaneDialog } from "@shared/session.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
@@ -10,6 +11,7 @@ import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
+import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
 import {
   AGENT_LABEL,
@@ -133,6 +135,7 @@ export function SessionCard({
   const attention = st.tone === "attention";
   const canSend = Boolean(session.tmux || session.wezterm);
   const canRename = canRenameSession(session);
+  const dialog = activePaneDialog(session);
   // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut
   // / the queued chip and stays open until you close it. Deliberately independent of
   // `expanded` - a queue is worth a glance without surrendering the grid to one card,
@@ -386,6 +389,11 @@ export function SessionCard({
         />
       )}
 
+      {/* Not gated on `expanded`, unlike the note below it: a session parked on a menu is
+          blocked until someone answers, which is the one thing a collapsed card most needs
+          to say. Burying it behind a click is how it gets missed. */}
+      {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
+
       {expanded && session.note && (
         <ForemanNote
           session={session}
@@ -421,6 +429,7 @@ export function SessionCard({
               sessionId={session.id}
               agent={session.agent}
               canSend={canSend}
+              dialogOpen={Boolean(dialog)}
               onReplyBox={setHasReply}
               resetNonce={resetNonce}
             />

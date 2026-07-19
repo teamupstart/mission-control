@@ -211,7 +211,7 @@
 <div class="meta">
   <div><b>Status</b>implemented (all five phases)</div>
   <div><b>Owner</b>ai-harness</div>
-  <div><b>Related</b><code>ForemanNote</code> (<code>src/web/components/ForemanNote.tsx</code>), which shows the one note that currently exists. This makes notes durable, puts them in the conversation, and reduces the always-on card to a single line.</div>
+  <div><b>Related</b><code>ForemanNote</code> (<code>src/web/components/ForemanNote.tsx</code>), which showed the one note that used to exist and now serves the grid card only. This makes notes durable, puts them in the conversation, and reduces the console's always-on block to a single line.</div>
 </div>
 
 <h2>Goal</h2>
@@ -293,9 +293,10 @@
   last_action    TEXT,
   sent_text      TEXT,              -- what was actually delivered
   sent_option    TEXT,              -- JSON {number,label} for a menu selection
-  sent_by        TEXT,              -- foreman | you
+  sent_by        TEXT,              -- foreman | you: who authored what was delivered
   created_at     INTEGER NOT NULL,
-  resolved_at    INTEGER
+  resolved_at    INTEGER,
+  resolved_by    TEXT               -- foreman | you: who DECIDED it (see below)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_foreman_episodes_marker
   ON foreman_episodes(note_key, marker);
@@ -306,7 +307,7 @@ CREATE INDEX IF NOT EXISTS idx_foreman_episodes_key
 
 <p><code>pane</code> is stored <strong>only when the surface is terminal</strong>. An <code>input</code> review's question is already durable in <code>reviews.body</code>, and storing a screen capture for it would be a second copy that can drift.</p>
 
-<p>Retention: swept alongside the existing <code>gate_replies</code> sweep, same cutoff.</p>
+<p>Retention: swept alongside the existing <code>gate_replies</code> sweep, but at <strong>30 days</strong> rather than that sweep's 90. An episode row can carry a whole pane capture, so it is the fattest of the aged tables, and the drawer is read for recent judgment rather than for a branch that may sit open for months. <code>pane</code> is capped at 16k bytes on write for the same reason.</p>
 
 <h2>Phases</h2>
 
@@ -325,7 +326,7 @@ CREATE INDEX IF NOT EXISTS idx_foreman_episodes_key
 
 <h3><span class="phase">Phase 2</span>Stop erasing on Approve</h3>
 
-<p><code>ForemanNote.approve()</code> nulls <code>recommendation</code> and <code>brief</code>. With Phase 1 in place the episode row already holds Foreman's text, but not the human's act. Add <code>api.resolveEpisode(sessionId, {marker, sentText, sentBy, disposition})</code>, called before <code>setNote</code>, stamping <code>sent_by: "you"</code>, <code>sent_text</code> and <code>resolved_at</code>. Same for <code>dismiss()</code>, with no <code>sent_text</code>.</p>
+<p><code>ForemanNote.approve()</code> nulls <code>recommendation</code> and <code>brief</code>. With Phase 1 in place the episode row already holds Foreman's text, but not the human's act. Add <code>api.resolveEpisode(sessionId, {marker, disposition, sentText})</code>, called before <code>setNote</code>, stamping <code>resolved_by: "you"</code>, <code>sent_text</code> and <code>resolved_at</code>. Same for <code>dismiss()</code>, with no <code>sent_text</code>. Authorship is <em>derived</em> server-side rather than passed: the dashboard says what it did, and <code>resolveEpisode</code> reads <code>sent_by</code> off whether anything was actually sent (see the <code>resolved_by</code> note below).</p>
 
 <p>The <code>setNote</code> nulling stays: <code>session_notes</code> is current state, and after you answer, there is no current recommendation. The record lives in the episode now.</p>
 
@@ -368,23 +369,29 @@ CREATE INDEX IF NOT EXISTS idx_foreman_episodes_key
 
 <p><strong>An unavailable transcript hid the episodes entirely.</strong> <code>TranscriptPanel</code> returns early with the reason line when the stream reports <code>unavailable</code>, so the merge below it never ran. That is exactly backwards: a session whose JSONL can't be resolved is the one where Foreman's record is the <em>only</em> account of what happened. The reason line now renders <em>above</em> the episodes rather than instead of them.</p>
 
-<p><strong><code>answered</code> doesn't say who answered.</strong> The note's label is "answered for you", which is true because only Foreman ever writes a note. An episode outlives that: an escalation you approve also ends up <code>answered</code>, and the note's wording then credits Foreman with your decision. <code>episodeLabel</code> reads <code>sentBy</code>, not the disposition alone.</p>
+<p><strong><code>answered</code> doesn't say who answered.</strong> The note's label is "answered for you", which is true because only Foreman ever writes a note. An episode outlives that: an escalation you approve also ends up <code>answered</code>, and the note's wording then credits Foreman with your decision. <code>episodeLabel</code> reads the author, not the disposition alone.</p>
+
+<p><strong>And the author is two facts, not one.</strong> Reading it off <code>sent_by</code> was the obvious move and was wrong: a <strong>dismissal</strong> resolves an episode without delivering a word, so <code>sent_by</code> is null on exactly the paths where a human still made the call - and the card then read "You approved" above a header saying you had dismissed it. <code>resolved_by</code> (who decided) is therefore split from <code>sent_by</code> (who authored what reached the child), added by an <code>addColumn</code> migration rather than by the <code>CREATE TABLE</code> alone, because the table already existed on the dbs this was built against.</p>
 
 <p><strong>Every naive source for a row's preview is wrong on a terminal ask.</strong> <code>question</code> is the notification line ("Claude needs your permission to use Bash"), identical on every such row; the menu rows are the choices, not the question; the pane is mostly scrollback. What a reader remembers is the sentence <em>between</em> the permission header and the first numbered row, so <code>askPreview</code> reaches for that first. This is what turns a row from "a decision was needed" into <code>rm -rf node_modules/.vite</code>.</p>
+
+<p>Picking <em>which</em> sentence took a second pass. Position doesn't work from either end: a Claude dialog opens with a short chip naming the tool ("Bash command") and closes with a generic confirmation ("Do you want to proceed?"), and choosing the nearest paragraph or the furthest gets two of the three verbatim captures in <code>foreman-pane-dialog.test.ts</code> wrong. <code>panePrompt</code> takes the <strong>longest</strong> paragraph above the option rows instead - the substantive line is the one with something to say - capped at four paragraphs so scrollback isn't weighed as dialog.</p>
 
 <h2>Testing</h2>
 
 <ul>
   <li><code>test/foreman-episodes.test.ts</code> - the DB layer: append, the <code>(note_key, marker)</code> upsert, list ordering, the sweep.</li>
   <li><code>test/foreman-episode-capture.test.ts</code> - <code>processSession</code> records the pane, menu and verdict fields for a terminal ask; records <code>review_id</code> and no pane for an input review; records nothing when the send throws.</li>
-  <li>Extend the existing <code>ForemanNote</code> tests for <code>resolveEpisode</code> firing before <code>setNote</code>.</li>
-  <li>Render tests for the merge ordering in <code>TranscriptPanel</code>.</li>
+  <li><code>test/foreman-note.test.ts</code> - <code>closeForemanNote</code>: <code>resolveEpisode</code> fires before <code>setNote</code>, and a note with no marker skips it rather than failing the human's decision.</li>
+  <li><code>test/foreman-episode-resolution.test.ts</code> - a dismissal stamps <code>resolved_by</code> without inventing a <code>sent_by</code>, which is the bug the split was made for.</li>
+  <li><code>test/foreman-episode-merge.test.ts</code> - the merge ordering in <code>TranscriptPanel</code>.</li>
+  <li><code>test/foreman-episode-preview.test.ts</code> - <code>askPreview</code> against the verbatim captures in <code>test/fixtures/claude-panes.ts</code>.</li>
 </ul>
 
 <h2>Open risks</h2>
 
 <ul>
-  <li><strong>Pane size.</strong> A capture is a full screen; at one row per episode this is bounded by the sweep, but worth watching. Cap at a sane byte length on write.</li>
+  <li><strong>Pane size.</strong> A capture is a full screen; at one row per episode this is bounded by the sweep, but worth watching. <strong>Resolved:</strong> capped at 16k bytes on write, and the sweep is 30 days rather than <code>gate_replies</code>' 90 - see Schema above.</li>
   <li><strong><code>/clear</code> re-mints <code>note_key</code></strong>, orphaning an episode history the same way it orphans a note. Acceptable for now - the drawer is session-scoped, and a cleared session is a new session.</li>
   <li><strong>Fleet-wide view</strong> is the obvious next step once episodes are durable (same list, unfiltered by session). Deliberately out of scope here.</li>
 </ul>

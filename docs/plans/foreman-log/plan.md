@@ -2,9 +2,9 @@
 
 Status: implemented (all five phases)
 Owner: ai-harness
-Related: `ForemanNote` (`src/web/components/ForemanNote.tsx`), which shows the one note that
-currently exists. This makes notes durable, puts them in the conversation, and reduces the
-always-on card to a single line.
+Related: `ForemanNote` (`src/web/components/ForemanNote.tsx`), which showed the one note that
+used to exist and now serves the grid card only. This makes notes durable, puts them in the
+conversation, and reduces the console's always-on block to a single line.
 
 ## Goal
 
@@ -98,9 +98,10 @@ CREATE TABLE IF NOT EXISTS foreman_episodes (
   last_action    TEXT,
   sent_text      TEXT,              -- what was actually delivered
   sent_option    TEXT,              -- JSON {number,label} for a menu selection
-  sent_by        TEXT,              -- foreman | you
+  sent_by        TEXT,              -- foreman | you: who authored what was delivered
   created_at     INTEGER NOT NULL,
-  resolved_at    INTEGER
+  resolved_at    INTEGER,
+  resolved_by    TEXT               -- foreman | you: who DECIDED it (see below)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_foreman_episodes_marker
   ON foreman_episodes(note_key, marker);
@@ -116,7 +117,10 @@ same row rather than appending a second one.
 durable in `reviews.body`, and storing a screen capture for it would be a second copy that can
 drift.
 
-Retention: swept alongside the existing `gate_replies` sweep, same cutoff.
+Retention: swept alongside the existing `gate_replies` sweep, but at **30 days** rather than
+that sweep's 90. An episode row can carry a whole pane capture, so it is the fattest of the
+aged tables, and the drawer is read for recent judgment rather than for a branch that may sit
+open for months. `pane` is capped at 16k bytes on write for the same reason.
 
 ## Phases
 
@@ -140,8 +144,10 @@ A failed send throws out of `applyVerdict` and writes no episode, matching how i
 
 `ForemanNote.approve()` nulls `recommendation` and `brief`. With Phase 1 in place the episode row
 already holds Foreman's text, but not the human's act. Add `api.resolveEpisode(sessionId, {marker,
-sentText, sentBy, disposition})`, called before `setNote`, stamping `sent_by: "you"`, `sent_text`
-and `resolved_at`. Same for `dismiss()`, with no `sent_text`.
+disposition, sentText})`, called before `setNote`, stamping `resolved_by: "you"`, `sent_text`
+and `resolved_at`. Same for `dismiss()`, with no `sent_text`. Authorship is *derived* server-side
+rather than passed: the dashboard says what it did, and `resolveEpisode` reads `sent_by` off
+whether anything was actually sent (see the `resolved_by` note below).
 
 The `setNote` nulling stays: `session_notes` is current state, and after you answer, there is no
 current recommendation. The record lives in the episode now.
@@ -212,7 +218,15 @@ Foreman's record is the *only* account of what happened. The reason line now ren
 **`answered` doesn't say who answered.** The note's label is "answered for you", which is
 true because only Foreman ever writes a note. An episode outlives that: an escalation you
 approve also ends up `answered`, and the note's wording then credits Foreman with your
-decision. `episodeLabel` reads `sentBy`, not the disposition alone.
+decision. `episodeLabel` reads the author, not the disposition alone.
+
+**And the author is two facts, not one.** Reading it off `sent_by` was the obvious move and
+was wrong: a **dismissal** resolves an episode without delivering a word, so `sent_by` is null
+on exactly the paths where a human still made the call - and the card then read "You approved"
+above a header saying you had dismissed it. `resolved_by` (who decided) is therefore split
+from `sent_by` (who authored what reached the child), added by an `addColumn` migration rather
+than by the `CREATE TABLE` alone, because the table already existed on the dbs this was built
+against.
 
 **Every naive source for a row's preview is wrong on a terminal ask.** `question` is the
 notification line ("Claude needs your permission to use Bash"), identical on every such row;
@@ -221,6 +235,13 @@ reader remembers is the sentence *between* the permission header and the first n
 so `askPreview` reaches for that first. This is what turns a row from "a decision was
 needed" into "rm -rf node_modules/.vite".
 
+Picking *which* sentence took a second pass. Position doesn't work from either end: a Claude
+dialog opens with a short chip naming the tool ("Bash command") and closes with a generic
+confirmation ("Do you want to proceed?"), and choosing the nearest paragraph or the furthest
+gets two of the three verbatim captures in `foreman-pane-dialog.test.ts` wrong. `panePrompt`
+takes the **longest** paragraph above the option rows instead - the substantive line is the
+one with something to say - capped at four paragraphs so scrollback isn't weighed as dialog.
+
 ## Testing
 
 - `test/foreman-episodes.test.ts` - the DB layer: append, the `(note_key, marker)` upsert, list
@@ -228,13 +249,19 @@ needed" into "rm -rf node_modules/.vite".
 - `test/foreman-episode-capture.test.ts` - `processSession` records the pane, menu and verdict
   fields for a terminal ask; records `review_id` and no pane for an input review; records nothing
   when the send throws.
-- Extend the existing `ForemanNote` tests for `resolveEpisode` firing before `setNote`.
-- Render tests for the merge ordering in `TranscriptPanel`.
+- `test/foreman-note.test.ts` - `closeForemanNote`: `resolveEpisode` fires before `setNote`, and
+  a note with no marker skips it rather than failing the human's decision.
+- `test/foreman-episode-resolution.test.ts` - a dismissal stamps `resolved_by` without inventing
+  a `sent_by`, which is the bug the split was made for.
+- `test/foreman-episode-merge.test.ts` - the merge ordering in `TranscriptPanel`.
+- `test/foreman-episode-preview.test.ts` - `askPreview` against the verbatim captures in
+  `test/fixtures/claude-panes.ts`.
 
 ## Open risks
 
 - **Pane size.** A capture is a full screen; at one row per episode this is bounded by the sweep,
-  but worth watching. Cap at a sane byte length on write.
+  but worth watching. **Resolved:** capped at 16k bytes on write, and the sweep is 30 days
+  rather than `gate_replies`' 90 - see Schema above.
 - **`/clear` re-mints `note_key`**, orphaning an episode history the same way it orphans a note.
   Acceptable for now - the drawer is session-scoped, and a cleared session is a new session.
 - **Fleet-wide view** is the obvious next step once episodes are durable (same list, unfiltered by

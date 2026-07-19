@@ -82,6 +82,28 @@ const reviewFailures = new ReviewFailureTracker();
 /** Per-session cooldown so a flapping marker can't trigger back-to-back reviews. */
 const evaluations = new EvaluationDebounce(EVAL_DEBOUNCE_MS);
 
+/**
+ * Consecutive verify failures on the PROMPTED wrap-up path, per session, alongside the
+ * episode they belong to. The queue path bounds the same failure with `failVerify` and
+ * the item's durable `verifyFailures`; this path has no item to hold a count, so it
+ * keeps one here - and without it a session whose diff permanently defeats the verifier
+ * (oversized, malformed, a `claude` binary that always fails) spawns one `claude -p`
+ * every tick, forever.
+ *
+ * In-memory like `ReviewFailureTracker` rather than durable like an item's count, and
+ * keyed by SESSION with the goal stored beside it rather than by session+goal: a new
+ * human prompt moves the goal, which is exactly when the strikes should reset, so
+ * storing the goal makes the reset fall out of the comparison instead of needing a
+ * sweep. One entry per session, so it cannot grow without bound.
+ */
+const promptedVerifyFailures = new Map<string, { goal: string; failures: number }>();
+
+/** Strikes against THIS episode - a different goal is a different episode, hence zero. */
+function promptedStrikes(sessionId: string, goal: string): number {
+  const seen = promptedVerifyFailures.get(sessionId);
+  return seen && seen.goal === goal ? seen.failures : 0;
+}
+
 /** This process's identity for the lease. New per start, by design. */
 const WORKER_ID = `${process.pid}-${randomUUID().slice(0, 8)}`;
 /** Whether we currently hold the worker lease. Owned by the renewal timer. */
@@ -300,7 +322,17 @@ async function processTarget(
   // The FULL queue: Session.queue is only the compact card summary, while the
   // machine needs gaps, baseSha, transcriptAnchor, round, revision and strikes.
   // One extra loopback round-trip per target per tick - noise next to a claude -p.
-  const queue = await client.queue(fresh.id).catch(() => null);
+  //
+  // A FAILED read decides nothing, for the same reason the `sessions()` read above
+  // decides nothing - but here the distinction has to be made explicitly, because
+  // `null` is ALSO the legitimate answer for "this session has no queue". Coercing a
+  // throw to `null` hands `decidePromptedWrapup` a null queue on a transient daemon
+  // blip, which silently disarms both of its double-fire guards at once: the overlap
+  // rule that hands a queued session to the drain trigger, and the once-per-episode
+  // `promptedGoal` re-arm. The result is a second wrap-up pushing the same branch.
+  const read = await client.queue(fresh.id).then((queue) => ({ queue }), () => null);
+  if (!read) return false;
+  const queue = read.queue;
 
   if (!queue || queue.items.length === 0) {
     // No queue: this session is here because it needs you...
@@ -419,6 +451,12 @@ async function processPromptedWrapup(
   });
   if (candidate.kind === "skip") return false;
 
+  // Foreman already gave up on this episode - see the cap in the `failed` branch below.
+  // Checked HERE, above every read, because the whole point of the cap is to stop
+  // spending a `claude -p` on it: a check after the evidence gather would still pay for
+  // the verify it exists to prevent.
+  if (promptedStrikes(session.id, candidate.goal) >= VERIFY_FAILURE_CAP) return false;
+
   // --- evidence. Same discipline as runVerify: any gap in it is a verify-INFRASTRUCTURE
   // failure and must never reach the verifier, which would otherwise find no proof the
   // work was done and answer "incomplete" about work that is finished. Here that
@@ -475,11 +513,32 @@ async function processPromptedWrapup(
     priorGaps: [],
   });
   if (result.kind === "failed") {
-    // Unlike the queue there is no item to escalate and no strike count to keep: a
-    // failed verify just means we learned nothing this tick. Leave the episode armed.
+    // Unlike the queue there is no item to escalate, but the failure is bounded the
+    // same way and for the same reason - see `promptedVerifyFailures`. Under the cap
+    // the episode stays armed and retries next tick; at the cap Foreman gives up on it,
+    // and only a new human prompt (which moves the goal, resetting the strikes) re-arms
+    // it. Retired durably as well, so the give-up survives a worker restart; the
+    // in-memory count is what holds the line when that write is the thing that's broken.
+    const failures = promptedStrikes(session.id, candidate.goal) + 1;
+    promptedVerifyFailures.set(session.id, { goal: candidate.goal, failures });
+    if (failures >= VERIFY_FAILURE_CAP) {
+      await client.markPromptedWrapup(session.id, candidate.goal).catch(() => {});
+      log(
+        `${session.name}: prompted wrap-up gave up - verify failed ${failures}x (${result.reason})`,
+      );
+      return false;
+    }
     log(`${session.name}: prompted wrap-up held - verify failed (${result.reason})`);
-    return true;
+    // NOT `advanced`: nothing was written and nothing changed. Reporting a failed tick
+    // as progress makes the loop skip its IDLE_MS sleep and re-select this same session
+    // on the very next pass - the episode is still armed, since `promptedGoal` was
+    // deliberately not stamped - turning a broken verifier into a hot loop of model
+    // calls separated only by BETWEEN_MS.
+    return false;
   }
+  // A verdict is evidence about the work, so it clears the transient-failure count -
+  // the same "onSuccess" shape `runVerify` applies to an item's `verifyFailures`.
+  promptedVerifyFailures.delete(session.id);
 
   const plan = planPromptedWrapup(
     candidate.goal,
@@ -507,8 +566,15 @@ async function processPromptedWrapup(
     // Raising the card IS the whole action here, so a failure to raise it is a dropped
     // question, not a cosmetic miss: the episode is already retired, so nothing will ask
     // again. Say so at the same volume as a failed send rather than swallowing it.
+    //
+    // `clearAnswer` because the card renders on `wrapupAskedAt !== null && wrapupAnswer
+    // === null`, and this row's answer belongs to a PREVIOUS episode - a prior prompted
+    // auto-send, or a human's earlier drain answer. Left in place it swallows this ask
+    // silently, which is the same dropped question by a quieter route. A new episode is
+    // by definition a new question, so the answer to the old one is stale; it is cleared
+    // in the SAME write that stamps the ask, so no read can see one without the other.
     try {
-      await client.markWrapupAsked(session.id);
+      await client.markWrapupAsked(session.id, { clearAnswer: true });
       log(`${session.name}: prompted work looks complete - asked about wrapping up`);
     } catch (err) {
       log(`${session.name}: prompted work looks complete but the ask could not be raised (${String(err)})`);
@@ -522,7 +588,7 @@ async function processPromptedWrapup(
     // Never retry: a retry IS the double-push. Fall back to the card, which is exactly
     // `ask` mode and puts this same text one click away.
     log(`${session.name}: could not send the prompted wrap-up (${String(err)}) - asking instead`);
-    await client.markWrapupAsked(session.id).catch(() => {});
+    await client.markWrapupAsked(session.id, { clearAnswer: true }).catch(() => {});
     return true;
   }
 

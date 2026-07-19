@@ -683,6 +683,23 @@ export const WrapupSchema = z.object({
 export type Wrapup = z.infer<typeof WrapupSchema>;
 
 /**
+ * Stamp the wrap-up ask.
+ *
+ * `clearAnswer` says this ask opens a NEW question, so any recorded answer on the row
+ * is an answer to a previous one and must go in the same write. Only the `prompted`
+ * trigger sets it: that trigger fires once per episode, and its second episode lands on
+ * a row that may already carry an answer (its own earlier auto-send, or a human's drain
+ * answer) - and since the card renders only while `wrapupAnswer` is null, the stale
+ * value would swallow the new ask outright. Optional, and absent by default, because the
+ * DRAIN path must never set it: there the answer it would clear is the answer to the
+ * very ask being raised.
+ */
+export const WrapupAskedSchema = z.object({
+  clearAnswer: z.boolean().optional(),
+});
+export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
+
+/**
  * Retire one episode of the `prompted` wrap-up trigger: the goal it just decided on.
  *
  * INTENT_MAX is generous headroom here, not a tight fit: this carries a whole captured

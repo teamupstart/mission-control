@@ -282,8 +282,21 @@ export class ForemanClient implements ForemanActions {
     return (await res.json()) as WorkItem;
   }
 
-  async markWrapupAsked(sessionId: string): Promise<void> {
-    const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`);
+  /**
+   * Stamp the wrap-up ask, so the Ship it? card renders.
+   *
+   * `clearAnswer` is the PROMPTED trigger's flag and must stay opt-in: that trigger can
+   * raise a second ask on a row whose `wrapupAnswer` belongs to a previous episode, and
+   * the card hides on a non-null answer - so without clearing it the new question is
+   * stamped and then invisibly swallowed. The DRAIN path must never pass it: there the
+   * answer it would clobber is the answer to the ask being raised.
+   */
+  async markWrapupAsked(sessionId: string, opts?: { clearAnswer?: boolean }): Promise<void> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`,
+      opts?.clearAnswer ? { clearAnswer: true } : undefined,
+    );
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }
 

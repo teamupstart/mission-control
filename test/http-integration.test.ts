@@ -835,6 +835,41 @@ test("the drain ask can be raised on a session that has NO queue items", async (
   assert.deepEqual(queue.items, [], "and creating that row invented no work");
 });
 
+test("a prompted ask clears a PREVIOUS episode's answer; the drain ask never does", async () => {
+  // The card renders only on `wrapupAskedAt !== null && wrapupAnswer === null`, and an
+  // answer is cleared nowhere else but a new queue item. So a second prompted episode
+  // landing on a row that already carries an answer - its own earlier auto-send, or a
+  // human's drain answer - would be stamped and then invisibly swallowed, with
+  // `promptedGoal` already retiring the episode so nothing ever asks again.
+  seedSession();
+  await app.request("/api/sessions/sess-1/queue/wrapup", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ answer: "/no-mistakes" }),
+  });
+
+  // The drain path sends no body, and must leave the answer it just collected alone.
+  const drain = await app.request("/api/sessions/sess-1/queue/wrapup/asked", {
+    method: "POST",
+    headers: LOOPBACK,
+  });
+  assert.equal(
+    ((await drain.json()) as { wrapupAnswer: string | null }).wrapupAnswer,
+    "/no-mistakes",
+    "the drain ask must not clobber the answer to the ask it is raising",
+  );
+
+  const prompted = await app.request("/api/sessions/sess-1/queue/wrapup/asked", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ clearAnswer: true }),
+  });
+  assert.equal(prompted.status, 200);
+  const q = (await prompted.json()) as { wrapupAskedAt: number | null; wrapupAnswer: string | null };
+  assert.ok(q.wrapupAskedAt, "the new question is stamped");
+  assert.equal(q.wrapupAnswer, null, "and the stale answer went with it, so the card renders");
+});
+
 test("the prompted trigger's episode guard round-trips, and is separate from the drain ask", async () => {
   // One field for both guards would mean a prompted wrap-up consumed the drain ask (or
   // the reverse) on a checkout that later gets a work queue. They must not interfere.

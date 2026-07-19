@@ -554,6 +554,35 @@ test("pruneDeadQueues leaves a recently-touched queue alone", () => {
   assert.ok(getQueueRow("recent-1"), "inside the retention window");
 });
 
+test("pruneDeadQueues collects an EMPTY row at any age, but keeps one holding wrap-up state", () => {
+  // `ensureQueue` mints a row for any session whose wrap-up state is merely touched, and
+  // the `prompted` trigger touches every session it ever considers - including the hold
+  // and empty-diff outcomes that never produce a queue. A row with no items and none of
+  // the three wrap-up fields set holds nothing anyone can resume, answer or re-arm, so
+  // there is nothing for the retention window to protect.
+  seedRow("empty-1", "/churn", Date.now());
+  pruneDeadQueues(new Set(), 1);
+  assert.equal(getQueueRow("empty-1"), undefined, "an itemless, stateless row is not history");
+
+  // ...but each of the three fields alone is state worth keeping: an unanswered Ship it?
+  // card, a human's answer, and the once-per-episode guard that stops the prompted
+  // trigger re-verifying an idle session every tick.
+  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "/no-mistakes", promptedGoal: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", updatedAt: Date.now() });
+
+  pruneDeadQueues(new Set(), 1);
+  assert.ok(getQueueRow("keep-ask"), "an unanswered ask still has to render");
+  assert.ok(getQueueRow("keep-answer"), "an answer is the human's, not ours to drop");
+  assert.ok(getQueueRow("keep-goal"), "dropping the guard re-arms the trigger on an idle session");
+
+  // And a LIVE session's empty row is untouchable, because `ensureQueue` plus the stamp
+  // that follows it are two writes - between them the row is legitimately empty.
+  seedRow("empty-live", "/here", Date.now());
+  pruneDeadQueues(new Set(["empty-live"]), 1);
+  assert.ok(getQueueRow("empty-live"), "never collect the row a live session is mid-write on");
+});
+
 test("clearQueue drops the row and EVERY item - open and in-flight alike", () => {
   // Where pruneDeadQueues refuses open work, the reset's clear takes it all: the
   // task these items were authored for is gone.

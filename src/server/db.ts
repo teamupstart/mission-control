@@ -1058,6 +1058,17 @@ export function countOpenQueueItems(noteKey: string): number {
  *    and the wrap-up ask still hangs off that row.
  * So this only ever drops a fully-finished batch whose session is gone and which
  * nothing has touched since `cutoff`.
+ *
+ * The second branch collects rows that hold NOTHING - no items at all, and none of the
+ * three wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
+ * session whose wrap-up state is merely touched, and the `prompted` trigger touches
+ * every session it ever considers, so this is now the common shape of a row rather than
+ * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
+ * no backlog to resume, no ask to answer and no episode to keep retired, and if the
+ * session comes back `ensureQueue` mints it again for free. The `liveKeys` guard still
+ * applies to both branches, which is what keeps this away from the row a live session is
+ * mid-write on - `ensureQueue` and the `promptedGoal` stamp that follows it are two
+ * writes, and between them the row is legitimately empty.
  */
 export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
   const db = openDb();
@@ -1065,11 +1076,21 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
   const dead = db
     .prepare(
       `SELECT note_key FROM foreman_queues q
-        WHERE q.updated_at < ?
-          AND NOT EXISTS (
-            SELECT 1 FROM foreman_queue_items i
-             WHERE i.note_key = q.note_key AND i.state NOT IN (${states})
-          )`,
+        WHERE (
+                q.updated_at < ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM foreman_queue_items i
+                   WHERE i.note_key = q.note_key AND i.state NOT IN (${states})
+                )
+              )
+           OR (
+                q.wrapup_asked_at IS NULL
+                AND q.wrapup_answer IS NULL
+                AND q.prompted_goal IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
+                )
+              )`,
     )
     .all(cutoff) as unknown as Array<{ note_key: string }>;
   const drop = dead.map((r) => r.note_key).filter((k) => !liveKeys.has(k));

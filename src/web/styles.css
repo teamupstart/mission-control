@@ -4214,10 +4214,20 @@ kbd {
   gap: 6px;
   min-inline-size: 0; /* a fieldset defaults to min-content and would refuse to shrink */
 }
-/* Disabled when no trigger is armed. Deeper than the parent's 0.5 so a fully
-   disabled Foreman doesn't stack the two into near-invisibility. */
-.foreman-wrapup-action:disabled {
+/* Disabled when no trigger is armed: deeper than the parent's 0.5, so "no moment for
+   this to happen at" reads as more-off than the group around it.
+
+   Scoped to an ENABLED parent, and paired with the rule below, because opacity
+   multiplies down the tree and a fieldset inside a disabled fieldset is itself matched
+   by :disabled - so an unscoped 0.55 lands at 0.5 x 0.55 = 0.275 the moment Foreman is
+   switched off, turning the radios from dimmed into all but invisible. With Foreman off
+   the whole group already carries the 0.5, and these radios should read exactly as
+   disabled as everything beside them, so the nested value is 1. */
+.foreman-modes:not(:disabled) > .foreman-wrapup-action:disabled {
   opacity: 0.55;
+}
+.foreman-modes:disabled > .foreman-wrapup-action:disabled {
+  opacity: 1;
 }
 .foreman-wrapup-action legend {
   font-size: 10.5px;

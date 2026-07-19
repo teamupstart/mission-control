@@ -30,6 +30,7 @@ import {
   SetPermissionModeSchema,
   SetWorkItemStateSchema,
   PromptedWrapupSchema,
+  WrapupAskedSchema,
   SkillsConfigPatchSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
@@ -834,12 +835,14 @@ export function buildApp(
   // work, decide to ask, and then silently drop the question. Creating the row is not a
   // side effect being smuggled in: `ensureQueue` writes cwd/branch and nothing else, an
   // itemless queue renders no item list, and `addItem` already creates one this way.
-  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => {
+  app.post("/api/sessions/:id/queue/wrapup/asked", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, WrapupAskedSchema);
+    if (!parsed.ok) return parsed.res;
     const key = registry.ensureQueue(session.id);
     if (!key) return c.json({ error: "no queue for this session" }, 404);
-    queues.markWrapupAsked(key);
+    queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
     return c.json(queues.get(session.id));
   });
 

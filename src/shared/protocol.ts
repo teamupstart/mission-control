@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { WRAPUP_MODES } from "./queue.ts";
+import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 
 /** Terminal env the hook / MCP client captures, used to bind an event to a session. */
 const EnvSchema = z
@@ -93,6 +93,48 @@ export const SelectOptionSchema = z.object({
   label: z.string().min(1),
 });
 export type SelectOption = z.infer<typeof SelectOptionSchema>;
+
+/**
+ * Fill in and send a multi-select `AskUserQuestion` - the form that `SelectOptionSchema`
+ * cannot express, because a form is answered by its whole state rather than by one row.
+ *
+ * Every checkbox row is sent, ticked or not, not just the ones the human changed. The
+ * daemon diffs that against a fresh read of the pane and toggles only what differs, so
+ * what crosses the wire is the ANSWER ("Alpha and Gamma, nothing else") rather than a list
+ * of keystrokes to replay - which is what keeps a box someone ticked in the terminal
+ * meanwhile from being silently inverted by a click made before it.
+ *
+ * `label` carries the same weight as it does above, and each row is re-checked against the
+ * screen before anything is typed.
+ */
+export const SubmitOptionsSchema = z.object({
+  options: z
+    .array(
+      z.object({
+        number: z.number().int().min(1).max(99),
+        label: z.string().min(1),
+        checked: z.boolean(),
+      }),
+    )
+    .min(1)
+    .max(99),
+});
+export type SubmitOptions = z.infer<typeof SubmitOptionsSchema>;
+
+/**
+ * How far a submitted form actually got, returned alongside `ok`.
+ *
+ * A success here is not always a send, and the difference is the human's to see: the boxes
+ * are ticked in all three, but only `submitted` reached Claude. The other two are Claude
+ * having more to ask ("next-question") or refusing to call the form complete
+ * ("unanswered"), both of which leave it on screen with something still to do.
+ *
+ * WHERE it is left on screen is the daemon's to say, not the outcome's - an `unanswered`
+ * that could be walked back to the question and one stranded on the review tab are the
+ * same outcome and different situations - so the response may also carry a `note` that
+ * replaces the sentence the outcome alone would produce.
+ */
+export type FormOutcome = "submitted" | "next-question" | "unanswered";
 
 /**
  * Rename a session from the dashboard - renames the underlying tmux session or
@@ -244,6 +286,12 @@ export const CompleteTaskSchema = z.object({
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
+/** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
+export const AssignTaskSchema = z.object({
+  sessionId: z.string().min(1),
+});
+export type AssignTask = z.infer<typeof AssignTaskSchema>;
+
 // ---- Foreman (auto-responder) ----
 
 /**
@@ -262,6 +310,61 @@ export const SetNoteSchema = z
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty note update" });
 export type SetNote = z.infer<typeof SetNoteSchema>;
+
+/**
+ * Record one Foreman decision, with the context that produced it.
+ *
+ * The append-only counterpart to `SetNoteSchema`, and unlike it NOT a patch: an
+ * episode is written once, whole, by the worker at the moment it acted, from state
+ * it is about to drop. A merge-patch shape would invite a caller to fill it in over
+ * several calls, and the fields that matter most (`pane`, `question`) have no second
+ * chance to arrive - the pane is read once and discarded.
+ *
+ * `marker` is required and is the identity: paired with the session's note key it is
+ * unique, so re-posting the same marker updates that episode rather than adding one.
+ */
+export const RecordEpisodeSchema = z.object({
+  marker: z.string().min(1),
+  situation: z.string().min(1),
+  surface: z.enum(["input-review", "terminal"]),
+  question: z.string(),
+  pane: z.string().nullable().optional(),
+  menu: z
+    .object({
+      options: z.array(z.object({ number: z.number(), label: z.string() })),
+      highlighted: z.number(),
+    })
+    .nullable()
+    .optional(),
+  reviewId: z.string().nullable().optional(),
+  purpose: z.string().nullable().optional(),
+  brief: z.string().nullable().optional(),
+  recommendation: z.string().nullable().optional(),
+  classification: z.string().nullable().optional(),
+  confidence: z.number().nullable().optional(),
+  tier: z.number().nullable().optional(),
+  disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
+  lastAction: z.string().nullable().optional(),
+  sentText: z.string().nullable().optional(),
+  sentOption: z.object({ number: z.number(), label: z.string() }).nullable().optional(),
+  sentBy: z.enum(["foreman", "you"]).nullable().optional(),
+});
+export type RecordEpisode = z.infer<typeof RecordEpisodeSchema>;
+
+/**
+ * Stamp the human's answer onto an episode Foreman left open.
+ *
+ * Deliberately narrow: the dashboard knows which episode it is answering and what it
+ * just did, and nothing else. It never saw the pane or the question, so it is given
+ * no way to write them - which is what keeps the captured context immutable once the
+ * worker has recorded it.
+ */
+export const ResolveEpisodeSchema = z.object({
+  marker: z.string().min(1),
+  disposition: z.enum(["answered", "pending", "escalated", "skipped"]),
+  sentText: z.string().nullable().optional(),
+});
+export type ResolveEpisode = z.infer<typeof ResolveEpisodeSchema>;
 
 /**
  * Patch a session's Goal. Separate from SetNoteSchema because the two records have
@@ -323,10 +426,23 @@ export const ForemanConfigSchema = z.object({
    */
   maxFixRounds: z.number().int().min(1).max(50).default(10),
   /**
-   * What happens when a queue drains (or the agent finishes and reports idle with
-   * nothing left to send).
+   * WHICH moments count as "this session has finished its work" and should wrap up.
+   * Independent of `wrapup`, which says what to DO at whichever moment fires.
    *
-   * `ask` is the shipped behaviour and the default: Foreman marks the drain and the
+   * Defaults to `["drain"]` alone - the shipped behaviour - so an existing install
+   * upgrades without silently arming a second, unattended trigger on every session
+   * it was never watching before. `prompted` is opt-in for exactly that reason.
+   *
+   * An empty list means "never wrap up automatically" and is honoured as written; it
+   * is NOT treated as unset. Someone running the work queue who wants to ship by hand
+   * has no other way to say so, and quietly restoring a default here would type into
+   * their sessions against an explicit choice.
+   */
+  wrapupTriggers: z.array(z.enum(WRAPUP_TRIGGERS)).default(["drain"]),
+  /**
+   * What happens when a wrap-up fires, whichever trigger fired it.
+   *
+   * `ask` is the shipped behaviour and the default: Foreman marks the moment and the
    * human picks from the Wrapup card. `no-mistakes` and `pr` let Foreman type that
    * instruction itself, unattended - the difference between the two is only which
    * text gets sent (see `autoWrapupPayload`).
@@ -348,6 +464,48 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
   { message: "empty config update" },
 );
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
+
+/**
+ * Away mode: what happens while you're away from the machine.
+ *
+ * Durable and server-side rather than a localStorage flag, for two reasons. The
+ * stall detector's input is elapsed `lastActivity`, which `sessionEqual`
+ * deliberately excludes from the SSE change comparison - so a client-side
+ * detector is blind to the one signal it needs. And away mode is precisely the
+ * feature that must survive the tab closing.
+ *
+ * Thresholds live here rather than as module constants because they are the knob
+ * a human actually reasons about ("don't nag me for 20 minutes"), which is the
+ * same line ForemanConfigSchema draws.
+ */
+export const AwayConfigSchema = z.object({
+  /** Whether you are away right now. */
+  away: z.boolean().default(false),
+  /** When away mode was entered (epoch ms), or null. Bounds the return digest. */
+  awaySince: z.number().nullable().default(null),
+  /**
+   * Whether stall detection runs at all. Independent of `away` on purpose: being
+   * told an agent is wedged is useful at the desk too, and coupling them would
+   * make the feature untestable without pretending to leave.
+   */
+  detectStalls: z.boolean().default(true),
+  /** Minutes of silence before an instrumented, working session reads as stuck. */
+  stallWorkingMinutes: z.number().int().min(1).max(240).default(10),
+  /** Minutes idle, with work still outstanding, before a session reads as stuck. */
+  stallUnfinishedMinutes: z.number().int().min(1).max(240).default(20),
+  /** Minutes a parked gate may wait on you before it reads as stuck. */
+  stallGateMinutes: z.number().int().min(1).max(240).default(5),
+  /** Minutes an unanswered Foreman escalation may sit before it reads as stuck. */
+  stallEscalationMinutes: z.number().int().min(1).max(240).default(5),
+});
+export type AwayConfig = z.infer<typeof AwayConfigSchema>;
+
+/** Partial update of the away config from the dashboard. */
+export const AwayConfigPatchSchema = AwayConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty away update" },
+);
+export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
 
 // ---- Custom skills (dashboard-wide skill toggles) ----
 
@@ -620,6 +778,38 @@ export const WrapupSchema = z.object({
   answer: z.string().max(INTENT_MAX).nullable(),
 });
 export type Wrapup = z.infer<typeof WrapupSchema>;
+
+/**
+ * Stamp the wrap-up ask.
+ *
+ * `clearAnswer` says this ask opens a NEW question, so any recorded answer on the row
+ * is an answer to a previous one and must go in the same write. Only the `prompted`
+ * trigger sets it: that trigger fires once per episode, and its second episode lands on
+ * a row that may already carry an answer (its own earlier auto-send, or a human's drain
+ * answer) - and since the card renders only while `wrapupAnswer` is null, the stale
+ * value would swallow the new ask outright. Optional, and absent by default, because the
+ * DRAIN path must never set it: there the answer it would clear is the answer to the
+ * very ask being raised.
+ */
+export const WrapupAskedSchema = z.object({
+  clearAnswer: z.boolean().optional(),
+});
+export type WrapupAsked = z.infer<typeof WrapupAskedSchema>;
+
+/**
+ * Retire one episode of the `prompted` wrap-up trigger: the goal it just decided on.
+ *
+ * INTENT_MAX is generous headroom here, not a tight fit: this carries a whole captured
+ * prompt, which `clampPrompt` has already bounded to ~4k upstream. The bound is about
+ * weight rather than safety - unlike `WrapupSchema.answer` this value is never
+ * delivered into a pane and is only ever compared for equality, so its content is
+ * inert. It still belongs at the boundary, since it is persisted and re-served on
+ * every queue read the worker polls.
+ */
+export const PromptedWrapupSchema = z.object({
+  goal: z.string().min(1).max(INTENT_MAX),
+});
+export type PromptedWrapup = z.infer<typeof PromptedWrapupSchema>;
 
 /**
  * Deliver a whole (possibly multi-line) prompt into a session's input as ONE

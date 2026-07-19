@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ResetPreview, Session } from "@shared/types.ts";
 import { api, fetchResetPreview } from "../lib/api.ts";
+import { AgentDot } from "./session-bits.tsx";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
  * Confirm-and-execute a hard reset of a session's checkout to origin's default
@@ -39,18 +41,6 @@ export function ResetModal({
     };
   }, [session.id]);
 
-  // Escape closes the modal (unless we're mid-reset - don't abandon a running op).
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape" && !busy) {
-        e.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
-
   const target = preview?.target ?? "origin/main";
   const canReset = Boolean(preview?.ok) && !busy;
 
@@ -67,43 +57,46 @@ export function ResetModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={() => !busy && onClose()}>
-      <div
-        className="modal reset-modal"
-        role="dialog"
-        aria-label="Reset session to origin"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="modal-head">
-          <h2>Reset to {target}</h2>
-          <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
-            ✕
-          </button>
-        </header>
+    // `closable` gates the backdrop click and Escape together: a reset that is already
+    // running must not be abandoned by either route, and one flag rather than two guards
+    // is what stops them drifting apart.
+    <Overlay
+      id={OVERLAY_IDS.reset}
+      onClose={onClose}
+      className="modal reset-modal"
+      role="dialog"
+      ariaLabel="Reset session to origin"
+      closable={!busy}
+    >
+      <header className="modal-head">
+        <h2>Reset to {target}</h2>
+        <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
+          ✕
+        </button>
+      </header>
 
-        <div className="reset-body">
-          <p className="reset-lead">
-            <span className={`agent-dot agent-${session.agent}`} aria-hidden />
-            <span className="reset-name">{session.name || "(unnamed)"}</span>
-          </p>
+      <div className="reset-body">
+        <p className="reset-lead">
+          <AgentDot agent={session.agent} />
+          <span className="reset-name">{session.name || "(unnamed)"}</span>
+        </p>
 
-          {!preview && !error && <p className="reset-checking">Checking working tree against origin…</p>}
-          {preview && !preview.ok && <p className="reset-error">{preview.error}</p>}
-          {preview?.ok && <ResetPreviewBody preview={preview} />}
-          {error && <p className="reset-error">{error}</p>}
-        </div>
-
-        <footer className="modal-foot">
-          <span className="actions-spacer" />
-          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
-            {busy ? "Resetting…" : "Reset & clear"}
-          </button>
-        </footer>
+        {!preview && !error && <p className="reset-checking">Checking working tree against origin…</p>}
+        {preview && !preview.ok && <p className="reset-error">{preview.error}</p>}
+        {preview?.ok && <ResetPreviewBody preview={preview} />}
+        {error && <p className="reset-error">{error}</p>}
       </div>
-    </div>
+
+      <footer className="modal-foot">
+        <span className="actions-spacer" />
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn btn-danger" onClick={() => void confirm()} disabled={!canReset}>
+          {busy ? "Resetting…" : "Reset & clear"}
+        </button>
+      </footer>
+    </Overlay>
   );
 }
 

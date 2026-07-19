@@ -36,9 +36,9 @@ Foreman's engineering rigor.
 | Dispatch new work | Core (`fm-spawn.sh`, worktree per task, ship/scout types) | No — only reacts to already-running sessions (dashboard has dispatch, Foreman doesn't drive it) |
 | Triage blocked sessions | Via watcher + protocol | Its whole job (answer/escalate/skip) |
 | Cost of supervision | Zero-token bash watcher absorbs benign wakes | Tiered gate (#1, shipped): zero-token Tier 0, cheap Haiku Tier 1, full `claude -p` only for real judgment - in `shadow` until measured |
-| Away mode | `/afk` daemon: batches, defers, flushes on return | One-by-one browser alerts, no batching |
+| Away mode | `/afk` daemon: batches, defers, flushes on return | Shipped (dashboard-side): daemon-owned away mode buffers informational events and flushes one digest on return; only blockers break through. Foreman's own autonomy is unchanged by it |
 | Knowledge capture / learning | `/stow` routes durable facts to canonical homes | Notes are ephemeral triage aids; no feedback loop |
-| Turn-end safety | Backstop blocks blind exit while work in flight | No notion of "session died with work unfinished" |
+| Turn-end safety | Backstop blocks blind exit while work in flight | Partial: the `unfinished-work` stall rule (`src/shared/stall.ts`) flags a session idle with a task or queue still open, but only reports it - no recovery playbook |
 | Cross-session awareness | Serializes same-file tasks, `blocked-by` | Each session reviewed in isolation |
 | Multi-harness | Claude, Grok, Pi, Codex, OpenCode | Claude only (Codex has no transcript endpoint) |
 | Domain specialization | Secondmates (persistent scoped supervisors) | One global policy/allowlist |
@@ -64,16 +64,21 @@ judgment. Asymmetric by design: the cheap tier may only *reduce* risk (skip/esca
 never invent a substantive answer. Roll out in shadow mode first. *(The 1-minute per-session
 evaluation debounce was the first concrete step; the tiers landed on top of it.)*
 
-### 2. AFK mode with a batched flush digest — biggest UX win
-Mirror `/afk`. When you flag yourself away, Foreman raises autonomy within its existing safety
-rails (never auto-approving destructive/security actions), *batches* escalations instead of
-firing one browser alert each, and on return presents a single ranked digest: "here's what I
-answered, here's the N calls I saved for you." Pairs naturally with a mobile push channel (the
-`PushNotification` capability already exists). Highest felt-value item.
+### 2. Away mode with a batched flush digest — biggest UX win
+**Batching + digest shipped as dashboard away mode - see `docs/plans/away-mode/plan.md`.** Away
+state is daemon-owned, informational events buffer instead of firing an alert each, and on return
+you get one ranked digest; anything blocked on you still breaks through immediately.
+What remains here is the *Foreman* half: raising its autonomy within the existing safety rails
+while you're away (never auto-approving destructive/security actions), so the digest can also say
+"here's what I answered, here's the N calls I saved for you." Pairs naturally with a mobile push
+channel (the `PushNotification` capability already exists).
 
 ### 3. Learning loop from accept/reject decisions — quality compounds
 Every review starts cold from the same `POLICY` string. Foreman already produces the signals —
-Approve/Dismiss on `ForemanNote`, resolved reviews — but throws them away. Capture them into a
+Approve/Dismiss on a note, resolved reviews — and since the Foreman log
+(`docs/plans/foreman-log/plan.md`) it also *keeps* them: `foreman_episodes` records each
+decision with the ask, the verdict and who resolved it. Nothing reads them back into a review.
+Route them into a
 per-repo/global learnings store and inject the relevant entries into `buildReviewPrompt`. e.g.
 "in repo X, dependency installs are always approved," "this user prefers a unified abstraction
 over per-case picks." Foreman gets more right per week without prompt edits. firstmate's `/stow`
@@ -93,8 +98,11 @@ transcript adapter for Codex unlocks every session — the rest of the pipeline 
 ### 6. Turn-end / wedged-session recovery — reliability
 firstmate refuses to let a session exit blind while work is in flight. Foreman only looks at
 `needs-you`; it's blind to a session that idled or died with uncommitted changes, an unpushed
-branch, or a failing gate. Add a detector that surfaces "this session stopped with work
-unfinished," ideally with a recovery playbook (re-engage or escalate).
+branch, or a failing gate. **The detector shipped** as the `unfinished-work` stall rule
+(`src/shared/stall.ts`), which surfaces a session idle past a threshold with a task or queue
+still open against it. What remains is the recovery playbook (re-engage or escalate) and the
+richer signals - uncommitted changes, an unpushed branch, a failing gate - that the stall rule
+does not inspect.
 
 ### 7. Cross-session collision awareness
 firstmate serializes tasks touching the same files/subsystem and records `blocked-by`. Foreman
@@ -116,6 +124,7 @@ phone without opening the dashboard. (The Slack MCP is already available.)
 1. **#1 (cheap watcher)** - the enabler that keeps everything else affordable. Shipped: the
    1-minute debounce, then Tiers 0 + 1 (`docs/plans/foreman-watcher/plan.md`), now running in
    `shadow` until the divergence data earns `triage: 'on'`.
-2. **#2 (AFK digest)** and **#3 (learning loop)** — immediate felt value.
+2. **#2 (away digest)** - the batching/digest half shipped; the Foreman-autonomy half is open -
+   and **#3 (learning loop)** — immediate felt value.
 3. **#4 (dispatch)** — the strategic leap that makes Foreman a real supervisor, not a triager.
 4. **#5 (Codex)** and **#6 (wedged recovery)** — coverage + reliability once the core is richer.

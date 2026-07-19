@@ -1,7 +1,7 @@
 // A short alert chime synthesized with the Web Audio API - no asset file, so no
 // bundle/CSP concerns. Two rising notes for "attention", one soft note for "info".
 
-import type { AlertSeverity } from "./alerts.ts";
+import type { AlertSeverity } from "@shared/alerts.ts";
 
 const RATE_MS = 1200;
 let ctx: AudioContext | null = null;

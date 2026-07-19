@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { gateParked } from "@shared/session.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -7,10 +7,12 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
+import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
+import { AgentDot } from "./components/session-bits.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
@@ -19,17 +21,26 @@ import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
+import { useAwayMode } from "./lib/awayMode.ts";
+import { useStalls } from "./lib/stalls.ts";
 import { useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
+import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
-  useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
+  const { away, setAway, digest, dismissDigest } = useAwayMode();
+  // Stalls come from the daemon (only it has the clock), but only the browser can
+  // raise a notification - so they are polled back in here to give the `stuck` alert
+  // a delivery path instead of leaving it to the return digest.
+  const stalls = useStalls();
+  const alertScope = useMemo(() => ({ sessions, tasks, stalls }), [sessions, tasks, stalls]);
+  useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
   const foreman = useForeman();
@@ -72,6 +83,23 @@ export function App(): React.JSX.Element {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
 
+  // The single source of truth for "is an overlay open". Populated by the overlays
+  // themselves as they mount (see Overlay.tsx), so the guards below can never fall out
+  // of step with what is actually on screen - which is what used to happen when a new
+  // overlay was added and one of the lists here was missed.
+  const overlays = useOverlayHost();
+
+  // Read by the global key handler below instead of closing over `overlays` directly.
+  // That handler is installed by a passive effect, so a closure over `overlays` keeps the
+  // value from the render BEFORE the overlay opened until the next passive flush - and a
+  // keydown arriving in that interval drives the card behind the overlay. Synced in a
+  // layout effect, which runs in the same commit as the overlay's own registration
+  // (Overlay.tsx), so the guard is never behind what is on screen.
+  const overlaysRef = useRef(overlays);
+  useLayoutEffect(() => {
+    overlaysRef.current = overlays;
+  }, [overlays]);
+
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
   useEffect(
@@ -109,6 +137,33 @@ export function App(): React.JSX.Element {
   }, []);
 
   const closeDispatch = useCallback(() => setDispatchOpen(false), []);
+  const closeDiff = useCallback(() => {
+    setDiffSessionId(null);
+    setDiffCommit(null);
+  }, []);
+  const closeReset = useCallback(() => setResetSessionId(null), []);
+
+  /**
+   * The overlays keyed on a session id, and how to drop that id.
+   *
+   * Whether an overlay is OPEN is answered by the registry, which the overlay populates
+   * itself. This is the one fact the registry can't supply: which session an overlay is
+   * bound to, so its id can be released when that session leaves the fleet. Declared
+   * once here and consumed by the reconciliation effect below, so a new session-bound
+   * overlay is one entry rather than another hand-written `if` in that effect.
+   *
+   * `reviewSessionId` is deliberately absent: the review modal is rendered from a lookup
+   * that also requires a PENDING review, so it already closes on its own, and clearing
+   * the id here would additionally stop it reopening when a session briefly drops out of
+   * a sweep and comes back. That asymmetry predates this change; it isn't introduced by it.
+   */
+  const sessionBoundOverlays = useMemo(
+    () => [
+      { sessionId: diffSessionId, close: closeDiff },
+      { sessionId: resetSessionId, close: closeReset },
+    ],
+    [diffSessionId, resetSessionId, closeDiff, closeReset],
+  );
 
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => {
@@ -196,6 +251,7 @@ export function App(): React.JSX.Element {
   // one owner of session state; a view only arranges what it's handed.
   const viewProps: SessionViewProps = {
     sessions: visible,
+    tasks,
     gateAlerts,
     selectedId,
     onSelect: setSelectedId,
@@ -234,13 +290,11 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
-    if (diffSessionId && !sessions.some((s) => s.id === diffSessionId)) {
-      setDiffSessionId(null);
-      setDiffCommit(null);
+    for (const bound of sessionBoundOverlays) {
+      if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
-    if (resetSessionId && !sessions.some((s) => s.id === resetSessionId)) setResetSessionId(null);
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, expandedId, diffSessionId, resetSessionId, renamingId]);
+  }, [sessions, visible, selectedId, expandedId, sessionBoundOverlays, renamingId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
@@ -284,16 +338,14 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
-      // Sitrep toggles whether it's open or closed - held back only while a
-      // review/dispatch/settings overlay owns the screen or you're typing.
+      // Sitrep toggles whether it's open or closed, so it stands down for every overlay
+      // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
+      // others. Asking the registry rather than listing overlays here is the point: a new
+      // overlay is counted the moment it renders, with no edit to this guard.
       if (
         !typing &&
-        !modalOpen &&
-        !dispatchOpen &&
-        !diffSession &&
-        !settingsOpen &&
-        !resetSession &&
         !renamingId &&
+        overlaysRef.current.onlyOpen(OVERLAY_IDS.sitrep) &&
         chord === bindings.roundup
       ) {
         e.preventDefault();
@@ -303,17 +355,7 @@ export function App(): React.JSX.Element {
 
       // Stand down while any overlay owns the screen (or a card's title is being
       // edited), so grid shortcuts don't drive a background card behind it.
-      if (
-        modalOpen ||
-        dispatchOpen ||
-        reportOpen ||
-        settingsOpen ||
-        diffSession ||
-        resetSession ||
-        renamingId ||
-        typing
-      )
-        return;
+      if (overlaysRef.current.anyOpen || renamingId || typing) return;
 
       // Global chords that don't need a selected card. Kept above the empty-grid
       // guard so dispatch still opens when there are no sessions yet.
@@ -434,20 +476,12 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [
-    visible,
-    selectedId,
-    expandedId,
-    modalOpen,
-    dispatchOpen,
-    reportOpen,
-    settingsOpen,
-    diffSession,
-    resetSession,
-    renamingId,
-    toggleExpand,
-    bindings,
-  ]);
+    // No `overlays` entry: the guards read `overlaysRef`, so this listener does not need
+    // re-subscribing when an overlay opens - and, more to the point, its correctness no
+    // longer depends on that re-subscription having happened yet. This dependency array
+    // was the third place a new overlay used to have to be remembered, and the one with no
+    // visible symptom when it was missed.
+  }, [visible, selectedId, expandedId, renamingId, toggleExpand, bindings, layout]);
 
   // Land the cursor in a keyboard-expanded card's send box. The panel that renders
   // it mounts on the render this effect trails, so a synchronous focus in the chord
@@ -462,208 +496,214 @@ export function App(): React.JSX.Element {
   }, [expandedId]);
 
   return (
-    <div className={`app app-${layout}`}>
-      <header className="topbar" ref={topbarRef}>
-        <div className="brand">
-          <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
-          <h1>Mission Control</h1>
-        </div>
-        <div className="filter-box">
-          <span className="filter-icon" aria-hidden>
-            ⌕
-          </span>
-          <input
-            ref={filterRef}
-            className="filter-input"
-            type="text"
-            placeholder={`Filter (${formatChord(bindings.filter)})`}
-            aria-label="Filter sessions by title or status"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.stopPropagation();
-                if (filter) setFilter("");
-                else e.currentTarget.blur();
-              }
-            }}
-          />
-          {filter && (
-            <button
-              className="filter-clear"
-              aria-label="Clear filter"
-              onClick={() => {
-                setFilter("");
-                filterRef.current?.focus();
+    <OverlayHost value={overlays}>
+      <div className={`app app-${layout}`}>
+        <header className="topbar" ref={topbarRef}>
+          <div className="brand">
+            <img className="brand-mark" src="/favicon.svg" alt="" width={20} height={20} />
+            <h1>Mission Control</h1>
+          </div>
+          <div className="filter-box">
+            <span className="filter-icon" aria-hidden>
+              ⌕
+            </span>
+            <input
+              ref={filterRef}
+              className="filter-input"
+              type="text"
+              placeholder={`Filter (${formatChord(bindings.filter)})`}
+              aria-label="Filter sessions by title or status"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") {
+                  e.stopPropagation();
+                  if (filter) setFilter("");
+                  else e.currentTarget.blur();
+                }
               }}
+            />
+            {filter && (
+              <button
+                className="filter-clear"
+                aria-label="Clear filter"
+                onClick={() => {
+                  setFilter("");
+                  filterRef.current?.focus();
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          <div className="summary">
+            <Stat n={sessions.length} label="sessions" />
+            {counts.attention > 0 && <Stat n={counts.attention} label="need you" tone="attention" />}
+            {counts.working > 0 && <Stat n={counts.working} label="working" tone="working" />}
+            {pendingReviews.length > 0 && (
+              <button className="stat-btn" onClick={openReviews}>
+                <Stat n={pendingReviews.length} label="reviews" tone="attention" />
+              </button>
+            )}
+          </div>
+          {/* Every action shares one rhythm, tighter than the gap separating them
+              from the filter/stats, so they read as one cluster and wrap as a
+              unit. `live` stays outside it: that is status, not an action. */}
+          <div className="topbar-actions">
+            <ForemanBar
+              state={foreman}
+              onOpenSettings={() => {
+                setSettingsCategory("foreman");
+                setSettingsOpen(true);
+              }}
+            />
+            <button
+              className="dispatch-btn"
+              onClick={() => setDispatchOpen(true)}
+              title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
             >
-              ✕
+              <span aria-hidden>＋</span> Dispatch
             </button>
-          )}
-        </div>
-        <div className="summary">
-          <Stat n={sessions.length} label="sessions" />
-          {counts.attention > 0 && <Stat n={counts.attention} label="need you" tone="attention" />}
-          {counts.working > 0 && <Stat n={counts.working} label="working" tone="working" />}
-          {pendingReviews.length > 0 && (
-            <button className="stat-btn" onClick={openReviews}>
-              <Stat n={pendingReviews.length} label="reviews" tone="attention" />
+            <button
+              className="ghost-btn glyph-btn"
+              onClick={() => setReportOpen(true)}
+              title={`Sitrep - press ${formatChord(bindings.roundup)}`}
+              aria-label="Sitrep"
+            >
+              <span aria-hidden>📡</span>
+              {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
             </button>
-          )}
-        </div>
-        {/* Every action shares one rhythm, tighter than the gap separating them
-            from the filter/stats, so they read as one cluster and wrap as a
-            unit. `live` stays outside it: that is status, not an action. */}
-        <div className="topbar-actions">
-          <ForemanBar
-            state={foreman}
-            onOpenSettings={() => {
-              setSettingsCategory("foreman");
-              setSettingsOpen(true);
+            <button
+              className="ghost-btn glyph-btn gear-btn"
+              onClick={() => {
+                setSettingsCategory("keyboard");
+                setSettingsOpen(true);
+              }}
+              title="Settings (⌘,)"
+              aria-label="Settings"
+            >
+              <span aria-hidden>⚙</span>
+            </button>
+            <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
+          </div>
+          <div className={`link ${connected ? "up" : "down"}`}>
+            <span className="link-dot" />
+            {connected ? "live" : "reconnecting"}
+          </div>
+        </header>
+
+        {/* Nothing to arrange means no layout: one of the two empty states below says why,
+            and every layout would otherwise dress that silence up as furniture - an empty
+            rail beside a "no session selected" pane, five empty board columns. */}
+        {visible.length > 0 && (
+          <>
+            {layout === "grid" && <GridView {...viewProps} gridRef={gridRef} />}
+            {layout === "console" && <ConsoleView {...viewProps} />}
+            {layout === "board" && <BoardView {...viewProps} />}
+          </>
+        )}
+
+        {modalSession && modalReviews.length > 0 && (
+          <ReviewModal
+            session={modalSession}
+            reviews={modalReviews}
+            onClose={() => setReviewSessionId(null)}
+          />
+        )}
+
+        <DispatchLayer open={dispatchOpen} onClose={closeDispatch} />
+
+        {reportOpen && (
+          <ReportPanel
+            sessions={sessions}
+            tasks={tasks}
+            onClose={() => setReportOpen(false)}
+            onOpenReviews={(id) => {
+              setReportOpen(false);
+              setReviewSessionId(id);
             }}
           />
-          <button
-            className="dispatch-btn"
-            onClick={() => setDispatchOpen(true)}
-            title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
-          >
-            <span aria-hidden>＋</span> Dispatch
-          </button>
-          <button
-            className="ghost-btn glyph-btn"
-            onClick={() => setReportOpen(true)}
-            title={`Sitrep - press ${formatChord(bindings.roundup)}`}
-            aria-label="Sitrep"
-          >
-            <span aria-hidden>📡</span>
-            {backlogCount > 0 && <span className="ghost-badge">{backlogCount}</span>}
-          </button>
-          <button
-            className="ghost-btn glyph-btn gear-btn"
-            onClick={() => {
-              setSettingsCategory("keyboard");
-              setSettingsOpen(true);
+        )}
+
+        {digest && (
+          <AwayDigestCard
+            digest={digest}
+            onDismiss={dismissDigest}
+            onOpenReport={() => {
+              dismissDigest();
+              setReportOpen(true);
             }}
-            title="Settings (⌘,)"
-            aria-label="Settings"
-          >
-            <span aria-hidden>⚙</span>
-          </button>
-          <AlertBar settings={alertSettings} update={updateAlerts} />
-        </div>
-        <div className={`link ${connected ? "up" : "down"}`}>
-          <span className="link-dot" />
-          {connected ? "live" : "reconnecting"}
-        </div>
-      </header>
+          />
+        )}
 
-      {/* Nothing to arrange means no layout: one of the two empty states below says why,
-          and every layout would otherwise dress that silence up as furniture - an empty
-          rail beside a "no session selected" pane, five empty board columns. */}
-      {visible.length > 0 && (
-        <>
-          {layout === "grid" && <GridView {...viewProps} gridRef={gridRef} />}
-          {layout === "console" && <ConsoleView {...viewProps} />}
-          {layout === "board" && <BoardView {...viewProps} />}
-        </>
-      )}
+        {diffSession && (
+          <DiffViewer session={diffSession} commit={diffCommit} onClose={closeDiff} />
+        )}
 
-      {modalSession && modalReviews.length > 0 && (
-        <ReviewModal
-          session={modalSession}
-          reviews={modalReviews}
-          onClose={() => setReviewSessionId(null)}
-        />
-      )}
+        {settingsOpen && (
+          <SettingsModal
+            onClose={() => setSettingsOpen(false)}
+            foreman={foreman}
+            initialCategory={settingsCategory}
+            layout={layout}
+            onLayoutChange={setLayout}
+          />
+        )}
 
-      <DispatchLayer open={dispatchOpen} onClose={closeDispatch} />
+        {resetSession && (
+          <ResetModal
+            session={resetSession}
+            onReset={() => onSessionReset(resetSession.id)}
+            onClose={() => setResetSessionId(null)}
+          />
+        )}
 
-      {reportOpen && (
-        <ReportPanel
-          sessions={sessions}
-          tasks={tasks}
-          onClose={() => setReportOpen(false)}
-          onOpenReviews={(id) => {
-            setReportOpen(false);
-            setReviewSessionId(id);
-          }}
-        />
-      )}
+        {sessions.length === 0 && (
+          <div className="empty">
+            <p className="empty-title">No agent sessions detected</p>
+            <p className="empty-sub">
+              Start a <code>claude</code> or <code>codex</code> session in a wezterm tab or tmux
+              session and it will appear here.
+            </p>
+          </div>
+        )}
 
-      {diffSession && (
-        <DiffViewer
-          session={diffSession}
-          commit={diffCommit}
-          onClose={() => {
-            setDiffSessionId(null);
-            setDiffCommit(null);
-          }}
-        />
-      )}
+        {sessions.length > 0 && visible.length === 0 && (
+          <div className="empty">
+            <p className="empty-title">No sessions match "{filter}"</p>
+            <p className="empty-sub">
+              Nothing matches that title or status.{" "}
+              <button className="link-btn" onClick={() => setFilter("")}>
+                Clear the filter
+              </button>{" "}
+              to see all {sessions.length} sessions.
+            </p>
+          </div>
+        )}
 
-      {settingsOpen && (
-        <SettingsModal
-          onClose={() => setSettingsOpen(false)}
-          foreman={foreman}
-          initialCategory={settingsCategory}
-          layout={layout}
-          onLayoutChange={setLayout}
-        />
-      )}
-
-      {resetSession && (
-        <ResetModal
-          session={resetSession}
-          onReset={() => onSessionReset(resetSession.id)}
-          onClose={() => setResetSessionId(null)}
-        />
-      )}
-
-      {sessions.length === 0 && (
-        <div className="empty">
-          <p className="empty-title">No agent sessions detected</p>
-          <p className="empty-sub">
-            Start a <code>claude</code> or <code>codex</code> session in a wezterm tab or tmux
-            session and it will appear here.
-          </p>
-        </div>
-      )}
-
-      {sessions.length > 0 && visible.length === 0 && (
-        <div className="empty">
-          <p className="empty-title">No sessions match "{filter}"</p>
-          <p className="empty-sub">
-            Nothing matches that title or status.{" "}
-            <button className="link-btn" onClick={() => setFilter("")}>
-              Clear the filter
-            </button>{" "}
-            to see all {sessions.length} sessions.
-          </p>
-        </div>
-      )}
-
-      {/* Grid only. The bar floats fixed over the bottom of the page, which is empty
-          space under a scrolling grid but is exactly where the console's detail pane and
-          the board's drill-in keep their reply box - it would sit on top of the control it
-          is advertising. Both of those layouts show the selected session's ActionBar
-          permanently instead, and every shortcut still works. */}
-      {selected && layout === "grid" && (
-        <CommandBar
-          session={selected}
-          bindings={bindings}
-          expanded={expandedId === selected.id}
-          onToggleExpand={() => toggleExpand(selected.id)}
-          onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
-          onDiff={() => {
-            setDiffCommit(null);
-            setDiffSessionId(selected.id);
-          }}
-          onReset={() => setResetSessionId(selected.id)}
-          onRename={() => setRenamingId(selected.id)}
-          onDeselect={() => setSelectedId(null)}
-        />
-      )}
-    </div>
+        {/* Grid only. The bar floats fixed over the bottom of the page, which is empty
+            space under a scrolling grid but is exactly where the console's detail pane and
+            the board's drill-in keep their reply box - it would sit on top of the control it
+            is advertising. Both of those layouts show the selected session's ActionBar
+            permanently instead, and every shortcut still works. */}
+        {selected && layout === "grid" && (
+          <CommandBar
+            session={selected}
+            bindings={bindings}
+            expanded={expandedId === selected.id}
+            onToggleExpand={() => toggleExpand(selected.id)}
+            onAction={(a) => actionHandles.current.get(selected.id)?.[a]()}
+            onDiff={() => {
+              setDiffCommit(null);
+              setDiffSessionId(selected.id);
+            }}
+            onReset={() => setResetSessionId(selected.id)}
+            onRename={() => setRenamingId(selected.id)}
+            onDeselect={() => setSelectedId(null)}
+          />
+        )}
+      </div>
+    </OverlayHost>
   );
 }
 
@@ -723,7 +763,7 @@ function CommandBar({
   return (
     <div ref={barRef} className="cmdbar" role="toolbar" aria-label="Selected session actions">
       <span className="cmdbar-name">
-        <span className={`agent-dot agent-${session.agent}`} aria-hidden />
+        <AgentDot agent={session.agent} />
         {session.name || "(unnamed)"}
       </span>
       <span className="cmdbar-keys">

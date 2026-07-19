@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type {
   AgentType,
+  ForemanEpisode,
   ToolCall,
   TranscriptMessage,
   TranscriptStreamMsg,
@@ -10,6 +11,10 @@ import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
+import { mergeEpisodes } from "../lib/episodes.ts";
+import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
+import { useRichText } from "../lib/rich-text.tsx";
+import { Markdown } from "./Markdown.tsx";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -32,6 +37,8 @@ export interface TranscriptHandle {
   /** Focus the reply box, reporting whether there was one (a collapsed card has no
    *  panel mounted at all, and the caller then owns the send flow itself). */
   focusReply: () => boolean;
+  /** Scroll to the inline Foreman entry for this episode marker, if it's rendered. */
+  scrollToEpisode: (marker: string | null) => void;
 }
 
 /**
@@ -45,6 +52,8 @@ export function TranscriptPanel({
   sessionId,
   agent,
   canSend,
+  dialogOpen = false,
+  episodes = [],
   onReplyBox,
   resetNonce = 0,
   ref,
@@ -52,6 +61,26 @@ export function TranscriptPanel({
   sessionId: string;
   agent: AgentType;
   canSend: boolean;
+  /**
+   * Whether the session is parked on an option menu right now.
+   *
+   * Typing is CLOSED while one is up, and this is a correctness guard rather than a
+   * nicety: a dialog swallows pasted text entirely - nothing is focused to receive it -
+   * and the Enter that follows confirms whichever row was already highlighted. So a reply
+   * sent at a menu doesn't fail, it silently answers a question with the default and
+   * attributes it to the human (see `pane-dialog.ts`). The rows are offered as buttons
+   * just above this box; that is the only safe way to answer one.
+   */
+  dialogOpen?: boolean;
+  /**
+   * Foreman's decisions on this session, interleaved into the log by timestamp.
+   *
+   * They arrive as a prop rather than being fetched here because they are not part of
+   * the transcript: the JSONL knows nothing about them, and the SSE stream this panel
+   * opens would have no way to carry them. The owner fetches them and re-renders when
+   * the note moves.
+   */
+  episodes?: ForemanEpisode[];
   /**
    * Bumped whenever this session is reset. The reply box is uncontrolled - its text
    * lives in the draft map, re-read only on mount - so a reset that clears the draft
@@ -108,6 +137,15 @@ export function TranscriptPanel({
       const end = el.value.length;
       el.setSelectionRange(end, end);
       return true;
+    },
+    scrollToEpisode: (marker) => {
+      if (!marker) return;
+      // Queried out of the DOM rather than tracked in a ref map, because the target
+      // may not be mounted: the episode list and the transcript load independently,
+      // and the strip is clickable before either has settled. A missing node is a
+      // no-op, which is the right outcome for "scroll to something not on screen".
+      const el = logRef.current?.querySelector(`[data-episode-marker="${CSS.escape(marker)}"]`);
+      el?.scrollIntoView({ block: "center", behavior: "smooth" });
     },
   }), []);
 
@@ -195,7 +233,10 @@ export function TranscriptPanel({
     // An image mid-upload has no path yet, and sending now would quietly leave it
     // out of the very prompt it was dropped on. The button says so; this guards the
     // Enter key, which doesn't.
-    if (drop.uploading || sending || (!text && ready.length === 0)) return;
+    // `dialogOpen` is re-checked here and not only on the disabled textarea, because the
+    // menu can open in the gap between reading the box and sending it. Everything else in
+    // this guard is a nuisance if it slips; this one silently answers a question.
+    if (dialogOpen || drop.uploading || sending || (!text && ready.length === 0)) return;
     setSending(true);
     const r = await api.injectPrompt(sessionId, withAttachments(text, ready));
     setSending(false);
@@ -216,18 +257,34 @@ export function TranscriptPanel({
     // Stop clicks inside the panel from re-selecting / collapsing the card.
     <div className="transcript" onClick={(e) => e.stopPropagation()}>
       <div className="transcript-log" ref={logRef} onScroll={onScroll}>
-        {status === "unavailable" ? (
+        {/* An unavailable transcript still shows Foreman's record, and this is the
+            case that most needs it: a session with no resolvable JSONL is exactly
+            where its decisions are the ONLY account of what happened. The reason
+            line stays above them, so "no transcript" is still said rather than
+            implied by its absence. */}
+        {status === "unavailable" && episodes.length === 0 ? (
           <p className="transcript-empty">{note}</p>
-        ) : messages.length === 0 ? (
+        ) : messages.length === 0 && episodes.length === 0 ? (
           <p className="transcript-empty">{status === "connecting" ? "Loading…" : "No messages yet."}</p>
         ) : (
-          transcriptRows(messages).map((row) =>
-            row.kind === "tools" ? (
-              <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_LABEL[agent]} />
-            ) : (
-              <Turn key={row.id} m={row.message} agentLabel={AGENT_LABEL[agent]} />
-            ),
-          )
+          <>
+            {status === "unavailable" && <p className="transcript-empty">{note}</p>}
+            {mergeEpisodes(transcriptRows(messages), episodes).map((row) =>
+              row.kind === "episode" ? (
+                <div
+                  key={`ep-${row.episode.id}`}
+                  className="transcript-episode"
+                  data-episode-marker={row.episode.marker}
+                >
+                  <ForemanEpisodeCard episode={row.episode} />
+                </div>
+              ) : row.kind === "tools" ? (
+                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_LABEL[agent]} />
+              ) : (
+                <Turn key={row.id} m={row.message} agentLabel={AGENT_LABEL[agent]} />
+              ),
+            )}
+          </>
         )}
       </div>
 
@@ -241,12 +298,14 @@ export function TranscriptPanel({
             ref={inputRef}
             className="transcript-input"
             placeholder={
-              canSend
-                ? "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
-                : "No pane to send to"
+              !canSend
+                ? "No pane to send to"
+                : dialogOpen
+                  ? "Waiting on a menu - pick an option above to answer it"
+                  : "Reply to this session…  (Enter to send, Shift+Enter for newline, drop or paste images)"
             }
             rows={2}
-            disabled={!canSend}
+            disabled={!canSend || dialogOpen}
             // Stays uncontrolled - that's why typing here has never re-rendered the
             // log above it, and a reply written against a streaming transcript can't
             // afford to start. `defaultValue` re-hydrates whatever the last mount was
@@ -271,7 +330,7 @@ export function TranscriptPanel({
           />
           <button
             className="btn btn-send"
-            disabled={!canSend || sending || drop.uploading}
+            disabled={!canSend || dialogOpen || sending || drop.uploading}
             onClick={() => void send()}
           >
             {drop.uploading ? "Uploading…" : "Send"}
@@ -285,6 +344,7 @@ export function TranscriptPanel({
 }
 
 function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): React.JSX.Element {
+  const [richText] = useRichText();
   // A turn the human didn't type says who did. Much of the "user" side of a supervised
   // session is Foreman delivering work or the dashboard reloading skills, and reading
   // those back as "you" makes the log claim the human asked for things they never asked
@@ -293,7 +353,14 @@ function Turn({ m, agentLabel }: { m: TranscriptMessage; agentLabel: string }): 
   return (
     <div className={`turn turn-${m.origin ?? m.role}`}>
       <div className="turn-role">{who}</div>
-      {m.text && <div className="turn-text">{m.text}</div>}
+      {m.text && (
+        // Formatted turns still wear `turn-text` - the bubble's colour, padding, and per-role
+        // tint are the same either way. Only what's inside it changes, and `markdown` swaps
+        // the `pre-wrap` raw text for parsed blocks.
+        <div className={`turn-text${richText ? " markdown" : ""}`}>
+          {richText ? <Markdown breaks>{m.text}</Markdown> : m.text}
+        </div>
+      )}
       {m.tools.length > 0 && <ToolChips tools={m.tools} />}
     </div>
   );

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Session } from "@shared/types.ts";
+import type { ForemanEpisode, Session } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
+import { activePaneDialog } from "@shared/session.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { NomistakesStrip } from "../NomistakesStrip.tsx";
 import { NomistakesFixLog } from "../NomistakesFixLog.tsx";
-import { ForemanNote } from "../ForemanNote.tsx";
+import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
+import { ForemanStrip } from "../ForemanStrip.tsx";
+import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "../TranscriptPanel.tsx";
 import {
@@ -20,9 +23,42 @@ import {
   subtitle,
 } from "../session-bits.tsx";
 import { canRenameSession } from "../../lib/format.ts";
+import { api } from "../../lib/api.ts";
 import type { SessionViewProps } from "./types.ts";
 
 type Tab = "conversation" | "queue" | "gate" | "diff";
+
+/**
+ * This session's Foreman episodes, refetched whenever its note moves.
+ *
+ * Fetched rather than denormalized onto the session, unlike the note itself. An
+ * episode carries a whole pane capture, and the session object rides the SSE snapshot
+ * that every card in the fleet re-renders from - so denormalizing these would put a
+ * terminal screenshot per session into every frame, to be read by the one panel that
+ * is open.
+ *
+ * `noteStamp` is the trigger and not a timer: the worker writes the note and the
+ * episode in the same breath, so the note's `updatedAt` moving IS the signal that
+ * there is a new episode to read, and it arrives over the stream we are already
+ * listening to. A poll would be strictly worse - later, and busy while nothing
+ * happens.
+ */
+function useEpisodes(sessionId: string, noteStamp: number): ForemanEpisode[] {
+  const [episodes, setEpisodes] = useState<ForemanEpisode[]>([]);
+  useEffect(() => {
+    let live = true;
+    void api.episodes(sessionId).then((rows) => {
+      // Guarded against the session switching mid-flight: without this, a slow
+      // response for the session you just left would land in the panel for the one
+      // you just opened, and its history would read as this session's.
+      if (live && rows) setEpisodes(rows);
+    });
+    return () => {
+      live = false;
+    };
+  }, [sessionId, noteStamp]);
+  return episodes;
+}
 
 /**
  * The console's detail pane: a bespoke, tabbed reading of ONE session - not the grid's
@@ -48,7 +84,9 @@ export function ConsoleDetail({
 }): React.JSX.Element {
   const [tab, setTab] = useState<Tab>("conversation");
   const [hasReply, setHasReply] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const transcriptRef = useRef<TranscriptHandle>(null);
+  const episodes = useEpisodes(session.id, session.note?.updatedAt ?? 0);
   // Set when the send shortcut arrives on another tab: the reply box exists, it's just
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
@@ -75,9 +113,11 @@ export function ConsoleDetail({
   const live = session.state !== "exited";
   const canSend = Boolean(session.tmux || session.wezterm);
   const canRename = canRenameSession(session);
+  const dialog = activePaneDialog(session);
   const gateNeedsYou = view.gateAlerts.has(session.id);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
+  const openCount = openEpisodeCount(episodes);
 
   const tabs = useMemo(
     () =>
@@ -146,6 +186,12 @@ export function ConsoleDetail({
         )}
       </dl>
 
+      <ForemanDrawer
+        episodes={episodes}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
+
       <div className="detail-tabs" role="tablist" aria-label="Session detail">
         {tabs.map((t) => (
           <button
@@ -159,6 +205,22 @@ export function ConsoleDetail({
             {t.pip > 0 && <span className="detail-pip">{t.pip}</span>}
           </button>
         ))}
+
+        {/* In the tab row but NOT a tab - no `role="tab"`, and pushed to the far end
+            past a flexible gap. Work queue, Gate and Diff are things this session
+            HAS; Foreman is an observer talking about it, so it opens a surface rather
+            than switching the body. Hidden when Foreman has never spoken here: an
+            empty archive isn't worth a permanent control. */}
+        {episodes.length > 0 && (
+          <button
+            className="foreman-rail"
+            aria-expanded={drawerOpen}
+            onClick={() => setDrawerOpen((v) => !v)}
+          >
+            {openCount > 0 && <span className="fr-dot" aria-hidden="true" />}
+            Foreman · {episodes.length}
+          </button>
+        )}
       </div>
 
       <div className="detail-body">
@@ -169,8 +231,9 @@ export function ConsoleDetail({
           <div className="detail-conv">
             <GoalLine session={session} />
             {session.activity && <p className="activity">{session.activity}</p>}
+            {dialog && <PaneDialogPrompt sessionId={session.id} dialog={dialog} />}
             {session.note && (
-              <ForemanNote
+              <ForemanStrip
                 session={session}
                 note={session.note}
                 mode={view.foremanMode}
@@ -178,6 +241,7 @@ export function ConsoleDetail({
                 allowlist={view.foremanAllowlist}
                 inputReviewId={view.inputReviewBySession.get(session.id) ?? null}
                 pendingReviewIds={view.pendingReviewIds}
+                onJump={() => transcriptRef.current?.scrollToEpisode(session.note?.handledMarker ?? null)}
               />
             )}
             {session.nomistakes && (
@@ -200,24 +264,28 @@ export function ConsoleDetail({
               sessionId={session.id}
               agent={session.agent}
               canSend={canSend}
+              dialogOpen={Boolean(dialog)}
+              episodes={episodes}
               onReplyBox={setHasReply}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />
           </div>
         )}
 
+        {/* Mounted unconditionally, exactly as the grid card does it. Gating this on
+            `session.queue` looked like an empty state but was a dead end: that summary is
+            null until a queue row exists, and the only thing that creates one is adding an
+            item - which happens in WorkQueue's own empty branch, along with the re-attach
+            hint an orphaned (post-`/clear`) queue needs. Hiding the component to say
+            "nothing queued" hid the sole way to queue anything. */}
         {tab === "queue" && (
           <div className="detail-pane">
-            {session.queue ? (
-              <WorkQueue
-                session={session}
-                foremanMode={view.foremanMode}
-                foremanEnabled={view.foremanEnabled}
-                allowlisted={allowlisted}
-              />
-            ) : (
-              <p className="detail-empty">Nothing queued for this session.</p>
-            )}
+            <WorkQueue
+              session={session}
+              foremanMode={view.foremanMode}
+              foremanEnabled={view.foremanEnabled}
+              allowlisted={allowlisted}
+            />
           </div>
         )}
 

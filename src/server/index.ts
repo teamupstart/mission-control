@@ -22,6 +22,7 @@ import { startPoolReaper } from "./pool.ts";
 import { startPrPoller } from "./pr.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startGoalRefiner } from "./goal/refiner.ts";
+import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
 import { reconcileSkills } from "./skills/config.ts";
@@ -53,11 +54,12 @@ const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
+const away = startAwayWatcher(registry);
 const stopHeadlessPruner = startHeadlessPruner();
 const stopPoolReaper = startPoolReaper(registry);
 const stopSkillsReloader = startSkillsReloader(registry);
 
-const app = buildApp(registry, reviews, tasks, queues);
+const app = buildApp(registry, reviews, tasks, queues, away);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.
@@ -88,6 +90,7 @@ function shutdown(): void {
   stopPrPoller();
   stopRuntimeMeta();
   stopGoalRefiner();
+  away.stop();
   stopHeadlessPruner();
   // Stopping the refiner only stops it STARTING runs; one already in flight is a detached
   // process that outlives us and would go on burning tokens for a card nobody is watching.

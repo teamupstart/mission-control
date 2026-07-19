@@ -1,84 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { optionRowMiss, parsePaneDialog, sameOptionLabel } from "../src/server/discovery/pane-dialog.ts";
+import {
+  hasUnansweredWarning,
+  optionRowMiss,
+  parsePaneDialog,
+  sameOptionLabel,
+  submitAnswersRow,
+} from "../src/server/discovery/pane-dialog.ts";
+import { dialogIdentity } from "../src/shared/session.ts";
+import {
+  ASK_USER_QUESTION,
+  CURSOR_ON_THIRD,
+  MULTI_SELECT,
+  PERMISSION,
+  REVIEW_UNANSWERED,
+  TRUST,
+  TRUST_QUESTION,
+  TRUST_UNWRAPPED,
+} from "./fixtures/claude-panes.ts";
 
-// Reading a Claude option dialog off a pane. Every fixture here is a VERBATIM tmux
+// Reading a Claude option dialog off a pane. Every fixture is a VERBATIM tmux
 // capture-pane of a real Claude session, not a hand-written approximation - the bug this
 // closes was a hand-written model of a TUI we don't own disagreeing with the TUI, so a
 // fixture that agrees with the parser because the same author imagined both would lock in
-// exactly the failure. Recapture them against a real session when Claude's chrome moves.
-
-/**
- * `AskUserQuestion`, captured live. The shape that produced the production bug: rows carry
- * a description underneath, Claude appends its own "Type something." / "Chat about this"
- * rows, and a separator rule sits between them - so the rows are NOT adjacent lines.
- */
-const ASK_USER_QUESTION = `
- ☐ Database
-
-Which database would you like to use?
-
-❯ 1. Postgres
-     Open-source relational database with advanced features, excellent for production applications
-  2. SQLite
-     Lightweight, file-based database, great for development and simple deployments
-  3. MySQL
-     Popular open-source relational database, widely supported and easy to set up
-  4. Type something.
-────────────────────────────────────────────────────────────────────────────────
-  5. Chat about this
-
-Enter to select · ↑/↓ to navigate · Esc to cancel
-`;
-
-/** A permission prompt, captured live. Note the footer shares no wording with the menu's. */
-const PERMISSION = `
- Bash command
-
-   curl -s https://example.com | head -1
-   Fetch example.com and show first line
-
- This command requires approval
-
- Do you want to proceed?
- ❯ 1. Yes
-   2. Yes, and don’t ask again for: curl -s https://example.com
-   3. No
-
- Esc to cancel · Tab to amend · ctrl+e to explain
-`;
-
-/** The folder-trust check, captured live - the two-row shape, cursor on the default. */
-const TRUST = `
- Quick safety check: Is this a project you created or one you trust?
-
- Security guide
-
- ❯ 1. Yes, I trust this folder
-   2. No, exit
-
- Enter to confirm · Esc to cancel
-`;
-
-/**
- * A live-fleet menu whose cursor rests on the LAST row, not the first. Claude does not
- * always default to row 1, which is why navigation is computed from the cursor we read
- * rather than assumed to start at the top.
- */
-const CURSOR_ON_THIRD = `
- ☐ Holder policy
-
-Which holder policy do you want?
-
-  1. Only reap fleet-control leases (Recommended)
-     Reap only leases whose recorded holder is 'fleet-control'.
-  2. Reap any holder, but only repos we know
-     Keep reaping regardless of holder, but drop the workspace-wide scan.
-❯ 3. Keep as-is (any holder, workspace-wide)
-     Ship current behavior: maximum reclamation.
-
-Enter to select · ↑/↓ to navigate · Esc to cancel
-`;
+// exactly the failure. They live in ./fixtures/claude-panes.ts; recapture them there.
 
 test("reads every row of a live AskUserQuestion menu, in rendered order", () => {
   const d = parsePaneDialog(ASK_USER_QUESTION);
@@ -113,6 +58,91 @@ test("reads the two-row trust check", () => {
 
 test("the cursor is read, never assumed to be row 1", () => {
   assert.equal(parsePaneDialog(CURSOR_ON_THIRD)?.highlighted, 3);
+});
+
+test("a multi-select is read as a form, box state separate from the label", () => {
+  const d = parsePaneDialog(MULTI_SELECT);
+  assert.ok(d);
+  assert.equal(d.multiSelect, true);
+  assert.deepEqual(
+    d.options.map((o) => [o.label, o.checked]),
+    [
+      ["Alpha", true],
+      ["Beta", true],
+      ["Gamma", false],
+      // Claude's free-text row RENDERS a box and is not one - see below.
+      ["Type something", undefined],
+      // Its trailing row carries no box at all, so it is a press and not a tick.
+      ["Chat about this", undefined],
+    ],
+  );
+});
+
+test("the free-text row is not one of the form's boxes, though it renders as one", () => {
+  // Measured live: a form submitted with "Type something" ticked and nothing typed still
+  // met "You have not answered all questions". So it is not an answer, and offering it as a
+  // tickable box lets a human submit what looks like a choice and get the question back.
+  // It also cannot be WALKED to - pressing it opens a field that eats the arrows the submit
+  // walk needs - so it is excluded at the parse, where every caller inherits it.
+  const d = parsePaneDialog(MULTI_SELECT)!;
+  const free = d.options.find((o) => o.label === "Type something")!;
+  assert.equal(free.checked, undefined, "not a checkbox");
+  assert.equal(free.label, "Type something", "and the box it renders is still out of the label");
+  // Still a form, and still the same boxes: the row counts toward recognizing a form
+  // without being answerable on one.
+  assert.equal(d.multiSelect, true);
+  assert.deepEqual(
+    d.options.filter((o) => o.checked !== undefined).map((o) => o.number),
+    [1, 2, 3],
+  );
+});
+
+test("ticking a box does not change what the row IS", () => {
+  // The bug this closes: with the box inside the label, a row rendered to the human as
+  // "[ ] Gamma" read back as "[✔] Gamma" the moment anything ticked it - including their
+  // own previous click - so every later click was refused as a changed screen, and a form
+  // that had been sitting there became permanently unanswerable.
+  const before = parsePaneDialog(MULTI_SELECT)!;
+  const after = parsePaneDialog(MULTI_SELECT.replace("3. [ ] Gamma", "3. [✔] Gamma"))!;
+  assert.equal(after.options[2]?.checked, true);
+  assert.equal(optionRowMiss(after, { number: 3, label: before.options[2]!.label }), null);
+  assert.equal(dialogIdentity(after), dialogIdentity(before));
+});
+
+test("a single-select menu is not a form, and parses exactly as it always did", () => {
+  for (const capture of [ASK_USER_QUESTION, PERMISSION, TRUST, CURSOR_ON_THIRD]) {
+    const d = parsePaneDialog(capture);
+    assert.equal(d?.multiSelect, undefined);
+    assert.ok(d?.options.every((o) => o.checked === undefined));
+  }
+});
+
+test("a lone bracketed row is text, not a checkbox", () => {
+  // A permission prompt quoting a command that contains brackets must not have them
+  // stripped out of the label the human is asked to confirm, nor be routed to the form
+  // path. One box is not a form; a real one always renders several.
+  const d = parsePaneDialog(`
+Run this command?
+
+❯ 1. [ ] is a test builtin
+  2. No
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+`);
+  assert.equal(d?.multiSelect, undefined);
+  assert.equal(d?.options[0]?.label, "[ ] is a test builtin");
+  assert.equal(d?.options[0]?.checked, undefined);
+});
+
+test("the form's Submit tab is recognized, and its warning read", () => {
+  const review = parsePaneDialog(REVIEW_UNANSWERED);
+  assert.ok(review);
+  assert.equal(submitAnswersRow(review)?.number, 1);
+  assert.ok(hasUnansweredWarning(REVIEW_UNANSWERED));
+  // The question tab is not the Submit tab - stepping onto the next question must not be
+  // mistaken for arriving at the send.
+  assert.equal(submitAnswersRow(parsePaneDialog(MULTI_SELECT)!), null);
+  assert.equal(hasUnansweredWarning(MULTI_SELECT), false);
 });
 
 test("the foreground menu wins over an earlier one left in scrollback", () => {
@@ -255,4 +285,77 @@ test("optionRowMiss names how the screen failed, so each caller can word it", ()
   const menu = parsePaneDialog(TRUST)!;
   assert.equal(optionRowMiss(menu, { number: 9, label: "Yes, I trust this folder" }), "no-such-row");
   assert.equal(optionRowMiss(menu, { number: 2, label: "Yes, I trust this folder" }), "label-differs");
+});
+
+// The question and the per-row descriptions. Both are DISPLAY-only reads, added so the
+// dashboard can render a dialog the human can actually answer: `optionRowMiss` still
+// verifies a selection by label alone, so nothing below can widen what a click confirms.
+
+test("the question above the rows is read, so the dashboard shows what is being asked", () => {
+  assert.equal(parsePaneDialog(ASK_USER_QUESTION)?.prompt, "Which database would you like to use?");
+  assert.equal(parsePaneDialog(PERMISSION)?.prompt, "Do you want to proceed?");
+  assert.equal(parsePaneDialog(CURSOR_ON_THIRD)?.prompt, "Which holder policy do you want?");
+});
+
+test("the question wins over nearer text that isn't one", () => {
+  // The trust check renders "Security guide" - and a whole sentence about what Claude will
+  // be able to do - BETWEEN the question and the rows. Taking the closest block would label
+  // the control with "Security guide": confident, wrong, and on the one control that most
+  // needs to say what it is agreeing to.
+  assert.equal(parsePaneDialog(TRUST)?.prompt, TRUST_QUESTION);
+});
+
+test("a question the terminal wrapped is put back together, not shown as its last fragment", () => {
+  // The defect this closes. The `?` falls mid-line at every width Claude renders this at, so
+  // an end-of-line anchor matched nothing and the fallback captioned the dialog "Security
+  // guide". Finding the line is only half of it: the line the `?` lands on trails off at
+  // "...take a moment to", so a caption taken from that line alone would be a sentence
+  // fragment where a security question belongs.
+  const prompt = parsePaneDialog(TRUST)?.prompt ?? "";
+  assert.ok(prompt.startsWith("Quick safety check:"), prompt);
+  assert.ok(prompt.endsWith("review what's in this folder first."), prompt);
+  assert.ok(!prompt.includes("Security guide"), "the link is never the question");
+  // The continuation line is joined in, rather than the caption stopping where the pane did.
+  assert.ok(prompt.includes("take a moment to review"), prompt);
+});
+
+test("wrapping is a viewport artifact - the same dialog asks the same thing at any width", () => {
+  // Width 180 breaks the question across two lines; width 400 does not. What is being asked
+  // did not change, so what the human is shown must not either.
+  assert.equal(parsePaneDialog(TRUST_UNWRAPPED)?.prompt, TRUST_QUESTION);
+  assert.equal(parsePaneDialog(TRUST_UNWRAPPED)?.prompt, parsePaneDialog(TRUST)?.prompt);
+});
+
+test("the rows and the cursor are unchanged by however the question wrapped", () => {
+  // The question is display-only; reading it must not disturb what a click is checked
+  // against. Both captures still offer the same two rows with the cursor on the default.
+  for (const capture of [TRUST, TRUST_UNWRAPPED]) {
+    const d = parsePaneDialog(capture)!;
+    assert.deepEqual(
+      d.options.map((o) => o.label),
+      ["Yes, I trust this folder", "No, exit"],
+    );
+    assert.equal(d.highlighted, 1);
+  }
+});
+
+test("a row's description is carried alongside its label, never folded into it", () => {
+  const d = parsePaneDialog(ASK_USER_QUESTION);
+  assert.equal(d?.options[0]?.label, "Postgres");
+  assert.match(d?.options[0]?.detail ?? "", /^Open-source relational database/);
+  // The label stays exactly the row's own text - it is what a selection is checked against.
+  assert.equal(optionRowMiss(d!, { number: 1, label: "Postgres" }), null);
+});
+
+test("the trailing rows carry no description, and the footer is not mistaken for one", () => {
+  const d = parsePaneDialog(ASK_USER_QUESTION);
+  // "Type something." is followed by a rule, "Chat about this" by the blank line above
+  // the footer - neither has prose of its own, and the footer belongs to no row.
+  assert.equal(d?.options[3]?.detail, undefined);
+  assert.equal(d?.options[4]?.detail, undefined);
+});
+
+test("a dialog with no descriptions reports none rather than inventing them", () => {
+  const d = parsePaneDialog(PERMISSION);
+  assert.ok(d?.options.every((o) => o.detail === undefined));
 });

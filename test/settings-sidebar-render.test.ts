@@ -6,6 +6,7 @@ import { SettingsModal, SETTINGS_CATEGORIES } from "../src/web/components/Settin
 import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx";
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
+import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
 // connection open, which hangs headless automation (same reason as plan-decisions-render).
@@ -20,14 +21,18 @@ const FOREMAN: ForemanState = { config: null, status: null, update: async () => 
 // The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
 // modal renders it, so the panel only edits what it's handed.
 function render(initialCategory?: SettingsCategoryId): string {
+  // Wrapped in a host because the modal is an <Overlay>, and an overlay outside a host
+  // refuses to render - being counted as open is not optional. See helpers/overlay-host.
   return renderToStaticMarkup(
-    createElement(SettingsModal, {
-      onClose: () => {},
-      foreman: FOREMAN,
-      layout: "grid",
-      onLayoutChange: () => {},
-      initialCategory,
-    }),
+    withOverlayHost(
+      createElement(SettingsModal, {
+        onClose: () => {},
+        foreman: FOREMAN,
+        layout: "grid",
+        onLayoutChange: () => {},
+        initialCategory,
+      }),
+    ),
   );
 }
 
@@ -37,6 +42,7 @@ const KEYBOARD_ONLY = /Anywhere/; // a keyboard action group label
 const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
 const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
+const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -77,9 +83,28 @@ test("the layout picker offers every layout, with the live one checked", () => {
 });
 
 test("the layout panel is absent from every other category", () => {
-  for (const id of ["keyboard", "skills", "harnesses", "foreman"] as const) {
+  for (const id of ["keyboard", "skills", "harnesses", "foreman", "appearance"] as const) {
     assert.doesNotMatch(render(id), LAYOUT_ONLY, `layout picker leaked into ${id}`);
   }
+});
+
+test("Appearance is a category of its own: its panel shows, the others don't", () => {
+  const html = render("appearance");
+  assert.match(html, APPEARANCE_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, LAYOUT_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>◐<\/span>Appearance/);
+});
+
+test("message formatting is on unless it has been turned off", () => {
+  // `render` mounts the modal with no `RichTextProvider`, so `useRichText` returns its
+  // out-of-provider fallback and `load` never runs. What this pins is that fallback: the
+  // panel shows a checked box, not an unchecked one or no box at all. It says nothing
+  // about what `load` reads from storage; that path is not covered here.
+  const html = render("appearance");
+  const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
+  assert.ok(toggle, "the appearance panel has a checkbox");
+  assert.match(toggle, /checked/);
 });
 
 test("Harnesses is a category of its own: its panel shows, the others don't", () => {

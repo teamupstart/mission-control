@@ -7,12 +7,18 @@ import { Tooltip } from "./Tooltip.tsx";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
- * goal line, the PR chip, the state badge, the runtime pills, the rename editor.
+ * goal line, the PR chip, the state badge, the title (with its rename editor), the
+ * runtime pills.
  *
- * Extracted here so a bespoke layout (the console's detail pane, the board's tile)
- * can arrange the SAME bits the card does, without importing the card itself and
- * without a second, drifting copy of the PR-icon SVG or the rename flow. The card
- * and every layout render one implementation of each.
+ * Every surface is a consumer here, the card included: the card, the console's detail
+ * pane and the board's tile each arrange these SAME bits rather than importing one
+ * another or keeping a private copy of the PR-icon SVG or the rename flow. That matters
+ * because the card is rendered by ONE layout while the detail serves two, so a private
+ * copy means a fix lands in two layouts and silently misses the third.
+ *
+ * `test/session-leaf-parity.test.ts` pins this: it renders each bit standalone and
+ * asserts all three surfaces contain that exact output, so a re-inlined copy fails as
+ * soon as it drifts.
  */
 
 export const AGENT_LABEL: Record<Session["agent"], string> = {
@@ -291,6 +297,10 @@ export function RenameEditor({
 /**
  * The runtime row: model, thinking level, and a context-window pressure meter - the same
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
+ *
+ * A `<span>` (styled `display:flex`), not a `<div>`, so it's phrasing content: the board's
+ * tile draws its whole body as spans, and this row has to nest into that flow - and into
+ * any button-like container a layout wraps it in - without being invalid HTML.
  */
 export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Element | null {
   const hasCtx = meta.contextPct != null;
@@ -301,7 +311,7 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
       ? `${compactTokens(meta.contextTokens)} / ${compactTokens(meta.contextWindow)} tokens in context`
       : `${meta.contextPct}% of the context window used`;
   return (
-    <div className="card-runtime">
+    <span className="card-runtime">
       {meta.model && (
         <span className="rt-pill rt-model" title={meta.modelId ?? undefined}>
           {meta.model}
@@ -330,7 +340,7 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
           <span className="rt-ctx-num">{meta.contextPct}%</span>
         </span>
       )}
-    </div>
+    </span>
   );
 }
 

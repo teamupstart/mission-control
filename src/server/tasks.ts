@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { AgentType, Task, TaskKind } from "@shared/types.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
-import { kill } from "./actions.ts";
+import { injectPrompt, kill } from "./actions.ts";
+import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
   repoRoot: string;
@@ -27,6 +28,17 @@ export interface Ok {
  */
 export class TaskManager {
   private dispatcher: Dispatcher;
+  /**
+   * In-flight titling runs, by task id.
+   *
+   * A backlogged untitled task is on the board - and dispatchable - the instant `create`
+   * returns, while its title is still being decided. Dispatching in that window would cut
+   * the branch and the tmux session from the heuristic title and then rename only the card,
+   * which is the exact mismatch the awaited-titling ordering exists to prevent. `dispatch`
+   * awaits this first, so an early click waits a beat and gets the model's title instead.
+   * Held here rather than checked at the route so the invariant holds on every path.
+   */
+  private titling = new Map<string, Promise<void>>();
 
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
@@ -53,12 +65,20 @@ export class TaskManager {
     return this.registry.getTask(id);
   }
 
+  /**
+   * Create a task, and - when the operator left the title blank - name it with a model
+   * before anything downstream reads that name.
+   *
+   * Stays synchronous so the POST returns a task immediately: the card must appear the
+   * instant it is dispatched, not after a subprocess. It appears under the heuristic title,
+   * which `autoTitleThenDispatch` replaces over SSE a beat later.
+   */
   create(input: CreateTaskInput): Task {
     const now = Date.now();
-    const title = input.title?.trim() || deriveTitle(input.intent);
+    const explicitTitle = input.title?.trim();
     const task: Task = {
       id: randomUUID(),
-      title,
+      title: explicitTitle || deriveTitle(input.intent),
       intent: input.intent,
       kind: input.kind,
       agent: input.agent,
@@ -78,8 +98,61 @@ export class TaskManager {
       completedAt: null,
     };
     this.registry.upsertTask(task);
-    if (!input.backlog) void this.dispatcher.dispatch(task.id);
+    if (explicitTitle) {
+      if (!input.backlog) void this.dispatcher.dispatch(task.id);
+    } else {
+      // Registered synchronously, before this returns, so no caller can observe the task
+      // without also observing that its title is still in flight.
+      const settled = this.autoTitleThenDispatch(task.id, input.intent, input.backlog)
+        .catch((err) => console.error("[title] titling failed:", err))
+        .finally(() => this.titling.delete(task.id));
+      this.titling.set(task.id, settled);
+    }
     return task;
+  }
+
+  /**
+   * Replace an auto-derived title with a model's, THEN dispatch.
+   *
+   * The ordering is the whole point, and it is why dispatch waits on a cosmetic call.
+   * `Dispatcher.dispatch` reads `task.title` once, at the top, to build the git branch
+   * (`slugify`) and the tmux session name (`sessionLabel`) - both of which are permanent for
+   * the life of the task and neither of which can be renamed afterwards from the dashboard.
+   * Dispatching first and patching the title after would leave every untitled task with a
+   * card whose name no longer matches its branch or its terminal, which is worse than the
+   * rough title this feature exists to replace. The wait is `TITLE_TIMEOUT_MS` per attempt,
+   * and almost always exactly one attempt: a timeout or a missing `claude` makes
+   * `runStructured` return on the first exception rather than retry, so the slow path costs
+   * one budget (~15s) and the answered path costs however long Haiku takes (~7s measured).
+   * Only a parse miss - a clean exit whose output won't validate - takes the second attempt
+   * and so roughly twice the budget. All of it against a dispatch that spends far longer
+   * cutting a worktree and waiting for the agent to boot.
+   *
+   * Never throws: `summariseTaskTitle` reports failure as null, and the title write is
+   * guarded, so a failure of either simply leaves the heuristic title standing - the
+   * dispatch below happens either way.
+   */
+  private async autoTitleThenDispatch(id: string, intent: string, backlog: boolean): Promise<void> {
+    const title = await summariseTaskTitle(intent);
+    // Re-read rather than closing over the created task: the operator can cancel or remove a
+    // task while the model is thinking, and both of those are decisions this must not undo.
+    const cur = this.registry.getTask(id);
+    if (!cur) return;
+    if (title && title !== cur.title) {
+      try {
+        this.registry.upsertTask({ ...cur, title, updatedAt: Date.now() });
+      } catch (err) {
+        // A failed write must not cost the dispatch. Throwing here would strand the task in
+        // `dispatching` forever - no error on the card, and `remove` refuses that status -
+        // over a cosmetic rename. The heuristic title stands and we fall through.
+        console.error("[title] could not store the title:", err);
+      }
+    }
+    if (backlog) return;
+    // A task cancelled mid-title is withdrawn, not merely renamed - launching an agent for it
+    // now would strand a worktree and a tmux session behind a card that says "cancelled".
+    if ((this.registry.getTask(id) ?? cur).status !== "dispatching") return;
+    void this.dispatcher.dispatch(id);
   }
 
   /**
@@ -87,8 +160,14 @@ export class TaskManager {
    * cleanly torn down (no lingering worktree). A failed task that still holds a
    * worktree means its agent may still be running; the user should Cancel it first
    * (which reclaims the tree) rather than dispatch a second agent onto it.
+   *
+   * Waits out any in-flight titling first: the branch and the tmux session are cut from
+   * `task.title` and can never be renamed afterwards, so dispatching mid-titling would
+   * name them after the heuristic title and leave the card disagreeing with both.
    */
-  dispatch(id: string): Task | null {
+  async dispatch(id: string): Promise<Task | null> {
+    await this.titling.get(id);
+    // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
     if (!t) return null;
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
@@ -98,17 +177,78 @@ export class TaskManager {
   }
 
   /**
+   * Hand a backlog task to an agent that is ALREADY running, instead of cutting a
+   * fresh worktree and launching one. This is what the board's drag-onto-an-idle-
+   * agent gesture calls: the operator has an agent sitting free in the right repo
+   * and would rather feed it than pay for another checkout.
+   *
+   * The critical difference from `dispatch`: an assigned task owns no worktree. The
+   * agent keeps its own checkout - very often the operator's real one - so
+   * `worktreePath` stays null, and that is precisely what keeps a later Cancel from
+   * running `git worktree remove --force` over a directory we did not create.
+   *
+   * Every refusal below is a state conflict the caller should surface, not retry.
+   */
+  async assign(id: string, sessionId: string): Promise<Ok> {
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status !== "backlog") return { ok: false, error: `task is ${t.status}, not in the backlog` };
+
+    const s = this.registry.getSession(sessionId);
+    if (!s) return { ok: false, error: "no such session" };
+    if (s.state !== "idle") {
+      return { ok: false, error: `that agent is ${s.state.replace("_", " ")} - drop onto an idle one` };
+    }
+    // Reports idle, but something is already parked on it waiting for the human. The
+    // dashboard files such a session under "needs you" rather than "idle" and won't
+    // offer it as a target; refuse it here too, so the API can't route around a rule
+    // the operator can see being applied on screen.
+    if (s.pendingReviews > 0) {
+      return { ok: false, error: "that agent has a review waiting on you - clear it first" };
+    }
+    // Running a task's intent against the wrong checkout is the one way this gesture
+    // does damage you cannot undo from the dashboard, so a mismatch is refused rather
+    // than best-efforted. Compared on repoRoot, not cwd: a linked worktree of the
+    // task's repo is a legitimate home for it, a different repo never is.
+    if (!s.repoRoot || s.repoRoot !== t.repoRoot) {
+      return { ok: false, error: `that agent is in a different repo (${s.repoRoot ?? "no repo"})` };
+    }
+
+    // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
+    // the agent died between the drop and here) the task must stay in the backlog,
+    // droppable again, rather than sit marked `running` with nothing running it.
+    const r = await injectPrompt(s, t.intent);
+    if (!r.ok) return { ok: false, error: r.error ?? "could not type into the agent's pane" };
+
+    const now = Date.now();
+    this.registry.upsertTask({
+      ...t,
+      status: "running",
+      sessionId: s.id,
+      dispatchedAt: now,
+      updatedAt: now,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Stop a task's agent and reclaim its (ephemeral) worktree, marking it
    * cancelled. A dispatched agent's tree is throwaway - to preserve work you
    * Focus and commit/PR it before cancelling - so cancel always reclaims, which
    * keeps the teardown model simple and leak-free (no keep/remove ambiguity that
    * an in-flight dispatch could race).
+   *
+   * Cancel only kills agents we LAUNCHED. An assigned task (dropped onto an agent
+   * that was already running) never had a tmux session of ours, and killing it would
+   * take down the operator's own session - along with whatever else it was doing
+   * before we handed it this task. For those, cancel means "stop tracking it", and
+   * the human stops the agent themselves if they want it stopped.
    */
   async cancel(id: string): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
 
-    if (t.sessionId) {
+    if (t.sessionId && t.tmuxSession) {
       const s = this.registry.getSession(t.sessionId);
       if (s) await kill(s);
     }

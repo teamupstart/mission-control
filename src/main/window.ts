@@ -84,7 +84,7 @@ export function createWindow(preloadPath: string): BrowserWindow {
       sandbox: true,
       // Keep the renderer's SSE stream + alert timers running at full rate when
       // the window is hidden, so a hidden app still delivers notifications and
-      // the AFK digest (the whole point of the desktop app).
+      // the away digest (the whole point of the desktop app).
       backgroundThrottling: false,
     },
   });

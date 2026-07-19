@@ -29,15 +29,19 @@ and get your decision back.
 - **Reviews**: an instrumented agent can push a diff, a markdown plan, or a
   question into the dashboard and block until you approve / request changes /
   answer - your decision flows straight back to the agent.
+- **Answers the menus** a session is parked on - a permission prompt, an
+  `AskUserQuestion` clarification, a folder-trust check - as
+  [clickable options on the card](#answer-a-sessions-menu-from-the-dashboard).
+  Read straight off the terminal, so it works with or without hooks.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + detached tmux session (or shelves it in a
   backlog for later).
 - **Rounds up** every session: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 - **Alerts** you when a session needs you: a desktop notification + sound the
-  moment a session needs input, a review lands, a no-mistakes gate parks, or a
-  dispatched task fails - with an **AFK mode** that also pings on idle sessions and
-  finished tasks and sends periodic session digests.
+  moment a session needs input, a review lands, a no-mistakes gate parks, a session
+  **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
+  rest and hands you one digest when you come back.
 - **Says what each session is for**: every card carries a one-sentence **Goal** - what
   that session is currently trying to solve - derived from your own prompts and
   refreshed as you steer it. No API key: it runs the local `claude` CLI.
@@ -128,7 +132,7 @@ Three layers, most-to-least automatic:
 
 | Layer | Setup | Gives you |
 |-------|-------|-----------|
-| **Passive discovery** | none | inventory + names + branch + uptime, live |
+| **Passive discovery** | none | inventory + names + branch + uptime, live - plus any [option menu](#answer-a-sessions-menu-from-the-dashboard) a session is parked on |
 | **Claude hooks** | `npm run install-hooks` | precise state (working / idle / needs-input) + activity |
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 
@@ -236,11 +240,16 @@ Each card's status badge and its left edge stripe encode the session's state:
 | 🔵 blue | **working** | agent is actively running a prompt or tool |
 | 🟢 green | **idle** | alive, waiting at an idle prompt |
 | 🟠 amber | **needs input / needs review** | the agent (or a review item) is blocked on you |
+| 🟠 amber | **needs an answer** | the session is parked on an [option menu](#answer-a-sessions-menu-from-the-dashboard) |
 | ⚪ grey | **running** | alive, but precise state unknown - hooks aren't reporting |
 | ⚫ dim | **exited** | the process is gone |
 
-Blue / green / amber require the **Claude hooks** above. Without them (or before
-you restart a session) every card shows grey **running**. The small colored dot
+Blue / green and **needs input / needs review** require the **Claude hooks** above.
+Without them (or before you restart a session) a card shows grey **running** - with one
+exception: **needs an answer** is read off the terminal itself, so a session sitting on a
+menu goes amber whether or not it's instrumented. That exception is the point: an
+uninstrumented session waiting on a permission prompt is the most blocked thing on the
+board, and it used to report as grey running forever. The small colored dot
 next to each title is *not* a status - it's the agent's brand color (terracotta
 for Claude Code, green for Codex).
 
@@ -248,6 +257,58 @@ A Claude card also carries a **permission mode** chip once a hook reports one - 
 `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for
 sessions that enable them. <kbd>⇧</kbd><kbd>Tab</kbd> cycles it, exactly as the keystroke
 would in the session's own terminal.
+
+### Answer a session's menu from the dashboard
+
+When a session stops on an option menu - a **permission prompt**, an `AskUserQuestion`
+clarification, a **plan decision**, the folder-trust check - the card renders that menu's
+rows as **buttons**, with the question above them and each row's description beneath it.
+Click one and the daemon answers it in the terminal. Not just plan mode, and not only the
+ones Foreman declined: **every** menu a session is parked on is offered.
+
+A **multi-select** `AskUserQuestion` renders as **checkboxes with a Submit button** instead,
+because it is a form rather than a menu: in the terminal, Enter on one of its rows only
+ticks that row's box, and nothing reaches Claude until its `✔ Submit` tab is confirmed. Tick
+any number of rows, press **Submit answers**, and the daemon ticks what differs and walks
+Claude's own submit path. If Claude has further questions, the next one takes the card's
+place and you answer it the same way; if its review tab reports a question still unanswered,
+the form is left up rather than sent half-filled.
+
+The menu is read straight off the pane on the same ~1.5s sweep that reads the permission
+mode, so it needs **no hooks** and costs no extra work - and it clears the moment the menu
+does. On a menu the card also marks the row the terminal's own cursor is on, so this view
+and a tab open on the same session never disagree about what Enter would do. A dialog whose
+pane stops being readable - the window closed, the tmux server restarted - clears within a
+few sweeps rather than lingering as rows nothing can reach.
+
+**The reply box is closed while a menu is up**, deliberately. A dialog isn't a text box: it
+discards typed characters, and the Enter that follows confirms whichever row was already
+highlighted - so a reply sent at a menu doesn't fail, it silently answers with the default
+under your name. The buttons are the only safe way to answer one.
+
+Because the card's copy of the menu is up to one sweep old, a click sends back the **label**
+you were shown and the daemon re-reads the pane before pressing anything: if the screen has
+moved on - the menu closed, the rows repainted, [Foreman](#foreman-auto-responder) got there
+first - the click is **refused and nothing is pressed** rather than landing on the wrong row.
+That also makes racing Foreman safe, which is why every menu is offered rather than waiting
+tens of seconds to see whether Foreman handles it.
+
+### Scrolling a pane back pauses writes into it
+
+Scroll a session's **tmux** pane back and tmux puts it in **copy-mode**, where it routes
+every keystroke to itself: `send-keys` and `paste-buffer` both report success while the
+agent receives nothing. So the daemon reads the pane's mode before it types and **refuses**
+the write instead, naming the mode - a reply, a menu click, a
+<kbd>⇧</kbd><kbd>Tab</kbd>, a queued item and a skills reload all wait rather than
+vanishing. It refuses rather than dropping you out of copy-mode, because a pane in it is a
+person reading their own scrollback. Leave it (<kbd>q</kbd>, or scroll back to the bottom)
+and the write goes through on the next attempt; Foreman retries a parked queue item on its
+own, and doesn't spend one of that item's delivery attempts on you.
+
+The one case that isn't a clean no-op is scrolling *while* an item is being delivered: the
+prompt is pasted, then the Enter that submits it is swallowed. The text is sitting in the
+composer unsubmitted, and the error says exactly that - leave copy-mode and press
+<kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
 ### Goal
 
@@ -321,6 +382,14 @@ The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
 
+Leave **Title** blank and the daemon names the task for you: a headless `claude -p` on
+Haiku summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
+not the top of your first paragraph. It runs *before* dispatch and the dispatch waits on
+it, because the title is also the git branch and the tmux session name, and neither can be
+renamed afterwards. The card appears immediately under a title taken from your first line
+and updates to the model's a beat later. If `claude` is missing, logged out, or slow, that
+first-line title just stands - nothing breaks, and the dispatch still goes.
+
 The new session then shows up on the grid like any other, with an **intent chip** naming
 what it's working on. It's headless until you want it - click **Focus** on the card to open
 it in a tab. Choose **Add to backlog** instead of **Dispatch now** to shelve a task without
@@ -340,29 +409,58 @@ Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the dae
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
-gates), **who's working** (with their intent + activity), **what's idle**, the **backlog**,
+gates, sessions sitting on an [option menu](#answer-a-sessions-menu-from-the-dashboard)),
+**who's working** (with their intent + activity), **what's idle**, the **backlog**,
 and **recent outcomes**. Dispatch a backlog task or drop it right from the panel, and **Mark
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
 
-## Alerts & AFK mode
+## Alerts & Away mode
 
 So you don't have to watch the grid, the dashboard can **alert you when a session
 needs you**. The daemon already streams every attention event over SSE; the browser
 turns those into a **desktop (Chrome) notification + a short sound** the moment a
-session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
+session goes to `needs-input`, a session stops on an
+[option menu](#answer-a-sessions-menu-from-the-dashboard) (which needs no hooks, and says
+how many options it's offering), a review lands, a no-mistakes gate parks, or a
 dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
 watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
 
-Open the **🔔 Alerts** control in the top bar to **Enable desktop alerts** (grants the
+**Only things blocked on you ever interrupt.** Informational events (a session going
+idle, a task finishing) are detected but never notify; they're digest material. Alerts
+fire on the *transition* into attention (once, not every tick) and de-dupe, so a
+waiting session pings you once. The chime is synthesized with the Web Audio API (no
+asset, no network).
+
+### Stuck sessions
+
+The daemon also watches for sessions that have **gone quiet**, which no state
+transition can announce - a stall is defined by nothing happening. Four rules, all
+deterministic: an instrumented session that claims to be working but hasn't reported
+in ~10 minutes; a session idle ~20 minutes with a task or queue still open against it
+(the "died with work unfinished" case); a no-mistakes gate parked with nobody driving
+it; and a Foreman escalation nobody answered. A stuck session is attention-level, so
+it breaks through even while you're away.
+
+### Away mode
+
+Open the alerts control in the top bar - **🔔** when alerts are on, **🔕** when they're
+muted, **🌙** once you're away - to **Enable desktop alerts** (grants the
 browser Notification permission and unlocks the chime), toggle **Sound**, and flip
-**AFK mode**. AFK also alerts on sessions going idle and tasks finishing, and sends a
-periodic **session digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
-the browser; the chime is synthesized with the Web Audio API (no asset, no network).
-Alerts fire on the *transition* into attention (once, not every tick) and de-dupe, so
-a waiting session pings you once. Delivery needs the tab open (foreground or
-background); a closed tab can't receive one.
+**Away mode**.
+
+While away, anything blocked on you still notifies immediately - everything else
+accumulates. When you come back, you get **one card** summarising the window: a couple
+of sentences written by Haiku over what actually happened, a deterministic rollup
+beneath it ("1 stuck · 3 finished"), and the per-event lines with what needs you
+first. Repeats coalesce, so a session that finished twice is one line with a count,
+not two notifications. A quiet window produces nothing at all.
+
+Away state lives in the daemon, not the browser, so it survives closing the tab -
+which is the case it exists for. The digest is read once; a refresh won't re-announce
+it. If the local `claude` CLI is missing or logged out, the narrative is simply absent
+and the rollup carries the summary on its own.
 
 ## Foreman (auto-responder)
 
@@ -393,6 +491,11 @@ the default, not the reply. So Foreman answers a menu the way you would, by walk
 cursor onto the row it picked and pressing Enter only while the pane still shows that row
 selected. An answer it can't pin to a row on screen is **escalated to you** - with its
 reasoning kept as the recommendation - rather than typed at a menu that would discard it.
+You get the same affordance for the same reason: a menu on any session is offered to you as
+[clickable rows](#answer-a-sessions-menu-from-the-dashboard) too, and whichever of you
+reaches it second is refused rather than pressing the wrong row. Because a visible menu puts
+a session in `needs-you` on its own, Foreman now also picks up sessions parked on one that
+no hook has told it about.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it
@@ -428,12 +531,31 @@ approve access/permission asks - turn it off and those escalate to you instead.
 Destructive or risky asks (force-push, secret access, prod deploy, data drops, disabling a
 safety check) are **always** escalated, never auto-approved.
 
-Everything Foreman does surfaces on the card: a needs-you session it acted on shows a
+Everything Foreman does surfaces where you're already looking. On a **card**: a needs-you
+session it acted on shows a
 **◆ decision** flag (or **✎ draft**) in its header, the expanded card shows the decision
 brief + recommended answer with **Approve & send / Dismiss** controls, and an answered
 session carries a `✓ Foreman answered: …` audit line. An escalation also fires a browser
 **alert**. The top-bar chip shows the mode, whether the worker is running, and the queue
 depth.
+
+In the [Console and Board](#layout-cards-console-or-board) detail the same decision is
+arranged differently, because a permanent conversation gives it somewhere better to sit:
+Foreman's note is rendered **in the transcript**, as a turn at the point it spoke, and what
+you still *owe* is a one-line strip above it - badge, disposition, purpose, **Approve &
+send** - that expands for the recommendation and **Dismiss**. It can't cover the chat,
+because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
+the inline entry stays.
+
+Every decision is also **kept**, which the note alone never was - a note is one upserted row,
+so each write erased the last one and approving erased the words that had just been sent.
+Foreman now records each decision it faces: the question the session was blocked on, what it
+concluded, and what actually went back. That question is the part worth recording - for a
+terminal ask (a permission prompt, a menu) the child's screen is the only place it ever
+exists, per the transcript gap above. The **Foreman · N** rail at the end of the detail's tab
+row opens that history: rows lead with the *ask* rather than the verdict, and opening one
+shows the ask verbatim beside Foreman's reasoning and the resolution, credited to whoever
+actually made the call. Records age out after a retention window.
 
 Only one worker drives the sessions at a time. `npm run foreman` twice is safe: the second
 process acquires no **lease** and idles as a standby, taking over automatically if the
@@ -493,7 +615,9 @@ session has queued anything at all - not just while work is still waiting. It re
 the batch is actually doing: **"3 queued"** while items wait, **"3 done"** once they've all
 landed, and **"1 done · 2 escalated · 1 stopped"** in the attention tone when some of them
 didn't - *escalated* being work Foreman gave up on and handed back, *stopped* being work
-that ended without landing at all.
+that ended without landing at all. A session with no queued work gets a chip too, but only
+while a wrap-up question is outstanding: a **"ship it?"** in the attention tone, which is
+how the *prompted* trigger's ask stays reachable on a card that has no batch to show.
 
 Only work that actually **verified** is ever counted as done, and that's the point of the
 wording rather than a detail of it. Every ending is *finished* in the sense that nothing
@@ -541,8 +665,35 @@ Foreman:
    and re-checks - escalating to you only once an issue looks beyond it;
 5. releases the next item.
 
-When the queue drains it asks whether to open a PR and run no-mistakes. It always **asks**;
-it never launches those itself.
+When Foreman decides a session is finished it can **wrap it up**. Two independent choices in
+the popover: **Trigger on**, one or more moments that count as finished, and **Then**, the
+single action to take at whichever one fires.
+
+| Trigger on | Fires when |
+|---|---|
+| **Queue drain** (default) | every item in the session's queue reached a terminal state |
+| **Prompted work complete** | you typed straight into the pane, the agent worked, and it parked - no queue involved |
+
+The prompted trigger doesn't fire on idleness alone, because idle isn't finished. It runs
+the same verifier queued items get - a fresh tool-less `claude -p` reading the branch diff
+against your captured prompt - and acts only on a **complete** verdict; an empty diff
+decides itself without a model call. A session that still needs you is left alone, and a
+checkout that *has* a work queue belongs to the drain trigger, which wins. It fires once
+per prompt: a new prompt from you re-arms it, and an incomplete verdict retires the
+episode rather than sending the agent back - Foreman didn't commission that work. Untick
+both triggers and Foreman never wraps up on its own.
+
+The action is the same whichever trigger fired:
+
+| Then | What it does |
+|---|---|
+| **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
+| **Run /no-mistakes** | types that instruction into the session itself |
+| **Straight to PR** | commit, push, open a PR |
+
+The two automated actions type something that *pushes*, so they only fire in **live** mode
+on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than
+letting a selected radio quietly do nothing.
 
 **Verification is evidence-only by design.** It reads the diff and the transcript - it does
 not run tests. `/no-mistakes` remains the gate that actually executes things; Foreman's job
@@ -674,13 +825,19 @@ switches between them live, and the choice persists per machine:
 
 Nothing is lost by switching. Every layout draws from the *same* leaf pieces - the
 transcript, the work queue, the gate strip, the action bar, the goal and runtime pills -
-so no chip, strip or control goes missing. What changes is how they're arranged:
+so no chip, strip or control goes missing. What changes is how they're arranged - and the
+console's permanent conversation earns two surfaces a card has nowhere to put:
 
 - **Cards** renders the full session card. The **Console** gives
   the selected session a bespoke, tabbed detail instead - **Conversation / Work queue /
   Gate / Diff** - because a split pane has room a card doesn't: the conversation is
   permanent, and the sections that share a card's height in the grid get a tab each. The
   **Board** drills into that same detail when you open a card.
+- **The console's two extras are Foreman's**, and both need a conversation to exist:
+  its notes render inline in the transcript, and a **Foreman · N** rail at the far end of
+  the tab row opens their history. The rail is deliberately *not* a fifth tab - Work queue,
+  Gate and Diff are things the session *has*, while Foreman is an observer talking *about*
+  it. A card keeps the full note block instead, since it has no transcript to inline into.
 - **Cards** is the only layout with a focus mode, so <kbd>e</kbd> (expand) and the floating
   command bar are unique to it. In the console and the board the selected session is
   *already* the open detail, so there is nothing to expand, and its controls are on screen
@@ -688,6 +845,26 @@ so no chip, strip or control goes missing. What changes is how they're arranged:
 - **Selecting is opening** in the console and the board: the arrow keys move the detail
   with them, and <kbd>Esc</kbd> deselects (emptying the console's pane, or reversing the board's drill-in).
 - **The arrow keys follow the shape** - see below.
+
+## Message formatting
+
+Agents write markdown, so the transcript renders it: headings, lists, tables, and fenced
+code blocks with syntax highlighting drawn from the dashboard's own palette. The same
+renderer draws shared plans and Foreman's briefs, so a fence looks the same wherever you
+read it.
+
+**Settings → Appearance → Format messages** turns it off, and the choice persists per
+machine. Off shows the literal text an agent emitted, backticks and all - useful when
+you're checking exactly what was said before pasting it somewhere that isn't a markdown
+renderer. Formatting is display-only either way: it never changes what the agent wrote or
+what gets sent when you reply, and copying a code block still yields exactly the
+characters inside the fence.
+
+Two deliberate limits. A fence with **no language tag is left uncoloured** rather than
+guessed at - agents emit plenty of fences that aren't code (log tails, file trees, error
+dumps), and a confident wrong guess reads worse than no colour. And **single newlines stay
+line breaks** in chat turns, which is what the transcript did before it parsed markdown,
+so no existing message reflows into a run-on paragraph.
 
 ## Keyboard shortcuts
 
@@ -697,7 +874,7 @@ without reaching for the mouse. Every shortcut works in every layout:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection. Around the grid in **Cards**; up and down the rail in **Console**; along and across the columns in **Board** | Anywhere |
-| <kbd>Esc</kbd> | Peel back a layer - leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
+| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box | Anywhere |
@@ -886,11 +1063,13 @@ that looks perfectly healthy would help nobody.
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
+| `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank |
+| `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
-| `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written. Overridable so tests never touch your real one |
-| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner) |
-| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner) pass it instead |
+| `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
+| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler) |
+| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler) pass it instead |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
@@ -900,6 +1079,9 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
+| `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
+| `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative |
+| `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 
 > **Upgrading from Fleet Control (`FLEET_*`) or ai-harness (`HARNESS_*`)?** Nothing to do.
 > Both older env prefixes are still honored as fallbacks - `MISSION_*` wins where more than
@@ -924,7 +1106,7 @@ npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman, skills)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

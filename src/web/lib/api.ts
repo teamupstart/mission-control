@@ -1,4 +1,5 @@
 import type {
+  ForemanEpisode,
   ForemanStatus,
   NmFixDetail,
   PermissionMode,
@@ -8,14 +9,20 @@ import type {
   SkillsView,
 } from "@shared/types.ts";
 import type {
+  AwayConfig,
+  AwayConfigPatch,
   ForemanConfig,
   ForemanConfigPatch,
+  FormOutcome,
   HarnessesConfig,
   HarnessesConfigPatch,
+  ResolveEpisode,
   SetNote,
   SkillsConfigPatch,
 } from "@shared/protocol.ts";
 import type { Attachment } from "@shared/attachments.ts";
+import type { AwayDigest } from "@shared/away-buffer.ts";
+import type { Stall } from "@shared/stall.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -39,6 +46,20 @@ export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/c
 export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/** Away mode: whether you're away, since when, and the stall thresholds. */
+export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
+/**
+ * The return digest, read once - the daemon drops it as it hands it over, so a
+ * refresh doesn't re-announce it. Null when there is nothing to report (a 204),
+ * which is the common case: you were never away, or nothing happened.
+ */
+export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
+/**
+ * The sessions the daemon currently reads as stuck. Fetched rather than derived:
+ * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the
+ * SSE change comparison, so the session stream cannot carry the signal.
+ */
+export const fetchAwayStalls = () => fetchJson<Stall[]>("/api/away/stalls");
 /** The skills catalog, what's on, and how many sessions are behind - one read. */
 export const fetchSkills = () => fetchJson<SkillsView>("/api/skills");
 
@@ -213,6 +234,34 @@ export const api = {
     post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
+  /**
+   * Answer the option menu a session is showing by selecting one of its rows.
+   *
+   * `label` is not decoration: the card renders a snapshot up to one poll (1.5s) old, and
+   * the daemon re-reads the pane and refuses unless the row still reads as the label the
+   * human was actually shown. Always pass the label off the row that was clicked, never a
+   * remembered or re-derived one, or the check is checking our own guess.
+   *
+   * A 409 means the screen moved out from under the click (the menu closed, the rows
+   * repainted, Foreman answered first). Nothing was pressed - re-render and let the human
+   * look again rather than retrying blind.
+   */
+  selectOption: (id: string, number: number, label: string) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/select-option`, { number, label }),
+  /**
+   * Fill in and SEND a multi-select `AskUserQuestion`, which `selectOption` cannot do:
+   * pressing a row of one ticks its box and answers nothing, so the whole form goes at
+   * once and the daemon walks Claude's own Submit tab (see `submitPaneForm`).
+   *
+   * Send every checkbox row with the state the human left it in - not just the ones they
+   * changed - so the daemon diffs against the live pane rather than replaying clicks onto
+   * a form that may have been ticked in the terminal since.
+   */
+  submitOptions: (
+    id: string,
+    options: Array<{ number: number; label: string; checked: boolean }>,
+  ): Promise<ActionResult & { outcome?: FormOutcome; note?: string }> =>
+    post(`/api/sessions/${encodeURIComponent(id)}/submit-options`, { options }),
   resolveReview: (id: string, action: "approve" | "reject" | "answer", response?: string | null) =>
     post(`/api/reviews/${encodeURIComponent(id)}/resolve`, { action, response }),
   nomistakesRespond: (
@@ -224,6 +273,9 @@ export const api = {
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
+  /** Hand a backlog task to an agent that is already running, rather than launching one. */
+  assignTask: (id: string, sessionId: string) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>
@@ -236,7 +288,24 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+
+  // --- Away mode ---
+  setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),
   setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
+
+  // --- Foreman episodes: the append-only record behind the note ---
+  /**
+   * Stamp your answer onto the episode Foreman left open.
+   *
+   * Paired with `setNote`, not replaced by it. The note is current state, so
+   * answering correctly clears its recommendation; the episode is the record, so it
+   * keeps what was sent and who sent it. Before this existed, Approve nulled the
+   * recommendation and the words that went to the child survived nowhere at all.
+   */
+  resolveEpisode: (id: string, p: ResolveEpisode) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/foreman-episode/resolve`, p),
+  episodes: (id: string) =>
+    fetchJson<ForemanEpisode[]>(`/api/sessions/${encodeURIComponent(id)}/foreman-episodes`),
 
   // --- Foreman session work queues ---
   addWorkItem: (id: string, intent: string) =>

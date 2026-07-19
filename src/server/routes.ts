@@ -4,6 +4,8 @@ import type { Context, MiddlewareHandler } from "hono";
 import type { TypeOf, ZodTypeAny } from "zod";
 import {
   AddWorkItemSchema,
+  AssignTaskSchema,
+  AwayConfigPatchSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
@@ -24,9 +26,14 @@ import {
   ResolveReviewSchema,
   SelectOptionSchema,
   SendTextSchema,
+  SubmitOptionsSchema,
+  RecordEpisodeSchema,
+  ResolveEpisodeSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
   SetWorkItemStateSchema,
+  PromptedWrapupSchema,
+  WrapupAskedSchema,
   SkillsConfigPatchSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
@@ -34,7 +41,7 @@ import {
   WrapupSchema,
 } from "@shared/protocol.ts";
 import type { NomistakesRespond } from "@shared/protocol.ts";
-import { capturePaneText } from "./discovery/pane-mode.ts";
+import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
@@ -57,6 +64,9 @@ import {
   releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { getAwayConfig, setAwayConfig } from "./away/config.ts";
+import { buildDigest } from "./away/digest.ts";
+import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -78,6 +88,7 @@ import {
   selectPaneOption,
   sendText,
   setPermissionMode,
+  submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
@@ -213,6 +224,8 @@ export function buildApp(
   reviews: ReviewManager,
   tasks: TaskManager,
   queues: QueueManager,
+  /** Optional so tests can build an app without the away poller running. */
+  away?: AwayWatcher,
 ): Hono {
   const app = new Hono();
 
@@ -280,12 +293,12 @@ export function buildApp(
   // exists (see `ReviewInput.pane`). Foreman's reviewer reads it alongside the transcript.
   //
   // Captured on demand rather than served off the poll's snapshot, even though
-  // `annotatePermissionModes` already captures every pane each tick and throws the text
-  // away. A review fires after a settle debounce, so a snapshot would be up to a tick stale
-  // - and "stale by one tick" here is not a slightly-old screen, it is the wrong question:
-  // the menu the reviewer is about to answer may have replaced the one the poll saw. The
-  // cost is one `tmux capture-pane` per review, which is noise beside the `claude -p` it
-  // feeds.
+  // `annotatePaneState` already captures every pane each tick, parsing the mode line and the
+  // dialog out of it. A review fires after a settle debounce, so a snapshot would be up to a
+  // tick stale - and "stale by one tick" here is not a slightly-old screen, it is the wrong
+  // question: the menu the reviewer is about to answer may have replaced the one the poll
+  // saw. The cost is one `tmux capture-pane` per review, which is noise beside the
+  // `claude -p` it feeds.
   app.get("/api/sessions/:id/pane", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -436,6 +449,21 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 409);
   });
 
+  // Fill in and send a multi-select `AskUserQuestion`. Separate from select-option because
+  // pressing a row of one of these answers nothing - it ticks a box, and the answers reach
+  // Claude only when the form's Submit tab is confirmed (see `submitPaneForm`).
+  //
+  // 409 on refusal for the same reason as above: every failure is the pane declining, and
+  // the walk stops before the send rather than half-way through it.
+  app.post("/api/sessions/:id/submit-options", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, SubmitOptionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await submitPaneForm(session, parsed.data.options);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
   // Rename the session's tmux session / wezterm tab; discovery reads the new name
   // back onto the card, and the registry echoes it immediately so it doesn't lag a
   // poll. A name the backing handle can't accept, or one a task's teardown still
@@ -466,6 +494,9 @@ export function buildApp(
   // that never happened (retryable) from one that may be sitting unsubmitted in the
   // pane (must not be retyped over). Every refusal below reports it too, since
   // rejecting a request outright is the one case where we KNOW nothing was typed.
+  // It also carries `paneBlocked` when a pane in a tmux mode refused the write, which
+  // is what stops the worker charging an attempt for a human reading their scrollback.
+  // Both ride along on the ActionResult itself, so neither can be forgotten here.
   app.post("/api/sessions/:id/inject", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session", pasted: false }, 404);
@@ -709,6 +740,49 @@ export function buildApp(
     return c.json(note);
   });
 
+  // --- Foreman episodes: the append-only record behind the note ---
+
+  // Written by the worker (a separate process with no DB access of its own) once it
+  // has acted, carrying the context it is about to drop - above all the pane, which
+  // for a terminal ask is the only copy of the question that ever exists.
+  app.post("/api/sessions/:id/foreman-episode", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, RecordEpisodeSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      registry.recordEpisode(session.id, parsed.data);
+    } catch (err) {
+      // Fail soft, on the same reasoning as the gate byline above: by the time the
+      // worker posts this it has already delivered its answer and stamped the note.
+      // The episode is the audit trail for an act that already happened, so a DB
+      // failure must cost the record and nothing else - 500ing would make the worker
+      // log an error for work that succeeded.
+      console.error("[foreman] could not record the episode:", err);
+    }
+    return c.json({ ok: true });
+  });
+
+  // Stamped by the dashboard when the human answers an episode Foreman left open.
+  app.post("/api/sessions/:id/foreman-episode/resolve", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, ResolveEpisodeSchema);
+    if (!parsed.ok) return parsed.res;
+    try {
+      registry.resolveEpisode(session.id, parsed.data);
+    } catch (err) {
+      console.error("[foreman] could not stamp the episode:", err);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.get("/api/sessions/:id/foreman-episodes", (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    return c.json(registry.listEpisodes(session.id));
+  });
+
   // --- Foreman session work queues (localhost only) ---
   app.get("/api/sessions/:id/queue", (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -818,13 +892,49 @@ export function buildApp(
   // The worker's "I've raised the ask" stamp - what makes it fire exactly once.
   // Separate from the answer above because they have different writers: this is
   // Foreman recording that it asked, that is the human recording what they said.
-  app.post("/api/sessions/:id/queue/wrapup/asked", (c) => {
+  //
+  // `ensureQueue` rather than a 404 on a missing row, because the `prompted` trigger
+  // fires on sessions that have NO work queue - that is its entire premise - and the
+  // Ship it? card it raises renders off `wrapupAskedAt` on the queue row. Without a
+  // row to stamp there is nowhere for the ask to live and the trigger would verify the
+  // work, decide to ask, and then silently drop the question. Creating the row is not a
+  // side effect being smuggled in: `ensureQueue` writes cwd/branch and nothing else, an
+  // itemless queue renders no item list, and `addItem` already creates one this way.
+  app.post("/api/sessions/:id/queue/wrapup/asked", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const queue = queues.get(session.id);
-    if (!queue) return c.json({ error: "no queue for this session" }, 404);
-    queues.markWrapupAsked(queue.noteKey);
+    const parsed = await parseBody(c, WrapupAskedSchema);
+    if (!parsed.ok) return parsed.res;
+    const key = registry.ensureQueue(session.id);
+    if (!key) return c.json({ error: "no queue for this session" }, 404);
+    queues.markWrapupAsked(key, undefined, { clearAnswer: parsed.data.clearAnswer });
     return c.json(queues.get(session.id));
+  });
+
+  // The `prompted` trigger's once-per-episode stamp: the goal it last fired (or held)
+  // on. A separate endpoint from the two above because it is a separate guard on a
+  // separate trigger - see `SessionQueue.promptedGoal` for why they must not share a
+  // field. Same `ensureQueue` reasoning: these sessions have no queue by definition.
+  app.post("/api/sessions/:id/queue/wrapup/prompted", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, PromptedWrapupSchema);
+    if (!parsed.ok) return parsed.res;
+    const key = registry.ensureQueue(session.id);
+    if (!key) return c.json({ error: "no queue for this session" }, 404);
+    registry.setQueueWrapup(key, { promptedGoal: parsed.data.goal });
+    return c.json(queues.get(session.id));
+  });
+
+  // The full goal record, including the verbatim prompt the refiner derived from.
+  // Loopback-only like the rest of the worker's surface: `SessionGoal.prompt` is
+  // deliberately never denormalized onto a card (it can be 4KB of someone's paste),
+  // so this is the only way the out-of-process worker can read the ask it needs to
+  // verify work against.
+  app.get("/api/sessions/:id/goal", (c) => {
+    const goal = registry.getGoal(c.req.param("id"));
+    if (!goal) return c.json({ error: "no goal for this session" }, 404);
+    return c.json(goal);
   });
 
   // Re-attach an orphaned queue onto this live session. Always an explicit click:
@@ -879,6 +989,34 @@ export function buildApp(
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+
+  // --- Away mode (localhost only) ---
+  app.get("/api/away", (c) => c.json(getAwayConfig()));
+  app.put("/api/away", async (c) => {
+    const parsed = await parseBody(c, AwayConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const next = setAwayConfig(parsed.data);
+    // Close the window synchronously on return: the poll tick is up to AWAY_POLL_MS
+    // behind, and the client's follow-up digest read would otherwise beat it.
+    if (!next.away) away?.flush();
+    return c.json(next);
+  });
+
+  /** Currently-stalled sessions. Empty when stall detection is off. */
+  app.get("/api/away/stalls", (c) => c.json(away?.stalls() ?? []));
+
+  /**
+   * The return digest, read once. 204 when there is nothing to report - either you
+   * were never away, or nothing happened while you were, and a digest that says "0
+   * finished" is a notification that says nothing.
+   */
+  app.get("/api/away/digest", async (c) => {
+    const buf = away?.takePending();
+    if (!buf) return c.body(null, 204);
+    const digest = await buildDigest(buf, Date.now());
+    if (digest.empty) return c.body(null, 204);
+    return c.json(digest);
+  });
 
   // A LEASED heartbeat: acquires when free/expired, renews when already ours, and
   // reports leader:false otherwise. The old bare heartbeat was one module-global
@@ -971,10 +1109,21 @@ export function buildApp(
     return c.json(task);
   });
 
-  app.post("/api/tasks/:id/dispatch", (c) => {
-    const t = tasks.dispatch(c.req.param("id"));
+  app.post("/api/tasks/:id/dispatch", async (c) => {
+    const t = await tasks.dispatch(c.req.param("id"));
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
+  });
+
+  // Assign a backlog task to an already-running agent. A refusal here is a 409, not a
+  // 500: every way it fails (task already dispatched, agent busy, agent in another
+  // repo, pane locked) is a state conflict the operator can see and resolve on the
+  // board - and in none of them was anything typed at the agent.
+  app.post("/api/tasks/:id/assign", async (c) => {
+    const parsed = await parseBody(c, AssignTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId);
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/api/tasks/:id/cancel", async (c) => {

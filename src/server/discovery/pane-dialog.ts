@@ -1,5 +1,4 @@
-import { capturePaneText } from "./pane-mode.ts";
-import type { Session } from "@shared/types.ts";
+import type { PaneDialog, PaneOption } from "@shared/types.ts";
 
 /**
  * Read a Claude option dialog - a permission prompt, an `AskUserQuestion` menu, the
@@ -27,30 +26,38 @@ import type { Session } from "@shared/types.ts";
  * is on screen right now, in the order shown.
  */
 
-/** One selectable row of an option dialog, as rendered. */
-export interface PaneOption {
-  /** The number Claude prints on the row (1-based, and its position in the list). */
-  number: number;
-  /** The row's visible label, whitespace-collapsed. Never the description beneath it. */
-  label: string;
-}
-
-/** An option dialog as read off a pane. */
-export interface PaneDialog {
-  /** Every row, ascending. Includes Claude's own trailing rows ("Type something."). */
-  options: PaneOption[];
-  /** The row the `❯` cursor sits on - where an Enter would land right now. */
-  highlighted: number;
-}
+/**
+ * The shapes live in `@shared/types.ts` because the dashboard renders these rows for the
+ * human to click, so the browser needs them too; re-exported here because this module is
+ * where they are PARSED, and every server-side caller already reaches for them by this
+ * name.
+ */
+export type { PaneDialog, PaneOption } from "@shared/types.ts";
 
 /**
- * An option row: an optional cursor, the number Claude prints, then the label.
+ * An option row: an optional cursor, the number Claude prints, an optional checkbox, then
+ * the label.
  *
  * The label is required to be non-empty so a bare "1." in prose can't open a block, and
  * the number is bounded to two digits because a dialog's rows are few - an unbounded `\d+`
  * would let a transcript's "2024. was the year" read as row 2024.
+ *
+ * The checkbox is what a MULTI-SELECT `AskUserQuestion` renders, captured live:
+ *
+ *     ❯ 1. [✔] Alpha
+ *       2. [ ] Beta
+ *
+ * It is a separate group rather than part of the label because it is STATE, not identity:
+ * it flips every time the row is toggled, and the label is what a selection is verified
+ * against (`optionRowMiss`). Left in the label, a row the human was shown as "[ ] Beta"
+ * reads "[✔] Beta" the moment anything ticks it, so their click is refused as a screen
+ * change - see `multiSelect` below for why that made a sitting form permanently
+ * unanswerable.
  */
-const OPTION_ROW = /^\s*(❯)?\s*(\d{1,2})\.\s+(\S.*?)\s*$/u;
+const OPTION_ROW = /^\s*(❯)?\s*(\d{1,2})\.\s+(?:\[([ ✔✓xX])\]\s+)?(\S.*?)\s*$/u;
+
+/** The box glyphs Claude renders for a ticked row; anything else in the brackets is empty. */
+const CHECKED_BOX = /[✔✓xX]/u;
 
 /**
  * Parse the option dialog a pane is showing, or null when it isn't showing one.
@@ -74,7 +81,14 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
   const lines = paneText.split("\n");
 
   // Collected bottom-up, so `rows` runs N..1 and reverses into the rendered order.
-  const rows: Array<{ number: number; label: string; cursor: boolean }> = [];
+  const rows: Array<{
+    number: number;
+    label: string;
+    /** The box glyph as rendered, or undefined on a row that carries no checkbox. */
+    box: string | undefined;
+    cursor: boolean;
+    line: number;
+  }> = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = OPTION_ROW.exec(lines[i]!);
     if (!m) continue;
@@ -87,7 +101,13 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
       rows.length = 0;
       if (number !== 1) continue;
     }
-    rows.push({ number, label: m[3]!.replace(/\s+/g, " "), cursor: Boolean(m[1]) });
+    rows.push({
+      number,
+      label: m[4]!.replace(/\s+/g, " "),
+      box: m[3],
+      cursor: Boolean(m[1]),
+      line: i,
+    });
     if (number === 1) break;
   }
 
@@ -95,15 +115,208 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
   const options = rows.reverse();
   const cursors = options.filter((o) => o.cursor);
   if (cursors.length !== 1) return null;
+  const multiSelect = options.filter((o) => o.box !== undefined).length >= MIN_CHECKBOX_ROWS;
+  const prompt = readPrompt(lines, options[0]!.line);
   return {
-    options: options.map((o) => ({ number: o.number, label: o.label })),
+    options: options.map((o, k) => {
+      const detail = readDetail(lines, o.line, options[k + 1]?.line ?? lines.length);
+      // A checkbox is only READ as one on a form that has several - see MIN_CHECKBOX_ROWS.
+      // Anywhere else the brackets are the row's own text and belong in the label, which
+      // keeps every single-select dialog parsing byte-for-byte as it did before.
+      const onForm = multiSelect && o.box !== undefined;
+      // ...and the free-text row is on a form without being answerable on one, so it comes
+      // out of the label like any other box but is reported with no `checked` at all.
+      const boxed = onForm && !FREE_TEXT_ROW.test(o.label);
+      return {
+        number: o.number,
+        label: onForm ? o.label : restoreBox(o),
+        ...(detail ? { detail } : {}),
+        ...(boxed ? { checked: CHECKED_BOX.test(o.box!) } : {}),
+      };
+    }),
     highlighted: cursors[0]!.number,
+    ...(multiSelect ? { multiSelect: true } : {}),
+    ...(prompt ? { prompt } : {}),
   };
 }
 
-/** Read the option dialog a session's pane is showing, or null when it isn't showing one. */
-export async function readPaneDialog(session: Pick<Session, "tmux" | "wezterm">): Promise<PaneDialog | null> {
-  return parsePaneDialog(await capturePaneText(session));
+/**
+ * How many rows must carry a checkbox before the dialog is read as a multi-select form.
+ *
+ * Two, not one. A real multi-select always clears it - `AskUserQuestion` appends its own
+ * "Type something" row with a box of its own, so even a one-option question renders two -
+ * while a lone `[ ]` is as likely to be a permission prompt quoting a command that
+ * contains one. Getting that wrong is not cosmetic: it would strip the brackets out of a
+ * label the human is asked to confirm, and route their click down the form path.
+ *
+ * That trailing row is counted here and only here: it is what proves the screen is a form,
+ * but `FREE_TEXT_ROW` keeps it out of the form's ANSWERABLE rows, so a one-option question
+ * still parses as a form with exactly one box to tick.
+ */
+const MIN_CHECKBOX_ROWS = 2;
+
+/** Put a box back into the label, for a row parsed on a dialog that isn't a form. */
+function restoreBox(row: { label: string; box: string | undefined }): string {
+  return row.box === undefined ? row.label : `[${row.box}] ${row.label}`;
+}
+
+/** A horizontal rule - `AskUserQuestion` draws one above its trailing "Chat about this". */
+const RULE = /^[\s─━―—–_=-]+$/u;
+
+/**
+ * How far above the rows the question may sit. Bounded because everything further up is
+ * the transcript: an unbounded walk turns the agent's last paragraph into the "question",
+ * which is worse than showing none - it reads as authoritative and is merely nearby.
+ */
+const PROMPT_SCAN_LINES = 8;
+
+/**
+ * The question the rows are answering, read off the lines above them, or undefined when
+ * there is nothing that looks like one.
+ *
+ * Display only, and deliberately so - `optionRowMiss` verifies a selection by LABEL alone,
+ * so nothing here can widen or narrow what a click is allowed to confirm. It exists
+ * because the labels by themselves frequently aren't an answerable question: a permission
+ * prompt's rows read "Yes" / "Yes, and don't ask again" / "No", which tells a human
+ * nothing about what they'd be approving.
+ *
+ * Anchored on the question mark rather than on proximity, because the nearest text above
+ * the rows is routinely NOT the question. The folder-trust check renders
+ *
+ *     Quick safety check: Is this a project you created or one you trust? (Like your own
+ *     code, a well-known open source project, or work from your team). If not, take a
+ *     moment to review what's in this folder first.
+ *
+ *     Claude Code'll be able to read, edit, and execute files here.
+ *
+ *     Security guide
+ *
+ *     ❯ 1. Yes, I trust this folder
+ *
+ * where a walk that simply took the closest non-blank block would announce "Security
+ * guide" as the question - a confident, wrong label on the one control that matters.
+ *
+ * The `?` may sit ANYWHERE in the line, not just at its end, because the pane hard-wraps:
+ * on a real terminal the trust question breaks mid-sentence, so no line ends with `?` at
+ * all and an end-anchored scan finds nothing - falling through to the adjacent block and
+ * captioning the dialog "Security guide", the exact label this anchor exists to avoid.
+ * Matching anywhere finds the line; `joinBlock` is what makes it readable, because the
+ * line the `?` lands on is a FRAGMENT of the question rather than the question.
+ *
+ * Falling back to the adjacent block only when there is no `?` keeps a question worded as
+ * an instruction from yielding nothing.
+ */
+function readPrompt(lines: string[], firstRow: number): string | undefined {
+  const top = Math.max(0, firstRow - PROMPT_SCAN_LINES);
+  for (let i = firstRow - 1; i >= top; i--) {
+    if (lines[i]!.includes("?")) return joinBlock(lines, i, top, firstRow) || undefined;
+  }
+  let i = firstRow - 1;
+  while (i >= top && !lines[i]!.trim()) i--;
+  return i >= top ? joinBlock(lines, i, top, firstRow) || undefined : undefined;
+}
+
+/**
+ * The whole wrapped paragraph that line `at` belongs to, joined back into one string.
+ *
+ * Expanded in BOTH directions from the anchor, to the paragraph's own bounds - a blank line
+ * or a rule on either side. The pane is a viewport, so a question reaches us broken across
+ * however many lines the terminal's width forced; the `?` lands on whichever fragment
+ * happened to contain it, which is as likely to be "...take a moment to" as anything
+ * answerable. Reassembling the paragraph is what turns that back into the question a human
+ * is being asked.
+ *
+ * Bounded by `top` above and by the first option row below, so it can neither climb into
+ * the transcript nor swallow the menu it is captioning.
+ */
+function joinBlock(lines: string[], at: number, top: number, end: number): string {
+  let start = at;
+  while (start - 1 >= top && isProse(lines[start - 1]!)) start--;
+  let stop = at;
+  while (stop + 1 < end && isProse(lines[stop + 1]!)) stop++;
+  return lines
+    .slice(start, stop + 1)
+    .map((l) => l.trim())
+    .join(" ");
+}
+
+/** Whether a line is part of a paragraph rather than one of the bounds of one. */
+function isProse(line: string): boolean {
+  const trimmed = line.trim();
+  return Boolean(trimmed) && !RULE.test(trimmed);
+}
+
+/**
+ * The description Claude prints beneath a row, or undefined when it prints none.
+ *
+ * Bounded by the next row and by the first blank line, which is what keeps the LAST row's
+ * description from swallowing the footer ("Enter to select · ↑/↓ to navigate") - there is
+ * no next row to stop it. Rules are skipped rather than collected for the same reason they
+ * aren't rows: the one above "Chat about this" is chrome, not text about an option.
+ */
+function readDetail(lines: string[], row: number, nextRow: number): string | undefined {
+  const block: string[] = [];
+  for (let i = row + 1; i < nextRow; i++) {
+    const line = lines[i]!.trim();
+    if (!line) break;
+    if (RULE.test(line)) continue;
+    block.push(line);
+  }
+  return block.length ? block.join(" ") : undefined;
+}
+
+/**
+ * A multi-select `AskUserQuestion` is a FORM, and a form is not sent by answering it.
+ *
+ * Ticking boxes commits nothing; the answers leave for Claude only when the last tab -
+ * "✔ Submit", reached with `→` from the last question - is confirmed:
+ *
+ *     ←  ☒ Features  ✔ Submit  →
+ *
+ *     Review your answers
+ *      ● Which features would you like to enable?
+ *        → Beta, Alpha
+ *
+ *     Ready to submit your answers?
+ *     ❯ 1. Submit answers
+ *       2. Cancel
+ *
+ * The two readers below are how the submit walk knows it has ARRIVED there (rather than
+ * on the next question's tab) and whether it may press the row when it has. Both are
+ * matched on Claude's own words, like everything else in this file, because the tab is a
+ * screen we can see and not a state we can query - recapture them here when its chrome
+ * moves. `FREE_TEXT_ROW` below is read off the same words and belongs to the same list.
+ */
+const SUBMIT_ROW = /^submit answers$/i;
+
+/**
+ * Claude's own trailing row on a multi-select - the one that opens a text field.
+ *
+ * It renders a box like every other row, and it is NOT a box: ticking it selects nothing.
+ * Measured live, a form with it ticked and no text typed still met "You have not answered
+ * all questions" on the review tab. So offering it as a checkbox lets a human tick what
+ * looks like a choice, submit, and be told they answered nothing - and the submit walk
+ * would meanwhile press Enter on the row, opening a field that eats the arrows the walk
+ * needs (see `submitPaneForm`'s park step). Excluded from the form's answerable rows at
+ * the parse, so it stays a plain numbered row that `selectPaneOption` may still press.
+ */
+const FREE_TEXT_ROW = /^type something\.?$/i;
+
+/** The review tab's send row, or null when this dialog is not the review tab. */
+export function submitAnswersRow(dialog: PaneDialog): PaneOption | null {
+  return dialog.options.find((o) => SUBMIT_ROW.test(o.label.trim())) ?? null;
+}
+
+/**
+ * Whether the review tab is saying some question still has no answer.
+ *
+ * Read off the raw pane rather than the parsed dialog because it is a banner above the
+ * rows, outside the question `readPrompt` captures. It is a REFUSAL condition for the
+ * submit walk: Claude will happily send a half-filled form, and a walk that pressed
+ * through this would answer, in the human's name, questions they were never shown.
+ */
+export function hasUnansweredWarning(paneText: string | null): boolean {
+  return paneText !== null && /have not answered all questions/i.test(paneText);
 }
 
 /**

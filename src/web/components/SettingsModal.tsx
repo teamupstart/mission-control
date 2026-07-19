@@ -1,22 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
+import { AppearancePanel } from "./AppearancePanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
  * The settings categories, in rail order. Each is a peer destination in the left nav,
- * so adding one - Notifications, Foreman, Appearance - is appending an entry here plus a
+ * so adding one - Notifications, General - is appending an entry here plus a
  * `case` in `renderCategory`, never lengthening a scroll. Keeping the list as data (not
  * inlined JSX) is also what the render test walks to prove every category is reachable.
  */
 export const SETTINGS_CATEGORIES = [
   { id: "layout", label: "Layout", icon: "▦" },
+  { id: "appearance", label: "Appearance", icon: "◐" },
   { id: "keyboard", label: "Keyboard", icon: "⌨" },
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "harnesses", label: "Harnesses", icon: "⚙" },
@@ -38,12 +41,12 @@ function tabDomId(id: SettingsCategoryId): string {
  * Skills is one click from open, not the tail of a scroll. The panels themselves are
  * unchanged; this component only arranges them and owns which one is showing.
  *
- * `LayoutPanel` and `KeyboardPanel` are the modal's local-only, synchronous settings
- * (localStorage). Skills is the one that leaves this machine: it writes to the daemon,
- * and through it to `~/.claude/skills`, so it is also the first that can fail
- * asynchronously. `SkillsPanel` owns that error path. `useSkills` lives here rather than
- * inside the Skills panel so the catalog keeps polling (and `pending` keeps moving) while
- * you're on another category.
+ * `LayoutPanel`, `AppearancePanel`, and `KeyboardPanel` are the modal's local-only,
+ * synchronous settings (localStorage). Skills is the one that leaves this machine: it
+ * writes to the daemon, and through it to `~/.claude/skills`, so it is also the first
+ * that can fail asynchronously. `SkillsPanel` owns that error path. `useSkills` lives
+ * here rather than inside the Skills panel so the catalog keeps polling (and `pending`
+ * keeps moving) while you're on another category.
  */
 export function SettingsModal({
   onClose,
@@ -78,17 +81,12 @@ export function SettingsModal({
   const harnesses = useHarnesses();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
-  // Escape closes the modal. This is a plain bubble-phase handler with no "is a shortcut
-  // recording?" guard: while KeyboardPanel records, its capture-phase listener swallows
-  // the keystroke (stopPropagation) before this ever runs, so Escape cancels the capture
-  // instead of closing - the modal never has to know recording is happening.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Escape is Overlay's, and stays a plain BUBBLE-phase listener there with no "is a
+  // shortcut recording?" guard - which is what makes this modal work. While
+  // KeyboardPanel records a chord its capture-phase listener swallows the keystroke
+  // (stopPropagation) before any bubble-phase handler runs, so Escape cancels the
+  // capture instead of closing the modal, and neither side has to know about the other.
+  // A capture-phase overlay listener would break that and close Settings mid-record.
 
   // Arrow/Home/End move the tab set, per the WAI-ARIA tabs pattern: selection follows
   // focus, so a keyboard user lands on the panel the same way a click gets there. The
@@ -129,6 +127,8 @@ export function SettingsModal({
     switch (id) {
       case "layout":
         return <LayoutPanel layout={layout} onLayoutChange={onLayoutChange} />;
+      case "appearance":
+        return <AppearancePanel />;
       case "keyboard":
         return <KeyboardPanel />;
       case "skills":
@@ -141,57 +141,56 @@ export function SettingsModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal settings-modal"
-        role="dialog"
-        aria-label="Settings"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="modal-head">
-          <h2>Settings</h2>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
-        </header>
+    <Overlay
+      id={OVERLAY_IDS.settings}
+      onClose={onClose}
+      className="modal settings-modal"
+      role="dialog"
+      ariaLabel="Settings"
+    >
+      <header className="modal-head">
+        <h2>Settings</h2>
+        <button className="icon-btn" aria-label="Close" onClick={onClose}>
+          ✕
+        </button>
+      </header>
 
-        <div className="settings-layout">
-          <div
-            className="settings-nav"
-            role="tablist"
-            aria-orientation="vertical"
-            aria-label="Settings categories"
-            onKeyDown={onTablistKey}
-          >
-            {SETTINGS_CATEGORIES.map((c) => (
-              <button
-                key={c.id}
-                id={tabDomId(c.id)}
-                type="button"
-                className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
-                role="tab"
-                aria-selected={active === c.id}
-                // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
-                tabIndex={active === c.id ? 0 : -1}
-                ref={(el) => {
-                  if (el) tabRefs.current.set(c.id, el);
-                  else tabRefs.current.delete(c.id);
-                }}
-                onClick={() => setActive(c.id)}
-              >
-                <span className="settings-nav-icon" aria-hidden>
-                  {c.icon}
-                </span>
-                {c.label}
-              </button>
-            ))}
-          </div>
+      <div className="settings-layout">
+        <div
+          className="settings-nav"
+          role="tablist"
+          aria-orientation="vertical"
+          aria-label="Settings categories"
+          onKeyDown={onTablistKey}
+        >
+          {SETTINGS_CATEGORIES.map((c) => (
+            <button
+              key={c.id}
+              id={tabDomId(c.id)}
+              type="button"
+              className={`settings-nav-item${active === c.id ? " is-active" : ""}`}
+              role="tab"
+              aria-selected={active === c.id}
+              // Roving tabindex: one Tab stop for the whole rail, arrows move within it.
+              tabIndex={active === c.id ? 0 : -1}
+              ref={(el) => {
+                if (el) tabRefs.current.set(c.id, el);
+                else tabRefs.current.delete(c.id);
+              }}
+              onClick={() => setActive(c.id)}
+            >
+              <span className="settings-nav-icon" aria-hidden>
+                {c.icon}
+              </span>
+              {c.label}
+            </button>
+          ))}
+        </div>
 
-          <div className="settings-pane" role="tabpanel" aria-labelledby={tabDomId(active)}>
-            {renderCategory(active)}
-          </div>
+        <div className="settings-pane" role="tabpanel" aria-labelledby={tabDomId(active)}>
+          {renderCategory(active)}
         </div>
       </div>
-    </div>
+    </Overlay>
   );
 }

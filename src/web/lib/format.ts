@@ -1,5 +1,5 @@
-import { runInFlight } from "@shared/session.ts";
-import type { PermissionMode, Session, SessionState } from "@shared/types.ts";
+import { activePaneDialog, runInFlight } from "@shared/session.ts";
+import type { NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
 
 export function relativeTime(ms: number | null): string {
   if (!ms) return "";
@@ -98,6 +98,14 @@ export function stateDisplay(session: Session): StateDisplay {
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
   }
+  // Above the instrumentation split on purpose. A menu on the screen is something we can
+  // SEE, not something a hook has to tell us, and it means the session has stopped dead -
+  // so an uninstrumented session parked on a permission prompt belongs in "needs you"
+  // rather than in "unconfirmed", where it read as merely unknown while being the most
+  // definitively blocked session on the board. Mirrors `reportBucket`.
+  if (activePaneDialog(session)) {
+    return { label: "needs an answer", tone: "attention" };
+  }
   const validating: StateDisplay = { label: "validating", tone: "working" };
   if (!session.instrumented) {
     return runInFlight(session) ? validating : { label: "running", tone: "neutral" };
@@ -111,6 +119,74 @@ export function stateDisplay(session: Session): StateDisplay {
     exited: { label: "exited", tone: "exited" },
   };
   return map[session.state];
+}
+
+export interface GateStepView {
+  /** The step to name above the tile's hairline, e.g. "review" - or the outcome once landed. */
+  label: string;
+  /** 1-based position of that step in the pipeline, or null when it can't be placed. */
+  pos: number | null;
+  /** How many steps the pipeline has. */
+  total: number;
+  /** Tone for the label - the same scale the hairline segment carries. */
+  tone: "working" | "attention" | "idle" | "danger";
+  /** True once the run has finished cleanly (label is the outcome, not a step). */
+  done: boolean;
+}
+
+/** Outcomes that mean the run landed badly - the calm idle tone would misreport these. */
+const FAILED_OUTCOMES = new Set(["failed", "cancelled", "canceled"]);
+
+/**
+ * The one step worth naming above the board tile's gate hairline.
+ *
+ * The hairline colours every step but names none, so "which stage is it at" is
+ * unreadable without knowing the pipeline's order by heart. This picks the step a
+ * glance should land on and dresses it in the same tone the segment carries, so the
+ * word and the bar can't disagree. Precedence mirrors what you'd triage by: a failure
+ * first, then a gate parked on your decision, then whatever is running, then - with
+ * nothing in flight - the outcome if the run has landed, else the next step up. A run
+ * that landed failed or cancelled keeps the danger tone; only a clean landing reads calm.
+ *
+ * Pure, so the rule is tested without a DOM (see gate-step-view.test.ts).
+ */
+export function gateStepView(nm: NmRunSummary): GateStepView {
+  const total = nm.steps.length;
+  const at = (i: number, tone: GateStepView["tone"]): GateStepView => ({
+    label: nm.steps[i]!.step,
+    pos: i + 1,
+    total,
+    tone,
+    done: false,
+  });
+
+  const failed = nm.steps.findIndex((s) => s.status === "failed");
+  if (failed >= 0) return at(failed, "danger");
+
+  // Parked on a decision: trust no-mistakes' own gateStep, but fall back to the parked
+  // status when it names no step we hold. gateStep and steps[] are parsed from separate
+  // blocks, so a name that doesn't place must not cost the tile its attention tone.
+  const named = nm.gateStep ? nm.steps.findIndex((s) => s.step === nm.gateStep) : -1;
+  const gated =
+    named >= 0
+      ? named
+      : nm.steps.findIndex((s) => s.status === "awaiting_approval" || s.status === "fix_review");
+  if (gated >= 0) return at(gated, "attention");
+
+  const running = nm.steps.findIndex((s) => s.status === "running");
+  if (running >= 0) return at(running, "working");
+
+  // Nothing in flight: the run has either landed, or is between steps.
+  if (nm.outcome) {
+    const tone = FAILED_OUTCOMES.has(nm.outcome.toLowerCase()) ? "danger" : "idle";
+    return { label: nm.outcome, pos: total || null, total, tone, done: true };
+  }
+  // The frontier is the first step still owing work. Counting settled steps would assume
+  // they form a prefix, which `--step <name> --action skip` can break.
+  const next = nm.steps.findIndex((s) => s.status !== "completed" && s.status !== "skipped");
+  return next >= 0
+    ? { label: nm.steps[next]!.step, pos: next + 1, total, tone: "working", done: false }
+    : { label: nm.status || "queued", pos: null, total, tone: "working", done: false };
 }
 
 /** Card presentation for a Claude permission mode: chip label, tone, tooltip. */

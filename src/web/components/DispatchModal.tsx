@@ -10,6 +10,7 @@ import {
   useImageDrop,
   type PendingAttachment,
 } from "./ImageDrop.tsx";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
  * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
@@ -193,15 +194,6 @@ function DispatchModal({
     };
   }, []);
 
-  // Close on Escape (unless typing in a field where Esc should just blur nothing).
-  useEffect(() => {
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   // Discard the draft without closing: every close path preserves it, so this is
   // the one way to start a fresh dispatch.
   function clearDraft(): void {
@@ -245,130 +237,129 @@ function DispatchModal({
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal dispatch-modal"
-        role="dialog"
-        aria-label="Dispatch an agent"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="modal-head">
-          <h2>Dispatch an agent</h2>
-          <button className="icon-btn" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
-        </header>
+    <Overlay
+      id={OVERLAY_IDS.dispatch}
+      onClose={onClose}
+      className="modal dispatch-modal"
+      role="dialog"
+      ariaLabel="Dispatch an agent"
+    >
+      <header className="modal-head">
+        <h2>Dispatch an agent</h2>
+        <button className="icon-btn" aria-label="Close" onClick={onClose}>
+          ✕
+        </button>
+      </header>
 
-        <div className="dispatch-body">
-          <label className="field">
-            <span className="field-label">
-              Repo{" "}
-              <span className="field-hint">
-                {reposLoading
-                  ? "indexing workspace…"
-                  : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
-              </span>
+      <div className="dispatch-body">
+        <label className="field">
+          <span className="field-label">
+            Repo{" "}
+            <span className="field-hint">
+              {reposLoading
+                ? "indexing workspace…"
+                : `${repos.length} repo${repos.length === 1 ? "" : "s"} found - type to filter`}
             </span>
-            <RepoCombobox
-              repos={repos}
-              value={draft.repoRoot}
-              onChange={(v) => update({ repoRoot: v })}
-            />
-          </label>
+          </span>
+          <RepoCombobox
+            repos={repos}
+            value={draft.repoRoot}
+            onChange={(v) => update({ repoRoot: v })}
+          />
+        </label>
 
-          <div className="field-row">
-            <label className="field">
-              <span className="field-label">Kind</span>
-              <select
-                className="field-input"
-                value={draft.kind}
-                onChange={(e) => update({ kind: e.target.value as TaskKind })}
-              >
-                <option value="ship">ship - deliver a change</option>
-                <option value="scout">scout - investigate / report</option>
-              </select>
-            </label>
-            <label className="field">
-              <span className="field-label">Agent</span>
-              <select
-                className="field-input"
-                value={draft.agent}
-                onChange={(e) => update({ agent: e.target.value as AgentType })}
-              >
-                <option value="claude">Claude Code</option>
-                <option value="codex">Codex</option>
-              </select>
-            </label>
-          </div>
-
+        <div className="field-row">
           <label className="field">
-            <span className="field-label">
-              Title <span className="field-hint">optional - names the tmux session / card</span>
-            </span>
-            <input
+            <span className="field-label">Kind</span>
+            <select
               className="field-input"
-              placeholder="auto from the task if left blank"
-              value={draft.title}
-              onChange={(e) => update({ title: e.target.value })}
-            />
+              value={draft.kind}
+              onChange={(e) => update({ kind: e.target.value as TaskKind })}
+            >
+              <option value="ship">ship - deliver a change</option>
+              <option value="scout">scout - investigate / report</option>
+            </select>
           </label>
-
           <label className="field">
-            <span className="field-label">
-              Task <span className="field-hint">drop or paste images to attach them</span>
-            </span>
-            <div className="drop-zone" {...drop.dropProps}>
-              <textarea
-                ref={intentRef}
-                className="field-input field-textarea"
-                placeholder="What should this agent do?"
-                rows={5}
-                value={draft.intent}
-                onChange={(e) => update({ intent: e.target.value })}
-                onPaste={drop.onPaste}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(false);
-                }}
-              />
-              <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
-              {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
-            </div>
+            <span className="field-label">Agent</span>
+            <select
+              className="field-input"
+              value={draft.agent}
+              onChange={(e) => update({ agent: e.target.value as AgentType })}
+            >
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex</option>
+            </select>
           </label>
-
-          {error && <p className="dispatch-error">{error}</p>}
         </div>
 
-        <footer className="modal-foot">
-          <button
-            className="btn btn-ghost"
-            onClick={() => void submit(true)}
-            disabled={busy || drop.uploading}
-          >
-            Add to backlog
-          </button>
-          <button
-            className="btn btn-ghost"
-            onClick={clearDraft}
-            disabled={busy || isEmptyDispatchDraft(draft)}
-            title="Reset the form"
-          >
-            Clear
-          </button>
-          <span className="actions-spacer" />
-          <button className="btn btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={() => void submit(false)}
-            disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
-            title="⌘/Ctrl+Enter"
-          >
-            {busy ? "Dispatching…" : drop.uploading ? "Uploading…" : "Dispatch now"}
-          </button>
-        </footer>
+        <label className="field">
+          <span className="field-label">
+            Title <span className="field-hint">optional - names the tmux session / card</span>
+          </span>
+          <input
+            className="field-input"
+            placeholder="summarized from the task if left blank"
+            value={draft.title}
+            onChange={(e) => update({ title: e.target.value })}
+          />
+        </label>
+
+        <label className="field">
+          <span className="field-label">
+            Task <span className="field-hint">drop or paste images to attach them</span>
+          </span>
+          <div className="drop-zone" {...drop.dropProps}>
+            <textarea
+              ref={intentRef}
+              className="field-input field-textarea"
+              placeholder="What should this agent do?"
+              rows={5}
+              value={draft.intent}
+              onChange={(e) => update({ intent: e.target.value })}
+              onPaste={drop.onPaste}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(false);
+              }}
+            />
+            <AttachmentStrip attachments={draft.attachments} onRemove={drop.remove} />
+            {drop.dropping && <div className="drop-veil">Drop images to attach</div>}
+          </div>
+        </label>
+
+        {error && <p className="dispatch-error">{error}</p>}
       </div>
-    </div>
+
+      <footer className="modal-foot">
+        <button
+          className="btn btn-ghost"
+          onClick={() => void submit(true)}
+          disabled={busy || drop.uploading}
+        >
+          Add to backlog
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={clearDraft}
+          disabled={busy || isEmptyDispatchDraft(draft)}
+          title="Reset the form"
+        >
+          Clear
+        </button>
+        <span className="actions-spacer" />
+        <button className="btn btn-ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn btn-primary"
+          onClick={() => void submit(false)}
+          disabled={busy || drop.uploading || !draft.repoRoot.trim() || !draft.intent.trim()}
+          title="⌘/Ctrl+Enter"
+        >
+          {busy ? "Dispatching…" : drop.uploading ? "Uploading…" : "Dispatch now"}
+        </button>
+      </footer>
+    </Overlay>
   );
 }
 

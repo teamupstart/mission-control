@@ -1,4 +1,5 @@
 import type { SessionQueueSummary, WorkItem, WorkItemState } from "@shared/types.ts";
+import { wrapupAskPending } from "@shared/queue.ts";
 
 // The work-queue panel's pure presentation logic, kept out of the component so it
 // can be tested without a DOM - the same split `src/web/lib/diff.ts` and
@@ -69,6 +70,22 @@ export interface QueueChipView {
 }
 
 /**
+ * Whether the card's queue chip has anything to say.
+ *
+ * Item count alone was the gate, and it hid the `prompted` trigger's ask completely: a
+ * prompted wrap-up fires only on a checkout with no work queue, so its row has zero
+ * items by construction. The alert fired and pointed at a card carrying no queue
+ * affordance at all - the panel only mounts once the card is expanded - so the one
+ * question Foreman had was reachable only by going looking for it.
+ *
+ * Kept narrow deliberately: an ANSWERED ask must not keep the chip alive on an itemless
+ * row, or every session that ever wrapped up grows a permanent chip saying nothing.
+ */
+export function queueChipVisible(q: SessionQueueSummary): boolean {
+  return q.totalCount > 0 || wrapupAskPending(q);
+}
+
+/**
  * The chip's label and tone.
  *
  * The one rule: only work the agent actually LANDED may be counted as done. That's
@@ -85,8 +102,30 @@ export interface QueueChipView {
  *
  * All of this matters most on a session that has exited: it has no ActionBar, so no
  * Queue button, which leaves this chip the last thing pointing at what the batch did.
+ *
+ * Pairs with `queueChipVisible`, which decides whether a chip renders at all - but does
+ * not DEPEND on having been called first. A summary with nothing to say gets a chip
+ * that says nothing, never a confident claim about work Foreman never looked at.
  */
 export function queueChipView(q: SessionQueueSummary): QueueChipView {
+  // No items at all, which is the `prompted` trigger's row: every count below is zero,
+  // so the tally has nothing to add up. What such a row can carry is an open question,
+  // and when it does that question IS the whole content - owed a human's eye by
+  // definition, the same reason its alert is raised at `attention`.
+  //
+  // The `wrapupAskPending` half is load-bearing rather than a restatement of the
+  // caller's gate: this is exported and called directly, and answering "Foreman thinks
+  // the work you asked for is finished" for an itemless row with NO outstanding ask
+  // would be inventing a verdict nobody reached.
+  if (q.totalCount === 0) {
+    return wrapupAskPending(q)
+      ? {
+          label: "ship it?",
+          title: "Foreman thinks the work you asked for is finished - click to decide",
+          attention: true,
+        }
+      : { label: "", title: "No queued work for this session", attention: false };
+  }
   const done = q.verifiedCount;
   const escalated = q.escalatedCount;
   const stopped = Math.max(0, q.totalCount - q.openCount - done - escalated);

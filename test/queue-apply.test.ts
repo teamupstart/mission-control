@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   InjectError,
+  PANE_BLOCKED_BACKOFF_MS,
   applyQueueAction,
   queueSendStillValid,
   observe,
@@ -22,6 +23,7 @@ const CFG: QueueConfig = {
   maxFixRounds: 10,
   settleMs: 10_000,
   pickupTimeoutMs: 45_000,
+  wrapupTriggers: ["drain"],
   wrapup: "ask",
 };
 
@@ -64,6 +66,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     note: null, goal: null,
     queue: null,
     orphanedQueue: null,
+    paneDialog: null,
     ...over,
   };
 }
@@ -100,6 +103,7 @@ const LIVE_CFG: ForemanConfig = {
   mode: "live",
   repoAllowlist: ["/repo"],
   autoApproveAccess: true,
+  wrapupTriggers: ["drain"],
   wrapup: "ask",
   triage: "off",
   maxFixAttempts: 3,
@@ -162,6 +166,7 @@ function mkFake(
       branch: "feature",
       wrapupAskedAt: null,
       wrapupAnswer: null,
+      promptedGoal: null,
       updatedAt: 0,
       items,
     }),
@@ -319,6 +324,114 @@ test("a half-landed send escalates even well below the attempt cap", async () =>
   });
   await applyQueueAction(fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW);
   assert.equal(fake.states.at(-1)?.patch.state, "escalated");
+});
+
+// ---- a pane a human is sitting in ----
+
+/** What the daemon throws when a pane in copy-mode refuses the write: nothing was typed. */
+const paneInCopyMode = () =>
+  new InjectError(
+    "inject s1 -> 500: this pane is in tmux copy-mode, which swallows keystrokes",
+    false,
+    true,
+  );
+
+test("copy-mode refusals never escalate the item, however many of them land", async () => {
+  // The regression this pins. A copy-mode refusal is a PERSON reading their own
+  // scrollback: nothing was written, and the condition clears when they leave. Charged
+  // as an ordinary send failure it hit SEND_ATTEMPT_CAP after three ticks - about twelve
+  // seconds of scrolling - and escalated the item permanently, under a "could not
+  // deliver this item" reason describing a condition that had since cleared. Nothing
+  // recovers a `sendAttempts` that only resets on pickup.
+  const session = mkSession();
+  let item = mkItem({ id: "blocked-1", sendAttempts: 0 });
+  let now = NOW;
+
+  for (let tick = 0; tick < SEND_ATTEMPT_CAP * 4; tick++) {
+    const fake = mkFake({ session, items: [item], injectFailure: paneInCopyMode() });
+    const out = await applyQueueAction(
+      fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, now,
+    );
+
+    assert.equal(out.kind, "aborted", `tick ${tick}`);
+    assert.equal(fake.sentMarks, 0, `tick ${tick}: a refused send must never look delivered`);
+    assert.equal(
+      fake.states.find((w) => w.patch.state === "escalated"),
+      undefined,
+      `tick ${tick}: a refusal that typed nothing must never be terminal`,
+    );
+
+    const last = fake.states.at(-1);
+    assert.equal(last?.patch.state, "queued", `tick ${tick}: it stays retryable`);
+    // The count is incremented BEFORE the write, so declining to escalate is not enough
+    // on its own - the attempt has to be given back or the cap is merely deferred.
+    assert.equal(last?.patch.sendAttempts, 0, `tick ${tick}: the refusal costs no attempt`);
+
+    item = { ...item, sendAttempts: last?.patch.sendAttempts as number };
+    now += PANE_BLOCKED_BACKOFF_MS + 1; // past the backoff, so every tick really tries
+  }
+
+  // And the moment the human leaves the mode it delivers, with its budget intact.
+  const fake = mkFake({ session, items: [item] });
+  const out = await applyQueueAction(
+    fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, now,
+  );
+  assert.equal(out.kind, "sent");
+  assert.deepEqual(fake.injected, ["do it"]);
+});
+
+test("a blocked item backs off instead of re-sending every tick", async () => {
+  // The worker ticks every IDLE_MS (4s). Without a backoff an item parked behind a long
+  // copy-mode session re-runs the whole send path - two state writes, a scope capture, a
+  // subprocess - every four seconds to re-learn the one fact that hasn't changed.
+  const session = mkSession();
+  const item = mkItem({ id: "blocked-2", sendAttempts: 0 });
+
+  const first = mkFake({ session, items: [item], injectFailure: paneInCopyMode() });
+  assert.equal(
+    (await applyQueueAction(first, session, { kind: "send", item, payload: "x", round: 0 }, CFG, NOW)).kind,
+    "aborted",
+  );
+
+  // Next tick, still inside the backoff: not even attempted.
+  const during = mkFake({ session, items: [item], injectFailure: paneInCopyMode() });
+  const held = await applyQueueAction(
+    during, session, { kind: "send", item, payload: "x", round: 0 }, CFG, NOW + 4_000,
+  );
+  assert.equal(held.kind, "noop", "a backed-off tick is not a failure to report");
+  assert.deepEqual(during.states, [], "it doesn't even write `sending` again");
+
+  // Once it expires the item is tried again - the backoff delays, it never gives up.
+  const after = mkFake({ session, items: [item] });
+  const out = await applyQueueAction(
+    after, session, { kind: "send", item, payload: "x", round: 0 }, CFG, NOW + PANE_BLOCKED_BACKOFF_MS + 1,
+  );
+  assert.equal(out.kind, "sent");
+  assert.deepEqual(after.injected, ["x"]);
+});
+
+test("a pane-blocked failure that may have LANDED still escalates", async () => {
+  // The post-paste Enter: refused for the mode, but the text is already in the composer.
+  // `paneBlocked` says the cause is transient; it does not say nothing was written, and
+  // `mayHaveLanded` still outranks it. Retrying would paste a second copy on top.
+  const session = mkSession();
+  const item = mkItem({ id: "blocked-3" });
+  const fake = mkFake({
+    session,
+    items: [item],
+    injectFailure: new InjectError("inject s1 -> 500: the text is sitting unsubmitted", true, true),
+  });
+  const out = await applyQueueAction(
+    fake, session, { kind: "send", item, payload: "do it", round: 0 }, CFG, NOW,
+  );
+
+  assert.equal(out.kind, "aborted");
+  assert.equal(fake.states.at(-1)?.patch.state, "escalated");
+  assert.equal(
+    fake.states.find((w) => w.patch.state === "queued"),
+    undefined,
+    "text that may be in the pane must never go back to be re-typed",
+  );
 });
 
 // ---- the stale-send guard ----

@@ -1,0 +1,265 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
+import { hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
+import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
+import type { Session, TmuxInfo } from "@shared/types.ts";
+
+// Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, Enter, read back -
+// and the ORDER is the whole fix, so these tests assert the sequence rather than the
+// outcome alone.
+//
+// The bug being pinned: Claude coalesces input for a window after a multi-line paste
+// (the "paste again to expand" affordance), and an Enter inside that window is absorbed
+// into the paste instead of submitting it. Paste and Enter used to be sent back-to-back,
+// which put the Enter inside the window EVERY time - so every multi-line dispatch, which
+// is every dispatch carrying an image path, pasted its prompt and then sat unsubmitted.
+//
+// Measured against Claude Code 2.1.215: swallowed at 0/50/100/200ms, submitted at
+// 300/400/500ms. Single-line pastes are never collapsed and were never affected, which is
+// why this read as intermittent rather than total.
+
+const PLACEHOLDER = "❯ [Pasted text #1 +3 lines]";
+const EMPTY_COMPOSER = "❯\n⏵⏵ auto mode on (shift+tab to cycle)";
+
+const tmuxSession = (paneId = "%1"): Session =>
+  ({ id: "s1", agent: "claude", tmux: { session: "s", window: "w", windowIndex: 0, paneId }, wezterm: null }) as Session;
+
+const weztermSession = (): Session =>
+  ({ id: "s2", agent: "claude", tmux: null, wezterm: { paneId: 7, tabId: 0, windowId: 0, tabTitle: "", isActive: true } }) as Session;
+
+/** One entry per thing the delivery did, in order, so the sequence itself is assertable. */
+type Event = { kind: "exec"; argv: string } | { kind: "sleep"; ms: number } | { kind: "capture" };
+
+/**
+ * A recording stand-in for the pane, which shows the collapsed paste until
+ * `clearsAfterEnters` Enters have reached it.
+ *
+ * Stated in Enters rather than in captures on purpose: "the composer clears on the 2nd
+ * Enter" is the actual claim under test, and it stays true regardless of how many times
+ * the implementation reads the pane between them.
+ */
+function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
+  const events: Event[] = [];
+  let entersSeen = 0;
+  return {
+    events,
+    deps: {
+      exec: async (bin, args) => {
+        const argv = [bin, ...args].join(" ");
+        events.push({ kind: "exec", argv });
+        if (isEnter(argv)) entersSeen++;
+        return { stdout: "", stderr: "", code: 0 };
+      },
+      capture: async () => {
+        events.push({ kind: "capture" });
+        return entersSeen >= clearsAfterEnters ? EMPTY_COMPOSER : PLACEHOLDER;
+      },
+      // Never actually waits: the waiting is asserted as an event, so the suite stays fast.
+      sleep: async (ms) => {
+        events.push({ kind: "sleep", ms });
+      },
+    },
+  };
+}
+
+/** Both handles submit with a keystroke of their own shape. */
+const isEnter = (argv: string): boolean => /send-keys .* Enter$/.test(argv) || argv.includes("--no-paste \r");
+
+const argvs = (events: Event[]): string[] =>
+  events.filter((e): e is Extract<Event, { kind: "exec" }> => e.kind === "exec").map((e) => e.argv);
+
+const enters = (events: Event[]): number => argvs(events).filter(isEnter).length;
+const pastes = (events: Event[]): number => argvs(events).filter((a) => a.includes("paste-buffer")).length;
+
+// ---- the regression: the Enter must not land inside the coalescing window ----
+
+test("the Enter waits for the paste to settle - it is never sent back-to-back with it", async () => {
+  // THE BUG, pinned. Before the fix these two were adjacent and the Enter was swallowed.
+  const { deps, events } = harness();
+  const r = await injectPrompt(tmuxSession(), "line one\nline two\n\n/tmp/shot.png", deps);
+
+  assert.equal(r.ok, true);
+  const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
+  const pasteAt = kinds.findIndex((k) => typeof k === "string" && k.includes("paste-buffer"));
+  const sleepAt = kinds.findIndex((k) => k === "sleep");
+  const enterAt = kinds.findIndex((k) => typeof k === "string" && /send-keys .* Enter$/.test(k));
+
+  assert.ok(pasteAt >= 0 && sleepAt >= 0 && enterAt >= 0, "all three steps should have run");
+  assert.ok(pasteAt < sleepAt, "the settle must come after the paste");
+  assert.ok(sleepAt < enterAt, "the Enter must come after the settle, not adjacent to the paste");
+  // A zero-length wait would satisfy the ordering above while restoring the exact
+  // back-to-back timing that caused the bug, so the gap has to be a real one.
+  const gap = events[sleepAt];
+  assert.ok(gap?.kind === "sleep" && gap.ms > 0, "the settle must be an actual wait, not a no-op");
+});
+
+test("the settle is long enough to clear the measured coalescing window", async () => {
+  // 200ms was still swallowed on 2.1.215; 300ms submitted. A settle at or under the
+  // measured failure point would ship the bug back.
+  const { deps, events } = harness();
+  await injectPrompt(tmuxSession(), "a\nb", deps);
+  const settle = events.find((e): e is Extract<Event, { kind: "sleep" }> => e.kind === "sleep");
+  assert.ok(settle, "the delivery should settle before pressing Enter");
+  assert.ok(settle.ms > 200, `settle of ${settle.ms}ms is inside the window that swallowed Enter`);
+});
+
+test("the delivery is verified against the pane, not assumed from tmux's exit code", async () => {
+  // tmux reports that bytes were written, never what the TUI did with them - a pty
+  // swallows an Enter as happily as it delivers one. The read-back is the only evidence.
+  const { deps, events } = harness();
+  await injectPrompt(tmuxSession(), "a\nb", deps);
+  assert.ok(events.some((e) => e.kind === "capture"), "it must read the pane back");
+});
+
+// ---- recovery: press Enter again, never paste again ----
+
+test("a paste still in the composer gets another Enter - and never a second paste", async () => {
+  // Re-pasting is what a caller would otherwise reach for, and it is destructive: a second
+  // paste onto a collapsed placeholder EXPANDS it and appends a second copy, which is the
+  // doubled, still-unsubmitted prompt this bug produced in the field.
+  const { deps, events } = harness(2);
+  const r = await injectPrompt(tmuxSession(), "a\nb", deps);
+
+  assert.equal(r.ok, true, "the retried Enter should land");
+  assert.ok(enters(events) >= 2, "a pending paste should be re-submitted");
+  assert.equal(pastes(events), 1, "the text must be pasted EXACTLY once - Enter is the only retry");
+});
+
+test("it stops pressing Enter as soon as the composer clears", async () => {
+  // Enter is idempotent into an empty composer but NOT into a dialog, so surplus keystrokes
+  // are not free: one landing on a permission prompt answers it on the operator's behalf.
+  const { deps, events } = harness();
+  await injectPrompt(tmuxSession(), "a\nb", deps);
+  assert.equal(enters(events), 1, "one Enter sufficed, so exactly one should have been sent");
+});
+
+test("a paste that outlasts every Enter fails loudly, and still reports the text as pasted", async () => {
+  // `pasted: true` is what stops a caller re-delivering on top of it. The failure has to
+  // carry that, or the recovery becomes the doubled prompt all over again.
+  const { deps, events } = harness(Number.POSITIVE_INFINITY);
+  const r = await injectPrompt(tmuxSession(), "a\nb", deps);
+
+  assert.equal(r.ok, false, "a paste that never submitted is not a success");
+  assert.equal(r.pasted, true, "the text IS in the pane - the caller must not re-deliver");
+  assert.match(r.error ?? "", /unsubmitted|composer/i, "the error should say what is actually wrong");
+  assert.equal(pastes(events), 1, "even giving up, it must never paste twice");
+});
+
+test("an unreadable pane ends the retry rather than spending a blind keystroke", async () => {
+  // No capture means no evidence, and every Enter past the first is gated on evidence:
+  // firing one at a pane we cannot see is the keystroke that answers an unread dialog.
+  const events: Event[] = [];
+  const deps: InjectDeps = {
+    exec: async (bin, args) => {
+      events.push({ kind: "exec", argv: [bin, ...args].join(" ") });
+      return { stdout: "", stderr: "", code: 0 };
+    },
+    capture: async () => null,
+    sleep: async () => {},
+  };
+  const r = await injectPrompt(tmuxSession(), "a\nb", deps);
+  assert.equal(r.ok, true, "with nothing to see, the one Enter we sent stands");
+  assert.equal(enters(events), 1, "it must not keep firing at a pane it cannot read");
+});
+
+// ---- the failure modes that must survive the rewrite ----
+
+test("a paste that never left the buffer is still reported as retryable", async () => {
+  // `pasted: false` is the ONLY state a caller may re-deliver from, so a failure before the
+  // paste must keep saying so.
+  const deps: InjectDeps = {
+    exec: async (_bin, args) => ({ stdout: "", stderr: "no such pane", code: args.includes("paste-buffer") ? 1 : 0 }),
+    capture: async () => EMPTY_COMPOSER,
+    sleep: async () => {},
+  };
+  const r = await injectPrompt(tmuxSession(), "a\nb", deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.pasted, false, "nothing reached the pane, so this is safe to retry");
+});
+
+test("wezterm settles before its Enter too", async () => {
+  // The same TUI is on the other end of the wezterm handle, so it has the same window.
+  const { deps, events } = harness();
+  const r = await injectPrompt(weztermSession(), "a\nb", deps);
+  assert.equal(r.ok, true);
+  const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
+  const sleepAt = kinds.indexOf("sleep");
+  const enterAt = kinds.findIndex((k) => typeof k === "string" && k.includes("--no-paste \r"));
+  assert.ok(sleepAt >= 0 && enterAt > sleepAt, "wezterm must settle before submitting");
+});
+
+test("a session with no pane is refused before any of this", async () => {
+  const { deps } = harness();
+  const r = await injectPrompt({ id: "s3", agent: "claude", tmux: null, wezterm: null } as Session, "a\nb", deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.pasted, false);
+});
+
+// ---- reading the placeholder off a pane ----
+
+test("the collapsed-paste placeholder is what marks a prompt as unsubmitted", () => {
+  assert.equal(hasPendingPaste("❯ [Pasted text #1 +3 lines]\n⏵⏵ auto mode on"), true);
+  // The index climbs as pastes accumulate within a turn, so it cannot be pinned to #1.
+  assert.equal(hasPendingPaste("❯ [Pasted text #4 +12 lines]\n⏵⏵ auto mode on"), true);
+  assert.equal(hasPendingPaste("❯ prose the human typed\n⏵⏵ auto mode on"), false);
+  assert.equal(hasPendingPaste(EMPTY_COMPOSER), false);
+});
+
+test("a placeholder scrolled up into the transcript is not a pending paste", () => {
+  // Only the composer counts. A submitted paste stays visible in the transcript above,
+  // and reading that as pending would fire Enter at a session already working.
+  const transcript = `❯ [Pasted text #1 +3 lines]\n${Array.from({ length: 20 }, (_, i) => `output line ${i}`).join("\n")}\n❯\n⏵⏵ auto mode on`;
+  assert.equal(hasPendingPaste(transcript), false);
+});
+
+test("nothing on screen is not evidence of a pending paste", () => {
+  // This gates a keystroke, so the unknown case must read as "no".
+  assert.equal(hasPendingPaste(null), false);
+  assert.equal(hasPendingPaste(""), false);
+});
+
+// ---- against a real pane ----
+
+function tmuxAvailable(): boolean {
+  try {
+    execFileSync("tmux", ["-V"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test("the placeholder is detected through a real capture-pane", { skip: tmuxAvailable() ? false : "tmux not available" }, async () => {
+  // The parser above works on strings a test wrote. This proves the same detection holds on
+  // bytes that actually round-tripped through a terminal - the composer line rendered into
+  // a live pane and read back out by the real `capturePaneText`.
+  const sessName = `mc-paste-${process.pid}`;
+  const tmux = (paneId: string): TmuxInfo => ({ session: sessName, window: "0", windowIndex: 0, paneId });
+  try {
+    execFileSync("tmux", ["new-session", "-d", "-s", sessName, "-x", "200", "-y", "50"]);
+    execFileSync("tmux", ["send-keys", "-t", sessName, "-l", 'clear; printf "\\n> [Pasted text #1 +3 lines]\\n"; read x']);
+    execFileSync("tmux", ["send-keys", "-t", sessName, "Enter"]);
+    const paneId = execFileSync("tmux", ["list-panes", "-t", sessName, "-F", "#{pane_id}"]).toString().trim();
+    const session = { id: "real", agent: "claude", tmux: tmux(paneId), wezterm: null } as Session;
+
+    // Wait for the pane to RENDER the line - the shell's echo of the command is on screen
+    // first, and `clear` has not run yet.
+    let text: string | null = null;
+    for (let i = 0; i < 60; i++) {
+      text = await capturePaneText(session);
+      if (text && !text.includes("printf")) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    assert.ok(text, "the pane should have been capturable");
+    assert.equal(hasPendingPaste(text), true, "a real rendered placeholder should read as pending");
+  } finally {
+    try {
+      execFileSync("tmux", ["kill-session", "-t", sessName], { stdio: "ignore" });
+    } catch {
+      /* the session may already be gone */
+    }
+  }
+});

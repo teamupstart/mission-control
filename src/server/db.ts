@@ -3,8 +3,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DB_PATH } from "./config.ts";
 import type {
+  EpisodeAuthor,
+  ForemanEpisode,
   NmFixReplySource,
   NoteDisposition,
+  PaneDialogSummary,
   PlanDecision,
   ReviewItem,
   ReviewKind,
@@ -117,6 +120,69 @@ export function openDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
     CREATE INDEX IF NOT EXISTS idx_tasks_worktree ON tasks(worktree_path);
 
+    -- Every decision Foreman has faced on a session, append-only: the question it
+    -- was asked, what it concluded, and what was actually sent back.
+    --
+    -- Its own table rather than columns on session_notes, and for a sharper reason
+    -- than "history needs rows". session_notes is a CURRENT STATE row: one
+    -- disposition and one updated_at, both meaning "what Foreman decided, and when".
+    -- It is keyed note_key PRIMARY KEY and upserted, so each write destroys its
+    -- predecessor - and the UI's Approve deliberately nulls brief/recommendation,
+    -- because after you answer there IS no current recommendation. All three of
+    -- those are correct for a live pointer and fatal for a record.
+    --
+    -- What makes this buildable is that the marker already exists: classifyPending
+    -- computes a stable id for each waiting episode and the worker already sends it
+    -- as handledMarker for its own idempotency. So episode identity costs nothing,
+    -- and (note_key, marker) is unique BY CONSTRUCTION - the worker refuses to
+    -- re-handle a marker it has stamped, and a human's later Approve updates that
+    -- same row rather than appending a second one.
+    --
+    -- The pane is the load-bearing column. For a terminal ask - a permission prompt,
+    -- an AskUserQuestion menu - the child's screen is the ONLY place the question
+    -- ever exists: Claude appends the assistant turn when a tool call COMPLETES, so
+    -- a blocked dialog is not in the transcript, and the worker reads the pane once
+    -- and drops it. Not capturing it here does not defer the question, it loses it.
+    --
+    -- session_id is provenance only, never joined on: it is synthetic (tty+pid+start)
+    -- and re-mints on restart, which is why note_key is the key here as it is there.
+    CREATE TABLE IF NOT EXISTS foreman_episodes (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      note_key       TEXT NOT NULL,
+      session_id     TEXT NOT NULL,
+      marker         TEXT NOT NULL,  -- Pending.marker: this waiting episode's identity
+      situation      TEXT NOT NULL,  -- PendingSituation
+      surface        TEXT NOT NULL,  -- input-review | terminal
+      question       TEXT NOT NULL,  -- the ask, verbatim
+      pane           TEXT,           -- the child's screen at decision time (terminal only)
+      menu           TEXT,           -- JSON PaneDialog: the rows the model chose among
+      review_id      TEXT,           -- reviews.id when the ask arrived as a review
+      purpose        TEXT,
+      brief          TEXT,
+      recommendation TEXT,
+      classification TEXT,
+      confidence     REAL,
+      tier           INTEGER,
+      disposition    TEXT NOT NULL,
+      last_action    TEXT,
+      sent_text      TEXT,           -- what was actually delivered
+      sent_option    TEXT,           -- JSON {number,label} for a menu selection
+      sent_by        TEXT,           -- foreman | you: who authored what was delivered
+      created_at     INTEGER NOT NULL,
+      resolved_at    INTEGER,
+      -- Who DECIDED the episode, which is a different question from who sent the text
+      -- and has a different answer on every path where nothing was sent. A dismissal
+      -- resolves an episode without delivering a word, so sent_by is null there while
+      -- resolved_by is 'you'; folding the two together made a dismissal indistinguishable
+      -- from an approval, and the card read "You approved" over a header saying you
+      -- dismissed it. Null while the episode is still open.
+      resolved_by    TEXT            -- foreman | you
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_foreman_episodes_marker
+      ON foreman_episodes(note_key, marker);
+    CREATE INDEX IF NOT EXISTS idx_foreman_episodes_key
+      ON foreman_episodes(note_key, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS session_notes (
       note_key       TEXT PRIMARY KEY,
       purpose        TEXT,
@@ -161,6 +227,7 @@ export function openDb(): DatabaseSync {
       branch          TEXT,
       wrapup_asked_at INTEGER,            -- the drain ask fires exactly once
       wrapup_answer   TEXT,
+      prompted_goal   TEXT,               -- the goal the prompted trigger last fired on
       updated_at      INTEGER NOT NULL
     );
 
@@ -243,11 +310,33 @@ function migrate(d: DatabaseSync): void {
   // truthful answer for a row written before the daemon could recover one.
   addColumn(d, "foreman_queue_items", "recovered_at", "INTEGER");
 
+  // `prompted_goal`: the session goal the `prompted` wrap-up trigger last fired on -
+  // its once-per-episode guard, and what re-arms it when a genuinely new prompt lands.
+  // Same exposure as the two ALTERs above: added to the CREATE TABLE after
+  // `foreman_queues` shipped, and CREATE TABLE IF NOT EXISTS will not add a column to
+  // an existing table, so without this every queue write on an upgraded db would fail.
+  //
+  // Nullable with no default, and that reads correctly rather than merely harmlessly:
+  // NULL means "this checkout has never had a prompted wrap-up", which is the truthful
+  // answer for every row written before the trigger existed. It leaves the trigger
+  // ARMED on those checkouts, which is right - the whole point is to fire once the
+  // human turns it on - and the verify step still has to agree before anything types.
+  addColumn(d, "foreman_queues", "prompted_goal", "TEXT");
+
   // `decisions`: the structured questions of a `plan-decisions` review, as a JSON
   // array. Added to `reviews` after it shipped, so an upgraded DB only gets it via
   // this ALTER. Nullable with no default: every existing review, and every review of
   // another kind, reads as "no decisions" - which is exactly what they are.
   addColumn(d, "reviews", "decisions", "TEXT");
+
+  // `resolved_by`: who decided the episode, split back out of `sent_by`. Unlike the
+  // ALTERs above this covers a window rather than a shipped release - `foreman_episodes`
+  // is new enough that the only dbs carrying it are the ones this feature was developed
+  // against - but the CREATE TABLE above still won't add the column to them, and every
+  // episode write would fail on a db that has the table without it. Nullable with no
+  // default, so an episode written before the split reads as "still open", which is the
+  // only honest answer: its `sent_by` cannot say whether a human dismissed it.
+  addColumn(d, "foreman_episodes", "resolved_by", "TEXT");
 
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
   // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
@@ -539,6 +628,270 @@ function parseIdList(raw: unknown): string[] {
  */
 export function pruneGateReplies(cutoff: number): number {
   return Number(openDb().prepare(`DELETE FROM gate_replies WHERE ts < ?`).run(cutoff).changes);
+}
+
+/**
+ * Longest pane capture kept per episode.
+ *
+ * A pane is a whole terminal screen and the only copy of a terminal ask, so this is
+ * generous - but it is not unbounded, because a pane is whatever the child happened
+ * to be printing and a scrolling build log would otherwise land here in full. The
+ * ask is at the BOTTOM of a pane (the dialog is the foreground - see
+ * `parsePaneDialog`), so when this bites, the tail is the half worth keeping.
+ */
+const MAX_EPISODE_PANE = 16_000;
+
+/** Longest free-text field (question / brief / recommendation / sent text) per episode. */
+const MAX_EPISODE_TEXT = 8000;
+
+/** What the worker records once it has acted on a waiting episode. */
+export interface EpisodeWrite {
+  noteKey: string;
+  sessionId: string;
+  marker: string;
+  situation: string;
+  surface: string;
+  question: string;
+  pane: string | null;
+  menu: PaneDialogSummary | null;
+  reviewId: string | null;
+  purpose: string | null;
+  brief: string | null;
+  recommendation: string | null;
+  classification: string | null;
+  confidence: number | null;
+  tier: number | null;
+  disposition: NoteDisposition;
+  lastAction: string | null;
+  sentText: string | null;
+  sentOption: { number: number; label: string } | null;
+  /** Who authored what reached the child; null when nothing was delivered. */
+  sentBy: EpisodeAuthor | null;
+  createdAt: number;
+  resolvedAt: number | null;
+  /** Who decided the episode; null while it is still waiting on someone. */
+  resolvedBy: EpisodeAuthor | null;
+}
+
+/** Clamp a nullable free-text field to what the DB carries. */
+function episodeText(v: string | null | undefined, max = MAX_EPISODE_TEXT): string | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t ? t.slice(0, max) : null;
+}
+
+/**
+ * Record what Foreman was asked and what it did about it.
+ *
+ * Upserts on (note_key, marker) rather than always inserting, and the distinction
+ * matters: the pair is unique by construction (the worker refuses to re-handle a
+ * marker it has stamped), so a second write for the same pair is not a second
+ * episode - it is the SAME episode reaching a later state, which is exactly what a
+ * human's Approve does minutes after Foreman escalated. Inserting there would split
+ * one decision across two rows, the second holding the outcome and the first the
+ * question, with nothing in the UI to rejoin them.
+ *
+ * `created_at` is therefore preserved on conflict while everything else is
+ * overwritten: the episode began when Foreman first faced it, not when the human got
+ * round to it.
+ */
+export function recordEpisode(e: EpisodeWrite): number {
+  const res = openDb()
+    .prepare(
+      `INSERT INTO foreman_episodes
+         (note_key, session_id, marker, situation, surface, question, pane, menu, review_id,
+          purpose, brief, recommendation, classification, confidence, tier, disposition,
+          last_action, sent_text, sent_option, sent_by, created_at, resolved_at, resolved_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key, marker) DO UPDATE SET
+         session_id     = excluded.session_id,
+         situation      = excluded.situation,
+         surface        = excluded.surface,
+         question       = excluded.question,
+         pane           = COALESCE(excluded.pane, foreman_episodes.pane),
+         menu           = COALESCE(excluded.menu, foreman_episodes.menu),
+         review_id      = excluded.review_id,
+         purpose        = excluded.purpose,
+         brief          = excluded.brief,
+         recommendation = excluded.recommendation,
+         classification = excluded.classification,
+         confidence     = excluded.confidence,
+         tier           = excluded.tier,
+         disposition    = excluded.disposition,
+         last_action    = excluded.last_action,
+         sent_text      = excluded.sent_text,
+         sent_option    = excluded.sent_option,
+         sent_by        = excluded.sent_by,
+         resolved_at    = excluded.resolved_at,
+         resolved_by    = excluded.resolved_by`,
+    )
+    .run(
+      e.noteKey,
+      e.sessionId,
+      e.marker,
+      e.situation,
+      e.surface,
+      episodeText(e.question) ?? "",
+      episodeText(e.pane, MAX_EPISODE_PANE),
+      e.menu ? JSON.stringify(e.menu) : null,
+      e.reviewId,
+      episodeText(e.purpose),
+      episodeText(e.brief),
+      episodeText(e.recommendation),
+      e.classification,
+      e.confidence,
+      e.tier,
+      e.disposition,
+      episodeText(e.lastAction),
+      episodeText(e.sentText),
+      e.sentOption ? JSON.stringify(e.sentOption) : null,
+      e.sentBy,
+      e.createdAt,
+      e.resolvedAt,
+      e.resolvedBy,
+    );
+  return Number(res.lastInsertRowid);
+}
+
+/**
+ * Stamp the human's answer onto an episode Foreman left open.
+ *
+ * Separate from `recordEpisode` because the caller is different in kind: the worker
+ * writes a whole episode from everything it has in hand, while the dashboard knows
+ * only the marker and what the human just did. Routing the UI through the full write
+ * would make it invent a question and a pane it never saw, and the COALESCE above
+ * would then be load-bearing for correctness rather than for belt-and-braces.
+ *
+ * A marker with no row is a no-op: an episode written before this shipped (or swept)
+ * has nothing to stamp, and failing the Approve over a missing audit row would put a
+ * bookkeeping gap in front of the human's actual decision.
+ */
+export function resolveEpisode(p: {
+  noteKey: string;
+  marker: string;
+  disposition: NoteDisposition;
+  sentText: string | null;
+  /** Who decided it. Whether they SENT anything is read off `sentText`, not asserted. */
+  resolvedBy: EpisodeAuthor;
+  resolvedAt: number;
+}): void {
+  const sent = episodeText(p.sentText);
+  openDb()
+    .prepare(
+      `UPDATE foreman_episodes
+          SET disposition = ?, sent_text = ?, sent_by = ?, resolved_at = ?, resolved_by = ?
+        WHERE note_key = ? AND marker = ?`,
+    )
+    .run(
+      p.disposition,
+      sent,
+      // Derived, never taken from the caller: a dismissal resolves the episode without
+      // delivering anything, so there is no author to name. Attributing a send that
+      // never happened is how the record came to claim the human had approved something
+      // they had in fact thrown away.
+      sent === null ? null : p.resolvedBy,
+      p.resolvedAt,
+      p.resolvedBy,
+      p.noteKey,
+      p.marker,
+    );
+}
+
+/** Every episode recorded for one session key, newest first. */
+export function episodesFor(noteKey: string, limit = 100): ForemanEpisode[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT id, note_key, session_id, marker, situation, surface, question, pane, menu,
+              review_id, purpose, brief, recommendation, classification, confidence, tier,
+              disposition, last_action, sent_text, sent_option, sent_by, created_at,
+              resolved_at, resolved_by
+         FROM foreman_episodes WHERE note_key = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+    )
+    .all(noteKey, limit) as unknown as Array<Record<string, unknown>>;
+  return rows.map(
+    (r): ForemanEpisode => ({
+      id: Number(r.id ?? 0),
+      noteKey: String(r.note_key ?? ""),
+      sessionId: String(r.session_id ?? ""),
+      marker: String(r.marker ?? ""),
+      situation: String(r.situation ?? ""),
+      surface: r.surface === "input-review" ? "input-review" : "terminal",
+      question: String(r.question ?? ""),
+      pane: typeof r.pane === "string" ? r.pane : null,
+      menu: parseMenu(r.menu),
+      reviewId: typeof r.review_id === "string" ? r.review_id : null,
+      purpose: typeof r.purpose === "string" ? r.purpose : null,
+      brief: typeof r.brief === "string" ? r.brief : null,
+      recommendation: typeof r.recommendation === "string" ? r.recommendation : null,
+      classification: typeof r.classification === "string" ? r.classification : null,
+      confidence: typeof r.confidence === "number" ? r.confidence : null,
+      tier: typeof r.tier === "number" ? r.tier : null,
+      disposition: episodeDisposition(r.disposition),
+      lastAction: typeof r.last_action === "string" ? r.last_action : null,
+      sentText: typeof r.sent_text === "string" ? r.sent_text : null,
+      sentOption: parseSentOption(r.sent_option),
+      sentBy: r.sent_by === "foreman" || r.sent_by === "you" ? r.sent_by : null,
+      createdAt: Number(r.created_at ?? 0),
+      resolvedAt: typeof r.resolved_at === "number" ? r.resolved_at : null,
+      resolvedBy: r.resolved_by === "foreman" || r.resolved_by === "you" ? r.resolved_by : null,
+    }),
+  );
+}
+
+/**
+ * A stored disposition back to the union, defaulting to `skipped`.
+ *
+ * `skipped` and not `escalated` on an unrecognised value: these rows outlive the
+ * daemon that wrote them, so a disposition minted by a newer build is a real
+ * upgrade-window state. Reading it as `escalated` would put a decision in front of
+ * the human that nothing established was theirs to make, and the strip would show a
+ * live Approve for it. "Left for you" is the claim that stays true either way.
+ */
+function episodeDisposition(v: unknown): NoteDisposition {
+  return v === "answered" || v === "pending" || v === "escalated" ? v : "skipped";
+}
+
+/** A stored `menu` blob back to its rows; a bad blob costs the menu, not the read. */
+function parseMenu(raw: unknown): PaneDialogSummary | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const v = JSON.parse(raw) as PaneDialogSummary;
+    if (!v || !Array.isArray(v.options)) return null;
+    return {
+      options: v.options
+        .filter((o) => o && typeof o.number === "number" && typeof o.label === "string")
+        .map((o) => ({ number: o.number, label: o.label })),
+      highlighted: typeof v.highlighted === "number" ? v.highlighted : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** A stored `sent_option` blob back to the row that was selected. */
+function parseSentOption(raw: unknown): { number: number; label: string } | null {
+  if (typeof raw !== "string") return null;
+  try {
+    const v = JSON.parse(raw) as { number?: unknown; label?: unknown };
+    if (typeof v?.number !== "number" || typeof v?.label !== "string") return null;
+    return { number: v.number, label: v.label };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Age out episodes. Returns how many rows went.
+ *
+ * Aged rather than session-scoped for the same reason as `pruneGateReplies`: the
+ * record is most interesting once the session is over, so dropping it when the
+ * session exits would delete it exactly when it starts being read. Panes make these
+ * rows fatter than a gate reply, so the retention window is the shorter of the two.
+ */
+export function pruneEpisodes(cutoff: number): number {
+  return Number(
+    openDb().prepare(`DELETE FROM foreman_episodes WHERE created_at < ?`).run(cutoff).changes,
+  );
 }
 
 /**
@@ -883,7 +1236,28 @@ interface QueueRow {
   branch: string | null;
   wrapup_asked_at: number | null;
   wrapup_answer: string | null;
+  prompted_goal: string | null;
   updated_at: number;
+}
+
+/**
+ * One row -> object mapping, for the four readers that need it.
+ *
+ * Spelled once because it was spelled four times, and a column added to the table
+ * reached whichever copies its author happened to grep: a `prompted_goal` missing
+ * from `listQueueRows` alone would leave the orphan sweep reading every queue as
+ * never-wrapped-up, which is the state that FIRES the trigger.
+ */
+function toQueueRow(r: QueueRow): Omit<SessionQueue, "items"> {
+  return {
+    noteKey: r.note_key,
+    cwd: r.cwd,
+    branch: r.branch,
+    wrapupAskedAt: r.wrapup_asked_at,
+    wrapupAnswer: r.wrapup_answer,
+    promptedGoal: r.prompted_goal,
+    updatedAt: r.updated_at,
+  };
 }
 
 interface QueueItemRow {
@@ -950,27 +1324,21 @@ function parseGaps(raw: string | null): TrackedGap[] {
 export function upsertQueue(q: Omit<SessionQueue, "items">): void {
   openDb()
     .prepare(
-      `INSERT INTO foreman_queues (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO foreman_queues
+         (note_key, cwd, branch, wrapup_asked_at, wrapup_answer, prompted_goal, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(note_key) DO UPDATE SET
          cwd=excluded.cwd, branch=excluded.branch, wrapup_asked_at=excluded.wrapup_asked_at,
-         wrapup_answer=excluded.wrapup_answer, updated_at=excluded.updated_at`,
+         wrapup_answer=excluded.wrapup_answer, prompted_goal=excluded.prompted_goal,
+         updated_at=excluded.updated_at`,
     )
-    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.updatedAt);
+    .run(q.noteKey, q.cwd, q.branch, q.wrapupAskedAt, q.wrapupAnswer, q.promptedGoal, q.updatedAt);
 }
 
 export function getQueueRow(noteKey: string): Omit<SessionQueue, "items"> | undefined {
   const r = openDb().prepare(`SELECT * FROM foreman_queues WHERE note_key = ?`).get(noteKey) as
     | unknown as QueueRow | undefined;
-  if (!r) return undefined;
-  return {
-    noteKey: r.note_key,
-    cwd: r.cwd,
-    branch: r.branch,
-    wrapupAskedAt: r.wrapup_asked_at,
-    wrapupAnswer: r.wrapup_answer,
-    updatedAt: r.updated_at,
-  };
+  return r ? toQueueRow(r) : undefined;
 }
 
 /** Every stored queue (without items) - for the orphan sweep + the session list. */
@@ -978,14 +1346,7 @@ export function listQueueRows(): Omit<SessionQueue, "items">[] {
   const rows = openDb()
     .prepare(`SELECT * FROM foreman_queues ORDER BY updated_at DESC`)
     .all() as unknown as QueueRow[];
-  return rows.map((r) => ({
-    noteKey: r.note_key,
-    cwd: r.cwd,
-    branch: r.branch,
-    wrapupAskedAt: r.wrapup_asked_at,
-    wrapupAnswer: r.wrapup_answer,
-    updatedAt: r.updated_at,
-  }));
+  return rows.map(toQueueRow);
 }
 
 /** Queues recorded at one cwd - the re-attach hint's question, asked as a lookup. */
@@ -993,14 +1354,7 @@ export function listQueueRowsForCwd(cwd: string): Omit<SessionQueue, "items">[] 
   const rows = openDb()
     .prepare(`SELECT * FROM foreman_queues WHERE cwd = ? ORDER BY updated_at DESC`)
     .all(cwd) as unknown as QueueRow[];
-  return rows.map((r) => ({
-    noteKey: r.note_key,
-    cwd: r.cwd,
-    branch: r.branch,
-    wrapupAskedAt: r.wrapup_asked_at,
-    wrapupAnswer: r.wrapup_answer,
-    updatedAt: r.updated_at,
-  }));
+  return rows.map(toQueueRow);
 }
 
 /**
@@ -1043,6 +1397,17 @@ export function countOpenQueueItems(noteKey: string): number {
  *    and the wrap-up ask still hangs off that row.
  * So this only ever drops a fully-finished batch whose session is gone and which
  * nothing has touched since `cutoff`.
+ *
+ * The second branch collects rows that hold NOTHING - no items at all, and none of the
+ * three wrap-up fields set - regardless of age. `ensureQueue` mints a row for any
+ * session whose wrap-up state is merely touched, and the `prompted` trigger touches
+ * every session it ever considers, so this is now the common shape of a row rather than
+ * a rarity. Waiting out `cutoff` for a row with nothing in it buys no safety: there is
+ * no backlog to resume, no ask to answer and no episode to keep retired, and if the
+ * session comes back `ensureQueue` mints it again for free. The `liveKeys` guard still
+ * applies to both branches, which is what keeps this away from the row a live session is
+ * mid-write on - `ensureQueue` and the `promptedGoal` stamp that follows it are two
+ * writes, and between them the row is legitimately empty.
  */
 export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
   const db = openDb();
@@ -1050,11 +1415,21 @@ export function pruneDeadQueues(liveKeys: Set<string>, cutoff: number): number {
   const dead = db
     .prepare(
       `SELECT note_key FROM foreman_queues q
-        WHERE q.updated_at < ?
-          AND NOT EXISTS (
-            SELECT 1 FROM foreman_queue_items i
-             WHERE i.note_key = q.note_key AND i.state NOT IN (${states})
-          )`,
+        WHERE (
+                q.updated_at < ?
+                AND NOT EXISTS (
+                  SELECT 1 FROM foreman_queue_items i
+                   WHERE i.note_key = q.note_key AND i.state NOT IN (${states})
+                )
+              )
+           OR (
+                q.wrapup_asked_at IS NULL
+                AND q.wrapup_answer IS NULL
+                AND q.prompted_goal IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM foreman_queue_items i WHERE i.note_key = q.note_key
+                )
+              )`,
     )
     .all(cutoff) as unknown as Array<{ note_key: string }>;
   const drop = dead.map((r) => r.note_key).filter((k) => !liveKeys.has(k));

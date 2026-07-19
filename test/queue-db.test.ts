@@ -71,6 +71,7 @@ test("a queue row round-trips and upserts in place", () => {
     branch: "main",
     wrapupAskedAt: null,
     wrapupAnswer: null,
+    promptedGoal: null,
     updatedAt: 1,
   });
   assert.equal(getQueueRow("k1")?.cwd, "/repo");
@@ -81,6 +82,7 @@ test("a queue row round-trips and upserts in place", () => {
     branch: "feature",
     wrapupAskedAt: 55,
     wrapupAnswer: "ship it",
+    promptedGoal: null,
     updatedAt: 2,
   });
   const r = getQueueRow("k1");
@@ -294,6 +296,7 @@ test("deleting an item and a queue row leaves nothing behind", () => {
     branch: null,
     wrapupAskedAt: null,
     wrapupAnswer: null,
+    promptedGoal: null,
     updatedAt: 1,
   });
   upsertQueueItem(mkItem({ id: "doomed", noteKey: "gone" }));
@@ -339,7 +342,7 @@ test("the single-flight index is rebuilt when its predicate drifts from the shar
   // `verifying` item in one queue is rejected by the db, not merely by hope.
   const guard = run(`const db = await import("./src/server/db.ts");
     db.openDb();
-    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "drift", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "drift", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -386,7 +389,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
     const d = db.openDb();
     d.exec("DROP INDEX one_inflight_per_queue;");
     d.exec("CREATE UNIQUE INDEX one_inflight_per_queue ON foreman_queue_items(note_key) WHERE state IN ('sending','awaiting_pickup','in_progress');");
-    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 0 });
+    db.upsertQueue({ noteKey: "stuck", cwd: null, branch: null, wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, updatedAt: 0 });
     const mk = (id, seq) => ({ id, noteKey: "stuck", seq, intent: "i", state: "verifying", round: 0,
       baseSha: null, transcriptAnchor: null, gaps: [], sendAttempts: 0, verifyFailures: 0,
       escalationReason: null, lastVerdict: null, approvedAt: null, proposedPayload: null,
@@ -411,7 +414,7 @@ test("a single-flight rebuild that CANNOT succeed keeps the old index and still 
 });
 
 test("rekeyQueue moves a whole queue onto a new key", () => {
-  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rk-from", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, updatedAt: 1 });
   const a = mkItem({ noteKey: "rk-from", seq: 0, intent: "first" });
   const b = mkItem({ noteKey: "rk-from", seq: 1, intent: "second" });
   upsertQueueItem(a);
@@ -419,7 +422,7 @@ test("rekeyQueue moves a whole queue onto a new key", () => {
 
   rekeyQueue(
     "rk-from",
-    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, updatedAt: 2 },
+    { noteKey: "rk-to", cwd: "/r", branch: "b", wrapupAskedAt: 7, wrapupAnswer: null, promptedGoal: null, updatedAt: 2 },
     [
       { ...a, noteKey: "rk-to", seq: 0 },
       { ...b, noteKey: "rk-to", seq: 1 },
@@ -440,7 +443,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   // leaves some items re-keyed under a queue row that may already be deleted and the
   // rest on the old key: a split no reader models, and one the re-attach button can't
   // repair, since the hint it keys off is computed from the very rows that got moved.
-  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 1 });
+  upsertQueue({ noteKey: "rb-from", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, updatedAt: 1 });
   const good = mkItem({ noteKey: "rb-from", seq: 0, intent: "keep me" });
   const also = mkItem({ noteKey: "rb-from", seq: 1, intent: "and me" });
   upsertQueueItem(good);
@@ -451,7 +454,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
   assert.throws(() =>
     rekeyQueue(
       "rb-from",
-      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, updatedAt: 2 },
+      { noteKey: "rb-to", cwd: "/r", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, updatedAt: 2 },
       [
         { ...good, noteKey: "rb-to", seq: 0 },
         { ...also, noteKey: "rb-to", seq: 1, intent: null as unknown as string },
@@ -477,7 +480,7 @@ test("rekeyQueue ROLLS BACK a half-applied move - the batch is never split", () 
 // ingest and SSE, so the floor rose with use and never came back down.
 
 function seedRow(key: string, cwd: string, updatedAt: number): void {
-  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, updatedAt });
+  upsertQueue({ noteKey: key, cwd, branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: null, updatedAt });
 }
 
 test("listQueueRowsForCwd returns only that cwd's queues", () => {
@@ -549,6 +552,35 @@ test("pruneDeadQueues leaves a recently-touched queue alone", () => {
 
   pruneDeadQueues(new Set(), 5000);
   assert.ok(getQueueRow("recent-1"), "inside the retention window");
+});
+
+test("pruneDeadQueues collects an EMPTY row at any age, but keeps one holding wrap-up state", () => {
+  // `ensureQueue` mints a row for any session whose wrap-up state is merely touched, and
+  // the `prompted` trigger touches every session it ever considers - including the hold
+  // and empty-diff outcomes that never produce a queue. A row with no items and none of
+  // the three wrap-up fields set holds nothing anyone can resume, answer or re-arm, so
+  // there is nothing for the retention window to protect.
+  seedRow("empty-1", "/churn", Date.now());
+  pruneDeadQueues(new Set(), 1);
+  assert.equal(getQueueRow("empty-1"), undefined, "an itemless, stateless row is not history");
+
+  // ...but each of the three fields alone is state worth keeping: an unanswered Ship it?
+  // card, a human's answer, and the once-per-episode guard that stops the prompted
+  // trigger re-verifying an idle session every tick.
+  upsertQueue({ noteKey: "keep-ask", cwd: "/k", branch: "b", wrapupAskedAt: 500, wrapupAnswer: null, promptedGoal: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-answer", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: "/no-mistakes", promptedGoal: null, updatedAt: Date.now() });
+  upsertQueue({ noteKey: "keep-goal", cwd: "/k", branch: "b", wrapupAskedAt: null, wrapupAnswer: null, promptedGoal: "ship the uploader", updatedAt: Date.now() });
+
+  pruneDeadQueues(new Set(), 1);
+  assert.ok(getQueueRow("keep-ask"), "an unanswered ask still has to render");
+  assert.ok(getQueueRow("keep-answer"), "an answer is the human's, not ours to drop");
+  assert.ok(getQueueRow("keep-goal"), "dropping the guard re-arms the trigger on an idle session");
+
+  // And a LIVE session's empty row is untouchable, because `ensureQueue` plus the stamp
+  // that follows it are two writes - between them the row is legitimately empty.
+  seedRow("empty-live", "/here", Date.now());
+  pruneDeadQueues(new Set(["empty-live"]), 1);
+  assert.ok(getQueueRow("empty-live"), "never collect the row a live session is mid-write on");
 });
 
 test("clearQueue drops the row and EVERY item - open and in-flight alike", () => {

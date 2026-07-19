@@ -2,6 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, sy
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
+import { envVar } from "@shared/harness-runtime.mjs";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
@@ -20,12 +21,35 @@ import type { Catalog } from "./catalog.ts";
 // /private/tmp and ~/workspace included.
 
 /**
- * The operator's global skills directory. Overridable so tests can exercise the
- * real reconciler against a real directory rather than a mock of one - the same
- * escape hatch `CLAUDE_SETTINGS_PATH` gives hooks/install.mjs, for the same reason.
+ * The skills directory THIS daemon owns.
+ *
+ * `~/.claude/skills` for an ordinary install - the operator's global claude config, which
+ * is the whole point of the feature. But a daemon running on an explicit home override
+ * (`MISSION_HOME`, or the older prefixes `envVar` still reads) gets a directory inside
+ * that home instead, because it does not own the machine's shared one.
+ *
+ * That scoping is not tidiness, it is the fix for real data loss. Which skills are on
+ * lives in the DB, and the DB lives under the state dir - so an isolated daemon has its
+ * OWN, usually empty, config. Pointed at the shared directory it would reconcile the real
+ * install's symlinks against that empty config, decide every one of them is no longer
+ * desired, and unlink them: observed for real, an isolated test daemon removing the live
+ * install's `mission-html-plans`. Nothing announces it, the operator's next session just
+ * quietly stops loading the skill, and `startup` runs this on every single launch - so
+ * merely running a second daemon, which the test suite and any E2E harness do routinely,
+ * silently uninstalls skills. The config and the directory it reconciles have to come from
+ * the same home or the pass is comparing two unrelated installs.
+ *
+ * The same rule `migrateStateDir` already holds: an explicit override owns its own path.
+ * The cost is that an isolated daemon's links land where no real `claude` will read them,
+ * which is correct - a throwaway home has no business installing skills machine-wide.
+ * `CLAUDE_SKILLS_DIR` still wins over both, so a test (or an operator) that genuinely
+ * wants a specific directory names it and gets it.
  */
 export function claudeSkillsDir(): string {
-  return process.env.CLAUDE_SKILLS_DIR ?? join(homedir(), ".claude", "skills");
+  if (process.env.CLAUDE_SKILLS_DIR) return process.env.CLAUDE_SKILLS_DIR;
+  const home = envVar("HOME");
+  if (home) return join(home, "claude-skills");
+  return join(homedir(), ".claude", "skills");
 }
 
 /** What one pass changed, and anything it refused to. */

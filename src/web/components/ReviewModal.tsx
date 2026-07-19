@@ -4,6 +4,8 @@ import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { DecisionForm } from "./PlanDecisions.tsx";
+import { AgentDot } from "./session-bits.tsx";
+import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
  * Modal for acting on a session's pending reviews. A diff or plan is approved or
@@ -20,37 +22,29 @@ export function ReviewModal({
   reviews: ReviewItem[];
   onClose: () => void;
 }): React.JSX.Element {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   // Close automatically once the session has no more pending reviews.
   useEffect(() => {
     if (reviews.length === 0) onClose();
   }, [reviews.length, onClose]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <header className="modal-head">
-          <div>
-            <span className={`agent-dot agent-${session.agent}`} aria-hidden />
-            <strong>{session.name}</strong>
-            <span className="dim"> · {reviews.length} pending</span>
-          </div>
-          <button className="btn btn-ghost" onClick={onClose}>
-            Close (esc)
-          </button>
-        </header>
-        <div className="modal-body">
-          {reviews.map((r) => (
-            <ReviewCard key={r.id} review={r} />
-          ))}
+    <Overlay id={OVERLAY_IDS.reviews} onClose={onClose} className="modal">
+      <header className="modal-head">
+        <div>
+          <AgentDot agent={session.agent} />
+          <strong>{session.name}</strong>
+          <span className="dim"> · {reviews.length} pending</span>
         </div>
+        <button className="btn btn-ghost" onClick={onClose}>
+          Close (esc)
+        </button>
+      </header>
+      <div className="modal-body">
+        {reviews.map((r) => (
+          <ReviewCard key={r.id} review={r} />
+        ))}
       </div>
-    </div>
+    </Overlay>
   );
 }
 

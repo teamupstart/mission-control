@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type {
+  ForemanEpisode,
   MetaSource,
   NmFixSummary,
   NmRunSummary,
@@ -23,7 +24,14 @@ import type {
   WorkItem,
   WorkItemState,
 } from "@shared/types.ts";
-import type { HookIngest, SetGoal, SetNote, StatusLineIngest } from "@shared/protocol.ts";
+import type {
+  HookIngest,
+  RecordEpisode,
+  ResolveEpisode,
+  SetGoal,
+  SetNote,
+  StatusLineIngest,
+} from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
 import {
@@ -61,6 +69,10 @@ import {
   countOpenQueueItems,
   pruneDeadQueues,
   pruneGateReplies,
+  pruneEpisodes,
+  recordEpisode as dbRecordEpisode,
+  resolveEpisode as dbResolveEpisode,
+  episodesFor,
   reorderQueueItems,
   upsertQueue,
   upsertQueueItem,
@@ -106,6 +118,17 @@ const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  * rather than scoped to a session.
  */
 const GATE_REPLY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * How long a Foreman episode is kept.
+ *
+ * Shorter than a gate byline and longer than a queue, because it is read for a
+ * different span than either: the drawer answers "what has Foreman been deciding on
+ * this session", which is a question about recent judgment, not about a branch that
+ * may sit open for months. The rows are also the fattest of the three - each can
+ * carry a whole pane capture - so generosity costs more here than it does there.
+ */
+const EPISODE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
 const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
@@ -332,6 +355,12 @@ export class Registry extends EventEmitter {
     } catch (err) {
       console.error("[registry] gate reply prune failed:", err);
     }
+    // And its own again, for the same reason.
+    try {
+      pruneEpisodes(now - EPISODE_RETENTION_MS);
+    } catch (err) {
+      console.error("[registry] foreman episode prune failed:", err);
+    }
   }
 
   private mergeDiscovered(
@@ -360,6 +389,27 @@ export class Registry extends EventEmitter {
       // one (Codex, no pane, or a dialog covering Claude's mode line) we keep the
       // last we knew rather than blanking the chip.
       permissionMode: d.permissionMode ?? prev?.permissionMode ?? null,
+      // Pointedly NOT sticky, unlike the mode above: a menu that has been answered
+      // must leave the card, and remembering the last one we saw would leave a
+      // button offering to answer a question nobody is asking any more. Undefined
+      // means the pane couldn't be read at all (no capture, no information), and
+      // only then do we keep what we had; a successful read that found no menu is
+      // an explicit null and clears it.
+      //
+      // And only while there is still a pane to read it from. A session whose handle
+      // has gone is never annotated at all (`annotatePaneState` skips it), so its
+      // dialog would ride `prev` forward for as long as the session lives - a card
+      // still offering rows that no keystroke can reach, because the answer would
+      // have nowhere to land. That is the exact shape of "it has been sitting there
+      // for ages and clicking does nothing", and it gets quieter, not louder, the
+      // longer it lasts. `annotatePaneState` bounds the other half: a capture that
+      // keeps failing on a pane that IS still there eventually clears too.
+      paneDialog:
+        d.paneDialog !== undefined
+          ? d.paneDialog
+          : d.tmux || d.wezterm
+            ? (prev?.paneDialog ?? null)
+            : null,
       wezterm: d.wezterm,
       tmux: d.tmux,
       // Seeded from the DB for the same reason `hooksSeen` below is: only a live
@@ -383,7 +433,7 @@ export class Registry extends EventEmitter {
       pendingReviews: this.countPending(d.syntheticId),
       nomistakes: prev?.nomistakes ?? null,
       nomistakesFixes: prev?.nomistakesFixes ?? [],
-      task: this.taskSummaryForCwd(d.cwd),
+      task: this.taskSummaryFor(d.syntheticId, d.cwd),
       nomistakesNarration: prev?.nomistakesNarration ?? null,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
@@ -1068,12 +1118,14 @@ export class Registry extends EventEmitter {
     return [...this.tasks.values()];
   }
 
-  /** Persist + broadcast a task, and refresh any session bound to its worktree. */
+  /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task): void {
     dbUpsertTask(task);
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
     this.syncSessionsForWorktree(task.worktreePath);
+    // An assigned task has no worktree to sync by, so refresh its agent directly.
+    if (task.sessionId) this.resyncSessionTask(task.sessionId);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
   }
 
@@ -1102,6 +1154,7 @@ export class Registry extends EventEmitter {
     dbDeleteTask(id);
     if (this.tasks.delete(id)) this.emitEvent({ type: "task_remove", id });
     if (t) this.syncSessionsForWorktree(t.worktreePath);
+    if (t?.sessionId) this.resyncSessionTask(t.sessionId);
   }
 
   /**
@@ -1202,12 +1255,33 @@ export class Registry extends EventEmitter {
     return undefined;
   }
 
-  /** The active task a session in `cwd` is executing, as a compact card summary. */
-  private taskSummaryForCwd(cwd: string | null): TaskSummary | null {
-    const t = this.activeTaskForCwd(cwd);
+  /** The active task a session is executing, as a compact card summary. */
+  private taskSummaryFor(sessionId: string, cwd: string | null): TaskSummary | null {
+    const t = this.activeTaskFor(sessionId, cwd);
     return t
       ? { id: t.id, title: t.title, kind: t.kind, status: t.status, outcome: t.outcome, outcomeUrl: t.outcomeUrl }
       : null;
+  }
+
+  /**
+   * The task this session is executing.
+   *
+   * Two ways a task reaches an agent, so two ways to correlate one back:
+   *  - ASSIGNED (dropped onto an already-running agent from the backlog). It owns no
+   *    worktree of its own - the agent keeps its existing checkout - so the only link
+   *    is the `sessionId` the assignment stamped on it. Checked first: it is the
+   *    stronger claim, being an explicit binding rather than a path coincidence.
+   *  - DISPATCHED (the daemon cut a worktree and launched an agent in it), which
+   *    correlates by that worktree path - see `activeTaskForCwd`.
+   */
+  private activeTaskFor(sessionId: string, cwd: string | null): Task | undefined {
+    let best: Task | undefined;
+    for (const t of this.tasks.values()) {
+      if (t.sessionId !== sessionId) continue;
+      if (t.status === "backlog" || t.status === "cancelled") continue;
+      if (!best || t.updatedAt > best.updatedAt) best = t;
+    }
+    return best ?? this.activeTaskForCwd(cwd);
   }
 
   /**
@@ -1229,14 +1303,24 @@ export class Registry extends EventEmitter {
 
   private syncSessionsForWorktree(cwd: string | null): void {
     if (!cwd) return;
-    const summary = this.taskSummaryForCwd(cwd);
-    for (const [id, s] of this.sessions) {
-      if (s.cwd !== cwd) continue;
-      if (JSON.stringify(s.task) === JSON.stringify(summary)) continue;
-      const next = { ...s, task: summary };
-      this.sessions.set(id, next);
-      this.emitSession(next);
+    for (const id of this.sessions.keys()) {
+      if (this.sessions.get(id)?.cwd === cwd) this.resyncSessionTask(id);
     }
+  }
+
+  /**
+   * Recompute one session's task chip and emit only if it actually changed.
+   * Per-session rather than per-worktree because an assigned task binds to a single
+   * session id, not to a directory that may hold several agents.
+   */
+  private resyncSessionTask(id: string): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    const summary = this.taskSummaryFor(id, s.cwd);
+    if (JSON.stringify(s.task) === JSON.stringify(summary)) return;
+    const next = { ...s, task: summary };
+    this.sessions.set(id, next);
+    this.emitSession(next);
   }
 
   // ---- Foreman notes (auto-responder) ----
@@ -1295,6 +1379,77 @@ export class Registry extends EventEmitter {
     upsertSessionNote(next);
     this.syncSessionsForNote(key);
     return next;
+  }
+
+  // ---- Foreman episodes (the append-only record behind the note) ----
+
+  /**
+   * Record one Foreman decision against this session's note key.
+   *
+   * Keyed the same way the note is, and deliberately so: the episode IS the note's
+   * history, so a session whose key re-mints (a `/clear`) starts a fresh log for the
+   * same reason it starts a fresh note. Unlike the note, nothing is denormalized onto
+   * the session - the list is fetched by the panel that shows it, because a card
+   * carrying every pane it ever saw would put a screen capture into every SSE frame.
+   */
+  recordEpisode(id: string, e: RecordEpisode, now = Date.now()): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    dbRecordEpisode({
+      noteKey: noteKeyFor(s),
+      sessionId: s.id,
+      marker: e.marker,
+      situation: e.situation,
+      surface: e.surface,
+      question: e.question,
+      pane: e.pane ?? null,
+      menu: e.menu ?? null,
+      reviewId: e.reviewId ?? null,
+      purpose: e.purpose ?? null,
+      brief: e.brief ?? null,
+      recommendation: e.recommendation ?? null,
+      classification: e.classification ?? null,
+      confidence: e.confidence ?? null,
+      tier: e.tier ?? null,
+      disposition: e.disposition,
+      lastAction: e.lastAction ?? null,
+      sentText: e.sentText ?? null,
+      sentOption: e.sentOption ?? null,
+      sentBy: e.sentBy ?? null,
+      createdAt: now,
+      // An episode Foreman closed itself is resolved the moment it is recorded;
+      // one it handed over stays open until a human acts on it.
+      resolvedAt: e.disposition === "answered" || e.disposition === "skipped" ? now : null,
+      // Derived from the same test, and deliberately not from `sentBy`: Foreman
+      // resolves an episode by skipping it as well as by answering it, and only the
+      // latter sends anything. A `skipped` episode with no author is one Foreman left
+      // for the human; the human's own dismissal comes through `resolveEpisode` and
+      // stamps `you` here, which is what keeps the two legible apart in the record.
+      resolvedBy: e.disposition === "answered" || e.disposition === "skipped" ? "foreman" : null,
+    });
+    return true;
+  }
+
+  /** Stamp the human's answer onto an open episode. */
+  resolveEpisode(id: string, p: ResolveEpisode, now = Date.now()): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    dbResolveEpisode({
+      noteKey: noteKeyFor(s),
+      marker: p.marker,
+      disposition: p.disposition,
+      sentText: p.sentText ?? null,
+      resolvedBy: "you",
+      resolvedAt: now,
+    });
+    return true;
+  }
+
+  /** Every episode recorded for this session's key, newest first. */
+  listEpisodes(id: string): ForemanEpisode[] {
+    const s = this.sessions.get(id);
+    if (!s) return [];
+    return episodesFor(noteKeyFor(s));
   }
 
   // ---- goals (what a session is attempting to solve) ----
@@ -1441,7 +1596,11 @@ export class Registry extends EventEmitter {
     const row = getQueueRow(key);
     const items = listQueueItems(key);
     if (!row && items.length === 0) return null;
-    return summarizeQueue(items, row?.wrapupAskedAt ?? null, row?.updatedAt ?? 0);
+    return summarizeQueue(
+      items,
+      { askedAt: row?.wrapupAskedAt ?? null, answer: row?.wrapupAnswer ?? null },
+      row?.updatedAt ?? 0,
+    );
   }
 
   /**
@@ -1509,6 +1668,7 @@ export class Registry extends EventEmitter {
       branch: row?.branch ?? null,
       wrapupAskedAt: row?.wrapupAskedAt ?? null,
       wrapupAnswer: row?.wrapupAnswer ?? null,
+      promptedGoal: row?.promptedGoal ?? null,
       updatedAt: row?.updatedAt ?? 0,
       items,
     };
@@ -1597,6 +1757,7 @@ export class Registry extends EventEmitter {
       branch: s.gitBranch,
       wrapupAskedAt: prev?.wrapupAskedAt ?? null,
       wrapupAnswer: prev?.wrapupAnswer ?? null,
+      promptedGoal: prev?.promptedGoal ?? null,
       updatedAt: now,
     });
     return key;
@@ -1605,7 +1766,11 @@ export class Registry extends EventEmitter {
   /** Patch a queue's wrap-up state, then re-denormalize. */
   setQueueWrapup(
     key: string,
-    patch: { wrapupAskedAt?: number | null; wrapupAnswer?: string | null },
+    patch: {
+      wrapupAskedAt?: number | null;
+      wrapupAnswer?: string | null;
+      promptedGoal?: string | null;
+    },
     now = Date.now(),
   ): void {
     const prev = getQueueRow(key);
@@ -1614,6 +1779,7 @@ export class Registry extends EventEmitter {
       ...prev,
       wrapupAskedAt: patch.wrapupAskedAt !== undefined ? patch.wrapupAskedAt : prev.wrapupAskedAt,
       wrapupAnswer: patch.wrapupAnswer !== undefined ? patch.wrapupAnswer : prev.wrapupAnswer,
+      promptedGoal: patch.promptedGoal !== undefined ? patch.promptedGoal : prev.promptedGoal,
       updatedAt: now,
     });
     this.syncSessionsForQueue(key);
@@ -1781,6 +1947,7 @@ export class Registry extends EventEmitter {
         branch: s.gitBranch,
         wrapupAskedAt: row.wrapupAskedAt,
         wrapupAnswer: row.wrapupAnswer,
+        promptedGoal: row.promptedGoal,
         updatedAt: now,
       },
       items.map((i, n) => ({ ...i, noteKey: toKey, seq: base + n, updatedAt: now })),
@@ -1831,7 +1998,12 @@ export const inFlightOf = inFlightItemOf;
 /** Project a queue's items into the compact card summary. Pure, for tests. */
 export function summarizeQueue(
   items: WorkItem[],
-  wrapupAskedAt: number | null,
+  /**
+   * The row's wrap-up state, taken as a pair rather than as two positional args: the
+   * card has to tell an OPEN question from an answered one, and passing only the
+   * timestamp is what made that undecidable at the call site.
+   */
+  wrapup: { askedAt: number | null; answer: string | null },
   updatedAt: number,
 ): SessionQueueSummary {
   const open = items.filter((i) => !isTerminalItem(i.state));
@@ -1846,7 +2018,8 @@ export function summarizeQueue(
     verifiedCount: items.filter((i) => i.state === "verified").length,
     escalatedCount: items.filter((i) => i.state === "escalated").length,
     drained: items.length > 0 && open.length === 0,
-    wrapupAskedAt,
+    wrapupAskedAt: wrapup.askedAt,
+    wrapupAnswered: wrapup.answer !== null,
     updatedAt,
   };
 }
@@ -1997,49 +2170,128 @@ export function hookToState(evt: HookIngest): { state: SessionState; activity: s
   }
 }
 
+/** How one `Session` field decides whether a change is worth an emit. */
+type FieldEqual<K extends keyof Session> = (a: Session[K], b: Session[K]) => boolean;
+
 /**
- * Compare user-visible fields; `lastSeen`/`lastActivity` excluded so a still-alive
- * session doesn't spam the UI every poll. Only real changes emit.
+ * A comparator for EVERY field of `Session`, with no gaps allowed: the mapped type
+ * makes a missing key and a stray key both compile errors, so growing `Session`
+ * breaks the build until the new field says how it participates here.
+ *
+ * That enforcement is the whole point, because the failure it replaces is silent.
+ * Sessions reach the dashboard only when `sessionEqual` returns false, so a field
+ * added to `Session` and forgotten here renders once from the initial snapshot and
+ * then never updates again - no error, no failing test, just a card that quietly
+ * goes stale while the daemon holds the fresh value. See `orphanedQueue` below for
+ * an instance that actually shipped.
  */
-function sessionEqual(a: Session, b: Session): boolean {
-  return (
-    a.name === b.name &&
-    a.state === b.state &&
-    a.cwd === b.cwd &&
-    a.gitBranch === b.gitBranch &&
-    a.gitRoot === b.gitRoot &&
-    a.repoRoot === b.repoRoot &&
-    a.pid === b.pid &&
-    a.nameSource === b.nameSource &&
-    a.agentSessionId === b.agentSessionId &&
-    a.transcriptPath === b.transcriptPath &&
-    a.instrumented === b.instrumented &&
-    a.hooksSeen === b.hooksSeen &&
-    a.activity === b.activity &&
-    a.permissionMode === b.permissionMode &&
-    a.pendingReviews === b.pendingReviews &&
-    a.wezterm?.isActive === b.wezterm?.isActive &&
-    a.tmux?.window === b.tmux?.window &&
-    a.nomistakesNarration === b.nomistakesNarration &&
-    a.prUrl === b.prUrl &&
-    a.prNumber === b.prNumber &&
-    a.prState === b.prState &&
-    a.prChecks === b.prChecks &&
-    metaDisplayEqual(a.meta, b.meta) &&
-    JSON.stringify(a.nomistakes) === JSON.stringify(b.nomistakes) &&
-    JSON.stringify(a.nomistakesFixes) === JSON.stringify(b.nomistakesFixes) &&
-    JSON.stringify(a.task) === JSON.stringify(b.task) &&
-    JSON.stringify(a.note) === JSON.stringify(b.note) &&
-    // The other denormalized fields `mergeDiscovered` resolves next to `note`.
-    // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
-    // particular depends on OTHER sessions (a queue is orphaned only once its own
-    // session is evicted), so the session whose hint changes need not have changed
-    // in any way of its own - an idle sibling is equal by every field above, stays
-    // quiet, and never surfaces the stranded batch.
-    JSON.stringify(a.queue) === JSON.stringify(b.queue) &&
-    JSON.stringify(a.orphanedQueue) === JSON.stringify(b.orphanedQueue) &&
-    JSON.stringify(a.goal) === JSON.stringify(b.goal)
-  );
+type SessionFieldComparators = { [K in keyof Session]-?: FieldEqual<K> };
+
+/** Scalar identity - the default for a field the card renders directly. */
+const byValue = <T>(a: T, b: T): boolean => a === b;
+
+/** Structural compare, for a nested object the card renders as a unit. */
+const byJson = <T>(a: T, b: T): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Never triggers an emit on its own. Only valid with a reason at the use site -
+ * "I did not think about this one" is exactly what the record exists to prevent.
+ */
+const alwaysEqual = (): boolean => true;
+
+/**
+ * The identity fields (`id`, `agent`, `tty`, `startedAt`, `firstSeen`) are grouped
+ * into a deliberate block up top since they share one reason; everything after
+ * follows `Session`'s own field order, so the two can be diffed by eye.
+ */
+export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
+  // Invariant for the life of a map entry, not state: sessions are keyed by
+  // `proc:<tty>:<pid>:<startMs>` (see `discovery/correlate.ts`) and both call sites compare a
+  // session against its own prior value under that key. These cannot differ, so
+  // comparing them would only cost work.
+  id: alwaysEqual,
+  agent: alwaysEqual,
+  tty: alwaysEqual,
+  startedAt: alwaysEqual,
+  // Set once, on first sight (`prev?.firstSeen ?? now`), and never rewritten.
+  firstSeen: alwaysEqual,
+
+  name: byValue,
+  nameSource: byValue,
+  state: byValue,
+  cwd: byValue,
+  gitBranch: byValue,
+  gitRoot: byValue,
+  repoRoot: byValue,
+  // KNOWN GAP, carried over rather than endorsed. Unlike the identity fields above
+  // this is re-read every sweep (`hasNoMistakesRemote`) and IS rendered - the ◇ rail
+  // mark and the gated chip - so adding the no-mistakes remote to a live session's
+  // repo can go unshown until some other field happens to move. Rare enough to have
+  // never been noticed, and left alone here only because closing it would change
+  // what gets emitted, which this fail-closed refactor deliberately does not do.
+  nomistakesGated: alwaysEqual,
+  pid: byValue,
+  permissionMode: byValue,
+  // Narrower than the whole object on purpose: only focus is rendered, and the pane
+  // geometry around it churns without the card ever looking different.
+  wezterm: (a, b) => a?.isActive === b?.isActive,
+  tmux: (a, b) => a?.window === b?.window,
+  agentSessionId: byValue,
+  transcriptPath: byValue,
+  instrumented: byValue,
+  hooksSeen: byValue,
+  activity: byValue,
+  // Excluded so a still-alive session doesn't spam the UI every poll: `lastSeen`
+  // moves on every sweep and `lastActivity` on every hook, both by definition. The
+  // stall detector consumes `lastActivity` server-side for this exact reason - see
+  // the note in `shared/stall.ts`. `applyHook` re-checks `lastActivity` itself at
+  // its call site when it needs the timestamp to force an emit.
+  lastSeen: alwaysEqual,
+  lastActivity: alwaysEqual,
+  pendingReviews: byValue,
+  nomistakes: byJson,
+  nomistakesFixes: byJson,
+  task: byJson,
+  nomistakesNarration: byValue,
+  prUrl: byValue,
+  prNumber: byValue,
+  prState: byValue,
+  // Only the *visible* fields of SessionMeta, so re-reading an identical model /
+  // context% doesn't re-render the meter. See `metaDisplayEqual`.
+  meta: metaDisplayEqual,
+  note: byJson,
+  goal: byJson,
+  // The other denormalized fields `mergeDiscovered` resolves next to `note`.
+  // Omitting them made a sweep's recomputation invisible: `orphanedQueue` in
+  // particular depends on OTHER sessions (a queue is orphaned only once its own
+  // session is evicted), so the session whose hint changes need not have changed
+  // in any way of its own - an idle sibling is equal by every other field, stays
+  // quiet, and never surfaces the stranded batch.
+  queue: byJson,
+  orphanedQueue: byJson,
+  prChecks: byValue,
+  // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
+  // `permissionMode` is sticky and so doesn't flip when the menu covers the
+  // footer, and a session parked on a question is by definition not doing
+  // anything to move the other fields - so leaving this out doesn't merely delay
+  // the buttons, it withholds them until some unrelated change happens to shake
+  // the card loose. That reads as a flaky parser rather than a missing compare.
+  paneDialog: byJson,
+};
+
+/**
+ * Compare the fields that decide whether the UI would look different. Only real
+ * changes emit; see `SESSION_FIELD_COMPARATORS` for what each field contributes
+ * and why the excluded ones are excluded.
+ */
+export function sessionEqual(a: Session, b: Session): boolean {
+  for (const key of Object.keys(SESSION_FIELD_COMPARATORS) as (keyof Session)[]) {
+    // The record's type pins each comparator to its own field; that per-key
+    // correlation just isn't expressible while iterating a union of keys.
+    const equal = SESSION_FIELD_COMPARATORS[key] as (a: unknown, b: unknown) => boolean;
+    if (!equal(a[key], b[key])) return false;
+  }
+  return true;
 }
 
 /**

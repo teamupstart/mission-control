@@ -2041,7 +2041,7 @@ body {
   color: var(--fg) !important;
 }
 
-/* ---- markdown (plans) ---- */
+/* ---- markdown (plans, Foreman briefs, chat turns) ---- */
 .markdown {
   padding: 4px 16px 8px;
   font-size: 13.5px;
@@ -2082,6 +2082,13 @@ body {
   border-radius: 4px;
 }
 .markdown pre {
+  /* The mono font and colour belong here, not only on the inner `code`: a fenced block
+     that fails to parse - or arrives mid-stream without its closing fence - still has to
+     read as code rather than silently falling back to the sans body font. */
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--fg);
   background: var(--bg-2);
   border: 1px solid var(--border-soft);
   border-radius: 8px;
@@ -2091,6 +2098,7 @@ body {
 .markdown pre code {
   background: none;
   padding: 0;
+  font-size: inherit;
 }
 .markdown a {
   color: var(--working);
@@ -2110,6 +2118,130 @@ body {
   padding-left: 12px;
   border-left: 3px solid var(--border);
   color: var(--muted);
+}
+
+/* ---- syntax highlighting (highlight.js token classes) ----
+   Built from the dashboard's own palette rather than dropping in one of highlight.js's
+   stock themes. A stock theme carries its own background and its own idea of a
+   foreground, and a code block that ships a foreign grey into these panels reads as
+   pasted-in. These are the same six tones the rest of the UI already speaks in, so a
+   fence looks like part of the app that contains it.
+
+   Only hue carries meaning here; nothing is bolded. Code in a transcript is being
+   skimmed for shape - where the strings are, where the comments are - and weight
+   competes with the surrounding prose for attention it hasn't earned. */
+.hljs-comment,
+.hljs-quote {
+  color: var(--dim);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-name,
+.hljs-subst {
+  color: var(--purple);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-attribute,
+.hljs-meta .hljs-string {
+  color: var(--idle);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-link,
+.hljs-selector-attr,
+.hljs-selector-pseudo,
+.hljs-template-variable {
+  color: var(--attention);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-built_in,
+.hljs-selector-id {
+  color: var(--working);
+}
+.hljs-type,
+.hljs-title.class_,
+.hljs-class .hljs-title,
+.hljs-selector-class {
+  color: var(--claude);
+}
+.hljs-attr,
+.hljs-property,
+.hljs-variable,
+.hljs-params,
+.hljs-operator,
+.hljs-punctuation {
+  color: var(--fg);
+}
+.hljs-meta,
+.hljs-meta .hljs-keyword,
+.hljs-comment .hljs-doctag {
+  color: var(--muted);
+}
+.hljs-deletion {
+  color: var(--danger);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* ---- formatted chat turns ----
+   The bubble keeps its own padding, size, and per-role tint (see `.turn-text`); the
+   `markdown` class only governs what's inside it. So the shared block's page-level
+   padding and font-size are handed back here - a turn is a bubble, not a document. */
+.turn-text.markdown {
+  /* Undoing `.turn-text`'s `pre-wrap`, which is what makes RAW text readable and what
+     wrecks parsed text: the newlines between generated block elements would each render
+     as a real blank line, pushing every paragraph and fence ~28px apart. Parsed markdown
+     carries its own spacing in margins - `remark-breaks` is what preserves the single
+     newlines *inside* a paragraph that `pre-wrap` used to. */
+  white-space: normal;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* A turn's first and last blocks sit flush against the bubble. Markdown's outer margins
+   would otherwise pad every message unevenly depending on whether it opened with a
+   paragraph, a list, or a fence. */
+.turn-text.markdown > :first-child {
+  margin-top: 0;
+}
+.turn-text.markdown > :last-child {
+  margin-bottom: 0;
+}
+/* Fences sit on the page background rather than `--bg-2`: inside an already-tinted
+   bubble, a panel-coloured block on a panel-coloured bubble has nothing to separate it,
+   and the per-role tints (blue for you, purple for Foreman) make that worse. */
+.turn-text.markdown pre {
+  background: var(--bg);
+  margin: 8px 0;
+}
+.turn-text.markdown code {
+  background: color-mix(in oklab, var(--bg) 60%, transparent);
+}
+.turn-text.markdown pre code {
+  background: none;
+}
+/* Headings in a chat turn are a message's internal structure, not a document outline -
+   an agent's `##` shouldn't tower over the turn it lives in. */
+.turn-text.markdown h1,
+.turn-text.markdown h2,
+.turn-text.markdown h3 {
+  margin: 12px 0 6px;
+  font-size: 13.5px;
+}
+.turn-text.markdown table {
+  font-size: 12.5px;
 }
 
 /* ---- keyboard command bar ---- */
@@ -3593,7 +3725,7 @@ kbd {
 .dl-hunk .dl-text {
   color: color-mix(in oklab, var(--working) 55%, var(--muted));
 }
-/* ---- alerts / AFK control ---- */
+/* ---- alerts / away control ---- */
 .alertbar {
   position: relative;
 }
@@ -4061,8 +4193,48 @@ kbd {
   color: var(--muted);
   padding: 0 4px;
 }
-.foreman-modes .alert-row input[type="radio"] {
+.foreman-modes .alert-row input[type="radio"],
+.foreman-modes .alert-row input[type="checkbox"] {
   accent-color: var(--idle);
+}
+/* The wrap-up ACTION, nested inside the trigger group it depends on. Indented and
+   rule-marked rather than boxed: a second border inside the first reads as a sibling
+   panel, while the rule + indent reads as "these belong to the above". */
+.foreman-wrapup-action {
+  border: 0;
+  /* Mixed toward --fg rather than plain --border-soft: at 1px on the popover's dark
+     fill that token is effectively invisible, and an indent with no rule reads as a
+     ragged margin instead of a hierarchy. */
+  border-left: 1px solid color-mix(in oklab, var(--fg) 16%, transparent);
+  border-radius: 0;
+  margin: 2px 0 0 6px;
+  padding: 0 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-inline-size: 0; /* a fieldset defaults to min-content and would refuse to shrink */
+}
+/* Disabled when no trigger is armed: deeper than the parent's 0.5, so "no moment for
+   this to happen at" reads as more-off than the group around it.
+
+   Scoped to an ENABLED parent, and paired with the rule below, because opacity
+   multiplies down the tree and a fieldset inside a disabled fieldset is itself matched
+   by :disabled - so an unscoped 0.55 lands at 0.5 x 0.55 = 0.275 the moment Foreman is
+   switched off, turning the radios from dimmed into all but invisible. With Foreman off
+   the whole group already carries the 0.5, and these radios should read exactly as
+   disabled as everything beside them, so the nested value is 1. */
+.foreman-modes:not(:disabled) > .foreman-wrapup-action:disabled {
+  opacity: 0.55;
+}
+.foreman-modes:disabled > .foreman-wrapup-action:disabled {
+  opacity: 1;
+}
+.foreman-wrapup-action legend {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 0 4px 0 0;
 }
 /* The Live-mode read-only summary in the popover: a deep-link to Settings → Foreman,
    where the trusted-repo list is now edited. Not an editor - a status line you can click. */
@@ -4083,6 +4255,14 @@ kbd {
 .foreman-live-repos:hover {
   background: color-mix(in oklab, var(--idle) 16%, transparent);
   border-color: color-mix(in oklab, var(--idle) 45%, var(--border-soft));
+}
+/* Foreman is switched off, so "Live in 3 repos" is not a live fact - it is what the mode
+   WOULD be. Dimmed to the same 0.5 as the fieldsets around it rather than disabled: this
+   is a deep-link to Settings, not a knob, and it stays worth following while Foreman is
+   off. A class rather than `:disabled` for exactly that reason - the button is not in a
+   fieldset and must keep working. */
+.foreman-live-repos.is-off {
+  opacity: 0.5;
 }
 
 /* ---- Foreman settings category (the panel behind the rail) ---- */
@@ -4783,6 +4963,13 @@ kbd {
   border: 1px solid var(--border-soft);
   border-radius: 8px;
 }
+/* Disabled with the rest of the popover, at the SAME 0.5 `.foreman-modes` uses. Without
+   this the two number inputs - mono, boxed, high-contrast - were the brightest things on
+   a switched-off panel, reading as the one control still live. Nothing nests inside this
+   fieldset, so there is no opacity to compound. */
+.foreman-knobs:disabled {
+  opacity: 0.5;
+}
 .foreman-knobs legend {
   padding: 0 4px;
   font-size: 10px;
@@ -5280,6 +5467,8 @@ kbd {
   display: flex;
   padding: 16px 20px 20px;
   overflow-x: auto;
+  /* Anchors the refused-drop message to the board rather than the viewport. */
+  position: relative;
 }
 /* Inter-column spacing lives on the columns, not the flex `gap`: the always-rendered
    zero-width detail track would otherwise draw a phantom gap after the last column and
@@ -5316,6 +5505,10 @@ kbd {
    survives to hold a gap between the rail and the detail. */
 .board:not([data-focus="none"]) .board-col {
   flex-grow: 0;
+  /* flex-basis too, not just min-width: the backlog and an all-clear column are sized
+     by basis rather than by grow, so clearing min-width alone would leave them holding
+     232px / 250px of the rail's space open. */
+  flex-basis: 0;
   min-width: 0;
   opacity: 0;
   border-width: 0;
@@ -5382,6 +5575,7 @@ kbd {
   .board-detail {
     transition:
       flex-grow 0.34s ease,
+      flex-basis 0.34s ease,
       min-width 0.34s ease,
       opacity 0.26s ease,
       border-width 0.34s ease,
@@ -5442,6 +5636,266 @@ kbd {
   color: var(--dim);
 }
 
+/* ---- empty columns: all-clear, and the stash the rest fold into ----
+   An empty "needs you" keeps its column but not its share of the width: it has one
+   sentence to say, and 250px says it. Everything else that empties leaves the board
+   entirely (BoardView simply stops rendering it) and reappears as a chip in the
+   stash, so the columns that hold sessions get the whole board. */
+.board-col.is-calm {
+  flex-grow: 0;
+  flex-basis: 250px;
+  min-width: 218px;
+}
+.board-allclear {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 1;
+  margin: 0;
+  padding: 22px 10px;
+  text-align: center;
+}
+.board-allclear-tick {
+  font-size: 17px;
+  line-height: 1;
+  color: var(--idle);
+}
+.board-allclear b {
+  font-size: 12px;
+  font-weight: 640;
+  color: var(--muted);
+}
+.board-allclear span:last-child {
+  font-size: 11px;
+  color: var(--dim);
+}
+/* Put a revealed column back. Sits where the count does on a column that has one. */
+.board-restash {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.board-restash:hover {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--panel);
+}
+.board-stash {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-left: 14px;
+  padding-top: 2px;
+}
+.board-stash-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--dim);
+  text-align: center;
+}
+.board-stash-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.board-stash-chip:hover {
+  color: var(--muted);
+  border-style: solid;
+  background: var(--panel);
+}
+.board-stash-chip .board-swatch {
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+/* ---- backlog column ----
+   Dashed and off-palette because it holds TASKS, not sessions: nothing in it is a
+   live agent, and it should never be mistaken for a sixth state. Never shrinks or
+   hides when empty - it is a drop target and an inbox, and one that vanishes when
+   empty is one you cannot drop into. */
+.board-backlog {
+  flex-grow: 0;
+  flex-basis: 232px;
+  min-width: 208px;
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--pr-merged) 30%, var(--border));
+  background: color-mix(in oklab, var(--pr-merged) 5%, transparent);
+}
+.board-backlog .board-swatch {
+  border-radius: 2px;
+  background: var(--pr-merged);
+}
+.board-backlog .board-col-head h2 {
+  color: color-mix(in oklab, var(--pr-merged) 65%, var(--fg));
+}
+.bl-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px 9px 13px;
+  background: linear-gradient(var(--panel), var(--panel-2));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: grab;
+  transition:
+    transform 0.14s ease,
+    border-color 0.14s ease,
+    opacity 0.14s ease;
+}
+.bl-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 10px 0 0 10px;
+  background: var(--pr-merged);
+  opacity: 0.75;
+}
+.bl-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in oklab, var(--pr-merged) 45%, var(--border));
+}
+.bl-card:active {
+  cursor: grabbing;
+}
+.bl-card.is-busy {
+  opacity: 0.55;
+  cursor: default;
+}
+.bl-title {
+  font-size: 12px;
+  line-height: 1.42;
+}
+.bl-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  color: var(--dim);
+}
+.bl-kind,
+.bl-agent {
+  padding: 0 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+}
+.bl-kind-ship {
+  color: var(--idle);
+}
+.bl-kind-scout {
+  color: var(--working);
+}
+.bl-added {
+  margin-left: auto;
+}
+.bl-launch {
+  align-self: flex-start;
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.bl-launch:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--select) 45%, var(--border));
+}
+.bl-launch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ---- dragging a backlog card over the board ----
+   While a card is in the air the board answers one question and no others: which
+   agents may take it. Everything that can't recedes; the ones that can are the only
+   lit things on screen. */
+.board[data-dragging="task"] .tile:not(.can-drop) {
+  opacity: 0.32;
+}
+.board[data-dragging="task"] .board-col:not(.tone-idle):not(.board-backlog) {
+  opacity: 0.6;
+}
+.tile.can-drop {
+  border-color: color-mix(in oklab, var(--select) 55%, var(--border));
+}
+.tile.drop-over {
+  border-color: var(--select);
+  box-shadow:
+    0 0 0 2px var(--select),
+    0 0 22px color-mix(in oklab, var(--select) 30%, transparent);
+  transform: translateY(-2px);
+}
+.tile-drop-hint {
+  font-size: 10.5px;
+  font-weight: 650;
+  color: var(--select);
+}
+/* A refused drop, reported where the drop happened. Not a toast that steals focus -
+   just a line the operator can read and dismiss. */
+.board-drop-error {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid color-mix(in oklab, var(--danger) 45%, var(--border));
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+}
+.board-drop-error button {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--dim);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.board-drop-error button:hover {
+  color: var(--fg);
+}
+
 /* ---- board tile ---- */
 .tile {
   position: relative;
@@ -5471,6 +5925,34 @@ kbd {
   width: 3px;
   border-radius: 10px 0 0 10px;
   background: var(--tone-color, var(--neutral));
+}
+/* The whole tile opens the session, but the tile is not itself a button - the PR flag
+   is a link, and a link cannot live inside one. So the open action is a transparent
+   button stretched over the tile, kept there purely to be focusable and labelled for
+   the keyboard. It takes no pointer events: mouse clicks hit the content and bubble to
+   the tile root, which leaves every `title` underneath it hoverable. */
+.tile-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.tile-open:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}
+.tile-flag-link {
+  position: relative;
+  z-index: 1;
+  text-decoration: none;
+}
+.tile-flag-link:hover {
+  border-color: currentcolor;
+  background: color-mix(in oklab, currentcolor 12%, transparent);
 }
 .tile:hover {
   transform: translateY(-2px);
@@ -5511,7 +5993,9 @@ kbd {
   overflow: hidden;
 }
 /* The no-mistakes pipeline as a hairline: one segment per step, same tones as the
-   dots on the card. Enough to see a gate parked; the drawer has the detail. */
+   dots on the card. On a board tile it sits under the step name `.tile-gate` draws,
+   so the bar carries the shape and the label carries the stage; the drawer has the
+   findings and the buttons. */
 .tile-rail {
   display: flex;
   gap: 2px;
@@ -5601,6 +6085,93 @@ kbd {
   white-space: nowrap;
 }
 
+/* ---- board tile: live detail (activity · gate step · runtime) ----
+   The three things a board tile now surfaces without being opened. All rendered as
+   inline content, laid out with flex - the tile draws its whole body as spans. */
+
+/* What the session is doing this second. The glyph spins while it works, and stands
+   still for anyone who asked for less motion. */
+.tile-activity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.tile-activity .ta-glyph {
+  flex: none;
+  font-size: 10px;
+  color: var(--working);
+  animation: tile-activity-spin 1.6s linear infinite;
+}
+.tile-activity .ta-txt {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes tile-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile-activity .ta-glyph {
+    animation: none;
+  }
+}
+
+/* The gate hairline, now with a name above it. The label wears the tone its live
+   segment carries, so the word and the bar can't disagree. */
+.tile-gate {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.tile-gate-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 10.5px;
+}
+.gate-brand {
+  flex: none;
+  color: var(--dim);
+}
+.gate-step {
+  min-width: 0;
+  font-weight: 640;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gate-step.gate-working {
+  color: var(--working);
+}
+.gate-step.gate-attention {
+  color: var(--attention);
+}
+.gate-step.gate-idle {
+  color: var(--idle);
+}
+.gate-step.gate-danger {
+  color: var(--danger);
+}
+.gate-pos {
+  flex: none;
+  margin-left: auto;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The shared runtime row sits in the tile's own flex column; drop its card margins so
+   the tile's gap does the spacing. */
+.tile .card-runtime {
+  margin: 0;
+}
+
 /* ---- hosting an expanded card inside a pane ----
    `.card.expanded` is sized for focus mode in the grid: it spans every column, jumps to
    the top of the grid, and measures itself against the viewport minus the topbar and the
@@ -5688,6 +6259,51 @@ kbd {
   color: var(--muted);
 }
 
+/* ---- settings: toggle row ----
+   Deliberately the same card as `.layout-option`, minus the radio's exclusivity. A
+   setting shouldn't change shape depending on whether it's one of three answers or a
+   yes/no, and the two categories sit one click apart in the same rail. */
+.settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background 0.14s ease;
+}
+.settings-toggle:hover {
+  border-color: color-mix(in oklab, var(--working) 40%, var(--border));
+}
+.settings-toggle.is-on {
+  border-color: color-mix(in oklab, var(--working) 55%, var(--border));
+  background: color-mix(in oklab, var(--working) 9%, var(--panel));
+}
+.settings-toggle input {
+  margin: 2px 0 0;
+  accent-color: var(--working);
+}
+.settings-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.settings-toggle-label {
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--fg);
+}
+.settings-toggle-desc {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 /* Below this the console's rail and the board's columns stop being a layout and start
    being a squeeze. Both fall back to the card grid's shape rather than pretending. */
 @media (max-width: 760px) {
@@ -5704,5 +6320,765 @@ kbd {
   }
   .board-col {
     max-height: none;
+  }
+}
+
+/* ---- away mode: the return digest ---- */
+.away-digest {
+  width: min(560px, 100%);
+  align-self: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.away-digest-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.away-digest-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+/* Pushes the close button to the far edge and keeps the duration beside the title. */
+.away-digest-span {
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-right: auto;
+}
+.away-digest-body {
+  padding: 16px 18px 6px;
+  max-height: 60vh;
+  overflow: auto;
+}
+.away-digest-narrative {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+/* The deterministic tier. Sits under the prose as the thing you can always trust,
+   so it reads as a subheading rather than competing with the narrative. */
+.away-digest-rollup {
+  margin: 0 0 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 650;
+  color: var(--muted);
+}
+/* No narrative (claude missing or logged out): the rollup carries the summary on
+   its own, so it reads as prose rather than as a caption for absent prose. */
+.away-digest-rollup.is-lead {
+  font-size: 13.5px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--text);
+}
+.away-digest-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.away-digest-list li {
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 6px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.away-digest-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+
+/* ---- Pane option dialog (a menu the session is parked on, answerable from here) ---- */
+
+/* Keyed to --attention, the same colour the escalated Foreman note carries: both mean a
+   session has stopped and is waiting on this human. */
+.pane-dialog {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--attention);
+  border-radius: 10px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pd-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--bg);
+  background: var(--attention);
+}
+.pd-hint {
+  font-size: 11px;
+}
+.pd-prompt {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+.pd-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pd-option {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-2);
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.pd-option:hover:not(:disabled) {
+  border-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 8%, var(--bg-2));
+}
+.pd-option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* Where an Enter typed in the terminal would land right now. Marked so this view and a
+   tab open on the same session don't disagree about the default. */
+.pd-current {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border-soft));
+}
+.pd-num {
+  flex: none;
+  min-width: 1.1em;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pd-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pd-label {
+  font-size: 13px;
+  line-height: 1.4;
+  /* Labels come off a hard-wrapping viewport and can be long (a full bash command in a
+     "don't ask again" row); wrap them rather than letting one clip or stretch the card. */
+  overflow-wrap: anywhere;
+}
+.pd-detail {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.pd-spin {
+  margin-left: auto;
+  flex: none;
+  font-size: 11px;
+}
+.pd-error {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--danger);
+}
+.pd-note {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+/* A multi-select row. Aligned to the box rather than the baseline so a wrapped label's
+   second line doesn't drift out from under its own checkbox. */
+.pd-check {
+  align-items: flex-start;
+}
+/* The number sits on the label's first line, not on the box's centre. */
+.pd-check .pd-num {
+  line-height: 1.4;
+  font-size: 11px;
+}
+.pd-box {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--bg);
+}
+.pd-checked {
+  border-color: color-mix(in oklab, var(--attention) 45%, var(--border-soft));
+  background: color-mix(in oklab, var(--attention) 8%, var(--bg-2));
+}
+.pd-checked .pd-box {
+  border-color: var(--attention);
+  background: var(--attention);
+}
+.pd-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.pd-submit {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--attention);
+  background: var(--attention);
+  color: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 120ms ease;
+}
+.pd-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.pd-submit:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ---------------------------------------------------------------------------
+   Foreman: the strip, the inline episode, and the history drawer.
+
+   Replaces the single `.foreman-note` block in the detail pane, which carried the
+   record and the action together and pinned both - so a long escalation covered the
+   conversation it was about. The prose now scrolls with the chat (`.transcript-
+   episode`), the decision stays pinned as one line (`.foreman-strip`), and the
+   archive lives behind a rail (`.foreman-drawer`).
+
+   `.foreman-note` itself is untouched: the grid card still uses it, where there is no
+   transcript to inline into and its own max-height cap already bounds it.
+   --------------------------------------------------------------------------- */
+
+/* --- the pinned one-liner --- */
+
+.foreman-strip {
+  flex: none;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 10px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.foreman-strip.fs-escalated {
+  border-left-color: var(--attention);
+}
+.foreman-strip.fs-pending {
+  border-left-color: var(--working);
+}
+
+.fs-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+/* The toggle takes all the slack so the ellipsis lands on the summary and never on
+   the badge or the disposition, which are the two things that must always be legible. */
+.fs-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+}
+.fs-toggle:hover .fs-summary {
+  color: var(--fg);
+}
+.fs-toggle:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.fs-disp {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* The one rule that makes the strip un-growable: one line, clipped. However much
+   Foreman writes, this is the same height. */
+.fs-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fs-caret {
+  flex: none;
+  font-size: 10px;
+  color: var(--dim);
+  transition: transform 0.18s ease;
+}
+.fs-toggle[aria-expanded="true"] .fs-caret {
+  transform: rotate(180deg);
+}
+
+.fs-go {
+  flex: none;
+}
+
+/* Expanding must not re-create the bug the strip exists to fix. The collapsed row is
+   already un-growable (`.fs-summary`); this bounds the OPEN state, where the
+   recommendation is the one child with no length limit and would otherwise push the
+   transcript, the composer and its own buttons off the bottom of the pane. */
+.fs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 10px;
+  max-height: 50vh;
+  min-height: 0;
+}
+/* Only the recommendation gives ground, mirroring `.card.expanded .fn-brief`: the
+   actions stay pinned outside the scrolling region, because a note you have to scroll
+   to reach Dismiss in is a note that reads as broken. `min-height` is spelled out
+   because a non-visible overflow zeroes a flex item's automatic minimum. */
+.fs-body .fn-rec {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.fs-body .fn-hint {
+  flex: none;
+}
+.fs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+}
+.fs-jump {
+  margin-left: auto;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.fs-jump:hover {
+  color: var(--working);
+}
+
+/* --- an episode, wherever it is rendered --- */
+
+.foreman-episode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.foreman-episode.fe-escalated {
+  border-left-color: var(--attention);
+}
+.foreman-episode.fe-pending {
+  border-left-color: var(--working);
+}
+.foreman-episode.fe-answered {
+  border-left-color: var(--idle);
+}
+.foreman-episode.fe-skipped {
+  border-left-color: var(--neutral);
+}
+
+.fe-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fe-disp {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.fe-time {
+  margin-left: auto;
+  font-size: 11px;
+}
+.fe-purpose {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+}
+
+/* No max-height, deliberately. In the scroller a long brief is just a long message;
+   the height cap belonged to the old pinned card and left with it. */
+.fe-brief {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--muted);
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+}
+.fe-brief :first-child {
+  margin-top: 0;
+}
+.fe-brief :last-child {
+  margin-bottom: 0;
+}
+
+.fe-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fe-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.fe-label span {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+/* Monospace and pre-wrapped because a terminal ask is a literal screen capture: the
+   `❯` cursor marks where an Enter would have landed, and the rows are aligned by
+   column. Proportional type would misrepresent what the model was looking at. */
+.fe-ask {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--claude);
+  border-radius: 8px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.fe-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.fe-meta span {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  border: 1px solid var(--border-soft);
+  background: var(--bg-2);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.fe-resolution {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--idle);
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+.fe-res-who {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--idle);
+}
+.fe-res-option {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.fe-res-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  border-left: 2px solid var(--border);
+  padding-left: 9px;
+}
+
+/* --- the inline entry in the conversation --- */
+
+.transcript-episode {
+  margin: 4px 0;
+}
+.transcript-episode .foreman-episode {
+  background: color-mix(in oklab, var(--panel-2) 90%, var(--attention) 4%);
+}
+
+/* --- the rail + drawer --- */
+
+/* Sits in the tab row, pushed to its far end - see the comment at its call site.
+   Not a tab: no underline, no selected state, and it opens a surface rather than
+   switching the body, so it must not read as a peer of Conversation/Gate/Diff. */
+.foreman-rail {
+  margin-left: auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.foreman-rail:hover {
+  color: var(--fg);
+  border-color: var(--neutral);
+}
+.foreman-rail[aria-expanded="true"] {
+  color: var(--fg);
+  border-color: var(--attention);
+  background: color-mix(in oklab, var(--attention) 10%, transparent);
+}
+.foreman-rail:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.fr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--attention);
+  flex: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--attention) 22%, transparent);
+}
+
+/* Anchored to the detail pane rather than the viewport: it is this session's record,
+   so it must not float over the fleet when the console's other panes are in view. */
+.cdetail {
+  position: relative;
+}
+.foreman-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, 70%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.32);
+}
+
+.fd-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 15px;
+  border-bottom: 1px solid var(--border);
+}
+.fd-title {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fd-back,
+.fd-close {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fd-close {
+  margin-left: auto;
+  border-color: var(--border);
+}
+.fd-back:hover,
+.fd-close:hover {
+  color: var(--fg);
+  border-color: var(--neutral);
+}
+.fd-back:focus-visible,
+.fd-close:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+
+.fd-pane {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 13px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.fd-empty {
+  margin: 0;
+  font-size: 13px;
+}
+
+.fd-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.fd-row:hover {
+  border-color: var(--neutral);
+}
+.fd-row:focus-visible {
+  outline: 2px solid var(--working);
+  outline-offset: 2px;
+}
+.fd-row-open {
+  border-left-color: var(--attention);
+  background: color-mix(in oklab, var(--panel-2) 88%, var(--attention) 6%);
+}
+.fd-row-done {
+  border-left-color: var(--idle);
+}
+.fd-row-skip {
+  border-left-color: var(--neutral);
+}
+
+.fd-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fd-row-state {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.fd-row-open .fd-row-state {
+  color: var(--attention);
+}
+.fd-row-done .fd-row-state {
+  color: var(--idle);
+}
+.fd-row-when {
+  margin-left: auto;
+  font-size: 10.5px;
+}
+
+/* The question leads the row, in the pane's own typeface, clamped to two lines: it is
+   what a reader scans for when they are looking for a particular past decision. */
+.fd-row-q {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.fd-row-verdict {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-caret {
+    transition: none;
   }
 }

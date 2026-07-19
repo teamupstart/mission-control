@@ -3,6 +3,7 @@ import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type {
   ForemanConfig,
   ForemanLeaseResult,
+  RecordEpisode,
   SetNote,
   SetWorkItemState,
 } from "@shared/protocol.ts";
@@ -10,6 +11,7 @@ import type {
   ReviewItem,
   Session,
   SessionDiff,
+  SessionGoal,
   SessionNote,
   SessionQueue,
   ToolCall,
@@ -251,10 +253,19 @@ export class ForemanClient implements ForemanActions {
       throw new InjectError(`inject ${id} -> ${String(err)}`, true);
     }
     if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string; pasted?: boolean };
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        pasted?: boolean;
+        paneBlocked?: boolean;
+      };
+      // `paneBlocked` reads the opposite way round from `pasted`: a MISSING field means
+      // false, because only the daemon can know a human is in copy-mode and silence is
+      // not that claim. Reading it as true would let any malformed error response buy an
+      // item unlimited retries.
       throw new InjectError(
         `inject ${id} -> ${res.status}${body.error ? `: ${body.error}` : ""}`,
         body.pasted !== false,
+        body.paneBlocked === true,
       );
     }
   }
@@ -281,8 +292,21 @@ export class ForemanClient implements ForemanActions {
     return (await res.json()) as WorkItem;
   }
 
-  async markWrapupAsked(sessionId: string): Promise<void> {
-    const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`);
+  /**
+   * Stamp the wrap-up ask, so the Ship it? card renders.
+   *
+   * `clearAnswer` is the PROMPTED trigger's flag and must stay opt-in: that trigger can
+   * raise a second ask on a row whose `wrapupAnswer` belongs to a previous episode, and
+   * the card hides on a non-null answer - so without clearing it the new question is
+   * stamped and then invisibly swallowed. The DRAIN path must never pass it: there the
+   * answer it would clobber is the answer to the ask being raised.
+   */
+  async markWrapupAsked(sessionId: string, opts?: { clearAnswer?: boolean }): Promise<void> {
+    const res = await send(
+      "POST",
+      `/api/sessions/${enc(sessionId)}/queue/wrapup/asked`,
+      opts?.clearAnswer ? { clearAnswer: true } : undefined,
+    );
     if (!res.ok) throw new Error(`markWrapupAsked ${sessionId} -> ${res.status}`);
   }
 
@@ -295,6 +319,25 @@ export class ForemanClient implements ForemanActions {
   async setWrapupAnswer(sessionId: string, answer: string): Promise<void> {
     const res = await send("PUT", `/api/sessions/${enc(sessionId)}/queue/wrapup`, { answer });
     if (!res.ok) throw new Error(`setWrapupAnswer ${sessionId} -> ${res.status}`);
+  }
+
+  /**
+   * Retire one episode of the `prompted` trigger. Throws on failure, and the caller
+   * must treat that as fatal to the episode: this write is what stops the trigger
+   * re-firing, so proceeding to type after it failed is the double-push.
+   */
+  async markPromptedWrapup(sessionId: string, goal: string): Promise<void> {
+    const res = await send("POST", `/api/sessions/${enc(sessionId)}/queue/wrapup/prompted`, {
+      goal,
+    });
+    if (!res.ok) throw new Error(`markPromptedWrapup ${sessionId} -> ${res.status}`);
+  }
+
+  /** The full goal record - the verbatim prompt, which the card summary never carries. */
+  async goal(sessionId: string): Promise<SessionGoal | null> {
+    const res = await send("GET", `/api/sessions/${enc(sessionId)}/goal`);
+    if (!res.ok) return null;
+    return (await res.json()) as SessionGoal;
   }
 
   note(id: string): Promise<SessionNote | null> {
@@ -328,6 +371,25 @@ export class ForemanClient implements ForemanActions {
     const res = await send("POST", `/api/reviews/${enc(reviewId)}/resolve`, { action, response });
     if (!res.ok) throw new Error(`resolveReview ${reviewId} -> ${res.status}`);
     return res.json();
+  }
+
+  /**
+   * Record the episode behind a note: what the child was asked, and what we did.
+   *
+   * Never throws. It runs after the answer has been delivered and the note stamped,
+   * so by then the work has SUCCEEDED - letting a failed audit write surface as an
+   * error would have the worker log a failure for a session it handled correctly,
+   * and (worse) leave the loop looking like it should retry an act it must not
+   * repeat. The daemon side fails soft for the same reason; this closes the other
+   * half, where the request never arrives at all.
+   */
+  async recordEpisode(id: string, episode: RecordEpisode): Promise<void> {
+    try {
+      const res = await send("POST", `/api/sessions/${enc(id)}/foreman-episode`, episode);
+      if (!res.ok) console.error(`[foreman] episode not recorded: ${id} -> ${res.status}`);
+    } catch (err) {
+      console.error("[foreman] could not record the episode:", err);
+    }
   }
 
   async logGateReply(id: string, gate: GateRef, text: string): Promise<unknown> {

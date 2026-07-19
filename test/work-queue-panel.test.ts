@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { itemLabel, moveTarget, queueChipView } from "../src/web/lib/queue.ts";
+import { itemLabel, moveTarget, queueChipView, queueChipVisible } from "../src/web/lib/queue.ts";
+import { wrapupAskCopy } from "../src/shared/queue.ts";
 import { foremanSendBlock } from "../src/web/lib/foreman.ts";
 import type { ForemanSendBlock } from "../src/web/lib/foreman.ts";
 import type { SessionQueueSummary, WorkItem, WorkItemState } from "../src/shared/types.ts";
@@ -171,6 +172,7 @@ function mkSummary(over: Partial<SessionQueueSummary> = {}): SessionQueueSummary
     escalatedCount: 0,
     drained: false,
     wrapupAskedAt: null,
+    wrapupAnswered: false,
     updatedAt: 0,
     ...over,
   };
@@ -298,4 +300,44 @@ test("the counts never go negative when the summary can't be reconciled", () => 
   // "-2 stopped" would be a worse bug than whatever produced the mismatch.
   const chip = queueChipView(mkSummary({ openCount: 0, totalCount: 1, verifiedCount: 5 }));
   assert.doesNotMatch(chip.label, /-/);
+});
+
+// ---- the prompted trigger's ask, which lives on a row with NO items ----
+
+test("an outstanding wrap-up ask makes the chip render on an itemless row", () => {
+  // The `prompted` trigger fires only on a checkout with no work queue, so its ask
+  // lands on a zero-item row. Gated on `totalCount > 0`, the chip never rendered and
+  // the alert pointed the human at a card showing no queue affordance at all.
+  assert.equal(queueChipVisible(mkSummary({ totalCount: 0, wrapupAskedAt: 123 })), true);
+});
+
+test("an ANSWERED ask leaves nothing behind on an itemless row", () => {
+  // `wrapupAskedAt` is never cleared - on the drain path it doubles as the once-only
+  // guard - so keying visibility on it alone would grow a permanent, contentless chip
+  // on every session that ever wrapped up.
+  assert.equal(
+    queueChipVisible(mkSummary({ totalCount: 0, wrapupAskedAt: 123, wrapupAnswered: true })),
+    false,
+  );
+  assert.equal(queueChipVisible(mkSummary({ totalCount: 0 })), false);
+});
+
+test("an itemless chip says the one thing it has to say instead of an empty tally", () => {
+  const chip = queueChipView(mkSummary({ totalCount: 0, wrapupAskedAt: 123 }));
+  assert.ok(chip.label.trim().length > 0);
+  assert.equal(chip.attention, true);
+});
+
+test("the Ship it? copy never claims a queue drained when there was no queue", () => {
+  // The card and the toast come out of ONE call precisely so they cannot drift into
+  // describing the same ask two different ways - which is how a queue-drain sentence
+  // came to be shown on a session that never had a queue.
+  const prompted = wrapupAskCopy(false);
+  assert.doesNotMatch(prompted.card, /queue/i);
+  assert.doesNotMatch(prompted.alert, /queue/i);
+
+  const drain = wrapupAskCopy(true);
+  assert.match(drain.card, /queue/i);
+  assert.match(drain.alert, /queue/i);
+  assert.notEqual(prompted.card, drain.card);
 });

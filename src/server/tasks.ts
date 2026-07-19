@@ -104,7 +104,7 @@ export class TaskManager {
       // Registered synchronously, before this returns, so no caller can observe the task
       // without also observing that its title is still in flight.
       const settled = this.autoTitleThenDispatch(task.id, input.intent, input.backlog)
-        .catch(() => {})
+        .catch((err) => console.error("[title] titling failed:", err))
         .finally(() => this.titling.delete(task.id));
       this.titling.set(task.id, settled);
     }

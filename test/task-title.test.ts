@@ -1,9 +1,11 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Drives the REAL create path against a fake `claude`: a real spawn, a real envelope, the
 // real parse ladder, the real registry write. Everything is pinned before importing the
@@ -123,16 +125,45 @@ test("a whitespace-only title is rejected rather than stamped onto the card", as
   assert.equal(callCount(), before + 2, "a parse miss is retried exactly once");
 });
 
-test("the wait in front of a dispatch is bounded by two attempts at the per-attempt budget", async () => {
-  const { TITLE_TIMEOUT_MS } = await import("../src/server/task-title.ts");
-  // The knob feeds ONE attempt (see the constant's doc block), and the blank case above
-  // pins the attempt count at two - so this is the real ceiling on the dispatch path.
-  assert.equal(TITLE_TIMEOUT_MS, 5000, "the per-attempt budget is what the env var sets");
+test("the shipped per-attempt budget keeps the dispatch-path ceiling at ~16s", () => {
+  // Read from a CHILD process that never saw the override this file pins above. Read in-process
+  // it would only prove the env var is wired, and would still pass if the shipped default
+  // regressed to the 15s that made the real ceiling 30s - which is the regression it guards.
+  const env = { ...process.env };
+  delete env.MISSION_TASK_TITLE_TIMEOUT_MS;
+  delete env.TASK_TITLE_TIMEOUT_MS;
+  const out = execFileSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "-e",
+      'const m = await import("./src/server/task-title.ts"); console.log(m.TITLE_TIMEOUT_MS);',
+    ],
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), env, encoding: "utf8" },
+  );
+  const shipped = Number(out.trim().split("\n").filter(Boolean).at(-1));
+  // Per ATTEMPT, and the blank case above pins the attempt count at two.
+  assert.equal(shipped, 8000, "two attempts at this must total the documented ~16s ceiling");
 });
 
-test("dispatching while titling is in flight still cuts the branch from the model's title", async () => {
+test("dispatching while titling is in flight uses the model's title, not the heuristic one", async () => {
   setMode("good");
-  const tasks = new TaskManager(new Registry());
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+
+  // The title `Dispatcher.dispatch` reads - once, at the top - to cut the branch and name the
+  // tmux session, captured at the moment TaskManager delegates to it. Standing in for the real
+  // dispatch so the assertion is about that read and nothing else: a real one shells out to git
+  // against a repo that does not exist, on a timeline this test cannot await and `after` can
+  // outrun. The titling under test is untouched - real spawn, real parse ladder, real registry.
+  let titleAtDispatch: string | undefined;
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  inner.dispatcher.dispatch = async (id) => {
+    titleAtDispatch = registry.getTask(id)?.title;
+  };
+
   const t = create(tasks, "hey, could you please look at the flaky worktree cleanup on Reset?");
   // The heuristic title is on the card right now, and the operator can click Dispatch on it
   // immediately - this is that click, landing inside the titling window.
@@ -140,10 +171,8 @@ test("dispatching while titling is in flight still cuts the branch from the mode
 
   const dispatched = await tasks.dispatch(t.id);
 
-  // `Dispatcher.dispatch` reads the title once, synchronously, to build the branch and the
-  // tmux session. By the time dispatch returns, that read must have seen the model's title.
+  assert.equal(titleAtDispatch, "Fix flaky worktree cleanup", "the branch/tmux name is cut from this");
   assert.equal(dispatched?.title, "Fix flaky worktree cleanup");
-  assert.equal(tasks.get(t.id)?.title, "Fix flaky worktree cleanup");
 });
 
 test("dispatching a task removed during titling is refused rather than resurrecting it", async () => {

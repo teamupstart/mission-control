@@ -66,8 +66,10 @@ function taskOpen(s: Session): boolean {
  * This is what separates "stuck" from "done". A finished session is idle forever,
  * so a plain idle-timeout would eventually flag every session that ever completed
  * anything - which is noise, not signal. The distinguishing fact is whether
- * anything was still expected of it, which is exactly the gap
- * todo/foreman-upgrades.md:41 names as "session died with work unfinished".
+ * anything was still expected of it. This repo had already scored that exact gap
+ * against itself before away mode existed - see the "Turn-end safety" row of the
+ * capability comparison in todo/foreman-upgrades.md, which is what this rule
+ * partially closes.
  */
 function workOutstanding(s: Session): boolean {
   if (taskOpen(s)) return true;

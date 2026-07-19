@@ -3,7 +3,9 @@ import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
+import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
+import { useHarnesses } from "../useHarnesses.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 
@@ -17,6 +19,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "layout", label: "Layout", icon: "▦" },
   { id: "keyboard", label: "Keyboard", icon: "⌨" },
   { id: "skills", label: "Skills", icon: "✦" },
+  { id: "harnesses", label: "Harnesses", icon: "⚙" },
   { id: "foreman", label: "Foreman", icon: "●" },
 ] as const;
 
@@ -70,6 +73,9 @@ export function SettingsModal({
 }): React.JSX.Element {
   const [active, setActive] = useState<SettingsCategoryId>(initialCategory);
   const skills = useSkills();
+  // Owned here rather than by App, like `skills`: nothing outside this modal reads the
+  // harnesses config, so it polls only while the modal is open.
+  const harnesses = useHarnesses();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
   // Escape closes the modal. This is a plain bubble-phase handler with no "is a shortcut
@@ -127,6 +133,8 @@ export function SettingsModal({
         return <KeyboardPanel />;
       case "skills":
         return <SkillsPanel state={skills} />;
+      case "harnesses":
+        return <HarnessesPanel state={harnesses} />;
       case "foreman":
         return <ForemanSettingsPanel state={foreman} />;
     }

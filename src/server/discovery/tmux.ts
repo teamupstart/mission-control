@@ -1,4 +1,4 @@
-import { run } from "../util/exec.ts";
+import { run, type RunResult } from "../util/exec.ts";
 import { normTty } from "./tty.ts";
 
 /** One pane as reported by `tmux list-panes -a`. */
@@ -24,6 +24,37 @@ const FMT = [
   "#{pane_current_command}",
   "#{pane_current_path}",
 ].join("\x1f"); // unit separator: safe against spaces in names/paths
+
+const MODE_FMT = ["#{pane_in_mode}", "#{pane_mode}"].join("\x1f");
+
+/**
+ * The tmux mode a pane is sitting in (`copy-mode`, `view-mode`, ...), or null when it
+ * is in none and keystrokes reach the child normally.
+ *
+ * This exists for the writers in `actions.ts`, which cannot tell the difference on
+ * their own: a pane in a mode routes every key to tmux's OWN key table, so `send-keys`
+ * and `paste-buffer` still exit 0 while the child receives nothing.
+ *
+ * Null is also the answer when the question can't be asked - no tmux, no such pane, or
+ * a tmux too old to know these formats. That direction is deliberate. A probe that
+ * cannot see a mode is not evidence of one, and treating an unrecognized probe as
+ * "blocked" would refuse every write on such a system - a far worse failure than the
+ * swallowed keystroke this exists to catch. Only an explicit `1` blocks.
+ */
+export async function readTmuxPaneMode(
+  paneId: string,
+  exec: (bin: string, args: string[]) => Promise<RunResult> = run,
+): Promise<string | null> {
+  const res = await exec("tmux", ["display-message", "-p", "-t", paneId, MODE_FMT]);
+  if (res.code !== 0) return null;
+  const [inMode, mode] = res.stdout.trim().split("\x1f");
+  if (inMode?.trim() !== "1") return null;
+  // `pane_mode` is empty on tmux versions that predate it. The pane is still in a mode,
+  // so the flag alone has to be enough to block; naming it copy-mode is a guess, but it
+  // is the one a person can act on (and the one it nearly always is) where "unknown mode"
+  // would leave them nothing to clear.
+  return mode?.trim() || "copy-mode";
+}
 
 /** One attached tmux client as reported by `tmux list-clients`. */
 export interface TmuxClient {

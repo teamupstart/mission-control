@@ -4,7 +4,7 @@ import { capturePaneText } from "./discovery/pane-capture.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingPaste } from "./discovery/pane-paste.ts";
 import { optionRowMiss, readPaneDialog, type OptionRowMiss, type PaneDialog } from "./discovery/pane-dialog.ts";
-import { listTmuxClients } from "./discovery/tmux.ts";
+import { listTmuxClients, readTmuxPaneMode } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
   findSessionHostPane,
@@ -99,6 +99,50 @@ async function step(bin: string, args: string[], failMsg: string): Promise<Actio
   return check(await run(bin, args), failMsg);
 }
 
+/** Say a pane is in a tmux mode, in the terms the person who has to clear it needs. */
+function inModeError(mode: string): string {
+  return `this pane is in tmux ${mode}, which swallows keystrokes before Claude sees them - nothing was sent. Leave ${mode} (q, or scroll to the bottom) and it will go through.`;
+}
+
+/**
+ * Refuse a write when tmux would eat it, naming the mode. Null means go ahead.
+ *
+ * A pane in copy-mode routes every key to tmux's own key table: `send-keys` and
+ * `paste-buffer` BOTH still exit 0, and the child receives nothing. Reporting that as
+ * success is the one lie this module must never tell, because everything above it
+ * treats a successful write as proof the keystroke landed. Foreman is the sharp edge:
+ * it stamps a prompt handled only once the send succeeds (see `applyVerdict`), so a
+ * swallowed answer marks the question answered, the idempotency check then refuses to
+ * retry it, and the session waits on a human forever underneath a note claiming it was
+ * already answered. That is not hypothetical - it is how a session sat in "Needs You"
+ * with `answered: option 1` written above the menu it never actually answered.
+ *
+ * This deliberately does NOT cancel the mode to push the keys through. A pane in
+ * copy-mode is a PERSON reading their own scrollback, and yanking them out of it for a
+ * background write would be a worse bug than the wait. Refusing keeps the failure a
+ * no-op by construction, exactly like every other guard here, and it is transient:
+ * callers retry on their next sweep and the write lands the moment the human leaves.
+ */
+async function tmuxWriteBlock(
+  paneId: string,
+  exec?: (bin: string, args: string[]) => Promise<RunResult>,
+): Promise<string | null> {
+  const mode = await readTmuxPaneMode(paneId, exec);
+  return mode === null ? null : inModeError(mode);
+}
+
+/**
+ * Send keystrokes to a tmux pane, refusing when the pane is in a mode that would
+ * swallow them. Every tmux keystroke in this module goes through here, so no path can
+ * forget the check - see `tmuxWriteBlock` for why a swallowed key is worse than a
+ * refused one.
+ */
+async function tmuxSendKeys(paneId: string, keys: string[], failMsg: string): Promise<ActionResult> {
+  const blocked = await tmuxWriteBlock(paneId);
+  if (blocked) return { ok: false, error: blocked };
+  return step("tmux", ["send-keys", "-t", paneId, ...keys], failMsg);
+}
+
 /**
  * Type text into a session's prompt, optionally submitting with Enter. Routes
  * through tmux `send-keys` or wezterm `cli send-text` depending on which handle
@@ -116,10 +160,10 @@ export async function sendText(
 async function sendTextLocked(session: Session, text: string, submit: boolean): Promise<ActionResult> {
   if (session.tmux) {
     const target = session.tmux.paneId;
-    const typed = await step("tmux", ["send-keys", "-t", target, "-l", text], "tmux send-keys failed");
+    const typed = await tmuxSendKeys(target, ["-l", text], "tmux send-keys failed");
     if (!typed.ok) return typed;
     if (submit) {
-      const entered = await step("tmux", ["send-keys", "-t", target, "Enter"], "tmux Enter failed");
+      const entered = await tmuxSendKeys(target, ["Enter"], "tmux Enter failed");
       if (!entered.ok) return entered;
     }
     return { ok: true };
@@ -291,6 +335,11 @@ async function injectPromptLocked(
 
   if (session.tmux) {
     const target = session.tmux.paneId;
+    // Before anything else: `paste-buffer` is swallowed by copy-mode exactly like
+    // `send-keys` is, and just as silently, so the "the text IS in the pane" invariant
+    // below is only true once this has cleared.
+    const blocked = await tmuxWriteBlock(target, deps.exec);
+    if (blocked) return { ok: false, error: blocked, pasted: false };
     const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
     const set = await cmd("tmux", ["set-buffer", "-b", buf, "--", text], "tmux set-buffer failed");
     if (!set.ok) return { ...set, pasted: false };
@@ -347,7 +396,7 @@ async function injectPromptLocked(
 async function injectShiftTab(session: Session): Promise<ActionResult> {
   if (session.tmux) {
     // No -l here: we want tmux to interpret `BTab` as a key name, not literal text.
-    return step("tmux", ["send-keys", "-t", session.tmux.paneId, "BTab"], "tmux send-keys BTab failed");
+    return tmuxSendKeys(session.tmux.paneId, ["BTab"], "tmux send-keys BTab failed");
   }
   if (session.wezterm) {
     const bin = resolveWeztermBin();
@@ -469,7 +518,7 @@ const MAX_ARROW_STEPS = 12;
 async function injectArrow(session: Session, dir: "Up" | "Down"): Promise<ActionResult> {
   if (session.tmux) {
     // No -l: `Up`/`Down` are tmux key names, not literal text to type.
-    return step("tmux", ["send-keys", "-t", session.tmux.paneId, dir], `tmux send-keys ${dir} failed`);
+    return tmuxSendKeys(session.tmux.paneId, [dir], `tmux send-keys ${dir} failed`);
   }
   if (session.wezterm) {
     const bin = resolveWeztermBin();
@@ -571,7 +620,7 @@ const NO_MENU = "no option menu is on this session's screen";
 /** Press Enter, with no text before it - the confirm half of a menu selection. */
 async function injectEnter(session: Session): Promise<ActionResult> {
   if (session.tmux) {
-    return step("tmux", ["send-keys", "-t", session.tmux.paneId, "Enter"], "tmux Enter failed");
+    return tmuxSendKeys(session.tmux.paneId, ["Enter"], "tmux Enter failed");
   }
   const bin = resolveWeztermBin();
   const id = String(session.wezterm!.paneId);

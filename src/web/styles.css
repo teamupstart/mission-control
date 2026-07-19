@@ -3725,7 +3725,7 @@ kbd {
 .dl-hunk .dl-text {
   color: color-mix(in oklab, var(--working) 55%, var(--muted));
 }
-/* ---- alerts / AFK control ---- */
+/* ---- alerts / away control ---- */
 .alertbar {
   position: relative;
 }
@@ -6266,4 +6266,83 @@ kbd {
   .board-col {
     max-height: none;
   }
+}
+
+/* ---- away mode: the return digest ---- */
+.away-digest {
+  width: min(560px, 100%);
+  align-self: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.away-digest-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel-2);
+}
+.away-digest-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+/* Pushes the close button to the far edge and keeps the duration beside the title. */
+.away-digest-span {
+  font-size: 11.5px;
+  color: var(--dim);
+  margin-right: auto;
+}
+.away-digest-body {
+  padding: 16px 18px 6px;
+  max-height: 60vh;
+  overflow: auto;
+}
+.away-digest-narrative {
+  margin: 0 0 12px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+/* The deterministic tier. Sits under the prose as the thing you can always trust,
+   so it reads as a subheading rather than competing with the narrative. */
+.away-digest-rollup {
+  margin: 0 0 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 650;
+  color: var(--muted);
+}
+/* No narrative (claude missing or logged out): the rollup carries the summary on
+   its own, so it reads as prose rather than as a caption for absent prose. */
+.away-digest-rollup.is-lead {
+  font-size: 13.5px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--text);
+}
+.away-digest-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.away-digest-list li {
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 6px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.away-digest-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel-2);
 }

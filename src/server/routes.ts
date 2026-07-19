@@ -5,6 +5,7 @@ import type { TypeOf, ZodTypeAny } from "zod";
 import {
   AddWorkItemSchema,
   AssignTaskSchema,
+  AwayConfigPatchSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
@@ -58,6 +59,9 @@ import {
   releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { getAwayConfig, setAwayConfig } from "./away/config.ts";
+import { buildDigest } from "./away/digest.ts";
+import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -214,6 +218,8 @@ export function buildApp(
   reviews: ReviewManager,
   tasks: TaskManager,
   queues: QueueManager,
+  /** Optional so tests can build an app without the away poller running. */
+  away?: AwayWatcher,
 ): Hono {
   const app = new Hono();
 
@@ -880,6 +886,34 @@ export function buildApp(
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+
+  // --- Away mode (localhost only) ---
+  app.get("/api/away", (c) => c.json(getAwayConfig()));
+  app.put("/api/away", async (c) => {
+    const parsed = await parseBody(c, AwayConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const next = setAwayConfig(parsed.data);
+    // Close the window synchronously on return: the poll tick is up to AWAY_POLL_MS
+    // behind, and the client's follow-up digest read would otherwise beat it.
+    if (!next.away) away?.flush();
+    return c.json(next);
+  });
+
+  /** Currently-stalled sessions. Empty when stall detection is off. */
+  app.get("/api/away/stalls", (c) => c.json(away?.stalls() ?? []));
+
+  /**
+   * The return digest, read once. 204 when there is nothing to report - either you
+   * were never away, or nothing happened while you were, and a digest that says "0
+   * finished" is a notification that says nothing.
+   */
+  app.get("/api/away/digest", async (c) => {
+    const buf = away?.takePending();
+    if (!buf) return c.body(null, 204);
+    const digest = await buildDigest(buf, Date.now());
+    if (digest.empty) return c.body(null, 204);
+    return c.json(digest);
+  });
 
   // A LEASED heartbeat: acquires when free/expired, renews when already ours, and
   // reports leader:false otherwise. The old bare heartbeat was one module-global

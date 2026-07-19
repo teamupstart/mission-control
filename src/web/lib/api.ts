@@ -8,6 +8,8 @@ import type {
   SkillsView,
 } from "@shared/types.ts";
 import type {
+  AwayConfig,
+  AwayConfigPatch,
   ForemanConfig,
   ForemanConfigPatch,
   HarnessesConfig,
@@ -16,6 +18,8 @@ import type {
   SkillsConfigPatch,
 } from "@shared/protocol.ts";
 import type { Attachment } from "@shared/attachments.ts";
+import type { AwayDigest } from "@shared/away-buffer.ts";
+import type { Stall } from "@shared/stall.ts";
 
 export interface ActionResult {
   ok: boolean;
@@ -39,6 +43,20 @@ export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/c
 export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/** Away mode: whether you're away, since when, and the stall thresholds. */
+export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
+/**
+ * The return digest, read once - the daemon drops it as it hands it over, so a
+ * refresh doesn't re-announce it. Null when there is nothing to report (a 204),
+ * which is the common case: you were never away, or nothing happened.
+ */
+export const fetchAwayDigest = () => fetchJson<AwayDigest>("/api/away/digest");
+/**
+ * The sessions the daemon currently reads as stuck. Fetched rather than derived:
+ * a stall is elapsed silence, and `sessionEqual` keeps `lastActivity` out of the
+ * SSE change comparison, so the session stream cannot carry the signal.
+ */
+export const fetchAwayStalls = () => fetchJson<Stall[]>("/api/away/stalls");
 /** The skills catalog, what's on, and how many sessions are behind - one read. */
 export const fetchSkills = () => fetchJson<SkillsView>("/api/skills");
 
@@ -239,6 +257,9 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+
+  // --- Away mode ---
+  setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),
   setNote: (id: string, note: SetNote) => put(`/api/sessions/${encodeURIComponent(id)}/note`, note),
 
   // --- Foreman session work queues ---

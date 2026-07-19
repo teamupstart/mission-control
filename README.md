@@ -35,9 +35,9 @@ and get your decision back.
 - **Rounds up** every session: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 - **Alerts** you when a session needs you: a desktop notification + sound the
-  moment a session needs input, a review lands, a no-mistakes gate parks, or a
-  dispatched task fails - with an **AFK mode** that also pings on idle sessions and
-  finished tasks and sends periodic session digests.
+  moment a session needs input, a review lands, a no-mistakes gate parks, a session
+  **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
+  rest and hands you one digest when you come back.
 - **Says what each session is for**: every card carries a one-sentence **Goal** - what
   that session is currently trying to solve - derived from your own prompts and
   refreshed as you steer it. No API key: it runs the local `claude` CLI.
@@ -346,7 +346,7 @@ done** a running task with its outcome (e.g. "opened PR #123") to close the loop
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).
 
-## Alerts & AFK mode
+## Alerts & Away mode
 
 So you don't have to watch the grid, the dashboard can **alert you when a session
 needs you**. The daemon already streams every attention event over SSE; the browser
@@ -355,14 +355,40 @@ session goes to `needs-input`, a review lands, a no-mistakes gate parks, or a
 dispatched task fails. It's zero extra tokens - the daemon (not an LLM) does the
 watching - and there's no phone/SMS piece; it's the open dashboard tab that alerts.
 
-Open the **🔔 Alerts** control in the top bar to **Enable desktop alerts** (grants the
+**Only things blocked on you ever interrupt.** Informational events (a session going
+idle, a task finishing) are detected but never notify; they're digest material. Alerts
+fire on the *transition* into attention (once, not every tick) and de-dupe, so a
+waiting session pings you once. The chime is synthesized with the Web Audio API (no
+asset, no network).
+
+### Stuck sessions
+
+The daemon also watches for sessions that have **gone quiet**, which no state
+transition can announce - a stall is defined by nothing happening. Four rules, all
+deterministic: an instrumented session that claims to be working but hasn't reported
+in ~10 minutes; a session idle ~20 minutes with a task or queue still open against it
+(the "died with work unfinished" case); a no-mistakes gate parked with nobody driving
+it; and a Foreman escalation nobody answered. A stuck session is attention-level, so
+it breaks through even while you're away.
+
+### Away mode
+
+Open the alerts control in the top bar - **🔔** when alerts are on, **🔕** when they're
+muted, **🌙** once you're away - to **Enable desktop alerts** (grants the
 browser Notification permission and unlocks the chime), toggle **Sound**, and flip
-**AFK mode**. AFK also alerts on sessions going idle and tasks finishing, and sends a
-periodic **session digest** ("2 need you · 3 working · 1 idle"). Preferences persist in
-the browser; the chime is synthesized with the Web Audio API (no asset, no network).
-Alerts fire on the *transition* into attention (once, not every tick) and de-dupe, so
-a waiting session pings you once. Delivery needs the tab open (foreground or
-background); a closed tab can't receive one.
+**Away mode**.
+
+While away, anything blocked on you still notifies immediately - everything else
+accumulates. When you come back, you get **one card** summarising the window: a couple
+of sentences written by Haiku over what actually happened, a deterministic rollup
+beneath it ("1 stuck · 3 finished"), and the per-event lines with what needs you
+first. Repeats coalesce, so a session that finished twice is one line with a count,
+not two notifications. A quiet window produces nothing at all.
+
+Away state lives in the daemon, not the browser, so it survives closing the tab -
+which is the case it exists for. The digest is read once; a refresh won't re-announce
+it. If the local `claude` CLI is missing or logged out, the narrative is simply absent
+and the rollup carries the summary on its own.
 
 ## Foreman (auto-responder)
 
@@ -920,6 +946,9 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
+| `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
+| `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative |
+| `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 
 > **Upgrading from Fleet Control (`FLEET_*`) or ai-harness (`HARNESS_*`)?** Nothing to do.
 > Both older env prefixes are still honored as fallbacks - `MISSION_*` wins where more than
@@ -944,7 +973,7 @@ npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
 npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
 npm run build          # build web + MCP bundle
-npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, foreman, skills)
+npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-service# LaunchAgent (macOS)

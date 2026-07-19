@@ -7,6 +7,7 @@ import { ReviewModal } from "./components/ReviewModal.tsx";
 import { DispatchLayer } from "./components/DispatchModal.tsx";
 import { ResetModal } from "./components/ResetModal.tsx";
 import { ReportPanel } from "./components/ReportPanel.tsx";
+import { AwayDigestCard } from "./components/AwayDigestCard.tsx";
 import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
@@ -19,6 +20,8 @@ import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
+import { useAwayMode } from "./lib/awayMode.ts";
+import { useStalls } from "./lib/stalls.ts";
 import { useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
@@ -29,7 +32,13 @@ import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
-  useNotifier({ sessions, tasks }, alertSettings, hasSnapshot);
+  const { away, setAway, digest, dismissDigest } = useAwayMode();
+  // Stalls come from the daemon (only it has the clock), but only the browser can
+  // raise a notification - so they are polled back in here to give the `stuck` alert
+  // a delivery path instead of leaving it to the return digest.
+  const stalls = useStalls();
+  const alertScope = useMemo(() => ({ sessions, tasks, stalls }), [sessions, tasks, stalls]);
+  useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
   const foreman = useForeman();
@@ -550,7 +559,7 @@ export function App(): React.JSX.Element {
           >
             <span aria-hidden>⚙</span>
           </button>
-          <AlertBar settings={alertSettings} update={updateAlerts} />
+          <AlertBar settings={alertSettings} update={updateAlerts} away={away} setAway={setAway} />
         </div>
         <div className={`link ${connected ? "up" : "down"}`}>
           <span className="link-dot" />
@@ -587,6 +596,17 @@ export function App(): React.JSX.Element {
           onOpenReviews={(id) => {
             setReportOpen(false);
             setReviewSessionId(id);
+          }}
+        />
+      )}
+
+      {digest && (
+        <AwayDigestCard
+          digest={digest}
+          onDismiss={dismissDigest}
+          onOpenReport={() => {
+            dismissDigest();
+            setReportOpen(true);
           }}
         />
       )}

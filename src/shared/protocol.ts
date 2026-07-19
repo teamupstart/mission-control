@@ -355,6 +355,48 @@ export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
 );
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
 
+/**
+ * Away mode: what happens while you're away from the machine.
+ *
+ * Durable and server-side rather than a localStorage flag, for two reasons. The
+ * stall detector's input is elapsed `lastActivity`, which `sessionEqual`
+ * deliberately excludes from the SSE change comparison - so a client-side
+ * detector is blind to the one signal it needs. And away mode is precisely the
+ * feature that must survive the tab closing.
+ *
+ * Thresholds live here rather than as module constants because they are the knob
+ * a human actually reasons about ("don't nag me for 20 minutes"), which is the
+ * same line ForemanConfigSchema draws.
+ */
+export const AwayConfigSchema = z.object({
+  /** Whether you are away right now. */
+  away: z.boolean().default(false),
+  /** When away mode was entered (epoch ms), or null. Bounds the return digest. */
+  awaySince: z.number().nullable().default(null),
+  /**
+   * Whether stall detection runs at all. Independent of `away` on purpose: being
+   * told an agent is wedged is useful at the desk too, and coupling them would
+   * make the feature untestable without pretending to leave.
+   */
+  detectStalls: z.boolean().default(true),
+  /** Minutes of silence before an instrumented, working session reads as stuck. */
+  stallWorkingMinutes: z.number().int().min(1).max(240).default(10),
+  /** Minutes idle, with work still outstanding, before a session reads as stuck. */
+  stallUnfinishedMinutes: z.number().int().min(1).max(240).default(20),
+  /** Minutes a parked gate may wait on you before it reads as stuck. */
+  stallGateMinutes: z.number().int().min(1).max(240).default(5),
+  /** Minutes an unanswered Foreman escalation may sit before it reads as stuck. */
+  stallEscalationMinutes: z.number().int().min(1).max(240).default(5),
+});
+export type AwayConfig = z.infer<typeof AwayConfigSchema>;
+
+/** Partial update of the away config from the dashboard. */
+export const AwayConfigPatchSchema = AwayConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty away update" },
+);
+export type AwayConfigPatch = z.infer<typeof AwayConfigPatchSchema>;
+
 // ---- Custom skills (dashboard-wide skill toggles) ----
 
 /**

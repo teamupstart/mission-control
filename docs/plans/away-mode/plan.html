@@ -1,0 +1,478 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Away mode - plan</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1c1e21;
+    --muted: #5c6370;
+    --rule: #e3e6ea;
+    --card: #f7f8fa;
+    --accent: #2f6feb;
+    --warn-bg: #fff6e5;
+    --warn-fg: #7a4d00;
+    --warn-rule: #f0c26b;
+    --code-bg: #f2f3f5;
+    --box: #ffffff;
+    --box-rule: #c4cad3;
+    --arrow: #8b93a1;
+    --hot: #d1383d;
+    --good: #1f7a4d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e6e8ec;
+      --muted: #98a0ad;
+      --rule: #2a2e35;
+      --card: #1b1e24;
+      --accent: #6699ff;
+      --warn-bg: #2b2313;
+      --warn-fg: #e8c37a;
+      --warn-rule: #6b5420;
+      --code-bg: #21252b;
+      --box: #1b1e24;
+      --box-rule: #3a4049;
+      --arrow: #6b7280;
+      --hot: #f0787c;
+      --good: #56c98c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    padding: 3rem 1.25rem 6rem;
+    max-width: 52rem;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 1.5rem; letter-spacing: -0.02em; }
+  h2 {
+    font-size: 1.35rem; margin: 3rem 0 1rem; letter-spacing: -0.01em;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: 1.05rem; margin: 2rem 0 .6rem; letter-spacing: -0.005em; }
+  p, li { color: var(--fg); }
+  a { color: var(--accent); }
+  blockquote {
+    margin: 0 0 2rem; padding: 1rem 1.25rem;
+    border-left: 3px solid var(--accent);
+    background: var(--card); border-radius: 0 6px 6px 0;
+    font-size: 1.05rem; color: var(--muted);
+  }
+  blockquote p { margin: 0; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .855em; background: var(--code-bg);
+    padding: .12em .38em; border-radius: 4px;
+  }
+  .scroll { overflow-x: auto; margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  th, td { text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; }
+  tbody tr:last-child td { border-bottom: none; }
+  .verdict {
+    background: var(--warn-bg); border: 1px solid var(--warn-rule);
+    color: var(--warn-fg); border-radius: 8px; padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .verdict p { margin: 0; color: var(--warn-fg); }
+  ol.defects { padding-left: 1.2rem; }
+  ol.defects > li { margin-bottom: .85rem; }
+  ul.builds > li { margin-bottom: .5rem; }
+  .decision {
+    border: 1px solid var(--rule); border-radius: 8px;
+    padding: 1.1rem 1.25rem; margin: 1.25rem 0; background: var(--card);
+  }
+  .decision h3 { margin-top: 0; }
+  .opt { margin: .85rem 0; }
+  .opt:last-child { margin-bottom: 0; }
+  .opt-name { font-weight: 600; }
+  .opt-body { color: var(--muted); }
+  .chosen, .deferred {
+    font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .07em;
+    text-transform: uppercase; padding: .16em .5em; border-radius: 999px;
+    vertical-align: middle; margin-left: .5rem;
+  }
+  .chosen { color: var(--good); border: 1px solid var(--good); }
+  .deferred { color: var(--muted); border: 1px solid var(--box-rule); }
+  figure { margin: 1.75rem 0; }
+  figcaption { color: var(--muted); font-size: .87rem; margin-top: .5rem; }
+  .diagram { width: 100%; height: auto; display: block; min-width: 33rem; }
+  .flow-label { font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--fg); }
+  .flow-sub { font: 9.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted); }
+  .flow-edge { font: 9.5px -apple-system, BlinkMacSystemFont, sans-serif; fill: var(--muted); }
+  .flow-box { fill: var(--box); stroke: var(--box-rule); stroke-width: 1.2; }
+  .flow-hot { stroke: var(--hot); }
+  .flow-good { stroke: var(--good); }
+  .flow-arrow { stroke: var(--arrow); stroke-width: 1.3; fill: none; }
+  .title-tag {
+    font: 600 10px ui-monospace, Menlo, monospace; letter-spacing: .09em;
+    text-transform: uppercase;
+  }
+  footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .87rem; }
+</style>
+
+<h1>Away mode</h1>
+
+<blockquote>
+  <p>Going for coffee? Away mode tells you when an agent finishes or gets stuck, and sends a
+  short digest so you come back to a summary instead of six blinking tabs.</p>
+</blockquote>
+
+<h2>Verdict: it half exists, and the half that exists points the wrong way</h2>
+
+<p>There is an &ldquo;AFK mode&rdquo; in the dashboard today - a toggle, a digest interval, a
+tested alert engine, shipped per <code>docs/plans/auto-pilot/plan.md</code>. But measured
+against the sentence above, turning it on makes things <em>louder</em>, not quieter, and two of
+the three promises are absent.</p>
+
+<div class="scroll">
+<table>
+  <thead>
+    <tr><th>The promise</th><th>Today</th><th>Gap</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>&ldquo;tells you when an agent finishes&rdquo;</td>
+      <td><code>idle</code> + <code>task-done</code> alerts, gated on <code>afk</code> (<code>src/web/lib/alerts.ts:137,167</code>)</td>
+      <td>Works; wants a settle window</td>
+    </tr>
+    <tr>
+      <td>&ldquo;or gets stuck&rdquo;</td>
+      <td>Nothing. No stall detection anywhere.</td>
+      <td><strong>Missing entirely</strong></td>
+    </tr>
+    <tr>
+      <td>&ldquo;a short digest&rdquo;</td>
+      <td>A counter line, <code>"2 need you · 3 working · 1 idle"</code> (<code>src/web/lib/alerts.ts:201</code>)</td>
+      <td>Not a summary of what <em>happened</em></td>
+    </tr>
+    <tr>
+      <td>&ldquo;so you come back to a summary&rdquo;</td>
+      <td>Digest fires on a timer <em>while you&rsquo;re gone</em> (<code>src/web/useNotifier.ts:107</code>)</td>
+      <td>Nothing fires on <strong>return</strong></td>
+    </tr>
+    <tr>
+      <td>&ldquo;instead of six blinking tabs&rdquo;</td>
+      <td>One OS notification per alert, unbatched (<code>src/web/useNotifier.ts:97</code>)</td>
+      <td><strong>Backwards</strong> - AFK adds alert kinds</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>The repo already scores this exact row against a prior system, in
+<code>todo/foreman-upgrades.md:39</code>:</p>
+
+<div class="scroll">
+<table>
+  <tbody>
+    <tr>
+      <td>Away mode</td>
+      <td><code>/afk</code> daemon: batches, defers, flushes on return</td>
+      <td>One-by-one browser alerts, no batching</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>And <code>todo/foreman-upgrades.md:41</code> names the stuck gap: <em>&ldquo;No notion of
+&lsquo;session died with work unfinished&rsquo;&rdquo;</em>.</p>
+
+<h3>Four concrete defects</h3>
+
+<ol class="defects">
+  <li><strong>AFK amplifies instead of buffering.</strong> <code>detectAlerts</code> adds
+  <code>idle</code> and <code>task-done</code> when <code>settings.afk</code> is on, and
+  <code>useNotifier</code> fires <code>new Notification(...)</code> per alert in a loop. Walking
+  away from six sessions is exactly when you get six notifications.</li>
+
+  <li><strong>Away mode dies with the tab.</strong> The whole feature is a
+  <code>setInterval</code> inside a React hook, with state in <code>localStorage</code>
+  (<code>src/web/lib/alertSettings.ts:4</code>). The desktop app works around this by disabling
+  background throttling <em>specifically</em> to keep the AFK digest alive in a hidden window
+  (<code>src/main/window.ts:86-87</code>) - a workaround that names the problem.</li>
+
+  <li><strong>&ldquo;While you were away&rdquo; is a lie about the network, not about you.</strong>
+  The only catch-up notification (<code>src/web/useNotifier.ts:85</code>) is keyed to an SSE
+  <em>reconnect</em>. It fires when the connection dropped, not when you came back.</li>
+
+  <li><strong>The client cannot see the signal stuck detection needs.</strong>
+  <code>sessionEqual</code> (<code>src/server/registry.ts:2038</code>) deliberately excludes
+  <code>lastActivity</code> and <code>lastSeen</code> from the change comparison, so a still-alive
+  session doesn&rsquo;t emit an SSE event every 1.5s poll. A session going quiet therefore produces
+  <strong>no client event at all</strong>. Any elapsed-time detector either runs server-side or
+  needs its own client ticker inventing the clock the server already has.</li>
+</ol>
+
+<h3>What we can build on</h3>
+
+<p>The foundations are good and should not be rewritten:</p>
+
+<ul class="builds">
+  <li><code>detectAlerts()</code> is pure, edge-triggered per cause, and unit-tested
+  (<code>test/alerts.test.ts</code>, 345 lines).</li>
+  <li><code>settledIdle(s, now, settleMs)</code> (<code>src/server/foreman/queue-machine.ts:104</code>)
+  is the existing, correct predicate for <em>genuinely</em> finished. Its settle window absorbs
+  hook reordering - a <code>PostToolUse</code> can land after a <code>Stop</code> and briefly
+  un-idle a session - which today&rsquo;s raw bucket-transition alert does not.</li>
+  <li><code>Session.lastActivity</code> (<code>src/shared/types.ts:170</code>) is the raw material
+  for stall detection; nothing derives from it yet.</li>
+  <li><code>classifyPending()</code> and its <code>marker</code>
+  (<code>src/server/foreman/pending.ts:57</code>) already model a <em>waiting episode</em> with a
+  stable id - the natural dedupe key for a buffer, rather than inventing one.</li>
+  <li>The daemon has an established pattern for periodic jobs: a self-scheduling
+  <code>unref(setTimeout(tick, ...))</code>, with <code>src/server/goal/refiner.ts</code> as the
+  worked example of a <em>model-backed</em> one (Haiku, 30s cap, concurrency limit, per-session
+  debounce, silent fallback).</li>
+  <li><code>runClaudeText(prompt, { model, timeoutMs })</code>
+  (<code>src/server/claude-cli.ts:207</code>) is the existing primitive for a short LLM-written
+  summary.</li>
+  <li><code>app_config</code> (<code>src/server/db.ts:143</code>) with
+  <code>getAppConfig</code>/<code>setAppConfig</code>, plus the Foreman Zod-blob pattern
+  (<code>src/server/foreman/config.ts</code>, routes at <code>src/server/routes.ts:876</code>), is
+  the template for durable server-side settings.</li>
+  <li><code>SettingsModal.tsx:13-16</code> already anticipates a &ldquo;Notifications&rdquo;
+  category; alert settings currently live only in the topbar popover.</li>
+</ul>
+
+<h3>One subtlety worth stating plainly</h3>
+
+<div class="verdict">
+  <p><code>isIdleNudge</code> (<code>src/server/registry.ts:1997</code>, with a long comment at
+  <code>:1959-1996</code>) documents a known hole: Claude fires <code>Notification</code> both for
+  &ldquo;I need you&rdquo; and for a ~60s idle nudge, so treating both as
+  <code>awaiting_input</code> made every settled session claim it needed you. The consequence is
+  that <strong>a session that ends its turn with a question in prose reads <code>idle</code>, and
+  nothing nags.</strong> A state-only stuck detector will miss that case entirely; only an
+  elapsed-time rule over <code>idle</code> catches it. This is a third flavour of stuck, distinct
+  from &ldquo;working but silent&rdquo; and from &ldquo;blocked on an ask nobody answered&rdquo;.</p>
+</div>
+
+<h2>The shape of the fix</h2>
+
+<p>Three changes, in dependency order:</p>
+
+<ol>
+  <li><strong>Invert the alert path while away.</strong> Away mode stops being an amplifier and
+  becomes a buffer: attention-level events still get through (or don&rsquo;t - see decision 4),
+  everything else accumulates into a coalesced event log keyed by session, instead of firing.</li>
+  <li><strong>Add stall detection.</strong> Derive &ldquo;stuck&rdquo; from
+  <code>lastActivity</code>, so a session that claims to be working but has gone silent - or has
+  sat idle long enough that its last turn was probably a question - becomes a first-class alert
+  kind.</li>
+  <li><strong>Flush on return.</strong> When you come back, one notification and one in-dashboard
+  panel summarize what happened, and the buffer clears.</li>
+</ol>
+
+<h3>Flow change</h3>
+
+<figure>
+  <div class="scroll">
+    <svg class="diagram" viewBox="0 0 720 300" role="img"
+         aria-label="Before and after: today every event goes straight from the registry through the React hook to one OS notification each, and the elapsed-time signal never leaves the server. After, a stall detector and an away buffer sit between detection and delivery, emitting one digest on return.">
+      <defs>
+        <marker id="ah" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+          <path d="M0,0 L7,3 L0,6 z" fill="var(--arrow)"/>
+        </marker>
+      </defs>
+
+      <!-- ── BEFORE ── -->
+      <text x="0" y="14" class="title-tag" fill="var(--hot)">Today</text>
+
+      <rect x="0"   y="30" width="96" height="38" rx="5" class="flow-box"/>
+      <text x="48"  y="53" class="flow-label" text-anchor="middle">Sessions</text>
+
+      <rect x="132" y="24" width="132" height="50" rx="5" class="flow-box"/>
+      <text x="198" y="43" class="flow-label" text-anchor="middle">Registry</text>
+      <text x="198" y="58" class="flow-sub"   text-anchor="middle">sessionEqual drops</text>
+      <text x="198" y="69" class="flow-sub"   text-anchor="middle">lastActivity</text>
+
+      <rect x="330" y="24" width="120" height="50" rx="5" class="flow-box"/>
+      <text x="390" y="43" class="flow-label" text-anchor="middle">useNotifier</text>
+      <text x="390" y="58" class="flow-sub"   text-anchor="middle">React hook</text>
+      <text x="390" y="69" class="flow-sub"   text-anchor="middle">(dies with tab)</text>
+
+      <rect x="516" y="6"  width="150" height="38" rx="5" class="flow-box flow-hot"/>
+      <text x="591" y="29" class="flow-label" text-anchor="middle">OS notification &times;N</text>
+
+      <rect x="516" y="56" width="150" height="38" rx="5" class="flow-box flow-hot"/>
+      <text x="591" y="79" class="flow-label" text-anchor="middle">Counter-line digest</text>
+
+      <path d="M96,49 H128"  class="flow-arrow" marker-end="url(#ah)"/>
+      <path d="M264,49 H326" class="flow-arrow" marker-end="url(#ah)"/>
+      <text x="295" y="43"   class="flow-edge" text-anchor="middle">SSE</text>
+      <path d="M450,42 C480,42 486,25 512,25" class="flow-arrow" marker-end="url(#ah)"/>
+      <text x="481" y="20"   class="flow-edge" text-anchor="middle">one per alert</text>
+      <path d="M450,58 C480,58 486,75 512,75" class="flow-arrow" marker-end="url(#ah)"/>
+      <text x="481" y="93"   class="flow-edge" text-anchor="middle">setInterval</text>
+
+      <line x1="0" y1="126" x2="720" y2="126" stroke="var(--rule)" stroke-width="1"/>
+
+      <!-- ── AFTER ── -->
+      <text x="0" y="156" class="title-tag" fill="var(--good)">After</text>
+
+      <rect x="0"   y="196" width="80" height="38" rx="5" class="flow-box"/>
+      <text x="40"  y="219" class="flow-label" text-anchor="middle">Sessions</text>
+
+      <rect x="108" y="196" width="80" height="38" rx="5" class="flow-box"/>
+      <text x="148" y="219" class="flow-label" text-anchor="middle">Registry</text>
+
+      <rect x="216" y="190" width="122" height="50" rx="5" class="flow-box flow-good"/>
+      <text x="277" y="209" class="flow-label" text-anchor="middle">Stall detector</text>
+      <text x="277" y="224" class="flow-sub"   text-anchor="middle">lastActivity +</text>
+      <text x="277" y="235" class="flow-sub"   text-anchor="middle">settledIdle</text>
+
+      <path d="M366,215 l30,-19 l30,19 l-30,19 z" class="flow-box"/>
+      <text x="396" y="219" class="flow-label" text-anchor="middle">Away?</text>
+
+      <rect x="462" y="160" width="128" height="34" rx="5" class="flow-box"/>
+      <text x="526" y="181" class="flow-label" text-anchor="middle">Notify per alert</text>
+
+      <rect x="462" y="222" width="128" height="46" rx="5" class="flow-box flow-good"/>
+      <text x="526" y="241" class="flow-label" text-anchor="middle">Away buffer</text>
+      <text x="526" y="256" class="flow-sub"   text-anchor="middle">coalesced by marker</text>
+
+      <rect x="622" y="222" width="94" height="46" rx="5" class="flow-box flow-good"/>
+      <text x="669" y="241" class="flow-label" text-anchor="middle">Digest</text>
+      <text x="669" y="256" class="flow-sub"   text-anchor="middle">+ return panel</text>
+
+      <path d="M80,215  H104" class="flow-arrow" marker-end="url(#ah)"/>
+      <path d="M188,215 H212" class="flow-arrow" marker-end="url(#ah)"/>
+      <path d="M338,215 H362" class="flow-arrow" marker-end="url(#ah)"/>
+      <path d="M426,207 C444,200 448,177 458,177" class="flow-arrow" marker-end="url(#ah)"/>
+      <text x="440" y="168"  class="flow-edge" text-anchor="middle">no</text>
+      <path d="M426,223 C444,230 448,245 458,245" class="flow-arrow" marker-end="url(#ah)"/>
+      <text x="440" y="266"  class="flow-edge" text-anchor="middle">yes</text>
+      <path d="M590,245 H618" class="flow-arrow" marker-end="url(#ah)"/>
+      <text x="604" y="238"  class="flow-edge" text-anchor="middle">on return</text>
+    </svg>
+  </div>
+  <figcaption>The two structural changes: the elapsed-time signal is read where it already
+  lives (server-side), and the buffer converts N notifications into one digest emitted on
+  return rather than on a timer.</figcaption>
+</figure>
+
+<h2>Decisions</h2>
+
+<p>Selected 2026-07-18. These are settled; the rationale is kept because it constrains the
+build.</p>
+
+<div class="decision">
+  <h3>1. Away state lives daemon-side <span class="chosen">chosen</span></h3>
+  <p>The server owns the away flag, the stall detector, and the event buffer, with state in
+  <code>app_config</code> following the Foreman Zod-blob pattern and a poller shaped like
+  <code>goal/refiner.ts</code>.</p>
+  <p style="margin-bottom:0">This was also the only workable option, not merely the best one.
+  Defect #4 is decisive: the stall detector&rsquo;s whole input is elapsed <code>lastActivity</code>,
+  and <code>sessionEqual</code> (<code>src/server/registry.ts:2038</code>) deliberately excludes that
+  field from the SSE change comparison. A client-side detector is structurally blind to the one
+  signal it needs, and would have to reconstruct on a ticker a clock the server already keeps. Away
+  mode also stops dying with the tab, which lets <code>src/main/window.ts:86</code>&rsquo;s
+  <code>backgroundThrottling: false</code> workaround be revisited later.</p>
+</div>
+
+<div class="decision">
+  <h3>2. The digest is model-written, over a deterministic fallback <span class="chosen">chosen</span></h3>
+  <p>One Haiku call via <code>runClaudeText</code>, exactly as <code>goal/refiner.ts</code> does for
+  card goals, turning the buffered events into a few sentences of what actually happened.</p>
+  <p style="margin-bottom:0">The structured rollup gets built regardless: it is the fallback when
+  <code>claude</code> is missing, logged out, slow, or over its timeout, and per
+  <code>goal/refiner.ts</code>&rsquo;s precedent that fallback is error handling rather than
+  configuration - it degrades silently and nothing breaks. So the build order is rollup first,
+  narrative on top.</p>
+</div>
+
+<div class="decision">
+  <h3>3. &ldquo;Stuck&rdquo; means silent, or an ask nobody answered <span class="chosen">chosen</span></h3>
+  <p>Four rules, all deterministic:</p>
+  <ol style="margin:.5rem 0">
+    <li><code>reportBucket(s) === "working"</code> and <code>lastActivity</code> older than the
+    stall threshold.</li>
+    <li><code>idle</code> for longer than a (longer) threshold - the <code>isIdleNudge</code> hole,
+    where a turn that ended in a prose question is indistinguishable from a settled session.</li>
+    <li>A gate parked beyond a threshold.</li>
+    <li>A Foreman escalation nobody answered.</li>
+  </ol>
+  <p style="margin-bottom:0">Rules 2-4 are the &ldquo;waiting on a human who left&rdquo; case, which
+  is the most likely way a coffee break actually costs you time. Rule 1 alone would miss all of
+  them.</p>
+</div>
+
+<div class="decision">
+  <h3>4. Attention breaks through; everything else buffers <span class="chosen">chosen</span></h3>
+  <p>Anything needing a human - needs-input, parked gate, Foreman escalation, task failed, and now
+  <code>stuck</code> - notifies immediately even while away. Informational events (<code>idle</code>,
+  <code>task-done</code>) accumulate into the buffer and land in the return digest.</p>
+  <p style="margin-bottom:0">This keeps away mode useful rather than merely quiet: you are pulled
+  back only for things genuinely blocked on you, and the six blinking tabs collapse into one
+  digest.</p>
+</div>
+
+<div class="decision">
+  <h3>5. Entry: manual toggle only, for now <span class="deferred">deferred</span></h3>
+  <p style="margin-bottom:0">The existing toggle stays and moves server-side. Automatic entry via
+  <code>powerMonitor.getSystemIdleTime()</code> or window focus/blur is <strong>deferred</strong> -
+  it needs a new preload IPC channel (<code>src/preload/index.ts</code> has none) and it is the piece
+  most likely to misfire on a second monitor or a background tab. Revisit once the manual path is
+  proven.</p>
+</div>
+
+<h2>Build order</h2>
+
+<p>Each step lands independently and is testable on its own.</p>
+
+<ol>
+  <li><strong><code>stuck</code> alert kind + stall rules.</strong> Pure functions over
+  <code>Session</code> and a <code>now</code>, in shared code so server and client agree. The only
+  genuinely new detection logic; everything after is plumbing. Tested the way
+  <code>test/alerts.test.ts</code> tests the engine.</li>
+  <li><strong>Away config in <code>app_config</code>.</strong> Zod blob +
+  <code>getAwayConfig</code>/<code>setAwayConfig</code> + <code>GET</code>/<code>PUT /api/away</code>,
+  mirroring <code>src/server/foreman/config.ts</code> and <code>src/server/routes.ts:876</code>.
+  Carries <code>away</code>, <code>awaySince</code>, the thresholds, and
+  <code>digestMinutes</code>.</li>
+  <li><strong>The away buffer.</strong> A pure reducer folding alerts into a per-session coalesced
+  map keyed on <code>pending.ts</code>&rsquo;s <code>marker</code> where one applies. Repeat events
+  replace rather than append.</li>
+  <li><strong>The poller.</strong> <code>unref(setTimeout(tick, ...))</code> beside
+  <code>goal/refiner.ts</code>: run the stall rules, fold results into the buffer, emit attention
+  events through the existing path.</li>
+  <li><strong>The digest.</strong> Structured rollup first, then the Haiku narrative on top with the
+  rollup as its fallback.</li>
+  <li><strong>Client.</strong> Toggle reads/writes the server config instead of
+  <code>localStorage</code>; a return panel renders the digest; <code>useNotifier</code> suppresses
+  info-severity alerts while away.</li>
+</ol>
+
+<h2>Out of scope</h2>
+
+<ul>
+  <li>Cross-device delivery (phone push, Slack, email). There is no transport for it today, and the
+  screenshot describes coming back to the machine.</li>
+  <li>Changing the alert engine&rsquo;s existing attention causes. <code>detectAlerts</code> is
+  correct and tested; this plan adds a kind and changes <em>delivery</em>, not detection of what
+  already works.</li>
+  <li>Foreman&rsquo;s supervision behaviour. Away mode observes; it does not act on your behalf.</li>
+</ul>
+
+<h2>Testing</h2>
+
+<p><code>test/alerts.test.ts</code> is the model: the engine is pure, so the buffer, the stall rule,
+and the digest assembly should all be pure functions tested the same way, with the hook and the
+daemon poller doing delivery only. Cases worth pinning:</p>
+
+<ul>
+  <li>A stall that resolves before you return must not appear as stuck.</li>
+  <li>The buffer must coalesce repeat events per session (keyed on <code>pending.ts</code>&rsquo;s
+  <code>marker</code> where one applies) rather than append.</li>
+  <li>Returning with an empty buffer must produce no notification at all.</li>
+  <li>A <code>PostToolUse</code> landing after a <code>Stop</code> must not register as
+  finished-then-restarted; this is what <code>settledIdle</code>&rsquo;s settle window is for.</li>
+</ul>
+
+<footer>
+  Rendering of <code>docs/plans/away-mode/plan.md</code>, which stays the source of truth.
+</footer>

@@ -293,7 +293,8 @@ export function RenameEditor({
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
  *
  * A `<span>` (styled `display:flex`), not a `<div>`, so it's phrasing content: the board's
- * tile is a `<button>`, and this row has to live inside one there without being invalid HTML.
+ * tile draws its whole body as spans, and this row has to nest into that flow - and into
+ * any button-like container a layout wraps it in - without being invalid HTML.
  */
 export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Element | null {
   const hasCtx = meta.contextPct != null;

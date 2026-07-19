@@ -5871,6 +5871,34 @@ kbd {
   border-radius: 10px 0 0 10px;
   background: var(--tone-color, var(--neutral));
 }
+/* The whole tile opens the session, but the tile is not itself a button - the PR flag
+   is a link, and a link cannot live inside one. So the open action is a transparent
+   button stretched over the tile, kept there purely to be focusable and labelled for
+   the keyboard. It takes no pointer events: mouse clicks hit the content and bubble to
+   the tile root, which leaves every `title` underneath it hoverable. */
+.tile-open {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.tile-open:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: -2px;
+}
+.tile-flag-link {
+  position: relative;
+  z-index: 1;
+  text-decoration: none;
+}
+.tile-flag-link:hover {
+  border-color: currentcolor;
+  background: color-mix(in oklab, currentcolor 12%, transparent);
+}
 .tile:hover {
   transform: translateY(-2px);
   border-color: color-mix(in oklab, var(--tone-color, var(--neutral)) 42%, var(--border));
@@ -6004,7 +6032,7 @@ kbd {
 
 /* ---- board tile: live detail (activity · gate step · runtime) ----
    The three things a board tile now surfaces without being opened. All rendered as
-   inline content because the tile is a <button>. */
+   inline content, laid out with flex - the tile draws its whole body as spans. */
 
 /* What the session is doing this second. The glyph spins while it works, and stands
    still for anyone who asked for less motion. */

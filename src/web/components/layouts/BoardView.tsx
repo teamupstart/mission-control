@@ -1,12 +1,12 @@
 import { useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { backlogTasks } from "@shared/session.ts";
-import { gateStepView, relativeTime, stateDisplay, uptime, type Tone } from "../../lib/format.ts";
+import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes, groupByTone } from "../../lib/tone.ts";
-import { RuntimeMetaRow } from "../session-bits.tsx";
-import { BacklogColumn, canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
+import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
+import { SessionTile } from "./SessionTile.tsx";
 import type { SessionViewProps } from "./types.ts";
 
 /**
@@ -194,153 +194,5 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         {selected && <ConsoleDetail key={selected.id} view={props} session={selected} />}
       </aside>
     </main>
-  );
-}
-
-/**
- * A session shrunk to what you'd triage by, without opening it: who it is, what it's
- * for, what it's doing this second, where its gate is parked, how much context it has
- * left, and whether it wants something. The conversation, the diff, and the gate's
- * buttons are all one click away in the console detail the tile opens.
- *
- * An idle tile is also a drop target for a backlog card - see BacklogColumn.
- */
-function SessionTile({
-  session,
-  gateNeedsYou,
-  onOpen,
-  draggingRepo,
-  onDropped,
-  onDropError,
-}: {
-  session: Session;
-  gateNeedsYou: boolean;
-  onOpen: () => void;
-  draggingRepo: string | null;
-  onDropped: () => void;
-  onDropError: (message: string) => void;
-}): React.JSX.Element {
-  const st = stateDisplay(session);
-  // A run always produces a gate line, and the line always carries the run's segments:
-  // pairing them here is what lets the tile head drop its own diamond (below) on the
-  // strength of a single guard rather than re-deriving the invariant at each use.
-  const nm = session.nomistakes;
-  const gate = nm ? { ...gateStepView(nm), steps: nm.steps } : null;
-  const isRunning = session.state === "working" || session.state === "starting";
-  const [over, setOver] = useState(false);
-
-  const droppable = canAcceptTask(session, draggingRepo);
-
-  return (
-    <button
-      className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
-        droppable ? " can-drop" : ""
-      }${over ? " drop-over" : ""}`}
-      onClick={onOpen}
-      onDragOver={(e) => {
-        if (!droppable) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        setOver(true);
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        setOver(false);
-        if (!droppable) return;
-        e.preventDefault();
-        // Clear the drag here as well as on dragend: a drop that lands inside a
-        // re-rendering board can swallow the dragend, leaving every tile lit.
-        onDropped();
-        void dropTaskOnSession(e, session, onDropError);
-      }}
-    >
-      <span className="tile-head">
-        <span className={`agent-dot agent-${session.agent}`} aria-hidden />
-        <span className="tile-name">{session.name || "(unnamed)"}</span>
-        {session.nomistakesGated && !session.nomistakes && (
-          <span className="gated" title="Gated by no-mistakes" aria-hidden>
-            ◇
-          </span>
-        )}
-      </span>
-
-      {session.goal?.text && <span className="tile-goal">{session.goal.text}</span>}
-
-      {/* What it's doing right now - the board's only live signal past "6s ago", and what
-          tells an actively-editing session apart from one stalled on a prompt. Only a
-          running session has a live action to report: once it settles, activity holds a
-          status label ("idle", "ended (logout)") the column and badge already carry, and
-          a ticker there would animate over a session that isn't moving. `instrumented`
-          is the freshness half of that: when hooks lapse past the overlay TTL the passive
-          poller refreshes `state` from the transcript but leaves `activity` at its stale
-          overlay value, so only a live hook makes the label worth animating. */}
-      {session.instrumented && isRunning && session.activity && (
-        <span className="tile-activity">
-          <span className="ta-glyph" aria-hidden>
-            ⟳
-          </span>
-          <span className="ta-txt">{session.activity}</span>
-        </span>
-      )}
-
-      {/* The gate as a named hairline: the segment bar the tile always afforded, now with
-          the stage a glance should land on spelled out above it (gateStepView picks it).
-          The full strip - findings and buttons - stays in the console detail. */}
-      {gate && (
-        <span className="tile-gate">
-          <span className="tile-gate-row">
-            <span className="gate-brand" title="Gated by no-mistakes" aria-hidden>
-              ◇
-            </span>
-            <span className={`gate-step gate-${gate.tone}`}>{gate.label}</span>
-            {!gate.done && gate.pos != null && (
-              <span className="gate-pos">
-                step {gate.pos} / {gate.total}
-              </span>
-            )}
-          </span>
-          <span className="tile-rail" aria-hidden>
-            {gate.steps.map((step) => (
-              <span key={step.step} className={`tr-${step.status}`} />
-            ))}
-          </span>
-        </span>
-      )}
-
-      <span className="tile-marks">
-        {gateNeedsYou && <span className="tile-flag tf-gate">gate</span>}
-        {session.note && (
-          <span className={`tile-flag tf-${session.note.disposition}`}>
-            {session.note.disposition === "escalated" ? "◆ decision" : "✎ draft"}
-          </span>
-        )}
-        {session.pendingReviews > 0 && <span className="tile-flag tf-review">review</span>}
-        {session.queue && session.queue.openCount > 0 && (
-          <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
-        )}
-        {session.prNumber && (
-          <span className={`tile-flag pr-${session.prState ?? "open"}`}>
-            #{session.prNumber}
-            {session.prChecks === "failing" && " ⚠"}
-          </span>
-        )}
-      </span>
-
-      {/* Only rendered while a compatible card is in the air, so it costs the tile
-          nothing the rest of the time. */}
-      {droppable && <span className="tile-drop-hint">↳ drop to hand this over</span>}
-
-      {/* The same runtime row the card shows - model, thinking level, and a context meter
-          that now carries its number. The board used to draw only the bare meter here; the
-          percentage is the triage signal (a session near full is about to compact). */}
-      {session.meta && <RuntimeMetaRow meta={session.meta} />}
-
-      <span className="tile-foot">
-        <span className="tile-branch">{session.gitBranch ?? session.nameSource}</span>
-        <span className="tile-seen">
-          {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
-        </span>
-      </span>
-    </button>
   );
 }

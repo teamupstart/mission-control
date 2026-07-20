@@ -201,9 +201,17 @@ handle, or both; writes prefer the innermost (multiplexer), focus walks outward.
 
 **Landed** in `src/server/terminal/` - `types.ts` (both interfaces, the `Key` vocabulary,
 `BinSpec`), `registry.ts` (`MULTIPLEXERS` / `EMULATORS`, plus `bindPane` and `hostPanesFor`,
-which are the composition rule made executable), `tmux.ts` and `wezterm.ts`. No call site is
-migrated yet; the adapters are mechanism only, and the copy-mode refusal, pane lock, paste
-settle and submit read-back stay in `actions.ts` as the policy that composes them.
+which are the composition rule made executable), `tmux.ts` and `wezterm.ts`, `exec.ts` (the
+subprocess seam the adapters are testable through) and `bin.ts`. No call site is migrated
+yet; the adapters are mechanism only, and the copy-mode refusal, pane lock, paste settle and
+submit read-back stay in `actions.ts` as the policy that composes them.
+
+`bin.ts` closes the first row of the divergence table rather than adding to it:
+`resolveWeztermBin` moved its body there as `resolveBin(BinSpec)` and `config.ts` keeps a
+one-line wrapper for the call sites this phase does not reach, so the change whose purpose is
+to stop copies multiplying does not land a fifth copy of bin resolution. Behavior is
+unchanged (env override, then the first existing candidate, then the bare name on PATH), and
+no `TMUX_BIN` env var was invented, because tmux has no such convention.
 
 Three refinements the sketch above did not have, each forced by the existing code:
 

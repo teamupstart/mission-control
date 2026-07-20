@@ -33,7 +33,11 @@ export function resolveBin(spec: BinSpec): string {
  * (`discovery/wezterm.ts` imports `config.ts`). One list of candidates, one resolver.
  */
 
-/** `TMUX_BIN` is deliberately absent: tmux has no such convention, so nothing invents one. */
+/**
+ * No env override, deliberately: tmux has no `TMUX_BIN` convention, so nothing invents one.
+ * The bare name is the only candidate, which is what every inline `run("tmux", …)` call site
+ * already assumes - this spec is where a real path goes if one is ever needed.
+ */
 export const TMUX_BIN: BinSpec = { env: null, candidates: ["tmux"] };
 
 export const WEZTERM_BIN: BinSpec = {

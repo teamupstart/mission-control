@@ -12,14 +12,16 @@ import type { TerminalResult } from "./types.ts";
  * factory rather than of every method: a caller that fakes half the commands drives none
  * of the read-write-read sequences the policy layer is made of.
  *
- * The seam covers the COMMAND surfaces only - `write`, `capture`, `select`, `sessions`,
- * `spawn`, `retitle`. Enumeration (`list`, `clients`) and `paneMode` delegate to
- * `discovery/*`, which calls `run` directly and ignores this parameter entirely, so a test
- * written as `tmuxMultiplexer(fake).list()` shells out to the host's real tmux: the
- * developer's own panes on a machine with a server running, `[]` on CI, green in both and
- * asserting nothing. The delegation is deliberate (see each adapter's header); this note is
- * so nobody reads the injection as broader than it is. Those surfaces get a seam when the
- * migration moves `discovery/*` behind this layer.
+ * The seam covers only what an adapter runs ITSELF: tmux's `write`, `capture`, `select`,
+ * `sessions` and `paneMode` (threaded on into `readTmuxPaneMode`), and wezterm's `write` and
+ * `capture`. Everything that delegates to `discovery/*` - `list`, `clients`, and wezterm's
+ * `focus`, `spawn` and `retitle` - calls `run` directly and ignores this parameter entirely.
+ * So `tmuxMultiplexer(fake).list()` shells out to the host's real tmux: the developer's own
+ * panes on a machine with a server running, `[]` on CI, green in both and asserting nothing;
+ * and `weztermEmulator(fake).spawn.tab(...)` opens a real tab on the developer's desktop.
+ * Drive those through a fake BINARY instead. The delegation is deliberate (see each
+ * adapter's header); this note is so nobody reads the injection as broader than it is. Those
+ * surfaces get a seam when the migration moves `discovery/*` behind this layer.
  *
  * Nothing in `types.ts` mentions this type. An adapter is not obliged to be a subprocess -
  * iTerm2 scripts through AppleScript - and the interface must not assume otherwise.

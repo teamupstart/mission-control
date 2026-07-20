@@ -189,8 +189,10 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         return created;
       },
       // Resolved through `bin`, not the bare name: this argv is handed to an emulator to
-      // spawn, so it is the one place a `TMUX_BIN` override matters most and the one place
-      // a literal would silently ignore it.
+      // spawn, so it is the one place a tmux outside PATH matters most and the one place a
+      // literal would silently ignore whatever `TMUX_BIN` lists. (It lists only the bare
+      // name today, and there is no env override - see `bin.ts` - so this is identical for
+      // now and stays right when that spec grows a candidate.)
       attachArgv: (session) => [bin(), "attach", "-t", session],
       // `--` ends flag parsing so a name like "-wip" is read as the new name rather than as
       // a flag bundle (which surfaces an arg-parser dump behind a 500).

@@ -86,7 +86,35 @@ const PREFS_FRAMING = [
  * standing between their text and the prompt guarantees it. Their `## ` headings go back to
  * being ordinary content, which is what they always were.
  */
-const PREFS_END = "----- END OF THE OPERATOR'S STANDING INSTRUCTIONS -----";
+export const PREFS_END = "----- END OF THE OPERATOR'S STANDING INSTRUCTIONS -----";
+
+/** The heading that opens the section. Exported for the same reason `PREFS_END` is. */
+export const PREFS_HEADING = "## The operator's standing instructions";
+
+/**
+ * Remove the trusted section's own markers from text the HARNESS did not author.
+ *
+ * The verify prompt fences its untrusted material; the reviewer and router prompts do not.
+ * They render `formatTranscript` and `paneSection` raw, so a child session's transcript - or
+ * the screen it is showing, which is whatever it chose to print - can simply emit
+ * `PREFS_HEADING` and have its own text read as the operator's standing instructions. That
+ * is a worse forgery than anything a FOREMAN.md can attempt, because the whole design turns
+ * on one section being trusted and the child is the party the trust is being exercised over.
+ *
+ * Stripping at the RENDERING of untrusted text, rather than trying to detect forgeries in
+ * the assembled prompt, is what makes the rule statable: these markers are emitted by the
+ * harness and by nothing else, so any copy arriving from a transcript or a screen is a
+ * forgery by construction and there is no legitimate case to weigh. A child that genuinely
+ * wants to discuss the file can still say "FOREMAN.md" - it just cannot draw the frame.
+ *
+ * Defanged rather than deleted, so the attempt stays visible: a reviewer reading the card
+ * should see that the child tried this, and a silently vanished line teaches nobody.
+ */
+export function stripPrefsMarkers(text: string): string {
+  return text
+    .replaceAll(PREFS_END, "[redacted: forged section marker]")
+    .replaceAll(PREFS_HEADING, "[redacted: forged section heading]");
+}
 
 /**
  * The ratchet stated BEFORE the operator's text, where nothing in that text can reach it.
@@ -135,9 +163,16 @@ const PREFS_FRAMING_LEAD = [
  * reaches a prompt. Forgery of prompt structure is the threat here, not terminal control.
  */
 function defangDelimiters(text: string): string {
-  return text
-    .replace(/-{4,}/g, "---")
-    .replace(/\b(BEGIN|END)\s+UNTRUSTED\s+EVIDENCE\b/gi, "$1_UNTRUSTED_EVIDENCE");
+  return (
+    text
+      // Every dash the Unicode standard offers, not just ASCII `-`. A line drawn from
+      // U+2010..U+2015, the U+2212 minus, or U+2500 box-drawing reproduces the SHAPE of
+      // `PREFS_END` while matching nothing an ASCII-only rule tests, so it could appear to
+      // close the operator's section early and have the text after it read as prompt-level
+      // rather than operator-level direction. The model reads shapes, not code points.
+      .replace(/[-‐-―−─━]{4,}/g, "---")
+      .replace(/\b(BEGIN|END)\s+UNTRUSTED\s+EVIDENCE\b/gi, "$1_UNTRUSTED_EVIDENCE")
+  );
 }
 
 /**
@@ -157,7 +192,7 @@ export function prefsSection(prefs: StandardsDoc | null | undefined): string[] {
   // stated instructions and then show it nothing.
   if (!text) return [];
   return [
-    `## The operator's standing instructions (from ${prefs.path}${prefs.truncated ? ", truncated" : ""})`,
+    `${PREFS_HEADING} (from ${prefs.path}${prefs.truncated ? ", truncated" : ""})`,
     "",
     // The ratchet is stated on BOTH sides of the operator's text, and the copy above is
     // the one that is structurally safe.

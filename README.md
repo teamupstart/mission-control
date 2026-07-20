@@ -790,9 +790,10 @@ policy, saying the operator's instructions outrank its advisory-only convention 
 cheap tier's rules, saying they can only ever move an ask *away* from auto-approval. Both are
 conditioned on instructions being present, so with no `FOREMAN.md` neither has anything to
 apply to.)
-It is capped at 16KB (a truncated file
-says so in the prompt), and it is resolved against the git toplevel, so a session sitting in
-a monorepo subdirectory still finds the one at the root. Because it's checked in, every
+
+`FOREMAN.md` is capped at 16KB (a truncated file says so in the prompt), and it is resolved
+against the git toplevel, so a session sitting in a monorepo subdirectory still finds the one
+at the root. Because it's checked in, every
 [treehouse worktree](#isolated-worktrees-per-session-treehouse) of the repo has it already.
 
 ### The cheap tier

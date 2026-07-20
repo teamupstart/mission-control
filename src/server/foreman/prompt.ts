@@ -1,6 +1,6 @@
 import type { TranscriptMessage } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
-import { prefsSection } from "./prefs.ts";
+import { prefsSection, stripPrefsMarkers } from "./prefs.ts";
 import { sanitizeGapText } from "./queue-machine.ts";
 
 // Builds the review prompt handed to a fresh `claude -p` per session. This text
@@ -272,7 +272,9 @@ export function paneSection(input: ReviewInput): string[] {
     "dialog, the options on offer - appears HERE and not above. This is a viewport: it is",
     "hard-wrapped, and anything scrolled off is gone. Read the ask here; read the history above.",
     "",
-    pane,
+    // Whatever the child chose to print, so it can draw anything - including this prompt's
+    // own trusted-section frame. See `stripPrefsMarkers`.
+    stripPrefsMarkers(pane),
     "",
   ];
 }
@@ -324,7 +326,11 @@ export function formatTranscript(messages: TranscriptMessage[]): string {
     .map((m) => {
       const calls = m.tools.map((t) => (t.input ? `${t.name}(${t.input})` : t.name));
       const tools = calls.length ? ` (tools: ${calls.join(", ")})` : "";
-      const text = m.text.length > MSG_CAP ? `${m.text.slice(0, MSG_CAP)}…` : m.text;
+      const capped = m.text.length > MSG_CAP ? `${m.text.slice(0, MSG_CAP)}…` : m.text;
+      // The reviewer and router prompts carry no evidence fence, so a turn that printed the
+      // trusted section's heading would have its own words read as the operator's standing
+      // instructions - see `stripPrefsMarkers`.
+      const text = stripPrefsMarkers(capped);
       return `[${m.role}]${tools} ${text}`.trim();
     })
     .join("\n\n");

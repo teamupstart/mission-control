@@ -74,6 +74,31 @@ export interface ReviewInput {
   prefs: StandardsDoc | null;
 }
 
+/**
+ * The per-evaluation inputs `processSession` gathers ONCE and hands to whichever tiers run.
+ *
+ * A bag rather than five positional parameters repeated through `decide` and its three
+ * posture branches, because all three answer the same question - "what did the caller
+ * capture for this one evaluation?" - and they were drifting apart in the worst way:
+ * `pane` and `prefs` are adjacent nullables of different types, so transposing them is
+ * silent at every call site, and the doc comment explaining the shared rule had to be
+ * copy-pasted onto each parameter of each function to say it once.
+ *
+ * The rule they share is worth stating once, here: each is read a single time per
+ * evaluation and passed down unchanged, so every tier judges the same session from the
+ * same evidence. Re-reading any of them per tier is the bug this shape prevents - two
+ * captures of a repainting screen, or two reads of a FOREMAN.md straddling an edit, would
+ * have `shadow` mode log a tier divergence that is really an input divergence.
+ */
+export interface CapturedInputs {
+  /** The child's screen - see `ReviewInput.pane`. Null when the surface has none. */
+  pane: string | null;
+  /** The operator's FOREMAN.md - see `ReviewInput.prefs`. Null when the repo has none. */
+  prefs: StandardsDoc | null;
+  /** The work-queue item this session is on, when it is on one - see `ReviewInput.queueItem`. */
+  queueItem?: ReviewInput["queueItem"];
+}
+
 /** Per-message text cap so a long turn can't blow up the prompt. */
 const MSG_CAP = 1800;
 

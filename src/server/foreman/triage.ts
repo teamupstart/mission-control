@@ -2,8 +2,7 @@ import { z } from "zod";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
-import type { StandardsDoc } from "../standards.ts";
-import type { ReviewInput } from "./prompt.ts";
+import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../claude-cli.ts";
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
@@ -551,25 +550,20 @@ export async function triageSession(
    * would be judged against rows it was never shown - the exact disagreement the menu fix
    * exists to design out. Null when the surface has no screen to read.
    */
-  pane: string | null,
   /**
-   * The operator's `FOREMAN.md`, read ONCE by the caller and handed to whichever tiers run
-   * (see `processSession`), for the same reason `pane` is: in `shadow` both tiers run
-   * concurrently and their verdicts are compared, so two independent reads could disagree
-   * over an edit that landed between them and be logged as a tier divergence.
+   * What the caller captured once for this evaluation - see `CapturedInputs`.
    *
-   * This tier needs it at all because it can DISPOSE. `routine-access` is answered outright
-   * at Tier 1 and never reaches Tier 2, so a router that had not read the operator's
-   * instructions would auto-approve the very asks they had written down as off-limits - on
-   * the most frequent path in the system, which is precisely the one they wrote the file to
-   * govern. A preferences doc only the expensive tier honours is not a preferences doc, it
-   * is a coin flip on which tier happens to pick the ask up. The extra tokens are real but
-   * small against that: the doc is capped at 16KB and this tier runs on Haiku.
-   *
-   * Null when the repo has no FOREMAN.md, which is the ordinary case.
+   * This tier reads `prefs` at all because it can DISPOSE. `routine-access` is answered
+   * outright at Tier 1 and never reaches Tier 2, so a router that had not read the
+   * operator's instructions would auto-approve the very asks they had written down as
+   * off-limits - on the most frequent path in the system, which is precisely the one they
+   * wrote the file to govern. A preferences doc only the expensive tier honours is not a
+   * preferences doc, it is a coin flip on which tier happens to pick the ask up. The extra
+   * tokens are real but small against that: the doc is capped at 16KB, this tier is Haiku.
    */
-  prefs: StandardsDoc | null,
+  captured: CapturedInputs,
 ): Promise<TriageOutcome> {
+  const { pane, prefs } = captured;
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 

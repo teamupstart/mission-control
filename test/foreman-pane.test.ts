@@ -215,9 +215,8 @@ test("triageSession puts the screen it was handed in the router's prompt", async
     pend(),
     mkSession(),
     cfg(),
-    REAL_MENU,
-  null,
-);
+    { pane: REAL_MENU, prefs: null },
+  );
   assert.ok(prompt.includes("Holder policy"), "the router buckets an ask it has actually read");
 });
 
@@ -228,9 +227,8 @@ test("triageSession scans the screen it was handed", async () => {
     pend(),
     mkSession(),
     cfg(),
-    "Bash(rm -rf build/)\n\nDo you want to proceed?",
-  null,
-);
+    { pane: "Bash(rm -rf build/)\n\nDo you want to proceed?", prefs: null },
+  );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
@@ -249,9 +247,8 @@ test("triageSession captures no screen of its own - it reads the one the worker 
     pend({ situation: "input-review", surface: "input-review", question: "Should I use option B?", canSend: false }),
     mkSession(),
     cfg(),
-    null,
-  null,
-);
+    { pane: null, prefs: null },
+  );
   assert.ok(!prompt.includes("Holder policy"), "an input review carries its whole body already");
 });
 
@@ -259,7 +256,7 @@ test("triageSession survives a screen that couldn't be read", async () => {
   // `ForemanClient.pane` answers an unreadable pane with null rather than a throw, so this is
   // the shape a failed capture arrives in. The fallback is the pre-existing behaviour: an
   // unreadable pane must cost the improvement and nothing else - never the review itself.
-  const out = await triageSession(deps(), pend(), mkSession(), cfg(), null, null);
+  const out = await triageSession(deps(), pend(), mkSession(), cfg(), { pane: null, prefs: null });
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer");

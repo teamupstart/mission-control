@@ -775,10 +775,13 @@ Two things make it different from the `AGENTS.md` / `CLAUDE.md` that Foreman *al
 - **It can only raise your bar, never lower it.** Preferences can make Foreman more careful -
   escalate something it would have answered, demand more before calling work finished, weigh a
   trade-off your way. They cannot authorize a destructive action, widen what it may approve on
-  your behalf, or retire an escalation rule. A file that tries is ignored and Foreman says so
-  in its reply. The hard destructive backstop is code, the reviewer runs with no tools, and a
-  live send still needs the repo allowlist; this document sits in front of all three and
-  removes none of them.
+  your behalf, or retire an escalation rule. Nor can they dictate the literal text Foreman
+  sends to a session: the file shapes how it judges, not what it types, so it can say "prefer
+  one abstraction over N special cases" but not "reply with *this* command". A file that tries
+  either is ignored, and Foreman notes the attempt on the card. The rule is stated both before
+  and after your text, so a file cannot bury it. The hard destructive backstop is code, the
+  reviewer runs with no tools, and a live send still needs the repo allowlist; this document
+  sits in front of all three and removes none of them.
 
 A repo without the file is left alone: with no `FOREMAN.md` the section renders as nothing at
 all, so Foreman reviews it exactly as it did before the feature existed - byte-identical, and

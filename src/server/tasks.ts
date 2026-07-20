@@ -257,8 +257,12 @@ export class TaskManager {
    * running `git worktree remove --force` over a directory we did not create.
    *
    * Every refusal below is a state conflict the caller should surface, not retry.
+   *
+   * `inject` is a parameter for the same reason it is one on `injectPrompt` itself: it
+   * is the only call here that leaves the process, and the window it holds open is
+   * where this method's one ordering rule can be broken.
    */
-  async assign(id: string, sessionId: string): Promise<Ok> {
+  async assign(id: string, sessionId: string, inject = injectPrompt): Promise<Ok> {
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
     if (t.status !== "backlog") return { ok: false, error: `task is ${t.status}, not in the backlog` };
@@ -286,12 +290,18 @@ export class TaskManager {
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
-    const r = await injectPrompt(s, t.intent);
+    const r = await inject(s, t.intent);
     if (!r.ok) return { ok: false, error: r.error ?? "could not type into the agent's pane" };
 
+    // Merge onto the LATEST snapshot, not the one read before the injection, for the
+    // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
+    // for a retriage to land, and priority/labels stay editable in every status - so a
+    // stale spread here writes yesterday's priority back over one just set on the card,
+    // silently, on a gesture that was only meant to hand the task to an agent.
+    const cur = this.registry.getTask(id) ?? t;
     const now = Date.now();
     this.registry.upsertTask({
-      ...t,
+      ...cur,
       status: "running",
       sessionId: s.id,
       dispatchedAt: now,

@@ -508,6 +508,14 @@ finished and sent without a second trip. **Revert** puts back the version the da
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
 Clear the **Title** and it's derived afresh from the task text as you've now written it.
 
+**A save writes only the fields you changed**, so it can't undo work you didn't touch: set a
+priority on the card while this form sits open on the same task and your save carries the
+title alone, leaving the priority where the card put it. And a kept edit is only kept while
+the task itself stands still - if the row changed while the form was closed, reopening it
+shows the task as it now reads rather than a picture of how it used to. A task whose **repo
+has since gone** - a reclaimed worktree, a project moved - stays editable too; only a repo
+you actually change is checked for being a git root.
+
 Only *shelved* work can be rewritten. Once a task is dispatched its title is already the
 name of a git branch and a tmux session, so the daemon refuses the edit rather than let the
 card drift from the terminal it describes - and a task that starts while you have it open

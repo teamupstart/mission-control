@@ -2,10 +2,18 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Task, TaskKind, AgentType, TaskPriority } from "@shared/types.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
-import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES, normalizeLabels } from "@shared/task.ts";
+import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import { api, fetchHarnessesConfig, fetchRepos } from "../lib/api.ts";
 import { readLastDispatchRepo, rememberDispatchRepo } from "../lib/lastRepo.ts";
+import {
+  EMPTY_DISPATCH_DRAFT,
+  draftFromTask,
+  draftsEqual,
+  parseLabelInput,
+  taskUpdatePatch,
+  type DispatchDraft,
+} from "../lib/task-draft.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import {
   AttachmentStrip,
@@ -18,70 +26,15 @@ import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 import { LabelChips } from "./session-bits.tsx";
 
 /**
- * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
- * an accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
- * half-written task around; the draft is wiped only once it's actually
- * dispatched or shelved, or when the footer's Clear discards it on purpose
- * (see freshDispatchDraft).
- */
-type DispatchDraft = {
-  /** Seeded from the last dispatch's repo - see `lib/lastRepo.ts`. */
-  repoRoot: string;
-  intent: string;
-  title: string;
-  kind: TaskKind;
-  agent: AgentType;
-  /** Unset by default - "" is the empty option, which posts as null. */
-  priority: TaskPriority | "";
-  /**
-   * Labels as the RAW comma-separated text, not the parsed array. Keeping the string
-   * is what lets a half-typed "bug, perf" survive a close/reopen with the trailing
-   * comma intact; parsing on every keystroke would eat the separator as you type it.
-   */
-  labels: string;
-  /**
-   * Model override, or "" to follow the configured default for `agent`. Empty is
-   * stored rather than the resolved default so the choice stays a deferral: the
-   * daemon reads the default when it launches, which is what a shelved task needs.
-   */
-  model: string;
-  /** Images dropped on the task box; sent as paths appended to the intent. */
-  attachments: PendingAttachment[];
-};
-
-const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
-  repoRoot: "",
-  intent: "",
-  title: "",
-  kind: "ship",
-  agent: "claude",
-  priority: "",
-  labels: "",
-  model: "",
-  attachments: [],
-};
-
-/**
  * What a fresh dispatch form holds: nothing, except the repo the last one went to.
  *
  * Read at call time rather than captured in a constant, so a dispatch sent moments ago
- * seeds the next form in this same tab - not just the next reload.
+ * seeds the next form in this same tab - not just the next reload. Lives here rather
+ * than beside the rest of the draft shape because it is the one piece that reads the
+ * browser: `lib/task-draft.ts` stays a pure translation between a form and a task.
  */
 function freshDispatchDraft(): DispatchDraft {
   return { ...EMPTY_DISPATCH_DRAFT, repoRoot: readLastDispatchRepo() };
-}
-
-/**
- * Split the labels field's raw text into the array the API takes.
- *
- * Splits on commas AND newlines so a list pasted from anywhere works, then hands the
- * pieces to the SHARED cleaner rather than trimming here - the server runs the same
- * function inside `DispatchSchema`, so what the chips preview is exactly what gets
- * stored. Doing it twice is the point: this one is for the preview, that one is the
- * guarantee.
- */
-function parseLabelInput(raw: string): string[] {
-  return normalizeLabels(raw.split(/[,\n]/));
 }
 
 /**
@@ -107,61 +60,17 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
 }
 
 /**
- * The same form, seeded from a task already sitting in the backlog.
- *
- * Attachments start empty rather than being reconstructed: an image attached earlier
- * is already IN the intent, as the path `withAttachments` appended, so the text box
- * carries it and there is nothing to restore. Anything dropped now appends to that
- * same tail on save.
- */
-function draftFromTask(t: Task): DispatchDraft {
-  return {
-    repoRoot: t.repoRoot,
-    intent: t.intent,
-    title: t.title,
-    kind: t.kind,
-    agent: t.agent,
-    // "" is the form's empty option, which is how an unset priority round-trips: a task
-    // reopened and saved unchanged must not acquire one.
-    priority: t.priority ?? "",
-    labels: t.labels.join(", "),
-    // A stored null is the deferral, and it reads back as the same empty option it was
-    // picked from - so reopening a shelved task shows "Default", not a model it never chose.
-    model: t.model ?? "",
-    attachments: [],
-  };
-}
-
-/**
  * Which task the modal is over, when it is over one. `new` writes a task that does
  * not exist yet; `edit` rewrites one that is waiting in the backlog.
  */
 type DispatchMode = { kind: "new" } | { kind: "edit"; task: Task };
 
 /**
- * Field-by-field draft equality. A dispatch POST can resolve after the modal
- * instance that sent it is gone, so its resolve path hands back the draft it sent
- * and the owner compares: still the same draft means nothing newer to lose (see
- * onSubmitted).
- *
- * Attachments compare by identity rather than contents, because the question this
- * answers is "did the human add or drop an image since?" - and an upload landing
- * mid-flight rewrites the row without being an answer to it.
+ * A kept working copy of one backlog task: what the operator has written, and the
+ * `seed` it was written on top of. The seed is what makes the copy falsifiable - see
+ * the staleness test in `DispatchLayer`.
  */
-function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
-  return (
-    a.repoRoot === b.repoRoot &&
-    a.intent === b.intent &&
-    a.title === b.title &&
-    a.kind === b.kind &&
-    a.agent === b.agent &&
-    a.priority === b.priority &&
-    a.labels === b.labels &&
-    a.model === b.model &&
-    a.attachments.length === b.attachments.length &&
-    a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
-  );
-}
+type EditSlot = { id: string; seed: DispatchDraft; draft: DispatchDraft };
 
 /**
  * What the "no override" option is called - the auto-recommended choice, so it names
@@ -203,6 +112,14 @@ function defaultModelOptionLabel(
  * and it would not if the two shared a slot. Only one task is held at a time, though -
  * opening the editor on a different card seeds fresh from that card's stored row, so
  * an unsaved edit lives exactly as long as the operator keeps coming back to it.
+ *
+ * And only as long as the ROW it was written against stands still. A kept working copy
+ * is a picture of the task as it read when the form was closed, and the task is live:
+ * the board's priority picker, another window, a task source. Reopening on the old
+ * picture would show values the daemon no longer holds and save them back over the
+ * newer ones - the reported bug, where a priority set on the card came back changed by
+ * a save that was only meant to fix a typo. So the slot carries the seed it was built
+ * from, and a reopen whose row has moved on drops it and starts from the row.
  */
 export function DispatchLayer({
   open,
@@ -221,24 +138,38 @@ export function DispatchLayer({
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
-  // The working copy of the task being edited, if any. Seeded during render rather
-  // than from an effect: an effect would show one frame of whatever the slot last
-  // held - an empty form, or the PREVIOUS task's text - and a task whose intent
-  // blinks blank is a task that looks like it lost its intent.
-  const [edit, setEdit] = useState<{ id: string; draft: DispatchDraft } | null>(null);
-  const editDraft = editTask
-    ? edit?.id === editTask.id
-      ? edit.draft
-      : draftFromTask(editTask)
-    : null;
-  // The effective slot, refreshed every render, for the two callbacks below that can
-  // fire long after the render that armed them.
-  const editRef = useRef<{ id: string; draft: DispatchDraft } | null>(null);
-  editRef.current = editTask && editDraft ? { id: editTask.id, draft: editDraft } : null;
+  // The working copy of the task being edited, if any, beside the seed it was built
+  // from. Seeded during render rather than from an effect: an effect would show one
+  // frame of whatever the slot last held - an empty form, or the PREVIOUS task's text -
+  // and a task whose intent blinks blank is a task that looks like it lost its intent.
+  const [edit, setEdit] = useState<EditSlot | null>(null);
+  const stored = editTask ? draftFromTask(editTask) : null;
+  // Which task the open form is over. Held as state so the staleness test below runs
+  // exactly once per opening, and never again while the form is up: re-testing on every
+  // render would re-seed the fields under the operator's cursor the moment anything
+  // touched the row, which loses the very typing the slot exists to keep.
+  const [openedOn, setOpenedOn] = useState<string | null>(null);
+  const openOn = open && editTask ? editTask.id : null;
+  if (openOn !== openedOn) {
+    setOpenedOn(openOn);
+    // The row moved while this form was closed, so the working copy describes a task
+    // that no longer exists. Dropping it costs an abandoned draft; keeping it costs
+    // whoever made that change their change, silently, on the next Save.
+    if (openOn && edit?.id === openOn && stored && !draftsEqual(edit.seed, stored)) setEdit(null);
+  }
+  const slot = editTask && edit?.id === editTask.id ? edit : null;
+  const editDraft = slot ? slot.draft : stored;
+  // The effective slot, refreshed every render, for the callbacks below that can fire
+  // long after the render that armed them.
+  const editRef = useRef<EditSlot | null>(null);
+  editRef.current =
+    editTask && editDraft && stored
+      ? { id: editTask.id, seed: slot ? slot.seed : stored, draft: editDraft }
+      : null;
 
   const onEditDraftChange = useCallback((next: DispatchDraft) => {
     const cur = editRef.current;
-    if (cur) setEdit({ id: cur.id, draft: next });
+    if (cur) setEdit({ ...cur, draft: next });
   }, []);
 
   // A dispatch is accepted server-side. The reply to an async network POST can
@@ -293,7 +224,25 @@ export function DispatchLayer({
    *  keeps a late upload from resurrecting the text as it read at drop time. */
   const onEditAttachmentsChange = useCallback((attachments: PendingAttachment[]) => {
     const cur = editRef.current;
-    if (cur) setEdit({ id: cur.id, draft: { ...cur.draft, attachments } });
+    if (cur) setEdit({ ...cur, draft: { ...cur.draft, attachments } });
+  }, []);
+
+  /**
+   * Revert: throw the working copy away, rather than replace it with a copy of the row.
+   *
+   * Those are not the same thing even though they look identical on screen. Writing a
+   * snapshot back into the slot leaves the form pinned to the row as it read at THAT
+   * moment - which is the state this whole slot has to be able to leave. Dropping it
+   * puts the form back on the live derivation, which is what "put it back how it was"
+   * means when the thing it was is still moving.
+   */
+  const onEditRevert = useCallback(() => {
+    setEdit(null);
+  }, []);
+
+  /** Clear, for a fresh dispatch: blank but for the seeded repo, as it opened. */
+  const onNewRevert = useCallback(() => {
+    setDraft(freshDispatchDraft());
   }, []);
 
   if (!open) return null;
@@ -307,6 +256,7 @@ export function DispatchLayer({
         draft={editDraft}
         onDraftChange={onEditDraftChange}
         onAttachmentsChange={onEditAttachmentsChange}
+        onRevert={onEditRevert}
         onClose={onClose}
         onSubmitted={onEditSubmitted}
       />
@@ -318,6 +268,7 @@ export function DispatchLayer({
       draft={draft}
       onDraftChange={setDraft}
       onAttachmentsChange={onAttachmentsChange}
+      onRevert={onNewRevert}
       onClose={onClose}
       onSubmitted={onSubmitted}
     />
@@ -344,6 +295,7 @@ function DispatchModal({
   draft,
   onDraftChange,
   onAttachmentsChange,
+  onRevert,
   onClose,
   onSubmitted,
 }: {
@@ -351,6 +303,8 @@ function DispatchModal({
   draft: DispatchDraft;
   onDraftChange: (draft: DispatchDraft) => void;
   onAttachmentsChange: (attachments: PendingAttachment[]) => void;
+  /** Discard the working copy - an empty form for a create, the live row for an edit. */
+  onRevert: () => void;
   onClose: () => void;
   onSubmitted: (submitted: DispatchDraft) => void;
 }): React.JSX.Element {
@@ -407,7 +361,7 @@ function DispatchModal({
   // is the only "start again" an edit has.
   function clearDraft(): void {
     revokeAttachments(draft.attachments);
-    onDraftChange(editing ? draftFromTask(editing) : freshDispatchDraft());
+    onRevert();
     setError(null);
     intentRef.current?.focus();
   }
@@ -425,18 +379,20 @@ function DispatchModal({
     // owner, which clears it only if nothing newer has been typed since - see
     // onSubmitted in DispatchLayer.
     const submitted = draft;
-    const fields = {
-      repoRoot: submitted.repoRoot.trim(),
-      // Paths ride at the end of the intent, which the dispatcher already delivers
-      // as one bracketed paste - so the agent's first prompt cites the screenshot
-      // exactly as a terminal drag would have.
-      intent: withAttachments(submitted.intent.trim(), readyAttachments(submitted.attachments)),
-      kind: submitted.kind,
-      agent: submitted.agent,
-      // "" is the empty option: no priority, which is a different answer from "low".
-      priority: submitted.priority || null,
-      labels: parseLabelInput(submitted.labels),
-    };
+    // Paths ride at the end of the intent, which the dispatcher already delivers
+    // as one bracketed paste - so the agent's first prompt cites the screenshot
+    // exactly as a terminal drag would have.
+    const intent = withAttachments(
+      submitted.intent.trim(),
+      readyAttachments(submitted.attachments),
+    );
+    // An edit sends a PATCH of what actually changed, a create sends the whole form.
+    // The asymmetry is the point: there is no row behind a create to leave alone, while
+    // an edit posting all nine fields posts the ones it was merely seeded with too, and
+    // those overwrite whatever the daemon has learned about them since (see
+    // `taskUpdatePatch`). A patch with nothing in it is not sent at all - a form that
+    // changed nothing has nothing to save.
+    //
     // An emptied title means different things to the two endpoints, and both are the
     // right meaning: on create, "no title given, go and summarize one"; on update,
     // "drop the title I had, derive it from the intent as it now reads". Only the
@@ -446,14 +402,19 @@ function DispatchModal({
     // field, update sends an explicit null to take an override back off a row that has
     // one. Either way the daemon resolves the default at launch, so a task shelved
     // today runs on the default in force when it is finally picked up.
+    const patch = editing ? taskUpdatePatch(editing, submitted, intent) : null;
     const r = editing
-      ? await api.updateTask(editing.id, {
-          ...fields,
-          title: submitted.title.trim(),
-          model: submitted.model || null,
-        })
+      ? patch
+        ? await api.updateTask(editing.id, patch)
+        : { ok: true }
       : await api.dispatch({
-          ...fields,
+          repoRoot: submitted.repoRoot.trim(),
+          intent,
+          kind: submitted.kind,
+          agent: submitted.agent,
+          // "" is the empty option: no priority, which is a different answer from "low".
+          priority: submitted.priority || null,
+          labels: parseLabelInput(submitted.labels),
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
           backlog: !dispatchNow,
@@ -472,7 +433,7 @@ function DispatchModal({
     // Only from THIS form, not the editor. Reopening a task shelved last week and
     // saving it is a visit to an old decision, not a statement about what to dispatch
     // next, and letting it move the seed would strand the next task in that repo.
-    if (r.ok && !editing) rememberDispatchRepo(fields.repoRoot);
+    if (r.ok && !editing) rememberDispatchRepo(submitted.repoRoot.trim());
     // Clear the draft and close only once the task row exists - the worktree and
     // tmux session are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit
@@ -489,10 +450,15 @@ function DispatchModal({
       className="modal dispatch-modal"
       role="dialog"
       ariaLabel={editing ? "Edit a backlog task" : "Dispatch an agent"}
+      // Sealed while a submit is in flight, all four dismiss routes at once. A modal
+      // dismissed mid-save unmounts the only thing that can report the answer, so a
+      // refusal - a repo that no longer resolves, a task the autopilot just started -
+      // lands on nothing and reads as a save that worked.
+      closable={!busy}
     >
       <header className="modal-head">
         <h2>{editing ? "Edit backlog task" : "Dispatch an agent"}</h2>
-        <button className="icon-btn" aria-label="Close" onClick={onClose}>
+        <button className="icon-btn" aria-label="Close" onClick={onClose} disabled={busy}>
           ✕
         </button>
       </header>
@@ -691,7 +657,7 @@ function DispatchModal({
           {editing ? "Revert" : "Clear"}
         </button>
         <span className="actions-spacer" />
-        <button className="btn btn-ghost" onClick={onClose}>
+        <button className="btn btn-ghost" onClick={onClose} disabled={busy}>
           Cancel
         </button>
         <button

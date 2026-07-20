@@ -3191,9 +3191,16 @@ kbd {
   padding: 4px 8px;
   border-radius: 6px;
 }
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   color: var(--fg);
   background: var(--panel);
+}
+/* Matches .btn:disabled, and the :not() above is half of it: a disabled button still
+   takes :hover, so without both it would light up under the cursor while refusing the
+   click - the dispatch modal's ✕ is disabled mid-save. */
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .dispatch-body {
   display: flex;

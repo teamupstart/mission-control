@@ -38,6 +38,7 @@ import {
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
+  UpdateTaskSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
 import type { NomistakesRespond } from "@shared/protocol.ts";
@@ -1107,6 +1108,24 @@ export function buildApp(
     if (!repoRoot) return c.json({ error: `not a git repository: ${parsed.data.repoRoot}` }, 400);
     const task = tasks.create({ ...parsed.data, repoRoot });
     return c.json(task);
+  });
+
+  // Edit a task still waiting in the backlog. A repo change is resolved the same way
+  // `POST /api/tasks` resolves one, so a task cannot be edited into pointing at a path
+  // that is not a git root - the dispatcher would only discover that much later, with a
+  // worktree half cut. Refusals mirror `assign`: 404 for a task that is gone, 409 for one
+  // that has already left the backlog and can no longer be rewritten.
+  app.post("/api/tasks/:id/update", async (c) => {
+    const parsed = await parseBody(c, UpdateTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    let { repoRoot } = parsed.data;
+    if (repoRoot !== undefined) {
+      const resolved = await resolveRepoRoot(repoRoot);
+      if (!resolved) return c.json({ error: `not a git repository: ${repoRoot}` }, 400);
+      repoRoot = resolved;
+    }
+    const r = await tasks.update(c.req.param("id"), { ...parsed.data, repoRoot });
+    return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 
   app.post("/api/tasks/:id/dispatch", async (c) => {

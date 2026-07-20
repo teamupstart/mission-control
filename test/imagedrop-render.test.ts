@@ -83,7 +83,7 @@ test("every chip can be taken back off, by name", () => {
 test("the dispatch task box advertises that it takes images", () => {
   // Hosted because the modal is an <Overlay>; see helpers/overlay-host.
   const html = renderToStaticMarkup(
-    withOverlayHost(createElement(DispatchLayer, { open: true, onClose: () => {} })),
+    withOverlayHost(createElement(DispatchLayer, { open: true, editTask: null, onClose: () => {} })),
   );
   assert.match(html, /drop or paste images to attach them/);
   assert.match(html, /drop-zone/);
@@ -91,7 +91,7 @@ test("the dispatch task box advertises that it takes images", () => {
 
 test("a closed dispatch layer renders nothing", () => {
   const html = renderToStaticMarkup(
-    withOverlayHost(createElement(DispatchLayer, { open: false, onClose: () => {} })),
+    withOverlayHost(createElement(DispatchLayer, { open: false, editTask: null, onClose: () => {} })),
   );
   assert.equal(html, "");
 });

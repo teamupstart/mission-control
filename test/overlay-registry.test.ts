@@ -164,6 +164,7 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
         tasks: [],
         onClose: () => {},
         onOpenReviews: () => {},
+        onEditTask: () => {},
       }),
   },
   {

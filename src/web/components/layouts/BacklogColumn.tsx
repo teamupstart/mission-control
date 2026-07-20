@@ -22,16 +22,24 @@ import { relativeTime, stateDisplay } from "../../lib/format.ts";
  * The column never shrinks or hides when empty, unlike the tone columns beside it:
  * it is a drop target and an inbox, not a readout, and a target that disappears
  * when it has nothing in it is a target you cannot drop into.
+ *
+ * A card is also a way back INTO the form that wrote it: clicking one reopens the
+ * dispatch modal over that task, where it can be corrected and then dispatched from
+ * the same dialog. Shelving a task is a decision to come back to it, and coming back
+ * to it almost always means rereading it - so the card is the door, not a tooltip.
  */
 export function BacklogColumn({
   tasks,
   onAssignError,
   onDragging,
+  onEdit,
 }: {
   tasks: Task[];
   onAssignError: (message: string) => void;
   /** The repo of the card now in the air, or null when nothing is being dragged. */
   onDragging: (repoRoot: string | null) => void;
+  /** Reopen the dispatch modal over this task. */
+  onEdit: (taskId: string) => void;
 }): React.JSX.Element {
   return (
     <section className="board-col board-backlog">
@@ -45,7 +53,13 @@ export function BacklogColumn({
           <p className="board-col-empty">Nothing queued</p>
         ) : (
           tasks.map((t) => (
-            <BacklogCard key={t.id} task={t} onAssignError={onAssignError} onDragging={onDragging} />
+            <BacklogCard
+              key={t.id}
+              task={t}
+              onAssignError={onAssignError}
+              onDragging={onDragging}
+              onEdit={() => onEdit(t.id)}
+            />
           ))
         )}
       </div>
@@ -57,10 +71,12 @@ function BacklogCard({
   task,
   onAssignError,
   onDragging,
+  onEdit,
 }: {
   task: Task;
   onAssignError: (message: string) => void;
   onDragging: (repoRoot: string | null) => void;
+  onEdit: () => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
 
@@ -84,15 +100,33 @@ function BacklogCard({
         onDragging(task.repoRoot);
       }}
       onDragEnd={() => onDragging(null)}
+      // Anywhere on the card opens it, so the gesture matches what the whole card looks
+      // like: one object. A drag doesn't fire this - the browser suppresses the click
+      // that ends one - so dragging a card to an agent still only ever assigns it.
+      onClick={onEdit}
       title={task.intent}
     >
-      <span className="bl-title">{task.title}</span>
+      {/* The real, focusable control behind the card-wide click: a card is not a button
+          (it contains one), so the title carries the keyboard route in. */}
+      <button className="bl-title" onClick={onEdit} title="Open this task for editing">
+        {task.title}
+      </button>
       <span className="bl-foot">
         <span className={`bl-kind bl-kind-${task.kind}`}>{task.kind}</span>
         <span className="bl-agent">{task.agent}</span>
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
-      <button className="bl-launch" onClick={launch} disabled={busy} title="Dispatch into a fresh worktree">
+      <button
+        className="bl-launch"
+        onClick={(e) => {
+          // Launching is not opening: without this the card's own handler would fire
+          // too and drop the modal over a task that is already on its way out.
+          e.stopPropagation();
+          void launch();
+        }}
+        disabled={busy}
+        title="Dispatch into a fresh worktree"
+      >
         {busy ? "dispatching…" : "launch new agent"}
       </button>
     </article>

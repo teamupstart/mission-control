@@ -286,6 +286,26 @@ export const CompleteTaskSchema = z.object({
 });
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
+/**
+ * Edit a task that is still sitting in the backlog - what the dispatch modal sends
+ * when it is reopened on a backlog card.
+ *
+ * Every field is optional and the server merges over the stored row, so a caller can
+ * correct just the intent without restating the repo. `title` is the one field where
+ * empty is meaningful rather than absent: clearing it asks for a title to be derived
+ * again from the intent as it now reads, the same bargain the create form offers.
+ */
+export const UpdateTaskSchema = z
+  .object({
+    repoRoot: z.string().min(1).optional(),
+    intent: z.string().min(1).optional(),
+    title: z.string().optional(),
+    kind: z.enum(["ship", "scout"]).optional(),
+    agent: z.enum(["claude", "codex"]).optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty task update" });
+export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),

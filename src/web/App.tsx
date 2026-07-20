@@ -53,6 +53,12 @@ export function App(): React.JSX.Element {
   // session grid, and the draft has to survive a close without dragging every
   // keystroke through it.
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  // The backlog task the dispatch modal is open OVER, when it was opened by clicking a
+  // backlog card rather than the Dispatch button. Only the id is held: the task itself
+  // is read back out of `tasks` on every render, so an edit made anywhere else - or the
+  // task being dispatched out from under the modal - is seen here rather than shadowed
+  // by a copy taken at open time.
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [reportOpen, setReportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Which category Settings opens on. The gear and ⌘, land on Keyboard; the ForemanBar
@@ -136,7 +142,26 @@ export function App(): React.JSX.Element {
     setExpandedId((cur) => (cur === id ? null : id));
   }, []);
 
-  const closeDispatch = useCallback(() => setDispatchOpen(false), []);
+  const closeDispatch = useCallback(() => {
+    setDispatchOpen(false);
+    setEditingTaskId(null);
+  }, []);
+  /**
+   * Open the dispatch modal over a backlog task.
+   *
+   * Clears `dispatchOpen` in the same breath, so the two ways in can never both be
+   * true: one modal, over one thing, and closing it goes all the way out rather than
+   * dropping back onto a new-dispatch form nobody asked for.
+   */
+  const openTaskEditor = useCallback((taskId: string) => {
+    setDispatchOpen(false);
+    setEditingTaskId(taskId);
+  }, []);
+  /** The other way in - the topbar button and the dispatch chord - and its mirror image. */
+  const openDispatch = useCallback(() => {
+    setEditingTaskId(null);
+    setDispatchOpen(true);
+  }, []);
   const closeDiff = useCallback(() => {
     setDiffSessionId(null);
     setDiffCommit(null);
@@ -275,7 +300,25 @@ export function App(): React.JSX.Element {
     foremanAllowlist,
     inputReviewBySession,
     pendingReviewIds,
+    onEditTask: openTaskEditor,
   };
+
+  /**
+   * The task the editor is over, or null. Deliberately requires `backlog` status, not
+   * just existence: the whole form is a rewrite of a shelved row, and the daemon refuses
+   * to rewrite one that has been dispatched - so a task that starts while its editor is
+   * open must take the editor with it rather than leave a form whose Save can only fail.
+   * The card can leave under you for good reasons (dropped onto an idle agent from the
+   * same board, launched from the Sitrep panel, deleted), which is the task-shaped case
+   * of the session-disappeared reconciliation below.
+   */
+  const editingTask = useMemo(
+    () => (editingTaskId ? tasks.find((t) => t.id === editingTaskId && t.status === "backlog") ?? null : null),
+    [editingTaskId, tasks],
+  );
+  useEffect(() => {
+    if (editingTaskId && !editingTask) setEditingTaskId(null);
+  }, [editingTaskId, editingTask]);
 
   // Drop selection / collapse / close the diff if the session disappears
   // (exited + reaped, etc.).
@@ -361,7 +404,7 @@ export function App(): React.JSX.Element {
       // guard so dispatch still opens when there are no sessions yet.
       if (chord === bindings.dispatch) {
         e.preventDefault();
-        setDispatchOpen(true);
+        openDispatch();
         return;
       }
       if (chord === bindings.filter) {
@@ -559,7 +602,7 @@ export function App(): React.JSX.Element {
             />
             <button
               className="dispatch-btn"
-              onClick={() => setDispatchOpen(true)}
+              onClick={openDispatch}
               title={`Dispatch a new agent (${formatChord(bindings.dispatch)})`}
             >
               <span aria-hidden>＋</span> Dispatch
@@ -611,7 +654,11 @@ export function App(): React.JSX.Element {
           />
         )}
 
-        <DispatchLayer open={dispatchOpen} onClose={closeDispatch} />
+        <DispatchLayer
+          open={dispatchOpen || editingTask != null}
+          editTask={editingTask}
+          onClose={closeDispatch}
+        />
 
         {reportOpen && (
           <ReportPanel
@@ -621,6 +668,10 @@ export function App(): React.JSX.Element {
             onOpenReviews={(id) => {
               setReportOpen(false);
               setReviewSessionId(id);
+            }}
+            onEditTask={(id) => {
+              setReportOpen(false);
+              openTaskEditor(id);
             }}
           />
         )}

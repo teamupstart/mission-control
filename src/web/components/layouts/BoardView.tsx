@@ -72,7 +72,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       data-focus={focusedTone ?? "none"}
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
-      <BacklogColumn tasks={backlog} onAssignError={setDropError} onDragging={setDraggingRepo} />
+      <BacklogColumn
+        tasks={backlog}
+        onAssignError={setDropError}
+        onDragging={setDraggingRepo}
+        onEdit={props.onEditTask}
+      />
 
       {groups
         .filter((g) => modes.get(g.tone) !== "stashed")

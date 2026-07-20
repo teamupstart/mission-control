@@ -156,6 +156,7 @@ test("card and console detail agree on every shared leaf", () => {
       view: {
         sessions: [session],
         tasks: [],
+        onEditTask: () => {},
         gateAlerts: new Set<string>(),
         selectedId: session.id,
         onSelect: () => {},

@@ -15,6 +15,8 @@ export interface SessionViewProps {
   sessions: Session[];
   /** Every known task. The board reads the backlog out of it for its dispatch column. */
   tasks: Task[];
+  /** Reopen the dispatch modal over a backlog task, to correct it or send it now. */
+  onEditTask: (taskId: string) => void;
   /** Sessions whose parked no-mistakes gate actually needs you (computed cross-session). */
   gateAlerts: ReadonlySet<string>;
   selectedId: string | null;

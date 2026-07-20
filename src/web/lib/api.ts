@@ -19,6 +19,7 @@ import type {
   ResolveEpisode,
   SetNote,
   SkillsConfigPatch,
+  UpdateTask,
 } from "@shared/protocol.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayDigest } from "@shared/away-buffer.ts";
@@ -273,6 +274,13 @@ export const api = {
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
+  /**
+   * Rewrite a task that is still in the backlog - the dispatch modal reopened on a
+   * card. Refused (409) once it has been dispatched, when its branch and tmux session
+   * are already cut from the title.
+   */
+  updateTask: (id: string, patch: UpdateTask) =>
+    post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
   /** Hand a backlog task to an agent that is already running, rather than launching one. */
   assignTask: (id: string, sessionId: string) =>
     post(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId }),

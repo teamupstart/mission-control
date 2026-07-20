@@ -35,7 +35,8 @@ and get your decision back.
   Read straight off the terminal, so it works with or without hooks.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
   agent in its own isolated worktree + detached tmux session (or shelves it in a
-  backlog for later).
+  backlog for later, where clicking it [reopens the form](#edit-a-shelved-task) to
+  edit or send).
 - **Rounds up** every session: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 - **Alerts** you when a session needs you: a desktop notification + sound the
@@ -401,6 +402,22 @@ the grid mid-thought without losing it. The draft is cleared only once the task 
 dispatched or queued, or when you hit **Clear** to start a fresh one. A submit that fails
 leaves the form open with your fields intact so you can retry.
 
+### Edit a shelved task
+
+**Click a backlog task and it opens back up in the form that wrote it** - on the
+[Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
+[Roundup](#roundup) panel. Every field is editable: repo, kind, agent, title, and the task
+text itself, plus more screenshots dropped onto it. **Save** keeps it in the backlog;
+**Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
+finished and sent without a second trip. **Revert** puts back the version the daemon still
+holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
+Clear the **Title** and it's derived afresh from the task text as you've now written it.
+
+Only *shelved* work can be rewritten. Once a task is dispatched its title is already the
+name of a git branch and a tmux session, so the daemon refuses the edit rather than let the
+card drift from the terminal it describes - and a task that starts while you have it open
+takes the form with it.
+
 Every dispatched task is a durable record (repo, intent, kind, worktree, branch, outcome)
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
@@ -411,7 +428,8 @@ Click **Roundup** for a one-look snapshot of every session, assembled from the s
 data the grid shows: **who needs you** (needs-input, pending reviews, parked no-mistakes
 gates, sessions sitting on an [option menu](#answer-a-sessions-menu-from-the-dashboard)),
 **who's working** (with their intent + activity), **what's idle**, the **backlog**,
-and **recent outcomes**. Dispatch a backlog task or drop it right from the panel, and **Mark
+and **recent outcomes**. Dispatch a backlog task, [edit it](#edit-a-shelved-task) by
+clicking its name, or drop it right from the panel, and **Mark
 done** a running task with its outcome (e.g. "opened PR #123") to close the loop. **Copy as
 markdown** yields a paste-able digest (also at `GET /api/report.md`; JSON at `GET
 /api/report`).

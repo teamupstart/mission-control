@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentType, Task, TaskKind } from "@shared/types.ts";
+import type { UpdateTask } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
 import { injectPrompt, kill } from "./actions.ts";
@@ -174,6 +175,47 @@ export class TaskManager {
       void this.dispatcher.dispatch(id);
     }
     return this.registry.getTask(id) ?? t;
+  }
+
+  /**
+   * Edit a task that is still in the backlog - the dispatch modal, reopened on a card.
+   *
+   * Only the backlog is editable, and that boundary is the whole rule. The moment a task
+   * dispatches, its title is baked into a git branch and a tmux session name that nothing
+   * downstream can rename (see `autoTitleThenDispatch`), and its intent has already been
+   * typed at an agent - so an edit after that point would change the card and nothing
+   * else, which is worse than a refusal. Every other status is a conflict the caller
+   * shows, not retries.
+   *
+   * Waits out any in-flight titling for the same reason `dispatch` does, inverted: the
+   * model writes the whole row back when it lands, so an edit applied before it would be
+   * silently reverted a beat later, in front of an operator who watched their text go in.
+   */
+  async update(id: string, patch: UpdateTask): Promise<Ok & { task?: Task }> {
+    await this.titling.get(id);
+    const t = this.registry.getTask(id);
+    if (!t) return { ok: false, error: "no such task" };
+    if (t.status !== "backlog") {
+      return { ok: false, error: `task is ${t.status}, not in the backlog` };
+    }
+    const intent = patch.intent?.trim() ?? t.intent;
+    const title = patch.title?.trim();
+    const next: Task = {
+      ...t,
+      repoRoot: patch.repoRoot ?? t.repoRoot,
+      intent,
+      // Emptying the title asks for one to be derived again - and from the intent as it
+      // now reads, not the one the task was first shelved under. Derived here rather than
+      // re-run through the model: an edit is a synchronous answer to a click, and the
+      // titling wait it would cost buys a nicety on a name the operator is looking at and
+      // can simply type.
+      title: title === undefined ? t.title : title || deriveTitle(intent),
+      kind: patch.kind ?? t.kind,
+      agent: patch.agent ?? t.agent,
+      updatedAt: Date.now(),
+    };
+    this.registry.upsertTask(next);
+    return { ok: true, task: next };
   }
 
   /**

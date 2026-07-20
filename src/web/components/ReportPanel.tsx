@@ -27,11 +27,14 @@ export function ReportPanel({
   tasks,
   onClose,
   onOpenReviews,
+  onEditTask,
 }: {
   sessions: Session[];
   tasks: Task[];
   onClose: () => void;
   onOpenReviews: (sessionId: string) => void;
+  /** Close this panel and reopen the dispatch modal over a backlog task. */
+  onEditTask: (taskId: string) => void;
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [copied, setCopied] = useState(false);
@@ -214,7 +217,15 @@ export function ReportPanel({
           {backlog.map((t) => (
             <div className="report-row" key={t.id}>
               <div className="report-row-main">
-                <span className="report-name">{t.title}</span>
+                {/* The same door the board's backlog card is: a shelved task is read and
+                    corrected in the form that wrote it, from wherever it's listed. */}
+                <button
+                  className="report-name report-name-btn"
+                  onClick={() => onEditTask(t.id)}
+                  title="Open this task for editing"
+                >
+                  {t.title}
+                </button>
                 <span className="task-kind">{t.kind}</span>
                 <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
               </div>

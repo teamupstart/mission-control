@@ -3354,6 +3354,27 @@ kbd {
   white-space: nowrap;
   max-width: 240px;
 }
+/* The backlog rows' name doubles as the way into the task editor. Same type as the
+   plain `.report-name` beside it, so a listing of shelved work doesn't turn into a
+   column of links - the pointer and the hover colour are the whole affordance. */
+.report-name-btn {
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  /* Yield last, not proportionally. A backlog row carries a title, a kind chip and a
+     repo path in one flex line, and shared shrink left BOTH the title and the path
+     ellipsized - two half-sentences where the title alone would have fit. The title
+     names the work and is the click target, so the path gives up its width first. */
+  flex-shrink: 0;
+  max-width: 320px;
+}
+.report-name-btn:hover {
+  color: var(--select);
+}
 .report-sub {
   font-size: 11.5px;
   color: var(--muted);
@@ -5791,9 +5812,28 @@ kbd {
   opacity: 0.55;
   cursor: default;
 }
+/* A button, because the title is the keyboard route into the task editor - stripped
+   back to the text it was, since the whole card is already the click target and a
+   second framed control inside it would read as a second action. */
 .bl-title {
+  padding: 0;
+  font: inherit;
   font-size: 12px;
   line-height: 1.42;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+.bl-card:hover .bl-title,
+.bl-title:hover {
+  color: color-mix(in oklab, var(--pr-merged) 40%, var(--fg));
+}
+.bl-title:focus-visible {
+  outline: 2px solid var(--select);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .bl-foot {
   display: flex;

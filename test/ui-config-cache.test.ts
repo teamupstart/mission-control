@@ -30,6 +30,7 @@ test("nothing stored anywhere reads as the shipped defaults", () => {
   assert.equal(config.layout, "grid");
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
+  assert.equal(config.usageBarCollapsed, false);
 });
 
 test("a written cache round-trips", () => {
@@ -38,12 +39,14 @@ test("a written cache round-trips", () => {
     keybindings: { select: "shift+Tab" },
     alerts: { notifications: true, sound: false },
     richText: false,
+    usageBarCollapsed: true,
   });
   const config = readCache();
   assert.equal(config.layout, "console");
   assert.deepEqual(config.keybindings, { select: "shift+Tab" });
   assert.deepEqual(config.alerts, { notifications: true, sound: false });
   assert.equal(config.richText, false);
+  assert.equal(config.usageBarCollapsed, true);
 });
 
 test("a corrupt cache falls back to the defaults instead of throwing", () => {

@@ -26,6 +26,7 @@ import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
 import { detailLayer, useLayoutMode } from "./lib/layout.ts";
+import { useUsageBarCollapsed } from "./lib/usageBar.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
@@ -45,6 +46,7 @@ export function App(): React.JSX.Element {
   useNotifier(alertScope, alertSettings, hasSnapshot);
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
+  const [usageBarCollapsed, setUsageBarCollapsed] = useUsageBarCollapsed();
   const foreman = useForeman();
   // Owned here rather than by SettingsModal, on the `foreman` precedent: the topbar strip
   // and the Cost panel read the same `view` setting, so a local copy in the modal would
@@ -616,7 +618,6 @@ export function App(): React.JSX.Element {
                 <Stat n={pendingReviews.length} label="reviews" tone="attention" />
               </button>
             )}
-            <FleetCostStrip fleet={fleetCost} view={cost.status?.config.view ?? "usd"} />
           </div>
           {/* Every action shares one rhythm, tighter than the gap separating them
               from the filter/stats, so they read as one cluster and wrap as a
@@ -662,6 +663,12 @@ export function App(): React.JSX.Element {
             <span className="link-dot" />
             {connected ? "live" : "reconnecting"}
           </div>
+          <UsageBar
+            fleet={fleetCost}
+            view={cost.status?.config.view ?? "usd"}
+            collapsed={usageBarCollapsed}
+            onToggleCollapsed={() => setUsageBarCollapsed(!usageBarCollapsed)}
+          />
         </header>
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
@@ -932,16 +939,65 @@ function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): Re
 }
 
 /**
- * Fleet spend and the subscription's rate limits, in the topbar.
+ * The topbar's second row: fleet spend and the subscription's rate limits, foldable.
  *
- * Rendered INSIDE `<header className="topbar">`, and that is not a layout preference:
- * `--topbar-h` is measured live off `topbarRef` with a ResizeObserver, so anything inside
- * the header is accounted for automatically while a sibling after `</header>` is not -
- * focus mode would then overflow by exactly this strip's height.
+ * A row of its own rather than living among the session-count pills - mixed content there
+ * used to wrap element-by-element (a pill here, a meter dangling on the next line there)
+ * because both `.summary` and `.fleet-cost` wrap independently. `flex-basis: 100%` on
+ * `.topbar-usage` forces this onto its own line unconditionally, so it never interleaves
+ * with the pills again regardless of width.
  *
- * Degrades honestly at every level. No telemetry at all -> nothing renders, rather than a
- * `$0.00` claiming a fleet that cost nothing. No `rate_limits` (an API-key user, or a
- * session before its first API response) -> no meters, rather than two bars sitting at 0%.
+ * Still rendered INSIDE `<header className="topbar">`: `--topbar-h` is measured live off
+ * `topbarRef` with a ResizeObserver, so anything inside the header is accounted for
+ * automatically while a sibling after `</header>` is not - focus mode would then overflow
+ * by exactly this row's height.
+ *
+ * The fold mirrors `WorkQueue`'s `Header`: the whole row is the button, and today's spend
+ * stays visible even collapsed (the work queue's precedent is its `count`) so folding away
+ * the meters never hides the one figure worth a glance.
+ */
+function UsageBar({
+  fleet,
+  view,
+  collapsed,
+  onToggleCollapsed,
+}: {
+  fleet: FleetCost | null;
+  view: "usd" | "plan";
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}): React.JSX.Element | null {
+  if (!fleet) return null;
+  const hasSpend = fleet.spendToday > 0;
+  const hasMeters = !!(fleet.rateLimits?.fiveHour || fleet.rateLimits?.sevenDay);
+  if (!hasSpend && !hasMeters) return null;
+  return (
+    <div className="topbar-usage">
+      <button
+        type="button"
+        className="topbar-usage-toggle"
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show fleet cost and usage" : "Fold fleet cost and usage away"}
+        onClick={onToggleCollapsed}
+      >
+        <span className="topbar-usage-caret" aria-hidden>
+          {collapsed ? "▸" : "▾"}
+        </span>
+        Usage
+        {collapsed && hasSpend && (
+          <span className="topbar-usage-compact">{fmtUsd(fleet.spendToday)}</span>
+        )}
+      </button>
+      {!collapsed && <FleetCostStrip fleet={fleet} view={view} />}
+    </div>
+  );
+}
+
+/**
+ * Fleet spend and the subscription's rate limits, as a row of pills. Degrades honestly at
+ * every level: no telemetry at all -> nothing renders, rather than a `$0.00` claiming a
+ * fleet that cost nothing. No `rate_limits` (an API-key user, or a session before its first
+ * API response) -> no meters, rather than two bars sitting at 0%.
  *
  * `view` picks which number LEADS, not which exists: on a Pro/Max plan the dollars are
  * notional and the percentage is the real constraint, so someone on a subscription can put

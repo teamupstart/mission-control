@@ -97,7 +97,7 @@
   <p class="meta">
     Owner <b>ai-harness (Mission Control)</b><br>
     Source of truth <b>docs/plans/cost-telemetry/plan.md</b><br>
-    Supersedes the cost bullet in <b>docs/plans/feature-ideas/plan.md</b>
+    Supersedes the cost bullet in <b>an earlier feature-ideas note that was never checked in</b>
   </p>
 </header>
 
@@ -123,7 +123,7 @@
 
 <h2>Premises that turned out to be wrong</h2>
 
-<p><strong>1. "Token counts ride the same hook payloads that already drive status."</strong> (<code>feature-ideas/plan.md</code>.) They do not. Verified empirically, not from docs: <code>Stop</code>, <code>SessionEnd</code>, and <code>PostToolUse</code> hooks were registered to dump raw stdin, and no field matching <code>cost|token|usage</code> appears in any of them. <code>hooks/harness-hook.mjs:67-84</code> builds an allowlist body with no <code>usage</code> field.</p>
+<p><strong>1. "Token counts ride the same hook payloads that already drive status."</strong> (The earlier feature-ideas note, not this plan.) They do not. Verified empirically, not from docs: <code>Stop</code>, <code>SessionEnd</code>, and <code>PostToolUse</code> hooks were registered to dump raw stdin, and no field matching <code>cost|token|usage</code> appears in any of them. <code>hooks/harness-hook.mjs:67-84</code> builds an allowlist body with no <code>usage</code> field.</p>
 
 <p><strong>2. "We do not know a subscription's limits programmatically and will not guess."</strong> (This plan, draft 1.) Wrong - the statusline payload carries them.</p>
 

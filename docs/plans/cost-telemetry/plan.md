@@ -3,7 +3,8 @@
 Status: implemented
 Owner: ai-harness (Mission Control)
 Rendered: `plan.html` beside this file - open that for the diagrams.
-Supersedes the "Cost & token telemetry" bullet in `docs/plans/feature-ideas/plan.md`.
+Supersedes the "Cost & token telemetry" bullet in an earlier feature-ideas note that was
+never checked in.
 
 Built as written, with three decisions the plan left open resolved in the code:
 
@@ -39,10 +40,10 @@ payload, and stores both durably.
 ## Premises that turned out to be wrong
 
 **1. "Token counts ride the same hook payloads that already drive status."**
-(`feature-ideas/plan.md`.) They do not. Verified empirically rather than from docs: `Stop`,
-`SessionEnd`, and `PostToolUse` hooks were registered to dump raw stdin, and no field
-matching `cost|token|usage` appears in any of them. `hooks/harness-hook.mjs:67-84` builds
-an allowlist body with no `usage` field.
+(The earlier feature-ideas note, not this plan.) They do not. Verified empirically rather
+than from docs: `Stop`, `SessionEnd`, and `PostToolUse` hooks were registered to dump raw
+stdin, and no field matching `cost|token|usage` appears in any of them.
+`hooks/harness-hook.mjs:67-84` builds an allowlist body with no `usage` field.
 
 **2. "We do not know a subscription's limits programmatically and will not guess."**
 (This plan, draft 1.) Wrong - the statusline payload carries them.

@@ -34,8 +34,12 @@ export interface VerifyInput {
    * direction the verifier follows - so it is the only way an operator can say "this
    * particular thing is not done until X" and have a gap actually block. See
    * `prefsSection` for why a repo file is allowed that, and what it still cannot do.
+   *
+   * REQUIRED, not optional: an omitted `prefs` renders identically to a repo that has no
+   * FOREMAN.md, so an optional field would let a future call site forget it and compile
+   * clean. Pass `null` to mean "this repo has none".
    */
-  prefs?: StandardsDoc | null;
+  prefs: StandardsDoc | null;
   /** Gaps from the previous round, with their live strike counts. */
   priorGaps: TrackedGap[];
 }

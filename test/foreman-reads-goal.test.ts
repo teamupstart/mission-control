@@ -25,6 +25,8 @@ function mkInput(over: Partial<ReviewInput> = {}): ReviewInput {
     question: "Can I run `rm -rf node_modules` and reinstall?",
     transcript: [{ id: "1", role: "user", text: "the tests are flaky", tools: [], ts: 1 }],
     truncated: false,
+    // No FOREMAN.md - these cases are about the goal, not the operator's instructions.
+    prefs: null,
     ...over,
   };
 }

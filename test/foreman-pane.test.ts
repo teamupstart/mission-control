@@ -59,6 +59,8 @@ function input(over: Partial<ReviewInput> = {}): ReviewInput {
     // The real shape: the transcript ends BEFORE the ask, on the tool call that preceded it.
     transcript: [msg("Round 4 surfaced something important. Let me read the full reasoning.")],
     truncated: false,
+    // No FOREMAN.md - these cases are about the screen, not the operator's instructions.
+    prefs: null,
     ...over,
   };
 }

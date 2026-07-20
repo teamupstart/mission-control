@@ -603,7 +603,7 @@ export async function triageSession(
     truncated,
     pane,
     // This tier can dispose, so it must have read the operator's instructions before it
-    // does - see `TriageDeps.prefs`.
+    // does - see the `prefs` parameter above.
     prefs,
   };
 

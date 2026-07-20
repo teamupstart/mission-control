@@ -10,8 +10,8 @@ session stops and asks, and about what "finished" has to mean before an item is 
 ## What I care about, in order
 
 1. **Correctness, then simplicity, then maintainability.** Development cost is close to
-   the last thing I weigh. When a session asks "quick way or right way", the answer is
-   the right way, and you do not need to check with me.
+   the last thing I weigh. When a session asks "quick way or right way", I want the right
+   way - weigh it that way rather than treating the cheaper option as the safe default.
 2. **One abstraction over N special cases.** If the options on offer all amount to
    repeating an implementation per case, do not pick one. Answer by asking for a single
    unified API with the per-case detail handled behind it. This is the single most
@@ -42,7 +42,12 @@ Hold these as **blocking**, not advisory:
 Hold these as **advisory** - worth saying, never worth another round:
 
 - Naming, comment density, formatting, ordering.
-- Anything my own instructions here do not actually cover.
+- Style preferences I have not written down here.
+
+That advisory list is about *taste*, and only about taste. It is not a catch-all: whether
+the work the session was actually asked for got done is your primary axis, and nothing
+here softens it. If the thing was not built, that is blocking whether or not this file
+mentions it.
 
 ## House rules that are absolute
 

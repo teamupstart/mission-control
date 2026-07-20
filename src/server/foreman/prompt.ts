@@ -64,8 +64,14 @@ export interface ReviewInput {
    *
    * This is the only repo-sourced input in the prompt that is DIRECTION rather than
    * evidence - see `prefsSection` for the ratchet that bounds it.
+   *
+   * REQUIRED, not optional, for the same reason `triageSession`'s parameter is: an
+   * omitted `prefs` and a repo with no FOREMAN.md render identically, so an optional
+   * field would let a future call site forget it and compile clean - reintroducing the
+   * silent blindness this change exists to remove, one layer up. Pass `null` to mean
+   * "this repo has none"; there is no way to mean "I didn't think about it".
    */
-  prefs?: StandardsDoc | null;
+  prefs: StandardsDoc | null;
 }
 
 /** Per-message text cap so a long turn can't blow up the prompt. */

@@ -832,7 +832,7 @@ async function processPromptedWrapup(
   // failed read is indistinguishable from that and is treated as it.
   const [standards, prefs] = await Promise.all([
     client.standards(session.id, changedPaths(diff.patch)).catch(() => ({ docs: [], truncated: false })),
-    client.prefs(session.id).catch(() => null),
+    readPrefs(client, session),
   ]);
 
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
@@ -1064,7 +1064,7 @@ async function runVerify(
   // ordinary case, so a read that fails must land on the pre-existing behaviour.
   const [standards, prefs] = await Promise.all([
     client.standards(session.id, changedPaths(diff.patch)).catch(() => ({ docs: [], truncated: false })),
-    client.prefs(session.id).catch(() => null),
+    readPrefs(client, session),
   ]);
 
   const result = await verifyItem({
@@ -1218,7 +1218,7 @@ async function processSession(
   // Null on failure, like every other read of this file - see `ForemanClient.prefs`.
   const [pane, prefs] = await Promise.all([
     paneFor(client, session, pending),
-    client.prefs(session.id).catch(() => null),
+    readPrefs(client, session),
   ]);
   const ctx: ReviewContext = {
     sessionId: session.id,
@@ -1514,6 +1514,50 @@ async function fullReview(
 }
 
 /** Adapt the daemon client to the cheap tier's read-only dependency surface. */
+/**
+ * Sessions whose last FOREMAN.md read failed, so the log says so ONCE per outage rather
+ * than every tick. Keyed by session id; an entry is cleared the moment a read succeeds.
+ */
+const prefsUnreadable = new Set<string>();
+
+/**
+ * The operator's FOREMAN.md for a session, or null - never throwing, but never SILENT.
+ *
+ * Every caller degrades a failure to null, which is right: no FOREMAN.md is the ordinary
+ * case and a review that runs without the operator's instructions beats one that doesn't
+ * run. But null is also what a repo with no file returns, so a bare `.catch(() => null)`
+ * makes a persistently broken read (a hung `git rev-parse`, a daemon/worker version skew,
+ * a permissions error) indistinguishable from "this repo never wrote one" - and the
+ * operator's standing instructions stop applying with no signal anywhere. That is exactly
+ * the failure `test/http-integration.test.ts` names when it explains why the route is
+ * worth an integration test at all.
+ *
+ * The standards read next door can afford the same silence because a standards finding is
+ * advisory-only and never drives a fix round. These instructions CAN block, and they gate
+ * what the cheap tier may auto-approve, so their disappearance has to be visible.
+ *
+ * Logged on the transition rather than per tick: the loop revisits a session every
+ * BETWEEN_MS, and a line per pass would bury the one that mattered.
+ */
+async function readPrefs(client: ForemanClient, session: Session): Promise<StandardsDoc | null> {
+  try {
+    const doc = await client.prefs(session.id);
+    if (prefsUnreadable.delete(session.id)) {
+      log(`${session.name}: FOREMAN.md readable again`);
+    }
+    return doc;
+  } catch (err) {
+    if (!prefsUnreadable.has(session.id)) {
+      prefsUnreadable.add(session.id);
+      log(
+        `${session.name}: could NOT read FOREMAN.md (${String(err)}) - ` +
+          `reviewing without the operator's standing instructions`,
+      );
+    }
+    return null;
+  }
+}
+
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),

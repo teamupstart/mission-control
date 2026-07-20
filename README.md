@@ -782,9 +782,11 @@ Two things make it different from the `AGENTS.md` / `CLAUDE.md` that Foreman *al
 
 A repo without the file is left alone: with no `FOREMAN.md` the section renders as nothing at
 all, so Foreman reviews it exactly as it did before the feature existed - byte-identical, and
-there's a test pinning that. (The one thing that did change everywhere is the *verifier's*
-policy, which now carries a conditional sentence saying the operator's instructions outrank its
-advisory-only convention rule. With no such instructions present it has nothing to apply to.)
+there's a test pinning that. (Two prompts did gain a sentence unconditionally: the verifier's
+policy, saying the operator's instructions outrank its advisory-only convention rule, and the
+cheap tier's rules, saying they can only ever move an ask *away* from auto-approval. Both are
+conditioned on instructions being present, so with no `FOREMAN.md` neither has anything to
+apply to.)
 It is capped at 16KB (a truncated file
 says so in the prompt), and it is resolved against the git toplevel, so a session sitting in
 a monorepo subdirectory still finds the one at the root. Because it's checked in, every

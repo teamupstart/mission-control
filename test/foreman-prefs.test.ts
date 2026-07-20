@@ -42,6 +42,7 @@ function reviewInput(over: Partial<ReviewInput> = {}): ReviewInput {
     question: "Should I add the endpoint?",
     transcript: [{ role: "assistant", text: "working", tools: [] }],
     truncated: false,
+    prefs: null,
     ...over,
   } as ReviewInput;
 }
@@ -58,6 +59,7 @@ function verifyInput(over: Partial<VerifyInput> = {}): VerifyInput {
     transcriptTruncated: false,
     standards: [],
     standardsTruncated: false,
+    prefs: null,
     priorGaps: [],
     ...over,
   } as VerifyInput;

@@ -14,6 +14,7 @@ import {
   ResolveRepoSchema,
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
+  ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
   GateReplySchema,
   HarnessesConfigPatchSchema,
@@ -80,7 +81,13 @@ import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
-import { readForemanPrefs, readStandards } from "./standards.ts";
+import { readStandards } from "./standards.ts";
+import {
+  defaultForemanInstructions,
+  foremanInstructions,
+  resetForemanInstructions,
+  setForemanInstructions,
+} from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
@@ -347,26 +354,31 @@ export function buildApp(
     return c.json(readStandards(root, parsed.data.paths));
   });
 
-  // The operator's own instructions to Foreman (`FOREMAN.md` at the repo root), or
-  // null when the repo has none. Unlike `/standards` this is direction rather than
-  // evidence - see `readForemanPrefs` for why that is bounded.
+  // Foreman's standing instructions - the prose half of its configuration.
   //
-  // Its own route rather than a field on `/standards`, because the two are needed on
-  // different paths: `/standards` is a verify-only concern keyed on a diff's changed
-  // paths, while prefs also apply to a Tier 2 review, which computes no diff at all.
-  // Folding them together would mean the review path POSTing an empty `paths` list to
-  // a route named for something it doesn't want.
+  // GLOBAL, not per-session, because that is what it is: one setting for the operator, not a
+  // property of whichever session happens to be under review. It reads the stored value if
+  // they have edited it and the shipped `FOREMAN.md` otherwise, so the worker never has to
+  // know which of the two it got.
   //
-  // A GET, unlike its neighbour: there is no unbounded path list to carry, so the
-  // reason `/standards` had to become a POST doesn't apply.
-  app.get("/api/sessions/:id/foreman-prefs", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
-    if (!session) return c.json({ error: "no such session" }, 404);
-    // The git TOPLEVEL, exactly as `/standards` resolves it: a session sitting in a
-    // monorepo subdirectory would otherwise look for FOREMAN.md one level down and
-    // silently find nothing.
-    return c.json(readForemanPrefs(await repoRootOf(session.cwd)));
+  // A plain string body rather than JSON: the value IS the document, and the settings panel
+  // that will edit it wants a textarea, not a wrapper object.
+  app.get("/api/foreman/instructions", (c) =>
+    c.json({ text: foremanInstructions(), default: defaultForemanInstructions() }),
+  );
+
+  // Replace them, or reset to the shipped default. An empty string is a real choice ("judge
+  // by your own policy alone") and is stored as such; resetting is a separate action, which
+  // is why it is a flag rather than an empty write.
+  app.put("/api/foreman/instructions", async (c) => {
+    const parsed = await parseBody(c, ForemanInstructionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const text = parsed.data.reset
+      ? resetForemanInstructions()
+      : setForemanInstructions(parsed.data.text ?? "");
+    return c.json({ text, default: defaultForemanInstructions() });
   });
+
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));

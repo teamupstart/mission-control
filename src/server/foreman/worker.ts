@@ -41,7 +41,7 @@ import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem } from "./queue-verify.ts";
-import type { StandardsBundle, StandardsDoc } from "../standards.ts";
+import type { StandardsBundle } from "../standards.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -827,7 +827,7 @@ async function processPromptedWrapup(
     return false;
   }
 
-  const { standards, prefs } = await judgingContext(client, session, diff.patch);
+  const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
   // is one question, and a second prompt for it would be a second thing to keep true.
@@ -845,7 +845,7 @@ async function processPromptedWrapup(
     transcriptTruncated: window.truncated,
     standards: standards.docs,
     standardsTruncated: standards.truncated,
-    prefs,
+    instructions,
     priorGaps: [],
   });
   if (result.kind === "failed") {
@@ -1054,7 +1054,7 @@ async function runVerify(
     return;
   }
 
-  const { standards, prefs } = await judgingContext(client, session, diff.patch);
+  const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
@@ -1069,7 +1069,7 @@ async function runVerify(
     transcriptTruncated: window.truncated,
     standards: standards.docs,
     standardsTruncated: standards.truncated,
-    prefs,
+    instructions,
     priorGaps: item.gaps,
   });
 
@@ -1163,12 +1163,12 @@ async function judgingContext(
   client: ForemanClient,
   session: Session,
   patch: string,
-): Promise<{ standards: StandardsBundle; prefs: StandardsDoc | null }> {
-  const [standards, prefs] = await Promise.all([
+): Promise<{ standards: StandardsBundle; instructions: string }> {
+  const [standards, instructions] = await Promise.all([
     client.standards(session.id, changedPaths(patch)).catch(() => ({ docs: [], truncated: false })),
-    readPrefs(client, session),
+    readInstructions(client),
   ]);
-  return { standards, prefs };
+  return { standards, instructions };
 }
 
 /** The repo-relative paths a unified diff touches - what standards docs apply. */
@@ -1229,9 +1229,9 @@ async function processSession(
   // nothing, so the `on` path used to pay for it twice whenever an ask routed up.
   //
   // Null on failure, like every other read of this file - see `ForemanClient.prefs`.
-  const [pane, prefs] = await Promise.all([
+  const [pane, instructions] = await Promise.all([
     paneFor(client, session, pending),
-    readPrefs(client, session),
+    readInstructions(client),
   ]);
   const ctx: ReviewContext = {
     sessionId: session.id,
@@ -1250,7 +1250,7 @@ async function processSession(
   // the outcome was already handled - a transient review failure that will retry, or a
   // give-up note that was already written - so there's nothing left to apply. That still
   // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
-  const decision = await decide(client, cfg, session, pending, ctx, { pane, prefs, queueItem });
+  const decision = await decide(client, cfg, session, pending, ctx, { pane, instructions, queueItem });
   if (!decision) return true;
   const { verdict, tier } = decision;
 
@@ -1509,60 +1509,34 @@ async function fullReview(
 }
 
 /**
- * Sessions whose last FOREMAN.md read failed, so the log says so ONCE per outage rather
- * than every tick. Keyed by session id; an entry is cleared the moment a read succeeds.
+ * Foreman's standing instructions, or "" when they cannot be read.
  *
- * Bounded, like both of its neighbours (`EvaluationDebounce` prunes on every successful
- * claim, `ReviewFailureTracker` deletes on success or marker change). This worker runs for
- * days, and a session whose read failed and which then vanishes - a closed tab, an ended
- * tmux session - would otherwise leave its id here forever. The cap is generous next to
- * any real fleet: reaching it at all means reads are failing across more sessions than a
- * machine plausibly runs, and the only cost of dropping the oldest entry is one repeated
- * log line if that session comes back still broken.
+ * ONE fetch per evaluation, handed to whichever tiers run - the same rule `pane` follows, and
+ * for a sharper reason here: in `shadow` mode both tiers run concurrently and their verdicts
+ * are COMPARED, so two reads straddling an edit would be logged as a tier divergence when it
+ * was really an input one.
+ *
+ * Empty on failure, and that is not a silent degrade: a daemon that cannot answer is
+ * indistinguishable from an operator who cleared the box, and both mean "judge by your own
+ * policy". It is logged on the transition into and out of failure rather than every tick,
+ * because the loop revisits a session every BETWEEN_MS and a line per pass buries the one
+ * that mattered.
  */
-const PREFS_UNREADABLE_MAX = 256;
-const prefsUnreadable = new Set<string>();
-
-/**
- * The operator's FOREMAN.md for a session, or null - never throwing, but never SILENT.
- *
- * Every caller degrades a failure to null, which is right: no FOREMAN.md is the ordinary
- * case and a review that runs without the operator's instructions beats one that doesn't
- * run. But null is also what a repo with no file returns, so a bare `.catch(() => null)`
- * makes a persistently broken read (a hung `git rev-parse`, a daemon/worker version skew,
- * a permissions error) indistinguishable from "this repo never wrote one" - and the
- * operator's standing instructions stop applying with no signal anywhere. That is exactly
- * the failure `test/http-integration.test.ts` names when it explains why the route is
- * worth an integration test at all.
- *
- * The standards read next door can afford the same silence because a standards finding is
- * advisory-only and never drives a fix round. These instructions CAN block, and they gate
- * what the cheap tier may auto-approve, so their disappearance has to be visible.
- *
- * Logged on the transition rather than per tick: the loop revisits a session every
- * BETWEEN_MS, and a line per pass would bury the one that mattered.
- */
-async function readPrefs(client: ForemanClient, session: Session): Promise<StandardsDoc | null> {
+let instructionsUnreadable = false;
+async function readInstructions(client: ForemanClient): Promise<string> {
   try {
-    const doc = await client.prefs(session.id);
-    if (prefsUnreadable.delete(session.id)) {
-      log(`${session.name}: FOREMAN.md readable again`);
+    const text = await client.instructions();
+    if (instructionsUnreadable) {
+      instructionsUnreadable = false;
+      log("Foreman instructions readable again");
     }
-    return doc;
+    return text;
   } catch (err) {
-    if (!prefsUnreadable.has(session.id)) {
-      // Insertion-ordered, so the first key is the oldest - evict it before adding.
-      if (prefsUnreadable.size >= PREFS_UNREADABLE_MAX) {
-        const oldest = prefsUnreadable.values().next().value;
-        if (oldest !== undefined) prefsUnreadable.delete(oldest);
-      }
-      prefsUnreadable.add(session.id);
-      log(
-        `${session.name}: could NOT read FOREMAN.md (${String(err)}) - ` +
-          `reviewing without the operator's standing instructions`,
-      );
+    if (!instructionsUnreadable) {
+      instructionsUnreadable = true;
+      log(`could NOT read Foreman's instructions (${String(err)}) - judging on policy alone`);
     }
-    return null;
+    return "";
   }
 }
 

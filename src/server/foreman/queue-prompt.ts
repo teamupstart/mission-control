@@ -1,6 +1,6 @@
 import type { TranscriptMessage, TrackedGap } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
-import { PREFS_END, fromChild, prefsSection } from "./prefs.ts";
+import { PREFS_END, fromChild, instructionsSection } from "./prefs.ts";
 // The SHARED transcript renderer. This module used to keep a private copy, and it had rotted
 // into a real bug: `TranscriptMessage.tools` is `ToolCall[]`, so its `m.tools.join(", ")`
 // printed `(tools: [object Object])` and the verifier judged "was this actually finished" -
@@ -38,19 +38,14 @@ export interface VerifyInput {
   standards: StandardsDoc[];
   standardsTruncated: boolean;
   /**
-   * The operator's `FOREMAN.md`, when the repo has one.
+   * Foreman's standing instructions - see `ReviewInput.instructions`. Empty for none.
    *
-   * Distinct from `standards` in the one way that matters here: the standards docs are
-   * fenced as evidence and can only ever raise an `advisory` gap, while this is
-   * direction the verifier follows - so it is the only way an operator can say "this
-   * particular thing is not done until X" and have a gap actually block. See
-   * `prefsSection` for why a repo file is allowed that, and what it still cannot do.
-   *
-   * REQUIRED, not optional: an omitted `prefs` renders identically to a repo that has no
-   * FOREMAN.md, so an optional field would let a future call site forget it and compile
-   * clean. Pass `null` to mean "this repo has none".
+   * Distinct from `standards` in the one way that matters here: the standards docs are fenced
+   * as evidence and can only ever raise an `advisory` gap, while this is direction the
+   * verifier follows - so it is the only way an operator can say "this particular thing is not
+   * done until X" and have a gap actually block.
    */
-  prefs: StandardsDoc | null;
+  instructions: string;
   /** Gaps from the previous round, with their live strike counts. */
   priorGaps: TrackedGap[];
 }
@@ -136,7 +131,7 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     // and the standards docs further down, which are the same kind of file read from the
     // same repo - so if these two ever swap sides, the ratchet in `prefsSection` is doing
     // nothing and repo content is instructing the verifier outright.
-    ...prefsSection(input.prefs),
+    ...instructionsSection(input.instructions),
     "## The session",
     `name: ${fromChild(input.session.name)}`,
     `cwd: ${fromChild(input.session.cwd) ?? "(unknown)"}`,

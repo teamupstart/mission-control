@@ -21,7 +21,7 @@ import type {
   TranscriptMessage,
   WorkItem,
 } from "@shared/types.ts";
-import type { StandardsBundle, StandardsDoc } from "../standards.ts";
+import type { StandardsBundle } from "../standards.ts";
 import { InjectError } from "./queue-apply.ts";
 import type { GateRef } from "./pending.ts";
 import type { ForemanActions } from "./verdict.ts";
@@ -271,12 +271,16 @@ export class ForemanClient implements ForemanActions {
   }
 
   /**
-   * The operator's `FOREMAN.md`, or null when the repo has none. Null is the ordinary
-   * case, which is why every caller degrades to it rather than holding the tick: a repo
-   * without the file must behave exactly as it did before the file existed.
+   * Foreman's standing instructions - the shipped default, or what the operator has since
+   * saved. Empty string when they have chosen to have none.
+   *
+   * GLOBAL, not per-session, because that is what it is: one setting for the operator rather
+   * than a property of whichever session is under review. The caller degrades a failure to ""
+   * (see `readInstructions`), which is the same state as an operator who cleared the box.
    */
-  prefs(id: string): Promise<StandardsDoc | null> {
-    return get<StandardsDoc | null>(`/api/sessions/${enc(id)}/foreman-prefs`);
+  async instructions(): Promise<string> {
+    const r = await get<{ text: string }>("/api/foreman/instructions");
+    return typeof r?.text === "string" ? r.text : "";
   }
 
   // ---- work queues ----

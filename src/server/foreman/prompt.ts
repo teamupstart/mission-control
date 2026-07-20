@@ -1,6 +1,5 @@
 import type { TranscriptMessage } from "@shared/types.ts";
-import type { StandardsDoc } from "../standards.ts";
-import { fromChild, prefsSection } from "./prefs.ts";
+import { fromChild, instructionsSection } from "./prefs.ts";
 import { sanitizeGapText } from "./queue-machine.ts";
 
 // Builds the review prompt handed to a fresh `claude -p` per session. This text
@@ -58,20 +57,15 @@ export interface ReviewInput {
    */
   queueItem?: { intent: string; round: number; openGaps: string[] };
   /**
-   * The operator's `FOREMAN.md`, when the repo has one. Null is the ordinary case and
-   * restores the exact pre-existing prompt, which is what lets this ship without
-   * changing how a single existing repo is reviewed.
+   * Foreman's standing instructions - the shipped `FOREMAN.md`, or what the operator has
+   * since typed into their settings. Empty when they have none, which renders nothing and
+   * leaves the prompt exactly as it was before this setting existed.
    *
-   * This is the only repo-sourced input in the prompt that is DIRECTION rather than
-   * evidence - see `prefsSection` for the ratchet that bounds it.
-   *
-   * REQUIRED, not optional, for the same reason `triageSession`'s parameter is: an
-   * omitted `prefs` and a repo with no FOREMAN.md render identically, so an optional
-   * field would let a future call site forget it and compile clean - reintroducing the
-   * silent blindness this change exists to remove, one layer up. Pass `null` to mean
-   * "this repo has none"; there is no way to mean "I didn't think about it".
+   * REQUIRED, not optional: empty and omitted render identically, so an optional field would
+   * let a future call site forget it and compile clean - the silent blindness this exists to
+   * remove, one layer up. Pass `""` to mean "none"; there is no way to mean "I didn't think".
    */
-  prefs: StandardsDoc | null;
+  instructions: string;
 }
 
 /**
@@ -101,8 +95,8 @@ export interface CapturedInputs {
    * design out.
    */
   pane: string | null;
-  /** The operator's FOREMAN.md - see `ReviewInput.prefs`. Null when the repo has none. */
-  prefs: StandardsDoc | null;
+  /** Foreman's standing instructions - see `ReviewInput.instructions`. Empty for none. */
+  instructions: string;
   /** The work-queue item this session is on, when it is on one - see `ReviewInput.queueItem`. */
   queueItem?: ReviewInput["queueItem"];
 }
@@ -224,7 +218,7 @@ export function buildReviewPrompt(input: ReviewInput): string {
     // there. Not down with the session data, which is the material being judged: an
     // operator instruction filed among evidence invites the model to weigh it as
     // evidence, and the whole point of this section is that it is not.
-    ...prefsSection(input.prefs),
+    ...instructionsSection(input.instructions),
     "## The session",
     `name: ${fromChild(session.name)}`,
     `cwd: ${fromChild(session.cwd) ?? "(unknown)"}`,

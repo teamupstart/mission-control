@@ -546,7 +546,7 @@ export async function triageSession(
   /**
    * What the caller captured once for this evaluation - see `CapturedInputs`.
    *
-   * This tier reads `prefs` at all because it can DISPOSE. `routine-access` is answered
+   * This tier reads the instructions at all because it can DISPOSE. `routine-access` is answered
    * outright at Tier 1 and never reaches Tier 2, so a router that had not read the
    * operator's instructions would auto-approve the very asks they had written down as
    * off-limits - on the most frequent path in the system, which is precisely the one they
@@ -556,7 +556,7 @@ export async function triageSession(
    */
   captured: CapturedInputs,
 ): Promise<TriageOutcome> {
-  const { pane, prefs } = captured;
+  const { pane, instructions } = captured;
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 
@@ -590,8 +590,8 @@ export async function triageSession(
     truncated,
     pane,
     // This tier can dispose, so it must have read the operator's instructions before it
-    // does - see the `prefs` parameter above.
-    prefs,
+    // does - see `captured` above.
+    instructions,
   };
 
   let raw: string;

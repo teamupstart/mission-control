@@ -1,5 +1,5 @@
 import { formatTranscript, paneSection } from "./prompt.ts";
-import { fromChild, prefsSection } from "./prefs.ts";
+import { fromChild, instructionsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
 
 // The Tier 1 routing prompt, handed to a cheap model (Haiku) in a fresh process. Unlike
@@ -63,7 +63,7 @@ export function buildTriagePrompt(input: ReviewInput): string {
     // `routine-access` on its own, so the operator's instructions have to bind here or
     // they only bind on whichever asks happen to route up. Same section, same ratchet,
     // so the two tiers cannot read the same file and reach different conclusions.
-    ...prefsSection(input.prefs),
+    ...instructionsSection(input.instructions),
     "## The session",
     `name: ${fromChild(session.name)}`,
     `cwd: ${fromChild(session.cwd) ?? "(unknown)"}`,

@@ -59,8 +59,8 @@ function input(over: Partial<ReviewInput> = {}): ReviewInput {
     // The real shape: the transcript ends BEFORE the ask, on the tool call that preceded it.
     transcript: [msg("Round 4 surfaced something important. Let me read the full reasoning.")],
     truncated: false,
-    // No FOREMAN.md - these cases are about the screen, not the operator's instructions.
-    prefs: null,
+    // No standing instructions - these cases are about the screen.
+    instructions: "",
     ...over,
   };
 }
@@ -215,7 +215,7 @@ test("triageSession puts the screen it was handed in the router's prompt", async
     pend(),
     mkSession(),
     cfg(),
-    { pane: REAL_MENU, prefs: null },
+    { pane: REAL_MENU, instructions: "" },
   );
   assert.ok(prompt.includes("Holder policy"), "the router buckets an ask it has actually read");
 });
@@ -227,7 +227,7 @@ test("triageSession scans the screen it was handed", async () => {
     pend(),
     mkSession(),
     cfg(),
-    { pane: "Bash(rm -rf build/)\n\nDo you want to proceed?", prefs: null },
+    { pane: "Bash(rm -rf build/)\n\nDo you want to proceed?", instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -247,7 +247,7 @@ test("triageSession captures no screen of its own - it reads the one the worker 
     pend({ situation: "input-review", surface: "input-review", question: "Should I use option B?", canSend: false }),
     mkSession(),
     cfg(),
-    { pane: null, prefs: null },
+    { pane: null, instructions: "" },
   );
   assert.ok(!prompt.includes("Holder policy"), "an input review carries its whole body already");
 });
@@ -256,7 +256,7 @@ test("triageSession survives a screen that couldn't be read", async () => {
   // `ForemanClient.pane` answers an unreadable pane with null rather than a throw, so this is
   // the shape a failed capture arrives in. The fallback is the pre-existing behaviour: an
   // unreadable pane must cost the improvement and nothing else - never the review itself.
-  const out = await triageSession(deps(), pend(), mkSession(), cfg(), { pane: null, prefs: null });
+  const out = await triageSession(deps(), pend(), mkSession(), cfg(), { pane: null, instructions: "" });
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer");

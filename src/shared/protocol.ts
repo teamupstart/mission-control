@@ -685,6 +685,31 @@ export const AwayConfigSchema = z.object({
 });
 export type AwayConfig = z.infer<typeof AwayConfigSchema>;
 
+/**
+ * Foreman's standing instructions - the prose half of its configuration, edited as one
+ * document rather than as fields.
+ *
+ * A separate route and schema from `ForemanConfigPatch` on purpose. That one carries knobs
+ * that grant AUTHORITY (may Foreman type, in which repos, may it approve access asks); this
+ * carries prose that shapes JUDGEMENT. Keeping them apart is what stops a sentence in a text
+ * box from doing a switch's job - see `PREFS_FRAMING`.
+ *
+ * `reset` and `text` are distinct operations because empty is a real value: an operator who
+ * clears the box wants Foreman judging by its own policy alone, which is not the same as
+ * wanting the shipped default back.
+ */
+export const ForemanInstructionsSchema = z
+  .object({
+    /** The new document. Ignored when `reset` is true. */
+    text: z.string().max(64_000).optional(),
+    /** Drop the stored value so the shipped `FOREMAN.md` applies again. */
+    reset: z.boolean().default(false),
+  })
+  .refine((o) => o.reset || typeof o.text === "string", {
+    message: "provide `text`, or `reset: true`",
+  });
+export type ForemanInstructionsUpdate = z.infer<typeof ForemanInstructionsSchema>;
+
 /** Partial update of the away config from the dashboard. */
 export const AwayConfigPatchSchema = AwayConfigSchema.partial().refine(
   (o) => Object.keys(o).length > 0,

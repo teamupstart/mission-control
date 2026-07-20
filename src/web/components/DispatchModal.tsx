@@ -5,6 +5,7 @@ import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES, normalizeLabels } from "@shared/task.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import { api, fetchHarnessesConfig, fetchRepos } from "../lib/api.ts";
+import { readLastDispatchRepo, rememberDispatchRepo } from "../lib/lastRepo.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import {
   AttachmentStrip,
@@ -21,9 +22,10 @@ import { LabelChips } from "./session-bits.tsx";
  * an accidental close - Escape, backdrop click, Cancel, or the ✕ - keeps a
  * half-written task around; the draft is wiped only once it's actually
  * dispatched or shelved, or when the footer's Clear discards it on purpose
- * (see EMPTY_DISPATCH_DRAFT).
+ * (see freshDispatchDraft).
  */
 type DispatchDraft = {
+  /** Seeded from the last dispatch's repo - see `lib/lastRepo.ts`. */
   repoRoot: string;
   intent: string;
   title: string;
@@ -60,6 +62,16 @@ const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
 };
 
 /**
+ * What a fresh dispatch form holds: nothing, except the repo the last one went to.
+ *
+ * Read at call time rather than captured in a constant, so a dispatch sent moments ago
+ * seeds the next form in this same tab - not just the next reload.
+ */
+function freshDispatchDraft(): DispatchDraft {
+  return { ...EMPTY_DISPATCH_DRAFT, repoRoot: readLastDispatchRepo() };
+}
+
+/**
  * Split the labels field's raw text into the array the API takes.
  *
  * Splits on commas AND newlines so a list pasted from anywhere works, then hands the
@@ -72,10 +84,17 @@ function parseLabelInput(raw: string): string[] {
   return normalizeLabels(raw.split(/[,\n]/));
 }
 
-/** True when a draft holds nothing worth keeping - so "Clear" has nothing to do. */
+/**
+ * True when a draft holds nothing worth keeping - so "Clear" has nothing to do.
+ *
+ * The seeded repo is not "something worth keeping": it was carried over from the last
+ * dispatch, not typed here, and Clear puts it back rather than blanking it. Comparing
+ * against the seed instead of "" is what keeps Clear greyed out on a form nobody has
+ * touched yet.
+ */
 function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   return (
-    !d.repoRoot.trim() &&
+    d.repoRoot.trim() === readLastDispatchRepo() &&
     !d.intent.trim() &&
     !d.title.trim() &&
     !d.labels.trim() &&
@@ -195,7 +214,7 @@ export function DispatchLayer({
   editTask: Task | null;
   onClose: () => void;
 }): React.JSX.Element | null {
-  const [draft, setDraft] = useState<DispatchDraft>(EMPTY_DISPATCH_DRAFT);
+  const [draft, setDraft] = useState<DispatchDraft>(freshDispatchDraft);
   // Read by the dispatch-accepted callback below, which can fire after the modal
   // instance that armed it is gone - a stale closure would compare against
   // whatever the draft held when that instance last rendered.
@@ -236,7 +255,9 @@ export function DispatchLayer({
       // blobs. (The files themselves stay on the daemon - the agent hasn't read them
       // yet, and won't for as long as it takes to provision a worktree.)
       revokeAttachments(draftRef.current.attachments);
-      setDraft(EMPTY_DISPATCH_DRAFT);
+      // Fresh, not blank: the repo just dispatched into is the one the next task is
+      // most likely to want, and it was remembered before this fired.
+      setDraft(freshDispatchDraft());
       onClose();
     },
     [onClose],
@@ -381,11 +402,12 @@ function DispatchModal({
 
   // Put the form back where it started without closing: every close path preserves
   // what's typed, so this is the one way to abandon it. For a new dispatch that means
-  // an empty form; for an edit it means the task as the daemon still holds it, which
+  // a form as freshly opened - blank but for the seeded repo, which is where "start
+  // again" starts; for an edit it means the task as the daemon still holds it, which
   // is the only "start again" an edit has.
   function clearDraft(): void {
     revokeAttachments(draft.attachments);
-    onDraftChange(editing ? draftFromTask(editing) : EMPTY_DISPATCH_DRAFT);
+    onDraftChange(editing ? draftFromTask(editing) : freshDispatchDraft());
     setError(null);
     intentRef.current?.focus();
   }
@@ -442,6 +464,15 @@ function DispatchModal({
     // the same button to press again.
     const launched = r.ok && editing && dispatchNow ? await api.dispatchBacklog(editing.id) : null;
     setPending(null);
+    // Seed the next dispatch with this repo, once the daemon has accepted it - a repo
+    // that was rejected is not one to hand the next task. Shelving counts as much as
+    // launching: both are "the repo I'm working in right now", which is the whole
+    // question this answers.
+    //
+    // Only from THIS form, not the editor. Reopening a task shelved last week and
+    // saving it is a visit to an old decision, not a statement about what to dispatch
+    // next, and letting it move the seed would strand the next task in that repo.
+    if (r.ok && !editing) rememberDispatchRepo(fields.repoRoot);
     // Clear the draft and close only once the task row exists - the worktree and
     // tmux session are provisioned in the background after this reply, and any
     // failure there surfaces on the task card rather than here. A rejected submit

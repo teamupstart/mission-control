@@ -468,6 +468,13 @@ The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
 
+It opens on **the repo your last dispatch went to**, since work comes in runs - three
+tasks into the same checkout, then a switch - and that's one fewer field to fill in for
+every task but the first. The seed is remembered per-machine and survives a reload, and
+it moves only when a *new* dispatch is accepted (shelving counts; saving an edit to an
+old backlog task doesn't). It's a starting point, not a lock: type or pick another and
+that repo becomes the seed instead.
+
 Leave **Title** blank and the daemon names the task for you: a headless `claude -p` on
 Haiku summarizes your task text into a few words - "Fix flaky worktree cleanup on Reset",
 not the top of your first paragraph. It runs *before* dispatch and the dispatch waits on
@@ -484,8 +491,9 @@ launching it yet.
 Closing the dispatch form (<kbd>Esc</kbd>, a backdrop click, **Cancel**, or the ✕) **keeps
 what you've typed** - reopen and a half-written task is still there, so you can glance at
 the grid mid-thought without losing it. The draft is cleared only once the task is actually
-dispatched or queued, or when you hit **Clear** to start a fresh one. A submit that fails
-leaves the form open with your fields intact so you can retry.
+dispatched or queued, or when you hit **Clear** to start a fresh one - either way the form
+comes back seeded with that repo, not blank. A submit that fails leaves the form open with
+your fields intact so you can retry.
 
 ### Edit a shelved task
 

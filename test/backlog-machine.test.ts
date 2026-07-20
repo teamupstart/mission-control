@@ -641,12 +641,60 @@ test("serial mode holds the ASSIGN path too, not just the launch path", () => {
   // Typing a task into an idle agent starts it exactly as thoroughly as cutting a
   // worktree does, so an assign that skipped the cap would hand out the whole backlog
   // at once - the failure the cap exists to prevent, by the other door.
-  const inFlight = mkTask({ status: "running", sessionId: "s-other", tmuxSession: null });
+  const busy = mkSession({ state: "working" });
+  const inFlight = mkTask({ status: "running", sessionId: busy.id, tmuxSession: null });
   const waiting = mkTask();
   const free = mkSession();
   const a = decide({
     tasks: [inFlight, waiting],
-    sessions: [free],
+    sessions: [busy, free],
+    plan: null,
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /one at a time/);
+});
+
+// The dead end this fallback used to be, and the reason serial mode is worth having at
+// all. A `running` task is only ever reconciled when the DAEMON restarts, so an agent
+// whose terminal was closed leaves a row that stays `running` for as long as the daemon
+// lives. Counting it meant one dead row parked the entire backlog - not "slow", stopped -
+// and the operator's only signal was a board full of ready items and an idle fleet.
+test("serial mode does not stall behind a task whose agent is gone", () => {
+  const gone = mkTask({ status: "running", sessionId: "s-vanished", tmuxSession: null });
+  const waiting = mkTask();
+  const a = decide({
+    tasks: [gone, waiting],
+    sessions: [],
+    plan: null,
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", waiting.id);
+});
+
+test("an exited session does not keep its task in flight either", () => {
+  const dead = mkSession({ state: "exited" });
+  const gone = mkTask({ status: "running", sessionId: dead.id, tmuxSession: null });
+  const waiting = mkTask();
+  const a = decide({
+    tasks: [gone, waiting],
+    sessions: [dead],
+    plan: null,
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "dispatch");
+});
+
+// The other half of the same predicate: a task we cut a tmux session for but that
+// discovery has not bound yet has NO sessionId to look up, and it is the one case serial
+// mode must still hold for - it is the window a sub-second next tick would launch into.
+test("serial mode still holds for a task whose agent has not been discovered yet", () => {
+  const undiscovered = mkTask({ status: "running", tmuxSession: "harness-x", sessionId: null });
+  const waiting = mkTask();
+  const a = decide({
+    tasks: [undiscovered, waiting],
+    sessions: [],
     plan: null,
     cfg: cfg({ planExhausted: true }),
   });

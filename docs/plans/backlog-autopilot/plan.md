@@ -114,13 +114,26 @@ survives whatever order it listed the items in; the entries are then emitted in
 dependency order.
 
 Planning re-runs only when the plan stops covering the backlog, so a steady backlog
-costs nothing. Three consecutive failures and the machine stops asking and falls back
+costs nothing. Its time budget SCALES with the backlog (`60s + 20s` an item, capped at
+10 min; `FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one). It has to: the model writes one
+entry per task, so the read costs seconds for a handful of items and minutes for two
+dozen. A fixed cap is an expiry date, not a tuning value - the original 90s worked until
+a backlog grew past it and then failed totally and silently, because a read that never
+completes stores no plan, and a backlog with no plan is re-read on every tick and
+scheduled never.
+
+Three consecutive failures and the machine stops asking and falls back
 to **serial mode**: one task in flight at a time, oldest first, assigns included.
 Serial execution is dependency-safe by construction, so a broken planner degrades to
-slow rather than to wrong. The fallback is a cooldown, not a latch - after
-`FOREMAN_BACKLOG_RETRY_MS` exactly one fresh attempt is let through, so a transient
-outage heals itself without a hung planner blocking the shared loop for three 90s calls
-per cooldown. A daemon that refuses the plan WRITE keeps its own count and its own
+slow rather than to wrong. "In flight" is judged against the SESSION LIST, not the task
+row alone: a `running` task is only reconciled when the daemon restarts, so an agent
+whose terminal was closed leaves a row that stays `running` for as long as the daemon
+lives, and counting it made serial mode a dead end rather than a degradation - one dead
+row parked the whole backlog indefinitely. A task with no session yet still counts; that
+window is exactly what the cap is protecting. The fallback is a cooldown, not a latch -
+after `FOREMAN_BACKLOG_RETRY_MS` exactly one fresh attempt is let through, so a transient
+outage heals itself without a hung planner blocking the shared loop for three full-budget
+calls per cooldown. A daemon that refuses the plan WRITE keeps its own count and its own
 backoff (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`, doubling), since a refused write is not a
 broken planner - but at the same cap it causes the same DEGRADATION, so a permanently
 broken route schedules serially instead of switching the autopilot off.

@@ -290,6 +290,7 @@ const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
   ["src/shared/cost.ts", "string | null"],
   ["src/shared/goal.ts", "string | null"],
   ["src/shared/model.ts", "readonly ModelChoice\\[\\]"],
+  ["src/server/config.ts", "AgentBin"],
   ["src/server/goal/source.ts", "GoalSource"],
 ];
 

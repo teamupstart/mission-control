@@ -1,4 +1,5 @@
-import type { AgentType } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
 import { modelChoicesFor } from "@shared/model.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 
@@ -8,11 +9,18 @@ import type { HarnessesState } from "../useHarnesses.ts";
 // styled as a switch - because that is what this is: a durable on/off that changes
 // what happens to every future dispatch.
 
-/** The label and blurb for one harness's default-model row. */
-const MODEL_ROWS: { agent: AgentType; label: string }[] = [
-  { agent: "claude", label: "Claude Code" },
-  { agent: "codex", label: "Codex" },
-];
+/**
+ * One default-model row per harness, derived from the union rather than listed here.
+ *
+ * A hand-kept list is how a harness ends up dispatchable but unconfigurable: it would
+ * launch with whatever `--model` default the code picks and the operator would have no
+ * row to change it in, with nothing failing to compile to say so. Order is
+ * `AGENT_TYPES`' order, which is the order this section has always shown.
+ */
+const MODEL_ROWS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((agent) => ({
+  agent,
+  label: AGENT_NAMES[agent].label,
+}));
 
 /**
  * One harness's default-model picker. The empty value is a real choice, not a

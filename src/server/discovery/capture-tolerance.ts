@@ -11,6 +11,17 @@
  * buttons away from under the human's cursor, the second offers rows against a screen
  * nobody can see, where every click is refused and the refusal is the only place it
  * shows.
+ *
+ * OWNERSHIP, and the thing to get right when a second caller arrives: the counter is
+ * process-global, and `forgetPanesExcept` prunes it against ONE caller's idea of which
+ * panes are live. Its only caller today is `annotatePaneState`, whose live set is
+ * filtered to Claude sessions. A pane that strikes here but is absent from that set has
+ * its count wiped on the next 1.5s sweep, so the tolerance quietly stops applying to it
+ * and a single flaky capture drops its reading. Anything that calls `paneReadLost` /
+ * `paneReadOk` must therefore also be represented in the set passed to
+ * `forgetPanesExcept` - one union of every user's panes, not one caller's. The fix is at
+ * the pruner's call site, never a harness filter in here: this module is deliberately
+ * neutral about what is running inside the pane.
  */
 
 /**
@@ -57,6 +68,9 @@ export function paneReadOk(key: string): void {
  * tmux reuses pane ids: after a restart a brand-new `%1` inherits the dead one's two
  * strikes and is one flaky capture away from having a dialog dropped out from under the
  * human on the first tick it ever showed one.
+ *
+ * `live` is every pane the COUNTER is used for, not every pane the caller cares about -
+ * see the ownership note in the module header before adding a second user.
  */
 export function forgetPanesExcept(live: Set<string>): void {
   for (const key of captureMisses.keys()) if (!live.has(key)) captureMisses.delete(key);

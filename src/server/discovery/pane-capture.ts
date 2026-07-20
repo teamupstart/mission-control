@@ -1,4 +1,4 @@
-import type { Session } from "@shared/types.ts";
+import type { PaneHandles } from "@shared/pane.ts";
 import { resolveWeztermBin } from "../config.ts";
 import { run } from "../util/exec.ts";
 
@@ -14,8 +14,12 @@ import { run } from "../util/exec.ts";
  * the first module-level statement anyone adds to either file.
  */
 
-/** The pane handles we can capture text from; both Session and DiscoveredSession have these. */
-export type PaneHandles = Pick<Session, "tmux" | "wezterm">;
+/**
+ * The pane handles we can capture text from - the SAME type `paneToken` keys on, so
+ * "what can be captured" and "what can be addressed" cannot drift into two answers.
+ * Re-exported so this module's importers keep reaching it where they always have.
+ */
+export type { PaneHandles } from "@shared/pane.ts";
 
 /** Capturing a pane is on the poll path - keep it well under the tick interval. */
 const CAPTURE_TIMEOUT_MS = 1000;

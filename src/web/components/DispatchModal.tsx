@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Task, TaskKind, AgentType, TaskPriority } from "@shared/types.ts";
+import {
+  AGENT_TYPES,
+  type Task,
+  type TaskKind,
+  type AgentType,
+  type TaskPriority,
+} from "@shared/types.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
@@ -503,8 +510,15 @@ function DispatchModal({
               // which is per-agent and always right for the harness now chosen.
               onChange={(e) => update({ agent: e.target.value as AgentType, model: "" })}
             >
-              <option value="claude">Claude Code</option>
-              <option value="codex">Codex</option>
+              {/* Driven off the union, so a harness that exists cannot be one the
+                  operator has no way to pick: a hand-written pair of options is a
+                  list that goes stale silently, with the new agent dispatchable
+                  everywhere except the modal that dispatches. */}
+              {AGENT_TYPES.map((a) => (
+                <option key={a} value={a}>
+                  {AGENT_NAMES[a].label}
+                </option>
+              ))}
             </select>
           </label>
         </div>

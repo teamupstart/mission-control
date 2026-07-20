@@ -250,6 +250,36 @@ export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Prom
     // skips tty-less ones) never discovers this headless run as a phantom
     // session. That covers discovery; `headlessEnv()` covers the other way in - the
     // hooks this run fires - which would otherwise bind it to a real card.
+    //
+    // The FLAGS THAT ARE NOT HERE are load-bearing, and this comment is the only thing
+    // saying so. There is no `--resume`, no `--continue`, no `--session-id`: without one
+    // of those, every `claude -p` mints a new session with an empty context. That is what
+    // makes each run start clean, and it is a correctness property, not a default worth
+    // tidying away. Note the contrast with the options above - `tools`, `cwd` and
+    // `settings` are deliberately per-caller; context isolation is deliberately not.
+    //
+    // It matters because the Foreman reviews MANY sessions. Anything that let one
+    // invocation see another's context would (a) grow the context monotonically across
+    // every session it ever looked at and (b) let session A's transcript influence the
+    // verdict on session B. Verified: a single held-open `--input-format stream-json`
+    // process does exactly that - turn 2 answers questions about turn 1 - so "hold the
+    // process open to skip the ~2s spawn" is not an optimisation available here. Measured,
+    // for the record: three cold runs of this exact shape took 4.1s/6.2s/5.0s wall, only
+    // ~1.8-2.4s of which is process boot, and all three still got a prompt-cache read
+    // because that cache is server-side and survives the process. There is very little to
+    // buy and a correctness property to lose.
+    //
+    // If per-supervised-session memory is ever wanted, the shape is `--session-id <uuid>`
+    // keyed on the observed session, then `--resume` - one conversation per supervised
+    // session, never one shared. Do not reach for a warm shared process.
+    //
+    // `--no-session-persistence` is deliberately NOT passed. It would stop these runs
+    // writing a transcript at all, which sounds tidy but deletes the only record of what a
+    // headless run did - the thing to read when Foreman answers oddly. For the default
+    // cwd, `goal/prune.ts` already bounds them by age on purpose; that is the considered
+    // answer, and this flag would quietly make it dead code. (A caller that overrides
+    // `cwd` writes outside what that sweep walks, which is a gap in the pruner rather
+    // than an argument for this flag.)
     const args = ["-p", "--output-format", "json", "--tools", opts.tools ?? ""];
     if (opts.model) args.push("--model", opts.model);
     if (opts.settings) args.push("--settings", opts.settings);

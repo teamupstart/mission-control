@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
-import { resolveBin } from "../src/server/terminal/bin.ts";
+import { resolveBin, TMUX_BIN } from "../src/server/terminal/bin.ts";
 import { tmuxMultiplexer, toMuxClient, toMuxPane } from "../src/server/terminal/tmux.ts";
 import { toEmulatorPane, weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
@@ -62,11 +62,38 @@ test("tmux sends key names, and text literally", async () => {
   const tmux = tmuxMultiplexer(exec);
 
   await tmux.write.keys(MUX, ["shift-tab"]);
-  assert.deepEqual(calls[0]!.args, ["send-keys", "-t", "%3", "BTab"]);
+  assert.deepEqual(calls[0]!.args, ["send-keys", "-t", "%3", "--", "BTab"]);
 
   // `-l` is the difference between typing a body and pressing whatever it happens to spell.
   await tmux.write.text(MUX, "Enter");
-  assert.deepEqual(calls[1]!.args, ["send-keys", "-t", "%3", "-l", "Enter"]);
+  assert.deepEqual(calls[1]!.args, ["send-keys", "-t", "%3", "-l", "--", "Enter"]);
+});
+
+test("a body beginning with a dash is typed, not parsed as flags", async () => {
+  // Both CLIs parse their trailing arguments as options, so "-v is what broke it" - an
+  // ordinary reply - dies in the arg parser and never reaches the pane. Verified against
+  // tmux 3.6b (`unknown flag -v`, exit 1) and wezterm's clap parser (`unexpected argument
+  // '-v'`), both fixed by the terminator, and neither visible to the caller as anything but
+  // a failed write.
+  const body = "-v is what broke it";
+
+  const tmux = recorder();
+  await tmuxMultiplexer(tmux.exec).write.text(MUX, body);
+  assert.deepEqual(tmux.calls[0]!.args, ["send-keys", "-t", "%3", "-l", "--", body]);
+
+  const wez = recorder();
+  await weztermEmulator(wez.exec).write!.paste!(EMU, body);
+  assert.deepEqual(wez.calls[0]!.args.slice(-2), ["--", body]);
+
+  // The agent binary is a trailing argument of `new-session` for the same reason.
+  const spawn = recorder();
+  await tmuxMultiplexer(spawn.exec).sessions!.spawnDetached({
+    name: "api",
+    cwd: "/w/api",
+    argv: ["claude", "--model", "opus"],
+    sidePane: false,
+  });
+  assert.deepEqual(spawn.calls[0]!.args.slice(-4), ["--", "claude", "--model", "opus"]);
 });
 
 test("wezterm sends escape sequences, and distinguishes typing from pasting", async () => {
@@ -81,6 +108,7 @@ test("wezterm sends escape sequences, and distinguishes typing from pasting", as
     "--pane-id",
     "5",
     "--no-paste",
+    "--",
     "\x1b[Z",
   ]);
 
@@ -93,6 +121,7 @@ test("wezterm sends escape sequences, and distinguishes typing from pasting", as
     "send-text",
     "--pane-id",
     "5",
+    "--",
     "one\ntwo",
   ]);
 });
@@ -144,11 +173,24 @@ test("a detached session gets its shell pane, and the session survives a failed 
     "api",
     "-c",
     "/w/api",
+    "--",
     "claude",
     "--model",
     "opus",
   ]);
   assert.equal(calls[1]!.args[0], "split-window");
+});
+
+test("the argv that attaches a terminal honours the resolved binary", () => {
+  // This argv is handed to an emulator to spawn, so it is the one place a binary outside
+  // PATH has to be spelled out rather than assumed - a bare "tmux" here would ignore the
+  // spec the adapter already carries.
+  assert.deepEqual(tmuxMultiplexer().sessions!.attachArgv("api"), [
+    resolveBin(TMUX_BIN),
+    "attach",
+    "-t",
+    "api",
+  ]);
 });
 
 test("tmux rejects the names its own target grammar cannot express", () => {

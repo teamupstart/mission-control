@@ -213,9 +213,26 @@ Three refinements the sketch above did not have, each forced by the existing cod
 - **`SpawnResult` splits "a tab opened" from "we can address it".** `spawnWeztermTab`
   returns a nullable pane id today and the focus fallback reads null as failure, which would
   make Ghostty - which opens tabs perfectly well and cannot say what it made - look broken.
+  The adapter reads `spawnWeztermTabResult` instead, which reports the spawn's own
+  `RunResult` beside the id, so a spawn that was killed rather than answering is not
+  reported as proof that no tab exists.
 - **`TerminalResult.outcomeUnknown` is required**, for the reason `RunResult` carries it: a
   `paste-buffer` that died rather than answering may be sitting in the composer, and
   `injectPrompt` re-pastes only on positive evidence of non-delivery.
+
+Two things the migration commits will carry that a reader of their diffs must not mistake
+for a pure move:
+
+- **The adapters terminate flag parsing; the inline call sites do not.** `send-keys`,
+  `new-session` and `wezterm send-text` all parse their trailing arguments as options, so a
+  reply beginning with a dash (`-v is what broke it`) dies in the arg parser and never
+  reaches the pane. Verified on tmux 3.6b and wezterm's clap parser; both fixed by `--`, and
+  the terminator changes nothing about how what follows is read.
+- **Every wezterm command in the adapter goes through `cli --no-auto-start` with
+  `weztermEnv()`.** The writes in `actions.ts` and the captures in `discovery/pane-capture.ts`
+  use neither, so they inherit `WEZTERM_UNIX_SOCKET` while the pane ids they are given came
+  from `listWeztermPanes`, which drops it. Routing them through the adapter puts commands and
+  ids on the same mux.
 
 ```mermaid
 flowchart LR

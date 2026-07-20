@@ -2,7 +2,7 @@ import {
   activateWeztermPane,
   listWeztermPanes,
   setWeztermTabTitle,
-  spawnWeztermTab,
+  spawnWeztermTabResult,
   weztermCwdToPath,
   weztermEnv,
   type WeztermPane,
@@ -32,6 +32,14 @@ import type {
  * second copy is how one of them gets fixed and the other does not. Writing and capturing
  * are implemented here because they have no existing home - today they are inline in
  * `actions.ts` and `pane-capture.ts`.
+ *
+ * Which means routing writes and captures through here is a DELIBERATE behavior change, not
+ * a move, and the migration commit should be read as one: the inline call sites in
+ * `actions.ts` and `discovery/pane-capture.ts` use neither `--no-auto-start` nor
+ * `weztermEnv()`, so they inherit `WEZTERM_UNIX_SOCKET` and may auto-start a mux. The pane
+ * ids they are given come from `listWeztermPanes`, which already drops that socket - so
+ * today a write can address a different mux than the one the id came from. Sending every
+ * command down the same socket the ids were enumerated on is the point of doing it here.
  */
 
 /**
@@ -86,7 +94,11 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     cmd(
       // Omitting `--no-paste` is what makes wezterm send the text as a bracketed paste, so
       // the flag is the difference between typing and pasting rather than a formality.
-      ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : []), text],
+      //
+      // `--` ends flag parsing. wezterm's CLI is clap-based, so a body starting with a dash
+      // ("-v is what broke it") is otherwise read as an option bundle and the write fails
+      // with a usage dump instead of being typed.
+      ["send-text", "--pane-id", target.paneId, ...(literal ? ["--no-paste"] : []), "--", text],
       fail,
     );
 
@@ -117,10 +129,16 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
 
     spawn: {
       async tab(argv, title) {
-        const paneId = await spawnWeztermTab([...argv], title);
-        if (paneId === null) {
-          return { ok: false, error: "wezterm could not open a tab", outcomeUnknown: false, target: null };
+        const { paneId, result } = await spawnWeztermTabResult([...argv], title);
+        // The spawn's own outcome, never a guess. A `wezterm cli spawn` that was killed
+        // rather than answering may have died AFTER the compositor opened the tab, and
+        // reporting that as a clean failure is how the focus fallback opens a second one.
+        if (result.code !== 0) {
+          return { ...toResult(result, "wezterm could not open a tab"), target: null };
         }
+        // Exit 0 with an unreadable id is the `SpawnResult` split doing its job: a tab
+        // opened, and nothing may be typed into it.
+        if (paneId === null) return { ok: true, outcomeUnknown: false, target: null };
         // wezterm's spawn reports only the pane. Resolving its tab costs one more `list`
         // and is what makes the returned target addressable - `focus` raises tabs, so a
         // target without one could not be brought forward by the caller that just made it.

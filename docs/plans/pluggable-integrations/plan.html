@@ -222,8 +222,13 @@
 <p>Three refinements the sketch above did not have, each forced by the existing code:</p>
 <ul>
 <li><strong>Keys are named, not written.</strong> tmux takes <code>BTab</code>/<code>Up</code>, wezterm takes <code>\x1b[Z</code>/<code>\x1b[A</code>, and each adapter renders a <code>Record&lt;Key, string&gt;</code> &mdash; so a new key fails typecheck in every backend rather than being typed as literal text into someone&rsquo;s session.</li>
-<li><strong><code>SpawnResult</code> splits &ldquo;a tab opened&rdquo; from &ldquo;we can address it&rdquo;.</strong> <code>spawnWeztermTab</code> returns a nullable pane id today and the focus fallback reads null as failure, which would make Ghostty &mdash; which opens tabs perfectly well and cannot say what it made &mdash; look broken.</li>
+<li><strong><code>SpawnResult</code> splits &ldquo;a tab opened&rdquo; from &ldquo;we can address it&rdquo;.</strong> <code>spawnWeztermTab</code> returns a nullable pane id today and the focus fallback reads null as failure, which would make Ghostty &mdash; which opens tabs perfectly well and cannot say what it made &mdash; look broken. The adapter reads <code>spawnWeztermTabResult</code> instead, which reports the spawn&rsquo;s own <code>RunResult</code> beside the id, so a spawn that was killed rather than answering is not reported as proof that no tab exists.</li>
 <li><strong><code>TerminalResult.outcomeUnknown</code> is required</strong>, for the reason <code>RunResult</code> carries it: a <code>paste-buffer</code> that died rather than answering may be sitting in the composer, and <code>injectPrompt</code> re-pastes only on positive evidence of non-delivery.</li>
+</ul>
+<p>Two things the migration commits will carry that a reader of their diffs must not mistake for a pure move:</p>
+<ul>
+<li><strong>The adapters terminate flag parsing; the inline call sites do not.</strong> <code>send-keys</code>, <code>new-session</code> and <code>wezterm send-text</code> all parse their trailing arguments as options, so a reply beginning with a dash (<code>-v is what broke it</code>) dies in the arg parser and never reaches the pane. Verified on tmux 3.6b and wezterm&rsquo;s clap parser; both fixed by <code>--</code>, and the terminator changes nothing about how what follows is read.</li>
+<li><strong>Every wezterm command in the adapter goes through <code>cli --no-auto-start</code> with <code>weztermEnv()</code>.</strong> The writes in <code>actions.ts</code> and the captures in <code>discovery/pane-capture.ts</code> use neither, so they inherit <code>WEZTERM_UNIX_SOCKET</code> while the pane ids they are given came from <code>listWeztermPanes</code>, which drops it. Routing them through the adapter puts commands and ids on the same mux.</li>
 </ul>
 
 <figure>

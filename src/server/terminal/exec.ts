@@ -12,6 +12,15 @@ import type { TerminalResult } from "./types.ts";
  * factory rather than of every method: a caller that fakes half the commands drives none
  * of the read-write-read sequences the policy layer is made of.
  *
+ * The seam covers the COMMAND surfaces only - `write`, `capture`, `select`, `sessions`,
+ * `spawn`, `retitle`. Enumeration (`list`, `clients`) and `paneMode` delegate to
+ * `discovery/*`, which calls `run` directly and ignores this parameter entirely, so a test
+ * written as `tmuxMultiplexer(fake).list()` shells out to the host's real tmux: the
+ * developer's own panes on a machine with a server running, `[]` on CI, green in both and
+ * asserting nothing. The delegation is deliberate (see each adapter's header); this note is
+ * so nobody reads the injection as broader than it is. Those surfaces get a seam when the
+ * migration moves `discovery/*` behind this layer.
+ *
  * Nothing in `types.ts` mentions this type. An adapter is not obliged to be a subprocess -
  * iTerm2 scripts through AppleScript - and the interface must not assume otherwise.
  */

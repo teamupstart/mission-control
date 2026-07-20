@@ -87,18 +87,35 @@ export async function activateWeztermPane(tabId: number, paneId: number): Promis
 }
 
 /**
- * Open a new wezterm tab running `argv`, give its tab an explicit `title`, and
- * return the new pane id. Returns null when wezterm isn't reachable or the spawn
- * fails, so callers can degrade instead of throwing.
+ * Open a new wezterm tab running `argv`, give its tab an explicit `title`, and report both
+ * the new pane id and the spawn's own `RunResult`.
+ *
+ * The two answers are separate because a null pane id has three causes that call for
+ * different recoveries: wezterm refused, wezterm never answered (the CLI was killed after
+ * the compositor may already have opened the tab - see `RunResult.outcomeUnknown`), or the
+ * tab opened and its id was unreadable. Collapsing them into one null is how a caller comes
+ * to treat "we never found out" as positive evidence that no tab exists and opens a second.
+ */
+export async function spawnWeztermTabResult(
+  argv: string[],
+  title: string,
+): Promise<{ paneId: number | null; result: RunResult }> {
+  const bin = resolveWeztermBin();
+  const result = await weztermCli(bin, ["spawn", "--", ...argv]);
+  if (result.code !== 0) return { paneId: null, result };
+  const paneId = Number(result.stdout.trim());
+  if (!Number.isInteger(paneId)) return { paneId: null, result };
+  if (title) await setWeztermTabTitle(paneId, title);
+  return { paneId, result };
+}
+
+/**
+ * The new pane id only. Returns null when wezterm isn't reachable or the spawn fails, so
+ * callers can degrade instead of throwing. Callers that must tell a refusal from a silence
+ * want `spawnWeztermTabResult`.
  */
 export async function spawnWeztermTab(argv: string[], title: string): Promise<number | null> {
-  const bin = resolveWeztermBin();
-  const res = await weztermCli(bin, ["spawn", "--", ...argv]);
-  if (res.code !== 0) return null;
-  const paneId = Number(res.stdout.trim());
-  if (!Number.isInteger(paneId)) return null;
-  if (title) await setWeztermTabTitle(paneId, title);
-  return paneId;
+  return (await spawnWeztermTabResult(argv, title)).paneId;
 }
 
 /**

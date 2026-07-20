@@ -110,12 +110,18 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     write: {
       // `-l` sends the text literally, so a body containing something that looks like a key
       // name is typed rather than pressed.
+      //
+      // `--` ends flag parsing, and it is load-bearing here rather than tidy: tmux parses
+      // the trailing arguments with getopt, so a reply beginning with a dash ("-v is what
+      // broke it") comes back as `unknown flag -v` and never reaches the pane. The
+      // terminator does not change how what follows is read - key names after it are still
+      // resolved as keys - so it costs nothing.
       text: (t, text) =>
-        cmd(["send-keys", "-t", paneTarget(t), "-l", text], "tmux send-keys failed"),
+        cmd(["send-keys", "-t", paneTarget(t), "-l", "--", text], "tmux send-keys failed"),
       // No `-l` here, for the mirrored reason: these ARE key names.
       keys: (t, keys) =>
         cmd(
-          ["send-keys", "-t", paneTarget(t), ...keys.map((k) => KEY_NAMES[k])],
+          ["send-keys", "-t", paneTarget(t), "--", ...keys.map((k) => KEY_NAMES[k])],
           "tmux send-keys failed",
         ),
       paste: async (t, text) => {
@@ -160,8 +166,12 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         // shell rather than exec'ing the argv, so anything carrying a quote or a glob is
         // interpreted rather than passed. Callers constrain their argv upstream
         // (`ModelIdSchema`); this comment is here so the next one knows to.
+        //
+        // `--` for the same reason as `send-keys`: the shell command is a trailing
+        // argument, so a binary or flag-first argv beginning with a dash would be parsed as
+        // a flag of `new-session` itself.
         const created = await cmd(
-          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, ...spec.argv],
+          ["new-session", "-d", "-s", spec.name, "-c", spec.cwd, "--", ...spec.argv],
           "tmux new-session failed",
           SESSION_TIMEOUT_MS,
         );
@@ -178,7 +188,10 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
         await cmd(["select-pane", "-t", agentPane], "tmux select-pane failed", SESSION_TIMEOUT_MS);
         return created;
       },
-      attachArgv: (session) => ["tmux", "attach", "-t", session],
+      // Resolved through `bin`, not the bare name: this argv is handed to an emulator to
+      // spawn, so it is the one place a `TMUX_BIN` override matters most and the one place
+      // a literal would silently ignore it.
+      attachArgv: (session) => [bin(), "attach", "-t", session],
       // `--` ends flag parsing so a name like "-wip" is read as the new name rather than as
       // a flag bundle (which surfaces an arg-parser dump behind a 500).
       rename: (from, to) => cmd(["rename-session", "-t", from, "--", to], "tmux rename-session failed"),

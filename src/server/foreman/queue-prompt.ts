@@ -165,7 +165,11 @@ export function buildVerifyPrompt(input: VerifyInput): string {
       lines.push(
         // Verifier output derived from the untrusted diff and transcript, rendered above the
         // fence where it reads as direction rather than as evidence.
-        `- id: ${g.id} (asked ${g.strikes}x already) [${g.severity}/${g.kind}] ${fromChild(g.path)}`,
+        // `id` too, not just `path` and `detail` beside it. `GapSchema.id` is a free-form
+        // `z.string().min(1)` clamped to 120 characters and model-produced from the untrusted
+        // diff - and a forged heading is 38, so an id carrying newlines and a heading survives
+        // clamping intact and lands above the fence with the rest of this line.
+        `- id: ${fromChild(g.id)} (asked ${g.strikes}x already) [${g.severity}/${g.kind}] ${fromChild(g.path)}`,
         `  ${fromChild(g.detail)}`,
       );
     }

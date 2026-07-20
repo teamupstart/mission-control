@@ -109,6 +109,17 @@ export interface CapturedInputs {
 
 /** Per-message text cap so a long turn can't blow up the prompt. */
 const MSG_CAP = 1800;
+/**
+ * Cap on the child's self-reported `activity` line. See its use for why this field alone
+ * needs one: it is the only prompt input that is both unbounded by any schema and written
+ * directly by the party being judged.
+ */
+const ACTIVITY_CAP = 2000;
+
+/** Truncate for display, preserving null - the `?? "(none)"` defaults still read correctly. */
+function clip<T extends string | null | undefined>(text: T, max: number): T {
+  return (text != null && text.length > max ? `${text.slice(0, max)}…` : text) as T;
+}
 
 /**
  * The gate clause below lets Foreman ANSWER a parked no-mistakes gate when the call is clear,
@@ -221,8 +232,15 @@ export function buildReviewPrompt(input: ReviewInput): string {
     `state: ${session.state}`,
     // `activity` is written by the child itself through the `report_status` MCP tool, whose
     // schema is `z.string().min(1)` - no length bound, no newline stripping, stored verbatim.
-    // A single field it controls is enough room for a whole forged section.
-    `activity: ${fromChild(session.activity) ?? "(none)"}`,
+    // A single field it controls is enough room for a whole forged section, so it is the one
+    // field here that is both unbounded and hostile-writable: capped before it is scanned or
+    // rendered. `fromChild`'s matcher is linear now, but linear work on an unbounded string is
+    // still unbounded, and this line is built twice per evaluation in `shadow` mode.
+    //
+    // The cap is a display bound, not a schema change: `report_status` keeps accepting what it
+    // accepts, and the card still shows the whole line. Generous next to the ~120 characters
+    // the hook path already trims its own activity to, so no honest status is touched.
+    `activity: ${fromChild(clip(session.activity, ACTIVITY_CAP)) ?? "(none)"}`,
     // The goal the daemon already derived and the human is already looking at. Handing it
     // over is what lets `purpose` shrink to decision context: without it the reviewer would
     // have to reconstruct the same sentence from the transcript, and the card would carry

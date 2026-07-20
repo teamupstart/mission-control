@@ -41,7 +41,7 @@ import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem } from "./queue-verify.ts";
-import type { StandardsDoc } from "../standards.ts";
+import type { StandardsBundle, StandardsDoc } from "../standards.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -827,13 +827,7 @@ async function processPromptedWrapup(
     return false;
   }
 
-  // Both degrade to "absent" rather than holding the tick: a repo with no FOREMAN.md is
-  // the ordinary case and must verify exactly as it did before the file existed, so a
-  // failed read is indistinguishable from that and is treated as it.
-  const [standards, prefs] = await Promise.all([
-    client.standards(session.id, changedPaths(diff.patch)).catch(() => ({ docs: [], truncated: false })),
-    readPrefs(client, session),
-  ]);
+  const { standards, prefs } = await judgingContext(client, session, diff.patch);
 
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
   // is one question, and a second prompt for it would be a second thing to keep true.
@@ -1060,12 +1054,7 @@ async function runVerify(
     return;
   }
 
-  // Absent on failure, for the reason the prompted path documents: no FOREMAN.md is the
-  // ordinary case, so a read that fails must land on the pre-existing behaviour.
-  const [standards, prefs] = await Promise.all([
-    client.standards(session.id, changedPaths(diff.patch)).catch(() => ({ docs: [], truncated: false })),
-    readPrefs(client, session),
-  ]);
+  const { standards, prefs } = await judgingContext(client, session, diff.patch);
 
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
@@ -1156,6 +1145,30 @@ async function failVerify(
     .setItemState(session.id, item.id, { state: "in_progress", verifyFailures: failures })
     .catch(() => {});
   log(`${session.name}: verify failed, will retry (${reason})`);
+}
+
+/**
+ * What a verify judges an item AGAINST: this repo's standards, and the operator's own
+ * instructions. Shared by the two verify entry points (the work queue and the prompted
+ * wrap-up), which call the same `verifyItem` with the same shape and had this block
+ * byte-for-byte twice - including the fallback literal, which is the part that must not drift.
+ *
+ * Both degrade to ABSENT rather than holding the tick, and that rule is why it is worth one
+ * function: a repo with no FOREMAN.md is the ordinary case and must verify exactly as it did
+ * before the file existed, so a failed read has to be indistinguishable from "there is none".
+ * Two copies of that reasoning are two chances for one of them to start holding the tick
+ * instead.
+ */
+async function judgingContext(
+  client: ForemanClient,
+  session: Session,
+  patch: string,
+): Promise<{ standards: StandardsBundle; prefs: StandardsDoc | null }> {
+  const [standards, prefs] = await Promise.all([
+    client.standards(session.id, changedPaths(patch)).catch(() => ({ docs: [], truncated: false })),
+    readPrefs(client, session),
+  ]);
+  return { standards, prefs };
 }
 
 /** The repo-relative paths a unified diff touches - what standards docs apply. */

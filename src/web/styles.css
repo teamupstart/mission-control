@@ -3377,7 +3377,8 @@ kbd {
    rows, which share .icon-btn, keep their tighter size. */
 .modal-head .icon-btn,
 .report-head .icon-btn,
-.diff-head .icon-btn {
+.diff-head .icon-btn,
+.away-digest-head .icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;

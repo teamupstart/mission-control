@@ -325,6 +325,15 @@ export interface Session {
    */
   prChecks: PrChecks | null;
   /**
+   * The Inspector's state for this session's pull request, or null when there is no PR
+   * or the Inspector never adopted it.
+   *
+   * Null is the overwhelmingly common case and MEANS SOMETHING: the Inspector only
+   * adopts PRs it can prove Mission Control opened, so a card showing a PR chip and no
+   * inspector chip is telling you that PR came from somewhere else.
+   */
+  inspector: InspectorSummary | null;
+  /**
    * The option dialog this session's pane is showing right now - a permission prompt, an
    * `AskUserQuestion` clarification menu, the folder-trust check - or null when it isn't
    * showing one. Read off the pane each poll by `annotatePaneState`.
@@ -342,15 +351,6 @@ export interface Session {
    * `submit-options` for a form (see `multiSelect`) - which re-reads the pane and refuses
    * unless the rows still read as the labels the human was shown.
    */
-  /**
-   * The Inspector's state for this session's pull request, or null when there is no PR
-   * or the Inspector never adopted it.
-   *
-   * Null is the overwhelmingly common case and MEANS SOMETHING: the Inspector only
-   * adopts PRs it can prove Mission Control opened, so a card showing a PR chip and no
-   * inspector chip is telling you that PR came from somewhere else.
-   */
-  inspector: InspectorSummary | null;
   paneDialog: PaneDialog | null;
 }
 
@@ -1346,8 +1346,15 @@ export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
  * fingerprint slot so the preview is stable across ticks, and switching to live must
  * treat it as NOT YET POSTED - otherwise dry-run permanently swallows everything it
  * previewed.
+ *
+ * `posting` is the crash window made visible. The review is written to this ledger
+ * BEFORE the POST that publishes it, because the other order loses: a POST that reaches
+ * GitHub and whose response times out leaves no row, so the next tick re-reviews the
+ * same push, finds nothing recorded, and posts every comment a second time under the
+ * operator's name. A `posting` row is read as "already raised" for dedup, so the
+ * duplicate cannot happen; the next round reconciles it against the live threads.
  */
-export type InspectorCommentStatus = "drafted" | "open" | "resolved";
+export type InspectorCommentStatus = "drafted" | "posting" | "open" | "resolved";
 
 /** One adopted pull request. The row's existence IS the permission to comment on it. */
 export interface InspectorPr {
@@ -1376,6 +1383,17 @@ export interface InspectorPr {
   lastReviewedAt: number | null;
   /** Why the last attempt failed, or null. Surfaced, never silently retried forever. */
   lastError: string | null;
+  /**
+   * Consecutive failed attempts. Reset by any attempt that completes.
+   *
+   * `round` counts SUCCESSES, so it can never stop a PR that fails permanently - a
+   * reaped worktree, revoked `gh` access, a diff the model cannot answer for inside the
+   * timeout. Each such tick costs up to two full `claude -p` runs, so failures have to
+   * be counted separately from progress in order to be backed off.
+   */
+  failCount: number;
+  /** Epoch ms before which this PR is not retried. Null when it is due now. */
+  nextAttemptAt: number | null;
   adoptedAt: number;
   updatedAt: number;
 }
@@ -1396,10 +1414,6 @@ export interface InspectorComment {
   line: number | null;
   title: string;
   severity: InspectorSeverity;
-  /** GitHub's review-comment id. Null while `drafted` - there is no comment yet. */
-  commentId: number | null;
-  /** The GraphQL review-thread node id, learned on the read after posting. */
-  threadId: string | null;
   round: number;
   status: InspectorCommentStatus;
   /** Follow-up replies we have written in this thread. Capped, so bots can't ping-pong. */

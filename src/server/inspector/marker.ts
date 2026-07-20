@@ -13,6 +13,10 @@ import { createHash } from "node:crypto";
 // what GitHub holds; GitHub is the record. That ordering survives a wiped state dir, a
 // fresh clone, a different machine, and a restore from backup, none of which the
 // database does.
+//
+// The marker is half of the rule, not all of it - anyone who can comment on the pull
+// request can paste one. See `isOurs` for the other half and why each is insufficient
+// alone.
 
 /**
  * The marker prefix. APPEND-ONLY, like the skill directory prefixes and the env
@@ -54,15 +58,44 @@ export function parseMarker(body: string): Marker | null {
   return { id: m[1]!, fingerprint: m[2]!, round: Number(m[3]) };
 }
 
+/** The half of a GitHub comment that ownership is decided from. */
+export interface AuthoredComment {
+  body: string;
+  /** The `author.login` GitHub reports for the comment. */
+  author: string;
+}
+
 /**
- * Whether this comment is one WE wrote.
+ * Whether this comment is one WE wrote. TWO conditions, both required.
  *
- * Note what this deliberately does NOT consult: the comment's author. Every comment in
- * play here has the same author - the operator - because that is whose `gh` credential
- * posts them. Author tells us nothing; the marker tells us everything.
+ * 1. The author is the login our `gh` credential is authenticated as.
+ * 2. Our marker is at column 0 of the body.
+ *
+ * Neither half is sufficient, and the reasons are different, which is why both are
+ * here:
+ *
+ * - **Author alone proves nothing.** The account is shared: the human comments under
+ *   it, other agents run as it, a second Mission Control on another machine posts as
+ *   it. The marker is what separates our comments from those.
+ * - **The marker alone proves nothing either.** Its prefix is a fixed public string and
+ *   the fingerprints are visible in any PR's page source, so anyone who can comment on
+ *   the pull request can paste a marker line at column 0. Under a marker-only rule that
+ *   forged comment is read as ours - so we would resolve a stranger's thread, and read
+ *   their forged reply as "we spoke last" and never answer a genuine question. The
+ *   author check is what separates our comments from theirs.
+ *
+ * The asymmetry is the point: the author cannot prove a comment IS ours, but it can
+ * prove one is NOT.
+ *
+ * FAILS CLOSED. `login` is null when `gh` could not tell us who we are, and then
+ * nothing is ours - no thread is resolved, no reply is written. Falling back to the
+ * marker alone in that state would be exactly the condition an attacker wants to
+ * induce.
  */
-export function isOurs(body: string): boolean {
-  return parseMarker(body) !== null;
+export function isOurs(comment: AuthoredComment, login: string | null): boolean {
+  if (!login) return false;
+  if (comment.author !== login) return false;
+  return parseMarker(comment.body) !== null;
 }
 
 /**

@@ -314,7 +314,10 @@ from the operator - worth saying, but it is the weakest layer here and is counte
 </ul>
 
 <p>Cost accepted: one more subsystem in the daemon process. Bounded by a concurrency limiter of 1
-and a 90s tick, and it spawns <strong>nothing at all</strong> while disabled.</p>
+and a 90s tick, and while disabled it spawns <strong>nothing at all</strong> - no <code>gh</code>,
+no <code>claude -p</code>. The one thing it still does while off is record an adoption row when a
+hook proves we opened a PR: a single local insert, because that proof is transient and gating it
+would make every PR opened before the feature was switched on permanently unreachable.</p>
 
 <h3>How the pieces talk</h3>
 

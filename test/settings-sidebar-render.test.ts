@@ -231,3 +231,18 @@ test("the Inspector panel's defaults are the off position", () => {
   assert.doesNotMatch(html, /inspector-live-warn/);
   assert.match(html, /Dry run - review and record findings, post nothing/);
 });
+
+// The same pre-poll render, from the other direction. Those defaults are the SAFE
+// posture, and presenting them as the daemon's answer is how an operator reads "off, dry
+// run, no repos" as fact while the stored config is enabled and live and the daemon is
+// merely restarting. Disabled inputs are not a statement about what is running.
+test("with no answer from the daemon, the Inspector panel says so rather than showing defaults as fact", () => {
+  const html = render("inspector");
+  assert.match(html, /inspector-unknown/);
+  assert.match(html, /is unknown/);
+  assert.doesNotMatch(
+    html,
+    /No repos yet - the Inspector won't post anywhere/,
+    "an unanswered panel must not assert an empty allowlist",
+  );
+});

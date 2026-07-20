@@ -1,5 +1,5 @@
 import { run } from "../util/exec.ts";
-import { parseMarker } from "./marker.ts";
+import { isOurs, parseMarker } from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
 
@@ -25,6 +25,37 @@ export interface GhResult<T> {
 function fail<T>(what: string, res: { stderr: string; stdout: string; code: number | null }): GhResult<T> {
   const detail = (res.stderr || res.stdout || "").trim().slice(0, 300);
   return { ok: false, error: `${what} failed (exit ${res.code}): ${detail}` };
+}
+
+/**
+ * The login `gh` is authenticated as, resolved once per process and cached.
+ *
+ * Half of the ownership rule (see `isOurs`): a comment we wrote must carry BOTH our
+ * marker and this login. Never hardcoded and never derived from a config value - a
+ * GitHub App or a bot credential reports a different login and has to keep working.
+ *
+ * Cached on the FIRST SUCCESS only. A failure is not cached, so a `gh` that was
+ * momentarily unavailable is retried on the next tick rather than pinning the whole
+ * subsystem into its fail-closed state for the life of the daemon.
+ */
+let cachedLogin: string | null = null;
+
+export async function authenticatedLogin(cwd: string | null): Promise<string | null> {
+  if (cachedLogin) return cachedLogin;
+  const res = await run("gh", ["api", "user", "--jq", ".login"], {
+    cwd: cwd ?? undefined,
+    timeoutMs: GH_TIMEOUT_MS,
+  });
+  if (res.code !== 0) return null;
+  const login = res.stdout.trim();
+  if (!login) return null;
+  cachedLogin = login;
+  return login;
+}
+
+/** Drop the cached login. Exists for tests; nothing in the tick calls it. */
+export function resetAuthenticatedLogin(): void {
+  cachedLogin = null;
 }
 
 /** Split "https://github.com/owner/repo/pull/123" into its parts, or null. */
@@ -162,12 +193,18 @@ function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
  * comment of ours in the same thread is a follow-up reply and carries the same
  * fingerprint, but keying off "any comment of ours" would let a thread someone else
  * started - which we merely replied to - be treated as ours to resolve.
+ *
+ * This map is what decides which threads may be RESOLVED, so it goes through the
+ * two-part `isOurs` rule rather than the marker alone, and returns nothing at all when
+ * `login` is null. See `marker.ts`.
  */
-export function ourThreads(snapshot: PrSnapshot): Map<string, OurThread> {
+export function ourThreads(snapshot: PrSnapshot, login: string | null): Map<string, OurThread> {
   const out = new Map<string, OurThread>();
+  if (!login) return out;
   for (const t of snapshot.threads) {
     const first = t.comments[0];
     if (!first) continue;
+    if (!isOurs(first, login)) continue;
     const marker = parseMarker(first.body);
     if (!marker) continue;
     out.set(marker.fingerprint, {
@@ -179,6 +216,15 @@ export function ourThreads(snapshot: PrSnapshot): Map<string, OurThread> {
   return out;
 }
 
+/**
+ * The whole diff, capped.
+ *
+ * `maxBytes` is the PROMPT budget and is applied after the fact; `maxBuffer` below is
+ * the pipe budget, and it has to be far larger because `gh` hands us the entire diff
+ * whatever we intend to keep. The default 8MB is not enough for a PR that regenerates
+ * a lockfile or vendors a directory, and the overflow arrives as an ordinary failure
+ * that the tick would otherwise retry for the life of the pull request.
+ */
 export async function fetchDiff(
   cwd: string | null,
   owner: string,
@@ -189,7 +235,7 @@ export async function fetchDiff(
   const res = await run(
     "gh",
     ["api", `repos/${owner}/${repo}/pulls/${number}`, "-H", "Accept: application/vnd.github.v3.diff"],
-    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 },
   );
   if (res.code !== 0) return fail("gh api (diff)", res);
   const full = res.stdout;
@@ -231,41 +277,10 @@ export async function postReview(
   return { ok: true };
 }
 
-/**
- * The review comments we just created, newest first.
- *
- * Creating a review does not tell us the ids of the comments inside it, and we need
- * them to reply and to map rows onto threads later. Rather than trust the order of the
- * response, this re-reads and matches on the marker - which is the only thing that
- * actually identifies one of ours.
- */
-export async function fetchReviewComments(
-  cwd: string | null,
-  owner: string,
-  repo: string,
-  number: number,
-): Promise<GhResult<Map<string, number>>> {
-  const res = await run(
-    "gh",
-    ["api", "--paginate", `repos/${owner}/${repo}/pulls/${number}/comments?per_page=100`],
-    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
-  );
-  if (res.code !== 0) return fail("gh api (list comments)", res);
-  try {
-    // --paginate concatenates JSON arrays; normalize back into one.
-    const chunks = res.stdout.replace(/\]\s*\[/g, ",").trim();
-    const arr = JSON.parse(chunks || "[]") as { id?: unknown; body?: unknown }[];
-    const byFingerprint = new Map<string, number>();
-    for (const c of arr) {
-      if (typeof c.body !== "string" || typeof c.id !== "number") continue;
-      const marker = parseMarker(c.body);
-      if (marker) byFingerprint.set(marker.fingerprint, c.id);
-    }
-    return { ok: true, value: byFingerprint };
-  } catch (err) {
-    return { ok: false, error: `could not parse comment list: ${String(err)}` };
-  }
-}
+// There is deliberately NO "read back the ids GitHub minted" call here. Everything that
+// needs one already works off the live `fetchPr` snapshot - replies use the newest
+// comment's `databaseId`, resolution uses `ourThreads` - so a second paginated round
+// trip per posted round only ever filled a column nothing read.
 
 /** Reply in an existing thread, by the id of any comment already in it. */
 export async function replyToComment(
@@ -301,6 +316,12 @@ const RESOLVE_MUTATION = `mutation($threadId:ID!){
  *
  * The caller is responsible for having established that the thread is ours; there is
  * nothing in this call that would stop it closing someone else's.
+ *
+ * The body is parsed for `errors` for the same reason `fetchPr` does it: GraphQL
+ * reports failure in a 200, so a zero exit is not success on its own. Reporting a
+ * refused mutation as `ok` would flip the ledger row to `resolved` while the thread
+ * stayed open on GitHub - and the next round, seeing no open row, would post the same
+ * finding again into the thread that never closed.
  */
 export async function resolveThread(
   cwd: string | null,
@@ -312,7 +333,21 @@ export async function resolveThread(
     { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS },
   );
   if (res.code !== 0) return fail("gh api (resolve thread)", res);
-  return { ok: true };
+  try {
+    const json = JSON.parse(res.stdout) as {
+      data?: { resolveReviewThread?: { thread?: { isResolved?: unknown } | null } | null };
+      errors?: { message?: string }[];
+    };
+    if (json.errors?.length) {
+      return { ok: false, error: `graphql: ${json.errors.map((e) => e.message).join("; ")}` };
+    }
+    if (json.data?.resolveReviewThread?.thread?.isResolved !== true) {
+      return { ok: false, error: "the thread did not come back resolved" };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `could not parse gh output: ${String(err)}` };
+  }
 }
 
 /** Render one finding as a comment body: marker first, at column 0. See `marker.ts`. */

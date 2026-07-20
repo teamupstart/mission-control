@@ -5,22 +5,61 @@ import { fingerprint, formatMarker, isOurs, parseMarker } from "../src/server/in
 // The Inspector pushes to GitHub as the OPERATOR. On the wire its comments are
 // indistinguishable from the human's, from another agent running as the same user, and
 // from a second Mission Control on another machine - same author, same avatar, same
-// everything. The marker is the only thing that tells them apart, and it decides two
-// irreversible-looking actions: which threads get resolved, and which questions get
-// answered.
+// everything. Ownership decides two irreversible-looking actions: which threads get
+// resolved, and which questions get answered.
 //
-// So these tests are not about a string format. They are about the two ways the app can
-// publicly embarrass its user: resolving a colleague's review thread, and silently
-// refusing to answer someone who asked a direct question.
+// So these tests are not about a string format. They are about the three ways the app
+// can publicly embarrass its user: resolving a colleague's review thread, silently
+// refusing to answer someone who asked a direct question, and being talked into either
+// of those by a stranger who pasted our marker into a comment of their own.
+
+/** The login `gh` reports for us in these tests. Never hardcoded in the app. */
+const US = "operator";
+
+/** A comment by us, carrying the marker for `fp`. */
+function ours(fp: string): { body: string; author: string } {
+  return { body: formatMarker({ id: "id1", fingerprint: fp, round: 1 }), author: US };
+}
 
 test("a marker we wrote is recognised, with its fields intact", () => {
   const line = formatMarker({ id: "abc-123", fingerprint: "deadbeef0000", round: 3 });
-  assert.ok(isOurs(line));
+  assert.ok(isOurs({ body: line, author: US }, US));
   assert.deepEqual(parseMarker(line), {
     id: "abc-123",
     fingerprint: "deadbeef0000",
     round: 3,
   });
+});
+
+// The marker prefix is a fixed public string and every fingerprint is visible in the
+// rendered page source, so anyone who can comment on a public pull request can open one
+// with our marker at column 0. Under a marker-only rule we would key that thread as ours
+// and RESOLVE it, and read a forged reply as "we spoke last" and never answer the real
+// question underneath.
+test("a stranger who pastes our marker is not us", () => {
+  const forged = { ...ours("fp1"), author: "drive-by-contributor" };
+  assert.equal(isOurs(forged, US), false, "the author check is what stops this");
+});
+
+// The other half. The account is shared - the human comments under it, other agents run
+// as it - so the author alone would make every comment on the PR ours to resolve.
+test("our own account without our marker is not us", () => {
+  assert.equal(isOurs({ body: "Looks good to me!", author: US }, US), false);
+});
+
+// FAIL CLOSED. An attacker who can stop `gh api user` from answering would otherwise
+// downgrade us to the marker-only rule - which is exactly the rule they want.
+test("with the login unknown, nothing is ours", () => {
+  assert.equal(isOurs(ours("fp1"), null), false);
+  assert.equal(isOurs({ body: "anything", author: US }, null), false);
+});
+
+// A GitHub App or bot credential reports a login that is not the human's, and it has to
+// keep working - which is why the login is resolved from `gh`, never hardcoded.
+test("ownership follows whatever login gh reports, not a fixed name", () => {
+  const bot = { ...ours("fp1"), author: "mission-control[bot]" };
+  assert.ok(isOurs(bot, "mission-control[bot]"));
+  assert.equal(isOurs(bot, US), false);
 });
 
 test("the marker survives having a whole comment written under it", () => {
@@ -45,7 +84,11 @@ test("a human QUOTING one of our comments is not mistaken for us", () => {
   const quoted = [`> ${ours}`, "> **⌕ Inspector** · `major`", "", "Why? This is the adapter."].join(
     "\n",
   );
-  assert.equal(isOurs(quoted), false, "a quote-reply is the human's comment, not ours");
+  assert.equal(
+    isOurs({ body: quoted, author: US }, US),
+    false,
+    "a quote-reply is the human's comment, not ours",
+  );
   assert.equal(parseMarker(quoted), null);
 });
 
@@ -59,7 +102,11 @@ test("nothing else counts as ours", () => {
     "<!-- some-other-bot:v1 id=x fp=y r=1 -->",
     "<!-- mission-inspector:v1 -->", // marker-shaped, but carries no identity
   ]) {
-    assert.equal(isOurs(body), false, `should not claim authorship of: ${JSON.stringify(body)}`);
+    assert.equal(
+      isOurs({ body, author: US }, US),
+      false,
+      `should not claim authorship of: ${JSON.stringify(body)}`,
+    );
   }
 });
 

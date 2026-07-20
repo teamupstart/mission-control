@@ -557,8 +557,15 @@ export type SetGoal = z.infer<typeof SetGoalSchema>;
 export const ForemanConfigSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
-  /** Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live. */
-  repoAllowlist: z.array(z.string()).default([]),
+  /**
+   * Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live.
+   *
+   * `min(1)` is the consent gate, not tidiness: `cwdAllowlisted` compares against
+   * `` `${root}/` ``, so a blank entry becomes "/" and every absolute path matches it.
+   * One empty string in this array silently grants consent EVERYWHERE, for Foreman and
+   * - through the same shared predicate - for the Inspector.
+   */
+  repoAllowlist: z.array(z.string().min(1)).default([]),
   /** Whether Foreman may auto-approve non-destructive access asks (still gated by risk). */
   autoApproveAccess: z.boolean().default(true),
   /**
@@ -780,17 +787,6 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 // ---- Harnesses (dispatch-time defaults for launched sessions) ----
 
 /**
- * Defaults the harness applies to the sessions IT dispatches - never to the
- * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
- * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
- *
- * The scoping is the whole contract: `autoModeOnDispatch` drives a session to `auto`
- * permission mode only on the dispatch path (see `Dispatcher.applyAutoMode`), so a
- * session the operator started themselves keeps whatever mode they chose. Ships off
- * because flipping a session into `auto` lets it act without stopping for prompts,
- * which is a posture the operator opts into, not a default.
- */
-/**
  * The Inspector's consent model, in one object.
  *
  * Every default here is the OFF position, and that is not caution theatre: this is the
@@ -807,8 +803,12 @@ export const InspectorConfigSchema = z.object({
    * reviewer is any good on your repo.
    */
   mode: z.enum(["dry-run", "live"]).default("dry-run"),
-  /** Repos the operator has trusted. Empty = act nowhere. Same rule as Foreman's. */
-  repoAllowlist: z.array(z.string()).default([]),
+  /**
+   * Repos the operator has trusted. Empty = act nowhere. Same rule as Foreman's,
+   * including the `min(1)`: a blank entry would match every absolute path and turn the
+   * one gate that decides whether anything writes to a public PR into a no-op.
+   */
+  repoAllowlist: z.array(z.string().min(1)).default([]),
   /** Overrides the review model. Undefined inherits the CLI default. */
   model: z.string().optional(),
   /**
@@ -827,6 +827,17 @@ export const InspectorConfigPatchSchema = InspectorConfigSchema.partial().refine
 );
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
+/**
+ * Defaults the harness applies to the sessions IT dispatches - never to the
+ * sessions it merely discovered. A schema-validated blob over the `app_config` KV,
+ * exactly like ForemanConfig/SkillsConfig, so a new key needs no migration.
+ *
+ * The scoping is the whole contract: `autoModeOnDispatch` drives a session to `auto`
+ * permission mode only on the dispatch path (see `Dispatcher.applyAutoMode`), so a
+ * session the operator started themselves keeps whatever mode they chose. Ships off
+ * because flipping a session into `auto` lets it act without stopping for prompts,
+ * which is a posture the operator opts into, not a default.
+ */
 export const HarnessesConfigSchema = z.object({
   /**
    * When on, every Claude session dispatched from Mission Control is driven to `auto`

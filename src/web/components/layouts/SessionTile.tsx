@@ -214,12 +214,13 @@ export function SessionTile({
           if (!insp || !session.inspector) return null;
           return (
             <a
-              className={`tile-flag tile-flag-link ${insp.tone}`}
+              className={`tile-flag tile-flag-link ${insp.tone}${insp.dry ? " insp-dry" : ""}`}
               href={session.inspector.url}
               target="_blank"
               rel="noreferrer"
               onClick={(e) => e.stopPropagation()}
               title={insp.title}
+              aria-label={insp.title}
             >
               ⌕{insp.mark && ` ${insp.mark}`}
             </a>

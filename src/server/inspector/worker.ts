@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { envVar } from "../config.ts";
 import {
   adoptInspectorPr,
@@ -8,7 +9,13 @@ import {
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
-import { createLimiter, parseModelJson, runClaudeText, runStructured } from "../claude-cli.ts";
+import {
+  createLimiter,
+  parseModelJson,
+  resultText,
+  runClaudeText,
+  runStructured,
+} from "../claude-cli.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
@@ -19,14 +26,14 @@ import { getInspectorConfig } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
-import { formatMarker, parseMarker } from "./marker.ts";
+import { formatMarker, isOurs, parseMarker } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
 import { InspectorVerdictSchema, planReview } from "./verdict.ts";
-import type { InspectorVerdict } from "./verdict.ts";
+import type { InspectorVerdict, OurThread } from "./verdict.ts";
 import {
+  authenticatedLogin,
   fetchDiff,
   fetchPr,
-  fetchReviewComments,
   ourThreads,
   parsePrUrl,
   postReview,
@@ -68,6 +75,22 @@ const MAX_REPLIES_PER_THREAD = 6;
 const MAX_ROUNDS = 100;
 
 /**
+ * Backoff for a PR that keeps failing.
+ *
+ * `MAX_ROUNDS` counts SUCCESSES, so on its own it can never stop a PR that fails
+ * permanently - a reaped worktree, revoked `gh` access, a diff the model cannot answer
+ * for inside `TIMEOUT_MS`. Such a PR was re-attempted every `POLL_MS` for its whole
+ * life, and `runStructured` retries once internally, so one tick of it costs up to two
+ * full `claude -p` runs. Doubling from one poll interval up to a six-hour ceiling keeps
+ * a transient failure cheap to recover from and makes a permanent one nearly free.
+ */
+const BACKOFF_CEILING_MS = 6 * 60 * 60 * 1000;
+
+function backoffMs(failCount: number): number {
+  return Math.min(POLL_MS * 2 ** Math.max(0, failCount - 1), BACKOFF_CEILING_MS);
+}
+
+/**
  * The tools the reviewer gets, and the reason this whole subsystem is defended in depth.
  *
  * Reading is the entire grant: no Bash, no Write/Edit, no WebFetch, no MCP. Reviewing a
@@ -86,26 +109,33 @@ const REVIEW_TOOLS = "Read,Grep,Glob";
  * The list is the obvious credential stores plus this app's own state: a reviewer that
  * could read `~/.claude` could read the operator's other projects' transcripts, and a
  * reviewer that could read `.git/config` could read a token embedded in a remote URL.
+ *
+ * Every path is denied for all THREE tools the reviewer holds, not just `Read`. `Grep`
+ * takes an absolute path and prints the matching lines, so a `Read(...)`-only list
+ * protects nothing it names; `Glob` confirms the files exist. The grant is what pays
+ * for the tool access, so it has to cover the whole grant.
  */
+const DENY_PATHS = [
+  "**/.env",
+  "**/.env.*",
+  "**/*.pem",
+  "**/*.key",
+  "**/*.p12",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/.git/config",
+  "**/.npmrc",
+  "**/.netrc",
+  "**/credentials*",
+  "//Users/*/.aws/**",
+  "//Users/*/.ssh/**",
+  "//Users/*/.claude/**",
+  "//Users/*/.mission-control/**",
+];
+
 const DENY_SETTINGS = JSON.stringify({
   permissions: {
-    deny: [
-      "Read(**/.env)",
-      "Read(**/.env.*)",
-      "Read(**/*.pem)",
-      "Read(**/*.key)",
-      "Read(**/*.p12)",
-      "Read(**/id_rsa*)",
-      "Read(**/id_ed25519*)",
-      "Read(**/.git/config)",
-      "Read(**/.npmrc)",
-      "Read(**/.netrc)",
-      "Read(**/credentials*)",
-      "Read(//Users/*/.aws/**)",
-      "Read(//Users/*/.ssh/**)",
-      "Read(//Users/*/.claude/**)",
-      "Read(//Users/*/.mission-control/**)",
-    ],
+    deny: DENY_PATHS.flatMap((p) => [`Read(${p})`, `Grep(${p})`, `Glob(${p})`]),
   },
 });
 
@@ -119,6 +149,41 @@ const DENY_SETTINGS = JSON.stringify({
 function mayPost(cfg: InspectorConfig, pr: InspectorPr): boolean {
   if (!cfg.enabled || cfg.mode !== "live") return false;
   return repoAllowlisted(pr.cwd, pr.repoRoot, cfg.repoAllowlist);
+}
+
+/**
+ * A directory that still exists to run things from, or null.
+ *
+ * The adopted `cwd` is a session worktree, and sessions run in POOLED worktrees under
+ * `~/.treehouse` that get reaped and reused. A row pinned to a reaped directory spawns
+ * every `gh` call and every `claude -p` into a path that isn't there, and nothing ever
+ * healed it - `adoptInspectorPr` is `DO NOTHING`, so re-adoption cannot rewrite it.
+ *
+ * `repoRoot` is the fallback because it is git's common dir: it outlives any worktree
+ * of the repo. Every `gh` call here is owner/repo-explicit, so the directory only ever
+ * supplies credentials and the reviewer's read scope, never the identity of the PR.
+ */
+function liveDir(pr: InspectorPr): string | null {
+  if (pr.cwd && existsSync(pr.cwd)) return pr.cwd;
+  if (pr.repoRoot && existsSync(pr.repoRoot)) return pr.repoRoot;
+  return null;
+}
+
+/**
+ * Record a failed attempt: the reason, and when to try again.
+ *
+ * Never advances `headSha` - a transient failure has to be retried against the same
+ * push - but it does move the row out of the way for a while, which is what stops a
+ * permanently broken PR from costing two model runs every poll interval forever.
+ */
+function noteFailure(pr: InspectorPr, reason: string, now: number): false {
+  const failCount = pr.failCount + 1;
+  updateInspectorPr(
+    pr.key,
+    { lastError: reason, failCount, nextAttemptAt: now + backoffMs(failCount) },
+    now,
+  );
+  return false;
 }
 
 /**
@@ -148,6 +213,8 @@ export function adoptPr(
     round: 0,
     lastReviewedAt: null,
     lastError: null,
+    failCount: 0,
+    nextAttemptAt: null,
     adoptedAt: now,
     updatedAt: now,
   });
@@ -179,26 +246,35 @@ function existingByFingerprint(prKey: string): Map<string, InspectorComment> {
 /**
  * Threads of ours where somebody else has spoken last.
  *
- * "Somebody else" is decided by the marker, never by the author name: every comment here
- * has the same author, because they are all posted with the operator's credential.
+ * "Ours" and "somebody else" both go through the two-part `isOurs` rule - our login AND
+ * our marker at column 0. The marker alone would let anyone who can comment on the pull
+ * request open a forged thread we then treat as our own, or post a forged reply we read
+ * as "we spoke last" and so never answer. Fails closed: with no login, nothing is ours
+ * and nobody is answered.
  */
 function threadsAwaitingUs(
   snapshot: PrSnapshot,
   rows: Map<string, InspectorComment>,
+  login: string | null,
 ): { thread: ThreadSnapshot; row: InspectorComment; newest: { databaseId: number | null; body: string; author: string } }[] {
-  const out = [];
+  const out: {
+    thread: ThreadSnapshot;
+    row: InspectorComment;
+    newest: { databaseId: number | null; body: string; author: string };
+  }[] = [];
+  if (!login) return out;
   for (const t of snapshot.threads) {
     if (t.isResolved) continue;
     const first = t.comments[0];
     if (!first) continue;
-    const marker = parseMarker(first.body);
-    if (!marker) continue; // not our thread
+    if (!isOurs(first, login)) continue; // not our thread
+    const marker = parseMarker(first.body)!;
     const row = rows.get(marker.fingerprint);
     if (!row) continue;
     if (row.replies >= MAX_REPLIES_PER_THREAD) continue;
 
     const newest = t.comments[t.comments.length - 1]!;
-    if (parseMarker(newest.body)) continue; // we spoke last - nobody is waiting
+    if (isOurs(newest, login)) continue; // we spoke last - nobody is waiting
     if (newest.databaseId !== null && row.answeredCommentId === newest.databaseId) continue;
     out.push({ thread: t, row, newest });
   }
@@ -211,57 +287,92 @@ async function processPr(
   pr: InspectorPr,
   now: number,
 ): Promise<boolean> {
-  const snap = await fetchPr(pr.cwd, pr.owner, pr.repo, pr.number);
+  // Still inside the backoff from an earlier failure. Cheapest possible check, before
+  // any subprocess.
+  if (pr.nextAttemptAt !== null && now < pr.nextAttemptAt) return false;
+
+  const dir = liveDir(pr);
+  if (!dir) {
+    return noteFailure(pr, "the checkout this PR was opened from is gone", now);
+  }
+
+  const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number);
   if (!snap.ok || !snap.value) {
-    updateInspectorPr(pr.key, { lastError: snap.error ?? "could not read the pull request" }, now);
-    return false;
+    return noteFailure(pr, snap.error ?? "could not read the pull request", now);
   }
   const s = snap.value;
 
   // Merged and closed-unmerged are both "done". Retiring the row rather than deleting it
   // keeps the audit trail of what was said on a PR that has since landed.
   if (s.state !== "OPEN") {
-    updateInspectorPr(pr.key, { state: "closed", lastError: null }, now);
+    updateInspectorPr(
+      pr.key,
+      { state: "closed", lastError: null, failCount: 0, nextAttemptAt: null },
+      now,
+    );
     return true;
   }
   if (pr.round >= MAX_ROUNDS) {
-    updateInspectorPr(pr.key, { lastError: `stopped after ${MAX_ROUNDS} rounds` }, now);
-    return false;
+    return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now);
   }
 
+  // Who we are, for every ownership decision below. Resolved once per process; null
+  // means we could not find out, and then nothing on this PR counts as ours.
+  const login = await authenticatedLogin(dir);
   const rows = existingByFingerprint(pr.key);
   const post = mayPost(cfg, pr);
   let acted = false;
 
   // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
   //    pushes ago should not queue behind a fresh review of a big diff.
-  const waiting = threadsAwaitingUs(s, rows);
+  //    Only when we could actually send the answer: a reply has no `drafted` state, so
+  //    running one we cannot post spends a model call to produce nothing.
+  const waiting = post ? threadsAwaitingUs(s, rows, login) : [];
   if (waiting.length) {
-    const diff = await fetchDiff(pr.cwd, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
+    const diff = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
     for (const w of waiting) {
-      const replied = await answerFollowUp(pr, w, diff.value?.diff ?? "", diff.value?.truncated ?? false, post, now);
+      const replied = await answerFollowUp(
+        pr,
+        dir,
+        w,
+        diff.value?.diff ?? "",
+        diff.value?.truncated ?? false,
+        post,
+        login,
+        now,
+      );
       if (replied) acted = true;
     }
   }
 
   // 2. Nothing pushed since the last review: there is nothing new to say.
   if (s.headSha && s.headSha === pr.headSha) {
-    if (pr.lastError) updateInspectorPr(pr.key, { lastError: null }, now);
+    if (pr.lastError || pr.failCount > 0) {
+      updateInspectorPr(pr.key, { lastError: null, failCount: 0, nextAttemptAt: null }, now);
+    }
     return acted;
   }
 
-  const reviewed = await reviewRound(cfg, pr, s, rows, post, now);
+  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now);
   return acted || reviewed;
 }
 
 async function answerFollowUp(
   pr: InspectorPr,
+  dir: string,
   w: ReturnType<typeof threadsAwaitingUs>[number],
   diff: string,
   diffTruncated: boolean,
   post: boolean,
+  login: string | null,
   now: number,
 ): Promise<boolean> {
+  // A reply we cannot actually send must not be drafted, spent or stamped. Comments
+  // have `drafted` for exactly this and replies have no equivalent: burning a
+  // `REPLY_TIMEOUT_MS` model run and then marking the question answered means switching
+  // back to live never answers it, and six such rounds retire the thread outright.
+  if (!post || w.newest.databaseId === null) return false;
+
   const brief = readBrief(pr.repoRoot);
   const first = w.thread.comments[0]!;
   const prompt = buildReplyPrompt({
@@ -269,7 +380,7 @@ async function answerFollowUp(
     original: { path: w.row.path, title: w.row.title, body: first.body },
     thread: w.thread.comments.map((c) => ({
       author: c.author,
-      ours: parseMarker(c.body) !== null,
+      ours: isOurs(c, login),
       body: c.body,
     })),
     diff,
@@ -282,15 +393,14 @@ async function answerFollowUp(
       model: MODEL,
       timeoutMs: REPLY_TIMEOUT_MS,
       tools: REVIEW_TOOLS,
-      cwd: pr.cwd ?? undefined,
+      cwd: dir,
       settings: DENY_SETTINGS,
     });
   } catch (err) {
-    updateInspectorPr(pr.key, { lastError: `reply failed: ${String(err)}` }, now);
-    return false;
+    return noteFailure(pr, `reply failed: ${String(err)}`, now);
   }
 
-  const reply = scrubSecrets(unwrapResult(text).trim());
+  const reply = scrubSecrets(resultText(text).trim());
   if (!reply) return false;
 
   // Same marker fingerprint as the thread it belongs to, so a reply of ours is
@@ -303,20 +413,15 @@ async function answerFollowUp(
     reply,
   ].join("\n");
 
-  if (post && w.newest.databaseId !== null) {
-    const res = await replyToComment(pr.cwd, pr.owner, pr.repo, pr.number, w.newest.databaseId, body);
-    if (!res.ok) {
-      updateInspectorPr(pr.key, { lastError: res.error ?? "reply failed" }, now);
-      return false;
-    }
-  }
+  const res = await replyToComment(dir, pr.owner, pr.repo, pr.number, w.newest.databaseId, body);
+  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", now);
+
   // Stamp AFTER the send, never before: a failed post that had already recorded the
   // answer would leave someone's question permanently unanswered and invisible.
   upsertInspectorComment({
     ...w.row,
     replies: w.row.replies + 1,
     answeredCommentId: w.newest.databaseId,
-    threadId: w.thread.id,
     updatedAt: now,
   });
   return true;
@@ -325,26 +430,40 @@ async function answerFollowUp(
 async function reviewRound(
   cfg: InspectorConfig,
   pr: InspectorPr,
+  dir: string,
   s: PrSnapshot,
   rows: Map<string, InspectorComment>,
   post: boolean,
+  login: string | null,
   now: number,
 ): Promise<boolean> {
-  const diffRes = await fetchDiff(pr.cwd, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
+  const threads = ourThreads(s, login);
+  reconcilePosting(rows, threads, login, now);
+
+  const diffRes = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
   if (!diffRes.ok || !diffRes.value) {
-    updateInspectorPr(pr.key, { lastError: diffRes.error ?? "could not read the diff" }, now);
-    return false;
+    return noteFailure(pr, diffRes.error ?? "could not read the diff", now);
   }
   const { diff, truncated } = diffRes.value;
   const paths = changedPaths(diff);
   if (paths.length === 0) {
     // Nothing reviewable (an empty or purely-binary diff). Still advance the head, or
     // every tick forever would re-fetch and re-decide the same nothing.
-    updateInspectorPr(pr.key, { headSha: s.headSha, lastReviewedAt: now, lastError: null }, now);
+    updateInspectorPr(
+      pr.key,
+      {
+        headSha: s.headSha,
+        lastReviewedAt: now,
+        lastError: null,
+        failCount: 0,
+        nextAttemptAt: null,
+      },
+      now,
+    );
     return true;
   }
 
-  const open = [...rows.values()].filter((c) => c.status === "open" || c.status === "drafted");
+  const open = [...rows.values()].filter((c) => c.status !== "resolved");
   const prompt = buildReviewPrompt({
     brief: readBrief(pr.repoRoot),
     standards: readStandards(pr.repoRoot, paths),
@@ -365,15 +484,14 @@ async function reviewRound(
       model: MODEL,
       timeoutMs: TIMEOUT_MS,
       tools: REVIEW_TOOLS,
-      cwd: pr.cwd ?? undefined,
+      cwd: dir,
       settings: DENY_SETTINGS,
     },
   );
   if (result.kind !== "ok") {
     // A transient failure must NEVER advance the head sha: doing so would record this
     // push as reviewed and the PR would never be looked at again.
-    updateInspectorPr(pr.key, { lastError: result.reason }, now);
-    return false;
+    return noteFailure(pr, result.reason, now);
   }
 
   const round = pr.round + 1;
@@ -384,7 +502,7 @@ async function reviewRound(
     verdict: result.value as InspectorVerdict,
     lines: commentableLines(diff),
     existing: rows,
-    threads: ourThreads(s),
+    threads,
     newId: () => randomUUID(),
   });
 
@@ -392,12 +510,14 @@ async function reviewRound(
   // only then closes the old thread for the same issue, which reads as churn.
   for (const r of plan.resolve) {
     if (post) {
-      const res = await resolveThread(pr.cwd, r.threadId);
+      const res = await resolveThread(dir, r.threadId);
       if (!res.ok) continue; // leave the row open; we'll try again next round
     }
-    const row = rows.get(r.fingerprint);
-    if (row) upsertInspectorComment({ ...row, status: "resolved", updatedAt: now });
+    closeRow(rows, r.fingerprint, now);
   }
+  // Findings with no thread to close - everything drafted in dry run, and anything
+  // demoted into the review body. Nothing to ask GitHub for, so nothing can refuse.
+  for (const fp of plan.resolveLocal) closeRow(rows, fp, now);
 
   const inline = plan.inline.map((c) => ({
     path: c.path,
@@ -408,9 +528,44 @@ async function reviewRound(
     ),
   }));
 
+  // Write the ledger BEFORE the POST, not after.
+  //
+  // The POST is the irreversible half: it publishes under the operator's name. If it
+  // reaches GitHub and its response is lost - a timeout on a review carrying eight
+  // comments, or the daemon exiting in that window - a ledger written afterwards is
+  // never written at all. `headSha` does not advance either, so the next tick re-reviews
+  // the same push against an empty ledger and posts every one of those comments a second
+  // time. `UNIQUE(pr_key, fingerprint)` cannot help, because there are no rows.
+  //
+  // So the rows go down first in `posting`, which the planner reads as already-raised.
+  // A round interrupted anywhere is then recognisable rather than invisible, and the
+  // reconciliation at the top of the next round decides what actually happened.
+  const planned: InspectorComment[] = [...plan.inline, ...plan.demoted].map((c) => {
+    const prior = rows.get(c.fingerprint);
+    return {
+      id: c.id,
+      prKey: pr.key,
+      fingerprint: c.fingerprint,
+      path: c.path,
+      line: c.line,
+      title: c.title,
+      severity: c.severity,
+      round,
+      status: post ? "posting" : "drafted",
+      // A regression re-uses its original row, so the reply budget it already spent
+      // stays spent - a thread that has been argued about six times is not made fresh
+      // by the issue coming back.
+      replies: prior?.replies ?? 0,
+      answeredCommentId: prior?.answeredCommentId ?? null,
+      createdAt: prior?.createdAt ?? now,
+      updatedAt: now,
+    };
+  });
+  for (const row of planned) upsertInspectorComment(row);
+
   if (post && (inline.length > 0 || plan.demoted.length > 0)) {
     const res = await postReview(
-      pr.cwd,
+      dir,
       pr.owner,
       pr.repo,
       pr.number,
@@ -419,63 +574,80 @@ async function reviewRound(
       s.headSha,
     );
     if (!res.ok) {
-      updateInspectorPr(pr.key, { lastError: res.error ?? "could not post the review" }, now);
-      return false;
+      // The head sha stays where it is, so this push is reviewed again. The `posting`
+      // rows stay as they are too: only the next round's live thread read can say
+      // whether the review landed, and guessing here is how a duplicate happens.
+      return noteFailure(pr, res.error ?? "could not post the review", now);
     }
-  }
-
-  // Learn the ids GitHub minted, by re-reading and matching on our own marker rather
-  // than trusting response ordering. Best-effort: a row without an id simply can't be
-  // replied to until the next tick reads it back.
-  const ids = post ? await fetchReviewComments(pr.cwd, pr.owner, pr.repo, pr.number) : null;
-  for (const c of [...plan.inline, ...plan.demoted]) {
-    const prior = rows.get(c.fingerprint);
-    upsertInspectorComment({
-      id: c.id,
-      prKey: pr.key,
-      fingerprint: c.fingerprint,
-      path: c.path,
-      line: c.line,
-      title: c.title,
-      severity: c.severity,
-      commentId: ids?.value?.get(c.fingerprint) ?? null,
-      threadId: null,
-      round,
-      status: post ? "open" : "drafted",
-      // A regression re-uses its original row, so the reply budget it already spent
-      // stays spent - a thread that has been argued about six times is not made fresh
-      // by the issue coming back.
-      replies: prior?.replies ?? 0,
-      answeredCommentId: prior?.answeredCommentId ?? null,
-      createdAt: prior?.createdAt ?? now,
-      updatedAt: now,
-    });
+    // Published. Promote every row this review carried out of `posting`.
+    for (const row of planned) upsertInspectorComment({ ...row, status: "open" });
   }
 
   updateInspectorPr(
     pr.key,
-    { headSha: s.headSha, round, lastReviewedAt: now, lastError: null },
+    {
+      headSha: s.headSha,
+      round,
+      lastReviewedAt: now,
+      lastError: null,
+      failCount: 0,
+      nextAttemptAt: null,
+    },
     now,
   );
   return true;
 }
 
-/** Unwrap the `--output-format json` envelope for a free-text run. */
-function unwrapResult(raw: string): string {
-  try {
-    const parsed = JSON.parse(raw) as { result?: unknown };
-    if (typeof parsed.result === "string") return parsed.result;
-  } catch {
-    // not the envelope - fall through and use it as-is
+/** Close one ledger row, in the map we are working from as well as in the DB. */
+function closeRow(rows: Map<string, InspectorComment>, fingerprint: string, now: number): void {
+  const row = rows.get(fingerprint);
+  if (!row) return;
+  const next: InspectorComment = { ...row, status: "resolved", updatedAt: now };
+  rows.set(fingerprint, next);
+  upsertInspectorComment(next);
+}
+
+/**
+ * Decide what happened to rows left in `posting` by an interrupted round.
+ *
+ * GitHub is the record, so the live threads answer it: an inline finding whose marker
+ * is on a thread was published, and one whose marker is not was never published and is
+ * free to be raised again. A demoted finding has no thread either way, so it cannot be
+ * checked and is assumed published - erring toward one finding said once too few rather
+ * than one public comment said twice.
+ *
+ * Skipped entirely when the login is unknown, because then `threads` is empty by
+ * construction and every row would look unpublished - which is precisely the state that
+ * would produce duplicates.
+ */
+function reconcilePosting(
+  rows: Map<string, InspectorComment>,
+  threads: Map<string, OurThread>,
+  login: string | null,
+  now: number,
+): void {
+  if (!login) return;
+  for (const [fp, row] of rows) {
+    if (row.status !== "posting") continue;
+    const published = row.line === null || threads.has(fp);
+    const next: InspectorComment = {
+      ...row,
+      status: published ? "open" : "drafted",
+      updatedAt: now,
+    };
+    rows.set(fp, next);
+    upsertInspectorComment(next);
   }
-  return raw;
 }
 
 /**
  * Start the Inspector.
  *
- * Costs NOTHING while disabled: the tick reads one config row and returns before it
- * touches the network, spawns a subprocess, or even loads the ledger.
+ * While disabled it neither reviews nor posts: the tick reads one config row and
+ * returns before it touches the network, spawns a subprocess, or loads the ledger. The
+ * ONE thing it still does is write an adoption row when a hook proves we opened a PR -
+ * a single local insert, because that proof is transient and gating it would make every
+ * PR opened before the feature was switched on permanently unreachable.
  */
 export function startInspector(registry: Registry): () => void {
   let stopped = false;
@@ -486,8 +658,13 @@ export function startInspector(registry: Registry): () => void {
 
   // The hook's signal is transient - nothing persists it - so it has to be caught as it
   // happens rather than found later. See `adoptFromSessions` for the other half.
+  //
+  // Deliberately NOT gated on `enabled`. Adoption is not consent to post - `mayPost` is,
+  // and it is checked separately every round - so the row costs nothing but a local
+  // insert. Gating it would mean a user who opens pull requests first and turns the
+  // Inspector on afterwards can never review any of them, because the proof they were
+  // ours went by while nobody was listening and cannot be recovered.
   const offPrOpened = registry.onPrOpened((e: PrOpened) => {
-    if (!getInspectorConfig().enabled) return;
     const adopted = adoptPr(
       e.url,
       { sessionId: e.sessionId, cwd: e.cwd, repoRoot: e.repoRoot },

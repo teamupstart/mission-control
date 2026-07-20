@@ -60,8 +60,6 @@ function row(over: Partial<InspectorComment> = {}): InspectorComment {
     line: 2,
     title: "Reaches into the concrete type",
     severity: "major",
-    commentId: 100,
-    threadId: "T_1",
     round: 1,
     status: "open",
     replies: 0,
@@ -158,7 +156,7 @@ test("a dry-run preview is still unposted, so going live posts it", () => {
   const plan = planReview(
     base({
       verdict: { summary: "", findings: [finding()], resolved: [] },
-      existing: new Map([[fp, row({ fingerprint: fp, status: "drafted", commentId: null })]]),
+      existing: new Map([[fp, row({ fingerprint: fp, status: "drafted" })]]),
     }),
   );
   assert.equal(plan.inline.length, 1, "a previewed finding must still be postable");
@@ -300,4 +298,86 @@ test("secrets are scrubbed from finding bodies AND from the summary", () => {
   // The summary is the one output layer 4 does NOT constrain, since it is not anchored
   // to a changed file - so it is the one that most needs layer 5.
   assert.ok(!plan.body.includes("ghp_AbCdEf"), "the summary is scrubbed too");
+});
+
+// ---- leak-defence layer 5, on the title as well as the body ----
+
+// `renderComment` interpolates the title into every published inline comment. Scrubbing
+// the body while letting the title through means the one string that is guaranteed to
+// appear in a public comment is the one string nobody cleaned.
+test("a finding's title is scrubbed, not just its body", () => {
+  const plan = planReview(
+    base({
+      verdict: {
+        summary: "",
+        findings: [
+          finding({
+            title: "Token ghp_AbCdEf0123456789AbCdEf0123456789abcd is committed",
+            body: "Move it out.",
+          }),
+        ],
+        resolved: [],
+      },
+    }),
+  );
+  assert.equal(plan.inline.length, 1);
+  assert.doesNotMatch(plan.inline[0]!.title, /ghp_AbCdEf/, "the title reaches a public comment");
+});
+
+// ---- a round that may already be public is never raised again ----
+
+// A `posting` row means a review carrying this finding was handed to GitHub and we do
+// not know whether the response was lost. Re-raising it is how the same comment gets
+// posted twice under the operator's name.
+test("a finding mid-post is treated as already raised", () => {
+  const fp = fingerprint("src/a.ts", "Reaches into the concrete type");
+  const plan = planReview(
+    base({
+      verdict: { summary: "", findings: [finding()], resolved: [] },
+      existing: new Map([[fp, row({ fingerprint: fp, status: "posting" })]]),
+    }),
+  );
+  assert.equal(plan.inline.length, 0);
+});
+
+// ---- closing what has no thread to close ----
+
+// In dry run nothing was posted, so there are no threads - and because a raised row is
+// never re-raised, a drafted finding the next push fixes would stay open forever. The
+// settings panel counts drafted rows as open, so the one number the operator can read
+// while evaluating the feature would only ever grow.
+test("a dry-run finding the next push fixed is closed in the ledger", () => {
+  const fp = fingerprint("src/a.ts", "Mine");
+  const plan = planReview(
+    base({
+      mode: "dry-run",
+      verdict: { summary: "", findings: [], resolved: [fp] },
+      existing: new Map([[fp, row({ fingerprint: fp, status: "drafted" })]]),
+      threads: new Map(),
+    }),
+  );
+  assert.deepEqual(plan.resolve, [], "there is no thread to ask GitHub about");
+  assert.deepEqual(plan.resolveLocal, [fp]);
+});
+
+// Same shape in live mode: a finding with nowhere to anchor goes in the review body, so
+// it has no thread either and was equally unclosable.
+test("a demoted finding the next push fixed is closed in the ledger", () => {
+  const fp = fingerprint("src/a.ts", "Mine");
+  const plan = planReview(
+    base({
+      verdict: { summary: "", findings: [], resolved: [fp] },
+      existing: new Map([[fp, row({ fingerprint: fp, line: null, status: "open" })]]),
+      threads: new Map(),
+    }),
+  );
+  assert.deepEqual(plan.resolveLocal, [fp]);
+});
+
+test("a fingerprint we have no row for is not closed anywhere", () => {
+  const plan = planReview(
+    base({ verdict: { summary: "", findings: [], resolved: ["fp-we-never-raised"] } }),
+  );
+  assert.deepEqual(plan.resolve, []);
+  assert.deepEqual(plan.resolveLocal, []);
 });

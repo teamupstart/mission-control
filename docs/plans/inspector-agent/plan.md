@@ -80,7 +80,10 @@ The Foreman worker is the obvious-looking home and is the wrong one:
   `src/server/claude-cli.ts` with `createLimiter`). Nothing new is being introduced into it.
 
 Cost accepted: one more subsystem in the daemon process. Bounded by a concurrency limiter of
-1 and a 90s tick, and it spawns **nothing at all** while disabled.
+1 and a 90s tick, and while disabled it spawns **nothing at all** - no `gh`, no `claude -p`.
+The one thing it still does while off is record an adoption row when a hook proves we opened
+a PR: a single local insert, because that proof is transient and gating it would make every
+PR opened before the feature was switched on permanently unreachable.
 
 ### How the pieces talk
 

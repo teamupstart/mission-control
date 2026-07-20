@@ -11,6 +11,7 @@
 // never blocks or fails the agent - even when the daemon is down.
 
 import { BASE_URL, captureTerminalEnv, readToken } from "../src/shared/harness-runtime.mjs";
+import { opensPullRequest } from "../src/shared/pr-command.mjs";
 
 // A GitHub PR URL as printed by `gh pr create` / `gh pr view`. Scoped to a real
 // pull path so a repo or compare link never masquerades as a PR.
@@ -35,10 +36,6 @@ function sniffPrUrl(payload) {
   return m ? m[0] : undefined;
 }
 
-// `gh pr create`, anywhere in a command line - after a `&&`, inside `$(...)`, with
-// flags in front of the subcommand (`gh --repo x pr --draft create`).
-const PR_CREATE_RE = /(?:^|[\s;&|(`])gh\s+(?:-{1,2}\S+\s+)*pr\s+(?:-{1,2}\S+\s+)*create(?:\s|$)/;
-
 /**
  * Whether this tool call is the agent OPENING a pull request, as opposed to merely
  * printing one's URL.
@@ -47,11 +44,8 @@ const PR_CREATE_RE = /(?:^|[\s;&|(`])gh\s+(?:-{1,2}\S+\s+)*pr\s+(?:-{1,2}\S+\s+)
  * it drives is a chip the poller retracts a tick later. This answers "we opened it",
  * which is a different question with a much higher bar: it is what the Inspector
  * adopts a PR on, and adopting wrongly means posting review comments on a pull
- * request that belongs to someone else. So it reads the COMMAND, not the output -
- * `gh pr view` prints the same URL that `gh pr create` does.
- *
- * Conservative on purpose. A false negative costs one uninspected PR; a false
- * positive writes to a stranger's.
+ * request that belongs to someone else. The predicate itself lives in
+ * `src/shared/pr-command.mjs` so it can be table-tested; see the note there.
  *
  * Returns undefined rather than false when it doesn't match, so the common case adds
  * nothing to the wire. The command itself is NEVER sent - only this boolean - so a
@@ -61,9 +55,7 @@ function sniffPrCreated(payload) {
   const event = payload.hook_event_name ?? process.argv[2] ?? "";
   if (event !== "PostToolUse") return undefined;
   if (payload.tool_name !== "Bash") return undefined;
-  const cmd = payload.tool_input?.command;
-  if (typeof cmd !== "string") return undefined;
-  return PR_CREATE_RE.test(cmd) ? true : undefined;
+  return opensPullRequest(payload.tool_input?.command) ? true : undefined;
 }
 
 function readStdin() {

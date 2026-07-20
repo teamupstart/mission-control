@@ -31,6 +31,17 @@ export function useInspector(): InspectorState {
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.
   const configRef = useRef<InspectorConfig | null>(null);
+  /**
+   * Bumped by every write. A poll reads it before its request and again after, and
+   * discards its answer if a write started in between.
+   *
+   * Without it, a tick that left just before the operator clicks "Live" lands after the
+   * click and overwrites the new state with the pre-write config: the radio visibly
+   * snaps back to Dry run and the live warning disappears for a second while the daemon
+   * is going live. The same stale value can become `before`, so a rejected write would
+   * then "revert" to a config that was never in force.
+   */
+  const writes = useRef(0);
 
   const setConfig = useCallback((c: InspectorConfig | null): void => {
     configRef.current = c;
@@ -40,10 +51,13 @@ export function useInspector(): InspectorState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
+      const at = writes.current;
       const [c, prs] = await Promise.all([fetchInspectorConfig(), fetchInspectorPrs()]);
       if (!alive) return;
-      if (c) setConfig(c);
+      // The inspections list is a read-only display and cannot be raced with, so it is
+      // applied regardless; only the config a write may have just changed is dropped.
       if (prs) setInspections(prs);
+      if (c && writes.current === at) setConfig(c);
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -65,6 +79,7 @@ export function useInspector(): InspectorState {
     async (patch: InspectorConfigPatch): Promise<void> => {
       const before = configRef.current;
       if (!before) return;
+      writes.current += 1;
       setConfig({ ...before, ...patch });
       const res = await api.setInspectorConfig(patch);
       if (!res.ok) {
@@ -73,8 +88,9 @@ export function useInspector(): InspectorState {
         return;
       }
       setError(null);
+      const at = (writes.current += 1);
       const c = await fetchInspectorConfig();
-      if (c) setConfig(c);
+      if (c && writes.current === at) setConfig(c);
     },
     [setConfig],
   );

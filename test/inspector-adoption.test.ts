@@ -4,6 +4,7 @@ import { openDb, getInspectorPr, loadOpenInspectorPrs, updateInspectorPr } from 
 import { adoptPr } from "../src/server/inspector/worker.ts";
 import { parsePrUrl } from "../src/server/inspector/github.ts";
 import { getInspectorConfig, setInspectorConfig } from "../src/server/inspector/config.ts";
+import { opensPullRequest } from "../src/shared/pr-command.mjs";
 
 // A row in `inspector_prs` IS the permission to write on someone's pull request. Nothing
 // else grants it: the tick only ever iterates this table, so whatever gets in here is
@@ -123,4 +124,59 @@ test("a stored blob from another version still reads", () => {
   assert.equal(cfg.enabled, true);
   assert.equal(cfg.mode, "dry-run", "a key the old blob lacked gets its default");
   assert.equal(cfg.maxCommentsPerRound, 8);
+});
+
+// ---- the discriminator itself ----
+
+// `sniffPrCreated` in the hook turns "a PR URL appeared" into "we may write on this pull
+// request", and that promotion is the whole consent model. The regex behind it had no
+// test at all because it lived unexported inside a bare-node hook - so any future
+// loosening was invisible, and a loosening here writes comments on strangers' PRs.
+test("only an actual `gh pr create` reads as opening a pull request", () => {
+  for (const cmd of [
+    "gh pr create --fill",
+    "gh pr create",
+    "cd /repo && gh pr create --draft --title x",
+    "git push && gh pr create --fill && echo done",
+    "echo $(gh pr create --fill)",
+    "gh pr --draft create", // a valueless flag before the subcommand
+  ]) {
+    assert.equal(opensPullRequest(cmd), true, `should open a PR: ${cmd}`);
+  }
+});
+
+test("everything that merely mentions or prints a PR is not opening one", () => {
+  for (const cmd of [
+    "gh pr view 12 --json url", // prints the identical URL
+    "gh pr list --head my-branch",
+    "gh pr checkout 12",
+    "gh issue create --title x",
+    "ghpr create",
+    "mygh pr create",
+    "no-mistakes --push", // how PRs are actually opened in this repo - signal (b)'s job
+    "",
+  ]) {
+    assert.equal(opensPullRequest(cmd), false, `should NOT open a PR: ${cmd}`);
+  }
+});
+
+// Two known limits of reading the command as text, pinned so a future "fix" for either
+// has to be a deliberate decision rather than a quiet widening.
+//
+// It matches prose that quotes the command, which is harmless only because the boolean
+// is half a signal: adoption also needs a PR URL in the same tool response, and a commit
+// message has none. And it misses a flag that takes a separate value, which costs one
+// uninspected PR - the cheap direction, and the one this predicate always takes.
+test("the command match is text, and it is strict where being loose would cost most", () => {
+  assert.equal(opensPullRequest("echo 'run gh pr create when ready' >> NOTES.md"), true);
+  assert.equal(opensPullRequest("gh --repo o/r pr create"), false);
+  // Not a general escape hatch: the trailing-boundary requirement still rules out the
+  // most common way the phrase appears in prose, at the end of a quoted string.
+  assert.equal(opensPullRequest('git commit -m "document gh pr create"'), false);
+});
+
+test("a command that is not a string is never a match", () => {
+  for (const bad of [undefined, null, 42, { command: "gh pr create" }, ["gh pr create"]]) {
+    assert.equal(opensPullRequest(bad), false);
+  }
 });

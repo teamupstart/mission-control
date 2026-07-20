@@ -27,6 +27,14 @@ export function run(
      * wrote.
      */
     input?: string;
+    /**
+     * Bytes of stdout to buffer before the child is killed. Defaults to 8MB, which is
+     * generous for the discovery commands this was written for and NOT generous for a
+     * whole pull request diff - a regenerated lockfile or a vendored directory blows
+     * past it, and the overflow surfaces as an ordinary non-zero exit that a caller
+     * would otherwise retry forever.
+     */
+    maxBuffer?: number;
   } = {},
 ): Promise<RunResult> {
   return new Promise((resolve) => {
@@ -35,7 +43,7 @@ export function run(
       args,
       {
         timeout: opts.timeoutMs ?? 4000,
-        maxBuffer: 8 * 1024 * 1024,
+        maxBuffer: opts.maxBuffer ?? 8 * 1024 * 1024,
         windowsHide: true,
         cwd: opts.cwd,
         env: opts.env,
@@ -47,7 +55,19 @@ export function run(
             : err
               ? 1
               : 0;
-        resolve({ stdout: stdout ?? "", stderr: stderr ?? "", code });
+        // An overflow otherwise arrives as a bare non-zero exit with the truncated
+        // OUTPUT in stderr's place, which reads to a caller as "the command failed and
+        // said this" - so it gets retried forever instead of recognised as too big to
+        // buffer. Naming it is what lets a caller stop.
+        const overflowed =
+          !!err &&
+          ((err as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+            /maxBuffer/i.test(err.message ?? ""));
+        resolve({
+          stdout: stdout ?? "",
+          stderr: overflowed ? (err.message ?? "maxBuffer exceeded") : (stderr ?? ""),
+          code,
+        });
       },
     );
     if (opts.input !== undefined) {

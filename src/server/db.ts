@@ -337,6 +337,8 @@ export function openDb(): DatabaseSync {
       round            INTEGER NOT NULL DEFAULT 0,
       last_reviewed_at INTEGER,
       last_error       TEXT,
+      fail_count       INTEGER NOT NULL DEFAULT 0,  -- consecutive failures, for the backoff
+      next_attempt_at  INTEGER,          -- not before this; null = due now
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -357,16 +359,15 @@ export function openDb(): DatabaseSync {
       line                INTEGER,
       title               TEXT NOT NULL,
       severity            TEXT NOT NULL,
-      comment_id          INTEGER,           -- GitHub's id; null while 'drafted'
-      thread_id           TEXT,              -- GraphQL node id, learned after posting
       round               INTEGER NOT NULL,
-      status              TEXT NOT NULL,     -- drafted | open | resolved
+      status              TEXT NOT NULL,     -- drafted | posting | open | resolved
       replies             INTEGER NOT NULL DEFAULT 0,
       answered_comment_id INTEGER,           -- newest foreign comment we've answered
       created_at          INTEGER NOT NULL,
       updated_at          INTEGER NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_inspector_comments_pr ON inspector_comments(pr_key);
+    -- No index on (pr_key) alone: it is the leftmost prefix of the unique index below,
+    -- so it can serve no query that one cannot, and it costs a write per row.
     CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
       ON inspector_comments(pr_key, fingerprint);
   `);
@@ -463,6 +464,26 @@ function migrate(d: DatabaseSync): void {
   // the harness default", which is the truthful answer for every task dispatched before
   // a model could be chosen at all.
   addColumn(d, "tasks", "model", "TEXT");
+
+  // `fail_count` / `next_attempt_at`: the Inspector's retry backoff. Same window as
+  // `foreman_episodes.resolved_by` above - `inspector_prs` has never shipped, so the
+  // only dbs carrying it are the ones this feature was developed against - but CREATE
+  // TABLE IF NOT EXISTS still will not add a column to a table that exists, and the
+  // INSERT names both, so without these every adoption on such a db would fail.
+  //
+  // `fail_count` defaults to 0 and `next_attempt_at` is nullable, so a row written
+  // before the backoff existed reads as "no failures, due now" - which is the truthful
+  // answer for a row nothing had yet counted failures for.
+  addColumn(d, "inspector_prs", "fail_count", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_prs", "next_attempt_at", "INTEGER");
+
+  // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
+  // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
+  // than merely removed from the CREATE, or a db created before this build keeps
+  // paying for it forever. `comment_id` / `thread_id` are left where they are: SQLite
+  // column drops are the expensive kind of migration, the columns are nullable, and
+  // every INSERT names its columns, so a leftover one is inert.
+  d.exec(`DROP INDEX IF EXISTS idx_inspector_comments_pr;`);
 
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
   // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
@@ -2009,6 +2030,8 @@ interface InspectorPrRow {
   round: number;
   last_reviewed_at: number | null;
   last_error: string | null;
+  fail_count: number;
+  next_attempt_at: number | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -2029,6 +2052,8 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     round: r.round,
     lastReviewedAt: r.last_reviewed_at,
     lastError: r.last_error,
+    failCount: r.fail_count,
+    nextAttemptAt: r.next_attempt_at,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -2048,8 +2073,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
     .prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
-          head_sha, round, last_reviewed_at, last_error, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          head_sha, round, last_reviewed_at, last_error, fail_count, next_attempt_at,
+          adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -2067,6 +2093,8 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.round,
       pr.lastReviewedAt,
       pr.lastError,
+      pr.failCount,
+      pr.nextAttemptAt,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -2090,6 +2118,8 @@ export function updateInspectorPr(
     round?: number;
     lastReviewedAt?: number | null;
     lastError?: string | null;
+    failCount?: number;
+    nextAttemptAt?: number | null;
   },
   now: number,
 ): void {
@@ -2100,7 +2130,8 @@ export function updateInspectorPr(
     .prepare(
       `UPDATE inspector_prs
           SET cwd = ?, repo_root = ?, state = ?, head_sha = ?, round = ?,
-              last_reviewed_at = ?, last_error = ?, updated_at = ?
+              last_reviewed_at = ?, last_error = ?, fail_count = ?, next_attempt_at = ?,
+              updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -2111,6 +2142,8 @@ export function updateInspectorPr(
       next.round,
       next.lastReviewedAt,
       next.lastError,
+      next.failCount,
+      next.nextAttemptAt,
       now,
       key,
     );
@@ -2139,8 +2172,6 @@ interface InspectorCommentRow {
   line: number | null;
   title: string;
   severity: string;
-  comment_id: number | null;
-  thread_id: string | null;
   round: number;
   status: string;
   replies: number;
@@ -2158,8 +2189,6 @@ function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
     line: r.line,
     title: r.title,
     severity: r.severity as InspectorSeverity,
-    commentId: r.comment_id,
-    threadId: r.thread_id,
     round: r.round,
     status: r.status as InspectorCommentStatus,
     replies: r.replies,
@@ -2182,16 +2211,14 @@ export function upsertInspectorComment(c: InspectorComment): void {
   openDb()
     .prepare(
       `INSERT INTO inspector_comments
-         (id, pr_key, fingerprint, path, line, title, severity, comment_id, thread_id,
+         (id, pr_key, fingerprint, path, line, title, severity,
           round, status, replies, answered_comment_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
          path = excluded.path,
          line = excluded.line,
          title = excluded.title,
          severity = excluded.severity,
-         comment_id = excluded.comment_id,
-         thread_id = excluded.thread_id,
          round = excluded.round,
          status = excluded.status,
          replies = excluded.replies,
@@ -2206,8 +2233,6 @@ export function upsertInspectorComment(c: InspectorComment): void {
       c.line,
       c.title,
       c.severity,
-      c.commentId,
-      c.threadId,
       c.round,
       c.status,
       c.replies,
@@ -2231,12 +2256,18 @@ export function loadInspectorComments(prKey: string): InspectorComment[] {
  * One grouped query rather than a load-then-count-per-row loop: this runs on the
  * daemon's single synchronous SQLite handle, the same one serving hook ingest and SSE,
  * and the panel polls it.
+ *
+ * `limit` is OPTIONAL, and the default is "all of them", because the two callers want
+ * different things. The settings panel is a display and wants the recent slice; the
+ * registry builds the per-session chip out of this and must not be truncated - rows are
+ * never deleted, so a cap would eventually drop live PRs off the bottom, and an absent
+ * chip is documented in three places as meaning "that PR came from somewhere else".
  */
-export function loadInspectorInspections(limit = 50): InspectorInspection[] {
+export function loadInspectorInspections(limit?: number): InspectorInspection[] {
   const rows = openDb()
     .prepare(
       `SELECT p.*,
-              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted') THEN 1 ELSE 0 END), 0) AS open_findings,
+              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
               COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
          FROM inspector_prs p
          LEFT JOIN inspector_comments c ON c.pr_key = p.key
@@ -2244,7 +2275,7 @@ export function loadInspectorInspections(limit = 50): InspectorInspection[] {
         ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC
         LIMIT ?`,
     )
-    .all(limit) as unknown as (InspectorPrRow & {
+    .all(limit ?? -1) as unknown as (InspectorPrRow & {
     open_findings: number;
     resolved_findings: number;
   })[];

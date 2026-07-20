@@ -1166,11 +1166,19 @@ export function buildApp(
   app.put("/api/inspector/config", async (c) => {
     const parsed = await parseBody(c, InspectorConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setInspectorConfig(parsed.data));
+    const next = setInspectorConfig(parsed.data);
+    // The per-session chip bakes `mode` in when the summary is resolved, and the tick
+    // that would otherwise re-resolve it only runs while the feature is ENABLED. Without
+    // this, flipping live -> dry-run leaves every card claiming the last review was
+    // posted publicly, and flipping enabled -> off freezes the chips in whatever mode
+    // was in force, indefinitely. This chip's whole job is that distinction.
+    registry.refreshInspections();
+    return c.json(next);
   });
   // The ledger, newest first. This is what makes dry-run legible: without somewhere to
   // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
-  app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections()));
+  // Capped because it is a display; the registry's copy is deliberately not.
+  app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections(50)));
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));

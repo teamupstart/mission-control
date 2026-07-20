@@ -78,6 +78,16 @@ export interface ReviewPlan {
   body: string;
   /** Threads to resolve, before anything is posted. */
   resolve: { fingerprint: string; threadId: string }[];
+  /**
+   * Findings to close in the LEDGER with no thread to close on GitHub.
+   *
+   * Two things land here, and both were previously stuck open forever. A dry-run
+   * finding was never posted, so it has no thread - and dry-run is the mode the README
+   * tells the operator to evaluate the feature in, where a monotonically growing open
+   * count is the only thing they can read. A demoted finding (nowhere to anchor, folded
+   * into the review body) has no thread either, in live mode.
+   */
+  resolveLocal: string[];
   /** Findings discarded because they named a file this PR never touched (layer 4). */
   droppedOffDiff: number;
   /** Findings discarded by the per-round cap. */
@@ -152,7 +162,10 @@ function snapToLine(lines: Set<number>, want: number | null): number | null {
  *  - A `drafted` row is a dry-run preview: still unposted, so switching to live posts
  *    it. Without this, dry-run would permanently swallow everything it previewed.
  *  - Resolution is narrowing only, and never contradicts a live finding: if the model
- *    both closes a fingerprint and raises it again this round, the raise wins.
+ *    both closes a fingerprint and raises it again this round, the raise wins. It is
+ *    split into the threads to close on GitHub and the rows to close only here
+ *    (`resolveLocal`), because a dry-run or demoted finding has no thread and would
+ *    otherwise be permanently unclosable.
  */
 export function planReview(input: PlanInput): ReviewPlan {
   const { verdict, lines, existing, threads, mode, round } = input;
@@ -169,14 +182,21 @@ export function planReview(input: PlanInput): ReviewPlan {
       droppedOffDiff++;
       continue;
     }
-    const fp = fingerprint(path, f.title);
+    // Layer 5, on the title as well as the body. `renderComment` interpolates the title
+    // into every published inline comment, so a credential-shaped string in a 120-char
+    // title would go out verbatim while the body beside it was cleaned. Scrubbed BEFORE
+    // the fingerprint so the issue's identity is the one that actually gets published.
+    const title = scrubSecrets(f.title);
+    const fp = fingerprint(path, title);
     if (raised.has(fp)) continue; // the model said the same thing twice
     raised.add(fp);
 
     const prior = existing.get(fp);
     // Already surfaced and still open: leave it be. Re-posting is how an automated
-    // reviewer becomes noise.
-    if (prior && prior.status === "open") continue;
+    // reviewer becomes noise. `posting` counts as surfaced too - it means a review
+    // carrying this finding was handed to GitHub and we do not know whether the
+    // response was lost, so raising it again risks a duplicate PUBLIC comment.
+    if (prior && (prior.status === "open" || prior.status === "posting")) continue;
 
     candidates.push({
       id: prior?.id ?? input.newId(),
@@ -184,7 +204,7 @@ export function planReview(input: PlanInput): ReviewPlan {
       path,
       line: snapToLine(fileLines, f.line),
       severity: f.severity,
-      title: f.title,
+      title,
       body: scrubSecrets(f.body),
     });
   }
@@ -199,11 +219,20 @@ export function planReview(input: PlanInput): ReviewPlan {
   const demoted = kept.filter((c) => c.line === null);
 
   const resolve: { fingerprint: string; threadId: string }[] = [];
+  const resolveLocal: string[] = [];
   for (const fp of verdict.resolved) {
-    const thread = threads.get(fp);
-    if (!thread || thread.isResolved) continue; // not ours, or already closed
     if (raised.has(fp)) continue; // it also raised this - the raise wins
-    resolve.push({ fingerprint: fp, threadId: thread.threadId });
+    const thread = threads.get(fp);
+    if (thread && !thread.isResolved) {
+      resolve.push({ fingerprint: fp, threadId: thread.threadId });
+      continue;
+    }
+    // No thread to close, or one already closed. Closing the LEDGER row is still the
+    // right answer whenever we have one that is still counted as open - otherwise a
+    // finding the next push fixed stays open for the life of the PR, and (because the
+    // planner will not re-raise an open row) it is never spoken about again either.
+    const row = existing.get(fp);
+    if (row && row.status !== "resolved") resolveLocal.push(fp);
   }
 
   return {
@@ -211,6 +240,7 @@ export function planReview(input: PlanInput): ReviewPlan {
     demoted,
     body: scrubSecrets(reviewBody(verdict.summary, demoted, droppedOverCap, mode, round)),
     resolve,
+    resolveLocal,
     droppedOffDiff,
     droppedOverCap,
   };

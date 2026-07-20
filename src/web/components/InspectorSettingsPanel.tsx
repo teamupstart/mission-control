@@ -96,6 +96,18 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         fixes them.
       </p>
 
+      {/* The daemon has not answered. Said out loud, because the fallbacks below are
+          `off` / `dry run` / `no repos` - the safe posture - and presenting schema
+          defaults as the daemon's answer tells the operator the Inspector is quiet when
+          the stored config may well be enabled and live. Disabled inputs are not a
+          statement about what is running. */}
+      {!config && (
+        <p className="settings-warn inspector-unknown">
+          Can't reach the daemon, so what the Inspector is actually set to is unknown. The
+          controls below are showing defaults, not its current state.
+        </p>
+      )}
+
       <label className="alert-row inspector-toggle">
         <input
           type="checkbox"
@@ -141,7 +153,9 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
 
         {allowlist.length === 0 ? (
           <p className="settings-hint foreman-repos-empty">
-            No repos yet - the Inspector won't post anywhere.
+            {config
+              ? "No repos yet - the Inspector won't post anywhere."
+              : "Unknown - the daemon hasn't said which repos are trusted."}
           </p>
         ) : (
           <ul className="foreman-repo-list">

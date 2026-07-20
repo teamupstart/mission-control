@@ -1932,16 +1932,6 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * A queue whose own session is gone but whose cwd matches this live one - the
-   * re-attach hint.
-   *
-   * Without this a queue orphaned by a `/clear` (which mints a new agent session
-   * id) would match NO live session, so it would appear on NO card and nothing
-   * would drive its tick. It is deliberately only a hint: a different agent at
-   * that cwd may be doing something else entirely, so rebinding is always an
-   * explicit click, never automatic.
-   */
-  /**
    * The Inspector's state for this session's pull request, keyed on `prUrl`.
    *
    * Keyed on the PR rather than the session because that is what the ledger is about:
@@ -1988,6 +1978,16 @@ export class Registry extends EventEmitter {
     }
   }
 
+  /**
+   * A queue whose own session is gone but whose cwd matches this live one - the
+   * re-attach hint.
+   *
+   * Without this a queue orphaned by a `/clear` (which mints a new agent session
+   * id) would match NO live session, so it would appear on NO card and nothing
+   * would drive its tick. It is deliberately only a hint: a different agent at
+   * that cwd may be doing something else entirely, so rebinding is always an
+   * explicit click, never automatic.
+   */
   private orphanedQueueFor(s: Session): OrphanedQueueHint | null {
     if (!s.cwd) return null;
     // No sweep yet means no evidence, only an empty map - and "no live session holds

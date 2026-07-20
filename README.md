@@ -1226,16 +1226,25 @@ A PR is adopted for review only from a signal that *proves* we opened it:
   that ran the `pr` step.
 
 Adopted PRs are recorded durably and stay adopted while they are open, even after the
-session that opened them exits. A PR with no adoption record is never touched.
+session that opened them exits. A PR with no adoption record is never touched. Adoption is
+not consent to post - that is `mode` plus the allowlist - so a PR is recorded whenever the
+proof arrives, including while the Inspector is switched off. That single local insert is
+the only thing it does while off; it runs no `gh` and no model.
 
 ### Knowing its own comments
 
-Everything the Inspector writes carries a hidden marker on the first line
-(`<!-- mission-inspector:v1 … -->`). This matters because it pushes under **your** GitHub
-account: on the wire its comments are indistinguishable from yours, from another agent
-running as you, and from a second Mission Control on another machine. The marker is the
-only thing that tells them apart, and it decides which threads get resolved and which
-questions get answered.
+A comment counts as the Inspector's own only if **both** are true: it was written by the
+login `gh` is authenticated as, **and** it carries a hidden marker
+(`<!-- mission-inspector:v1 … -->`) at the very start of its body. That is what decides
+which threads get resolved and which questions get answered.
+
+Neither half is enough alone, for different reasons. The account is shared - you comment
+under it, other agents run as you, a second Mission Control on another machine posts as
+you - so the author cannot tell our comments from those; the marker can. And the marker's
+prefix is a fixed public string whose fingerprints are visible in any PR's page source, so
+anyone who can comment on the pull request can paste one; the author check is what stops a
+forged comment being read as ours. If `gh` cannot say who we are, nothing counts as ours
+and nothing is resolved or answered.
 
 The marker must be at the *start* of a body to count. GitHub's quote-reply prefixes every
 line with `> `, so a human quoting one of our comments would otherwise be mistaken for us
@@ -1253,7 +1262,8 @@ Five things stand in the way of that:
 
 1. **Tool allowlist** - reading only. No `Bash`, no `Write`/`Edit`, no `WebFetch`, no MCP.
 2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys, `.ssh`,
-   `.aws`, `.git/config`, and Mission Control's own state.
+   `.aws`, `.git/config`, and Mission Control's own state - denied for all three of
+   `Read`, `Grep` and `Glob`, since `Grep` prints the lines of any path it is given.
 3. **Working directory** is the reviewed worktree; under `-p` a read outside it has nobody
    to approve it, so it fails.
 4. **Every finding must name a file the PR changed.** One that doesn't is discarded - so
@@ -1453,7 +1463,7 @@ that looks perfectly healthy would help nobody.
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler) pass it instead |
-| `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Costs nothing while the Inspector is off |
+| `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. The tick does nothing at all while the Inspector is off |
 | `MISSION_INSPECTOR_MODEL` | CLI default | Inspector: the review model. Unset inherits the `claude` CLI's own default (the most capable, and the priciest) |
 | `MISSION_INSPECTOR_TIMEOUT_MS` | `180000` | Inspector: hard cap on one review. Larger than the Foreman reviewer's 120s because this one has tool round-trips inside it |
 | `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `90000` | Inspector: hard cap on one follow-up reply - a much smaller job than a review |

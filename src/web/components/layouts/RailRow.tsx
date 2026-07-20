@@ -76,7 +76,10 @@ export function RailRow({
             const insp = inspectorChipView(session.inspector);
             if (!insp || insp.tone === "insp-clean" || insp.tone === "insp-queued") return null;
             return (
-              <span className={`rail-insp ${insp.tone}`} title={insp.title}>
+              <span
+                className={`rail-insp ${insp.tone}${insp.dry ? " insp-dry" : ""}`}
+                title={insp.title}
+              >
                 ⌕{insp.mark}
               </span>
             );

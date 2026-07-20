@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
+import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
 import {
   AgentDot,
   CostChip,
@@ -294,4 +295,65 @@ test("card and console detail agree on every shared leaf", () => {
     assert.ok(html.includes(fragment), `card should contain the shared ${name}`);
     assert.ok(detail.includes(fragment), `console detail should contain the shared ${name}`);
   }
+});
+
+// Dry run means the review happened and NOTHING was published. That is the distinction
+// the whole feature's safety story rests on, so it cannot be legible on the card and
+// invisible on the other two surfaces - a bare `⌕ 3` must not read the same whether
+// those three findings are public review comments or were only recorded here.
+//
+// The mark vocabularies differ by design (a pill, a `.tile-flag`, a glyph), so this
+// asserts each surface carries the shared `insp-dry` hook rather than identical markup.
+test("all three inspector surfaces show dry run, and none of them shows it when live", () => {
+  const dry = insp({ open: 3, round: 2, mode: "dry-run" });
+  const live = insp({ open: 3, round: 2, mode: "live" });
+
+  const tile = (i: Session["inspector"]): string =>
+    renderToStaticMarkup(
+      createElement(SessionTile, {
+        session: mkSession({ inspector: i }),
+        gateNeedsYou: false,
+        onOpen: () => {},
+        draggingRepo: null,
+        onDropped: () => {},
+        onDropError: () => {},
+      }),
+    );
+  const rail = (i: Session["inspector"]): string =>
+    renderToStaticMarkup(
+      createElement(RailRow, {
+        session: mkSession({ inspector: i }),
+        selected: false,
+        gateNeedsYou: false,
+        onSelect: () => {},
+      }),
+    );
+
+  for (const [name, render] of [
+    ["card", (i: Session["inspector"]) => card({ inspector: i })],
+    ["tile", tile],
+    ["rail", rail],
+  ] as const) {
+    assert.match(render(dry), /insp-dry/, `${name} should mark a dry-run review`);
+    assert.doesNotMatch(render(live), /insp-dry/, `${name} must not mark a live review`);
+  }
+});
+
+// The chip's only unconditional child is an aria-hidden glyph, and in the queued state
+// the mark is empty - so without a name it announces as nothing at all, and otherwise as
+// a bare "3". The tooltip's aria-describedby is a description, and only while open.
+test("the inspector chip and its tile twin have an accessible name", () => {
+  const session = mkSession({ inspector: insp({ open: 0, round: 0 }) });
+  assert.match(bit(InspectorChip, { session }), /aria-label="Inspector: adopted for review/);
+  const tile = renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      gateNeedsYou: false,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+    }),
+  );
+  assert.match(tile, /aria-label="Inspector: adopted for review/);
 });

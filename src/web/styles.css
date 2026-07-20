@@ -3199,9 +3199,17 @@ kbd {
 .insp-label {
   line-height: 1;
 }
-/* Dashed border = "this was a rehearsal". Read alongside the tone, never instead of it. */
-.insp-chip.insp-dry {
+/* Dashed border = "this was a rehearsal". Read alongside the tone, never instead of it.
+   Applied on the tile as well as the card, and as a dotted underline on the rail, which
+   has no border to dash - posted-versus-recorded is the distinction the whole feature's
+   safety story rests on, so it cannot be visible on one surface out of three. */
+.insp-chip.insp-dry,
+.tile-flag.insp-dry {
   border-style: dashed;
+}
+.rail-insp.insp-dry {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
 
 .insp-findings {
@@ -4894,6 +4902,21 @@ kbd {
   background: color-mix(in oklab, var(--attention) 10%, var(--panel-2));
   border: 1px solid color-mix(in oklab, var(--attention) 32%, transparent);
   border-radius: 8px;
+}
+/* The Inspector's live warning is the strongest one here - it is the only setting in the
+   app whose consequence is public - so it gets the danger tone rather than settings-warn's
+   attention tone. */
+.inspector-live-warn {
+  color: color-mix(in oklab, var(--danger) 86%, var(--fg));
+  background: color-mix(in oklab, var(--danger) 10%, var(--panel-2));
+  border-color: color-mix(in oklab, var(--danger) 34%, transparent);
+}
+/* The daemon has not answered yet, so the panel is showing nothing rather than the safe
+   posture. Muted, because it is an absence of information and not a finding. */
+.inspector-unknown {
+  color: var(--muted);
+  background: var(--panel-2);
+  border-color: color-mix(in oklab, var(--muted) 28%, transparent);
 }
 .inspector-log {
   margin-top: 18px;

@@ -90,9 +90,28 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
  * Counts rather than findings. The card's job is to say whether to go and look; the pull
  * request is where you look.
  */
-export function inspectorChipView(
-  inspector: Session["inspector"],
-): { mark: string; tone: string; title: string } | null {
+export type InspectorTone = "insp-failed" | "insp-queued" | "insp-clean" | "insp-findings";
+
+export interface InspectorChipView {
+  mark: string;
+  /**
+   * A union rather than a string, because the rail FILTERS on it. These double as CSS
+   * class names, so a rename that updated the helper and `styles.css` would silently
+   * turn the rail's suppression off with no type error anywhere.
+   */
+  tone: InspectorTone;
+  /**
+   * Reviewed but posted nothing. Its own field rather than prose folded into `title`,
+   * so every surface can render the distinction instead of only the one that happens to
+   * check `mode` itself. This is the difference the feature's safety story rests on: a
+   * bare `⌕ 3` must not read the same whether those three findings are public review
+   * comments or were merely recorded.
+   */
+  dry: boolean;
+  title: string;
+}
+
+export function inspectorChipView(inspector: Session["inspector"]): InspectorChipView | null {
   if (!inspector) return null;
   const dry = inspector.mode === "dry-run";
   const suffix = dry ? " (dry run - nothing was posted)" : "";
@@ -100,6 +119,7 @@ export function inspectorChipView(
     return {
       mark: "!",
       tone: "insp-failed",
+      dry,
       title: `Inspector: the last review of this pull request did not complete${suffix}`,
     };
   }
@@ -109,6 +129,7 @@ export function inspectorChipView(
     return {
       mark: "",
       tone: "insp-queued",
+      dry,
       title: `Inspector: adopted for review, not looked at yet${suffix}`,
     };
   }
@@ -116,12 +137,14 @@ export function inspectorChipView(
     return {
       mark: "✓",
       tone: "insp-clean",
+      dry,
       title: `Inspector: reviewed, nothing outstanding${suffix}`,
     };
   }
   return {
     mark: `${inspector.open}`,
     tone: "insp-findings",
+    dry,
     title:
       `Inspector: ${inspector.open} open finding${inspector.open === 1 ? "" : "s"} ` +
       `after ${inspector.round} round${inspector.round === 1 ? "" : "s"}${suffix}`,
@@ -135,10 +158,14 @@ export function InspectorChip({ session }: { session: Session }): React.JSX.Elem
   return (
     <Tooltip label={view.title}>
       <a
-        className={`insp-chip ${view.tone}${session.inspector.mode === "dry-run" ? " insp-dry" : ""}`}
+        className={`insp-chip ${view.tone}${view.dry ? " insp-dry" : ""}`}
         href={session.inspector.url}
         target="_blank"
         rel="noreferrer"
+        // The glyph is decorative and the mark is a bare "3" or "✓" - and nothing at all
+        // in the queued state - so without this the link has no accessible name. The
+        // tooltip's `aria-describedby` is a description, and only while it is open.
+        aria-label={view.title}
         onClick={(e) => e.stopPropagation()}
       >
         <span className="insp-glyph" aria-hidden>

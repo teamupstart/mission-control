@@ -92,6 +92,26 @@ function backoffMs(failCount: number): number {
 }
 
 /**
+ * How many failures a PR may have before a new push STOPS cutting the wait short.
+ *
+ * A deliberate middle position between two pulls that point opposite ways, so that the
+ * next reader knows it is a decision rather than an oversight:
+ *
+ *  - A push is genuinely new input, and the case that matters is an author whose review
+ *    timed out on a huge diff and who force-pushes it down to three lines. Making them
+ *    sit out a doubling wait for a diff that no longer exists is the wrong answer, so
+ *    below this threshold a push is attempted on the very next tick.
+ *  - But some failures have nothing to do with the head - revoked `gh` write access, a
+ *    diff the model reliably cannot answer for inside `TIMEOUT_MS`. There a push buys
+ *    nothing, and unparking on every one of them means an afternoon of iteration costs
+ *    up to two `claude -p` runs per push with the ladder never biting.
+ *
+ * Three puts the ceiling on the wasted work at roughly three rounds per PR, after which
+ * the backoff governs pushes as well as polls.
+ */
+const PUSH_UNPARK_MAX_FAILURES = 3;
+
+/**
  * The tools the reviewer gets, and the reason this whole subsystem is defended in depth.
  *
  * Reading is the entire grant: no Bash, no Write/Edit, no WebFetch, no MCP. Reviewing a
@@ -358,18 +378,17 @@ async function processPr(
     return true;
   }
 
-  // A push is new evidence, so it ends the wait its predecessor earned - including the
-  // six-hour park a diff too large to buffer buys, which the next push may well shrink
-  // below the ceiling. Compared against the last head we ATTEMPTED rather than the last
-  // one we reviewed: a failed round never advances `headSha`, so comparing with that
-  // would read every tick as a fresh push and the backoff would never hold at all.
+  // A push is new evidence, so while the ladder is still low it ends the wait its
+  // predecessor earned - including the six-hour park a diff too large to buffer buys,
+  // which the next push may well shrink below the ceiling. Compared against the last
+  // head we ATTEMPTED rather than the last one we reviewed: a failed round never
+  // advances `headSha`, so comparing with that would read every tick as a fresh push
+  // and the backoff would never hold at all.
   //
-  // Only `nextAttemptAt` is cleared. `failCount` is what the ladder is climbing, and a
-  // push is not an attempt completing - a PR failing for a head-INDEPENDENT reason
-  // (revoked `gh` write access, a diff the model reliably cannot answer for in time)
-  // would otherwise buy a fresh full review on every push, so an afternoon of iteration
-  // costs a round of up to two `claude -p` runs per push and the wait never accumulates.
-  // A round that actually completes resets the count.
+  // Past `PUSH_UNPARK_MAX_FAILURES` the push waits like everything else, because by
+  // then the failures are evidently not about the head. `failCount` is never cleared
+  // here either way - it is what the ladder is climbing, and a push is not an attempt
+  // completing. Only a round that actually completes resets it.
   //
   // A NULL `lastAttemptSha` is "we cannot name what we last tried", not "the head
   // changed" - `liveDir` and `fetchPr` both fail before it is ever written, so a PR
@@ -377,14 +396,15 @@ async function processPr(
   // that as a push would drop the whole penalty the moment the directory reappears. We
   // record the head so the next tick can compare, and leave the wait in force.
   const pushed = pr.lastAttemptSha !== null && !!s.headSha && s.headSha !== pr.lastAttemptSha;
+  const unpark = pushed && pr.failCount < PUSH_UNPARK_MAX_FAILURES;
   if (s.headSha && s.headSha !== pr.lastAttemptSha) {
     const patch: { lastAttemptSha: string; nextAttemptAt?: number | null } = {
       lastAttemptSha: s.headSha,
     };
-    if (pushed) patch.nextAttemptAt = null;
+    if (unpark) patch.nextAttemptAt = null;
     updateInspectorPr(pr.key, patch, now);
   }
-  if (!pushed && backedOff) return false;
+  if (!unpark && backedOff) return false;
 
   if (pr.round >= MAX_ROUNDS) {
     return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now, tick);

@@ -254,11 +254,11 @@ test("the attempted head is tracked separately from the reviewed head", () => {
   // The same head on a later tick is still the input that earned the wait.
   assert.equal(getInspectorPr(key)?.lastAttemptSha, "aaa");
 
-  // A push ENDS THE WAIT but does not reset the ladder. Clearing `failCount` here would
-  // hand a PR that fails for a head-independent reason - revoked write access, a diff
-  // the model reliably cannot answer for in time - a fresh full review on every push, so
-  // an afternoon of iteration would cost a round of up to two `claude -p` runs per push
-  // and the backoff would never accumulate. Only a round that COMPLETES resets it.
+  // While the ladder is low a push ENDS THE WAIT, but it never resets the ladder itself.
+  // The two are separate levers: clearing `nextAttemptAt` is what gets a force-pushed
+  // three-line diff reviewed on the next tick, and keeping `failCount` is what stops the
+  // wait restarting from the bottom once the pushes stop. Only a round that COMPLETES
+  // resets the count.
   updateInspectorPr(key, { lastAttemptSha: "bbb", nextAttemptAt: null }, 3000);
   const pushed = getInspectorPr(key)!;
   assert.equal(pushed.lastAttemptSha, "bbb");
@@ -268,4 +268,24 @@ test("the attempted head is tracked separately from the reviewed head", () => {
   // What a completed round does, and the only thing that should.
   updateInspectorPr(key, { lastError: null, failCount: 0, nextAttemptAt: null }, 4000);
   assert.equal(getInspectorPr(key)?.failCount, 0);
+});
+
+// The other half of that lever, and the one the comment above used to overclaim. Ending
+// the wait on EVERY push would leave a PR failing for a head-INDEPENDENT reason - revoked
+// write access, a diff the model reliably cannot answer for in time - buying a fresh full
+// review each time the author pushes, so an afternoon of iteration still costs up to two
+// `claude -p` runs per push however high the ladder has climbed. Past the threshold the
+// push waits like everything else.
+test("a push stops cutting the wait short once the ladder is high", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const key = "mancej/ai-harness#56";
+  updateInspectorPr(key, { lastAttemptSha: "aaa", failCount: 5, nextAttemptAt: 99_999 }, 2000);
+
+  // A push at this height records the new head so the next tick can compare, and leaves
+  // the wait exactly where it was.
+  updateInspectorPr(key, { lastAttemptSha: "bbb" }, 3000);
+  const row = getInspectorPr(key)!;
+  assert.equal(row.lastAttemptSha, "bbb", "the head we would attempt next is still tracked");
+  assert.equal(row.nextAttemptAt, 99_999, "but the wait it has earned is not cut short");
+  assert.equal(row.failCount, 5);
 });

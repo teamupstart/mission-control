@@ -42,9 +42,17 @@ export interface GhResult<T> {
  * So this demands an explicit `false` rather than testing for the absence of `true`.
  * Every way of not knowing then lands on the same side, and the side it lands on is the
  * one where the cost is a delayed round instead of a duplicate public comment.
+ *
+ * `tooLarge` is excluded, and it is the one case where READING and WRITING draw opposite
+ * conclusions from the same flag. On a read an overflow is a fact ABOUT THE RESPONSE -
+ * the body will not fit, asking again cannot shrink it, so `fetchDiff` rightly declines
+ * the PR. On a write the request completed and GitHub answered; the only thing that
+ * failed is our own buffer, so the review DID land and calling that a refusal would
+ * re-post every comment in it. The predicate lives on the write side, so it takes the
+ * write side's reading; the read side inspects `tooLarge` directly.
  */
 export function wasRefused(res: GhResult<unknown>): boolean {
-  return !res.ok && res.outcomeUnknown === false;
+  return !res.ok && res.outcomeUnknown === false && !res.tooLarge;
 }
 
 function fail<T>(what: string, res: RunResult): GhResult<T> {

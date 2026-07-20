@@ -95,3 +95,17 @@ test("every way of not knowing reads as 'it may already be published'", () => {
 test("a result carrying no verdict at all is never treated as a refusal", () => {
   assert.equal(wasRefused({ ok: false }), false);
 });
+
+// A `maxBuffer` overflow is the one flag READS and WRITES read in opposite directions,
+// and getting it backwards on the write side is the fifth distinct route into the same
+// duplicate-comment failure. On a read the overflow is a fact about the response and
+// `fetchDiff` rightly declines the PR (see the test above). On a write the request
+// completed and GitHub answered - only our own buffer failed - so the review DID land,
+// and calling that a refusal would put every row back to `drafted` and say it all again.
+test("an overflow on a write is never a refusal, whatever the flags say", () => {
+  assert.equal(
+    wasRefused({ ok: false, error: "too big", outcomeUnknown: false, tooLarge: true }),
+    false,
+    "the response overflowed, not the request - it may well have landed",
+  );
+});

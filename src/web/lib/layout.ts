@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
+import { LAYOUT_MODES } from "@shared/protocol.ts";
+import type { LayoutMode } from "@shared/protocol.ts";
+import { updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
  * Which arrangement the dashboard is in. The same sessions, the same cards, the
@@ -8,10 +11,12 @@ import { useCallback, useEffect, useState } from "react";
  * - `console` split-pane: a rail of every session, one always-open detail beside it.
  * - `board`   kanban by state: a column per tone, drilling into the console detail on click.
  *
- * Persisted per-machine, like alert settings and keybindings - it's a preference
- * about this screen, not a fact about the fleet, so it never goes near the daemon.
+ * Stored in the daemon (`app_config.ui.layout`), per machine. It used to be `localStorage`,
+ * which is really per ORIGIN and per Electron profile - so the product rename minted a
+ * fresh profile and silently reset it, and so does every new Vite port. The daemon is the
+ * per-machine store this always wanted; see `lib/uiConfig.ts`.
  */
-export type LayoutMode = "grid" | "console" | "board";
+export type { LayoutMode };
 
 export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] = [
   {
@@ -49,36 +54,24 @@ export function detailLayer(mode: LayoutMode): "expanded" | "selection" {
   return mode === "grid" ? "expanded" : "selection";
 }
 
-const KEY = "mission-control.layout";
-const DEFAULT: LayoutMode = "grid";
-
 /**
  * A stored value is only trusted if it's still a layout we ship. Anything else -
  * a hand-edited key, a mode from a future version, a half-written string - falls
  * back to the grid rather than rendering nothing.
+ *
+ * `LAYOUT_MODES` is the shared list the daemon's schema validates against too, so a mode
+ * cannot be renderable here and rejected there (or the reverse). `LAYOUTS` carries the
+ * prose, which the daemon has no use for.
  */
 export function parseLayoutMode(raw: string | null | undefined): LayoutMode {
-  return LAYOUTS.some((l) => l.id === raw) ? (raw as LayoutMode) : DEFAULT;
+  return (LAYOUT_MODES as readonly string[]).includes(raw ?? "") ? (raw as LayoutMode) : "grid";
 }
 
-function load(): LayoutMode {
-  try {
-    return parseLayoutMode(localStorage.getItem(KEY));
-  } catch {
-    return DEFAULT;
-  }
-}
-
-/** The chosen layout, persisted per-machine in localStorage. */
+/** The chosen layout, stored in the daemon. */
 export function useLayoutMode(): [LayoutMode, (mode: LayoutMode) => void] {
-  const [mode, setMode] = useState<LayoutMode>(load);
-  useEffect(() => {
-    try {
-      localStorage.setItem(KEY, mode);
-    } catch {
-      /* storage unavailable - keep in-memory only */
-    }
-  }, [mode]);
-  const set = useCallback((next: LayoutMode) => setMode(parseLayoutMode(next)), []);
-  return [mode, set];
+  const layout = useUiConfig().layout;
+  const set = useCallback((next: LayoutMode) => {
+    void updateUiConfig({ layout: parseLayoutMode(next) });
+  }, []);
+  return [layout, set];
 }

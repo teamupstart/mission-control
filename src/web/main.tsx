@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
-import { RichTextProvider } from "./lib/rich-text.tsx";
+import { hydrateUiConfig } from "./lib/uiConfig.ts";
 import "./styles.css";
 
 // In the Electron shell the window has no native title bar (titleBarStyle:
@@ -9,12 +9,17 @@ import "./styles.css";
 // light inset and the drag region. In a plain browser tab neither applies.
 if (window.missionDesktop?.isDesktop) document.documentElement.classList.add("is-desktop");
 
+// Reconcile the dashboard's preferences with the daemon, which owns them. Fired here
+// rather than from an effect in App because it is not App's state: the layout, the
+// keybindings, the alert toggles and the rich-text switch all read one module store, and
+// three of those four are used outside the tree. The first paint has already happened
+// from the local cache by the time this resolves, so there is nothing to wait for.
+void hydrateUiConfig();
+
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
 createRoot(root).render(
   <StrictMode>
-    <RichTextProvider>
-      <App />
-    </RichTextProvider>
+    <App />
   </StrictMode>,
 );

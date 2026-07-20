@@ -23,6 +23,8 @@ import type {
   ResolveEpisode,
   SetNote,
   SkillsConfigPatch,
+  UiConfigPatch,
+  UiConfigView,
   UpdateTask,
 } from "@shared/protocol.ts";
 import type { Attachment } from "@shared/attachments.ts";
@@ -62,6 +64,11 @@ export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/s
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/**
+ * The operator's dashboard preferences, plus whether one was ever saved. `configured` is
+ * what gates the one-time adoption of pre-rename `localStorage`; see `lib/uiConfig.ts`.
+ */
+export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
 /**
  * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
  * Both, because they diverge for real reasons (a hand-edited file, an install from
@@ -325,6 +332,9 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+
+  // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
+  setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),
   setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- Away mode ---

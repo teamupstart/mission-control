@@ -6,10 +6,13 @@
  * costs nothing to override (the combobox is still free text) and saves retyping
  * the answer for every task in a run.
  *
- * Persisted per-machine in localStorage next to the layout, alert settings and
- * keybindings: it's a fact about how this screen is being used, not about the fleet,
- * so it never goes near the daemon. Surviving a reload is the point - the tab is
- * refreshed far more often than the repo changes.
+ * In localStorage, and the LAST thing here - the layout, alert settings and keybindings
+ * that used to sit beside it are the daemon's now, because losing a setting to a rename
+ * or a new port was a real bug (docs/plans/ui-settings-to-daemon/plan.md). This stays
+ * because it is a convenience, not a preference: it is never chosen, only observed, and
+ * losing it costs one retype of a field that is still free text. Surviving a reload is
+ * the point - the tab is refreshed far more often than the repo changes - and being
+ * per-origin is not wrong for it the way it was wrong for a setting.
  */
 
 const KEY = "mission-control.dispatch.repo";

@@ -105,10 +105,10 @@ test("Appearance is a category of its own: its panel shows, the others don't", (
 });
 
 test("message formatting is on unless it has been turned off", () => {
-  // `render` mounts the modal with no `RichTextProvider`, so `useRichText` returns its
-  // out-of-provider fallback and `load` never runs. What this pins is that fallback: the
+  // `render` mounts the modal with no daemon and no storage, so the shared config store
+  // holds the shipped defaults. What this pins is that default reaching the control: the
   // panel shows a checked box, not an unchecked one or no box at all. It says nothing
-  // about what `load` reads from storage; that path is not covered here.
+  // about what the daemon or the cache hold; those paths are ui-config-*.test.ts.
   const html = render("appearance");
   const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
   assert.ok(toggle, "the appearance panel has a checkbox");

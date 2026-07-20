@@ -1342,6 +1342,14 @@ that looks perfectly healthy would help nobody.
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](#cost-telemetry) installers edit. Overridable so tests never touch your real one |
 
+**Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
+shortcuts, alert delivery, and message formatting all live in the daemon's database
+(`app_config`), alongside the Foreman, Skills, Harnesses, and Cost settings - so they are
+the same in every tab, on `localhost` and `127.0.0.1` alike, in the desktop app and in a
+browser, and they survive an upgrade. The browser keeps a copy in `localStorage`, but only
+as a cache so the dashboard paints your layout in the first frame; deleting it costs one
+request, not a preference.
+
 [Cost telemetry](#cost-telemetry) is not configured by the environment - it is a switch in
 **Settings → Cost** (or `npm run install-telemetry`), which writes these keys into your
 `~/.claude/settings.json` `env` block so that every Claude Code session on the machine
@@ -1369,6 +1377,13 @@ startup and the Cost panel says so on screen.
 > uploads; if that move can't happen the old dir keeps working exactly as before. Treehouse
 > leases stamped with the old holder names are still recognised as ours, so a renamed
 > install doesn't strand its worktree pool. Prefer the `MISSION_*` names going forward.
+>
+> Dashboard settings (layout, shortcuts, alerts, formatting) are read out of the browser
+> once, under whichever product name last wrote them, and saved into the daemon - after
+> which the rename can't reach them again. This only runs when the daemon has no settings
+> of its own, so it can never overwrite ones you are already using. Settings left behind by
+> an older **desktop app** are the exception: renaming the app gave it a new Electron
+> profile, and the new one cannot read the old one's storage.
 >
 > Two things do need a re-run, because they registered a name with something outside this
 > repo: `npm run install-service` (the launchd label becomes `com.mission-control.daemon`;

@@ -202,8 +202,6 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   return {
     transcript: async () => ({ messages: [msg("Ready to run the unit tests.")], truncated: false }),
     runModel: async () => JSON.stringify(report()),
-    // No FOREMAN.md - these cases are about the screen, not the operator's instructions.
-    prefs: async () => null,
     ...over,
   };
 }
@@ -216,7 +214,8 @@ test("triageSession puts the screen it was handed in the router's prompt", async
     mkSession(),
     cfg(),
     REAL_MENU,
-  );
+  null,
+);
   assert.ok(prompt.includes("Holder policy"), "the router buckets an ask it has actually read");
 });
 
@@ -228,7 +227,8 @@ test("triageSession scans the screen it was handed", async () => {
     mkSession(),
     cfg(),
     "Bash(rm -rf build/)\n\nDo you want to proceed?",
-  );
+  null,
+);
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "escalate");
@@ -248,7 +248,8 @@ test("triageSession captures no screen of its own - it reads the one the worker 
     mkSession(),
     cfg(),
     null,
-  );
+  null,
+);
   assert.ok(!prompt.includes("Holder policy"), "an input review carries its whole body already");
 });
 
@@ -256,7 +257,7 @@ test("triageSession survives a screen that couldn't be read", async () => {
   // `ForemanClient.pane` answers an unreadable pane with null rather than a throw, so this is
   // the shape a failed capture arrives in. The fallback is the pre-existing behaviour: an
   // unreadable pane must cost the improvement and nothing else - never the review itself.
-  const out = await triageSession(deps(), pend(), mkSession(), cfg(), null);
+  const out = await triageSession(deps(), pend(), mkSession(), cfg(), null, null);
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
   assert.equal(out.verdict.action, "answer");

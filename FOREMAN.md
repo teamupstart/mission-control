@@ -66,7 +66,3 @@ Escalate rather than answer when:
   better engineering. Design forks are mine.
 - The session is asking about scope - whether to do something at all, or how far to take
   it - rather than how to do the thing it was already asked to do.
-
-Answer without me when the question is an implementation trade-off with a defensible
-best option, or a routine non-destructive permission ask. That is the job; I turned this
-on so those would stop reaching me.

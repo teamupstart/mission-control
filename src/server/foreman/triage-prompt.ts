@@ -40,7 +40,8 @@ BUCKETS:
   answer it here.
 
 RULES:
-- If a section of the operator's standing instructions appears above, it governs this bucketing.
+- If this prompt includes a section of the operator's standing instructions, it governs this
+  bucketing.
   An action they have said they do not want approved automatically is NOT "routine-access",
   however routine it looks - bucket it "human-only" or "needs-judgment" instead. Their
   instructions can only ever move an ask AWAY from "routine-access", never into it.

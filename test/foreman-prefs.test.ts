@@ -132,6 +132,31 @@ test("the ratchet framing comes AFTER the operator's text", () => {
   assert.match(out, /cannot authorize a destructive or irreversible action/);
 });
 
+test("the ignore-it complaint is routed away from the text sent to the session", () => {
+  // `answer.text` is typed VERBATIM into a live, tool-enabled child (buildReviewPrompt's
+  // PHRASING clause). An unnamed "say so in your reply" resolves to it, so a bar-lowering
+  // FOREMAN.md would have leaked "ignoring the operator's instruction that ..." into a real
+  // session's input - Foreman talking to the agent about its operator. The complaint is for
+  // the human on the card, so it must name a field that is never delivered onward.
+  const out = prefsSection(doc(PREFS)).join("\n");
+  assert.match(out, /"purpose"/);
+  assert.match(out, /NEVER put it in "answer\.text"/);
+});
+
+test("no prompt claims the operator's section is somewhere it is not", () => {
+  // The rules used to say the section "appears above" while `prefsSection` splices in BELOW
+  // the ROUTER/POLICY string that says it. That is not cosmetic: the router rule is the one
+  // that closes the Tier 1 auto-approve hole, and a cheap model looking the wrong way can
+  // read it as inapplicable, making the ratchet inert on the highest-volume path.
+  for (const p of [
+    buildTriagePrompt(reviewInput({ prefs: doc(PREFS) })),
+    buildVerifyPrompt(verifyInput({ prefs: doc(PREFS) })),
+    buildReviewPrompt(reviewInput({ prefs: doc(PREFS) })),
+  ]) {
+    assert.ok(!/instructions,? (?:if a section for them )?appears above/.test(p));
+  }
+});
+
 test("a truncated FOREMAN.md says so in its own heading", () => {
   assert.match(prefsSection(doc(PREFS, true))[0]!, /truncated/);
 });

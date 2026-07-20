@@ -41,6 +41,7 @@ import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem } from "./queue-verify.ts";
+import type { StandardsDoc } from "../standards.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -1206,7 +1207,19 @@ async function processSession(
   // repainted between two captures would have us validating an answer to a question the
   // model never saw. It also has to precede `decide`, because the CHEAP tier can answer an
   // access prompt too, and a menu it answered in prose must be caught by the same gate.
-  const pane = await paneFor(client, session, pending);
+  // ONE read of the operator's FOREMAN.md per evaluation, threaded exactly like `pane`
+  // above and for a related reason. Whichever tiers run must be reading the SAME
+  // instructions - in `shadow` both run concurrently and their verdicts are compared, so
+  // two independent reads could have them diverge over an edit that landed between them
+  // and log it as a tier disagreement. It also spares a repeated `git rev-parse
+  // --show-toplevel` subprocess: the route resolves the repo root per call and caches
+  // nothing, so the `on` path used to pay for it twice whenever an ask routed up.
+  //
+  // Null on failure, like every other read of this file - see `ForemanClient.prefs`.
+  const [pane, prefs] = await Promise.all([
+    paneFor(client, session, pending),
+    client.prefs(session.id).catch(() => null),
+  ]);
   const ctx: ReviewContext = {
     sessionId: session.id,
     promptMarker: pending.marker,
@@ -1224,7 +1237,7 @@ async function processSession(
   // the outcome was already handled - a transient review failure that will retry, or a
   // give-up note that was already written - so there's nothing left to apply. That still
   // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
-  const decision = await decide(client, cfg, session, pending, ctx, pane, queueItem);
+  const decision = await decide(client, cfg, session, pending, ctx, pane, prefs, queueItem);
   if (!decision) return true;
   const { verdict, tier } = decision;
 
@@ -1344,15 +1357,17 @@ async function decide(
   ctx: ReviewContext,
   /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
+  /** The operator's FOREMAN.md, read once by the caller - see `processSession`. */
+  prefs: StandardsDoc | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
   switch (triagePosture(cfg.triage)) {
     case "off":
-      return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
+      return fullReviewOnly(client, session, pending, ctx, pane, prefs, queueItem);
     case "shadow":
-      return shadowBoth(client, cfg, session, pending, ctx, pane, queueItem);
+      return shadowBoth(client, cfg, session, pending, ctx, pane, prefs, queueItem);
     case "on":
-      return cheapTierDecides(client, cfg, session, pending, ctx, pane, queueItem);
+      return cheapTierDecides(client, cfg, session, pending, ctx, pane, prefs, queueItem);
   }
 }
 
@@ -1364,9 +1379,11 @@ async function fullReviewOnly(
   ctx: ReviewContext,
   /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
+  /** The operator's FOREMAN.md, read once by the caller - see `processSession`. */
+  prefs: StandardsDoc | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
-  const r = await fullReview(client, session, pending, ctx, pane, queueItem);
+  const r = await fullReview(client, session, pending, ctx, pane, prefs, queueItem);
   return r && { verdict: r.verdict, tier: 2 };
 }
 
@@ -1382,11 +1399,16 @@ async function shadowBoth(
   ctx: ReviewContext,
   /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
+  /** The operator's FOREMAN.md, read once by the caller - see `processSession`. */
+  prefs: StandardsDoc | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
   const [cheap, r] = await Promise.all([
-    triageSession(triageDeps(client), pending, session, cfg, pane),
-    fullReview(client, session, pending, ctx, pane, queueItem),
+    // The same `prefs` object to both, which is the point of reading it once: these two
+    // verdicts are COMPARED below, so a tier reading different instructions than its
+    // counterpart would surface as a divergence in the log rather than as what it is.
+    triageSession(triageDeps(client), pending, session, cfg, pane, prefs),
+    fullReview(client, session, pending, ctx, pane, prefs, queueItem),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
   log(
@@ -1405,9 +1427,11 @@ async function cheapTierDecides(
   ctx: ReviewContext,
   /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
+  /** The operator's FOREMAN.md, read once by the caller - see `processSession`. */
+  prefs: StandardsDoc | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<Decision> {
-  const cheap = await triageSession(triageDeps(client), pending, session, cfg, pane);
+  const cheap = await triageSession(triageDeps(client), pending, session, cfg, pane, prefs);
   if (cheap.kind === "dispose" && !menuBlocksAnswer(cheap.verdict, ctx)) {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
     return { verdict: cheap.verdict, tier: cheap.tier };
@@ -1420,7 +1444,7 @@ async function cheapTierDecides(
   // escalates it there - the fallback stays, it just stops being the first stop.
   const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
   log(`${session.name}: routed up to full review (${why})`);
-  return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
+  return fullReviewOnly(client, session, pending, ctx, pane, prefs, queueItem);
 }
 
 /**
@@ -1436,14 +1460,13 @@ async function fullReview(
   ctx: ReviewContext,
   /** The child's screen, captured once by the caller - see `processSession`. */
   pane: string | null,
+  /** The operator's FOREMAN.md, read once by the caller - see `processSession`. */
+  prefs: StandardsDoc | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<{ verdict: Verdict } | null> {
-  const [window, prefs] = await Promise.all([
-    client.transcript(session.id).catch(() => ({ messages: [], truncated: false })),
-    // Absent on failure: no FOREMAN.md is the ordinary case, and a review that silently
-    // ran without the operator's instructions is better than one that doesn't run.
-    client.prefs(session.id).catch(() => null),
-  ]);
+  const window = await client
+    .transcript(session.id)
+    .catch(() => ({ messages: [], truncated: false }));
   const input: ReviewInput = {
     session: {
       name: session.name,
@@ -1495,7 +1518,6 @@ function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
     runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
-    prefs: (id) => client.prefs(id),
   };
 }
 

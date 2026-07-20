@@ -780,8 +780,12 @@ Two things make it different from the `AGENTS.md` / `CLAUDE.md` that Foreman *al
   live send still needs the repo allowlist; this document sits in front of all three and
   removes none of them.
 
-Nothing changes for a repo without the file: no `FOREMAN.md` produces a byte-identical prompt
-to the one Foreman used before the feature existed. It is capped at 16KB (a truncated file
+A repo without the file is left alone: with no `FOREMAN.md` the section renders as nothing at
+all, so Foreman reviews it exactly as it did before the feature existed - byte-identical, and
+there's a test pinning that. (The one thing that did change everywhere is the *verifier's*
+policy, which now carries a conditional sentence saying the operator's instructions outrank its
+advisory-only convention rule. With no such instructions present it has nothing to apply to.)
+It is capped at 16KB (a truncated file
 says so in the prompt), and it is resolved against the git toplevel, so a session sitting in
 a monorepo subdirectory still finds the one at the root. Because it's checked in, every
 [treehouse worktree](#isolated-worktrees-per-session-treehouse) of the repo has it already.

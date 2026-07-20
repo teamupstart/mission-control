@@ -48,8 +48,9 @@ import {
   parseContextWindowSize,
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
-import type { RuntimeMetaRead, SessionActivityRead } from "./transcript.ts";
-import { clampPrompt, substantivePrompt } from "./transcript.ts";
+import type { RuntimeMetaRead, SessionActivityRead } from "./harness/types.ts";
+import { substantivePrompt } from "./harness/claude/scaffolding.ts";
+import { clampPrompt } from "./util/prompt-text.ts";
 import {
   clearQueue as clearQueueDb,
   deleteQueueItem,
@@ -836,9 +837,14 @@ export class Registry extends EventEmitter {
         if (s.agentSessionId === agentSessionId) return s;
     }
     if (cwd) {
-      const matches = [...this.sessions.values()].filter(
-        (s) => s.cwd === cwd && s.agent === "claude",
-      );
+      // Every live session in that cwd, whatever it runs. The agent was pinned to
+      // "claude" here, which was an accident rather than a capability: the caller is a
+      // hook or an MCP call that has already identified itself, and the tie-break this
+      // fallback needs is UNIQUENESS - exactly one session in the directory. Filtering by
+      // agent doesn't make the match safer, it makes it wrong in the one case that
+      // matters, a Claude and a Codex session sharing a worktree: the filter hides the
+      // ambiguity and binds the caller to the Claude card with full confidence.
+      const matches = [...this.sessions.values()].filter((s) => s.cwd === cwd);
       if (matches.length === 1) return matches[0];
     }
     return undefined;
@@ -1803,6 +1809,11 @@ export class Registry extends EventEmitter {
    * a card is never blank while waiting on a model. `source: "heuristic"` is also the
    * refiner's queue: it says "this prompt has not been summarised yet", so re-stamping it on
    * every new prompt is what makes the goal refresh at all.
+   *
+   * `substantivePrompt` is Claude's scaffolding grammar, reached directly rather than
+   * through a capability, because the event carrying it is Claude's too: nothing else
+   * sends a `UserPromptSubmit`. It moves onto `HookSpec` with the rest of the hook
+   * vocabulary rather than being bent onto the transcript capability, which reads files.
    */
   private captureGoalPrompt(s: Session, evt: HookIngest, now: number): void {
     if (evt.event !== "UserPromptSubmit") return;

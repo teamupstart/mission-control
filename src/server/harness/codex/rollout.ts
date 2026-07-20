@@ -3,8 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ThinkingLevel } from "@shared/types.ts";
 import { isLongContext } from "@shared/model.ts";
-import { readTailLines } from "./util/file-tail.ts";
-import type { RuntimeMetaRead } from "./transcript.ts";
+import { readTailLines } from "../../util/file-tail.ts";
+import type { RuntimeMetaRead } from "../types.ts";
 
 // Reads an OpenAI Codex CLI "rollout" session file to surface the same runtime
 // facts we read for Claude: model, reasoning effort, and context usage. Codex has
@@ -82,14 +82,19 @@ export function parseSessionMeta(headLine: string | null): { cwd: string | null;
  * Locate the rollout file for a Codex session by matching cwd, choosing the one
  * whose start time is closest to the session's (two Codex sessions in the same
  * cwd can't be told apart more precisely than this). Scans newest-first and is
- * bounded by SCAN_CAP; the poller caches the result so this rarely re-runs.
+ * bounded by SCAN_CAP; `transcript.ts` beside this caches the result, so a walk
+ * this size runs once per session rather than once per tick.
  * `sessionsDir` is injectable for tests.
+ *
+ * Takes no view on the session's agent: it is reachable only through
+ * `HARNESSES.codex`, and an implementation re-deciding which harness it belongs to is
+ * the hardcode the capability replaced.
  */
 export function findRolloutForSession(
   session: Session,
   sessionsDir: string = codexSessionsDir(),
 ): string | null {
-  if (session.agent !== "codex" || !session.cwd) return null;
+  if (!session.cwd) return null;
   const target = session.cwd;
   const startedAt = session.startedAt;
 

@@ -6,8 +6,9 @@ import { closeSync, openSync, readSync, statSync } from "node:fs";
  * Every harness that keeps a session log keeps it as one record per line and appends
  * forever - Claude's transcript JSONL, Codex's rollout - so "read the end of it without
  * parsing megabytes" is the primitive underneath all of them. Nothing here knows what a
- * record contains, which is why it lives outside `transcript.ts`: that module is
- * Anthropic's JSONL shape, and this is byte arithmetic on a file.
+ * record contains, nor which harness wrote it: `transcript.ts` builds windows out of
+ * these reads, `harness/<agent>/` says what a line means, and this is byte arithmetic on
+ * a file.
  *
  * The load-bearing detail is the partial line. Starting mid-file lands in the middle of
  * a record, and a half-record is not a record that failed to parse - it is one that

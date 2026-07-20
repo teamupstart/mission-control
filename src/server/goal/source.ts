@@ -1,13 +1,20 @@
-import type { AgentType, Session } from "@shared/types.ts";
-import { readTranscriptWindow, resolveTranscriptPath } from "../transcript.ts";
-import type { TranscriptWindow } from "../transcript.ts";
+import type { Session } from "@shared/types.ts";
+import { sessionMessages } from "../harness/index.ts";
+import type { TranscriptWindow } from "../harness/types.ts";
 
-// How the daemon reads what a session is working on, one implementation per agent type.
+// How the daemon reads what a session is working on.
 //
-// Split out rather than inlined because Codex support is a stated "not now, but will" - so
-// adding it must be dropping a reader in here, not restructuring the refiner. The other half
-// of that seam is `GOAL_UNSUPPORTED` in shared/goal.ts, which is what a card says until this
-// module can answer for an agent.
+// This was a `Record<AgentType, GoalSource>` with one reader per agent, of which Claude's
+// called `resolveTranscriptPath` and Codex's returned null - which is the harness's
+// `transcript.messages` capability, spelled a second time. The second spelling is the
+// thing worth deleting: a harness that gained a message reader would have had to remember
+// to also come here, and the failure of forgetting is a card that stays blank with
+// nothing pointing at why.
+//
+// So there is one reader now, and the only per-agent decision left is the one the harness
+// itself declares. The other half of the seam is `GOAL_UNSUPPORTED` (shared/goal.ts),
+// which is what a card says when it can never be filled in; `harness-transcript.test.ts`
+// pins that an agent claiming no goals is one whose harness reads no messages.
 
 /** The opening turns: the goal a human set is stated up front, and this keeps it in view
  *  even after the session has run long past it. */
@@ -21,42 +28,16 @@ const GOAL_HEAD_TURNS = 6;
 const GOAL_TAIL_TURNS = 12;
 
 /**
- * A per-agent reader of the material Tier 2 summarises.
+ * A bounded window of the session's recent conversation, or null when there is nothing
+ * readable - no transcript yet, a file that vanished, or a harness whose record carries no
+ * turns at all. Null means "summarise from the prompt alone", never an error.
  *
- * Only the window varies by agent. Tier 1 needs no entry here: it runs off the prompt the
- * hook already delivered, and an agent without hooks simply never reaches it.
+ * Tier 1 needs nothing from here: it runs off the prompt the hook already delivered, and
+ * an agent without hooks simply never reaches it.
  */
-export interface GoalSource {
-  /**
-   * A bounded window of the session's recent conversation, or null when there is nothing
-   * readable - no transcript yet, a file that vanished, or an agent we cannot read at all.
-   * Null means "summarise from the prompt alone", never an error.
-   */
-  readWindow(s: Session): TranscriptWindow | null;
-}
-
-const claudeSource: GoalSource = {
-  readWindow(s) {
-    const path = resolveTranscriptPath(s);
-    if (!path) return null;
-    const w = readTranscriptWindow(path, GOAL_HEAD_TURNS, GOAL_TAIL_TURNS);
-    return w.messages.length > 0 ? w : null;
-  },
-};
-
-const codexSource: GoalSource = {
-  // Not a placeholder for its own sake - this is exactly where a rollout message reader
-  // lands, and until one exists `GOAL_UNSUPPORTED.codex` is what the card says. Returning
-  // null rather than guessing is the point: no rollout file has ever existed on this
-  // machine, so any parsing written now would be unverified fiction.
-  readWindow: () => null,
-};
-
-const SOURCES: Record<AgentType, GoalSource> = {
-  claude: claudeSource,
-  codex: codexSource,
-};
-
-export function goalSourceFor(agent: AgentType): GoalSource {
-  return SOURCES[agent];
+export function readGoalWindow(s: Session): TranscriptWindow | null {
+  const t = sessionMessages(s);
+  if (!t) return null;
+  const w = t.read.window(t.path, GOAL_HEAD_TURNS, GOAL_TAIL_TURNS);
+  return w.messages.length > 0 ? w : null;
 }

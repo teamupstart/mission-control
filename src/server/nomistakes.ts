@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { run } from "./util/exec.ts";
 import { envVar } from "./config.ts";
 import { unref } from "./util/timers.ts";
-import { readCurrentTodo, resolveTranscriptPath } from "./transcript.ts";
+import { sessionMessages } from "./harness/index.ts";
 import { fixSummaries, retainFixLogs } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
 import type { NmActiveStep, NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
@@ -240,13 +240,15 @@ export function startNomistakesPoller(registry: Registry): () => void {
       await pollAndReconcile(registry);
       await pollFixLogs(registry);
       // For sessions with an *active* run, surface what the skill is doing right
-      // now from its Claude transcript (a bounded tail read, no subprocess). A
+      // now from its harness's transcript (a bounded tail read, no subprocess). A
       // run that has reached an outcome is finished, so its narration is cleared.
       // Attribution is precise now, so only the launcher/owner sessions narrate.
+      // A harness with no readable turns simply narrates nothing - the strip is a
+      // one-line status, so its absence degrades to blank rather than to wrong.
       for (const s of registry.nomistakesSessions()) {
         const active = s.nomistakes && !s.nomistakes.outcome;
-        const path = active ? resolveTranscriptPath(s) : null;
-        registry.applyNomistakesNarration(s.id, path ? readCurrentTodo(path) : null);
+        const t = active ? sessionMessages(s) : null;
+        registry.applyNomistakesNarration(s.id, t ? t.read.narration(t.path) : null);
       }
     } catch (err) {
       console.error("[nomistakes] poll failed:", err);

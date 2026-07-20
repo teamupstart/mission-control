@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { RuntimeMetaRead } from "../src/server/transcript.ts";
+import type { RuntimeMetaRead } from "../src/server/harness/types.ts";
 import type { Session, ServerEvent } from "@shared/types.ts";
 import type { StatusLineIngest } from "@shared/protocol.ts";
 

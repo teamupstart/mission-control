@@ -1,6 +1,6 @@
 import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
-import { blockersFor, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
+import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
 import { cwdAllowlisted, foremanAllowlisted } from "@shared/foreman.ts";
 import { hasPane, settledIdle } from "./queue-machine.ts";
 
@@ -251,7 +251,8 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     // Counted over the ALLOWED items, so the number matches the sentence: an item in an
     // untrusted repo is not "blocked", it is out of scope, and including it would have
     // the count disagree with the board's blocked chips.
-    const blocked = allowed.filter((t) => blockersFor(t, plan, tasks).length > 0).length;
+    const index = backlogIndex(tasks, plan);
+    const blocked = allowed.filter((t) => blockersIn(t, index).length > 0).length;
     return {
       kind: "none",
       why: `every schedulable backlog item is waiting on another task (${blocked} blocked)`,

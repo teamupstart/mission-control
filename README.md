@@ -841,13 +841,14 @@ one fresh read is tried, so an API blip heals itself instead of waiting for a re
 daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
 counter and its own backoff.
 
-A long backlog is read in **batches** (80 items a call, `FOREMAN_BACKLOG_CHUNK`), each shown
-the ids and titles of everything else so a dependency crossing a batch is still stated, and
-the batches are merged and cycle-checked as one graph. At most five batches run per read
-(`FOREMAN_BACKLOG_MAX_CHUNKS`), so a replan costs a bounded number of model calls however
-long the backlog is - but the plan still **names every backlog item**, the ones past the
-read window as waiting on nothing. That matters because staleness is coverage: a plan that
-could never cover the backlog would be regenerated on every single dispatch.
+One read, one model call, over the **first 400 backlog items**. Reading a longer backlog in
+several calls was tried and taken back out: they run on the Foreman worker's single loop,
+which also drives queue drain and needs-you triage, so each extra call is another span in
+which nothing else in the fleet is attended to. Past 400 the tail is scheduled **oldest
+first with no dependency information** - and, since staleness is coverage, a dispatch while
+the backlog is that long promotes an unplanned item into the head and costs one replan.
+That is the accepted trade: one call, only above 400, in exchange for a bounded worst case
+on the shared loop.
 
 **An idle agent is preferred to a new worktree**, and that preference survives the ceiling,
 since it consumes no new session. "Idle" is stricter here than the board's Idle column: the
@@ -1236,8 +1237,6 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |
 | `FOREMAN_BACKLOG_TIMEOUT_MS` | `90000` | Backlog autopilot: hard cap on one dependency read. Three failures in a row and Foreman schedules serially instead |
-| `FOREMAN_BACKLOG_CHUNK` | `80` | Backlog autopilot: how many items one dependency-read call covers. Each batch is shown the other items' ids and titles, so a dependency across batches is still stated |
-| `FOREMAN_BACKLOG_MAX_CHUNKS` | `5` | Backlog autopilot: how many batches one read may run, bounding the model calls a replan costs. Items past the window are still planned, waiting on nothing |
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |

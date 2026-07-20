@@ -156,10 +156,10 @@ test("a plan that no longer names a DISPATCHED task is still current - a task le
 });
 
 test("an oversized backlog is planned to the limit, and that plan is not stale forever", () => {
-  // Past PLANNABLE_LIMIT a plan cannot be stored at all (the route's schema refuses the
-  // body), so asking for coverage of the whole backlog would replan on every tick and
-  // never schedule anything. The head is read; the tail falls to "unnamed items go
-  // last, oldest first", which is what readyBacklog already does.
+  // Only the head is read, so asking for coverage of the whole backlog would leave the
+  // plan stale the moment it was written - a replan every tick that never schedules
+  // anything. The tail falls to "unnamed items go last, oldest first", which is what
+  // readyBacklog already does.
   const tasks = Array.from({ length: PLANNABLE_LIMIT + 20 }, () => mkTask());
   const a = decide({ tasks });
   assert.equal(a.kind, "plan");

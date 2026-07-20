@@ -117,21 +117,19 @@ backoff (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`, doubling), since a refused write is
 broken planner - but at the same cap it causes the same DEGRADATION, so a permanently
 broken route schedules serially instead of switching the autopilot off.
 
-A backlog longer than `BACKLOG_CHUNK` (80) is read in batches, each shown the ids and
-titles of the items outside it so a cross-batch dependency can still be stated, and the
-replies are merged into ONE report before `sanitizePlan` runs - the cycle break and the
-topological emit have to see the merged graph, since a cycle can span two batches and
-neither batch could see it alone. A failed batch fails the whole plan: a partial plan is
-indistinguishable from a complete one once stored, and its unread items would read as
-"depends on nothing", which is the wrong thing to be confident about.
+One read is ONE model call, over `PLANNABLE_LIMIT` (400) items of the backlog's head.
+Reading a longer backlog in batches was built and then removed: the calls run on the
+Foreman worker's single loop, which also drives queue drain and needs-you triage, so N
+batches is N times the span in which nothing else in the fleet is attended to - the same
+failure the planner's one-probe-per-cooldown rule exists to bound, arriving by another
+door. The limit is held below `BacklogPlanSchema`'s `.max(500)`, since a plan the route
+refuses is a write that fails every time.
 
-At most `BACKLOG_MAX_CHUNKS` (5) batches run, so a replan costs a bounded number of model
-calls. That bounds the READ, not the coverage: `sanitizePlan` still appends every item no
-batch described, so the stored plan names the whole backlog and `planStale` goes false at
-any size. The distinction is load-bearing - coverage is the staleness test, so a plan that
-could only ever cover a window would be stale again the moment a dispatch promoted an
-uncovered item into it, i.e. a full read per launched task. `PLANNABLE_LIMIT` (2000, equal
-to the route schema's entry cap) is only the ceiling that keeps a plan storable.
+Above the limit the tail is unplanned, and `readyBacklog` already answers for it: unnamed
+items are unblocked and go last, oldest first. The accepted cost, stated rather than
+implied - staleness is coverage, so while the backlog is that long every dispatch promotes
+an unplanned item into the head and the next tick spends one dependency read. One call,
+only above the limit, against a bounded worst case on the shared loop.
 
 ### `src/server/backlog.ts` + routes - where the plan lives
 

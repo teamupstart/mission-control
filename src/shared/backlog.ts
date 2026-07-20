@@ -34,25 +34,27 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
 }
 
 /**
- * How many backlog items one plan may describe.
+ * How much of the backlog one plan covers: its head, oldest first.
  *
- * A ceiling on COVERAGE, and not the same thing as how much of the backlog gets a
- * dependency read - that is `BACKLOG_MAX_CHUNKS` in backlog-plan.ts, is much smaller,
- * and is what actually costs model calls. Coverage is cheap: an item no chunk described
- * still gets an entry saying it waits on nothing.
+ * Held BELOW `BacklogPlanSchema`'s `.max(500)` (src/shared/protocol.ts) on purpose: a
+ * plan larger than the wire schema accepts is a body the daemon refuses every single
+ * time, which turns a big backlog into a permanently failing write rather than a slow
+ * one. `backlog-plan-http.test.ts` pins the two together, since nothing else would
+ * notice them drifting apart.
  *
- * The two must not be conflated, because a coverage ceiling below the backlog's size
- * has a nasty cost profile. `planStale` is coverage, so every dispatch would promote an
- * uncovered item into the covered window and make the plan stale again - a full read
- * per launched task, which is exactly the "model call on every dispatch" that choosing
- * coverage over a fingerprint was meant to avoid. Hence a ceiling set where no real
- * backlog reaches it, rather than one sized to the read.
+ * Everything past the limit is simply unplanned, which the readers below already have
+ * an answer for: unnamed items are unblocked and go last, oldest first. So a 900-item
+ * backlog gets a real dependency read on the part of it that is about to run, and the
+ * tail is scheduled in age order with no dependency information at all.
  *
- * Held at `BacklogPlanSchema`'s `.max(...)` (src/shared/protocol.ts), since a plan the
- * wire schema refuses is a write that fails every time. `backlog-plan-http.test.ts`
- * pins the two together, as nothing else would notice them drifting apart.
+ * That tail carries one ACCEPTED cost, written down here rather than left to be
+ * rediscovered: `planStale` is coverage, so above the limit every dispatch promotes an
+ * unplanned item into the covered head and the plan goes stale again - one dependency
+ * read per launched task. It is one model call and not a batch of them, and only on a
+ * backlog past the limit, which is the trade taken deliberately over reading the whole
+ * backlog in batches on the worker's single shared loop.
  */
-export const PLANNABLE_LIMIT = 2000;
+export const PLANNABLE_LIMIT = 400;
 
 /** The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`. */
 export function plannableBacklog(tasks: Task[]): Task[] {
@@ -101,12 +103,34 @@ export function blockersFor(
   plan: BacklogPlan | null,
   tasks: Task[],
 ): BacklogBlocker[] {
-  const entry = planEntries(plan).get(task.id);
+  return blockersIn(task, backlogIndex(tasks, plan));
+}
+
+/**
+ * The two lookups every blocker question needs, built once for a whole pass.
+ *
+ * Both maps used to be rebuilt inside `blockersFor`, which `readyBacklog` calls once per
+ * backlog item - so answering "what can start?" cost a full rebuild per item, on the
+ * three hottest paths there are: `/api/foreman/status`, the worker's 4s tick, and every
+ * board render. Ask for the index once and the pass is linear again.
+ */
+export interface BacklogIndex {
+  entries: Map<string, BacklogPlanEntry>;
+  byId: Map<string, Task>;
+}
+
+/** Build the lookups `blockersIn` reads. See `BacklogIndex`. */
+export function backlogIndex(tasks: Task[], plan: BacklogPlan | null): BacklogIndex {
+  return { entries: planEntries(plan), byId: new Map(tasks.map((t) => [t.id, t])) };
+}
+
+/** `blockersFor` against a prebuilt index. Same answer, no rebuild. */
+export function blockersIn(task: Task, index: BacklogIndex): BacklogBlocker[] {
+  const entry = index.entries.get(task.id);
   if (!entry || entry.dependsOn.length === 0) return [];
-  const byId = new Map(tasks.map((t) => [t.id, t]));
   const out: BacklogBlocker[] = [];
   for (const id of entry.dependsOn) {
-    const dep = byId.get(id);
+    const dep = index.byId.get(id);
     if (!dep || dep.status === "done") continue;
     out.push({
       taskId: dep.id,
@@ -128,17 +152,19 @@ export function blockersFor(
  */
 export function readyBacklog(tasks: Task[], plan: BacklogPlan | null): Task[] {
   const backlog = backlogTasks(tasks);
-  const byId = new Map(backlog.map((t) => [t.id, t]));
+  const index = backlogIndex(tasks, plan);
+  // Consumed as they are placed, so a plan that names the same task twice cannot put it
+  // in the result twice, and what is left over is exactly the unnamed tail.
+  const unplaced = new Map(backlog.map((t) => [t.id, t]));
   const ordered: Task[] = [];
-  const seen = new Set<string>();
   for (const e of plan?.entries ?? []) {
-    const t = byId.get(e.taskId);
-    if (!t || seen.has(t.id)) continue;
-    seen.add(t.id);
+    const t = unplaced.get(e.taskId);
+    if (!t) continue;
+    unplaced.delete(t.id);
     ordered.push(t);
   }
-  for (const t of backlog) if (!seen.has(t.id)) ordered.push(t);
-  return ordered.filter((t) => blockersFor(t, plan, tasks).length === 0);
+  for (const t of backlog) if (unplaced.has(t.id)) ordered.push(t);
+  return ordered.filter((t) => blockersIn(t, index).length === 0);
 }
 
 /**

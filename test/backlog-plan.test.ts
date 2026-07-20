@@ -1,16 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  BACKLOG_CHUNK,
-  BACKLOG_MAX_CHUNKS,
   DEFAULT_BACKLOG_MODEL,
-  backlogChunks,
   backlogModel,
-  mergeChunkReports,
   sanitizePlan,
 } from "../src/server/foreman/backlog-plan.ts";
 import type { BacklogReport } from "../src/server/foreman/backlog-plan.ts";
 import {
+  PLANNABLE_LIMIT,
   blockersFor,
   nextUpTaskId,
   planStale,
@@ -230,76 +227,22 @@ test("blank prose becomes null rather than an empty chip", () => {
   assert.equal(plan.note, null);
 });
 
-// ---- reading a backlog too long for one call ------------------------------------------
+// ---- a backlog longer than one plan can cover -----------------------------------------
 
-test("the read is chunked, and stops at the call budget however long the backlog is", () => {
-  const backlog = Array.from({ length: BACKLOG_CHUNK * (BACKLOG_MAX_CHUNKS + 3) }, () => mkTask());
-  const groups = backlogChunks(backlog);
-  assert.equal(groups.length, BACKLOG_MAX_CHUNKS);
-  assert.deepEqual(groups.map((g) => g.length), Array(BACKLOG_MAX_CHUNKS).fill(BACKLOG_CHUNK));
-  // Backlog order, so the head - the part about to run - is what gets read.
-  assert.equal(groups[0]![0]!.id, backlog[0]!.id);
-});
-
-test("an oversized backlog is still COVERED, so it does not go stale on every dispatch", () => {
-  const backlog = Array.from({ length: BACKLOG_CHUNK * BACKLOG_MAX_CHUNKS + 25 }, () => mkTask());
-  const groups = backlogChunks(backlog);
-  const merged = mergeChunkReports(
-    groups.map((g) => report(g.map((t) => ({ id: t.id, dependsOn: [] })))),
-    groups,
-  );
-  const plan = sanitizePlan(merged, backlog);
-  assert.equal(plan.entries.length, backlog.length);
-  // The 25 nobody read are in the plan, waiting on nothing - the read is bounded, the
-  // coverage is not, and coverage is what staleness asks about.
+test("a plan of the head satisfies staleness, so an oversized backlog cannot replan forever", () => {
+  // The read is one call over the head, and the tail is left unplanned on purpose. What
+  // must NOT happen is the plan being stale the moment it is written: staleness is
+  // coverage, so if it asked about the tail too it could never be satisfied and the
+  // worker would replan every tick, forever, scheduling nothing.
+  const backlog = Array.from({ length: PLANNABLE_LIMIT + 20 }, () => mkTask());
+  const head = backlog.slice(0, PLANNABLE_LIMIT);
+  const plan = sanitizePlan(report(head.map((t) => ({ id: t.id, dependsOn: [] }))), head);
+  assert.equal(plan.entries.length, head.length);
   assert.equal(planStale(backlog, stored(plan)), false);
-});
-
-test("a chunk cannot describe another chunk's task, however confidently it tries", () => {
-  const mine = mkTask();
-  const theirs = mkTask();
-  const merged = mergeChunkReports(
-    [
-      report([{ id: mine.id, dependsOn: [], reason: "read properly" }]),
-      report([
-        { id: theirs.id, dependsOn: [] },
-        { id: mine.id, dependsOn: [theirs.id], reason: "guessed from a title" },
-      ]),
-    ],
-    [[mine], [theirs]],
-  );
-  const plan = sanitizePlan(merged, [mine, theirs]);
-  assert.equal(plan.entries.length, 2);
-  assert.equal(plan.entries.find((e) => e.taskId === mine.id)!.reason, "read properly");
-  assert.deepEqual(plan.entries.find((e) => e.taskId === mine.id)!.dependsOn, []);
-});
-
-test("a dependency stated ACROSS chunks survives the merge", () => {
-  const migration = mkTask();
-  const route = mkTask();
-  const merged = mergeChunkReports(
-    [
-      report([{ id: migration.id, dependsOn: [] }]),
-      report([{ id: route.id, dependsOn: [migration.id] }]),
-    ],
-    [[migration], [route]],
-  );
-  const plan = sanitizePlan(merged, [migration, route]);
-  assert.deepEqual(plan.entries.find((e) => e.taskId === route.id)!.dependsOn, [migration.id]);
-  assert.deepEqual(readyBacklog([migration, route], stored(plan)).map((t) => t.id), [migration.id]);
-});
-
-test("a cycle that spans two chunks is broken - neither chunk could see it alone", () => {
-  const a = mkTask();
-  const b = mkTask();
-  const merged = mergeChunkReports(
-    [report([{ id: a.id, dependsOn: [b.id] }]), report([{ id: b.id, dependsOn: [a.id] }])],
-    [[a], [b]],
-  );
-  const plan = sanitizePlan(merged, [a, b]);
-  assert.equal(plan.entries.reduce((n, e) => n + e.dependsOn.length, 0), 1);
-  assert.equal(readyBacklog([a, b], stored(plan)).length, 1);
-  assert.equal(planStale([a, b], stored(plan)), false);
+  // The unread tail is still schedulable, oldest first, behind everything the plan names.
+  const ready = readyBacklog(backlog, stored(plan));
+  assert.equal(ready.length, backlog.length);
+  assert.equal(ready[PLANNABLE_LIMIT]!.id, backlog[PLANNABLE_LIMIT]!.id);
 });
 
 // ---- which model reads the backlog ----------------------------------------------------

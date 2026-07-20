@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
 import type { BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
-import { blockersFor, nextUpTaskId } from "@shared/backlog.ts";
+import { backlogIndex, blockersIn, nextUpTaskId } from "@shared/backlog.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
@@ -58,6 +58,7 @@ export function BacklogColumn({
   onEdit: (taskId: string) => void;
 }): React.JSX.Element {
   const nextUp = nextUpTaskId(allTasks, plan);
+  const index = backlogIndex(allTasks, plan);
   return (
     <section className="board-col board-backlog">
       <header className="board-col-head">
@@ -73,7 +74,7 @@ export function BacklogColumn({
             <BacklogCard
               key={t.id}
               task={t}
-              blockers={blockersFor(t, plan, allTasks)}
+              blockers={blockersIn(t, index)}
               nextUp={t.id === nextUp}
               onAssignError={onAssignError}
               onDragging={onDragging}

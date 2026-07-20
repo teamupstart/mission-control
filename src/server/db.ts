@@ -7,6 +7,7 @@ import type {
   ForemanEpisode,
   InspectorComment,
   InspectorCommentStatus,
+  InspectorFailKind,
   InspectorInspection,
   InspectorPr,
   InspectorPrState,
@@ -338,6 +339,7 @@ export function openDb(): DatabaseSync {
       last_reviewed_at INTEGER,
       last_error       TEXT,
       fail_count       INTEGER NOT NULL DEFAULT 0,  -- consecutive failures, for the backoff
+      last_fail_kind   TEXT,              -- push-fixable | persistent (may a push skip the wait)
       next_attempt_at  INTEGER,          -- not before this; null = due now
       last_attempt_sha TEXT,             -- the head the backoff was earned on
       adopted_at       INTEGER NOT NULL,
@@ -482,6 +484,13 @@ function migrate(d: DatabaseSync): void {
   // reason - a row written before it existed has attempted nothing we can name, and the
   // backoff on it stays fully in force until something does.
   addColumn(d, "inspector_prs", "last_attempt_sha", "TEXT");
+  // `last_fail_kind`: which of the two failure classes earned the wait now in force, so
+  // the push-escape can be unlimited for the class a push is the remedy for and capped
+  // for the class it cannot touch. Same unshipped-table window as the three above.
+  // Nullable, and NULL reads as "nothing has failed" - which is also the safe reading if
+  // it somehow survives alongside a non-zero `fail_count`, since an unnamed class falls
+  // under the cap rather than escaping it.
+  addColumn(d, "inspector_prs", "last_fail_kind", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -2037,6 +2046,7 @@ interface InspectorPrRow {
   last_reviewed_at: number | null;
   last_error: string | null;
   fail_count: number;
+  last_fail_kind: string | null;
   next_attempt_at: number | null;
   last_attempt_sha: string | null;
   adopted_at: number;
@@ -2060,6 +2070,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     lastReviewedAt: r.last_reviewed_at,
     lastError: r.last_error,
     failCount: r.fail_count,
+    lastFailKind: (r.last_fail_kind as InspectorFailKind | null) ?? null,
     nextAttemptAt: r.next_attempt_at,
     lastAttemptSha: r.last_attempt_sha,
     adoptedAt: r.adopted_at,
@@ -2081,9 +2092,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
     .prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
-          head_sha, round, last_reviewed_at, last_error, fail_count, next_attempt_at,
-          last_attempt_sha, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
+          next_attempt_at, last_attempt_sha, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -2102,6 +2113,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.lastReviewedAt,
       pr.lastError,
       pr.failCount,
+      pr.lastFailKind,
       pr.nextAttemptAt,
       pr.lastAttemptSha,
       pr.adoptedAt,
@@ -2130,6 +2142,7 @@ export function updateInspectorPr(
     lastReviewedAt?: number | null;
     lastError?: string | null;
     failCount?: number;
+    lastFailKind?: InspectorFailKind | null;
     nextAttemptAt?: number | null;
     lastAttemptSha?: string | null;
   },
@@ -2142,8 +2155,8 @@ export function updateInspectorPr(
     .prepare(
       `UPDATE inspector_prs
           SET state = ?, head_sha = ?, round = ?,
-              last_reviewed_at = ?, last_error = ?, fail_count = ?, next_attempt_at = ?,
-              last_attempt_sha = ?, updated_at = ?
+              last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
+              next_attempt_at = ?, last_attempt_sha = ?, updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -2153,6 +2166,7 @@ export function updateInspectorPr(
       next.lastReviewedAt,
       next.lastError,
       next.failCount,
+      next.lastFailKind,
       next.nextAttemptAt,
       next.lastAttemptSha,
       now,

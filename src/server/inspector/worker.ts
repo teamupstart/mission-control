@@ -20,7 +20,12 @@ import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import { repoAllowlisted } from "@shared/allowlist.ts";
 import type { PrOpened, Registry } from "../registry.ts";
-import type { InspectorComment, InspectorPr, InspectorSource } from "@shared/types.ts";
+import type {
+  InspectorComment,
+  InspectorFailKind,
+  InspectorPr,
+  InspectorSource,
+} from "@shared/types.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
 import { getInspectorConfig } from "./config.ts";
 import { readBrief } from "./brief.ts";
@@ -92,24 +97,46 @@ function backoffMs(failCount: number): number {
 }
 
 /**
- * How many failures a PR may have before a new push STOPS cutting the wait short.
+ * How many `persistent` failures a PR may have before a new push STOPS cutting the wait
+ * short. Read only by `pushEndsTheWait`, which is where the whole rule lives.
  *
- * A deliberate middle position between two pulls that point opposite ways, so that the
- * next reader knows it is a decision rather than an oversight:
+ * The rule arrived in three corrections that pull against each other, so all three are
+ * stated here rather than only the last one:
  *
- *  - A push is genuinely new input, and the case that matters is an author whose review
- *    timed out on a huge diff and who force-pushes it down to three lines. Making them
- *    sit out a doubling wait for a diff that no longer exists is the wrong answer, so
- *    below this threshold a push is attempted on the very next tick.
- *  - But some failures have nothing to do with the head - revoked `gh` write access, a
- *    diff the model reliably cannot answer for inside `TIMEOUT_MS`. There a push buys
- *    nothing, and unparking on every one of them means an afternoon of iteration costs
- *    up to two `claude -p` runs per push with the ladder never biting.
- *
- * Three puts the ceiling on the wasted work at roughly three rounds per PR, after which
- * the backoff governs pushes as well as polls.
+ *  1. A push must be able to cut the wait short at all. The case that matters is an
+ *     author whose review failed on a huge diff and who force-pushes it down to three
+ *     lines: making them sit out a doubling wait for a diff that no longer exists is the
+ *     wrong answer, so a push is otherwise attempted on the very next tick.
+ *  2. But not on every push, forever. Some failures have nothing to do with the head -
+ *     revoked `gh` write access, a diff the model reliably cannot answer for inside
+ *     `TIMEOUT_MS` - and there an unlimited escape means an afternoon of iteration costs
+ *     up to two `claude -p` runs per push while the ladder never bites. Three caps the
+ *     wasted work at roughly three rounds per PR, after which the backoff governs pushes
+ *     as well as polls.
+ *  3. And the cap must not apply to a failure a push is the REMEDY for. Those are capped
+ *     by `InspectorFailKind`, not by this number: an oversize diff sits at the flat
+ *     six-hour ceiling and can only ever be cleared by a smaller push, so counting its
+ *     parks against the escape would strand the very push that fixes it - four pushes
+ *     in, the one that finally drops the vendored directory would wait six hours. That
+ *     is the case (1) exists for, so throttling it inverts the whole rule; and it buys
+ *     almost nothing, since a parked round costs one `gh api` call rather than two
+ *     model runs.
  */
 const PUSH_UNPARK_MAX_FAILURES = 3;
+
+/**
+ * May a new head skip the wait this PR has earned?
+ *
+ * Unlimited for the class of failure a push is the remedy for, capped for the class it
+ * cannot touch - see `PUSH_UNPARK_MAX_FAILURES` for why it is split that way. Reads the
+ * LAST failure because that is the one that set the wait now in force. A null kind
+ * cannot escape: either nothing has failed, in which case there is no wait to escape,
+ * or a row predates the column and an unnamed class falls under the cap.
+ */
+export function pushEndsTheWait(pr: Pick<InspectorPr, "failCount" | "lastFailKind">): boolean {
+  if (pr.lastFailKind === "push-fixable") return true;
+  return pr.failCount < PUSH_UNPARK_MAX_FAILURES;
+}
 
 /**
  * The tools the reviewer gets, and the reason this whole subsystem is defended in depth.
@@ -213,28 +240,27 @@ interface TickState {
  * push - but it does move the row out of the way for a while, which is what stops a
  * permanently broken PR from costing two model runs every poll interval forever.
  *
- * `park` is for a failure that retrying cannot fix (a diff too large to buffer): it
- * jumps straight to the ceiling instead of climbing to it, since the intervening
- * attempts would each pay the same cost to learn the same thing.
+ * `push-fixable` does two things at once, and they are one idea rather than two: the
+ * failure is a property of the HEAD, so climbing the ladder would pay the same cost
+ * repeatedly to learn the same thing (hence straight to the ceiling), and the only
+ * thing that can change the answer is a new head (hence the uncapped escape in
+ * `pushEndsTheWait`). Anything whose cause is outside the diff is `persistent`.
  */
 function noteFailure(
   pr: InspectorPr,
   reason: string,
   now: number,
   tick: TickState,
-  opts: { park?: boolean } = {},
+  kind: InspectorFailKind = "persistent",
 ): false {
   tick.failed = true;
   // Re-read rather than trusting the snapshot: an earlier failure in this same pass has
   // already written a higher count, and incrementing the stale one would discard it.
   const failCount = (getInspectorPr(pr.key)?.failCount ?? pr.failCount) + 1;
+  const wait = kind === "push-fixable" ? BACKOFF_CEILING_MS : backoffMs(failCount);
   updateInspectorPr(
     pr.key,
-    {
-      lastError: reason,
-      failCount,
-      nextAttemptAt: now + (opts.park ? BACKOFF_CEILING_MS : backoffMs(failCount)),
-    },
+    { lastError: reason, failCount, lastFailKind: kind, nextAttemptAt: now + wait },
     now,
   );
   return false;
@@ -268,6 +294,7 @@ export function adoptPr(
     lastReviewedAt: null,
     lastError: null,
     failCount: 0,
+    lastFailKind: null,
     nextAttemptAt: null,
     lastAttemptSha: null,
     adoptedAt: now,
@@ -372,23 +399,28 @@ async function processPr(
   if (s.state !== "OPEN") {
     updateInspectorPr(
       pr.key,
-      { state: "closed", lastError: null, failCount: 0, nextAttemptAt: null },
+      {
+        state: "closed",
+        lastError: null,
+        failCount: 0,
+        lastFailKind: null,
+        nextAttemptAt: null,
+      },
       now,
     );
     return true;
   }
 
-  // A push is new evidence, so while the ladder is still low it ends the wait its
-  // predecessor earned - including the six-hour park a diff too large to buffer buys,
-  // which the next push may well shrink below the ceiling. Compared against the last
-  // head we ATTEMPTED rather than the last one we reviewed: a failed round never
-  // advances `headSha`, so comparing with that would read every tick as a fresh push
-  // and the backoff would never hold at all.
+  // A push is new evidence, and `pushEndsTheWait` decides whether it is the kind of
+  // evidence that ends the wait its predecessor earned - always, for the six-hour park
+  // a diff too large to buffer buys, since a smaller push is the only way out of it.
+  // Compared against the last head we ATTEMPTED rather than the last one we reviewed: a
+  // failed round never advances `headSha`, so comparing with that would read every tick
+  // as a fresh push and the backoff would never hold at all.
   //
-  // Past `PUSH_UNPARK_MAX_FAILURES` the push waits like everything else, because by
-  // then the failures are evidently not about the head. `failCount` is never cleared
-  // here either way - it is what the ladder is climbing, and a push is not an attempt
-  // completing. Only a round that actually completes resets it.
+  // `failCount` is never cleared here either way - it is what the ladder is climbing,
+  // and a push is not an attempt completing. Only a round that actually completes
+  // resets it.
   //
   // A NULL `lastAttemptSha` is "we cannot name what we last tried", not "the head
   // changed" - `liveDir` and `fetchPr` both fail before it is ever written, so a PR
@@ -396,7 +428,7 @@ async function processPr(
   // that as a push would drop the whole penalty the moment the directory reappears. We
   // record the head so the next tick can compare, and leave the wait in force.
   const pushed = pr.lastAttemptSha !== null && !!s.headSha && s.headSha !== pr.lastAttemptSha;
-  const unpark = pushed && pr.failCount < PUSH_UNPARK_MAX_FAILURES;
+  const unpark = pushed && pushEndsTheWait(pr);
   if (s.headSha && s.headSha !== pr.lastAttemptSha) {
     const patch: { lastAttemptSha: string; nextAttemptAt?: number | null } = {
       lastAttemptSha: s.headSha,
@@ -460,7 +492,11 @@ async function processPr(
     if (!tick.failed) {
       const current = getInspectorPr(pr.key);
       if (current && (current.lastError || current.failCount > 0)) {
-        updateInspectorPr(pr.key, { lastError: null, failCount: 0, nextAttemptAt: null }, now);
+        updateInspectorPr(
+          pr.key,
+          { lastError: null, failCount: 0, lastFailKind: null, nextAttemptAt: null },
+          now,
+        );
       }
     }
     return acted;
@@ -559,10 +595,16 @@ async function reviewRound(
   if (!diffRes.ok || !diffRes.value) {
     // A diff too large to buffer is not a transient failure - the same request returns
     // the same bytes forever - so it goes straight to the backoff ceiling instead of
-    // paying to rediscover that every poll. A later, smaller push still gets reviewed.
-    return noteFailure(pr, diffRes.error ?? "could not read the diff", now, tick, {
-      park: diffRes.tooLarge,
-    });
+    // paying to rediscover that every poll, and a later smaller push cuts that wait
+    // short however many times it has already been parked. Any other read failure is
+    // about the network or `gh`, not about this head, so it climbs the ladder normally.
+    return noteFailure(
+      pr,
+      diffRes.error ?? "could not read the diff",
+      now,
+      tick,
+      diffRes.tooLarge ? "push-fixable" : "persistent",
+    );
   }
   const { diff, truncated } = diffRes.value;
   const paths = changedPaths(diff);
@@ -576,6 +618,7 @@ async function reviewRound(
         lastReviewedAt: now,
         lastError: null,
         failCount: 0,
+        lastFailKind: null,
         nextAttemptAt: null,
       },
       now,

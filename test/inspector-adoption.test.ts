@@ -1,7 +1,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { openDb, getInspectorPr, loadOpenInspectorPrs, updateInspectorPr } from "../src/server/db.ts";
-import { adoptPr } from "../src/server/inspector/worker.ts";
+import { adoptPr, pushEndsTheWait } from "../src/server/inspector/worker.ts";
 import { parsePrUrl } from "../src/server/inspector/github.ts";
 import { getInspectorConfig, setInspectorConfig } from "../src/server/inspector/config.ts";
 import { opensPullRequest } from "../src/shared/pr-command.mjs";
@@ -233,11 +233,10 @@ test("a ledger update cannot rewrite where the PR came from", () => {
 
 // ---- the head a backoff was earned on ----
 
-// A backed-off PR still gets looked at, and a NEW push ends the wait its predecessor
-// earned - including the six-hour park a diff too large to buffer buys. That comparison
-// has to be against the last head we ATTEMPTED, not the last one we successfully
-// reviewed: a failed round never advances `headSha`, so keying on that would read every
-// single tick as a fresh push and the backoff would never hold at all.
+// A backed-off PR still gets looked at, and a NEW push can end the wait its predecessor
+// earned. That comparison has to be against the last head we ATTEMPTED, not the last one
+// we successfully reviewed: a failed round never advances `headSha`, so keying on that
+// would read every single tick as a fresh push and the backoff would never hold at all.
 test("the attempted head is tracked separately from the reviewed head", () => {
   adoptPr(URL_1, CTX, "hook", 1000);
   const key = "mancej/ai-harness#56";
@@ -254,11 +253,10 @@ test("the attempted head is tracked separately from the reviewed head", () => {
   // The same head on a later tick is still the input that earned the wait.
   assert.equal(getInspectorPr(key)?.lastAttemptSha, "aaa");
 
-  // While the ladder is low a push ENDS THE WAIT, but it never resets the ladder itself.
-  // The two are separate levers: clearing `nextAttemptAt` is what gets a force-pushed
-  // three-line diff reviewed on the next tick, and keeping `failCount` is what stops the
-  // wait restarting from the bottom once the pushes stop. Only a round that COMPLETES
-  // resets the count.
+  // When a push ends the wait it never resets the ladder itself. The two are separate
+  // levers: clearing `nextAttemptAt` is what gets a force-pushed three-line diff reviewed
+  // on the next tick, and keeping `failCount` is what stops the wait restarting from the
+  // bottom once the pushes stop. Only a round that COMPLETES resets the count.
   updateInspectorPr(key, { lastAttemptSha: "bbb", nextAttemptAt: null }, 3000);
   const pushed = getInspectorPr(key)!;
   assert.equal(pushed.lastAttemptSha, "bbb");
@@ -270,16 +268,21 @@ test("the attempted head is tracked separately from the reviewed head", () => {
   assert.equal(getInspectorPr(key)?.failCount, 0);
 });
 
-// The other half of that lever, and the one the comment above used to overclaim. Ending
-// the wait on EVERY push would leave a PR failing for a head-INDEPENDENT reason - revoked
-// write access, a diff the model reliably cannot answer for in time - buying a fresh full
-// review each time the author pushes, so an afternoon of iteration still costs up to two
-// `claude -p` runs per push however high the ladder has climbed. Past the threshold the
-// push waits like everything else.
+// The other half of that lever. Ending the wait on EVERY push would leave a PR failing
+// for a head-INDEPENDENT reason - revoked write access, a diff the model reliably cannot
+// answer for in time - buying a fresh full review each time the author pushes, so an
+// afternoon of iteration would cost up to two `claude -p` runs per push however high the
+// ladder had climbed. Past the threshold such a push waits like everything else.
 test("a push stops cutting the wait short once the ladder is high", () => {
   adoptPr(URL_1, CTX, "hook", 1000);
   const key = "mancej/ai-harness#56";
-  updateInspectorPr(key, { lastAttemptSha: "aaa", failCount: 5, nextAttemptAt: 99_999 }, 2000);
+  updateInspectorPr(
+    key,
+    { lastAttemptSha: "aaa", failCount: 5, lastFailKind: "persistent", nextAttemptAt: 99_999 },
+    2000,
+  );
+
+  assert.equal(pushEndsTheWait(getInspectorPr(key)!), false, "a push cannot fix this one");
 
   // A push at this height records the new head so the next tick can compare, and leaves
   // the wait exactly where it was.
@@ -288,4 +291,53 @@ test("a push stops cutting the wait short once the ladder is high", () => {
   assert.equal(row.lastAttemptSha, "bbb", "the head we would attempt next is still tracked");
   assert.equal(row.nextAttemptAt, 99_999, "but the wait it has earned is not cut short");
   assert.equal(row.failCount, 5);
+});
+
+// And the exception that keeps that cap from inverting the rule it was added to serve.
+//
+// A diff too large to buffer parks at the flat six-hour ceiling and can be re-attempted
+// ONLY by a push, so its failures accumulate one per push. Counted against a single cap
+// they run it out in four: park, push, park, push, park, push, and the fourth push - the
+// one that finally drops the vendored directory - would find the cap spent and sit out
+// six hours. That is precisely the author the escape exists for, so the cap has to read
+// the failure CLASS rather than a bare count.
+test("a diff parked as too large is always released by the next push", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const key = "mancej/ai-harness#56";
+
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    updateInspectorPr(
+      key,
+      {
+        lastAttemptSha: `head${attempt}`,
+        failCount: attempt,
+        lastFailKind: "push-fixable",
+        nextAttemptAt: 1000 + 6 * 60 * 60 * 1000,
+      },
+      2000,
+    );
+    assert.equal(
+      pushEndsTheWait(getInspectorPr(key)!),
+      true,
+      `push ${attempt + 1} still gets to shrink the diff`,
+    );
+  }
+});
+
+// The class is a property of the LAST failure, because the last failure is what set the
+// wait now in force. A PR that was parked for an oversize diff and then started failing
+// for a reason a push cannot touch is back under the cap.
+test("the escape follows the failure that earned the current wait", () => {
+  assert.equal(pushEndsTheWait({ failCount: 9, lastFailKind: "push-fixable" }), true);
+  assert.equal(pushEndsTheWait({ failCount: 9, lastFailKind: "persistent" }), false);
+  assert.equal(
+    pushEndsTheWait({ failCount: 9, lastFailKind: null }),
+    false,
+    "an unnamed class falls under the cap, never out of it",
+  );
+  assert.equal(
+    pushEndsTheWait({ failCount: 1, lastFailKind: "persistent" }),
+    true,
+    "a low ladder still lets a push through, whatever earned it",
+  );
 });

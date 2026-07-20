@@ -1339,6 +1339,17 @@ export type InspectorSource = "hook" | "no-mistakes";
 /** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
 export type InspectorPrState = "open" | "closed";
 
+/**
+ * What a failed attempt says about whether the NEXT PUSH is worth trying immediately.
+ *
+ * `push-fixable` is a failure that is a property of the head itself, so pushing is the
+ * remedy and the only one - a diff too large to hold in memory is declined until the
+ * author shrinks it. `persistent` is everything else: `gh` refused us, the model could
+ * not answer in time for a diff nobody has meaningfully changed. Pushing buys nothing
+ * there, so those are the failures the push-escape is capped on.
+ */
+export type InspectorFailKind = "push-fixable" | "persistent";
+
 export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
 
 /**
@@ -1392,6 +1403,13 @@ export interface InspectorPr {
    * be counted separately from progress in order to be backed off.
    */
   failCount: number;
+  /**
+   * What the wait currently in force was earned by, or null when nothing has failed.
+   *
+   * The wait was set by the LAST failure, so the last failure is what decides whether a
+   * push is entitled to end it early. Reset alongside `failCount` by a completed round.
+   */
+  lastFailKind: InspectorFailKind | null;
   /** Epoch ms before which this PR is not retried. Null when it is due now. */
   nextAttemptAt: number | null;
   /**

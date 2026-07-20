@@ -7,6 +7,7 @@ import {
 } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogPlan, Session, Task } from "../src/shared/types.ts";
+import { PLANNABLE_LIMIT, planStale } from "../src/shared/backlog.ts";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 
 // The backlog autopilot's decision core. Pure with `now` injected, so the precedence is
@@ -152,6 +153,23 @@ test("a plan that no longer names a DISPATCHED task is still current - a task le
   // Only t2 is in the backlog and only t2 needs an entry.
   const a = decide({ tasks: [t1, t2], plan: mkPlan([[t2.id, []]]) });
   assert.equal(a.kind, "dispatch");
+});
+
+test("an oversized backlog is planned to the limit, and that plan is not stale forever", () => {
+  // Past PLANNABLE_LIMIT a plan cannot be stored at all (the route's schema refuses the
+  // body), so asking for coverage of the whole backlog would replan on every tick and
+  // never schedule anything. The head is read; the tail falls to "unnamed items go
+  // last, oldest first", which is what readyBacklog already does.
+  const tasks = Array.from({ length: PLANNABLE_LIMIT + 20 }, () => mkTask());
+  const a = decide({ tasks });
+  assert.equal(a.kind, "plan");
+  assert.equal(a.kind === "plan" ? a.tasks.length : 0, PLANNABLE_LIMIT);
+
+  const covered = mkPlan((a.kind === "plan" ? a.tasks : []).map((t) => [t.id, []]));
+  assert.equal(planStale(tasks, covered), false);
+  const next = decide({ tasks, plan: covered });
+  assert.equal(next.kind, "dispatch");
+  assert.equal(next.kind === "dispatch" ? next.task.id : "", tasks[0]!.id);
 });
 
 // ---- dependencies --------------------------------------------------------------------

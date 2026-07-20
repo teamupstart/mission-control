@@ -279,8 +279,15 @@
     worktree does. Serial execution satisfies every possible dependency order by construction,
     so a broken planner degrades to <em>slow</em> rather than to <em>wrong</em>. A plan that
     arrives later is used again immediately - exhaustion never sticks to the data - and after
-    <code>FOREMAN_BACKLOG_RETRY_MS</code> (10 min) the read itself is retried, so a transient
-    outage heals without a restart.</p>
+    <code>FOREMAN_BACKLOG_RETRY_MS</code> (10 min) one fresh read is let through, so a transient
+    outage heals without a restart and a hung planner cannot re-stall the shared loop three
+    times per cooldown. A daemon that refuses to <strong>store</strong> a plan keeps its own
+    count and backoff, and at the same cap degrades the same way rather than halting the
+    autopilot outright.</p>
+  <p>One plan covers at most <strong>400</strong> backlog items, held below the route schema's
+    500-entry cap so a full plan is always storable. Coverage is asked over that same head -
+    otherwise a larger backlog could never be covered and would replan forever - and the tail
+    rides the existing "items the plan does not name go last, oldest first" rule.</p>
 
   <h2>What the board shows</h2>
   <ul>

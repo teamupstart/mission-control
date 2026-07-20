@@ -7,6 +7,7 @@ import type { Registry } from "../src/server/registry.ts";
 import type { ReviewManager } from "../src/server/reviews.ts";
 import type { TaskManager } from "../src/server/tasks.ts";
 import type { QueueManager } from "../src/server/queue.ts";
+import { PLANNABLE_LIMIT } from "../src/shared/backlog.ts";
 
 // The channel the Foreman worker stores its reading of the backlog through - it never
 // touches the DB, so this route is the only way a plan reaches disk.
@@ -89,6 +90,17 @@ test("a malformed body is refused rather than half-stored", async () => {
   assert.equal((await put({ entries: [{ taskId: "" }] })).status, 400);
   assert.equal((await put({ entries: "not a list" })).status, 400);
   assert.equal((await put({})).status, 400);
+});
+
+test("a plan covering the whole plannable head is accepted by the route", async () => {
+  // The two limits are hand-kept in different files, and drift is invisible until it
+  // bites: a PLANNABLE_LIMIT above the schema's cap makes every write of a full plan a
+  // permanent 400, which stops the autopilot rather than slowing it.
+  const entries = Array.from({ length: PLANNABLE_LIMIT }, (_, i) => ({
+    taskId: `t${i}`,
+    dependsOn: [],
+  }));
+  assert.equal((await put({ entries })).status, 200);
 });
 
 test("the loopback guard applies here too", async () => {

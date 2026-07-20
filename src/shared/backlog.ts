@@ -34,8 +34,29 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
 }
 
 /**
+ * How many backlog items one plan may describe.
+ *
+ * Held BELOW `BacklogPlanSchema`'s `.max(500)` (src/shared/protocol.ts) on purpose: a
+ * plan larger than the wire schema accepts is a body the daemon refuses every single
+ * time, which turns a big backlog into a permanently failing write rather than a slow
+ * one. `backlog-plan-http.test.ts` pins the two together, since nothing else would
+ * notice them drifting apart.
+ *
+ * Everything past the limit is simply unplanned, which the readers below already have
+ * an answer for: unnamed items are unblocked and go last, oldest first. So a 900-item
+ * backlog gets a real dependency read on the part of it that is about to run.
+ */
+export const PLANNABLE_LIMIT = 400;
+
+/** The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`. */
+export function plannableBacklog(tasks: Task[]): Task[] {
+  return backlogTasks(tasks).slice(0, PLANNABLE_LIMIT);
+}
+
+/**
  * True when the stored plan no longer describes the backlog - i.e. some backlog item
- * has no entry - and must be regenerated before anything is scheduled.
+ * a plan is allowed to cover has no entry - and must be regenerated before anything is
+ * scheduled.
  *
  * Coverage, deliberately, and NOT a fingerprint of the backlog. A plan is a set of
  * statements about the tasks it names, and a task LEAVING the backlog (dispatched,
@@ -44,12 +65,15 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
  * A task ARRIVING is different: it may be the thing everything else waits on, and
  * nothing in the stored plan can say so.
  *
- * This also fixes what `sanitizePlan` has to guarantee: every backlog item gets an
- * entry, or a plan is stored that leaves this true and the worker replans forever.
+ * Asked over `plannableBacklog` rather than the whole backlog, because the question has
+ * to be answerable by a plan that was actually storable. Over the full list, a backlog
+ * past the limit could never be covered, so this would stay true forever and the worker
+ * would replan on every tick - the unbounded loop of model calls producing nothing that
+ * `sanitizePlan`'s missing-entry repair exists to prevent, arriving by the other door.
  */
 export function planStale(tasks: Task[], plan: BacklogPlan | null): boolean {
   const entries = planEntries(plan);
-  return backlogTasks(tasks).some((t) => !entries.has(t.id));
+  return plannableBacklog(tasks).some((t) => !entries.has(t.id));
 }
 
 /**

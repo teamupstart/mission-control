@@ -837,7 +837,11 @@ backlog **gains** an item, so a steady backlog costs nothing. Three failures in 
 Foreman stops asking and schedules **one task at a time, oldest first** - serial execution
 satisfies any dependency order by construction, so a broken planner degrades to slow rather
 than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
-the read is tried again, so an API blip heals itself instead of waiting for a restart.
+one fresh read is tried, so an API blip heals itself instead of waiting for a restart. A
+daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
+counter and its own backoff. Above 400 backlog items only the first 400 are read, and the
+rest queue behind them oldest first: a plan bigger than that is a body the daemon would
+refuse every time, and one unstorable plan must not cost the whole feature.
 
 **An idle agent is preferred to a new worktree**, and that preference survives the ceiling,
 since it consumes no new session. "Idle" is stricter here than the board's Idle column: the
@@ -1227,7 +1231,7 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |
 | `FOREMAN_BACKLOG_TIMEOUT_MS` | `90000` | Backlog autopilot: hard cap on one dependency read. Three failures in a row and Foreman schedules serially instead |
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
-| `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick |
+| `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |
 | `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |

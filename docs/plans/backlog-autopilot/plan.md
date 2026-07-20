@@ -110,10 +110,18 @@ costs nothing. Three consecutive failures and the machine stops asking and falls
 to **serial mode**: one task in flight at a time, oldest first, assigns included.
 Serial execution is dependency-safe by construction, so a broken planner degrades to
 slow rather than to wrong. The fallback is a cooldown, not a latch - after
-`FOREMAN_BACKLOG_RETRY_MS` the read is tried again, so a transient outage heals itself.
-A daemon that refuses the plan WRITE backs off separately (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`,
-doubling), since a refused write is not a broken planner but would otherwise cost a
-model call every tick.
+`FOREMAN_BACKLOG_RETRY_MS` exactly one fresh attempt is let through, so a transient
+outage heals itself without a hung planner blocking the shared loop for three 90s calls
+per cooldown. A daemon that refuses the plan WRITE keeps its own count and its own
+backoff (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`, doubling), since a refused write is not a
+broken planner - but at the same cap it causes the same DEGRADATION, so a permanently
+broken route schedules serially instead of switching the autopilot off.
+
+A plan may cover at most `PLANNABLE_LIMIT` (400) items, held below the route schema's
+500-entry cap so a full plan is always storable. `planStale` asks its coverage question
+over that same head, or an oversized backlog could never be covered and would replan
+forever; the tail rides the existing "items the plan does not name go last, oldest
+first" rule.
 
 ### `src/server/backlog.ts` + routes - where the plan lives
 

@@ -1,6 +1,6 @@
 import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
-import { blockersFor, planStale, readyBacklog } from "@shared/backlog.ts";
+import { blockersFor, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
 import { cwdAllowlisted, foremanAllowlisted } from "@shared/foreman.ts";
 import { hasPane, settledIdle } from "./queue-machine.ts";
 
@@ -223,7 +223,9 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   // simply treats the unplanned items as unblocked - but the serial cap below, which is
   // what makes that safe.
   const stale = planStale(tasks, plan);
-  if (stale && !cfg.planExhausted) return { kind: "plan", tasks: backlog };
+  // `plannableBacklog`, not the whole backlog: the same head `planStale` asks about, so
+  // what gets read is exactly what makes the staleness question answerable.
+  if (stale && !cfg.planExhausted) return { kind: "plan", tasks: plannableBacklog(tasks) };
   const serial = stale;
 
   // Only items we are cleared to act on at all. `cwdAllowlisted` and not

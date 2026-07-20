@@ -307,11 +307,13 @@ let backlogPlanFailedAt = 0;
 /**
  * Consecutive failures to STORE a plan, counted apart from `backlogPlanFailures`.
  *
- * A refused write is not a broken planner, and folding the two together would drop a
- * perfectly good dependency read into serial mode over a daemon that was restarting.
- * What it does need is its own brake: the plan never lands, so the machine asks for one
- * again next tick, and without a wait that is a Sonnet call every IDLE_MS for as long
- * as the route stays broken.
+ * A refused write is not a broken planner, so the two keep their own counts and their
+ * own recovery clocks - a daemon that was restarting must not spend the planner's
+ * strikes. What they share is the DEGRADATION they cause: see `backlogSerial`.
+ *
+ * It also needs its own brake. The plan never lands, so the machine asks for one again
+ * next tick, and without a wait that is a Sonnet call every IDLE_MS for as long as the
+ * route stays broken.
  */
 let backlogStoreFailures = 0;
 /** Epoch ms before which the plan path is skipped entirely. See `backlogStoreFailures`. */
@@ -342,13 +344,36 @@ function actedTaskIds(now: number): Set<string> {
 function rearmBacklogPlanning(now: number): void {
   if (backlogPlanFailures < PLAN_FAILURE_CAP) return;
   if (now - backlogPlanFailedAt < PLAN_RETRY_MS) return;
-  backlogPlanFailures = 0;
-  backlogPlanFailedAt = 0;
+  // One probe per cooldown, not a fresh set of three. `planBacklog` is a 90s blocking
+  // call on the loop that also drives queue drain and needs-you triage, so a planner
+  // that HANGS rather than erroring would stall everything else for four and a half
+  // minutes every cooldown. A single attempt still self-heals: it clears the count
+  // outright on success.
+  backlogPlanFailures = PLAN_FAILURE_CAP - 1;
   lastBacklogNote = "";
   log(
     `backlog: retrying the dependency read after ${Math.round(PLAN_RETRY_MS / 1000)}s ` +
       `of scheduling one at a time`,
   );
+}
+
+/**
+ * Whether scheduling should degrade to serial right now.
+ *
+ * Two independent ways to get here, kept as separate counters because they are
+ * different faults: the planner cannot answer, or the daemon will not store what it
+ * answered. The DEGRADATION is shared on purpose. A refused write used to leave
+ * `planExhausted` false, so the machine kept deciding `plan` and the worker kept
+ * declining to act on it - a broken route silently switched the autopilot off rather
+ * than slowing it down.
+ *
+ * The store half is scoped to its backoff window, so when the wait elapses the machine
+ * asks for a plan again and the write gets one probe. Without that scoping this would
+ * be the permanent latch the planner's cooldown was written to remove.
+ */
+function backlogSerial(now: number): boolean {
+  if (backlogPlanFailures >= PLAN_FAILURE_CAP) return true;
+  return backlogStoreFailures >= PLAN_FAILURE_CAP && now < backlogStoreRetryAt;
 }
 
 /** Exponential, capped: 15s, 30s, 60s ... 10m. */
@@ -365,7 +390,7 @@ function noteBacklog(msg: string): void {
 }
 
 /** Policy knobs from config; timings from the module constants, as the queue does. */
-function backlogConfig(cfg: ForemanConfig): BacklogConfig {
+function backlogConfig(cfg: ForemanConfig, now: number): BacklogConfig {
   return {
     enabled: cfg.autoBacklog,
     maxSessions: cfg.maxSessions,
@@ -374,7 +399,7 @@ function backlogConfig(cfg: ForemanConfig): BacklogConfig {
     // typing a task into someone's pane are both live acts; neither happens in dry-run.
     mayActLive: cfg.mode === "live",
     settleMs: SETTLE_MS,
-    planExhausted: backlogPlanFailures >= PLAN_FAILURE_CAP,
+    planExhausted: backlogSerial(now),
   };
 }
 
@@ -407,12 +432,17 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   const [sessions, tasks, plan] = snapshot;
 
   const now = Date.now();
+  // Read before the re-arm clears it, so a plan that lands can say the degradation
+  // ended. Counter-based rather than `backlogSerial`, which is false during the store
+  // path's probe window and would miss exactly the recovery worth announcing.
+  const degradedBefore =
+    backlogPlanFailures >= PLAN_FAILURE_CAP || backlogStoreFailures >= PLAN_FAILURE_CAP;
   rearmBacklogPlanning(now);
   const action = decideBacklogTick({
     tasks,
     sessions,
     plan,
-    cfg: backlogConfig(cfg),
+    cfg: backlogConfig(cfg, now),
     now,
     // The machine skips these and takes the next item it can act on. Kept here rather
     // than in the machine because it is a fact about THIS PROCESS's recent history, not
@@ -444,13 +474,17 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       await client.putBacklogPlan(result.plan);
     } catch (err) {
       // NOT a planning failure - the model answered fine, the daemon refused the write.
-      // Counting it toward the cap would drop a working planner into serial mode over a
-      // broken route, so this backs its OWN counter off instead.
+      // Counted and backed off separately so a broken route does not spend the
+      // planner's strikes, though at its own cap it degrades the same way.
       backlogStoreFailures++;
       backlogStoreRetryAt = now + storeBackoffMs(backlogStoreFailures);
       noteBacklog(
         `planned the backlog but could not store it (${backlogStoreFailures}x, retrying in ` +
-          `${Math.round(storeBackoffMs(backlogStoreFailures) / 1000)}s): ${String(err)}`,
+          `${Math.round(storeBackoffMs(backlogStoreFailures) / 1000)}s)` +
+          (backlogStoreFailures >= PLAN_FAILURE_CAP
+            ? " - scheduling one at a time meanwhile"
+            : "") +
+          `: ${String(err)}`,
       );
       return false;
     }
@@ -465,6 +499,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       `backlog: read ${result.plan.entries.length} item(s)` +
         (result.plan.note ? ` - ${result.plan.note}` : ""),
     );
+    if (degradedBefore) log("backlog: scheduling from the plan again, not one at a time");
     return true;
   }
 
@@ -475,8 +510,11 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     recentlyActed.set(action.task.id, now);
     const r = await client.assignTask(action.task.id, action.session.id);
     if (!r.ok) {
-      // A refusal means nothing was typed - the daemon re-checks and the task is still
-      // in the backlog - so this is an ordinary "not now", deduplicated like any other.
+      // An answered refusal is positive knowledge that nothing was typed - the daemon
+      // re-checks and every refusal path returns before or after a failed injection -
+      // so the stamp is released. Holding it would walk the whole ready set out of
+      // reach one item per tick while a single pane stayed locked.
+      recentlyActed.delete(action.task.id);
       noteBacklog(`could not hand "${oneLine(action.task.title)}" over - ${r.error}`);
       return false;
     }
@@ -488,6 +526,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   recentlyActed.set(action.task.id, now);
   const r = await client.dispatchTask(action.task.id);
   if (!r.ok) {
+    recentlyActed.delete(action.task.id);
     noteBacklog(`could not launch "${oneLine(action.task.title)}" - ${r.error}`);
     return false;
   }

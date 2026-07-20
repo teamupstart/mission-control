@@ -1,0 +1,487 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  activeAgentCount,
+  agentIsFree,
+  decideBacklogTick,
+} from "../src/server/foreman/backlog-machine.ts";
+import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
+import type { BacklogPlan, Session, Task } from "../src/shared/types.ts";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+
+// The backlog autopilot's decision core. Pure with `now` injected, so the precedence is
+// a table - and it has to be, because two of its steps are the difference between a
+// feature and an incident: the capacity count is what stands between a ceiling of three
+// and a machine with eleven agents on it, and the assign-before-capacity ordering is
+// what keeps the ceiling from silently disabling the cheap path that needs no session
+// at all.
+//
+// The other thing pinned here is that a MISSING plan never becomes permission. A stale
+// plan replans and schedules nothing; a plan that cannot be made at all drops to one
+// task in flight, which satisfies any dependency order by construction.
+
+const NOW = 1_000_000;
+
+const CFG: BacklogConfig = {
+  enabled: true,
+  maxSessions: 3,
+  allowlist: ["/repo"],
+  mayActLive: true,
+  settleMs: 10_000,
+  planExhausted: false,
+};
+
+const cfg = (over: Partial<BacklogConfig> = {}): BacklogConfig => ({ ...CFG, ...over });
+
+let taskSeq = 0;
+/** A backlog item with a distinct id and arrival order, over the shared task fixture. */
+function mkTask(over: Partial<Task> = {}): Task {
+  const n = ++taskSeq;
+  return baseTask({
+    id: `t${n}`,
+    title: `Task ${n}`,
+    createdAt: 1000 + n,
+    updatedAt: 1000 + n,
+    ...over,
+  });
+}
+
+let sessionSeq = 0;
+function mkSession(over: Partial<Session> = {}): Session {
+  const n = ++sessionSeq;
+  return {
+    id: `s${n}`,
+    agent: "claude",
+    name: `agent-${n}`,
+    nameSource: "tmux",
+    state: "idle",
+    cwd: "/repo",
+    gitBranch: "main",
+    gitRoot: "/repo",
+    repoRoot: "/repo",
+    nomistakesGated: false,
+    pid: 100 + n,
+    tty: `ttys00${n}`,
+    permissionMode: null,
+    wezterm: null,
+    tmux: { session: `agent-${n}`, window: "w", windowIndex: 0, paneId: `%${n}` },
+    agentSessionId: `agent-session-${n}`,
+    transcriptPath: null,
+    instrumented: true,
+    hooksSeen: true,
+    activity: "idle",
+    startedAt: 0,
+    firstSeen: 0,
+    lastSeen: NOW,
+    // Settled well past settleMs by default, so a test opts INTO un-settled.
+    lastActivity: NOW - 60_000,
+    pendingReviews: 0,
+    nomistakes: null,
+    nomistakesFixes: [],
+    task: null,
+    nomistakesNarration: null,
+    prUrl: null,
+    prNumber: null,
+    prState: null,
+    prChecks: null,
+    meta: null,
+    note: null,
+    goal: null,
+    queue: null,
+    orphanedQueue: null,
+    paneDialog: null,
+    ...over,
+  };
+}
+
+/** A plan that names exactly these tasks, in order, with the given edges. */
+function mkPlan(entries: Array<[string, string[]]>): BacklogPlan {
+  return {
+    entries: entries.map(([taskId, dependsOn]) => ({ taskId, dependsOn, reason: null })),
+    note: null,
+    generatedAt: NOW,
+  };
+}
+
+const decide = (over: {
+  tasks?: Task[];
+  sessions?: Session[];
+  plan?: BacklogPlan | null;
+  cfg?: BacklogConfig;
+}) =>
+  decideBacklogTick({
+    tasks: over.tasks ?? [],
+    sessions: over.sessions ?? [],
+    plan: over.plan ?? null,
+    cfg: over.cfg ?? CFG,
+    now: NOW,
+  });
+
+// ---- the switch, and the empty cases -------------------------------------------------
+
+test("autopilot off decides nothing, whatever is waiting", () => {
+  const t = mkTask();
+  const a = decide({ tasks: [t], cfg: cfg({ enabled: false }) });
+  assert.equal(a.kind, "none");
+});
+
+test("an empty backlog says so rather than planning nothing", () => {
+  const a = decide({ tasks: [mkTask({ status: "done" })] });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /empty/);
+});
+
+// ---- planning ------------------------------------------------------------------------
+
+test("a backlog with no plan is READ first, and nothing is scheduled that tick", () => {
+  const a = decide({ tasks: [mkTask(), mkTask()], sessions: [] });
+  assert.equal(a.kind, "plan");
+  assert.equal(a.kind === "plan" ? a.tasks.length : 0, 2);
+});
+
+test("a plan that misses one new backlog item is stale - acting on it could start conflicting work", () => {
+  const t1 = mkTask();
+  const t2 = mkTask();
+  const a = decide({ tasks: [t1, t2], plan: mkPlan([[t1.id, []]]) });
+  assert.equal(a.kind, "plan");
+});
+
+test("a plan that no longer names a DISPATCHED task is still current - a task leaving the backlog invalidates nothing", () => {
+  const t1 = mkTask({ status: "running" });
+  const t2 = mkTask();
+  // Only t2 is in the backlog and only t2 needs an entry.
+  const a = decide({ tasks: [t1, t2], plan: mkPlan([[t2.id, []]]) });
+  assert.equal(a.kind, "dispatch");
+});
+
+// ---- dependencies --------------------------------------------------------------------
+
+test("an item waiting on an unfinished task is not scheduled; the one it waits for is", () => {
+  const first = mkTask();
+  const second = mkTask();
+  const a = decide({
+    tasks: [first, second],
+    plan: mkPlan([
+      [first.id, []],
+      [second.id, [first.id]],
+    ]),
+  });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", first.id);
+});
+
+test("a dependency that reached done stops blocking", () => {
+  const first = mkTask({ status: "done" });
+  const second = mkTask();
+  const a = decide({
+    tasks: [first, second],
+    plan: mkPlan([
+      [first.id, []],
+      [second.id, [first.id]],
+    ]),
+  });
+  assert.equal(a.kind === "dispatch" && a.task.id, second.id);
+});
+
+test("a dependency that FAILED keeps blocking - the work it was to lay never happened", () => {
+  const first = mkTask({ status: "failed" });
+  const second = mkTask();
+  const a = decide({
+    tasks: [first, second],
+    plan: mkPlan([
+      [first.id, []],
+      [second.id, [first.id]],
+    ]),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /waiting on another task/);
+});
+
+test("a backlog where everything is blocked says THAT, not 'at capacity'", () => {
+  const gone = mkTask({ status: "cancelled" });
+  const a = decide({
+    tasks: [gone, mkTask(), mkTask()],
+    plan: mkPlan([
+      [gone.id, []],
+      ["t-unused", []],
+    ]),
+  });
+  // Both backlog items depend on the cancelled one.
+  const t = [mkTask(), mkTask()];
+  const blocked = decide({
+    tasks: [gone, ...t],
+    plan: mkPlan([
+      [t[0]!.id, [gone.id]],
+      [t[1]!.id, [gone.id]],
+    ]),
+  });
+  assert.equal(blocked.kind, "none");
+  assert.match(blocked.kind === "none" ? blocked.why : "", /waiting on another task/);
+  // (the first `a` only exists to prove a stale plan would have short-circuited first)
+  assert.equal(a.kind, "plan");
+});
+
+// ---- the allowlist -------------------------------------------------------------------
+
+test("a task in an untrusted repo is never scheduled, and is not blamed on dependencies", () => {
+  const t = mkTask({ repoRoot: "/elsewhere" });
+  const a = decide({ tasks: [t], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /trusted/);
+});
+
+test("an untrusted backlog is never blamed on a dependency graph that is fine", () => {
+  // Caught live: with an empty allowlist and one genuinely blocked item out of three,
+  // asking "is anything blocked?" first reported "waiting on another task" while the
+  // real answer was that Foreman was trusted nowhere - a refusal pointing the operator
+  // at the one thing they could not fix.
+  const first = mkTask({ repoRoot: "/untrusted" });
+  const second = mkTask({ repoRoot: "/untrusted" });
+  const a = decide({
+    tasks: [first, second],
+    plan: mkPlan([
+      [first.id, []],
+      [second.id, [first.id]],
+    ]),
+    cfg: cfg({ allowlist: [] }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /trusted/);
+});
+
+test("the blocked count is over TRUSTED items, so it matches the chips on the board", () => {
+  const dep = mkTask({ status: "failed" });
+  const blocked = mkTask();
+  const outOfScope = mkTask({ repoRoot: "/untrusted" });
+  const a = decide({
+    tasks: [dep, blocked, outOfScope],
+    plan: mkPlan([
+      [blocked.id, [dep.id]],
+      [outOfScope.id, [dep.id]],
+    ]),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /\(1 blocked\)/);
+});
+
+test("a repo that merely PREFIXES an allowlisted one does not clear the bar", () => {
+  const t = mkTask({ repoRoot: "/repo-backup" });
+  const a = decide({ tasks: [t], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "none");
+});
+
+// ---- assign vs dispatch --------------------------------------------------------------
+
+test("a free agent in the right repo is preferred over cutting a new worktree", () => {
+  const t = mkTask();
+  const free = mkSession();
+  const a = decide({ tasks: [t], sessions: [free], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.session.id : "", free.id);
+});
+
+test("assignment still happens AT the ceiling - it consumes no new session", () => {
+  const t = mkTask();
+  const free = mkSession();
+  const others = [mkSession({ state: "working" }), mkSession({ state: "working" })];
+  const a = decide({
+    tasks: [t],
+    sessions: [free, ...others],
+    plan: mkPlan([[t.id, []]]),
+    cfg: cfg({ maxSessions: 1 }),
+  });
+  assert.equal(a.kind, "assign");
+});
+
+test("a later ready item with a home wins over launching a worktree for the head", () => {
+  const head = mkTask({ repoRoot: "/other-repo" });
+  const later = mkTask();
+  const free = mkSession();
+  const a = decide({
+    tasks: [head, later],
+    sessions: [free],
+    plan: mkPlan([
+      [head.id, []],
+      [later.id, []],
+    ]),
+    cfg: cfg({ allowlist: ["/repo", "/other-repo"] }),
+  });
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.task.id : "", later.id);
+});
+
+test("an idle agent in a DIFFERENT repo is not a home for the task", () => {
+  const t = mkTask();
+  const elsewhere = mkSession({ cwd: "/other", repoRoot: "/other" });
+  const a = decide({
+    tasks: [t],
+    sessions: [elsewhere],
+    plan: mkPlan([[t.id, []]]),
+    cfg: cfg({ allowlist: ["/repo", "/other"] }),
+  });
+  assert.equal(a.kind, "dispatch");
+});
+
+// ---- what counts as free -------------------------------------------------------------
+
+test("an agent that has not settled is not free yet - a pause between turns is not being finished", () => {
+  const s = mkSession({ lastActivity: NOW - 1000 });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("an UNINSTRUMENTED agent is never handed a task, however idle it looks", () => {
+  // reportBucket files it under idle by default; that is right for a readout and wrong
+  // for an autopilot, which would have no way to tell it was mid-thought.
+  const s = mkSession({ hooksSeen: false, instrumented: false });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("an agent with a review waiting on you is not free", () => {
+  const s = mkSession({ pendingReviews: 1 });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("an agent with an open work queue is already being fed", () => {
+  const s = mkSession({
+    queue: {
+      openCount: 1,
+      totalCount: 2,
+      inFlightState: "in_progress",
+      inFlightIntent: "x",
+      round: 0,
+      blockingGaps: 0,
+      verifiedCount: 0,
+      escalatedCount: 0,
+      drained: false,
+      wrapupAskedAt: null,
+      wrapupAnswered: false,
+      updatedAt: NOW,
+    },
+  });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("an agent already executing one of our tasks is not free for a second", () => {
+  const s = mkSession();
+  const running = mkTask({ status: "running", sessionId: s.id });
+  assert.equal(agentIsFree(s, [s], [running], CFG, NOW), false);
+});
+
+test("an agent in an un-allowlisted checkout is not typed into", () => {
+  const s = mkSession({ cwd: "/untrusted", repoRoot: "/untrusted" });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("a pane-less agent has nowhere to be typed at", () => {
+  const s = mkSession({ tmux: null, wezterm: null });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+// ---- the ceiling ---------------------------------------------------------------------
+
+test("live sessions and tasks mid-provision are both agents", () => {
+  const live = [mkSession(), mkSession({ state: "working" })];
+  const provisioning = mkTask({ status: "dispatching" });
+  assert.equal(activeAgentCount(live, [provisioning]), 3);
+});
+
+test("an exited session is not an agent", () => {
+  assert.equal(activeAgentCount([mkSession({ state: "exited" })], []), 0);
+});
+
+test("a dispatching task whose session was already discovered is not counted twice", () => {
+  const s = mkSession();
+  const t = mkTask({ status: "dispatching", sessionId: s.id });
+  assert.equal(activeAgentCount([s], [t]), 1);
+});
+
+test("the ceiling refuses a launch and says which ceiling it was", () => {
+  const t = mkTask();
+  const busy = [mkSession({ state: "working" }), mkSession({ state: "working" })];
+  const a = decide({
+    tasks: [t],
+    sessions: busy,
+    plan: mkPlan([[t.id, []]]),
+    cfg: cfg({ maxSessions: 2 }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /2\/2/);
+});
+
+test("a task still being provisioned holds the slot it is about to fill", () => {
+  // The window this closes: dispatch has been accepted, the worktree is being cut, and
+  // no session exists yet. Counting sessions alone would launch a second agent here.
+  const t = mkTask();
+  const inFlight = mkTask({ status: "dispatching" });
+  const a = decide({
+    tasks: [t, inFlight],
+    sessions: [],
+    plan: mkPlan([[t.id, []]]),
+    cfg: cfg({ maxSessions: 1 }),
+  });
+  assert.equal(a.kind, "none");
+});
+
+// ---- the mode gate -------------------------------------------------------------------
+
+test("dry-run reports the decision it would have taken rather than staying silent", () => {
+  const t = mkTask();
+  const a = decide({ tasks: [t], plan: mkPlan([[t.id, []]]), cfg: cfg({ mayActLive: false }) });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /would launch/);
+});
+
+test("dry-run names the agent it would have handed the task to", () => {
+  const t = mkTask();
+  const free = mkSession({ name: "spare" });
+  const a = decide({
+    tasks: [t],
+    sessions: [free],
+    plan: mkPlan([[t.id, []]]),
+    cfg: cfg({ mayActLive: false }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /would hand.*spare/);
+});
+
+// ---- serial fallback -----------------------------------------------------------------
+
+test("when planning has failed its cap the machine schedules anyway, one at a time", () => {
+  const t1 = mkTask();
+  const t2 = mkTask();
+  const a = decide({ tasks: [t1, t2], plan: null, cfg: cfg({ planExhausted: true }) });
+  assert.equal(a.kind, "dispatch");
+  // Oldest first: with no dependency read, authored order is the only signal left.
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", t1.id);
+});
+
+test("serial mode launches nothing while one of OUR tasks is still in flight", () => {
+  const inFlight = mkTask({ status: "running", tmuxSession: "harness-x" });
+  const waiting = mkTask();
+  const a = decide({
+    tasks: [inFlight, waiting],
+    plan: null,
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /one at a time/);
+});
+
+test("serial mode is not blocked by an agent the human started themselves", () => {
+  // An assigned task holds no tmux session of ours, and neither does a hand-started
+  // terminal - so neither is evidence that autopilot has work in flight.
+  const assigned = mkTask({ status: "running", sessionId: "s-human", tmuxSession: null });
+  const waiting = mkTask();
+  const a = decide({ tasks: [assigned, waiting], plan: null, cfg: cfg({ planExhausted: true }) });
+  assert.equal(a.kind, "dispatch");
+});
+
+test("a plan that arrives after the cap is used again - exhaustion never sticks to the data", () => {
+  const t = mkTask();
+  const a = decide({
+    tasks: [t],
+    plan: mkPlan([[t.id, []]]),
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "dispatch");
+});

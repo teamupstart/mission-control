@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plan: Backlog autopilot - Foreman schedules the backlog</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-2: #f5f7fa; --fg: #1a1f27; --muted: #5d6775;
+    --border: #d9dee6; --border-soft: #e6eaf0; --accent: #b46a00; --link: #0b6bcb;
+    --code-bg: #f2f4f8; --panel: #ffffff; --panel-2: #eef1f6; --sel: #dceafe;
+    --ok: #157347;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0e13; --bg-2: #12161d; --fg: #e7ebf1; --muted: #939eae;
+      --border: #232a34; --border-soft: #1b2129; --accent: #f6a733; --link: #6aa9ee;
+      --code-bg: #12161d; --panel: #0f131a; --panel-2: #161b23; --sel: #17263b;
+      --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 48px 24px;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 29px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  p, li { color: var(--fg); }
+  a { color: var(--link); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px;
+    border: 1px solid var(--border-soft);
+  }
+  .status {
+    display: inline-block; font-size: 12px; font-weight: 640; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    padding: 3px 10px; border-radius: 999px; margin-bottom: 20px;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 660; }
+  .muted { color: var(--muted); }
+  .rec {
+    display: inline-block; font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--ok);
+    background: color-mix(in oklab, var(--ok) 15%, transparent);
+    padding: 2px 8px; border-radius: 999px; margin-left: 8px; vertical-align: middle;
+  }
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+  th { color: var(--muted); font-weight: 640; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  td strong { font-weight: 640; }
+  .keep { color: var(--muted); }
+  .move { color: var(--accent); font-weight: 640; }
+  /* diagram + decision boxes */
+  figure { margin: 20px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .box { border: 1px solid var(--border); border-radius: 12px; padding: 2px 16px 14px; margin: 16px 0; background: var(--bg-2); }
+  .box h3 { margin-top: 14px; }
+  .steps { counter-reset: step; list-style: none; padding-left: 0; }
+  .steps li { counter-increment: step; position: relative; padding-left: 34px; margin: 10px 0; }
+  .steps li::before {
+    content: counter(step); position: absolute; left: 0; top: 1px;
+    width: 22px; height: 22px; border-radius: 50%; text-align: center; line-height: 22px;
+    font-size: 12px; font-weight: 700; color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 15%, transparent);
+  }
+  .why { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; margin: 14px 0; color: var(--muted); }
+  .why strong { color: var(--fg); }
+</style>
+</head><body>
+<main>
+  <h1>Plan: Backlog autopilot - Foreman schedules the backlog</h1>
+  <p class="muted">Foreman reads the whole backlog, works out what depends on what, and hands
+    one item at a time to an idle agent or to a fresh worktree - up to a ceiling you set.</p>
+  <span class="status">Implemented · live-only · max agents default 3</span>
+
+  <h2>Why</h2>
+  <p>The backlog is a list of things you want done, and the board shows it right next to your
+    idle agents. Nothing closes that gap but your hand. Foreman already drains a
+    <em>session's</em> work queue; this drains the <em>fleet's</em> backlog.</p>
+
+  <div class="why">
+    <strong>The two halves already exist.</strong> A task can reach an agent two ways -
+    <code>POST /api/tasks/:id/dispatch</code> cuts a worktree and launches one,
+    <code>POST /api/tasks/:id/assign</code> hands it to one that is already running. Both are
+    a click on the board today. All that is missing is something deciding <em>which</em>, and
+    <em>when</em>, and <em>whether there is room</em>.
+  </div>
+
+  <h2>What the human sets</h2>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>Knob</th><th>Default</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Auto-schedule the backlog</strong> <code>autoBacklog</code></td><td>off</td><td>arms the autopilot</td></tr>
+        <tr><td><strong>Max agents running at once</strong> <code>maxSessions</code></td><td><code>3</code></td><td>the ceiling it will not launch past</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Max agents counts every live agent on the machine</strong>, not just the ones
+    Mission launched - it is a claim about the machine's load, and a count that ignored six
+    hand-started sessions would not be one. It bounds <em>autopilot</em> only: it never
+    refuses a dispatch <em>you</em> clicked, because blocking a button you pressed to protect
+    a background scheduler's budget is the worse surprise.</p>
+
+  <h2>The gate</h2>
+  <p>Launching an agent starts unattended work; handing a task to a running agent types a
+    whole prompt into a pane a human may be sitting in front of. Both are more consequential
+    than answering a prompt, so autopilot clears the same bar an automated wrap-up does:</p>
+  <ul>
+    <li>Foreman <code>enabled</code>, and <code>autoBacklog</code> on.</li>
+    <li>Mode is <strong>live</strong>. In dry-run and semi-auto it still <em>plans</em> - the
+      board shows the ordering and the dependency read - but it never launches or types.
+      Dry-run means dry-run.</li>
+    <li>The task's <code>repoRoot</code> is on the repo <strong>allowlist</strong>, judged
+      with the shared <code>foremanAllowlisted</code> so the board explains the decision with
+      the same predicate the server gates on.</li>
+  </ul>
+
+  <h2>Architecture</h2>
+  <figure>
+    <svg viewBox="0 0 860 430" role="img" aria-label="The Foreman worker reads sessions, tasks and the stored plan from the daemon, asks the pure decision machine what to do, and performs exactly one action: store a plan, assign to an idle agent, or dispatch a new worktree.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5">
+
+        <!-- worker -->
+        <rect x="16" y="150" width="176" height="120" rx="12" fill="var(--panel-2)" stroke="var(--border)"/>
+        <text x="104" y="180" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--fg)">Foreman worker</text>
+        <text x="104" y="202" text-anchor="middle" fill="var(--muted)">separate process</text>
+        <text x="104" y="222" text-anchor="middle" fill="var(--muted)">HTTP only, never</text>
+        <text x="104" y="240" text-anchor="middle" fill="var(--muted)">touches the DB</text>
+        <text x="104" y="260" text-anchor="middle" fill="var(--accent)">one action / tick</text>
+
+        <!-- daemon -->
+        <rect x="330" y="16" width="212" height="112" rx="12" fill="var(--panel-2)" stroke="var(--border)"/>
+        <text x="436" y="42" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--fg)">daemon :7317</text>
+        <text x="436" y="64" text-anchor="middle" fill="var(--muted)">GET /api/sessions</text>
+        <text x="436" y="82" text-anchor="middle" fill="var(--muted)">GET /api/tasks</text>
+        <text x="436" y="100" text-anchor="middle" fill="var(--muted)">GET/PUT /api/backlog/plan</text>
+        <text x="436" y="118" text-anchor="middle" fill="var(--muted)">POST /api/tasks/:id/…</text>
+
+        <!-- machine -->
+        <rect x="330" y="168" width="212" height="84" rx="12" fill="var(--sel)" stroke="var(--link)"/>
+        <text x="436" y="194" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--fg)">decideBacklogTick</text>
+        <text x="436" y="215" text-anchor="middle" fill="var(--muted)">pure · no I/O · now injected</text>
+        <text x="436" y="236" text-anchor="middle" fill="var(--muted)">the whole precedence</text>
+
+        <!-- planner -->
+        <rect x="330" y="300" width="212" height="80" rx="12" fill="var(--panel-2)" stroke="var(--border)"/>
+        <text x="436" y="326" text-anchor="middle" font-size="13.5" font-weight="700" fill="var(--fg)">claude -p (Sonnet)</text>
+        <text x="436" y="347" text-anchor="middle" fill="var(--muted)">tool-less · dependency read</text>
+        <text x="436" y="367" text-anchor="middle" fill="var(--muted)">then sanitizePlan</text>
+
+        <!-- actions -->
+        <rect x="628" y="150" width="216" height="42" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+        <text x="736" y="176" text-anchor="middle" fill="var(--fg)">assign → idle agent</text>
+
+        <rect x="628" y="204" width="216" height="42" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+        <text x="736" y="230" text-anchor="middle" fill="var(--fg)">dispatch → new worktree</text>
+
+        <rect x="628" y="258" width="216" height="42" rx="10" fill="var(--panel-2)" stroke="var(--border)"/>
+        <text x="736" y="284" text-anchor="middle" fill="var(--muted)">none + a reason</text>
+
+        <!-- arrows -->
+        <g stroke="var(--muted)" fill="none" stroke-width="1.6" color="var(--muted)">
+          <path d="M 104 150 L 104 72 L 322 72" marker-end="url(#ar)"/>
+          <path d="M 192 210 L 322 210" marker-end="url(#ar)"/>
+          <path d="M 542 176 L 620 171" marker-end="url(#ar)"/>
+          <path d="M 542 210 L 620 225" marker-end="url(#ar)"/>
+          <path d="M 542 240 L 620 275" marker-end="url(#ar)"/>
+          <path d="M 436 252 L 436 292" marker-end="url(#ar)"/>
+          <path d="M 330 340 L 190 340 L 190 272" marker-end="url(#ar)"/>
+          <path d="M 736 150 L 736 130 L 550 100" marker-end="url(#ar)"/>
+        </g>
+        <text x="212" y="64" font-size="11.5" fill="var(--muted)">read fleet + backlog + plan</text>
+        <text x="232" y="203" font-size="11.5" fill="var(--muted)">decide</text>
+        <text x="452" y="282" font-size="11.5" fill="var(--muted)">on a stale plan</text>
+        <text x="596" y="128" font-size="11.5" fill="var(--muted)">act</text>
+      </g>
+    </svg>
+    <figcaption>One fleet-level step per pass, above the per-session ones. The backlog is about
+      sessions that do not exist yet, so the pass where the whole fleet is quiet is the pass
+      most likely to have capacity to launch into.</figcaption>
+  </figure>
+
+  <h3>The precedence</h3>
+  <div class="box">
+    <ol class="steps">
+      <li>autopilot off → <code>none</code>.</li>
+      <li>backlog empty → <code>none</code>.</li>
+      <li>the stored plan does not cover every backlog item → <code>plan</code>, and
+        <strong>nothing is scheduled this tick</strong>. Acting on a plan that has never seen
+        the newest item is how two conflicting tasks get started together.</li>
+      <li>walk ready items in plan order; the first with a genuinely free agent in its repo →
+        <code>assign</code>.</li>
+      <li>otherwise the first ready item, if the fleet is under <code>maxSessions</code> →
+        <code>dispatch</code>.</li>
+      <li>otherwise <code>none</code>, saying which of those it was.</li>
+    </ol>
+  </div>
+  <p><strong>Assignment is checked before capacity on purpose.</strong> It consumes no new
+    session, so it is correct at the ceiling and cheaper below it. Putting the ceiling first
+    would silently disable the one path that costs nothing.</p>
+
+  <h3>Capacity is sessions <em>plus</em> tasks mid-provision</h3>
+  <div class="why">
+    A task that has been dispatched but whose agent has not been <strong>discovered</strong>
+    yet is an agent - the worktree is being cut, the process is coming up. Counting only the
+    session list leaves several seconds in which every tick sees spare capacity and launches
+    into it. Not theoretical: discovery polls, and provisioning a worktree takes longer than
+    one Foreman pass.
+  </div>
+
+  <h3>What "free agent" means</h3>
+  <p>Stricter than the board's Idle column, because the board's version is a human saying
+    "yes, that one" and this is a background loop typing into a pane nobody asked:</p>
+  <ul>
+    <li><code>reportBucket === "idle"</code> - the shared bucketing, which already excludes a
+      review waiting, a menu on screen, a parked gate.</li>
+    <li><code>settledIdle</code> - a pause between turns is not being finished.</li>
+    <li><code>hooksSeen</code> - <code>reportBucket</code> files an uninstrumented session
+      under idle by default. Right for a readout, wrong for an autopilot, which would have no
+      way to tell it was mid-thought.</li>
+    <li>a pane, an empty work queue, no non-terminal task of ours bound to it, the same
+      <code>repoRoot</code>, and allowlisted.</li>
+  </ul>
+  <p><code>TaskManager.assign</code> re-checks what it can, because an agent can go busy
+    between the decision and the POST.</p>
+
+  <h2>The dependency read, and why it is not trusted as written</h2>
+  <p>A fresh tool-less <code>claude -p</code> (Sonnet by default, <code>FOREMAN_BACKLOG_MODEL</code>)
+    sees every backlog item's title and intent and returns an order plus a <code>dependsOn</code>
+    list per item. Tool-less because the prompt embeds text a human typed and the model only
+    needs to emit JSON.</p>
+  <p><code>sanitizePlan</code> then makes it safe to schedule from. Every repair closes a
+    <strong>silent</strong> failure:</p>
+  <div class="scroll-x">
+    <table>
+      <thead><tr><th>Repair</th><th>What it prevents</th></tr></thead>
+      <tbody>
+        <tr><td>unknown ids dropped</td><td>a dependency no task can ever satisfy under that id</td></tr>
+        <tr><td>self-references dropped</td><td>a task waiting on itself, which never starts</td></tr>
+        <tr><td><strong>cycles broken</strong></td><td>two cards blocked forever, looking exactly like two cards waiting their turn</td></tr>
+        <tr><td><strong>missing entries appended</strong></td><td>a permanently stale plan - an unbounded loop of model calls that produces nothing</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Cycles are broken by keeping only the edges that point <em>backward</em> in the model's
+    own order, so the repair follows its intent rather than overriding it - an edge pointing
+    forward is the reply contradicting itself, and that is the one to drop.</p>
+
+  <h3>Staleness is coverage, not a fingerprint</h3>
+  <div class="why">
+    A plan is a set of statements about the tasks it names, and a task <strong>leaving</strong>
+    the backlog invalidates none of them. A fingerprint would burn a model call on every
+    single dispatch - the one moment the backlog always changes. A task <strong>arriving</strong>
+    is different: it may be the thing everything else waits on, and nothing in the stored plan
+    can say so.
+  </div>
+
+  <h3>When planning breaks</h3>
+  <p>Three consecutive failures and the machine stops asking and drops to <strong>serial
+    mode</strong>: one autopilot-launched task in flight at a time, oldest first. Serial
+    execution satisfies every possible dependency order by construction, so a broken planner
+    degrades to <em>slow</em> rather than to <em>wrong</em>. A plan that arrives later is used
+    again immediately - exhaustion never sticks to the data.</p>
+
+  <h2>What the board shows</h2>
+  <ul>
+    <li>a <strong>blocked</strong> chip naming what an item waits on - in the attention tone
+      when the dependency was cancelled or failed, since that one will never clear on its own;</li>
+    <li>a <strong>next up</strong> mark on the item autopilot would take next;</li>
+    <li>on a blocked card, the launch button reads <strong>launch anyway</strong>. A dependency
+      read is a model's opinion, and overruling it should be one gesture.</li>
+  </ul>
+  <p>The Foreman popover carries the live readout - <code>2/3 agents · 4 ready · 1 blocked</code> -
+    so "why is nothing launching?" is answerable without reading a log. All of it is drawn from
+    the shared predicates in <code>@shared/backlog.ts</code>, which the scheduler decides with,
+    so the column cannot mark a card ready that the machine will not touch.</p>
+
+  <h2>Testing</h2>
+  <ul>
+    <li><code>backlog-machine.test.ts</code> - the precedence table: off, empty, stale plan,
+      assign preferred over dispatch, assignment at the ceiling, capacity including
+      mid-provision, blocked-only, un-allowlisted, dry-run, serial fallback.</li>
+    <li><code>backlog-plan.test.ts</code> - <code>sanitizePlan</code> on a cycle (two- and
+      three-task), a self-dep, an unknown id, a forgotten entry; <code>blockersFor</code>
+      across every dependency status; ordering and staleness.</li>
+    <li><code>backlog-plan-http.test.ts</code> - the plan round-trips through
+      <code>buildApp</code>, cannot be back-dated, replaces rather than merges, and a
+      malformed body is refused.</li>
+  </ul>
+
+  <h2>Out of scope</h2>
+  <ul>
+    <li>Autopilot <strong>completing</strong> a task. A finished agent still hands its work to
+      the existing wrap-up triggers.</li>
+    <li>A hard fleet cap on manual dispatch.</li>
+    <li>Cross-repo scheduling logic. Items in different repos are independent to the
+      scheduler; a dependency the planner states across them is still honoured.</li>
+  </ul>
+
+  <p class="muted">Source of truth: <a href="plan.md">plan.md</a>.</p>
+</main>
+</body>
+</html>

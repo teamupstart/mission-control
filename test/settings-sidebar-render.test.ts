@@ -16,7 +16,7 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // Foreman config is owned by App and passed in; null config is the pre-poll state, which
 // renders the panel's defaults. Static render never runs effects, so nothing fetches.
-const FOREMAN: ForemanState = { config: null, status: null, update: async () => {}, error: null };
+const FOREMAN: ForemanState = { config: null, status: null, backlogPlan: null, update: async () => {}, error: null };
 
 // The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
 // modal renders it, so the panel only edits what it's handed.

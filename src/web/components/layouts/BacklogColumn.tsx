@@ -1,5 +1,7 @@
 import { useState } from "react";
-import type { Session, Task, TaskPriority } from "@shared/types.ts";
+import type { BacklogBlocker } from "@shared/backlog.ts";
+import type { BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
+import { blockersFor, nextUpTaskId } from "@shared/backlog.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
@@ -29,20 +31,33 @@ import { LabelChips } from "../session-bits.tsx";
  * dispatch modal over that task, where it can be corrected and then dispatched from
  * the same dialog. Shelving a task is a decision to come back to it, and coming back
  * to it almost always means rereading it - so the card is the door, not a tooltip.
+ *
+ * When Foreman's backlog autopilot has read the backlog (see
+ * docs/plans/backlog-autopilot/plan.md) the cards also carry ITS view: which items are
+ * waiting on another task, and which one it would take next. Drawn from the shared
+ * predicates the scheduler decides with, never from a second reading of the plan, so
+ * the column cannot mark a card ready that the machine will not touch.
  */
 export function BacklogColumn({
   tasks,
+  allTasks,
+  plan,
   onAssignError,
   onDragging,
   onEdit,
 }: {
   tasks: Task[];
+  /** Every task, not just the backlog - dependencies point at tasks that already left it. */
+  allTasks: Task[];
+  /** Foreman's reading of the backlog, or null when it has none. */
+  plan: BacklogPlan | null;
   onAssignError: (message: string) => void;
   /** The repo of the card now in the air, or null when nothing is being dragged. */
   onDragging: (repoRoot: string | null) => void;
   /** Reopen the dispatch modal over this task. */
   onEdit: (taskId: string) => void;
 }): React.JSX.Element {
+  const nextUp = nextUpTaskId(allTasks, plan);
   return (
     <section className="board-col board-backlog">
       <header className="board-col-head">
@@ -58,6 +73,8 @@ export function BacklogColumn({
             <BacklogCard
               key={t.id}
               task={t}
+              blockers={blockersFor(t, plan, allTasks)}
+              nextUp={t.id === nextUp}
               onAssignError={onAssignError}
               onDragging={onDragging}
               onEdit={() => onEdit(t.id)}
@@ -65,22 +82,44 @@ export function BacklogColumn({
           ))
         )}
       </div>
+      {/* Only once there IS a plan: before autopilot has ever run, this line would be
+          a footer explaining a feature that isn't doing anything. */}
+      {plan?.note && <p className="bl-plan-note">{plan.note}</p>}
     </section>
   );
 }
 
+/**
+ * One line naming what a card is waiting on. Two by name, then a count, because the
+ * chip has to stay a chip - and the full list is in the `title` either way.
+ */
+function blockedLabel(blockers: BacklogBlocker[]): string {
+  const stopped = blockers.filter((b) => b.state === "stopped");
+  // A dependency that was cancelled or failed will never clear on its own, so it is a
+  // different message from "wait your turn" - it is the one that needs you.
+  if (stopped.length > 0) return `needs you - ${stopped[0]!.title} didn't finish`;
+  if (blockers.length === 1) return `after ${blockers[0]!.title}`;
+  return `after ${blockers[0]!.title} +${blockers.length - 1}`;
+}
+
 function BacklogCard({
   task,
+  blockers,
+  nextUp,
   onAssignError,
   onDragging,
   onEdit,
 }: {
   task: Task;
+  blockers: BacklogBlocker[];
+  /** True on the item Foreman's autopilot would pick up next. */
+  nextUp: boolean;
   onAssignError: (message: string) => void;
   onDragging: (repoRoot: string | null) => void;
   onEdit: () => void;
 }): React.JSX.Element {
   const [busy, setBusy] = useState(false);
+  const blocked = blockers.length > 0;
 
   async function launch(): Promise<void> {
     setBusy(true);
@@ -91,7 +130,12 @@ function BacklogCard({
 
   return (
     <article
-      className={`bl-card${busy ? " is-busy" : ""}`}
+      className={`bl-card${busy ? " is-busy" : ""}${blocked ? " is-blocked" : ""}${
+        nextUp ? " is-next" : ""
+      }`}
+      // Blocked cards stay draggable and launchable on purpose. Foreman's dependency
+      // read is a model's opinion, and the human overruling it is a legitimate,
+      // one-gesture answer - the card only has to be honest about what it thinks.
       draggable={!busy}
       onDragStart={(e) => {
         // The id travels in the payload (the only thing the drop needs); the repo goes
@@ -164,6 +208,19 @@ function BacklogCard({
         <span className="bl-agent">{task.agent}</span>
         <span className="bl-added">{relativeTime(task.createdAt)}</span>
       </span>
+      {blocked && (
+        <span
+          className={`bl-blocked${blockers.some((b) => b.state === "stopped") ? " is-stopped" : ""}`}
+          title={`Waiting on: ${blockers.map((b) => b.title).join(", ")}`}
+        >
+          {blockedLabel(blockers)}
+        </span>
+      )}
+      {nextUp && !blocked && (
+        <span className="bl-next" title="Foreman's autopilot would pick this up next">
+          next up
+        </span>
+      )}
       <button
         className="bl-launch"
         onClick={(e) => {
@@ -173,9 +230,13 @@ function BacklogCard({
           void launch();
         }}
         disabled={busy}
-        title="Dispatch into a fresh worktree"
+        title={
+          blocked
+            ? "Launch it anyway, ahead of what Foreman thinks it's waiting on"
+            : "Dispatch into a fresh worktree"
+        }
       >
-        {busy ? "dispatching…" : "launch new agent"}
+        {busy ? "dispatching…" : blocked ? "launch anyway" : "launch new agent"}
       </button>
     </article>
   );

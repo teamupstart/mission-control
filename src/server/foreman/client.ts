@@ -1,6 +1,7 @@
 import { BASE_URL } from "@shared/harness-runtime.mjs";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type {
+  BacklogPlanInput,
   ForemanConfig,
   ForemanLeaseResult,
   RecordEpisode,
@@ -8,12 +9,14 @@ import type {
   SetWorkItemState,
 } from "@shared/protocol.ts";
 import type {
+  BacklogPlan,
   ReviewItem,
   Session,
   SessionDiff,
   SessionGoal,
   SessionNote,
   SessionQueue,
+  Task,
   ToolCall,
   TranscriptMessage,
   WorkItem,
@@ -129,6 +132,61 @@ export class ForemanClient implements ForemanActions {
 
   reviews(): Promise<ReviewItem[]> {
     return get<ReviewItem[]>("/api/reviews");
+  }
+
+  // ---- the backlog autopilot ----
+
+  /** Every task, not just the backlog: dependencies point at tasks that already left it. */
+  tasks(): Promise<Task[]> {
+    return get<Task[]>("/api/tasks");
+  }
+
+  /** Foreman's stored reading of the backlog, or null when it has never made one. */
+  backlogPlan(): Promise<BacklogPlan | null> {
+    return get<BacklogPlan | null>("/api/backlog/plan");
+  }
+
+  /**
+   * Store a fresh plan, replacing whatever was there.
+   *
+   * Throws on failure, and the caller must NOT count that as progress: the write is
+   * what makes the plan cover the backlog, so a tick that failed it leaves the machine
+   * deciding `plan` again next pass. Reporting it as advanced is what would turn a
+   * broken route into a Sonnet call every BETWEEN_MS.
+   */
+  async putBacklogPlan(plan: BacklogPlanInput): Promise<void> {
+    const res = await send("PUT", "/api/backlog/plan", plan);
+    if (!res.ok) throw new Error(`putBacklogPlan -> ${res.status}`);
+  }
+
+  /**
+   * Launch a fresh agent in its own worktree for a backlog task.
+   *
+   * The daemon flips the task out of `backlog` before this resolves, so the next tick's
+   * read cannot see it as schedulable again - which is the only thing standing between
+   * a laggy read and two agents on one task. The worker keeps a short-lived guard of its
+   * own as well; see `recentlyActed`.
+   */
+  async dispatchTask(id: string): Promise<{ ok: boolean; error?: string }> {
+    const res = await send("POST", `/api/tasks/${enc(id)}/dispatch`);
+    if (res.ok) return { ok: true };
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return { ok: false, error: body.error ?? `dispatch -> ${res.status}` };
+  }
+
+  /**
+   * Hand a backlog task to an agent that is already running.
+   *
+   * A refusal is a 409 carrying a reason, and it is an ordinary outcome rather than an
+   * error: the session can go busy between the decision and this call, and the daemon
+   * re-checks. Nothing was typed in that case, so the task stays in the backlog and the
+   * next tick decides again from a fresh snapshot.
+   */
+  async assignTask(id: string, sessionId: string): Promise<{ ok: boolean; error?: string }> {
+    const res = await send("POST", `/api/tasks/${enc(id)}/assign`, { sessionId });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (res.ok && body.ok !== false) return { ok: true };
+    return { ok: false, error: body.error ?? `assign -> ${res.status}` };
   }
 
   /**

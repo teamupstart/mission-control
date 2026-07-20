@@ -6,6 +6,7 @@ import {
   AddWorkItemSchema,
   AssignTaskSchema,
   AwayConfigPatchSchema,
+  BacklogPlanSchema,
   CompleteTaskSchema,
   CreateReviewSchema,
   DispatchSchema,
@@ -65,6 +66,7 @@ import {
   releaseForemanLease,
   setForemanConfig,
 } from "./foreman/config.ts";
+import { getBacklogPlan, setBacklogPlan } from "./backlog.ts";
 import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
@@ -990,6 +992,18 @@ export function buildApp(
     return c.json(setForemanConfig(parsed.data));
   });
   app.get("/api/foreman/status", (c) => c.json(foremanStatus(registry)));
+
+  // --- backlog autopilot: Foreman's reading of the backlog (localhost only) ---
+  //
+  // Written by the worker (which never touches the DB) and read by the board. `null`
+  // rather than a 404 for "no plan yet": the absence of a plan is the ordinary starting
+  // state, not an error, and both readers already branch on it.
+  app.get("/api/backlog/plan", (c) => c.json(getBacklogPlan()));
+  app.put("/api/backlog/plan", async (c) => {
+    const parsed = await parseBody(c, BacklogPlanSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setBacklogPlan(parsed.data));
+  });
 
   // --- Away mode (localhost only) ---
   app.get("/api/away", (c) => c.json(getAwayConfig()));

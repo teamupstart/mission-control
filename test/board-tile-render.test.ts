@@ -19,6 +19,7 @@ function props(sessions: Session[]): SessionViewProps {
     sessions,
     tasks: [],
     onEditTask: () => {},
+    backlogPlan: null,
     gateAlerts: new Set<string>(),
     selectedId: null,
     onSelect: () => {},

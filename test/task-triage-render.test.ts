@@ -32,6 +32,8 @@ function column(tasks: ReturnType<typeof mkTask>[]): string {
   return renderToStaticMarkup(
     createElement(BacklogColumn, {
       tasks,
+      allTasks: tasks,
+      plan: null,
       onAssignError: noop,
       onDragging: noop,
       onEdit: noop,

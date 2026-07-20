@@ -388,6 +388,33 @@ export const AssignTaskSchema = z.object({
 });
 export type AssignTask = z.infer<typeof AssignTaskSchema>;
 
+/**
+ * Store Foreman's reading of the backlog (see `BacklogPlan`).
+ *
+ * Written by the worker, which is the only thing that can produce it, and read by the
+ * board. `generatedAt` is NOT accepted from the caller - the daemon stamps it, so the
+ * "planned N minutes ago" the board shows cannot be back-dated by a worker with a
+ * skewed clock, or by a replay of an old body.
+ *
+ * The shape is permissive about the graph on purpose: cycles, self-references and
+ * dangling ids are refused by `sanitizePlan` BEFORE the worker posts, because those
+ * are judgments about the current task list that a wire schema cannot make. What this
+ * schema guarantees is only that the stored value has the shape every reader assumes.
+ */
+export const BacklogPlanSchema = z.object({
+  entries: z
+    .array(
+      z.object({
+        taskId: z.string().min(1),
+        dependsOn: z.array(z.string().min(1)).default([]),
+        reason: z.string().nullable().optional().default(null),
+      }),
+    )
+    .max(500),
+  note: z.string().nullable().optional().default(null),
+});
+export type BacklogPlanInput = z.infer<typeof BacklogPlanSchema>;
+
 // ---- Foreman (auto-responder) ----
 
 /**
@@ -551,6 +578,38 @@ export const ForemanConfigSchema = z.object({
    * in dry-run does NOT type; it degrades to `ask`. Dry-run means dry-run.
    */
   wrapup: z.enum(WRAPUP_MODES).default("ask"),
+  /**
+   * Whether Foreman schedules the BACKLOG on its own - reading every item, working out
+   * what depends on what, and then handing one at a time to an idle agent or to a fresh
+   * worktree (see docs/plans/backlog-autopilot/plan.md).
+   *
+   * Off by default, and - like `wrapup`'s automated actions - it only ever ACTS in live
+   * mode on an allowlisted repo. Launching an agent starts unattended work, and
+   * assigning to an existing one types a whole task into a pane a human may be sitting
+   * in front of; both are strictly more consequential than answering a prompt. In
+   * dry-run and semi-auto it still plans, so the board can show what it would take next
+   * and the human can click it themselves. Dry-run means dry-run.
+   */
+  autoBacklog: z.boolean().default(false),
+  /**
+   * The ceiling on how many agents may be running at once before the backlog autopilot
+   * stops launching new ones.
+   *
+   * Counts EVERY live agent session on the machine plus the tasks still mid-provision,
+   * not just the ones Mission launched: "max agents" is a claim about the machine's
+   * load, and a count that ignored six hand-started sessions would not be one.
+   *
+   * It bounds AUTOPILOT only - it never refuses a dispatch a human clicked. Blocking a
+   * button you pressed because a background scheduler had reserved the budget is a
+   * worse surprise than briefly running over the line.
+   */
+  maxSessions: z.number().int().min(1).max(20).default(3),
+  /**
+   * Model id for the backlog dependency read. Falls back to the FOREMAN_BACKLOG_MODEL
+   * env var, then a Sonnet default, in the worker. Not the triage router's model: this
+   * is a judgment call over prose the human wrote, not a bucketing.
+   */
+  backlogModel: z.string().optional(),
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 

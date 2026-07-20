@@ -277,6 +277,7 @@ export function App(): React.JSX.Element {
   const viewProps: SessionViewProps = {
     sessions: visible,
     tasks,
+    backlogPlan: foreman.backlogPlan,
     gateAlerts,
     selectedId,
     onSelect: setSelectedId,

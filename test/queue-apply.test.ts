@@ -108,6 +108,8 @@ const LIVE_CFG: ForemanConfig = {
   triage: "off",
   maxFixAttempts: 3,
   maxFixRounds: 10,
+  autoBacklog: false,
+  maxSessions: 3,
 };
 
 /** Foreman on, but drafting. The default mode - and the one Approve exists for. */

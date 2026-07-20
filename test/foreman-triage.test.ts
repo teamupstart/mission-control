@@ -578,6 +578,8 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     maxFixRounds: 10,
     wrapupTriggers: ["drain"],
     wrapup: "ask",
+    autoBacklog: false,
+    maxSessions: 3,
     ...over,
   };
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Session } from "@shared/types.ts";
+import type { FleetCost, Session } from "@shared/types.ts";
 import { gateParked } from "@shared/session.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -12,7 +12,8 @@ import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
-import { AgentDot } from "./components/session-bits.tsx";
+import { AgentDot, RateMeter } from "./components/session-bits.tsx";
+import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
 import { BoardView } from "./components/layouts/BoardView.tsx";
@@ -20,6 +21,7 @@ import type { SessionViewProps } from "./components/layouts/types.ts";
 import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
+import { useCost } from "./useCost.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
@@ -28,11 +30,11 @@ import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
+import { canRenameSession, fmtUsd, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, connected, hasSnapshot } = useEventStream();
+  const { sessions, reviews, tasks, fleetCost, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
@@ -44,6 +46,10 @@ export function App(): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [layout, setLayout] = useLayoutMode();
   const foreman = useForeman();
+  // Owned here rather than by SettingsModal, on the `foreman` precedent: the topbar strip
+  // and the Cost panel read the same `view` setting, so a local copy in the modal would
+  // leave the strip showing the old choice until the next reload - and double-poll.
+  const cost = useCost();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
@@ -589,6 +595,7 @@ export function App(): React.JSX.Element {
                 <Stat n={pendingReviews.length} label="reviews" tone="attention" />
               </button>
             )}
+            <FleetCostStrip fleet={fleetCost} view={cost.status?.config.view ?? "usd"} />
           </div>
           {/* Every action shares one rhythm, tighter than the gap separating them
               from the filter/stats, so they read as one cluster and wrap as a
@@ -696,6 +703,7 @@ export function App(): React.JSX.Element {
           <SettingsModal
             onClose={() => setSettingsOpen(false)}
             foreman={foreman}
+            cost={cost}
             initialCategory={settingsCategory}
             layout={layout}
             onLayoutChange={setLayout}
@@ -898,6 +906,72 @@ function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): Re
     <div className={`stat${tone ? ` stat-${tone}` : ""}`}>
       <span className="stat-n">{n}</span>
       <span className="stat-label">{label}</span>
+    </div>
+  );
+}
+
+/**
+ * Fleet spend and the subscription's rate limits, in the topbar.
+ *
+ * Rendered INSIDE `<header className="topbar">`, and that is not a layout preference:
+ * `--topbar-h` is measured live off `topbarRef` with a ResizeObserver, so anything inside
+ * the header is accounted for automatically while a sibling after `</header>` is not -
+ * focus mode would then overflow by exactly this strip's height.
+ *
+ * Degrades honestly at every level. No telemetry at all -> nothing renders, rather than a
+ * `$0.00` claiming a fleet that cost nothing. No `rate_limits` (an API-key user, or a
+ * session before its first API response) -> no meters, rather than two bars sitting at 0%.
+ *
+ * `view` picks which number LEADS, not which exists: on a Pro/Max plan the dollars are
+ * notional and the percentage is the real constraint, so someone on a subscription can put
+ * the plan meters first without losing the estimate underneath.
+ */
+function FleetCostStrip({
+  fleet,
+  view,
+}: {
+  fleet: FleetCost | null;
+  view: "usd" | "plan";
+}): React.JSX.Element | null {
+  if (!fleet) return null;
+  const limits = fleet.rateLimits;
+  const spend = fleet.spendToday > 0 && (
+    <Tooltip
+      label={
+        `${fmtUsd(fleet.spendToday)} spent today, ${fmtUsd(fleet.burnPerHour)} in the last hour.\n` +
+        `Claude Code's own estimate; your bill may differ.`
+      }
+    >
+      <div className="stat stat-cost">
+        <span className="stat-n">{fmtUsd(fleet.spendToday)}</span>
+        <span className="stat-label">today</span>
+      </div>
+    </Tooltip>
+  );
+  const meters = limits && (
+    <>
+      {limits.fiveHour && (
+        <RateMeter window={limits.fiveHour} label="5h" title="Five-hour usage limit" />
+      )}
+      {limits.sevenDay && (
+        <RateMeter window={limits.sevenDay} label="7d" title="Seven-day usage limit" />
+      )}
+    </>
+  );
+  if (!spend && !meters) return null;
+  return (
+    <div className="fleet-cost">
+      {view === "plan" ? (
+        <>
+          {meters}
+          {spend}
+        </>
+      ) : (
+        <>
+          {spend}
+          {meters}
+        </>
+      )}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
+import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { AgentDot } from "../session-bits.tsx";
 
@@ -38,6 +39,14 @@ export function RailRow({
   if (gateNeedsYou) marks.push("▮");
   if (session.note) marks.push("◆");
   if (session.queue && session.queue.openCount > 0) marks.push(`≡${session.queue.openCount}`);
+  // Cost is the one signal the rail states as a GLYPH rather than a figure, and only once
+  // it is notable. The two-line budget below is why: a full "$1.24" in `.rail-meta` is
+  // honest but spends horizontal room on the tightest surface in the app, on every row,
+  // for a number that is usually unremarkable. The trade is real and worth naming - the
+  // rail is the one place a routine cost is invisible until it isn't. The other three
+  // surfaces carry the figure itself (`CostChip`); `costIsNotable` is shared so all four
+  // agree on where the line sits.
+  if (costIsNotable(session.cost)) marks.push("$");
 
   return (
     <button

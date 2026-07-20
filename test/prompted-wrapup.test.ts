@@ -74,6 +74,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    cost: null,
     goal: { text: "Add retry handling.", source: "model", updatedAt: NOW },
     queue: null,
     orphanedQueue: null,

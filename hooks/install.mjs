@@ -34,6 +34,11 @@ import { stateDir } from "../src/shared/harness-runtime.mjs";
 // (see package.json) - unlike harness-hook.mjs, which bare `node` runs at hook time and
 // which is why the runtime module above is .mjs at all.
 import { claudeSkillsDir, uninstallSkillLinks } from "../src/server/skills/reconcile.ts";
+// One definition of the OTel env block, shared with the packaged app's installer and the
+// dashboard's Cost panel - three writers of the same six keys is exactly how half a block
+// gets left behind that nothing owns. See src/shared/claude-settings.ts.
+import { writeOtelEnv } from "../src/shared/claude-settings.ts";
+import { BASE_URL, readToken } from "../src/shared/harness-runtime.mjs";
 
 const MARKER = "harness-hook.mjs";
 /** Marker identifying our statusLine wrapper command in settings.json. */
@@ -60,6 +65,21 @@ const uninstall = process.argv.includes("--uninstall");
 // context % reaches the daemon. Off by default - we never touch statusLine unless
 // asked (uninstall still unwraps ours, so an install never leaves a dangling one).
 const doStatusline = process.argv.includes("--statusline");
+// Opt-in, and separately from --statusline: cost telemetry over OpenTelemetry. Two
+// switches rather than one because they are two different asks of the user's config -
+// this one adds an `env` block that makes EVERY Claude session on the machine export to
+// the daemon, while --statusline rewrites the command that draws their terminal line.
+// Someone may well want the spend figures and not want us near their status line, and
+// the reverse; bundling them would force a choice neither of them made.
+const doTelemetry = process.argv.includes("--telemetry");
+/**
+ * Default export interval, in ms, matching `CostConfigSchema`'s default.
+ *
+ * The SDK's own default is 60s, which makes a cost badge feel dead beside a context
+ * meter that moves every render. 15s is livelier at the cost of four requests per
+ * session per minute, all on loopback.
+ */
+const TELEMETRY_INTERVAL_MS = 15000;
 
 function command(event) {
   return `"${process.execPath}" "${scriptPath}" ${event}`;
@@ -229,7 +249,45 @@ function reportSkills() {
 // --- write only if something changed ----------------------------------------
 const mcpPath = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "mcp", "server.mjs");
 
-if (text === original) {
+const hooksChanged = text !== original;
+if (hooksChanged) {
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writeFileSync(settingsPath, text);
+}
+
+// --- OTel env block (opt-in on install; always removed on uninstall) ----------
+//
+// AFTER the write above, deliberately: `writeOtelEnv` re-reads settings.json from disk and
+// writes it back, so running it against the pre-write text would have this script's own
+// `text` clobber the env edit a moment later. Sequencing it here means each edit sees the
+// other's result, and both stay surgical.
+//
+// Uninstall removes the block unconditionally, exactly as it unwraps the status line -
+// leaving an `env` pointing at a daemon this checkout no longer runs would keep every
+// Claude session on the machine retrying an export forever.
+let telemetryAction = "unchanged";
+try {
+  telemetryAction = writeOtelEnv(
+    uninstall || !doTelemetry
+      ? null
+      : { endpoint: BASE_URL, token: readToken(), intervalMs: TELEMETRY_INTERVAL_MS },
+  );
+} catch (err) {
+  // Never fatal: the hooks are the point of this script, and a telemetry block we
+  // couldn't write costs cost figures, not status.
+  console.error(`  could not update the telemetry env block: ${err?.message ?? err}`);
+}
+
+function reportTelemetry() {
+  if (telemetryAction === "installed" || telemetryAction === "updated") {
+    console.log(`  cost telemetry enabled: Claude Code will export usage to ${BASE_URL}`);
+    console.log(`    (env block in ${settingsPath}; export every ${TELEMETRY_INTERVAL_MS / 1000}s)`);
+  } else if (telemetryAction === "removed") {
+    console.log(`  removed the cost telemetry env block.`);
+  }
+}
+
+if (!hooksChanged && telemetryAction === "unchanged") {
   console.log(
     uninstall
       ? `No Mission Control hooks found in ${settingsPath} - nothing to remove.`
@@ -239,13 +297,11 @@ if (text === original) {
   process.exit(0);
 }
 
-mkdirSync(dirname(settingsPath), { recursive: true });
-writeFileSync(settingsPath, text);
-
 if (uninstall) {
   console.log(`Removed Mission Control hooks from ${settingsPath} (your other settings were left intact)`);
   if (statuslineAction === "restored") console.log(`  restored your original status line command.`);
   else if (statuslineAction === "removed") console.log(`  removed the Mission Control status line wrapper.`);
+  reportTelemetry();
   reportSkills();
   // Names it was registered under before the renames, too: the MCP server is added by
   // hand with `claude mcp add <name>`, so an install from an older version is still
@@ -265,6 +321,11 @@ if (uninstall) {
   } else if (!doStatusline) {
     console.log(`\nOptional: also surface model / thinking level / context % on the cards:`);
     console.log(`  npm run install-statusline   (wraps your status line; reversible via --uninstall)`);
+  }
+  reportTelemetry();
+  if (!doTelemetry && telemetryAction === "unchanged") {
+    console.log(`\nOptional: track what the fleet costs (Claude Code's own figures, over OpenTelemetry):`);
+    console.log(`  npm run install-telemetry    (adds an env block; reversible via --uninstall)`);
   }
   console.log(`\nStart a new Claude Code session; it will report live status to Mission Control.`);
 

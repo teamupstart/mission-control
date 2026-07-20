@@ -37,6 +37,7 @@
     "setup": "npm run build && npm run install-hooks",
     "install-hooks": "tsx hooks/install.mjs",
     "install-statusline": "tsx hooks/install.mjs --statusline",
+    "install-telemetry": "tsx hooks/install.mjs --telemetry",
     "install-service": "node scripts/install-service.mjs"
   },
   "dependencies": {

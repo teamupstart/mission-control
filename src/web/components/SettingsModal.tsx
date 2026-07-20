@@ -3,12 +3,14 @@ import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
+import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
+import type { CostState } from "../useCost.ts";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
@@ -24,6 +26,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "harnesses", label: "Harnesses", icon: "⚙" },
   { id: "foreman", label: "Foreman", icon: "●" },
+  { id: "cost", label: "Cost", icon: "$" },
 ] as const;
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
@@ -51,6 +54,7 @@ function tabDomId(id: SettingsCategoryId): string {
 export function SettingsModal({
   onClose,
   foreman,
+  cost,
   layout,
   onLayoutChange,
   initialCategory = "keyboard",
@@ -63,6 +67,12 @@ export function SettingsModal({
    * doesn't use it, so it stays a local `useSkills()` below.
    */
   foreman: ForemanState;
+  /**
+   * Cost telemetry config, OWNED BY App for the same reason as `foreman`: the topbar's
+   * fleet strip reads the same `view` setting this panel edits, so a local copy here
+   * would leave the strip on the old choice after an edit, and poll for it twice.
+   */
+  cost: CostState;
   /**
    * The live layout, OWNED BY App for the same reason as `foreman`: App renders the
    * layout, so it holds the state and this panel only edits it. A local `useLayoutMode()`
@@ -137,6 +147,8 @@ export function SettingsModal({
         return <HarnessesPanel state={harnesses} />;
       case "foreman":
         return <ForemanSettingsPanel state={foreman} />;
+      case "cost":
+        return <CostSettingsPanel state={cost} />;
     }
   }
 

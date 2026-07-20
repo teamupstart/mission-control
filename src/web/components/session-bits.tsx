@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import type { PrState, Session, SessionMeta, TaskPriority } from "@shared/types.ts";
+import type {
+  PrState,
+  RateLimitWindow,
+  Session,
+  SessionCost,
+  SessionMeta,
+  TaskPriority,
+} from "@shared/types.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
+import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
-import { compactTokens, contextTone, stateDisplay } from "../lib/format.ts";
+import { compactTokens, contextTone, fmtUsd, stateDisplay, untilReset } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -344,6 +352,74 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
         </span>
       )}
     </span>
+  );
+}
+
+/**
+ * What a session has spent so far, as a chip beside the runtime row.
+ *
+ * Sits next to `RuntimeMetaRow` rather than among the alert marks because cost is the
+ * fourth runtime fact of the same kind as model, thinking level and context - something
+ * true of the session right now, not something asking for you. Escalation is expressed by
+ * the chip's own tone (see `costTone`), not by a second copy of the number in the tile's
+ * `.tile-marks`; the rail, which has no room for a figure, carries a glyph instead.
+ *
+ * A `<span>`, not a `<div>`, for the same reason `RuntimeMetaRow` is: the board's tile
+ * draws its whole body as spans, and this has to nest into that flow without being
+ * invalid HTML.
+ *
+ * Renders NOTHING when there is nothing to say - an unpriced session (no telemetry, or
+ * none yet) and a session that genuinely cost nothing both get no chip, because a `$0.00`
+ * would assert the one of those two that is false.
+ */
+export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
+  if (!cost || cost.costUsd <= 0) return null;
+  const tone = costTone(cost.costUsd);
+  const tokensIn = cost.input + cost.cacheRead + cost.cacheWrite;
+  return (
+    <Tooltip
+      label={
+        `${fmtUsd(cost.costUsd)} estimated - ${compactTokens(tokensIn)} in / ` +
+        `${compactTokens(cost.output)} out.\nClaude Code's own figure; your bill may differ.`
+      }
+    >
+      <span className={`rt-pill cost-chip cost-${tone}`}>{fmtUsd(cost.costUsd)}</span>
+    </Tooltip>
+  );
+}
+
+/**
+ * One subscription rate-limit window as a labelled meter.
+ *
+ * Reuses the context meter's `.rt-meter` / `.rt-meter-fill` idiom deliberately: there is
+ * no charting library in this app and no non-icon SVG, so a bar is two spans and a width,
+ * and a second way of drawing the same shape would be a second thing to keep in step.
+ *
+ * The caller decides whether to render it at all - an absent window means "we have not
+ * been told", which must show as nothing rather than as a bar sitting at 0%.
+ */
+export function RateMeter({
+  window,
+  label,
+  title,
+}: {
+  window: RateLimitWindow;
+  label: string;
+  title: string;
+}): React.JSX.Element {
+  const pct = Math.min(100, Math.max(0, window.usedPercentage));
+  return (
+    <Tooltip label={`${title}: ${Math.round(window.usedPercentage)}% used, resets ${untilReset(window.resetsAt)}`}>
+      {/* `rt-ctx-<tone>` rather than a private rate-* tone set: the amber/red escalation is
+          already defined for the context meter, and a second copy would drift. */}
+      <span className={`rt-ctx rt-ctx-${contextTone(window.usedPercentage)} rate-meter`}>
+        <span className="rate-label">{label}</span>
+        <span className="rt-meter" aria-hidden>
+          <span className="rt-meter-fill" style={{ width: `${pct}%` }} />
+        </span>
+        <span className="rt-ctx-num">{Math.round(window.usedPercentage)}%</span>
+      </span>
+    </Tooltip>
   );
 }
 

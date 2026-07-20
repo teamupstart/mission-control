@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
+import { writeOtelEnv } from "@shared/claude-settings.ts";
 
 const MARKER = "harness-hook";
 const EVENTS = [
@@ -230,8 +231,16 @@ export function removeIntegrations(): IntegrationResult {
     const { hook, mcp } = satellitePaths();
     const runtime = resolveRuntime();
     editHooks(true, runtime.hookCommand, hook);
+    // TEARDOWN, and asymmetric with install on purpose - the same shape as the skill
+    // symlinks. Installing telemetry is the Cost settings panel's job, because it edits
+    // an `env` block that makes EVERY Claude session on the machine export to us and
+    // that is an ask, not a side effect of pressing "Install integrations". Removing it
+    // is unconditional, because an env block left pointing at a daemon that is no longer
+    // installed makes every session on the machine retry an export forever.
+    const telemetry = writeOtelEnv(null);
     const mcpMsg = claudeMcp(false, runtime, mcp);
-    return { ok: true, message: `Claude integrations removed. ${mcpMsg}` };
+    const telemetryMsg = telemetry === "removed" ? " Cost telemetry env block removed." : "";
+    return { ok: true, message: `Claude integrations removed. ${mcpMsg}${telemetryMsg}` };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }

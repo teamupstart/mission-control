@@ -51,13 +51,20 @@ export const HookIngestSchema = z.object({
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
 
+/** One rate-limit window as the statusLine forwarder normalizes it. `resetsAt` is epoch SECONDS. */
+const RateLimitWindowSchema = z.object({
+  usedPercentage: z.number(),
+  resetsAt: z.number(),
+});
+
 /**
  * Normalized status-line payload the forwarder posts to the daemon. Claude Code
  * pipes a rich JSON blob to the configured statusLine command on every render;
  * our forwarder (hooks/harness-statusline.mjs) lifts the fields we care about
- * into this flat, camelCased shape - model, context window, and reasoning effort -
- * plus the terminal env used to bind it to a discovered session. Everything but
- * `env` is optional so an older Claude Code that omits a field still validates.
+ * into this flat, camelCased shape - model, context window, reasoning effort, and
+ * the subscription's rate limits - plus the terminal env used to bind it to a
+ * discovered session. Everything but `env` is optional so an older Claude Code that
+ * omits a field still validates.
  */
 export const StatusLineIngestSchema = z.object({
   sessionId: z.string().nullable().optional().default(null),
@@ -78,6 +85,24 @@ export const StatusLineIngestSchema = z.object({
     .optional(),
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
   thinkingEnabled: z.boolean().optional(),
+  /**
+   * The subscription's rate-limit windows, lifted from `payload.rate_limits`.
+   *
+   * The ONLY local source of a real subscription's limits - OpenTelemetry has no quota
+   * metric, which is why the statusLine wrapper is still in the cost design at all.
+   * Cost is pointedly NOT taken from here even though the payload carries it: OTel owns
+   * cost, and one source per fact is what keeps two numbers from disagreeing on screen.
+   *
+   * Every level is optional because every level is genuinely absent for someone: an
+   * API-key user has no `rate_limits` at all, a session that has not yet had an API
+   * response has the key but no windows, and the two windows arrive independently.
+   */
+  rateLimits: z
+    .object({
+      fiveHour: RateLimitWindowSchema.nullable().optional(),
+      sevenDay: RateLimitWindowSchema.nullable().optional(),
+    })
+    .optional(),
 });
 export type StatusLineIngest = z.infer<typeof StatusLineIngestSchema>;
 
@@ -780,6 +805,152 @@ export const HarnessesConfigPatchSchema = z
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
+// ---- cost telemetry ----
+
+/**
+ * Slowest and fastest export intervals we will write into a user's settings.
+ *
+ * The OTel SDK default is 60s, which makes a cost badge feel dead beside a context meter
+ * that moves every render. Lower is livelier and costs one HTTP request per session on
+ * the machine per interval - so the floor is where that stops being free. The ceiling is
+ * the SDK default: anything slower is better expressed by turning the feature off.
+ */
+export const COST_EXPORT_INTERVAL_MIN_MS = 5_000;
+export const COST_EXPORT_INTERVAL_MAX_MS = 60_000;
+
+/**
+ * The Cost settings section: whether we ask Claude Code for telemetry at all, how often,
+ * and which number the fleet strip leads with. A schema-validated blob over `app_config`,
+ * exactly like Foreman/Skills/Harnesses, so a new key needs no migration.
+ *
+ * `enabled` is not merely a display toggle - it is the thing that writes (or removes) the
+ * `env` block in `~/.claude/settings.json`, which is the user's file. Off by default for
+ * that reason: nothing edits their config until they ask.
+ */
+export const CostConfigSchema = z.object({
+  /** Whether the OTel `env` block is installed in `~/.claude/settings.json`. */
+  enabled: z.boolean().default(false),
+  /** `OTEL_METRIC_EXPORT_INTERVAL`, in ms. */
+  exportIntervalMs: z
+    .number()
+    .int()
+    .min(COST_EXPORT_INTERVAL_MIN_MS)
+    .max(COST_EXPORT_INTERVAL_MAX_MS)
+    .default(15_000),
+  /**
+   * What the topbar strip leads with. `usd` is honest about being an estimate; `plan`
+   * is the truer number for a Pro/Max subscriber, for whom the dollars are notional.
+   */
+  view: z.enum(["usd", "plan"]).default("usd"),
+});
+export type CostConfig = z.infer<typeof CostConfigSchema>;
+
+/** Partial update of the cost config from the dashboard. */
+export const CostConfigPatchSchema = CostConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type CostConfigPatch = z.infer<typeof CostConfigPatchSchema>;
+
+/**
+ * What the daemon reports back about the telemetry wiring, beyond the stored config.
+ *
+ * The config records intent; this records what is actually true of the user's
+ * `settings.json` right now. They diverge for real reasons - a hand-edited file, an
+ * install from a different checkout, a `CLAUDE_CODE_ENABLE_TELEMETRY` the user set
+ * themselves - and a panel that showed only the intent would be confidently wrong.
+ */
+export interface CostTelemetryStatus {
+  config: CostConfig;
+  /** True when our `env` keys are present in `~/.claude/settings.json`. */
+  installed: boolean;
+  /**
+   * True once ANY export has ever landed in the ledger.
+   *
+   * The difference between "configured" and "working", which `installed` alone cannot
+   * tell you: the `env` block only reaches sessions started AFTER it was written, so the
+   * ordinary first-run state is a correctly-installed feature that has recorded nothing
+   * and will go on recording nothing until the user opens a new session. Without this the
+   * panel would show a switch that is on beside a dashboard with no numbers on it, and
+   * nothing to explain the gap.
+   */
+  receiving: boolean;
+  /**
+   * Set when `OTEL_METRICS_INCLUDE_SESSION_ID` reads false anywhere we can see it. That
+   * value silently destroys per-session attribution - every datapoint arrives
+   * unattributable and is dropped - so it is surfaced rather than diagnosed later.
+   */
+  sessionIdDisabled: boolean;
+  /** Absolute path of the settings file we would edit, for the panel to name. */
+  settingsPath: string;
+}
+
+/**
+ * OTLP/HTTP JSON metrics, as Claude Code's exporter sends them to `POST /v1/metrics`.
+ *
+ * Deliberately LOOSE. This is Claude Code's wire shape, not ours: we validate only the
+ * fields we actually read and leave everything else optional, so an upstream addition
+ * never fails a whole export. The alternative - a strict mirror - would turn any change
+ * on their side into total, silent data loss on ours.
+ *
+ * `asInt` accepts a string as well as a number because OTLP/JSON encodes 64-bit ints as
+ * strings, and `timeUnixNano` (~1.78e18) is past `Number.MAX_SAFE_INTEGER` - it is read
+ * as text and never parsed as a JS number. See `usage_ledger.window_end_ns`.
+ */
+export const OtlpMetricsSchema = z.object({
+  resourceMetrics: z
+    .array(
+      z.object({
+        scopeMetrics: z
+          .array(
+            z.object({
+              metrics: z
+                .array(
+                  z.object({
+                    name: z.string(),
+                    sum: z
+                      .object({
+                        /** 1 = delta (Claude Code's default), 2 = cumulative. */
+                        aggregationTemporality: z.number().optional(),
+                        dataPoints: z
+                          .array(
+                            z.object({
+                              asDouble: z.number().optional(),
+                              asInt: z.union([z.number(), z.string()]).optional(),
+                              startTimeUnixNano: z.union([z.string(), z.number()]).optional(),
+                              timeUnixNano: z.union([z.string(), z.number()]).optional(),
+                              attributes: z
+                                .array(
+                                  z.object({
+                                    key: z.string(),
+                                    value: z
+                                      .object({ stringValue: z.string().optional() })
+                                      .passthrough(),
+                                  }),
+                                )
+                                .optional()
+                                .default([]),
+                            }),
+                          )
+                          .optional()
+                          .default([]),
+                      })
+                      .optional(),
+                  }),
+                )
+                .optional()
+                .default([]),
+            }),
+          )
+          .optional()
+          .default([]),
+      }),
+    )
+    .optional()
+    .default([]),
+});
+export type OtlpMetrics = z.infer<typeof OtlpMetricsSchema>;
 
 // ---- Foreman session work queues ----
 

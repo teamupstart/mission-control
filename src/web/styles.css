@@ -42,6 +42,14 @@
   --prio-high: var(--attention);
   --prio-blocker: var(--danger);
 
+  /* Spend. An alias of the off-palette purple by design: cost is neither a session
+     state nor a warning, so it must not borrow a tone that already means one - a card
+     is not "working" because it is expensive. It escalates to --attention and --danger
+     at the thresholds in @shared/cost.ts, which is the only place they are decided.
+     Deliberately NOT a member of TONE_ORDER: that registry drives grid sort, rail
+     sections and board columns, none of which should reorder by spend. */
+  --cost: var(--purple);
+
   --radius: 13px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -222,6 +230,39 @@ body {
 }
 .stat-working .stat-n {
   color: var(--working);
+}
+
+/* The fleet cost strip: today's spend and the plan meters. INSIDE the topbar, because
+   --topbar-h is measured off the header with a ResizeObserver - a sibling placed after
+   </header> would overflow focus mode by exactly this strip's height. */
+.fleet-cost {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.stat-cost {
+  border-color: color-mix(in oklab, var(--cost) 40%, var(--border));
+}
+.stat-cost .stat-n {
+  color: var(--cost);
+}
+/* The plan meters, sized up from the card's context meter: this one sits in the topbar
+   next to pill-shaped stats, not in a dense card body. */
+.rate-meter {
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+}
+.rate-meter .rt-meter {
+  width: 52px;
+}
+.rate-label {
+  font-weight: 650;
+  color: var(--dim);
+  letter-spacing: 0.02em;
 }
 
 .link {
@@ -662,6 +703,36 @@ body {
 .rt-ctx-high .rt-ctx-num {
   color: #e5877f;
 }
+
+/* Cost sits ON the runtime row rather than beside it, so card/detail/tile all wrap the
+   two together and the chip lands in the same flow as the model and context pills. */
+.card-runtime-line,
+.tile-runtime-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+/* The row inside already has its own margin; the wrapper must not add a second one. */
+.card-runtime-line > .card-runtime,
+.tile-runtime-line > .card-runtime {
+  margin: 0;
+}
+.cost-chip {
+  color: var(--cost);
+  border-color: color-mix(in oklab, var(--cost) 32%, var(--border-soft));
+  background: color-mix(in oklab, var(--cost) 12%, var(--panel-2));
+  font-variant-numeric: tabular-nums;
+  font-weight: 550;
+}
+.cost-attention {
+  --cost: var(--attention);
+}
+.cost-danger {
+  --cost: var(--danger);
+}
+/* The rail's spelling of this same signal is a glyph in `.rail-marks` (see RailRow), which
+   is styled with the rest of the console rail rather than here. */
 
 .activity {
   margin: 0;
@@ -4254,12 +4325,17 @@ kbd {
   cursor: default;
 }
 
-/* ---- Harnesses (dispatch-time defaults) ----
-   Reuses the skills panel's row shape: a `.kb-row` with a `.skill-switch` control.
-   Only the label's badge alignment and the blurb spacing are section-specific. */
-.harnesses-blurb {
+/* A section's opening paragraph, above its first row. `.settings-hint` is written for a
+   hint BELOW something (top margin, no bottom), which is the wrong way round here - so
+   this flips it. Shared by Harnesses and Cost; a third section wanting the same shape
+   should use this rather than mint another one-off. */
+.settings-blurb {
   margin: 0 0 12px;
 }
+
+/* ---- Harnesses (dispatch-time defaults) ----
+   Reuses the skills panel's row shape: a `.kb-row` with a `.skill-switch` control.
+   Only the label's badge alignment is section-specific. */
 .harnesses-row .kb-row-label {
   display: flex;
   align-items: center;
@@ -4294,6 +4370,35 @@ kbd {
 }
 .harnesses-select:disabled {
   opacity: 0.55;
+}
+
+/* ---- Cost (telemetry + what the fleet spends) ----
+   Reuses the skills/harnesses row shape (`.kb-row` + `.skill-switch`); the only thing
+   this section owns is the select, which is the first settings panel to need one that
+   isn't inside an `.alert-row`. */
+.settings-select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 7px;
+}
+.settings-select:disabled {
+  color: var(--dim);
+  opacity: 0.7;
+}
+/* Paths and env-var names in the blurbs are identifiers you may have to go and look at,
+   so they read as code rather than as prose. */
+.settings-section code {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--fg);
+  word-break: break-all;
 }
 
 /* ---- Foreman (auto-responder) ---- */

@@ -6,6 +6,7 @@ import { SettingsModal, SETTINGS_CATEGORIES } from "../src/web/components/Settin
 import type { SettingsCategoryId } from "../src/web/components/SettingsModal.tsx";
 import { LAYOUTS } from "../src/web/lib/layout.ts";
 import type { ForemanState } from "../src/web/useForeman.ts";
+import type { CostState } from "../src/web/useCost.ts";
 import { withOverlayHost } from "./helpers/overlay-host.ts";
 
 // Rendered rather than driven through a browser: the dashboard's SSE stream holds the
@@ -18,6 +19,11 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 // renders the panel's defaults. Static render never runs effects, so nothing fetches.
 const FOREMAN: ForemanState = { config: null, status: null, backlogPlan: null, update: async () => {}, error: null };
 
+// Cost is owned by App and passed in for the same reason as Foreman - the topbar strip
+// reads the same view setting. A null status is the pre-poll state, which renders the
+// panel's shipped defaults with its controls disabled.
+const COST: CostState = { status: null, update: async () => {}, error: null };
+
 // The layout is owned by App too, for the same reason as Foreman: the dashboard behind the
 // modal renders it, so the panel only edits what it's handed.
 function render(initialCategory?: SettingsCategoryId): string {
@@ -28,6 +34,7 @@ function render(initialCategory?: SettingsCategoryId): string {
       createElement(SettingsModal, {
         onClose: () => {},
         foreman: FOREMAN,
+        cost: COST,
         layout: "grid",
         onLayoutChange: () => {},
         initialCategory,
@@ -43,6 +50,7 @@ const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
 const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
+const COST_ONLY = /Track what the fleet costs/; // the telemetry master toggle label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -83,7 +91,7 @@ test("the layout picker offers every layout, with the live one checked", () => {
 });
 
 test("the layout panel is absent from every other category", () => {
-  for (const id of ["keyboard", "skills", "harnesses", "foreman", "appearance"] as const) {
+  for (const id of ["keyboard", "skills", "harnesses", "foreman", "appearance", "cost"] as const) {
     assert.doesNotMatch(render(id), LAYOUT_ONLY, `layout picker leaked into ${id}`);
   }
 });
@@ -113,6 +121,32 @@ test("Harnesses is a category of its own: its panel shows, the others don't", ()
   assert.doesNotMatch(html, KEYBOARD_ONLY);
   assert.doesNotMatch(html, SKILLS_ONLY);
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⚙<\/span>Harnesses/);
+});
+
+test("Cost is a category of its own: its panel shows, the others don't", () => {
+  const html = render("cost");
+  assert.match(html, COST_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, HARNESSES_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>\$<\/span>Cost/);
+});
+
+test("the cost panel says every number is an estimate", () => {
+  // The one thing this panel must never stop saying. Anthropic's own docs are explicit
+  // that the client-side figure can differ from billing, and on a subscription the
+  // dollars are notional entirely - a panel that dropped the word would be presenting a
+  // guess as a bill.
+  assert.match(render("cost"), /estimate/i);
+});
+
+test("the cost panel's controls are disabled until the first read lands", () => {
+  // `status` is null here (static render runs no effects), which is the pre-poll instant.
+  // A live-looking toggle in that window would let a click race the fetch and write a
+  // config built on defaults the daemon never sent.
+  const html = render("cost");
+  for (const control of html.match(/<(input|select)[^>]*>/g) ?? []) {
+    assert.match(control, /disabled/, `cost control should be disabled pre-poll: ${control}`);
+  }
 });
 
 test("initialCategory swaps the panel: skills shows, keyboard does not", () => {

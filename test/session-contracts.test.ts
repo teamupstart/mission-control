@@ -185,7 +185,11 @@ function edit(dir: string, rel: string, from: string, to: string): void {
 }
 
 const SESSION_END = "  paneDialog: PaneDialog | null;\n}";
-const SERVER_EVENT_END = `  | { type: "task_remove"; id: string };`;
+// Anchored MID-union rather than on the last variant, so adding one to the end of
+// `ServerEvent` doesn't break this probe. `task_remove` without its trailing semicolon
+// matches wherever it sits in the union, and the probe is spliced in beside it - an
+// unhandled variant is unhandled whatever its position.
+const SERVER_EVENT_ANCHOR = `  | { type: "task_remove"; id: string }`;
 
 /**
  * Matched on error CODES plus the identifiers involved, never on diagnostic
@@ -234,8 +238,8 @@ test("a ServerEvent variant the stream doesn't handle fails typecheck", () => {
     edit(
       dir,
       "src/shared/types.ts",
-      SERVER_EVENT_END,
-      `  | { type: "task_remove"; id: string }\n  | { type: "probe_unhandled"; id: string };`,
+      SERVER_EVENT_ANCHOR,
+      `  | { type: "probe_unhandled"; id: string }\n  | { type: "task_remove"; id: string }`,
     ),
   );
   assert.match(

@@ -16,6 +16,8 @@ import type {
   ForemanConfig,
   ForemanConfigPatch,
   FormOutcome,
+  CostConfigPatch,
+  CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
   ResolveEpisode,
@@ -60,6 +62,12 @@ export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/s
 export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
+/**
+ * Cost telemetry: the stored config PLUS what is actually in the user's settings.json.
+ * Both, because they diverge for real reasons (a hand-edited file, an install from
+ * another checkout) and a panel showing only the intent would be confidently wrong.
+ */
+export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/config");
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**
@@ -317,6 +325,7 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+  setCostConfig: (cfg: CostConfigPatch) => put(`/api/cost/config`, cfg),
 
   // --- Away mode ---
   setAwayConfig: (cfg: AwayConfigPatch) => put(`/api/away`, cfg),

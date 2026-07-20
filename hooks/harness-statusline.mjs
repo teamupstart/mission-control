@@ -15,20 +15,13 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { BASE_URL, captureTerminalEnv, readToken, stateDir } from "../src/shared/harness-runtime.mjs";
-
-/** Effort levels the daemon accepts; anything else is dropped (schema is strict). */
-const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+import { BASE_URL, readToken, stateDir } from "../src/shared/harness-runtime.mjs";
+// The payload -> wire-shape normalization, in its own module so it can be tested without
+// importing this script (which renders and exits at import time). See statusline-body.mjs.
+import { toBody } from "./statusline-body.mjs";
 
 /** Default inner status line when the user hasn't recorded their own. */
 const DEFAULT_INNER = "npx -y ccstatusline@latest";
-
-function num(v) {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
-}
-function numOrUndef(v) {
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
-}
 
 /** Collect all of stdin as a string (the raw payload we also re-feed the inner cmd). */
 function readStdin() {
@@ -58,46 +51,6 @@ function innerCommand() {
     // none recorded - fall through to the default
   }
   return DEFAULT_INNER;
-}
-
-/** Normalize the raw Claude statusLine payload into the daemon's flat wire shape. */
-function toBody(payload) {
-  const model =
-    payload.model && typeof payload.model === "object"
-      ? { id: payload.model.id, displayName: payload.model.display_name }
-      : typeof payload.model === "string"
-        ? { id: payload.model }
-        : undefined;
-
-  const cw = payload.context_window;
-  let contextWindow;
-  if (cw && typeof cw === "object") {
-    const cu = cw.current_usage;
-    const tokens =
-      cu && typeof cu === "object"
-        ? num(cu.input_tokens) + num(cu.cache_read_input_tokens) + num(cu.cache_creation_input_tokens)
-        : 0;
-    contextWindow = {
-      usedPercentage: numOrUndef(cw.used_percentage),
-      contextWindowSize: numOrUndef(cw.context_window_size),
-      tokens: tokens > 0 ? tokens : undefined,
-    };
-  }
-
-  const level = payload.effort && typeof payload.effort === "object" ? payload.effort.level : undefined;
-  const effort = typeof level === "string" && EFFORTS.has(level) ? level : undefined;
-
-  return {
-    sessionId: payload.session_id ?? null,
-    cwd: payload.cwd ?? payload.workspace?.current_dir ?? null,
-    ts: Date.now(),
-    env: captureTerminalEnv(),
-    model,
-    contextWindow,
-    effort,
-    thinkingEnabled:
-      payload.thinking && typeof payload.thinking.enabled === "boolean" ? payload.thinking.enabled : undefined,
-  };
 }
 
 /** Fire-and-forget POST of the reading to the daemon; never throws, self-limits. */

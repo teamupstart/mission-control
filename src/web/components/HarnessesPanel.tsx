@@ -78,7 +78,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
         <h3>Harnesses</h3>
       </div>
 
-      <p className="settings-hint harnesses-blurb">
+      <p className="settings-hint settings-blurb">
         Defaults for the agents Mission Control <strong>dispatches</strong>. These never touch
         sessions you started yourself and the app merely discovered - only the ones it launches.
       </p>

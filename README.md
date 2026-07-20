@@ -43,6 +43,10 @@ and get your decision back.
   moment a session needs input, a review lands, a no-mistakes gate parks, a session
   **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
+- **Tracks what the fleet costs**: an opt-in badge on every card, and a fleet total plus
+  your subscription's rate-limit meters in the topbar. It consumes **Claude Code's own
+  cost figures** over OpenTelemetry - Mission Control keeps no price list and does no
+  arithmetic of its own. See [Cost telemetry](#cost-telemetry).
 - **Says what each session is for**: every card carries a one-sentence **Goal** - what
   that session is currently trying to solve - derived from your own prompts and
   refreshed as you steer it. No API key: it runs the local `claude` CLI.
@@ -342,6 +346,49 @@ What it deliberately isn't:
 
 Codex sessions say so instead of showing one: they carry no hooks, so there's no prompt
 to read.
+
+### Cost telemetry
+
+You run a fleet; this tells you what it costs. Off by default - switch it on in
+**Settings → Cost**, or from the CLI:
+
+```sh
+npm run install-telemetry     # adds an env block to ~/.claude/settings.json
+npm run install-hooks -- --uninstall   # removes it again
+```
+
+Once on, every card carries a **spend badge** beside its model / thinking / context row,
+and the topbar carries the fleet's **spend today** plus **5h** and **7d** plan meters.
+
+Two sources, each used for the one thing only it can do:
+
+| Source | Provides |
+|---|---|
+| **OpenTelemetry** | `claude_code.cost.usage` (USD) and `claude_code.token.usage` by tier, per session, model, and `query_source` (so subagent spend is separated natively) |
+| **statusLine payload** | your subscription's `five_hour` / `seven_day` rate-limit windows - the only local source of real limits, since OTel has no quota metric |
+
+The plan meters need the [opt-in statusLine wrapper](#precise-status-claude-hooks)
+(`npm run install-statusline`); the spend figures don't. They are two separate opt-ins
+because they are two different asks of your config - one adds an `env` block, the other
+rewrites the command that draws your terminal line.
+
+**Every figure is a local estimate.** Anthropic's own docs say the client-side number can
+differ from your bill, and on a Pro or Max plan the dollars are notional entirely - the
+plan meters are the real constraint there. Nothing here reconstructs cost from a token
+count times a rate table: there is no rate table to drift, no effective-date logic, and
+no exposure to a mispriced model.
+
+Enabling it writes six keys into your `~/.claude/settings.json` `env` block (see
+[Configuration](#configuration)); the edit is surgical, your other settings and comments
+are left byte-for-byte intact, and switching it off removes only the keys it added. It
+has to be a settings-level `env` rather than a per-spawn variable because Mission Control
+sees sessions it didn't start.
+
+Ledger rows are kept for **180 days** and pruned by age alone - a finished session's cost
+is exactly when the record starts being interesting. Codex sessions show no figure: their
+`tokens_used` scalar carries no tier split and no cost, so it can't be priced to the same
+confidence, and a number with a different error bar beside a Claude one is worse than
+none.
 
 ### Review channel (MCP)
 
@@ -1244,6 +1291,26 @@ that looks perfectly healthy would help nobody.
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
+| `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](#cost-telemetry) installers edit. Overridable so tests never touch your real one |
+
+[Cost telemetry](#cost-telemetry) is not configured by the environment - it is a switch in
+**Settings → Cost** (or `npm run install-telemetry`), which writes these keys into your
+`~/.claude/settings.json` `env` block so that every Claude Code session on the machine
+inherits them, including ones this app never launched:
+
+| Key | Written as | Meaning |
+|-----|-----|---------|
+| `CLAUDE_CODE_ENABLE_TELEMETRY` | `1` | turns Claude Code's own metrics on |
+| `OTEL_METRICS_EXPORTER` | `otlp` | export over OTLP |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/json` | JSON, so the daemon takes no protobuf dependency |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://127.0.0.1:<MISSION_PORT>` | the daemon; the SDK appends `/v1/metrics` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `x-harness-token=…` | the same per-machine token the hooks present |
+| `OTEL_METRIC_EXPORT_INTERVAL` | `15000` | how often each session reports, in ms (5s-60s, set in Settings) |
+
+`OTEL_METRICS_INCLUDE_SESSION_ID` is deliberately **not** written: it defaults to true and
+must stay true, because with it false every datapoint arrives with no session id and none
+of it can be attributed. If you have set it to `false` yourself, the daemon says so at
+startup and the Cost panel says so on screen.
 
 > **Upgrading from Fleet Control (`FLEET_*`) or ai-harness (`HARNESS_*`)?** Nothing to do.
 > Both older env prefixes are still honored as fallbacks - `MISSION_*` wins where more than
@@ -1271,6 +1338,8 @@ npm run build          # build web + MCP bundle
 npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
+npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)
+npm run install-telemetry  # + cost telemetry env block (see Cost telemetry)
 npm run install-service# LaunchAgent (macOS)
 ```
 
@@ -1279,7 +1348,11 @@ npm run install-service# LaunchAgent (macOS)
 The daemon binds to loopback only, and every data endpoint (`/api/*`, `/events`)
 additionally requires a loopback `Host` header so a web page you visit can't reach
 it via DNS-rebinding - a defense that matters now that dispatch can launch agents
-(effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook
-and MCP ingress is authenticated with a per-machine token in `~/.mission-control/token`
-so other local processes can't spoof session or task state. Session and task
+(effectively RCE) and reads leak task prompts, repo paths, and transcripts. Hook,
+statusLine, OTLP metrics (`/v1/metrics`) and MCP ingress are authenticated with a
+per-machine token in `~/.mission-control/token` so other local processes can't spoof
+session, task, or spend state. Cost datapoints arrive carrying `user.email`,
+`user.account_uuid`, `user.account_id` and `organization.id`; the ingest reads four
+attributes and discards the rest before anything is written, so none of it reaches the
+database. Session and task
 actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.

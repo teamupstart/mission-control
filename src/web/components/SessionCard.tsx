@@ -16,6 +16,7 @@ import { WorkQueue } from "./WorkQueue.tsx";
 import {
   AGENT_LABEL,
   AgentDot,
+  CostChip,
   GoalLine,
   PrChip,
   RuntimeMetaRow,
@@ -249,7 +250,13 @@ export function SessionCard({
         )}
       </dl>
 
-      {session.meta && <RuntimeMetaRow meta={session.meta} />}
+      {/* Cost rides WITH the runtime row, not instead of it: a session can have a model
+          and no telemetry yet (no chip), or telemetry and no statusLine (no runtime row),
+          so neither may gate the other. */}
+      <span className="card-runtime-line">
+        {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        <CostChip cost={session.cost} />
+      </span>
 
       {session.task && (
         <div className={`task-chip task-${session.task.status}`} title={`${session.task.kind} task`}>

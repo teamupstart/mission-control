@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, RuntimeMetaRow } from "../session-bits.tsx";
+import { AgentDot, CostChip, RuntimeMetaRow } from "../session-bits.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
@@ -215,7 +215,14 @@ export function SessionTile({
       {/* The same runtime row the card shows - model, thinking level, and a context meter
           that now carries its number. The board used to draw only the bare meter here; the
           percentage is the triage signal (a session near full is about to compact). */}
-      {session.meta && <RuntimeMetaRow meta={session.meta} />}
+      {/* Beside the runtime row, deliberately NOT up in `.tile-marks` above: that row
+          means "things that want your attention", and a routine spend figure is not an
+          alert. When it stops being routine the chip's own tone says so (costTone), which
+          keeps one spelling of the number per surface rather than two. */}
+      <span className="tile-runtime-line">
+        {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        <CostChip cost={session.cost} />
+      </span>
 
       <span className="tile-foot">
         <span className="tile-branch">{session.gitBranch ?? session.nameSource}</span>

@@ -12,6 +12,7 @@ import type {
   ReviewItem,
   ReviewKind,
   ReviewStatus,
+  SessionCost,
   SessionGoal,
   SessionNote,
   SessionQueue,
@@ -216,6 +217,49 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
 
+    -- What the fleet has spent, one row per OpenTelemetry export window.
+    --
+    -- Its OWN table rather than a new kind in session_events, and the reason is written
+    -- down at logEvent below: that table has exactly one writer, and hooksEverSeen asks
+    -- "any row for this session?" - not "any row of a hook kind". A second writer would
+    -- make every session it touched claim hooks it never emitted, which is the
+    -- installation fact the work queue gates on. gate_replies got its own table for
+    -- exactly this reason; so does this.
+    --
+    -- Keyed on note_key, never on session_id: a session id is synthetic (tty+pid+start)
+    -- and re-mints on every restart, while this record is meant to outlive the session
+    -- that made it. OTel's session.id attribute IS the agent session id, which is what
+    -- noteKeyFor already prefers.
+    CREATE TABLE IF NOT EXISTS usage_ledger (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      note_key      TEXT NOT NULL,           -- agentSessionId (OTel session.id)
+      session_id    TEXT,                    -- provenance only; never joined on
+      agent         TEXT NOT NULL DEFAULT 'claude',
+      -- Both NOT NULL with an empty-string "unknown", and that is load-bearing rather
+      -- than tidiness: SQLite treats NULLs as DISTINCT inside a UNIQUE index, so a
+      -- nullable model_id would make the ON CONFLICT below never fire for a datapoint
+      -- that carried no model attribute - every retry of that export would insert a new
+      -- row and the total would climb on its own. The writer coalesces; nothing stores null.
+      model_id      TEXT NOT NULL DEFAULT '',  -- raw, e.g. claude-opus-4-8[1m]
+      query_source  TEXT NOT NULL DEFAULT '',  -- main | subagent | auxiliary
+      -- The datapoint's dedup identity, as TEXT. timeUnixNano is ~1.78e18, well past
+      -- Number.MAX_SAFE_INTEGER (9.007e15), so parsing it as a JS number would silently
+      -- collide adjacent windows. Holds timeUnixNano for a delta datapoint (each export
+      -- is a distinct window, and the rows accumulate) and startTimeUnixNano for a
+      -- cumulative one (the series has one fixed start, so every export replaces the same
+      -- row with the newer running total). SUM over rows is correct in both cases.
+      window_end_ns TEXT NOT NULL,
+      ts            INTEGER NOT NULL,        -- window end in epoch ms, for range queries
+      cost_usd      REAL NOT NULL DEFAULT 0,
+      input         INTEGER NOT NULL DEFAULT 0,
+      output        INTEGER NOT NULL DEFAULT 0,
+      cache_read    INTEGER NOT NULL DEFAULT 0,
+      cache_write   INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(note_key, model_id, query_source, window_end_ns)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ledger_key ON usage_ledger(note_key, ts);
+    CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);
+
     -- The last skills generation each session was told about. Durable on purpose:
     -- held in memory, a daemon restart would forget every ack while the generation
     -- stayed put, and the next idle moment would type /reload-skills into every
@@ -367,6 +411,11 @@ function migrate(d: DatabaseSync): void {
   // session whose prompts were all seen before goals existed. (This is the payoff of a
   // separate table over columns on `session_notes`: no ALTER, and no row written before
   // this build that has to be reasoned about.)
+  //
+  // `usage_ledger` needs no migration for the same reason, and it is the stronger case:
+  // there is nothing to backfill at all. An existing install starts accruing spend from
+  // the first export after telemetry is switched on, and reads as unpriced (not $0)
+  // before that - which is the truthful answer for work nobody was measuring.
 
   rebuildInFlightIndexIfStale(d);
 }
@@ -1278,6 +1327,137 @@ export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number)
     )
     .run(olderThan, ...keys);
   return Number(r.changes);
+}
+
+// ---- usage ledger (what the fleet has spent) ----
+
+/**
+ * The columns an OTel datapoint may land in, keyed by the name the ingest uses.
+ *
+ * A WHITELIST, and the only reason `upsertUsageCell` can interpolate a column name into
+ * SQL at all: the value is looked up here, never taken from the wire. A `type` attribute
+ * the exporter invents tomorrow finds no entry and is dropped, which is the right answer
+ * for a tier we cannot price into a column that does not exist.
+ */
+const USAGE_COLS = {
+  costUsd: "cost_usd",
+  input: "input",
+  output: "output",
+  cacheRead: "cache_read",
+  cacheWrite: "cache_write",
+} as const;
+export type UsageCol = keyof typeof USAGE_COLS;
+
+/** The identity of one export window, as the ingest resolves it. */
+export interface UsageCell {
+  noteKey: string;
+  /** Provenance only - which live session we believed this key belonged to. */
+  sessionId: string | null;
+  agent: string;
+  /** Empty string when the datapoint carried no such attribute; never null. See the table. */
+  modelId: string;
+  querySource: string;
+  /** The datapoint's dedup identity, as text. Never parsed as a JS number. */
+  windowEndNs: string;
+  /** Window end in epoch ms, derived with BigInt division. */
+  ts: number;
+}
+
+/**
+ * Record one metric's value for one export window.
+ *
+ * REPLACE on conflict, never SUM, and the direction is the whole point. OTel delta
+ * datapoints carry a unique `(start, end)` window, so a retried or duplicated POST
+ * arrives with the same `window_end_ns` and overwrites the row with an identical value -
+ * it cannot double-count. An additive upsert would double-count on exactly that retry,
+ * which is the failure this is here to make impossible. The cumulative total is `SUM`
+ * over rows at read time.
+ *
+ * One COLUMN at a time, because `cost.usage` and `token.usage` are separate metrics
+ * sharing one window: each datapoint updates only its own column, which makes the writes
+ * order-independent and lets a partial export (cost arrived, tokens didn't) still be
+ * correct for what it carried.
+ *
+ * `ts` is also refreshed, so a cumulative series - whose rows are replaced rather than
+ * accumulated - still reports the freshness of its LATEST export rather than of its first.
+ */
+export function upsertUsageCell(k: UsageCell, col: UsageCol, value: number): void {
+  const c = USAGE_COLS[col];
+  if (!c) throw new Error(`refusing to write an unknown usage column: ${String(col)}`);
+  openDb()
+    .prepare(
+      `INSERT INTO usage_ledger
+         (note_key, session_id, agent, model_id, query_source, window_end_ns, ts, ${c})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(note_key, model_id, query_source, window_end_ns)
+         DO UPDATE SET ${c} = excluded.${c},
+                       ts = MAX(usage_ledger.ts, excluded.ts),
+                       session_id = COALESCE(excluded.session_id, usage_ledger.session_id)`,
+    )
+    .run(k.noteKey, k.sessionId, k.agent, k.modelId, k.querySource, k.windowEndNs, k.ts, value);
+}
+
+/**
+ * What one session has spent, or null when the ledger has never heard of its key.
+ *
+ * Null rather than a zeroed summary, deliberately: "we have not been told" and "it cost
+ * nothing" are different claims, and only the first is ever true of a session with no
+ * rows. A card that showed `$0.00` for an untracked session would be asserting the one
+ * of the two that is false.
+ *
+ * The per-field `?? 0` is the same defence `episodesFor`'s row mapper takes: these rows
+ * outlive the daemon that wrote them, so a column added later reads as absent on an old
+ * row rather than as `undefined` arriving on the wire.
+ */
+export function sessionCostFor(noteKey: string): SessionCost | null {
+  const r = openDb()
+    .prepare(
+      `SELECT SUM(cost_usd) c, SUM(input) i, SUM(output) o,
+              SUM(cache_read) cr, SUM(cache_write) cw, MAX(ts) u
+         FROM usage_ledger WHERE note_key = ?`,
+    )
+    .get(noteKey) as
+    | { c: number | null; i: number | null; o: number | null; cr: number | null; cw: number | null; u: number | null }
+    | undefined;
+  // `SUM` over no rows is NULL, not 0 - which is what distinguishes the two claims above.
+  if (!r || r.c == null) return null;
+  return {
+    costUsd: r.c,
+    input: r.i ?? 0,
+    output: r.o ?? 0,
+    cacheRead: r.cr ?? 0,
+    cacheWrite: r.cw ?? 0,
+    updatedAt: r.u ?? 0,
+  };
+}
+
+/** Fleet-wide dollars since `tsMs`. 0 when nothing landed in the window, which is a fact. */
+export function fleetSpendSince(tsMs: number): number {
+  const r = openDb()
+    .prepare(`SELECT SUM(cost_usd) c FROM usage_ledger WHERE ts >= ?`)
+    .get(tsMs) as { c: number | null } | undefined;
+  return r?.c ?? 0;
+}
+
+/** True when the ledger holds anything at all - "has telemetry ever arrived?". */
+export function usageLedgerHasRows(): boolean {
+  const r = openDb().prepare(`SELECT 1 AS x FROM usage_ledger LIMIT 1`).get() as
+    | { x: number }
+    | undefined;
+  return Boolean(r);
+}
+
+/**
+ * Age out ledger rows. Returns how many went.
+ *
+ * Pruned by AGE and nothing else, on the `pruneGateReplies` precedent and for the same
+ * reason: these are keyed to a session that will be long gone, and the record becomes
+ * interesting PRECISELY once it is - "what did last week cost?" is a question you ask
+ * about finished work. Session-scoped pruning would delete the answer at the moment it
+ * started to matter.
+ */
+export function pruneUsageLedger(cutoff: number): number {
+  return Number(openDb().prepare(`DELETE FROM usage_ledger WHERE ts < ?`).run(cutoff).changes);
 }
 
 // ---- Foreman session work queues ----

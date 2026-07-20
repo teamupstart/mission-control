@@ -3,6 +3,7 @@ import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { readyBacklog } from "@shared/backlog.ts";
+import { resolveForemanModels } from "@shared/foreman-models.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { getBacklogPlan } from "../backlog.ts";
 import { activeAgentCount } from "./backlog-machine.ts";
@@ -138,6 +139,9 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
       ready,
       blocked: backlog.length - ready,
     },
+    // Resolved here, from the daemon's own env, because the browser has no `process`
+    // and so cannot see the env layer at all - see `ForemanStatus.models`.
+    models: resolveForemanModels(cfg, process.env),
   };
 }
 

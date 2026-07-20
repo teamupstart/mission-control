@@ -2,6 +2,7 @@
 // and the web UI (src/web). Keep this the single source of truth for anything
 // that crosses the SSE / HTTP boundary.
 
+import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { SkillEnforcement } from "./skills.ts";
 
 export type AgentType = "claude" | "codex";
@@ -840,6 +841,22 @@ export interface ForemanStatus {
     /** Backlog items waiting on another task. */
     blocked: number;
   };
+  /**
+   * What each of Foreman's four `claude -p` calls will actually spawn with, and why -
+   * the operator's config, an env var, or the shipped default.
+   *
+   * RESOLVED server-side rather than re-derived in the panel, because the env layer is
+   * invisible to the browser: a panel that showed only `config || default` would print
+   * "claude-haiku-4-5 (default)" while a `FOREMAN_TRIAGE_MODEL` in the worker's shell
+   * quietly ran something else. Reporting the resolution, with its source, is the
+   * difference between a settings screen and a guess.
+   *
+   * The daemon resolves it from its OWN env, which is the worker's env in every
+   * supported way of running the stack (`make start` puts both under one
+   * `concurrently` shell). Hand-starting the worker with a different environment is the
+   * one case this readout cannot see.
+   */
+  models: Record<ForemanModelRole, ResolvedForemanModel>;
 }
 
 // ---- Custom skills ----

@@ -3,7 +3,7 @@ import type { ForemanConfig } from "@shared/protocol.ts";
 import type { ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
-import { reviewSession } from "./review.ts";
+import { reviewModel, reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
@@ -40,7 +40,7 @@ import type { QueueActions } from "./queue-apply.ts";
 import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
-import { verifyItem } from "./queue-verify.ts";
+import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
@@ -847,7 +847,7 @@ async function processPromptedWrapup(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: [],
-  });
+  }, verifyModel(cfg));
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
@@ -1071,7 +1071,7 @@ async function runVerify(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: item.gaps,
-  });
+  }, verifyModel(cfg));
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -1373,7 +1373,7 @@ async function decide(
 ): Promise<Decision> {
   switch (triagePosture(cfg.triage)) {
     case "off":
-      return fullReviewOnly(client, session, pending, ctx, captured);
+      return fullReviewOnly(client, cfg, session, pending, ctx, captured);
     case "shadow":
       return shadowBoth(client, cfg, session, pending, ctx, captured);
     case "on":
@@ -1384,13 +1384,14 @@ async function decide(
 /** `off`: the pre-triage behaviour - every new marker gets a full review. */
 async function fullReviewOnly(
   client: ForemanClient,
+  cfg: ForemanConfig,
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
   /** What the caller captured once for this evaluation - see `processSession`. */
   captured: CapturedInputs,
 ): Promise<Decision> {
-  const r = await fullReview(client, session, pending, ctx, captured);
+  const r = await fullReview(client, cfg, session, pending, ctx, captured);
   return r && { verdict: r.verdict, tier: 2 };
 }
 
@@ -1412,7 +1413,7 @@ async function shadowBoth(
     // verdicts are COMPARED below, so a tier reading different instructions than its
     // counterpart would surface as a divergence in the log rather than as what it is.
     triageSession(triageDeps(client), pending, session, cfg, captured),
-    fullReview(client, session, pending, ctx, captured),
+    fullReview(client, cfg, session, pending, ctx, captured),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
   log(
@@ -1445,7 +1446,7 @@ async function cheapTierDecides(
   // escalates it there - the fallback stays, it just stops being the first stop.
   const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
   log(`${session.name}: routed up to full review (${why})`);
-  return fullReviewOnly(client, session, pending, ctx, captured);
+  return fullReviewOnly(client, cfg, session, pending, ctx, captured);
 }
 
 /**
@@ -1456,6 +1457,7 @@ async function cheapTierDecides(
  */
 async function fullReview(
   client: ForemanClient,
+  cfg: ForemanConfig,
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
@@ -1488,7 +1490,7 @@ async function fullReview(
     ...captured,
   };
 
-  const result = await reviewSession(input);
+  const result = await reviewSession(input, reviewModel(cfg));
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a

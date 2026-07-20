@@ -2,6 +2,7 @@ import { z } from "zod";
 import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
 import { parseModelJson, runStructured } from "../claude-cli.ts";
+import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
 // Runs ONE work-item verification in a fresh tool-less `claude -p`, mirroring
@@ -151,12 +152,29 @@ export type QueueVerifyResult =
   | { kind: "verdict"; verdict: QueueVerdict }
   | { kind: "failed"; reason: string };
 
-/** Verify one work item in a fresh process; never throws. */
-export async function verifyItem(input: VerifyInput): Promise<QueueVerifyResult> {
+/** The verifier's default, unless overridden by config or FOREMAN_VERIFY_MODEL. */
+export const DEFAULT_VERIFY_MODEL = FOREMAN_MODEL_SPECS.verify.fallback;
+
+/** The verifier's model from config, then env, then the Opus default. */
+export function verifyModel(cfg: { verifyModel?: string }): string {
+  return resolveForemanModel("verify", cfg, process.env).id;
+}
+
+/**
+ * Verify one work item in a fresh process; never throws.
+ *
+ * `model` is required and supplied by the caller - see `reviewSession` for why this is
+ * a parameter rather than a lookup, and why it must not be optional.
+ */
+export async function verifyItem(
+  input: VerifyInput,
+  model: string,
+): Promise<QueueVerifyResult> {
   const r = await runStructured<typeof QueueVerdictSchema>(
     buildVerifyPrompt(input),
     extractQueueVerdict,
     "Foreman verify",
+    { model },
   );
   return r.kind === "ok"
     ? { kind: "verdict", verdict: r.value as QueueVerdict }

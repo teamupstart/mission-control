@@ -16,6 +16,7 @@ import {
   type PoolTree,
 } from "../src/server/pool.ts";
 import type { Registry } from "../src/server/registry.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import { sleep } from "../src/server/util/timers.ts";
 import { gitIn, mkOriginAndClone, mkLinkedWorktree } from "./helpers/git-fixture.ts";
 
@@ -292,10 +293,10 @@ function fakeDeps(status: string): { deps: PoolDeps; returned: string[] } {
   return {
     returned,
     deps: {
-      status: async () => ({ stdout: status, stderr: "", code: 0 }),
+      status: async () => (stubRun({ stdout: status, stderr: "", code: 0 })),
       returnTree: async (_root, path) => {
         returned.push(path);
-        return { stdout: "", stderr: "", code: 0 };
+        return stubRun({ stdout: "", stderr: "", code: 0 });
       },
     },
   };
@@ -435,12 +436,13 @@ test("reapPool reports a failed return as a skip instead of claiming the slot is
   const idle = mkLinkedWorktree(clone, "idle", join(clone, "..", "f-idle"));
 
   const deps: PoolDeps = {
-    status: async () => ({
-      stdout: `1     leased       ${idle}  (held by mission-control)`,
-      stderr: "",
-      code: 0,
-    }),
-    returnTree: async () => ({ stdout: "", stderr: "lease is held elsewhere", code: 1 }),
+    status: async () =>
+      stubRun({
+        stdout: `1     leased       ${idle}  (held by mission-control)`,
+        stderr: "",
+        code: 0,
+      }),
+    returnTree: async () => stubRun({ stdout: "", stderr: "lease is held elsewhere", code: 1 }),
   };
   const r = await reapPool(clone, () => pins(), deps);
   assert.deepEqual(r.reaped, []);
@@ -460,14 +462,15 @@ function scriptedDeps(...statuses: string[]): { deps: PoolDeps; returned: string
   return {
     returned,
     deps: {
-      status: async () => ({
-        stdout: statuses[Math.min(call++, statuses.length - 1)]!,
-        stderr: "",
-        code: 0,
-      }),
+      status: async () =>
+        stubRun({
+          stdout: statuses[Math.min(call++, statuses.length - 1)]!,
+          stderr: "",
+          code: 0,
+        }),
       returnTree: async (_root, path) => {
         returned.push(path);
-        return { stdout: "", stderr: "", code: 0 };
+        return stubRun({ stdout: "", stderr: "", code: 0 });
       },
     },
   };
@@ -532,11 +535,11 @@ test("reapPool reaps nothing when it cannot re-read the pool before acting", asy
   const deps: PoolDeps = {
     status: async () =>
       call++ === 0
-        ? { stdout: `1     leased       ${idle}  (held by mission-control)`, stderr: "", code: 0 }
-        : { stdout: "", stderr: "treehouse: could not read pool state", code: 1 },
+        ? stubRun({ stdout: `1     leased       ${idle}  (held by mission-control)`, stderr: "", code: 0 })
+        : stubRun({ stdout: "", stderr: "treehouse: could not read pool state", code: 1 }),
     returnTree: async (_root, path) => {
       returned.push(path);
-      return { stdout: "", stderr: "", code: 0 };
+      return stubRun({ stdout: "", stderr: "", code: 0 });
     },
   };
 
@@ -564,14 +567,15 @@ test("reapPool re-checks between returns instead of trusting one reading for the
   const returned: string[] = [];
   const deps: PoolDeps = {
     // The world only moves once tree 1 is actually back in the pool.
-    status: async () => ({
-      stdout: returned.length === 0 ? idle : [leased(first, "1"), leased(second, "2"), "                   claude (999)"].join("\n"),
-      stderr: "",
-      code: 0,
-    }),
+    status: async () =>
+      stubRun({
+        stdout: returned.length === 0 ? idle : [leased(first, "1"), leased(second, "2"), "                   claude (999)"].join("\n"),
+        stderr: "",
+        code: 0,
+      }),
     returnTree: async (_root, path) => {
       returned.push(path);
-      return { stdout: "", stderr: "", code: 0 };
+      return stubRun({ stdout: "", stderr: "", code: 0 });
     },
   };
 

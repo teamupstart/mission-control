@@ -74,7 +74,7 @@ The request was "one interface per integration point". The investigation says th
    hook/MCP installation. (`claude`, `codex`, `pi`)
 2. **Terminal** - which itself splits in two (below).
 3. **Headless runner** - the `claude -p` calls behind Foreman triage, goal refinement, task
-   titling and away digests (`claude-cli.ts`, plus four hardcoded `claude-haiku-4-5`
+   titling, away digests and the Inspector (`claude-cli.ts`, plus their per-caller model
    constants). This is a *model provider* axis, orthogonal to which agent the observed
    session runs. Keep it separate; conflating it would mean you cannot review a Pi session
    with Claude, or a Claude session with a cheaper local model.
@@ -108,6 +108,14 @@ interface LlmRunner {
   runInThread: ((threadKey: string, prompt: string, opts: RunOpts) => Promise<string>) | null;
 }
 ```
+
+`RunOpts` cannot be just `{ model, timeoutMs }`. The Inspector already grants tools and
+pays for it with a working directory and a `--settings` deny-list (`ClaudeRunOptions.tools`
+/ `cwd` / `settings`), so the interface has to carry a *sandboxing* shape, not only a model
+id - and a runner backed by something other than `claude -p` has to be able to say it
+cannot honour one. Treat `tools` as the capability boundary it is: the default of every
+tool disabled is what makes it safe to embed untrusted transcript and repo text in a
+prompt, and that default must survive being put behind an interface.
 
 Also note the naming collision to avoid: phase 4 is titled "Headless", and this plan means
 *which model does offline work*. It does not mean driving an agent without a terminal -

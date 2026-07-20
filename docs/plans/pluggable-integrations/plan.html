@@ -165,7 +165,7 @@
 <ol>
 <li><strong>Harness</strong> &mdash; the agent process. Detection, transcript, live state, TUI grammar, skills, hook/MCP installation. (<code>claude</code>, <code>codex</code>, <code>pi</code>)</li>
 <li><strong>Terminal</strong> &mdash; which itself splits in two (below).</li>
-<li><strong>Headless runner</strong> &mdash; the <code>claude -p</code> calls behind Foreman triage, goal refinement, task titling and away digests (<code>claude-cli.ts</code>, plus four hardcoded <code>claude-haiku-4-5</code> constants). This is a <em>model provider</em> axis, orthogonal to which agent the observed session runs. Keep it separate; conflating it would mean you cannot review a Pi session with Claude, or a Claude session with a cheaper local model.</li>
+<li><strong>Headless runner</strong> &mdash; the <code>claude -p</code> calls behind Foreman triage, goal refinement, task titling, away digests and the Inspector (<code>claude-cli.ts</code>, plus their per-caller model constants). This is a <em>model provider</em> axis, orthogonal to which agent the observed session runs. Keep it separate; conflating it would mean you cannot review a Pi session with Claude, or a Claude session with a cheaper local model.</li>
 </ol>
 
 <h4><code>LlmRunner</code> must guarantee context isolation, not just shape</h4>
@@ -182,6 +182,8 @@
    */
   runInThread: ((threadKey: string, prompt: string, opts: RunOpts) =&gt; Promise&lt;string&gt;) | null;
 }</code></pre>
+
+<p><code>RunOpts</code> cannot be just <code>{ model, timeoutMs }</code>. The Inspector already grants tools and pays for it with a working directory and a <code>--settings</code> deny-list (<code>ClaudeRunOptions.tools</code> / <code>cwd</code> / <code>settings</code>), so the interface has to carry a <em>sandboxing</em> shape, not only a model id &mdash; and a runner backed by something other than <code>claude -p</code> has to be able to say it cannot honour one. Treat <code>tools</code> as the capability boundary it is: the default of every tool disabled is what makes it safe to embed untrusted transcript and repo text in a prompt, and that default must survive being put behind an interface.</p>
 
 <p>Also note the naming collision to avoid: phase 4 is titled &ldquo;Headless&rdquo;, and this plan means <em>which model does offline work</em>. It does not mean driving an agent without a terminal &mdash; that is the <code>control</code> capability on the Harness axis. Rename one of them before both exist in the codebase.</p>
 

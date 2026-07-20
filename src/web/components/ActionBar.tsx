@@ -34,6 +34,7 @@ export function ActionBar({
   onFocusReply,
   registerActions,
   onReset,
+  onKilled,
   variant = "card",
   onDiff,
 }: {
@@ -66,6 +67,12 @@ export function ActionBar({
   registerActions?: (id: string, handle: ActionBarHandle | null) => void;
   /** Open the reset-to-origin confirm (app-level modal). Absent = no reset control. */
   onReset?: () => void;
+  /**
+   * The kill landed. Fires only on success, so a refused kill leaves the screen exactly
+   * where it was, with the reason on it. App uses this to close whatever detail the kill
+   * was ordered from - see `onKilled` in `layouts/types.ts`.
+   */
+  onKilled?: () => void;
 }): React.JSX.Element {
   const { bindings } = useKeybindings();
   const [composing, setComposing] = useState(false);
@@ -104,8 +111,12 @@ export function ActionBar({
   }
 
   async function doKill() {
-    await run("kill", () => api.kill(session.id));
+    const r = await run("kill", () => api.kill(session.id));
     setConfirmKill(false);
+    // Killed, so this session's detail is about to be a dead transcript with no controls -
+    // and it stays in the list for the exit linger, long enough to feel stuck. Tell App the
+    // moment the kill lands so it can put the overview back.
+    if (r.ok) onKilled?.();
   }
 
   function startSend() {

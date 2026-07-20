@@ -29,6 +29,7 @@ function props(sessions: Session[]): SessionViewProps {
     onOpenReviews: () => {},
     onOpenDiff: () => {},
     onReset: () => {},
+    onKilled: () => {},
     resetNonces: {},
     registerEl: () => {},
     registerActions: () => {},

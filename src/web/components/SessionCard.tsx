@@ -78,6 +78,7 @@ export function SessionCard({
   onOpenReviews,
   onOpenDiff,
   onReset,
+  onKilled,
   resetNonce = 0,
   selected = false,
   onSelect,
@@ -102,6 +103,8 @@ export function SessionCard({
   /** Opens the diff viewer: the whole branch, or one commit when given a sha. */
   onOpenDiff?: (commit?: string) => void;
   onReset?: () => void;
+  /** This card's session was killed (successfully), so focus mode has nothing left to show. */
+  onKilled?: () => void;
   /** Bumped each time this session is reset, so the reply box remounts and drops the
    *  text the reset discarded (it's an uncontrolled box; clearing the draft map alone
    *  wouldn't empty one that's open). */
@@ -336,6 +339,7 @@ export function SessionCard({
           onFocusReply={() => transcriptRef.current?.focusReply() ?? false}
           registerActions={registerActions}
           onReset={onReset}
+          onKilled={onKilled}
         />
       )}
 

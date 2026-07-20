@@ -544,13 +544,6 @@ export async function triageSession(
   session: Session,
   cfg: ForemanConfig,
   /**
-   * The child's screen, captured ONCE per session by the caller (see `paneFor`) and passed to
-   * whichever tier reviews. Not captured here: the worker checks what this tier answers against
-   * its own copy of the screen, so a second capture would be a second screen, and the router
-   * would be judged against rows it was never shown - the exact disagreement the menu fix
-   * exists to design out. Null when the surface has no screen to read.
-   */
-  /**
    * What the caller captured once for this evaluation - see `CapturedInputs`.
    *
    * This tier reads `prefs` at all because it can DISPOSE. `routine-access` is answered

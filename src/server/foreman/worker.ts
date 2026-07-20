@@ -1554,7 +1554,6 @@ async function readPrefs(client: ForemanClient, session: Session): Promise<Stand
 }
 
 /** Adapt the daemon client to the cheap tier's read-only dependency surface. */
-
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),

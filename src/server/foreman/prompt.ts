@@ -91,7 +91,15 @@ export interface ReviewInput {
  * have `shadow` mode log a tier divergence that is really an input divergence.
  */
 export interface CapturedInputs {
-  /** The child's screen - see `ReviewInput.pane`. Null when the surface has none. */
+  /**
+   * The child's screen - see `ReviewInput.pane`. Null when the surface has none.
+   *
+   * Captured by the caller (`paneFor`) rather than by whichever tier reviews, and that is
+   * the load-bearing half: the worker checks what a tier ANSWERS against its own copy of
+   * the screen, so a second capture would be a second screen, and the router would be
+   * judged against rows it was never shown - the exact disagreement the menu fix exists to
+   * design out.
+   */
   pane: string | null;
   /** The operator's FOREMAN.md - see `ReviewInput.prefs`. Null when the repo has none. */
   prefs: StandardsDoc | null;

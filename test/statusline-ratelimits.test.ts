@@ -26,8 +26,12 @@ after(() => rmSync(home, { recursive: true, force: true }));
 
 openDb();
 
-const FIVE_HOUR = { used_percentage: 42.5, resets_at: 1_784_500_000 };
-const SEVEN_DAY = { used_percentage: 83, resets_at: 1_785_000_000 };
+// Relative to now, and deliberately so: `resetsAt` is epoch SECONDS and a window whose
+// reset has passed is dropped where it is read, so a hard-coded date would quietly turn
+// every assertion below into a test of the expiry path the day it went by.
+const nowSec = Math.floor(Date.now() / 1000);
+const FIVE_HOUR = { used_percentage: 42.5, resets_at: nowSec + 3 * 3600 };
+const SEVEN_DAY = { used_percentage: 83, resets_at: nowSec + 5 * 86400 };
 
 /** `toBody`'s output as the daemon would actually receive it - through the real schema. */
 function ingest(payload: Record<string, unknown>) {
@@ -37,8 +41,8 @@ function ingest(payload: Record<string, unknown>) {
 test("toBody lifts both rate-limit windows", () => {
   const body = ingest({ session_id: "s", rate_limits: { five_hour: FIVE_HOUR, seven_day: SEVEN_DAY } });
   assert.deepEqual(body.rateLimits, {
-    fiveHour: { usedPercentage: 42.5, resetsAt: 1_784_500_000 },
-    sevenDay: { usedPercentage: 83, resetsAt: 1_785_000_000 },
+    fiveHour: { usedPercentage: 42.5, resetsAt: FIVE_HOUR.resets_at },
+    sevenDay: { usedPercentage: 83, resetsAt: SEVEN_DAY.resets_at },
   });
 });
 
@@ -50,7 +54,7 @@ test("an absent rate_limits drops out of the payload entirely", () => {
 
 test("one window present without the other is tolerated", () => {
   const body = ingest({ session_id: "s", rate_limits: { five_hour: FIVE_HOUR } });
-  assert.deepEqual(body.rateLimits?.fiveHour, { usedPercentage: 42.5, resetsAt: 1_784_500_000 });
+  assert.deepEqual(body.rateLimits?.fiveHour, { usedPercentage: 42.5, resetsAt: FIVE_HOUR.resets_at });
   assert.equal(body.rateLimits?.sevenDay, null, "the window we were not told about is null");
 });
 
@@ -80,12 +84,71 @@ test("the registry holds the last reading, and a payload without windows never c
 
   // A payload carrying only the seven-day window keeps the five-hour one we already know.
   registry.applyStatusLine({
-    ...ingest({ session_id: "sess-rl", rate_limits: { seven_day: { used_percentage: 91, resets_at: 9 } } }),
+    ...ingest({
+      session_id: "sess-rl",
+      rate_limits: { seven_day: { used_percentage: 91, resets_at: nowSec + 6 * 86400 } },
+    }),
     env,
   });
   const rl = registry.snapshot().fleetCost?.rateLimits;
   assert.equal(rl?.fiveHour?.usedPercentage, 42.5, "held from the earlier reading");
   assert.equal(rl?.sevenDay?.usedPercentage, 91, "refreshed by this one");
+});
+
+test("a window whose reset has passed is dropped rather than shown as stale", () => {
+  // Nothing ages `latestRateLimits` out, so once every wrapped session closes the topbar
+  // would otherwise render the last reading forever: "83% used" for a quota that rolled
+  // over, beside a countdown collapsed to "now". Absent renders as no meter at all, which
+  // is what an account with no limits to report already gets - not told and no longer true
+  // are both better said than guessed at.
+  const registry = new Registry();
+  registry.applyStatusLine(
+    ingest({
+      session_id: "sess-expiring",
+      rate_limits: { five_hour: { ...FIVE_HOUR, resets_at: nowSec - 1 }, seven_day: SEVEN_DAY },
+    }),
+  );
+  const rl = registry.snapshot().fleetCost?.rateLimits;
+  assert.equal(rl?.fiveHour, null, "the rolled-over window is gone");
+  assert.equal(rl?.sevenDay?.usedPercentage, 83, "the live one is untouched");
+
+  // And once every window it holds has expired, there is no reading at all.
+  const both = new Registry();
+  both.applyStatusLine(
+    ingest({
+      session_id: "sess-expired",
+      rate_limits: {
+        five_hour: { used_percentage: 12, resets_at: nowSec - 1 },
+        seven_day: { used_percentage: 34, resets_at: nowSec - 600 },
+      },
+    }),
+  );
+  assert.equal(both.snapshot().fleetCost?.rateLimits, null);
+});
+
+test("a render restating the same windows emits nothing", () => {
+  // The forwarder posts on EVERY terminal render. The reading's `updatedAt` is a
+  // timestamp, not a figure, so letting it move would defeat the fleet emit's suppression
+  // and put a `cost_fleet` frame on every open dashboard several times a second, per
+  // session, carrying numbers that never changed.
+  const registry = new Registry();
+  const frames: unknown[] = [];
+  registry.subscribe((e) => {
+    if (e.type === "cost_fleet") frames.push(e);
+  });
+  const payload = ingest({ session_id: "sess-quiet", rate_limits: { five_hour: FIVE_HOUR } });
+  registry.applyStatusLine(payload);
+  assert.equal(frames.length, 1, "the first reading is news");
+  for (let i = 0; i < 20; i++) registry.applyStatusLine(payload);
+  assert.equal(frames.length, 1, "restating it is not");
+
+  registry.applyStatusLine(
+    ingest({
+      session_id: "sess-quiet",
+      rate_limits: { five_hour: { ...FIVE_HOUR, used_percentage: 43.5 } },
+    }),
+  );
+  assert.equal(frames.length, 2, "a figure that actually moved still gets through");
 });
 
 test("rate limits are recorded even when no session can be bound", () => {

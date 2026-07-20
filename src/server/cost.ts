@@ -3,7 +3,7 @@ import type { CostConfig, CostConfigPatch, CostTelemetryStatus } from "@shared/p
 import { getAppConfig, setAppConfig, usageLedgerHasRows } from "./db.ts";
 import {
   claudeSettingsPath,
-  otelEnvInstalled,
+  otelEnvFlags,
   sessionIdAttributionDisabled,
   writeOtelEnv,
 } from "@shared/claude-settings.ts";
@@ -55,13 +55,20 @@ export function setCostConfig(patch: CostConfigPatch): CostConfig {
   return next;
 }
 
-/** Config plus what is actually true of the user's settings file right now. */
+/**
+ * Config plus what is actually true of the user's settings file right now.
+ *
+ * One `otelEnvFlags()` for both facts, not one call each: the dashboard polls this while
+ * it is open, and the settings file is read and JSONC-parsed synchronously on the
+ * daemon's own thread.
+ */
 export function costTelemetryStatus(): CostTelemetryStatus {
+  const flags = otelEnvFlags();
   return {
     config: getCostConfig(),
-    installed: otelEnvInstalled(),
+    installed: flags.installed,
     receiving: usageLedgerHasRows(),
-    sessionIdDisabled: sessionIdAttributionDisabled(),
+    sessionIdDisabled: flags.sessionIdDisabled,
     settingsPath: claudeSettingsPath(),
   };
 }

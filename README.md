@@ -370,7 +370,13 @@ Two sources, each used for the one thing only it can do:
 The plan meters need the [opt-in statusLine wrapper](#precise-status-claude-hooks)
 (`npm run install-statusline`); the spend figures don't. They are two separate opt-ins
 because they are two different asks of your config - one adds an `env` block, the other
-rewrites the command that draws your terminal line.
+rewrites the command that draws your terminal line. Only `--telemetry` adds the block and
+only `--uninstall` removes it: re-running `npm run setup` or any other installer leaves an
+existing block exactly as it found it, so **Settings → Cost** stays the one switch.
+
+A plan meter disappears once its window resets rather than holding the last percentage -
+a quota that has already rolled over is not a figure worth showing, and the same rule
+already governs an account with no rate limits to report.
 
 **Every figure is a local estimate.** Anthropic's own docs say the client-side number can
 differ from your bill, and on a Pro or Max plan the dollars are notional entirely - the

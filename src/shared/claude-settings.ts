@@ -137,33 +137,51 @@ export function writeOtelEnv(spec: OtelEnvSpec | null): "installed" | "updated" 
   return had ? "updated" : "installed";
 }
 
-/** True when our telemetry keys are present in the settings file right now. */
-export function otelEnvInstalled(): boolean {
-  try {
-    const { parsed } = readSettings(claudeSettingsPath());
-    const env = currentEnv(parsed);
-    return env.CLAUDE_CODE_ENABLE_TELEMETRY !== undefined && env.OTEL_METRICS_EXPORTER !== undefined;
-  } catch {
-    // An unparseable settings.json is a real problem, but not this function's to report:
-    // "we cannot see our keys" is the honest answer, and the write path throws properly.
-    return false;
-  }
+/** What one look at the settings file can tell us about the telemetry env block. */
+export interface OtelEnvFlags {
+  /** Our telemetry keys are present in the settings file right now. */
+  installed: boolean;
+  /**
+   * `OTEL_METRICS_INCLUDE_SESSION_ID` is switched off somewhere we can see.
+   *
+   * Both places it can be: the process environment the daemon inherited, and the settings
+   * file every Claude session inherits. Neither is authoritative over the other - a session
+   * gets the settings value, this process got the env one - so a false in either is worth
+   * warning about, and neither is worth silently correcting in someone else's file.
+   */
+  sessionIdDisabled: boolean;
 }
 
 /**
- * True when `OTEL_METRICS_INCLUDE_SESSION_ID` is switched off anywhere we can see.
+ * Both facts off ONE read and parse of the settings file.
  *
- * Both places it can be: the process environment the daemon inherited, and the settings
- * file every Claude session inherits. Neither is authoritative over the other - a session
- * gets the settings value, this process got the env one - so a false in either is worth
- * warning about, and neither is worth silently correcting in someone else's file.
+ * Combined rather than derived separately because the status route behind them is polled
+ * by every open dashboard tab, and two callers each re-reading and re-JSONC-parsing the
+ * user's settings file on the daemon's main thread is a synchronous cost paid per poll
+ * for an answer a single parse already holds.
  */
-export function sessionIdAttributionDisabled(): boolean {
-  const off = (v: unknown): boolean => typeof v === "string" && v.trim().toLowerCase() === "false";
-  if (off(process.env[SESSION_ID_KEY])) return true;
+export function otelEnvFlags(): OtelEnvFlags {
+  let env: Record<string, unknown> = {};
   try {
-    return off(currentEnv(readSettings(claudeSettingsPath()).parsed)[SESSION_ID_KEY]);
+    env = currentEnv(readSettings(claudeSettingsPath()).parsed);
   } catch {
-    return false;
+    // An unparseable settings.json is a real problem, but not this function's to report:
+    // "we cannot see our keys" is the honest answer, and the write path throws properly.
   }
+  const off = (v: unknown): boolean => typeof v === "string" && v.trim().toLowerCase() === "false";
+  return {
+    installed:
+      env.CLAUDE_CODE_ENABLE_TELEMETRY !== undefined && env.OTEL_METRICS_EXPORTER !== undefined,
+    sessionIdDisabled: off(process.env[SESSION_ID_KEY]) || off(env[SESSION_ID_KEY]),
+  };
+}
+
+/** True when our telemetry keys are present in the settings file right now. */
+export function otelEnvInstalled(): boolean {
+  return otelEnvFlags().installed;
+}
+
+/** True when `OTEL_METRICS_INCLUDE_SESSION_ID` is switched off anywhere we can see. */
+export function sessionIdAttributionDisabled(): boolean {
+  return otelEnvFlags().sessionIdDisabled;
 }

@@ -191,6 +191,64 @@ test("--statusline with no prior status line wraps, and uninstall removes the ke
   });
 });
 
+// ---- the opt-in cost telemetry env block ----
+// Both failures pinned here are SILENT ones: telemetry that reports nothing, and
+// telemetry switched off by an install that was never asked to switch it off.
+
+/** Our six keys as they stand in the file, or `{}`. */
+function otelEnv(settingsPath: string): Record<string, string> {
+  const env = ((parse(readFileSync(settingsPath, "utf8")) as any)?.env ?? {}) as Record<string, string>;
+  return Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("OTEL_") || k === "CLAUDE_CODE_ENABLE_TELEMETRY"));
+}
+
+test("--telemetry writes the block with a token it mints if the daemon never ran", () => {
+  withTempSettingsHome(`{ "model": "opus" }\n`, (path, home) => {
+    // `npm run setup` installs BEFORE the daemon has ever booted, so the token file is
+    // normally absent here. Reading "" would bake `x-harness-token=` into the file, have
+    // every export answered 401, and look exactly like a fresh install awaiting its
+    // first session - nothing on screen would say otherwise.
+    assert.ok(!existsSync(join(home, "token")), "no token before the install");
+    runInstallerHome(path, home, ["--telemetry"]);
+    const token = readFileSync(join(home, "token"), "utf8").trim();
+    assert.ok(token.length > 0, "the installer minted one");
+    assert.equal(otelEnv(path).OTEL_EXPORTER_OTLP_HEADERS, `x-harness-token=${token}`);
+    assert.equal(otelEnv(path).CLAUDE_CODE_ENABLE_TELEMETRY, "1");
+  });
+});
+
+test("a default install never adds the block", () => {
+  withTempSettingsHome(`{ "model": "opus" }\n`, (path, home) => {
+    runInstallerHome(path, home, []);
+    assert.deepEqual(otelEnv(path), {}, "telemetry is its own opt-in, like the status line");
+  });
+});
+
+test("a later install without --telemetry leaves an existing block completely untouched", () => {
+  withTempSettingsHome(`{ "model": "opus" }\n`, (path, home) => {
+    runInstallerHome(path, home, ["--telemetry"]);
+    const block = otelEnv(path);
+    // Every one of these is a plain re-install someone runs for an unrelated reason.
+    // Tearing the block down here would silently disable cost telemetry switched on in
+    // Settings -> Cost and leave the daemon's stored `enabled` disagreeing with the file,
+    // with nothing to reconcile the two.
+    for (const args of [[], ["--statusline"], []]) runInstallerHome(path, home, args);
+    assert.deepEqual(otelEnv(path), block, "the block survives verbatim");
+    const after = parse(readFileSync(path, "utf8")) as any;
+    assert.ok(after.statusLine.command.includes(STATUSLINE_MARKER), "and the runs it rode in on still did their job");
+  });
+});
+
+test("--uninstall removes the block", () => {
+  withTempSettingsHome(`{ "model": "opus", "env": { "EDITOR": "hx" } }\n`, (path, home) => {
+    runInstallerHome(path, home, ["--telemetry"]);
+    runInstallerHome(path, home, ["--uninstall"]);
+    assert.deepEqual(otelEnv(path), {}, "ours are gone");
+    // Leaving an env pointing at a daemon this checkout no longer runs would keep every
+    // Claude session on the machine retrying an export forever - but only ours go.
+    assert.equal((parse(readFileSync(path, "utf8")) as any).env.EDITOR, "hx");
+  });
+});
+
 // ---- the skill symlinks ----
 // The most invasive thing the harness puts in a home directory: they sit in Claude's
 // native loading path for every session on the machine, so leaving them behind would

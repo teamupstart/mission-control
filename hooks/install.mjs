@@ -38,7 +38,7 @@ import { claudeSkillsDir, uninstallSkillLinks } from "../src/server/skills/recon
 // dashboard's Cost panel - three writers of the same six keys is exactly how half a block
 // gets left behind that nothing owns. See src/shared/claude-settings.ts.
 import { writeOtelEnv } from "../src/shared/claude-settings.ts";
-import { BASE_URL, readToken } from "../src/shared/harness-runtime.mjs";
+import { BASE_URL, ensureToken } from "../src/shared/harness-runtime.mjs";
 
 const MARKER = "harness-hook.mjs";
 /** Marker identifying our statusLine wrapper command in settings.json. */
@@ -265,13 +265,25 @@ if (hooksChanged) {
 // Uninstall removes the block unconditionally, exactly as it unwraps the status line -
 // leaving an `env` pointing at a daemon this checkout no longer runs would keep every
 // Claude session on the machine retrying an export forever.
+//
+// An install WITHOUT `--telemetry` touches the block not at all - it is not a request to
+// remove one, the same way an install without `--statusline` never unwraps a status line.
+// The app's Cost settings toggle is what owns this block; tearing it down from a plain
+// `install-hooks` would silently disable telemetry someone switched on there and leave the
+// daemon's stored `enabled` disagreeing with the file, with nothing to reconcile them.
+//
+// `ensureToken()` rather than `readToken()`: this runs before the daemon has necessarily
+// ever booted (`npm run setup` installs first), and "" would bake an empty auth header
+// into settings.json, get every export 401'd, and look exactly like a fresh install.
 let telemetryAction = "unchanged";
 try {
-  telemetryAction = writeOtelEnv(
-    uninstall || !doTelemetry
-      ? null
-      : { endpoint: BASE_URL, token: readToken(), intervalMs: TELEMETRY_INTERVAL_MS },
-  );
+  if (uninstall) telemetryAction = writeOtelEnv(null);
+  else if (doTelemetry)
+    telemetryAction = writeOtelEnv({
+      endpoint: BASE_URL,
+      token: ensureToken(),
+      intervalMs: TELEMETRY_INTERVAL_MS,
+    });
 } catch (err) {
   // Never fatal: the hooks are the point of this script, and a telemetry block we
   // couldn't write costs cost figures, not status.

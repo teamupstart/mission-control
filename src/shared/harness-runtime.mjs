@@ -12,9 +12,10 @@
 // from ever matching), which is exactly why these must live in one place. A .d.mts
 // alongside gives the TS side types.
 
-import { readFileSync, existsSync, renameSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { readFileSync, existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Read a config env var by its `MISSION_` name, falling back to the names this app
@@ -152,6 +153,26 @@ export function readToken() {
   } catch {
     return "";
   }
+}
+
+/**
+ * The daemon auth token, minting one if the file does not exist yet.
+ *
+ * Lives here rather than only in the daemon because the installer needs it too, and
+ * needs the SAME value: it bakes the token into `~/.claude/settings.json` as an OTLP
+ * header, and `npm run setup` runs before the daemon has ever booted. `readToken()`
+ * answers "" there, which would write an empty header, get every export answered 401,
+ * and show up nowhere - the panel would read exactly like a fresh install waiting for
+ * its first session. One minter, so the two can never disagree about the value.
+ */
+export function ensureToken() {
+  const existing = readToken();
+  if (existing) return existing;
+  const path = tokenPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const minted = randomBytes(24).toString("hex");
+  writeFileSync(path, minted + "\n", { mode: 0o600 });
+  return minted;
 }
 
 /**

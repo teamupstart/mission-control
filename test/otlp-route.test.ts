@@ -37,6 +37,12 @@ const app = buildApp(
   new QueueManager(registry),
 );
 
+// Anchored to now, not to the day this was written: `spendToday` is measured from LOCAL
+// midnight, so a hard-coded export window silently stops counting toward it the following
+// day and the assertion below turns into a test of nothing.
+const END_NS = `${Date.now()}000000`;
+const START_NS = `${Date.now() - 210}000000`;
+
 const BODY = {
   resourceMetrics: [
     {
@@ -51,8 +57,8 @@ const BODY = {
                 dataPoints: [
                   {
                     asDouble: 0.0965845,
-                    startTimeUnixNano: "1784489513278000000",
-                    timeUnixNano: "1784489513488000000",
+                    startTimeUnixNano: START_NS,
+                    timeUnixNano: END_NS,
                     attributes: [
                       { key: "session.id", value: { stringValue: "route-sess" } },
                       { key: "model", value: { stringValue: "claude-opus-4-8[1m]" } },

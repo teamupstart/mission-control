@@ -8,6 +8,7 @@ import type {
   OrphanedQueueHint,
   PermissionMode,
   RateLimits,
+  RateLimitWindow,
   PrChecks,
   PrState,
   ReviewItem,
@@ -1060,16 +1061,23 @@ export class Registry extends EventEmitter {
     if (!s) return;
     const meta = metaFromStatusLine(ingest, Date.now());
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
-    const changed = !metaDisplayEqual(s.meta, meta) || s.agentSessionId !== agentSessionId;
     const next: Session = { ...s, meta, agentSessionId };
     // A statusLine can be the first thing to bind an agent session id (it carries one and
     // fires on every render, where a hook fires on events). That rotates the note key, so
     // re-resolve the cost the same way `applyHook` re-resolves note/goal/queue - otherwise
     // a session picks up its already-ledgered spend only on the next unrelated change.
-    next.cost = sessionCostFor(noteKeyFor(next));
+    //
+    // On a ROTATION only, though, and that is the whole of the condition below. This runs
+    // on every terminal render, and `sessionCostFor` aggregates every ledger row for the
+    // key on the same synchronous handle that serves hook ingest and SSE - the very cost
+    // `FLEET_COST_IDLE_INTERVAL_MS` throttles the idle recompute to 30s to avoid. Nothing
+    // else here can move the figure: the ledger's own writer re-denormalizes through
+    // `syncSessionsForCost` the moment it changes.
+    const key = noteKeyFor(next);
+    if (key !== noteKeyFor(s)) next.cost = sessionCostFor(key);
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
-    if (changed || !sessionEqual(s, next)) this.emitSession(next);
+    if (!sessionEqual(s, next)) this.emitSession(next);
   }
 
   // ---- cost telemetry (OpenTelemetry ingest + fleet roll-up) ----
@@ -1082,22 +1090,29 @@ export class Registry extends EventEmitter {
    * that simply hasn't had its first API response yet - so on a machine running both, or
    * during the first seconds of any session, every other render would wipe a perfectly
    * good reading and the meters would strobe. Only a payload that actually carries
-   * windows updates them; nothing takes them away but a daemon restart.
+   * windows updates them; nothing takes them away but their own reset time passing
+   * (applied where the value is read, in `fleetCostNow`).
+   *
+   * A payload that RESTATES the windows we already hold is not a change and is dropped
+   * here, before `updatedAt` is restamped. That matters more than it looks: the
+   * forwarder posts on every terminal render, `updatedAt` is a reading timestamp rather
+   * than anything a human sees, and leaving it to move would make the fleet emit's
+   * suppression always miss - putting a `cost_fleet` frame on every open dashboard
+   * several times a second, per session, carrying numbers that never moved.
    */
   private recordRateLimits(ingest: StatusLineIngest): void {
     const rl = ingest.rateLimits;
     if (!rl) return;
-    const fiveHour = rl.fiveHour ?? null;
-    const sevenDay = rl.sevenDay ?? null;
-    if (!fiveHour && !sevenDay) return;
-    const next: RateLimits = {
-      // One window present without the other is ordinary, not an error: keep whichever
-      // this payload carried and hold the last known value of the one it didn't.
-      fiveHour: fiveHour ?? this.latestRateLimits?.fiveHour ?? null,
-      sevenDay: sevenDay ?? this.latestRateLimits?.sevenDay ?? null,
-      updatedAt: Date.now(),
-    };
-    this.latestRateLimits = next;
+    if (!rl.fiveHour && !rl.sevenDay) return;
+    // One window present without the other is ordinary, not an error: keep whichever
+    // this payload carried and hold the last known value of the one it didn't.
+    const prev = this.latestRateLimits;
+    const fiveHour = rl.fiveHour ?? prev?.fiveHour ?? null;
+    const sevenDay = rl.sevenDay ?? prev?.sevenDay ?? null;
+    if (prev && rateWindowEqual(prev.fiveHour, fiveHour) && rateWindowEqual(prev.sevenDay, sevenDay)) {
+      return;
+    }
+    this.latestRateLimits = { fiveHour, sevenDay, updatedAt: Date.now() };
     this.recomputeFleetCost();
   }
 
@@ -1202,7 +1217,9 @@ export class Registry extends EventEmitter {
     return {
       spendToday: fleetSpendSince(startOfLocalDay(now)),
       burnPerHour: fleetSpendSince(now - 3_600_000),
-      rateLimits: this.latestRateLimits,
+      // Expired at READ, not on a timer: nothing then depends on a tick having fired,
+      // and a snapshot served between recomputes is as honest as an emitted one.
+      rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
       updatedAt: now,
     };
   }
@@ -1210,9 +1227,11 @@ export class Registry extends EventEmitter {
   /**
    * Recompute the fleet strip and emit only when a figure a human can see moved.
    *
-   * `updatedAt` is excluded from the comparison on purpose - it changes every call by
-   * construction, so including it would make the suppression do nothing and put an SSE
-   * frame on every browser every sweep, forever, for a strip that hasn't moved.
+   * BOTH `updatedAt`s are excluded on purpose, the strip's and the nested reading's -
+   * they are timestamps, not figures, and each changes by construction. Including
+   * either makes the suppression do nothing and puts an SSE frame on every browser for
+   * a strip that hasn't moved: the strip's own on every sweep, forever, and the
+   * reading's on every terminal render of every session, which is far worse.
    */
   private recomputeFleetCost(now = Date.now()): void {
     const fleet = this.fleetCostNow(now);
@@ -1221,7 +1240,7 @@ export class Registry extends EventEmitter {
       this.lastFleetCost != null &&
       this.lastFleetCost.spendToday === fleet.spendToday &&
       this.lastFleetCost.burnPerHour === fleet.burnPerHour &&
-      JSON.stringify(this.lastFleetCost.rateLimits) === JSON.stringify(fleet.rateLimits);
+      rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits);
     this.lastFleetCost = fleet;
     if (same) return;
     this.emitEvent({ type: "cost_fleet", fleet });
@@ -2394,6 +2413,38 @@ export function startOfLocalDay(now: number): number {
   const d = new Date(now);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
+}
+
+/** Two readings compared on what a human can see, so `updatedAt` never forces an emit. */
+export function rateLimitsDisplayEqual(a: RateLimits | null, b: RateLimits | null): boolean {
+  if (!a || !b) return a === b;
+  return rateWindowEqual(a.fiveHour, b.fiveHour) && rateWindowEqual(a.sevenDay, b.sevenDay);
+}
+
+/** Two rate-limit windows compared on what a human can see, ignoring when we read them. */
+export function rateWindowEqual(a: RateLimitWindow | null, b: RateLimitWindow | null): boolean {
+  if (!a || !b) return a === b;
+  return a.usedPercentage === b.usedPercentage && a.resetsAt === b.resetsAt;
+}
+
+/**
+ * The reading with any window whose reset time has already passed dropped.
+ *
+ * `resetsAt` is epoch SECONDS. Once it passes, the window has rolled over and the
+ * percentage we hold describes a quota that no longer exists - so it goes, rather than
+ * sitting in the topbar as "85% used" next to a countdown that has collapsed to "now".
+ * Absent renders as no meter at all, which is the same way this feature already treats
+ * an API-key user: not told and no longer true are both better said than guessed at.
+ */
+export function unexpiredRateLimits(rl: RateLimits | null, now: number): RateLimits | null {
+  if (!rl) return null;
+  const live = (w: RateLimitWindow | null): RateLimitWindow | null =>
+    w && w.resetsAt * 1000 > now ? w : null;
+  const fiveHour = live(rl.fiveHour);
+  const sevenDay = live(rl.sevenDay);
+  if (!fiveHour && !sevenDay) return null;
+  if (fiveHour === rl.fiveHour && sevenDay === rl.sevenDay) return rl;
+  return { ...rl, fiveHour, sevenDay };
 }
 
 /**

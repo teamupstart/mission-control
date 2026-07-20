@@ -13,6 +13,7 @@ export function stateDir(): string;
 export function migrateStateDir(): { from: string; to: string } | null;
 export function tokenPath(): string;
 export function readToken(): string;
+export function ensureToken(): string;
 
 export interface TerminalEnv {
   tmuxPane: string | undefined;

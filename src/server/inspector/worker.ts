@@ -248,6 +248,7 @@ export function adoptPr(
     lastError: null,
     failCount: 0,
     nextAttemptAt: null,
+    lastAttemptSha: null,
     adoptedAt: now,
     updatedAt: now,
   });
@@ -282,20 +283,24 @@ function existingByFingerprint(prKey: string): Map<string, InspectorComment> {
  * "Ours" and "somebody else" both go through the two-part `isOurs` rule - our login AND
  * our marker at column 0. The marker alone would let anyone who can comment on the pull
  * request open a forged thread we then treat as our own, or post a forged reply we read
- * as "we spoke last" and so never answer. Fails closed: with no login, nothing is ours
- * and nobody is answered.
+ * as "we spoke last" and so never answer.
+ *
+ * Takes a known login, never a nullable one. Fail-closed is enforced once, in
+ * `processPr`, which abstains from the whole PR before reaching here - see the login
+ * check there. A second nullable guard on this path would only invite a reader to
+ * believe abstention is decided per-helper, which is how one of them ends up acting on
+ * local state while the others sit out.
  */
 function threadsAwaitingUs(
   snapshot: PrSnapshot,
   rows: Map<string, InspectorComment>,
-  login: string | null,
+  login: string,
 ): { thread: ThreadSnapshot; row: InspectorComment; newest: { databaseId: number | null; body: string; author: string } }[] {
   const out: {
     thread: ThreadSnapshot;
     row: InspectorComment;
     newest: { databaseId: number | null; body: string; author: string };
   }[] = [];
-  if (!login) return out;
   for (const t of snapshot.threads) {
     if (t.isResolved) continue;
     const first = t.comments[0];
@@ -321,18 +326,22 @@ async function processPr(
   now: number,
 ): Promise<boolean> {
   const tick: TickState = { failed: false };
-
-  // Still inside the backoff from an earlier failure. Cheapest possible check, before
-  // any subprocess.
-  if (pr.nextAttemptAt !== null && now < pr.nextAttemptAt) return false;
+  const backedOff = pr.nextAttemptAt !== null && now < pr.nextAttemptAt;
 
   const dir = liveDir(pr);
   if (!dir) {
+    if (backedOff) return false;
     return noteFailure(pr, "the checkout this PR was opened from is gone", now, tick);
   }
 
+  // Read the PR even while backed off. The backoff is there to stop paying for repeated
+  // `claude -p` runs, not to stop LOOKING: one `fetchPr` costs a fraction of a review,
+  // and it is the only way a parked PR can notice that its input changed. A failure of
+  // this probe does not extend the wait, or the cheap check would inflate a penalty it
+  // was not the cause of.
   const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number);
   if (!snap.ok || !snap.value) {
+    if (backedOff) return false;
     return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
   }
   const s = snap.value;
@@ -347,6 +356,22 @@ async function processPr(
     );
     return true;
   }
+
+  // A push is new evidence, so it ends the wait its predecessor earned - including the
+  // six-hour park a diff too large to buffer buys, which the next push may well shrink
+  // below the ceiling. Compared against the last head we ATTEMPTED rather than the last
+  // one we reviewed: a failed round never advances `headSha`, so comparing with that
+  // would read every tick as a fresh push and the backoff would never hold at all.
+  if (s.headSha && s.headSha !== pr.lastAttemptSha) {
+    updateInspectorPr(
+      pr.key,
+      { lastAttemptSha: s.headSha, failCount: 0, nextAttemptAt: null },
+      now,
+    );
+  } else if (backedOff) {
+    return false;
+  }
+
   if (pr.round >= MAX_ROUNDS) {
     return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now, tick);
   }
@@ -418,7 +443,7 @@ async function answerFollowUp(
   diff: string,
   diffTruncated: boolean,
   post: boolean,
-  login: string | null,
+  login: string,
   now: number,
   tick: TickState,
 ): Promise<boolean> {
@@ -494,7 +519,7 @@ async function reviewRound(
   tick: TickState,
 ): Promise<boolean> {
   const threads = ourThreads(s, login);
-  reconcilePosting(rows, threads, login, now);
+  reconcilePosting(rows, threads, now);
 
   const diffRes = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
   if (!diffRes.ok || !diffRes.value) {
@@ -642,10 +667,12 @@ async function reviewRound(
       // round is re-plannable - which matters most for the demoted findings, since they
       // live in the review body and leave no thread for the next round's reconciliation
       // to find, so left in `posting` they would be promoted to `open` and never
-      // actually said. A TIMEOUT is not a fact: we stopped listening and the review may
-      // well have landed, so those rows stay in `posting` for the live thread read to
-      // adjudicate. Guessing there is how a duplicate public comment happens.
-      if (!res.timedOut) {
+      // actually said. A `gh` that DIED is not a fact - our own timeout, the OOM
+      // killer, a container stop all leave a review that may well have landed - so
+      // those rows stay in `posting` for the live thread read to adjudicate. The
+      // asymmetry is deliberate: guessing "nothing was published" is how a duplicate
+      // public comment happens, and guessing the other way costs one delayed round.
+      if (!res.outcomeUnknown) {
         for (const row of planned) {
           const reverted: InspectorComment = { ...row, status: "drafted" };
           rows.set(row.fingerprint, reverted);
@@ -695,17 +722,16 @@ function closeRow(rows: Map<string, InspectorComment>, fingerprint: string, now:
  * thread either way, so it cannot be checked and is assumed published - erring toward
  * one finding said once too few rather than one public comment said twice.
  *
- * Skipped entirely when the login is unknown, because then `threads` is empty by
- * construction and every row would look unpublished - which is precisely the state that
- * would produce duplicates.
+ * `threads` must have been resolved from a KNOWN login. Built without one it is empty,
+ * so every row would read as unpublished and be raised again - which is exactly the
+ * duplicate this state exists to prevent. `processPr` abstains from the whole PR before
+ * that can happen; this function is not the place that decides it.
  */
 function reconcilePosting(
   rows: Map<string, InspectorComment>,
   threads: Map<string, OurThread>,
-  login: string | null,
   now: number,
 ): void {
-  if (!login) return;
   for (const [fp, row] of rows) {
     if (row.status !== "posting") continue;
     const published = row.line === null || threads.has(fp);

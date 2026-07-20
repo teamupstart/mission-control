@@ -230,3 +230,34 @@ test("a ledger update cannot rewrite where the PR came from", () => {
   assert.equal(row.repoRoot, CTX.repoRoot);
   assert.equal(row.headSha, "deadbeef", "the mutable half still moves");
 });
+
+// ---- the head a backoff was earned on ----
+
+// A backed-off PR still gets looked at, and a NEW push ends the wait its predecessor
+// earned - including the six-hour park a diff too large to buffer buys. That comparison
+// has to be against the last head we ATTEMPTED, not the last one we successfully
+// reviewed: a failed round never advances `headSha`, so keying on that would read every
+// single tick as a fresh push and the backoff would never hold at all.
+test("the attempted head is tracked separately from the reviewed head", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const key = "mancej/ai-harness#56";
+
+  assert.equal(getInspectorPr(key)?.lastAttemptSha, null, "nothing attempted yet");
+
+  // A round starts on `aaa` and fails: attempted, never reviewed.
+  updateInspectorPr(key, { lastAttemptSha: "aaa" }, 2000);
+  updateInspectorPr(key, { lastError: "timed out", failCount: 1, nextAttemptAt: 99_999 }, 2000);
+  const failed = getInspectorPr(key)!;
+  assert.equal(failed.lastAttemptSha, "aaa");
+  assert.equal(failed.headSha, null, "a failed round must not record the push as reviewed");
+
+  // The same head on a later tick is still the input that earned the wait.
+  assert.equal(getInspectorPr(key)?.lastAttemptSha, "aaa");
+
+  // A push moves it, and the backoff goes with it.
+  updateInspectorPr(key, { lastAttemptSha: "bbb", failCount: 0, nextAttemptAt: null }, 3000);
+  const pushed = getInspectorPr(key)!;
+  assert.equal(pushed.lastAttemptSha, "bbb");
+  assert.equal(pushed.nextAttemptAt, null, "a new push is due now, whatever the old one bought");
+  assert.equal(pushed.failCount, 0, "and it starts its own count, not the previous input's");
+});

@@ -22,12 +22,12 @@ export interface GhResult<T> {
   value?: T;
   error?: string;
   /**
-   * We stopped listening rather than GitHub refusing us, so whether the request took
+   * The `gh` process died rather than GitHub refusing us, so whether the request took
    * effect is UNKNOWN. Only a writer needs this, and it needs it badly: "refused" means
    * nothing was published and the round can be re-planned, while "unknown" means
    * re-planning it might say the same thing twice in public.
    */
-  timedOut?: boolean;
+  outcomeUnknown?: boolean;
   /** The response did not fit in the pipe. Retrying the same request cannot produce less. */
   tooLarge?: boolean;
 }
@@ -37,53 +37,57 @@ function fail<T>(what: string, res: RunResult): GhResult<T> {
   return {
     ok: false,
     error: `${what} failed (exit ${res.code}): ${detail}`,
-    timedOut: res.timedOut,
+    outcomeUnknown: res.outcomeUnknown,
     tooLarge: res.overflowed,
   };
 }
 
 /**
- * The login `gh` is authenticated as, resolved once per process and cached.
+ * The login `gh` is authenticated as, cached with a TTL.
  *
  * Half of the ownership rule (see `isOurs`): a comment we wrote must carry BOTH our
  * marker and this login. Never hardcoded and never derived from a config value - a
  * GitHub App or a bot credential reports a different login and has to keep working.
  *
- * A SUCCESS is cached for the life of the process; a failure is cached only briefly.
- * Neither extreme works on its own: caching failure forever would pin the whole
- * subsystem into its fail-closed state until a restart, and not caching it at all
- * spawns one pointless subprocess per adopted PR per sweep for as long as `gh` is
- * unavailable. A window shorter than the poll interval collapses a sweep's worth of
- * those into one, and still retries on the next sweep.
+ * BOTH answers expire, and the success matters more than the failure. `gh auth switch`
+ * is an ordinary thing to do for anyone with a work account and a personal one, and a
+ * login cached for the life of the daemon would go on naming the account we are no
+ * longer posting as. That is worse than not knowing: every ownership test then reads
+ * "nothing here is ours", so questions quietly stop being answered and threads that are
+ * open on GitHub get closed in the ledger - and it all looks like a quiet PR, with
+ * nothing anywhere saying why. Failing to resolve at least abstains loudly.
+ *
+ * The failure window is shorter, and for a different reason: it collapses a sweep's
+ * worth of pointless subprocesses into one while `gh` is unavailable, without pinning
+ * the subsystem into its fail-closed state until a restart.
  */
+const LOGIN_TTL_MS = 5 * 60_000;
 const LOGIN_FAILURE_TTL_MS = 60_000;
 
 let cachedLogin: string | null = null;
-let loginFailedUntil = 0;
+let loginExpiresAt = 0;
 
 export async function authenticatedLogin(
   cwd: string | null,
   now: number = Date.now(),
 ): Promise<string | null> {
-  if (cachedLogin) return cachedLogin;
-  if (now < loginFailedUntil) return null;
+  if (now < loginExpiresAt) return cachedLogin;
   const res = await run("gh", ["api", "user", "--jq", ".login"], {
     cwd: cwd ?? undefined,
     timeoutMs: GH_TIMEOUT_MS,
   });
   const login = res.code === 0 ? res.stdout.trim() : "";
-  if (!login) {
-    loginFailedUntil = now + LOGIN_FAILURE_TTL_MS;
-    return null;
-  }
-  cachedLogin = login;
-  return login;
+  // A re-resolve that fails discards the old answer rather than keeping it: an identity
+  // we can no longer confirm is exactly the one we must not act on.
+  cachedLogin = login || null;
+  loginExpiresAt = now + (login ? LOGIN_TTL_MS : LOGIN_FAILURE_TTL_MS);
+  return cachedLogin;
 }
 
 /** Drop the cached login, success or failure. Exists for tests; the tick never calls it. */
 export function resetAuthenticatedLogin(): void {
   cachedLogin = null;
-  loginFailedUntil = 0;
+  loginExpiresAt = 0;
 }
 
 /** Split "https://github.com/owner/repo/pull/123" into its parts, or null. */

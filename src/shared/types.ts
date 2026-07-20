@@ -1394,6 +1394,17 @@ export interface InspectorPr {
   failCount: number;
   /** Epoch ms before which this PR is not retried. Null when it is due now. */
   nextAttemptAt: number | null;
+  /**
+   * The head we last STARTED work on, whether or not that work finished.
+   *
+   * Distinct from `headSha`, which records the last head we successfully reviewed, and
+   * the distinction is what makes the backoff both effective and escapable. Keyed on
+   * `headSha` the backoff would never apply at all to a PR whose review has never
+   * succeeded - the common case, since a failed round does not advance it - and keyed on
+   * nothing it would outlast the push that earned it, so a diff force-pushed down to
+   * three lines would sit out the full wait a huge one bought.
+   */
+  lastAttemptSha: string | null;
   adoptedAt: number;
   updatedAt: number;
 }

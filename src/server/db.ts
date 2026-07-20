@@ -339,6 +339,7 @@ export function openDb(): DatabaseSync {
       last_error       TEXT,
       fail_count       INTEGER NOT NULL DEFAULT 0,  -- consecutive failures, for the backoff
       next_attempt_at  INTEGER,          -- not before this; null = due now
+      last_attempt_sha TEXT,             -- the head the backoff was earned on
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -476,6 +477,11 @@ function migrate(d: DatabaseSync): void {
   // answer for a row nothing had yet counted failures for.
   addColumn(d, "inspector_prs", "fail_count", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "inspector_prs", "next_attempt_at", "INTEGER");
+  // `last_attempt_sha`: the head a backoff was earned on, so a new push can cut the wait
+  // short. Same unshipped-table window as the two above, and nullable for the same
+  // reason - a row written before it existed has attempted nothing we can name, and the
+  // backoff on it stays fully in force until something does.
+  addColumn(d, "inspector_prs", "last_attempt_sha", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -2032,6 +2038,7 @@ interface InspectorPrRow {
   last_error: string | null;
   fail_count: number;
   next_attempt_at: number | null;
+  last_attempt_sha: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -2054,6 +2061,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     lastError: r.last_error,
     failCount: r.fail_count,
     nextAttemptAt: r.next_attempt_at,
+    lastAttemptSha: r.last_attempt_sha,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -2074,8 +2082,8 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
           head_sha, round, last_reviewed_at, last_error, fail_count, next_attempt_at,
-          adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          last_attempt_sha, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -2095,6 +2103,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.lastError,
       pr.failCount,
       pr.nextAttemptAt,
+      pr.lastAttemptSha,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -2122,6 +2131,7 @@ export function updateInspectorPr(
     lastError?: string | null;
     failCount?: number;
     nextAttemptAt?: number | null;
+    lastAttemptSha?: string | null;
   },
   now: number,
 ): void {
@@ -2133,7 +2143,7 @@ export function updateInspectorPr(
       `UPDATE inspector_prs
           SET state = ?, head_sha = ?, round = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, next_attempt_at = ?,
-              updated_at = ?
+              last_attempt_sha = ?, updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -2144,6 +2154,7 @@ export function updateInspectorPr(
       next.lastError,
       next.failCount,
       next.nextAttemptAt,
+      next.lastAttemptSha,
       now,
       key,
     );

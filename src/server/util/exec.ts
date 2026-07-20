@@ -5,18 +5,25 @@ export interface RunResult {
   stderr: string;
   code: number | null;
   /**
-   * We killed the child on `timeoutMs`, so whether the command had any EFFECT is
+   * The child DIED rather than answering, so whether the command had any EFFECT is
    * unknown. Distinct from every other non-zero exit, where the command ran to
    * completion and reported its own failure - a caller writing to a remote has to be
-   * able to tell "it was refused" from "we stopped listening".
+   * able to tell "it was refused" from "we never found out".
+   *
+   * Named for the conclusion rather than the cause on purpose. Our own `timeoutMs` is
+   * one way to get here; the OOM killer, a container stop and an operator's `pkill` are
+   * others, and they are indistinguishable from the caller's point of view because in
+   * every one of them the command may well have completed its work first.
    */
-  timedOut?: boolean;
+  outcomeUnknown?: boolean;
   /** stdout exceeded `maxBuffer`. Retrying the same command cannot produce less. */
   overflowed?: boolean;
   // Both are OPTIONAL because they narrow a failure rather than describing a result:
-  // `run` always sets them, every consumer reads absent as false, and the many hand-built
-  // stubs that model only stdout/stderr/code stay honest instead of asserting a `false`
-  // they never reasoned about.
+  // `run` always sets them, and the many hand-built stubs that model only
+  // stdout/stderr/code stay honest instead of asserting a `false` they never reasoned
+  // about. A consumer reading absent as false must therefore be one for which "assume
+  // it completed" is the SAFE reading - see `postReview`'s caller, which treats unknown
+  // as "may already be published" and so must never infer it from a missing field.
 }
 
 /**
@@ -76,15 +83,19 @@ export function run(
           !!err &&
           ((err as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
             /maxBuffer/i.test(err.message ?? ""));
-        // `killed` is set by Node when IT killed the child, which for these options can
-        // only be the `timeout`. A command we stopped listening to may still have done
-        // its work, so this is never "it failed", only "we do not know".
-        const timedOut = !overflowed && !!err && (err as { killed?: unknown }).killed === true;
+        // `killed` alone is not enough: Node sets it only when NODE killed the child,
+        // so a process the OOM killer or an operator took out arrives with
+        // `killed: false` and a `signal`, and would otherwise read as an ordinary
+        // refusal. Every death-by-signal is the same conclusion - the command never
+        // reported its own exit, so we do not know whether it did its work.
+        const e = err as { killed?: unknown; signal?: unknown } | null;
+        const outcomeUnknown =
+          !overflowed && !!err && (e?.killed === true || typeof e?.signal === "string");
         resolve({
           stdout: stdout ?? "",
           stderr: overflowed ? (err.message ?? "maxBuffer exceeded") : (stderr ?? ""),
           code,
-          timedOut,
+          outcomeUnknown,
           overflowed,
         });
       },

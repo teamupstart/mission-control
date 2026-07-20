@@ -1171,7 +1171,13 @@ export function buildApp(
     const parsed = await parseBody(c, UpdateTaskSchema);
     if (!parsed.ok) return parsed.res;
     const patch = parsed.data;
-    if (patch.repoRoot !== undefined) {
+    const id = c.req.param("id");
+    // Resolved only when the repo actually MOVES. A caller restating the root it was
+    // handed is not asking for anything, and re-checking it makes a task uneditable the
+    // moment its repo goes away - a reclaimed worktree, a directory since renamed - so a
+    // priority change would be refused on the strength of a path the edit never touched,
+    // under an error message about git that names neither the field nor the task.
+    if (patch.repoRoot !== undefined && patch.repoRoot !== tasks.get(id)?.repoRoot) {
       const resolved = await resolveRepoRoot(patch.repoRoot);
       if (!resolved) return c.json({ error: `not a git repository: ${patch.repoRoot}` }, 400);
       // Assigned in place rather than spread as `{...patch, repoRoot}`: that spread names
@@ -1180,7 +1186,7 @@ export function buildApp(
       // task that had already been dispatched.
       patch.repoRoot = resolved;
     }
-    const r = await tasks.update(c.req.param("id"), patch);
+    const r = await tasks.update(id, patch);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 

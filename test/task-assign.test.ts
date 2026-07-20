@@ -145,6 +145,26 @@ test("a pane that refuses the prompt leaves the task in the backlog, droppable a
   assert.equal(after.dispatchedAt, null);
 });
 
+test("a retriage made while the prompt is being typed survives the assignment", async () => {
+  // Typing into a pane is a real round-trip - a bracketed paste, a settle, a pane read
+  // back - and priority and labels stay editable in EVERY status, so a retriage can
+  // land inside that window. Merging onto the task as it was read before the injection
+  // would write the old priority back over the new one, on a gesture that was only
+  // meant to hand the task to an agent, with nothing failing to say so.
+  const { r, tasks, sessionId } = setup();
+  r.upsertTask(mkTask({ priority: "low", labels: ["infra"] }));
+  const res = await tasks.assign("t1", sessionId, async () => {
+    await tasks.update("t1", { priority: "blocker", labels: ["infra", "urgent"] });
+    return { ok: true, pasted: true };
+  });
+  assert.equal(res.ok, true);
+  const after = r.getTask("t1")!;
+  assert.equal(after.status, "running", "the assignment still lands");
+  assert.equal(after.sessionId, sessionId);
+  assert.equal(after.priority, "blocker");
+  assert.deepEqual(after.labels, ["infra", "urgent"]);
+});
+
 test("an assigned task never claims a worktree - cancel must not remove one", () => {
   // The invariant behind the whole feature: an assigned task borrows an agent that
   // already had a checkout, so it owns no worktree. If `worktreePath` were ever set

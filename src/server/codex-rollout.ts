@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, ThinkingLevel } from "@shared/types.ts";
 import { isLongContext } from "@shared/model.ts";
-import { readTailLines, type RuntimeMetaRead } from "./transcript.ts";
+import { readTailLines } from "./util/file-tail.ts";
+import type { RuntimeMetaRead } from "./transcript.ts";
 
 // Reads an OpenAI Codex CLI "rollout" session file to surface the same runtime
 // facts we read for Claude: model, reasoning effort, and context usage. Codex has

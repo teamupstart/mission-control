@@ -7,13 +7,13 @@ import { ActionBar } from "../ActionBar.tsx";
 import { ModePicker } from "../ModePicker.tsx";
 import { NomistakesStrip } from "../NomistakesStrip.tsx";
 import { NomistakesFixLog } from "../NomistakesFixLog.tsx";
+import { AGENT_NAMES } from "@shared/agent.ts";
 import { PaneDialogPrompt } from "../PaneDialogPrompt.tsx";
 import { ForemanStrip } from "../ForemanStrip.tsx";
 import { ForemanDrawer, openEpisodeCount } from "../ForemanDrawer.tsx";
 import { WorkQueue } from "../WorkQueue.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "../TranscriptPanel.tsx";
 import {
-  AGENT_LABEL,
   AgentDot,
   CostChip,
   GoalLine,
@@ -334,7 +334,7 @@ export function ConsoleDetail({
       </div>
 
       <footer className="detail-foot">
-        <span className="detail-agent">{AGENT_LABEL[session.agent]}</span>
+        <span className="detail-agent">{AGENT_NAMES[session.agent].label}</span>
         {session.nomistakesGated && (
           <span className="gated" title="Gated by no-mistakes">
             ◇ gated

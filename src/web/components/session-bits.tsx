@@ -32,11 +32,6 @@ import { Tooltip } from "./Tooltip.tsx";
  * soon as it drifts.
  */
 
-export const AGENT_LABEL: Record<Session["agent"], string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-};
-
 /** Where this session was found, phrased for the small grey subtitle. */
 export function subtitle(session: Session): string {
   if (session.nameSource === "tmux" && session.tmux) return `tmux · ${session.tmux.paneId}`;

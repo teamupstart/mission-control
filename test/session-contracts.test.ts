@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 
 import { sessionEqual } from "../src/server/registry.ts";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { AGENT_TYPES } from "../src/shared/types.ts";
+import { AGENT_NAMES } from "../src/shared/agent.ts";
+import { DispatchSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
 import type { NmFixSummary, OrphanedQueueHint, Session } from "../src/shared/types.ts";
 
 const FIX: NmFixSummary = {
@@ -26,15 +29,19 @@ const FIX: NmFixSummary = {
 const ORPHAN: OrphanedQueueHint = { noteKey: "k", itemCount: 2, branch: "harness/x" };
 
 /**
- * Two contracts that fail SILENTLY when broken - no error, no failing test, just a
+ * Three contracts that fail SILENTLY when broken - no error, no failing test, just a
  * dashboard showing something that isn't true anymore:
  *
  *  1. `sessionEqual` gates every SSE emit. A `Session` field it doesn't compare
  *     renders once from the snapshot and then never updates again.
  *  2. `useEventStream`'s switch handles `ServerEvent`. A variant it doesn't handle
  *     is dropped on the floor.
+ *  3. `AGENT_TYPES` is the union every agent id is drawn from. It used to be written
+ *     out three times - the type, the dispatch schema's `z.enum`, the dashboard's
+ *     dispatch input - so a fourth agent added to one of them was accepted by the UI
+ *     and rejected at the wire, or vice versa.
  *
- * Both are now compiler-enforced. These tests prove the enforcement actually fires
+ * All three are now compiler-enforced. These tests prove the enforcement actually fires
  * (below), and that making it fail closed didn't change what gets emitted (above).
  */
 
@@ -126,6 +133,35 @@ test("meta compares displayed values, not the reading behind them", () => {
   );
 });
 
+// ---- the agent union: one source, and the wire follows it ----
+
+test("every declared agent is dispatchable", () => {
+  // The property that matters to a person: an id in the union can be launched. It broke
+  // by omission - the union grew, the schema's hand-written enum didn't, and the failure
+  // surfaced as a 400 from a picker that offered the choice.
+  for (const agent of AGENT_TYPES) {
+    assert.equal(DispatchSchema.parse({ repoRoot: "/r", intent: "do it", agent }).agent, agent);
+    assert.equal(UpdateTaskSchema.parse({ agent }).agent, agent);
+  }
+});
+
+test("an agent id that is not in the union is refused at the wire", () => {
+  // The other half: the schema is the boundary, so it must not accept ids the rest of
+  // the daemon has no code for. A widened enum that forgot to narrow is a session
+  // launched against a binary nobody resolves.
+  assert.throws(() => DispatchSchema.parse({ repoRoot: "/r", intent: "do it", agent: "pi" }));
+  assert.throws(() => UpdateTaskSchema.parse({ agent: "pi" }));
+});
+
+test("every declared agent has a name to render", () => {
+  // `AGENT_NAMES` is compiler-enforced (the probe below), but only against a MISSING
+  // key. An empty string satisfies the type and renders as a blank byline.
+  for (const agent of AGENT_TYPES) {
+    assert.ok(AGENT_NAMES[agent].label, `${agent} needs a product name`);
+    assert.ok(AGENT_NAMES[agent].speaker, `${agent} needs a transcript byline`);
+  }
+});
+
 // ---- enforcement: prove the compiler actually rejects a gap ----
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -185,6 +221,12 @@ function edit(dir: string, rel: string, from: string, to: string): void {
 }
 
 const SESSION_END = "  paneDialog: PaneDialog | null;\n}";
+const AGENT_TYPES_DECL = `export const AGENT_TYPES = ["claude", "codex"] as const;`;
+/**
+ * Deliberately not a plausible agent id. A probe named `pi` would start passing for the
+ * wrong reason on the day someone adds a real `pi` harness and fills every map in.
+ */
+const PROBE_AGENT = "probeagent";
 // Anchored MID-union rather than on the last variant, so adding one to the end of
 // `ServerEvent` doesn't break this probe. `task_remove` without its trailing semicolon
 // matches wherever it sits in the union, and the probe is spliced in beside it - an
@@ -231,6 +273,63 @@ test("an OPTIONAL Session field with no comparator also fails typecheck", () => 
     missingComparator("probeOptional"),
     `an optional Session field should still be required in the record, got:\n${out}`,
   );
+});
+
+/**
+ * Each `Record<AgentType, …>` that a new harness must fill in, and the type name tsc
+ * will quote back. Matched on the CODE plus the missing key plus that type name, per
+ * the convention above - never on prose.
+ *
+ * Listing them rather than asserting "some error somewhere" is the point: this is the
+ * set of decisions a new harness is forced to make, and a map dropping off it (rewritten
+ * as a lookup with a default, say) is a capability that silently does nothing for the
+ * new agent - the exact asymmetry the pluggable-integrations migration exists to close.
+ */
+const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
+  ["src/shared/agent.ts", "AgentNames"],
+  ["src/shared/cost.ts", "string | null"],
+  ["src/shared/goal.ts", "string | null"],
+  ["src/shared/model.ts", "readonly ModelChoice[]"],
+  ["src/server/config.ts", "AgentBin"],
+  ["src/server/goal/source.ts", "GoalSource"],
+];
+
+/**
+ * Escape a TYPE NAME for use inside the match pattern below.
+ *
+ * The table above is written the way tsc prints, not the way `RegExp` reads, and the
+ * gap between those is how an assertion here goes quietly green: `string | null`
+ * interpolated raw is an alternation whose right branch is the bare pattern ` null`,
+ * which matches somewhere in tsc's output no matter what happened in the file the row
+ * names. That row then passes with the map deleted - the precise rot this test exists
+ * to catch. Escaping centrally rather than row by row is the point: a hand-escaped
+ * table only holds until the next row someone adds with a `|`, `(` or `?` in it.
+ */
+function asLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+test("a new agent id fails typecheck everywhere it has to be accounted for", () => {
+  // The union is now written ONCE, so this probe edits one line - which is itself the
+  // thing being proved. Before, the same edit compiled clean: the type widened, the
+  // dispatch schema's own copy of the enum did not, and the new agent was offered by
+  // the picker and rejected by the daemon.
+  const out = typecheckWithPatch((dir) =>
+    edit(
+      dir,
+      "src/shared/types.ts",
+      AGENT_TYPES_DECL,
+      `export const AGENT_TYPES = ["claude", "codex", "${PROBE_AGENT}"] as const;`,
+    ),
+  );
+  for (const [file, type] of AGENT_RECORDS) {
+    const base = asLiteral(file.split("/").pop()!);
+    assert.match(
+      out,
+      new RegExp(`${base}[^\\n]*error TS2741:[^\\n]*'${PROBE_AGENT}'[^\\n]*${asLiteral(type)}`),
+      `adding an agent id should force a decision in ${file}, got:\n${out}`,
+    );
+  }
 });
 
 test("a ServerEvent variant the stream doesn't handle fails typecheck", () => {

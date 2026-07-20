@@ -2,6 +2,7 @@ import type { ForemanConfig } from "@shared/protocol.ts";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { isInFlightState } from "@shared/queue.ts";
+import { paneToken } from "@shared/pane.ts";
 import { SEND_ATTEMPT_CAP, hasPane, inFlightItem, settledIdle } from "./queue-machine.ts";
 import type { QueueAction, QueueConfig } from "./queue-machine.ts";
 import { foremanMayActLive } from "./verdict.ts";
@@ -143,9 +144,7 @@ export function resolveLiveSession(sessions: Session[], noteKey: string): Sessio
 
 /** Pane token for a session - what `inject` will actually target. */
 export function paneKeyOf(s: Session): string | null {
-  if (s.tmux) return `tmux:${s.tmux.paneId}`;
-  if (s.wezterm) return `wez:${s.wezterm.paneId}`;
-  return null;
+  return paneToken(s);
 }
 
 /** What the guard observed when the machine made its decision. */

@@ -125,14 +125,14 @@ test("hookToState surfaces a readable activity line", () => {
 
 test("overlayKeyFromEnv prefers the tmux pane over the outer wezterm pane", () => {
   assert.equal(overlayKeyFromEnv({ tmuxPane: "%3", weztermPane: "7" }), "tmux:%3");
-  assert.equal(overlayKeyFromEnv({ weztermPane: "7" }), "wez:7");
+  assert.equal(overlayKeyFromEnv({ weztermPane: "7" }), "wezterm:7");
   assert.equal(overlayKeyFromEnv({}), null);
 });
 
 test("sessionKey matches a session's own pane, tmux preferred", () => {
   const base = sessionFixture();
   assert.equal(sessionKey(base), "tmux:%3");
-  assert.equal(sessionKey({ ...base, tmux: null }), "wez:7");
+  assert.equal(sessionKey({ ...base, tmux: null }), "wezterm:7");
   assert.equal(sessionKey({ ...base, tmux: null, wezterm: null }), null);
 });
 

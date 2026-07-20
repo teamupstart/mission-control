@@ -21,7 +21,7 @@ silently rather than failing to compile**.
 | Capability | Where it is hardcoded |
 |---|---|
 | Process detection | `discovery/processes.ts:47-90` - literal argv signatures per agent |
-| Binary resolution | **three** independent paths: `config.ts:54-57`, `claude-cli.ts:26`, `main/integrations.ts:184` |
+| Binary resolution | **three** independent paths: `config.ts` `AGENT_BINS` (a total map since Phase 0), `claude-cli.ts:26`, `main/integrations.ts:184` |
 | Transcript | `transcript.ts:51` hard `return null` for non-Claude; Anthropic JSONL shape throughout (`:115-155`, `:500-505`, `:584`) |
 | Rollout (codex) | `codex-rollout.ts` - metadata only, no message parsing |
 | Dispatch point | `runtime-meta.ts:43-58` - an explicit `if claude … else if codex`. This is where the interface belongs. |
@@ -34,13 +34,19 @@ silently rather than failing to compile**.
 | Hooks + MCP install | `hooks/install.mjs` and `main/integrations.ts:183-206` - `~/.claude/settings.json` and `claude mcp add` only |
 | Model windows | `shared/model.ts:96-101` - only Claude families get a non-200k default |
 
-The union itself is written out **three** times (`shared/types.ts:7`,
-`shared/protocol.ts:249`, `web/lib/api.ts:216`) and `AGENT_LABEL` **twice**
-(`session-bits.tsx:24`, `TranscriptPanel.tsx:26`).
+The union itself was written out **three** times (`shared/types.ts`, `shared/protocol.ts`,
+`web/lib/api.ts`) and `AGENT_LABEL` **twice**, holding different values for the same key -
+`session-bits.tsx` said "Claude Code" where `TranscriptPanel.tsx` said "claude". **Phase 0
+collapsed both**: `AGENT_TYPES` (`shared/types.ts`) is the one source the zod enum and the
+dashboard's dispatch input now derive from, and `AGENT_NAMES` (`shared/agent.ts`) holds the
+two registers as named fields (`label`, `speaker`) so neither can be mistaken for drift.
 
-Only **four** `Record<AgentType, …>` maps would fail to compile on a new agent
-(`shared/goal.ts:16`, `goal/source.ts:55`, `session-bits.tsx:24`, `TranscriptPanel.tsx:26`).
-Everything else silently does nothing. That asymmetry is the core problem.
+Before Phase 0, only **four** `Record<AgentType, …>` maps would fail to compile on a new
+agent. Everything else silently does nothing, and that asymmetry is the core problem. Phase 0
+took it to **six** - `shared/agent.ts`, `shared/cost.ts`, `shared/goal.ts`, `shared/model.ts`,
+`server/config.ts`, `server/goal/source.ts` - which is the list `session-contracts.test.ts`
+pins by adding a probe agent id and asserting each one fails to typecheck. Every row in the
+table above is still silent.
 
 ### Terminal coupling (tmux / wezterm)
 
@@ -58,10 +64,13 @@ code lives, and in which capabilities exist at all:
 | focus | `activateWeztermPane:83-87` | cannot focus alone |
 | kill group | none - SIGTERM only (`actions.ts:1234`) | `kill-session` |
 
-Duplicated pane-token functions, in **two spellings**:
-`actions.ts:66-70` and `pane-mode.ts:187-189` emit `wezterm:`; `registry.ts:2055-2065` and
-`foreman/queue-apply.ts:146` emit `wez:`. Each subsystem is internally consistent, so there
-is no live defect - but it is four copies of one function waiting for a fifth backend.
+Duplicated pane-token functions, in **two spellings**: `actions.ts` (the write lock) and
+`pane-mode.ts` (the capture-miss counter) emitted `wezterm:`; `registry.ts` (the hook
+overlay) and `foreman/queue-apply.ts` (the pane-recreated guard) emitted `wez:`. Each
+subsystem was internally consistent, so there was no live defect - but it was four copies of
+one function waiting for a fifth backend. **Phase 0 collapsed them** into `paneToken`
+(`shared/pane.ts`) on the `wezterm:` spelling, tmux being unabbreviated too; no token is
+persisted, so the format was free to change. `test/pane-lock.test.ts` pins the agreement.
 
 ## The design
 
@@ -326,12 +335,12 @@ cleanly until they become lists:
 
 ## Sequence
 
-Phase 0 lands first because it shrinks every later diff and carries no behavior change.
+Phase 0 landed first because it shrinks every later diff and carries no behavior change.
 Phase 3 is deliberately last: it is the only phase that can lose someone's worktree.
 
 | Phase | Items |
 |---|---|
-| 0 - Seams | Single agent-union source; unified pane token; extract the already-neutral helpers (`readTailLines`, capture-miss tolerance) out of the Claude modules |
+| 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_NAMES` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
 | 1 - Harness | Interface + registry; then detection/bin, transcript, hooks->state, TUI, capability guards, UI |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
@@ -372,7 +381,7 @@ If any of the four requires editing a file outside its own adapter, the interfac
 Real defects, each folded into the migration item that rewrites its file rather than queued
 separately. The item that owns each fix is named in brackets.
 
-- **[Phase 1 - TUI]** `pane-mode.ts:124-125` - `annotatePaneState` filters to Claude, so
+- **[Phase 1 - TUI]** `pane-mode.ts:126-133` - `annotatePaneState` filters to Claude, so
   `paneDialog` is never set for Codex. Since `activePaneDialog` is the only hookless
   "needs-you" evidence (`shared/session.ts:172`), **a Codex session parked on a prompt reads
   as idle**. The most user-visible of the six.

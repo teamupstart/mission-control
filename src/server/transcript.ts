@@ -1,4 +1,4 @@
-import { openSync, readSync, closeSync, statSync, existsSync } from "node:fs";
+import { statSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
@@ -8,6 +8,7 @@ import { effectiveContextWindow, isLongContext, parseContextWindowSize } from "@
 import type { Registry } from "./registry.ts";
 import { originOf } from "./injections.ts";
 import { sleep } from "./util/timers.ts";
+import { completeLines, readRange, readTailLines } from "./util/file-tail.ts";
 
 // Reads a Claude Code session transcript (JSONL) and streams it to the expanded
 // card over SSE. Claude writes one JSON record per line to
@@ -54,20 +55,6 @@ export function resolveTranscriptPath(
   const dir = join(projectsDir, session.cwd.replace(/[/.]/g, "-"));
   const derived = join(dir, `${session.agentSessionId}.jsonl`);
   return existsSync(derived) ? derived : null;
-}
-
-/** Read bytes [start, end) of a file as a Buffer. */
-function readRange(path: string, start: number, end: number): Buffer {
-  const len = Math.max(0, end - start);
-  if (len === 0) return Buffer.alloc(0);
-  const fd = openSync(path, "r");
-  try {
-    const buf = Buffer.allocUnsafe(len);
-    const n = readSync(fd, buf, 0, len, start);
-    return buf.subarray(0, n);
-  } finally {
-    closeSync(fd);
-  }
 }
 
 /**
@@ -536,30 +523,6 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
 }
 
 /**
- * Read the last `maxBytes` of a file as complete lines, dropping a partial first
- * line when we began mid-file. Shared bounded-tail read for the JSONL scanners
- * (runtime metadata here, and the Codex rollout reader) so none parse a whole
- * multi-MB file. Returns [] when the file is missing/unreadable.
- */
-export function readTailLines(path: string, maxBytes: number): string[] {
-  let size: number;
-  try {
-    size = statSync(path).size;
-  } catch {
-    return [];
-  }
-  const start = Math.max(0, size - maxBytes);
-  const buf = readRange(path, start, size);
-  let from = 0;
-  if (start > 0) {
-    const nl = buf.indexOf(NL);
-    from = nl >= 0 ? nl + 1 : buf.length;
-  }
-  const text = buf.subarray(from).toString("utf8");
-  return text ? text.split("\n") : [];
-}
-
-/**
  * Read the tail of a session's transcript and derive its runtime metadata, or
  * null when the file is missing/unreadable or yields nothing.
  */
@@ -769,26 +732,6 @@ export function readTranscriptSince(
   // middle, so the turns it returns are always contiguous and a reader slicing
   // forward from 0 can never run back into an elided boundary.
   return { messages: parseLines(lines), truncated, headCount: 0 };
-}
-
-/**
- * Split a byte buffer into lines, optionally dropping a partial line at either
- * end: `dropFirst` for a buffer that began mid-file (a tail read), `dropLast`
- * for one that ended mid-file (a head read). The kept end is returned intact.
- */
-function completeLines(buf: Buffer, dropFirst: boolean, dropLast: boolean): string[] {
-  let from = 0;
-  if (dropFirst) {
-    const nl = buf.indexOf(NL);
-    from = nl >= 0 ? nl + 1 : buf.length;
-  }
-  let end = buf.length;
-  if (dropLast) {
-    const lastNl = buf.lastIndexOf(NL);
-    end = lastNl >= 0 ? lastNl + 1 : from;
-  }
-  const text = buf.subarray(from, end).toString("utf8");
-  return text ? text.split("\n") : [];
 }
 
 /** Read the tail of the transcript for the initial view. Returns turns + the byte offset to resume from. */

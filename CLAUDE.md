@@ -28,7 +28,7 @@ how to run it, read `README.md`.
 
 ## Compiler-enforced contracts
 
-Both fail typecheck now. Know the right answer when you hit the error.
+These all fail typecheck now. Know the right answer when you hit the error.
 
 **New `Session` field** → give it a comparator in `SESSION_FIELD_COMPARATORS`
 (`src/server/registry.ts`). `byValue` for scalars, `byJson` for nested objects. `alwaysEqual`
@@ -39,6 +39,14 @@ why - do not use it to silence the error. Read the `queue` / `orphanedQueue` ent
 **New `ServerEvent` variant** → add a `case` in `src/web/useEventStream.ts`. If it adds a
 top-level collection, also extend the `snapshot` case, `registry.snapshot()`, and
 `MissionState`.
+
+**New agent id** → add it to `AGENT_TYPES` (`src/shared/types.ts`) and nowhere else: the
+`z.enum` in `protocol.ts`, `DispatchInput`, the dispatch modal's `<option>`s and the
+Harnesses rows all derive from it. `AgentType` is that array's element type, so every
+`Record<AgentType, …>` then fails to compile until the new harness has said what it is
+called (`AGENT_NAMES`, `@shared/agent.ts`), which binary it launches (`AGENT_BINS`,
+`server/config.ts`), which models it offers, and how it answers goals and cost. Fill each in
+rather than defaulting one. Test: `session-contracts.test.ts`, which pins that list.
 
 ## Layout parity
 
@@ -198,6 +206,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   autopilot's `readyBacklog` / `blockersIn` / `nextUpTaskId` (`@shared/backlog.ts`) are shared
   so every surface, and the server, decides identically. Do not copy them into a component. A
   third consent gate extends `allowlist.ts`; it does not start a matcher.
+- **Pane token**: `paneToken` (`@shared/pane.ts`) spells the key every pane-scoped map uses -
+  the write lock, the hook overlay, the capture-miss counter, the Foreman's send guard. There
+  were four copies in two spellings (`wezterm:` and `wez:`); each subsystem only compared the
+  token against itself, so the fifth copy is where that becomes a session whose hooks bind to
+  nothing. No token is persisted, which is what keeps the spelling changeable. Test:
+  `pane-lock.test.ts`.
 - **`~/.claude/settings.json` writers**: `hooks/install.mjs`, `src/main/integrations.ts`, and
   the daemon (via `src/server/cost.ts`). The telemetry `env` block has ONE definition in
   `@shared/claude-settings.ts` - three copies of six keys is how half a block gets left

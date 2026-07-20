@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
+import type { AgentType } from "@shared/types.ts";
 import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
 
 /** Runtime coordinates and the `MISSION_`/legacy env resolution live in the shared
@@ -66,10 +67,33 @@ export function foremanInstructionsPath(): string {
   return envVar("FOREMAN_INSTRUCTIONS") ?? fileURLToPath(new URL("../../FOREMAN.md", import.meta.url));
 }
 
+/** The env override and the fallback command for one harness's CLI. */
+export interface AgentBin {
+  /** Suffix of the `MISSION_`/legacy env chain that overrides the binary. */
+  env: string;
+  /** What to run when the operator has set no override. */
+  bin: string;
+}
+
+/**
+ * Which binary each harness launches - a total map and not a chain of `if`s.
+ *
+ * This is the function that decides what process a dispatch actually spawns, so the
+ * cost of forgetting an entry is a new harness silently launching somebody else's
+ * CLI: the `if claude ... else codex` this replaced resolved EVERY unrecognised agent
+ * to `codex`, and the caller passes an `AgentType`, so nothing anywhere would have
+ * complained. As a `Record<AgentType, ...>` the omission is a typecheck failure at
+ * the point of the decision. Pinned by `session-contracts.test.ts`.
+ */
+const AGENT_BINS: Record<AgentType, AgentBin> = {
+  claude: { env: "CLAUDE_BIN", bin: "claude" },
+  codex: { env: "CODEX_BIN", bin: "codex" },
+};
+
 /** Resolve the CLI to launch for a dispatched agent, overridable per agent. */
-export function resolveAgentBin(agent: "claude" | "codex"): string {
-  if (agent === "claude") return envVar("CLAUDE_BIN") ?? "claude";
-  return envVar("CODEX_BIN") ?? "codex";
+export function resolveAgentBin(agent: AgentType): string {
+  const { env, bin } = AGENT_BINS[agent];
+  return envVar(env) ?? bin;
 }
 
 /** How often the passive discovery poller sweeps the system. */

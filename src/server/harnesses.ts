@@ -1,5 +1,6 @@
 import { HarnessesConfigSchema } from "@shared/protocol.ts";
 import type { HarnessesConfig, HarnessesConfigPatch } from "@shared/protocol.ts";
+import type { AgentType } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // The "Harnesses" settings section, mirroring foreman/config.ts and skills/config.ts:
@@ -42,6 +43,6 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
  * the default changed launches on the new default, which is what "default" has to
  * mean for it to be worth setting. An explicit per-task `model` always wins.
  */
-export function resolveDispatchModel(agent: "claude" | "codex", taskModel: string | null): string | null {
+export function resolveDispatchModel(agent: AgentType, taskModel: string | null): string | null {
   return taskModel ?? getHarnessesConfig().defaultModel[agent];
 }

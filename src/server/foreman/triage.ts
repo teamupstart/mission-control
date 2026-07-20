@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
+import type { StandardsDoc } from "../standards.ts";
 import type { ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../claude-cli.ts";
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
@@ -468,6 +469,22 @@ interface TriageWindow {
 export interface TriageDeps {
   transcript(id: string, turns: number): Promise<TriageWindow>;
   runModel(prompt: string, model: string): Promise<string>;
+  /**
+   * The operator's `FOREMAN.md`, or null when the repo has none.
+   *
+   * The cheap tier reads it for the same reason the full reviewer does, and the reason is
+   * sharper here: this tier can DISPOSE. `routine-access` is answered outright at Tier 1
+   * and never reaches Tier 2, so a router that had not read the operator's instructions
+   * would auto-approve the very asks they had just written down as off-limits - and it
+   * would do it on the most frequent path in the system, which is precisely the one they
+   * wrote the file to govern. A preferences doc that only the expensive tier honours is
+   * not a preferences doc, it is a coin flip on which tier happens to pick the ask up.
+   *
+   * The extra tokens are real but small against that: the doc is capped at 16KB and this
+   * tier runs on Haiku, while the failure it prevents is Foreman approving something the
+   * operator forbade in writing.
+   */
+  prefs(id: string): Promise<StandardsDoc | null>;
 }
 
 /**
@@ -555,11 +572,16 @@ export async function triageSession(
   const t0 = tier0(pending);
   if (t0.kind !== "continue") return t0;
 
-  const window = await deps.transcript(session.id, TIER1_TURNS).catch((): TriageWindow => {
-    // A failed fetch is an absent window, not an absent transcript file - the two stay
-    // distinguishable in the log, so `unavailable` is deliberately left false here.
-    return { messages: [], truncated: false };
-  });
+  const [window, prefs] = await Promise.all([
+    deps.transcript(session.id, TIER1_TURNS).catch((): TriageWindow => {
+      // A failed fetch is an absent window, not an absent transcript file - the two stay
+      // distinguishable in the log, so `unavailable` is deliberately left false here.
+      return { messages: [], truncated: false };
+    }),
+    // Absent on failure, like every other read of this file: no FOREMAN.md is the ordinary
+    // case, so a failed read has to land on the behaviour a repo without one gets.
+    deps.prefs(session.id).catch(() => null),
+  ]);
   // The endpoint's `turns` only bounds BYTES (see TIER1_TURNS), so apply the real turn bound
   // here - see `recentTurns`. The router's prompt gets `recent` plus the opening turns; see
   // `promptWindow` for why the two windows differ. Eliding the middle is itself a truncation,
@@ -584,6 +606,9 @@ export async function triageSession(
     transcript: messages,
     truncated,
     pane,
+    // This tier can dispose, so it must have read the operator's instructions before it
+    // does - see `TriageDeps.prefs`.
+    prefs,
   };
 
   let raw: string;

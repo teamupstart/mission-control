@@ -1,4 +1,6 @@
 import type { TranscriptMessage } from "@shared/types.ts";
+import type { StandardsDoc } from "../standards.ts";
+import { prefsSection } from "./prefs.ts";
 import { sanitizeGapText } from "./queue-machine.ts";
 
 // Builds the review prompt handed to a fresh `claude -p` per session. This text
@@ -55,6 +57,15 @@ export interface ReviewInput {
    * had it known the intent.
    */
   queueItem?: { intent: string; round: number; openGaps: string[] };
+  /**
+   * The operator's `FOREMAN.md`, when the repo has one. Null is the ordinary case and
+   * restores the exact pre-existing prompt, which is what lets this ship without
+   * changing how a single existing repo is reviewed.
+   *
+   * This is the only repo-sourced input in the prompt that is DIRECTION rather than
+   * evidence - see `prefsSection` for the ratchet that bounds it.
+   */
+  prefs?: StandardsDoc | null;
 }
 
 /** Per-message text cap so a long turn can't blow up the prompt. */
@@ -152,6 +163,11 @@ export function buildReviewPrompt(input: ReviewInput): string {
   const head = [
     POLICY,
     "",
+    // Directly under POLICY, because it is an amendment TO the policy and reads as one
+    // there. Not down with the session data, which is the material being judged: an
+    // operator instruction filed among evidence invites the model to weigh it as
+    // evidence, and the whole point of this section is that it is not.
+    ...prefsSection(input.prefs),
     "## The session",
     `name: ${session.name}`,
     `cwd: ${session.cwd ?? "(unknown)"}`,

@@ -1312,6 +1312,64 @@ test("the standards request carries its paths in a BODY, so a big refactor still
   rmSync(repo, { recursive: true, force: true });
 });
 
+test("the foreman-prefs route serves FOREMAN.md from the git TOPLEVEL, or null", async () => {
+  // The whole seam the worker depends on: route -> repoRootOf (a real
+  // `git rev-parse --show-toplevel`) -> readForemanPrefs. Worth an integration test
+  // rather than trusting the unit ones, because the failure is silent in the direction
+  // that matters - a session in a monorepo package resolving the root one level down
+  // finds nothing, and "no FOREMAN.md" is a legitimate answer, so a broken lookup is
+  // indistinguishable from a repo that never wrote one. Nothing would ever say the
+  // operator's standing instructions had stopped being applied.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "mission-prefs-")));
+  execFileSync("git", ["-C", repo, "init", "-q"], { stdio: "pipe" });
+  mkdirSync(join(repo, "packages", "app"), { recursive: true });
+  writeFileSync(join(repo, "FOREMAN.md"), "Never merge without a test.");
+
+  // A session whose cwd is the PACKAGE, not the toplevel - the ordinary monorepo shape.
+  registry.applyDiscovery([
+    {
+      syntheticId: "sess-prefs",
+      agent: "claude",
+      name: "prefs",
+      nameSource: "tmux",
+      cwd: join(repo, "packages", "app"),
+      gitBranch: "main",
+      gitRoot: repo,
+      repoRoot: repo,
+      nomistakesGated: false,
+      pid: 4545,
+      tty: "ttys011",
+      wezterm: null,
+      tmux: { session: "work", window: "w", windowIndex: 3, paneId: "%11" },
+      startedAt: 0,
+    },
+  ]);
+
+  // LOOPBACK because this reads a file off disk into a response, so it sits behind the
+  // same DNS-rebinding guard as its neighbours - a page the user merely visits must not
+  // be able to read the repo's FOREMAN.md out of the daemon.
+  const r = await app.request("/api/sessions/sess-prefs/foreman-prefs", { headers: LOOPBACK });
+  assert.equal(r.status, 200);
+  const doc = (await r.json()) as { path: string; text: string; truncated: boolean } | null;
+  assert.equal(doc?.path, "FOREMAN.md");
+  assert.match(doc!.text, /Never merge without a test/);
+
+  // And a repo without one answers null rather than erroring: that is the common case,
+  // and every caller degrades to it, so it has to be an ordinary 200.
+  rmSync(join(repo, "FOREMAN.md"));
+  const empty = await app.request("/api/sessions/sess-prefs/foreman-prefs", { headers: LOOPBACK });
+  assert.equal(empty.status, 200);
+  assert.equal(await empty.json(), null);
+
+  // The guard itself, pinned on this route rather than assumed from the middleware.
+  const rebound = await app.request("/api/sessions/sess-prefs/foreman-prefs", {
+    headers: { host: "evil.example.com" },
+  });
+  assert.equal(rebound.status, 403);
+
+  rmSync(repo, { recursive: true, force: true });
+});
+
 test("a reorder moves the queue's change token, so a second tab learns about it", async () => {
   // `SessionQueueSummary` projects counts and the in-flight item but never `seq`, so
   // a reorder is byte-identical to it and `syncSessionsForQueue`'s equality check

@@ -1,4 +1,5 @@
 import { formatTranscript, paneSection } from "./prompt.ts";
+import { prefsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
 
 // The Tier 1 routing prompt, handed to a cheap model (Haiku) in a fresh process. Unlike
@@ -39,6 +40,10 @@ BUCKETS:
   answer it here.
 
 RULES:
+- If a section of the operator's standing instructions appears above, it governs this bucketing.
+  An action they have said they do not want approved automatically is NOT "routine-access",
+  however routine it looks - bucket it "human-only" or "needs-judgment" instead. Their
+  instructions can only ever move an ask AWAY from "routine-access", never into it.
 - When unsure, choose "needs-judgment" (it routes up). Never guess an answer.
 - If in doubt about risk, choose "human-only" + "escalate". Escalating is always safe.
 - "purpose" is REQUIRED in every reply.
@@ -51,6 +56,11 @@ export function buildTriagePrompt(input: ReviewInput): string {
   return [
     ROUTER,
     "",
+    // Shared verbatim with the full reviewer, which is the point: this tier disposes
+    // `routine-access` on its own, so the operator's instructions have to bind here or
+    // they only bind on whichever asks happen to route up. Same section, same ratchet,
+    // so the two tiers cannot read the same file and reach different conclusions.
+    ...prefsSection(input.prefs),
     "## The session",
     `name: ${session.name}`,
     `cwd: ${session.cwd ?? "(unknown)"}`,

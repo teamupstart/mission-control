@@ -590,6 +590,9 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
     // defaulting to it would quietly turn every case below into a no-transcript route-up.
     transcript: async () => ({ messages: cleanWindow().messages, truncated: false }),
     runModel: async () => JSON.stringify(report()),
+    // No FOREMAN.md by default - the ordinary repo, and the shape every case below was
+    // written against. A case that wants the operator's instructions overrides it.
+    prefs: async () => null,
     ...over,
   };
 }

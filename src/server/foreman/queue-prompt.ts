@@ -1,5 +1,6 @@
 import type { TranscriptMessage, TrackedGap } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
+import { prefsSection } from "./prefs.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff + transcript and never
@@ -25,6 +26,16 @@ export interface VerifyInput {
   transcriptTruncated: boolean;
   standards: StandardsDoc[];
   standardsTruncated: boolean;
+  /**
+   * The operator's `FOREMAN.md`, when the repo has one.
+   *
+   * Distinct from `standards` in the one way that matters here: the standards docs are
+   * fenced as evidence and can only ever raise an `advisory` gap, while this is
+   * direction the verifier follows - so it is the only way an operator can say "this
+   * particular thing is not done until X" and have a gap actually block. See
+   * `prefsSection` for why a repo file is allowed that, and what it still cannot do.
+   */
+  prefs?: StandardsDoc | null;
   /** Gaps from the previous round, with their live strike counts. */
   priorGaps: TrackedGap[];
 }
@@ -69,6 +80,13 @@ of an explicit, load-bearing rule. Do not go hunting for nits: if you report a f
 round, the agent will fix one and introduce another forever, and the human's actual request - already
 satisfied - will never be marked done.
 
+THE ONE EXCEPTION is the operator's standing instructions, if a section for them appears above. Those
+are not standards docs and this paragraph does not govern them: the operator wrote them TO YOU, so a
+rule stated there is one they have said they want enforced, and it may be "blocking" when they have
+made clear it should be. Everything else about severity still holds - a blocking gap must still be
+something you would genuinely refuse to merge - and the anti-nit rule above still holds too: their
+instructions raise the bar on what "done" means, they do not turn you into a style reviewer.
+
 REUSE GAP IDS. If a problem you are reporting is the SAME underlying problem as one in "previously
 reported gaps", reuse that id EVEN IF YOUR WORDING DIFFERS. The strike count attached to each id is
 how we know when to stop asking, so a fresh id for an old problem hides that the agent is stuck.
@@ -91,6 +109,12 @@ export function buildVerifyPrompt(input: VerifyInput): string {
   const lines = [
     POLICY,
     "",
+    // Above the evidence fence, and directly under POLICY, because it is direction and
+    // not material to judge. The placement is the entire trust distinction between this
+    // and the standards docs further down, which are the same kind of file read from the
+    // same repo - so if these two ever swap sides, the ratchet in `prefsSection` is doing
+    // nothing and repo content is instructing the verifier outright.
+    ...prefsSection(input.prefs),
     "## The session",
     `name: ${input.session.name}`,
     `cwd: ${input.session.cwd ?? "(unknown)"}`,

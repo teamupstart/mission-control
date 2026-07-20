@@ -1,15 +1,37 @@
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 
-// The repo's own standards docs - what the queue verifier judges an item's diff
-// against when it asks "was this actually finished, to this repo's bar?".
+// Two kinds of repo doc, read the same safe way and used at OPPOSITE trust levels.
 //
+// The standards docs (AGENTS.md / CLAUDE.md) are what the queue verifier judges an
+// item's diff against when it asks "was this actually finished, to this repo's bar?".
 // Getting the file set wrong is not cosmetic: too few and the verifier misses the
 // repo's contract, too many and it invents `standards` gaps from text the repo
-// never asserted.
+// never asserted. They reach the prompt BELOW the evidence fence, as material to
+// judge.
+//
+// FOREMAN.md is the operator's own instructions TO Foreman - how to weigh a call,
+// what this operator considers done, which conventions actually matter. It reaches
+// the prompt ABOVE the fence, as direction to follow. See `readForemanPrefs` for why
+// that asymmetry is safe.
+//
+// Both go through `readDoc`, so the symlink hardening is written once. That is
+// deliberate: the escape it defeats is strictly worse on the FOREMAN.md path, where
+// the contents are presented to the model as trusted.
 
 /** Cap per file, so one enormous AGENTS.md can't crowd out the diff in the prompt. */
 const MAX_FILE_BYTES = 24 * 1024;
+/**
+ * Cap on FOREMAN.md. Smaller than MAX_FILE_BYTES on purpose: this text is prepended
+ * to EVERY review and EVERY verify, including the Tier 2 reviews that already carry a
+ * 48-turn transcript, so it is the one doc here that is paid for on every model call
+ * rather than only on a verify. 16KB is several pages of prose - far past the point a
+ * preferences doc stays useful - and overrunning it truncates rather than drops, so a
+ * long file degrades instead of silently contributing nothing.
+ */
+const MAX_PREFS_BYTES = 16 * 1024;
+/** The operator's instructions to Foreman, at the repo root. */
+export const PREFS_NAME = "FOREMAN.md";
 /** Cap on the whole bundle - the verify prompt also carries a diff + transcript. */
 const MAX_TOTAL_BYTES = 64 * 1024;
 /**
@@ -166,7 +188,7 @@ function withinRoot(root: string, abs: string): boolean {
  * ERR_STRING_TOO_LONG - which the catch below would swallow as "not a standard that
  * applies", silently dropping the repo's contract instead of truncating it.
  */
-function readDoc(root: string, realRoot: string, abs: string): StandardsDoc | null {
+function readDoc(root: string, realRoot: string, abs: string, cap = MAX_FILE_BYTES): StandardsDoc | null {
   try {
     // Resolve first: a link's own path tells us nothing about what we'd read.
     const real = realpathSync(abs);
@@ -177,12 +199,44 @@ function readDoc(root: string, realRoot: string, abs: string): StandardsDoc | nu
       // Cite the path the repo asked for, not the link target: that's the file the
       // verifier can name in a gap.
       path: relative(root, abs) || abs,
-      text: readCapped(real, Math.min(stat.size, MAX_FILE_BYTES)),
-      truncated: stat.size > MAX_FILE_BYTES,
+      text: readCapped(real, Math.min(stat.size, cap)),
+      truncated: stat.size > cap,
     };
   } catch {
     return null; // missing, unreadable, or a dangling link - not a standard that applies
   }
+}
+
+/**
+ * The operator's own instructions to Foreman: `FOREMAN.md` at the repo root, or null
+ * when the repo doesn't have one. Null is the ordinary case and not a failure.
+ *
+ * Repo-root rather than user-level (`~/.mission/foreman.md`) because every real
+ * session runs in a pooled worktree under the daemon's worktrees dir, and a checked-in
+ * file is already present in every one of them - the same property that makes
+ * `foremanAllowlisted` widen consent to worktrees. A user-level file would have to be
+ * located through a second lookup that the worker, which holds no filesystem opinion
+ * of its own, has no way to perform.
+ *
+ * WHY THIS IS TRUSTED, AND WHAT BOUNDS IT. The standards docs are fenced as untrusted
+ * evidence because they are repo content the verifier is JUDGING. This file is repo
+ * content too, so the distinction cannot rest on provenance - it rests on what the
+ * prompt lets it do. `PREFS_FRAMING` grants a one-way ratchet: preferences may make
+ * Foreman more conservative, tell it what to value, or raise the bar for done. They
+ * may never authorize an action, widen what it may approve, or soften an escalation
+ * rule. So the worst a hostile FOREMAN.md achieves is a Foreman that escalates more
+ * than it needs to, which is the direction every other guard here already fails in.
+ *
+ * That framing is prose, and prose is not a guarantee - which is exactly why it is not
+ * the only thing standing there. `isDestructive` (triage.ts) is pure code and cannot be
+ * argued with, the reviewer runs `--tools ""` so it cannot act on anything it reads,
+ * and a live send additionally needs `foremanAllowlisted`. This adds a document that
+ * can raise the bar in front of all three; it removes none of them.
+ */
+export function readForemanPrefs(repoRoot: string | null): StandardsDoc | null {
+  if (!repoRoot || !existsSync(repoRoot)) return null;
+  const root = resolve(repoRoot);
+  return readDoc(root, realpathOr(root), join(root, PREFS_NAME), MAX_PREFS_BYTES);
 }
 
 /** The resolved path, or the input when it can't be resolved (a root that's gone). */

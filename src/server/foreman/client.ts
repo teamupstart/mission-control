@@ -21,7 +21,7 @@ import type {
   TranscriptMessage,
   WorkItem,
 } from "@shared/types.ts";
-import type { StandardsBundle } from "../standards.ts";
+import type { StandardsBundle, StandardsDoc } from "../standards.ts";
 import { InjectError } from "./queue-apply.ts";
 import type { GateRef } from "./pending.ts";
 import type { ForemanActions } from "./verdict.ts";
@@ -268,6 +268,15 @@ export class ForemanClient implements ForemanActions {
     const res = await send("POST", `/api/sessions/${enc(id)}/standards`, { paths });
     if (!res.ok) throw new Error(`standards ${id} -> ${res.status}`);
     return (await res.json()) as StandardsBundle;
+  }
+
+  /**
+   * The operator's `FOREMAN.md`, or null when the repo has none. Null is the ordinary
+   * case, which is why every caller degrades to it rather than holding the tick: a repo
+   * without the file must behave exactly as it did before the file existed.
+   */
+  prefs(id: string): Promise<StandardsDoc | null> {
+    return get<StandardsDoc | null>(`/api/sessions/${enc(id)}/foreman-prefs`);
   }
 
   // ---- work queues ----

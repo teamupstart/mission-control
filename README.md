@@ -741,6 +741,51 @@ process acquires no **lease** and idles as a standby, taking over automatically 
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
 
+### Teaching it your preferences (`FOREMAN.md`)
+
+Foreman ships with one built-in judgment policy, which is deliberately generic. Drop a
+**`FOREMAN.md` at your repo root** to tell it how *you* want these calls made. For sessions in
+that repo it is read into every review, every work-item verification, **and the
+[cheap tier](#the-cheap-tier)** - that last one matters, because the cheap tier answers routine
+permission asks on its own and never escalates them, so instructions it couldn't see would be
+silently skipped on the highest-volume path in the system.
+
+It is prose, not config - write what you would say if you were looking over its shoulder:
+
+```markdown
+## What I care about, in order
+1. Correctness, then simplicity, then maintainability. Development cost is nearly last.
+2. One abstraction over N special cases. If the options all amount to repeating an
+   implementation per case, ask for a single unified API instead of picking one.
+
+## Judging whether work is done
+Hold these as **blocking**, not advisory:
+- A bug fix with no end-to-end reproduction.
+- A capability that did not update `README.md` in the same change.
+```
+
+This repo's own [`FOREMAN.md`](FOREMAN.md) is a worked example.
+
+Two things make it different from the `AGENTS.md` / `CLAUDE.md` that Foreman *already* reads:
+
+- **It is direction, not evidence.** The standards docs reach the verifier fenced as material
+  to judge, and a finding against them is `advisory` - so it never sends an agent back for
+  another round. `FOREMAN.md` reaches it as instructions to follow, so it is the only way to
+  say "this particular thing is not done until X" and have it actually block.
+- **It can only raise your bar, never lower it.** Preferences can make Foreman more careful -
+  escalate something it would have answered, demand more before calling work finished, weigh a
+  trade-off your way. They cannot authorize a destructive action, widen what it may approve on
+  your behalf, or retire an escalation rule. A file that tries is ignored and Foreman says so
+  in its reply. The hard destructive backstop is code, the reviewer runs with no tools, and a
+  live send still needs the repo allowlist; this document sits in front of all three and
+  removes none of them.
+
+Nothing changes for a repo without the file: no `FOREMAN.md` produces a byte-identical prompt
+to the one Foreman used before the feature existed. It is capped at 16KB (a truncated file
+says so in the prompt), and it is resolved against the git toplevel, so a session sitting in
+a monorepo subdirectory still finds the one at the root. Because it's checked in, every
+[treehouse worktree](#isolated-worktrees-per-session-treehouse) of the repo has it already.
+
 ### The cheap tier
 
 Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of

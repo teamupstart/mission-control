@@ -80,7 +80,7 @@ import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
-import { readStandards } from "./standards.ts";
+import { readForemanPrefs, readStandards } from "./standards.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
@@ -345,6 +345,27 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     const root = await repoRootOf(session.cwd);
     return c.json(readStandards(root, parsed.data.paths));
+  });
+
+  // The operator's own instructions to Foreman (`FOREMAN.md` at the repo root), or
+  // null when the repo has none. Unlike `/standards` this is direction rather than
+  // evidence - see `readForemanPrefs` for why that is bounded.
+  //
+  // Its own route rather than a field on `/standards`, because the two are needed on
+  // different paths: `/standards` is a verify-only concern keyed on a diff's changed
+  // paths, while prefs also apply to a Tier 2 review, which computes no diff at all.
+  // Folding them together would mean the review path POSTing an empty `paths` list to
+  // a route named for something it doesn't want.
+  //
+  // A GET, unlike its neighbour: there is no unbounded path list to carry, so the
+  // reason `/standards` had to become a POST doesn't apply.
+  app.get("/api/sessions/:id/foreman-prefs", async (c) => {
+    const session = registry.getSession(c.req.param("id"));
+    if (!session) return c.json({ error: "no such session" }, 404);
+    // The git TOPLEVEL, exactly as `/standards` resolves it: a session sitting in a
+    // monorepo subdirectory would otherwise look for FOREMAN.md one level down and
+    // silently find nothing.
+    return c.json(readForemanPrefs(await repoRootOf(session.cwd)));
   });
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {

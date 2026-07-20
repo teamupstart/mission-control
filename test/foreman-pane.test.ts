@@ -202,6 +202,8 @@ function deps(over: Partial<TriageDeps> = {}): TriageDeps {
   return {
     transcript: async () => ({ messages: [msg("Ready to run the unit tests.")], truncated: false }),
     runModel: async () => JSON.stringify(report()),
+    // No FOREMAN.md - these cases are about the screen, not the operator's instructions.
+    prefs: async () => null,
     ...over,
   };
 }

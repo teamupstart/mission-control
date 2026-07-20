@@ -826,9 +826,13 @@ async function processPromptedWrapup(
     return false;
   }
 
-  const standards = await client
-    .standards(session.id, changedPaths(diff.patch))
-    .catch(() => ({ docs: [], truncated: false }));
+  // Both degrade to "absent" rather than holding the tick: a repo with no FOREMAN.md is
+  // the ordinary case and must verify exactly as it did before the file existed, so a
+  // failed read is indistinguishable from that and is treated as it.
+  const [standards, prefs] = await Promise.all([
+    client.standards(session.id, changedPaths(diff.patch)).catch(() => ({ docs: [], truncated: false })),
+    client.prefs(session.id).catch(() => null),
+  ]);
 
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
   // is one question, and a second prompt for it would be a second thing to keep true.
@@ -846,6 +850,7 @@ async function processPromptedWrapup(
     transcriptTruncated: window.truncated,
     standards: standards.docs,
     standardsTruncated: standards.truncated,
+    prefs,
     priorGaps: [],
   });
   if (result.kind === "failed") {
@@ -1054,9 +1059,12 @@ async function runVerify(
     return;
   }
 
-  const standards = await client
-    .standards(session.id, changedPaths(diff.patch))
-    .catch(() => ({ docs: [], truncated: false }));
+  // Absent on failure, for the reason the prompted path documents: no FOREMAN.md is the
+  // ordinary case, so a read that fails must land on the pre-existing behaviour.
+  const [standards, prefs] = await Promise.all([
+    client.standards(session.id, changedPaths(diff.patch)).catch(() => ({ docs: [], truncated: false })),
+    client.prefs(session.id).catch(() => null),
+  ]);
 
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
@@ -1071,6 +1079,7 @@ async function runVerify(
     transcriptTruncated: window.truncated,
     standards: standards.docs,
     standardsTruncated: standards.truncated,
+    prefs,
     priorGaps: item.gaps,
   });
 
@@ -1429,9 +1438,12 @@ async function fullReview(
   pane: string | null,
   queueItem?: ReviewInput["queueItem"],
 ): Promise<{ verdict: Verdict } | null> {
-  const window = await client
-    .transcript(session.id)
-    .catch(() => ({ messages: [], truncated: false }));
+  const [window, prefs] = await Promise.all([
+    client.transcript(session.id).catch(() => ({ messages: [], truncated: false })),
+    // Absent on failure: no FOREMAN.md is the ordinary case, and a review that silently
+    // ran without the operator's instructions is better than one that doesn't run.
+    client.prefs(session.id).catch(() => null),
+  ]);
   const input: ReviewInput = {
     session: {
       name: session.name,
@@ -1453,6 +1465,9 @@ async function fullReview(
     // don't do that" to a question about the very item Foreman commissioned, or
     // escalate something it could have answered trivially had it known the intent.
     queueItem,
+    // How THIS operator wants these calls made - the only input here they authored
+    // specifically to steer Foreman. See `prefsSection` for what it may and may not do.
+    prefs,
   };
 
   const result = await reviewSession(input);
@@ -1480,6 +1495,7 @@ function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
     runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
+    prefs: (id) => client.prefs(id),
   };
 }
 

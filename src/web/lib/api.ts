@@ -220,6 +220,8 @@ export interface DispatchInput {
   priority?: TaskPriority | null;
   /** Optional free-form tags; the server normalizes them. */
   labels?: string[];
+  /** Model override; omitted follows the configured harness default at dispatch time. */
+  model?: string;
   backlog?: boolean;
 }
 

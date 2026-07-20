@@ -265,6 +265,22 @@ const TASK_TRIAGE_FIELDS = {
 };
 
 /**
+ * A model id, in the only shape that is safe to hand to a harness CLI.
+ *
+ * This value ends up as an argument on a `tmux new-session` command line, which
+ * tmux joins with spaces and runs through a shell - so anything quotable or
+ * glob-able here would be a shell injection, not a typo. Every real Claude and
+ * Codex id is `[a-z0-9]` plus dots and dashes (`claude-opus-4-8`, `gpt-5.6-sol`),
+ * so constraining to that costs nothing and closes the hole at the edge, before
+ * the id is stored. Note this deliberately excludes Claude's `[1m]` long-context
+ * marker: the CLI takes the bare id and picks the window itself.
+ */
+export const ModelIdSchema = z
+  .string()
+  .max(80)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, "model id must be alphanumeric with . _ - only");
+
+/**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
  * the backlog (no worktree/session yet); dispatch it later.
@@ -275,6 +291,13 @@ export const DispatchSchema = z.object({
   title: z.string().optional(),
   kind: z.enum(["ship", "scout"]).default("ship"),
   agent: z.enum(["claude", "codex"]).default("claude"),
+  /**
+   * Run this agent on a specific model instead of the harness default. Omitted
+   * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
+   * not the same as pinning today's default, and is what lets a backlogged task
+   * pick up a default changed after it was shelved.
+   */
+  model: ModelIdSchema.optional(),
   backlog: z.boolean().optional().default(false),
   ...TASK_TRIAGE_FIELDS,
 });
@@ -324,16 +347,21 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * empty is meaningful rather than absent: clearing it asks for a title to be derived
  * again from the intent as it now reads, the same bargain the create form offers.
  *
- * The two halves are NOT equivalent, and `TaskManager.update` treats them differently.
- * The first five are PROVISIONING fields - repo, intent and title are cut into a branch
- * name and a tmux session at dispatch and cannot be rewritten afterwards - so a patch
- * touching any of them is refused once the task has left the backlog. `priority` and
- * `labels` are pure annotation that nothing is provisioned from, so they can be changed
- * at any point in a task's life, including while its agent is running.
+ * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
+ * `repoRoot`, `intent`, `title`, `kind`, `agent` and `model` are PROVISIONING fields -
+ * repo, intent and title are cut into a branch name and a tmux session at dispatch and
+ * cannot be rewritten afterwards, and the model is baked into the launched command line -
+ * so a patch touching any of them is refused once the task has left the backlog.
+ * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
+ * can be changed at any point in a task's life, including while its agent is running.
  *
  * `priority` is `.optional()` WITHOUT the create schema's `.default(null)`: here an
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
+ *
+ * `model` is nullable for the same reason: an absent field leaves the stored override
+ * alone, while an explicit `null` takes it back off - which is the only way to say
+ * "follow the harness default again" about a row that already names a model.
  */
 export const UpdateTaskSchema = z
   .object({
@@ -344,6 +372,7 @@ export const UpdateTaskSchema = z
     agent: z.enum(["claude", "codex"]).optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
+    model: ModelIdSchema.nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" });
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
@@ -646,14 +675,46 @@ export const HarnessesConfigSchema = z.object({
    * mode, so it's untouched today; the setting is worded to admit codex support later.
    */
   autoModeOnDispatch: z.boolean().default(false),
+  /**
+   * The model each harness is launched on when a task doesn't name one, keyed by
+   * agent because "the default model" is meaningless across harnesses - a Claude id
+   * is not a thing Codex can run.
+   *
+   * `null` means "don't pass `--model` at all", which is not the same as naming the
+   * CLI's current default: it defers to whatever the operator configured in the
+   * harness itself (`~/.claude/settings.json`, `~/.codex/config.toml`, `/model`), and
+   * keeps following it when that changes. That is the shipped value, so installing
+   * this feature changes nothing about how agents launch until it's set.
+   */
+  defaultModel: z
+    .object({
+      claude: ModelIdSchema.nullable().default(null),
+      codex: ModelIdSchema.nullable().default(null),
+    })
+    .default({ claude: null, codex: null }),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 
-/** Partial update of the harnesses config from the dashboard. */
-export const HarnessesConfigPatchSchema = HarnessesConfigSchema.partial().refine(
-  (o) => Object.keys(o).length > 0,
-  { message: "empty config update" },
-);
+/**
+ * Partial update of the harnesses config from the dashboard.
+ *
+ * Spelled out rather than `HarnessesConfigSchema.partial()`, because `.partial()`
+ * only reaches the top level: a `{defaultModel: {claude}}` patch would parse under
+ * it, fill `codex` in from the inner `.default(null)`, and the shallow merge in
+ * `setHarnessesConfig` would then wipe the codex default the caller never mentioned.
+ * Here an omitted inner key stays omitted, and the server merges per-agent.
+ */
+export const HarnessesConfigPatchSchema = z
+  .object({
+    autoModeOnDispatch: z.boolean().optional(),
+    defaultModel: z
+      .object({
+        claude: ModelIdSchema.nullable().optional(),
+        codex: ModelIdSchema.nullable().optional(),
+      })
+      .optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
 
 // ---- Foreman session work queues ----

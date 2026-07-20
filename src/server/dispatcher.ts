@@ -4,7 +4,7 @@ import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.t
 import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { injectPrompt, setPermissionMode } from "./actions.ts";
-import { getHarnessesConfig } from "./harnesses.ts";
+import { getHarnessesConfig, resolveDispatchModel } from "./harnesses.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
@@ -68,7 +68,13 @@ export class Dispatcher {
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
 
-      const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin);
+      // Resolved here, not at task creation: a backlogged task launches on the default
+      // in force NOW. Both CLIs spell the flag `--model <id>`; null means pass nothing
+      // and let the harness's own configuration decide.
+      const model = resolveDispatchModel(task.agent, task.model);
+      const agentArgs = model ? ["--model", model] : [];
+
+      const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
       this.patch(taskId, { tmuxSession });
       if (await this.abortIfSettled(taskId)) return;
 
@@ -445,15 +451,24 @@ export async function teardownWorktree(task: {
  * you straight into a terminal at the worktree for ad-hoc git/build/inspection work.
  * The split is best-effort - a shell pane is a convenience, so if tmux can't add it
  * we keep the agent session rather than failing the whole dispatch.
+ *
+ * `agentArgs` (today: `--model <id>`) are appended to the binary. tmux joins the
+ * trailing arguments with spaces and runs the result through a shell rather than
+ * exec'ing the argv, so a value carrying a quote or a glob would be interpreted
+ * rather than passed - which is why model ids are constrained to a safe charset at
+ * the schema (`ModelIdSchema`) before they can ever be stored.
  */
 export async function spawnDetachedSession(
   sessionName: string,
   cwd: string,
   agentBin: string,
+  agentArgs: readonly string[] = [],
 ): Promise<void> {
-  const r = await run("tmux", ["new-session", "-d", "-s", sessionName, "-c", cwd, agentBin], {
-    timeoutMs: 10000,
-  });
+  const r = await run(
+    "tmux",
+    ["new-session", "-d", "-s", sessionName, "-c", cwd, agentBin, ...agentArgs],
+    { timeoutMs: 10000 },
+  );
   if (r.code !== 0) throw new Error(`tmux new-session failed: ${r.stderr.trim() || "unknown"}`);
 
   const agentPane = `${sessionName}:0.0`;
@@ -563,15 +578,16 @@ async function spawnUniquely(
   shortId: string,
   cwd: string,
   agentBin: string,
+  agentArgs: readonly string[] = [],
 ): Promise<string> {
   const name = await uniqueTmuxSessionName(baseName, shortId);
   try {
-    await spawnDetachedSession(name, cwd, agentBin);
+    await spawnDetachedSession(name, cwd, agentBin, agentArgs);
     return name;
   } catch (err) {
     const alt = `${baseName}-${shortId}`;
     if (name === alt) throw err;
-    await spawnDetachedSession(alt, cwd, agentBin);
+    await spawnDetachedSession(alt, cwd, agentBin, agentArgs);
     return alt;
   }
 }

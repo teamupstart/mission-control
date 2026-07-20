@@ -106,6 +106,7 @@ export function openDb(): DatabaseSync {
       agent         TEXT NOT NULL,
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
+      model         TEXT,
       repo_root     TEXT NOT NULL,
       worktree_path TEXT,
       branch        TEXT,
@@ -351,6 +352,14 @@ function migrate(d: DatabaseSync): void {
   // default, so an episode written before the split reads as "still open", which is the
   // only honest answer: its `sent_by` cannot say whether a human dismissed it.
   addColumn(d, "foreman_episodes", "resolved_by", "TEXT");
+
+  // `model`: the per-task model override, added to `tasks` after it shipped - so on an
+  // upgraded db this ALTER is the only way the column arrives, and without it EVERY
+  // task write would fail (the INSERT names the column). Nullable with no default, and
+  // that reads correctly rather than merely harmlessly: NULL means "no override, follow
+  // the harness default", which is the truthful answer for every task dispatched before
+  // a model could be chosen at all.
+  addColumn(d, "tasks", "model", "TEXT");
 
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
   // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
@@ -982,6 +991,7 @@ interface TaskRow {
   agent: string;
   priority: string | null;
   labels: string | null;
+  model: string | null;
   repo_root: string;
   worktree_path: string | null;
   branch: string | null;
@@ -1024,6 +1034,7 @@ function rowToTask(r: TaskRow): Task {
     // unbounded tag. A malformed blob reads as no labels rather than throwing - one
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
+    model: r.model,
     repoRoot: r.repo_root,
     worktreePath: r.worktree_path,
     branch: r.branch,
@@ -1045,13 +1056,13 @@ export function upsertTask(t: Task): void {
   openDb()
     .prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, repo_root, worktree_path, branch,
+         id, title, intent, kind, agent, priority, labels, model, repo_root, worktree_path, branch,
          provider, tmux_session, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
-         priority=excluded.priority, labels=excluded.labels,
+         priority=excluded.priority, labels=excluded.labels, model=excluded.model,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
@@ -1064,7 +1075,7 @@ export function upsertTask(t: Task): void {
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
-      t.repoRoot, t.worktreePath, t.branch, t.provider,
+      t.model, t.repoRoot, t.worktreePath, t.branch, t.provider,
       t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );

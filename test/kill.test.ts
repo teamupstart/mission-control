@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { kill, type KillDeps } from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import type { Session, SessionState, TmuxInfo } from "../src/shared/types.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
@@ -55,7 +56,7 @@ const tmux: TmuxInfo = { session: "work", window: "0", windowIndex: 0, paneId: "
 function spyDeps(over: Partial<KillDeps> = {}): { deps: KillDeps; signalled: number[]; killedSessions: string[] } {
   const signalled: number[] = [];
   const killedSessions: string[] = [];
-  const ok: RunResult = { stdout: "", stderr: "", code: 0 };
+  const ok: RunResult = stubRun({ stdout: "", stderr: "", code: 0 });
   const deps: KillDeps = {
     signal: (pid) => {
       signalled.push(pid);
@@ -105,7 +106,7 @@ test("kill: tmux session succeeds when the process is already gone but kill-sess
 
 test("kill: tmux session succeeds when the session is already gone but the signal lands", async () => {
   // Race the other way: the agent exit already collapsed its tmux session.
-  const gone: RunResult = { stdout: "", stderr: "can't find session: work", code: 1 };
+  const gone: RunResult = stubRun({ stdout: "", stderr: "can't find session: work", code: 1 });
   const { deps } = spyDeps({ killTmuxSession: () => Promise.resolve(gone) });
   const r = await kill(mkSession({ tmux }), deps);
 
@@ -113,7 +114,7 @@ test("kill: tmux session succeeds when the session is already gone but the signa
 });
 
 test("kill: tmux session fails only when BOTH the signal and kill-session fail", async () => {
-  const gone: RunResult = { stdout: "", stderr: "can't find session: work", code: 1 };
+  const gone: RunResult = stubRun({ stdout: "", stderr: "can't find session: work", code: 1 });
   const { deps } = spyDeps({
     signal: () => ({ ok: false, error: "kill EPERM" }),
     killTmuxSession: () => Promise.resolve(gone),

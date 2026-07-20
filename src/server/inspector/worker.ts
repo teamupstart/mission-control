@@ -40,6 +40,7 @@ import {
   renderComment,
   replyToComment,
   resolveThread,
+  wasRefused,
 } from "./github.ts";
 import type { PrSnapshot, ThreadSnapshot } from "./github.ts";
 
@@ -362,15 +363,28 @@ async function processPr(
   // below the ceiling. Compared against the last head we ATTEMPTED rather than the last
   // one we reviewed: a failed round never advances `headSha`, so comparing with that
   // would read every tick as a fresh push and the backoff would never hold at all.
+  //
+  // Only `nextAttemptAt` is cleared. `failCount` is what the ladder is climbing, and a
+  // push is not an attempt completing - a PR failing for a head-INDEPENDENT reason
+  // (revoked `gh` write access, a diff the model reliably cannot answer for in time)
+  // would otherwise buy a fresh full review on every push, so an afternoon of iteration
+  // costs a round of up to two `claude -p` runs per push and the wait never accumulates.
+  // A round that actually completes resets the count.
+  //
+  // A NULL `lastAttemptSha` is "we cannot name what we last tried", not "the head
+  // changed" - `liveDir` and `fetchPr` both fail before it is ever written, so a PR
+  // whose worktree was reaped climbs to a long wait with it still null, and crediting
+  // that as a push would drop the whole penalty the moment the directory reappears. We
+  // record the head so the next tick can compare, and leave the wait in force.
+  const pushed = pr.lastAttemptSha !== null && !!s.headSha && s.headSha !== pr.lastAttemptSha;
   if (s.headSha && s.headSha !== pr.lastAttemptSha) {
-    updateInspectorPr(
-      pr.key,
-      { lastAttemptSha: s.headSha, failCount: 0, nextAttemptAt: null },
-      now,
-    );
-  } else if (backedOff) {
-    return false;
+    const patch: { lastAttemptSha: string; nextAttemptAt?: number | null } = {
+      lastAttemptSha: s.headSha,
+    };
+    if (pushed) patch.nextAttemptAt = null;
+    updateInspectorPr(pr.key, patch, now);
   }
+  if (!pushed && backedOff) return false;
 
   if (pr.round >= MAX_ROUNDS) {
     return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now, tick);
@@ -662,17 +676,13 @@ async function reviewRound(
     if (!res.ok) {
       // The head sha stays where it is, so this push is reviewed again.
       //
-      // What happens to the rows turns on WHY the post failed. GitHub refusing us is a
-      // fact: nothing was published, so every row goes back to `drafted` and the whole
-      // round is re-plannable - which matters most for the demoted findings, since they
-      // live in the review body and leave no thread for the next round's reconciliation
-      // to find, so left in `posting` they would be promoted to `open` and never
-      // actually said. A `gh` that DIED is not a fact - our own timeout, the OOM
-      // killer, a container stop all leave a review that may well have landed - so
-      // those rows stay in `posting` for the live thread read to adjudicate. The
-      // asymmetry is deliberate: guessing "nothing was published" is how a duplicate
-      // public comment happens, and guessing the other way costs one delayed round.
-      if (!res.outcomeUnknown) {
+      // What happens to the rows turns on WHY the post failed, and `wasRefused` is the
+      // one place that decides it. Only a refusal frees the round to be re-planned,
+      // which matters most for the demoted findings: they live in the review body and
+      // leave no thread for the next round's reconciliation to find, so left in
+      // `posting` they would be promoted to `open` and never actually said. Everything
+      // else stays in `posting` for the live thread read to adjudicate.
+      if (wasRefused(res)) {
         for (const row of planned) {
           const reverted: InspectorComment = { ...row, status: "drafted" };
           rows.set(row.fingerprint, reverted);

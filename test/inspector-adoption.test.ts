@@ -254,10 +254,18 @@ test("the attempted head is tracked separately from the reviewed head", () => {
   // The same head on a later tick is still the input that earned the wait.
   assert.equal(getInspectorPr(key)?.lastAttemptSha, "aaa");
 
-  // A push moves it, and the backoff goes with it.
-  updateInspectorPr(key, { lastAttemptSha: "bbb", failCount: 0, nextAttemptAt: null }, 3000);
+  // A push ENDS THE WAIT but does not reset the ladder. Clearing `failCount` here would
+  // hand a PR that fails for a head-independent reason - revoked write access, a diff
+  // the model reliably cannot answer for in time - a fresh full review on every push, so
+  // an afternoon of iteration would cost a round of up to two `claude -p` runs per push
+  // and the backoff would never accumulate. Only a round that COMPLETES resets it.
+  updateInspectorPr(key, { lastAttemptSha: "bbb", nextAttemptAt: null }, 3000);
   const pushed = getInspectorPr(key)!;
   assert.equal(pushed.lastAttemptSha, "bbb");
   assert.equal(pushed.nextAttemptAt, null, "a new push is due now, whatever the old one bought");
-  assert.equal(pushed.failCount, 0, "and it starts its own count, not the previous input's");
+  assert.equal(pushed.failCount, 1, "but the ladder continues from where the failures left it");
+
+  // What a completed round does, and the only thing that should.
+  updateInspectorPr(key, { lastError: null, failCount: 0, nextAttemptAt: null }, 4000);
+  assert.equal(getInspectorPr(key)?.failCount, 0);
 });

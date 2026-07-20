@@ -14,16 +14,26 @@ export interface RunResult {
    * one way to get here; the OOM killer, a container stop and an operator's `pkill` are
    * others, and they are indistinguishable from the caller's point of view because in
    * every one of them the command may well have completed its work first.
+   *
+   * REQUIRED, not optional, and that is the whole point. An optional boolean has a
+   * default reading, and a default reading is a decision made by whoever forgot rather
+   * than by whoever knew. For the one consumer whose mistake is public and irreversible
+   * - the Inspector deciding whether a review it may already have published can be
+   * re-planned - the safe direction is "assume it landed", which is the opposite of what
+   * an absent `false` says. So every producer states it, including the hand-built stubs.
    */
-  outcomeUnknown?: boolean;
+  outcomeUnknown: boolean;
   /** stdout exceeded `maxBuffer`. Retrying the same command cannot produce less. */
-  overflowed?: boolean;
-  // Both are OPTIONAL because they narrow a failure rather than describing a result:
-  // `run` always sets them, and the many hand-built stubs that model only
-  // stdout/stderr/code stay honest instead of asserting a `false` they never reasoned
-  // about. A consumer reading absent as false must therefore be one for which "assume
-  // it completed" is the SAFE reading - see `postReview`'s caller, which treats unknown
-  // as "may already be published" and so must never infer it from a missing field.
+  overflowed: boolean;
+}
+
+/**
+ * A result stubbed by a test or a caller that models only the three fields it cares
+ * about. Fills in the two narrowing flags with "the command ran and reported this",
+ * which is what a stub is asserting by having thought about neither.
+ */
+export function stubRun(partial: Pick<RunResult, "stdout" | "stderr" | "code">): RunResult {
+  return { ...partial, outcomeUnknown: false, overflowed: false };
 }
 
 /**

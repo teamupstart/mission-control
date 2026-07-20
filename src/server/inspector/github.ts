@@ -23,13 +23,28 @@ export interface GhResult<T> {
   error?: string;
   /**
    * The `gh` process died rather than GitHub refusing us, so whether the request took
-   * effect is UNKNOWN. Only a writer needs this, and it needs it badly: "refused" means
-   * nothing was published and the round can be re-planned, while "unknown" means
-   * re-planning it might say the same thing twice in public.
+   * effect is UNKNOWN. Only a writer needs this, and it needs it badly - read the rule
+   * off `wasRefused` rather than off this field.
    */
   outcomeUnknown?: boolean;
   /** The response did not fit in the pipe. Retrying the same request cannot produce less. */
   tooLarge?: boolean;
+}
+
+/**
+ * Did GitHub REFUSE this request - as opposed to us never finding out?
+ *
+ * The single statement of a rule that decides whether a round which may already be
+ * public can be re-planned. A refusal is a fact: nothing was published, so the round is
+ * free to be said again. Anything else - a `gh` that died, or a result that never
+ * carried the flag at all - is not a fact, and must be treated as "it may have landed".
+ *
+ * So this demands an explicit `false` rather than testing for the absence of `true`.
+ * Every way of not knowing then lands on the same side, and the side it lands on is the
+ * one where the cost is a delayed round instead of a duplicate public comment.
+ */
+export function wasRefused(res: GhResult<unknown>): boolean {
+  return !res.ok && res.outcomeUnknown === false;
 }
 
 function fail<T>(what: string, res: RunResult): GhResult<T> {

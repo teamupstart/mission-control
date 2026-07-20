@@ -11,6 +11,7 @@ import {
   type RenameDeps,
 } from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WeztermPane } from "../src/server/discovery/wezterm.ts";
 import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
@@ -193,7 +194,7 @@ function spyDeps(
   const tmuxCalls: [string, string][] = [];
   const wezCalls: [number, string][] = [];
   const hostLookups: string[] = [];
-  const ok: RunResult = { stdout: "", stderr: "", code: 0 };
+  const ok: RunResult = stubRun({ stdout: "", stderr: "", code: 0 });
   const deps: RenameDeps = {
     renameTmuxSession: (from, to) => {
       tmuxCalls.push([from, to]);
@@ -255,7 +256,7 @@ test("rename: host tabs are looked up by the OLD name, before the rename lands",
   // The lookup joins tmux clients to wezterm panes by the session name, so it
   // has to run while the session still answers to `from`.
   const order: string[] = [];
-  const ok: RunResult = { stdout: "", stderr: "", code: 0 };
+  const ok: RunResult = stubRun({ stdout: "", stderr: "", code: 0 });
   const { deps, hostLookups } = spyDeps({
     findTmuxHostPanes: (session) => {
       order.push(`find:${session}`);
@@ -275,7 +276,7 @@ test("rename: host tabs are looked up by the OLD name, before the rename lands",
 test("rename: a tmux rename still succeeds when the tab retitle fails", async () => {
   // wezterm may not be running at all (tmux-only user) or its GUI may have gone
   // away. The card name already moved, so a cosmetic title must not fail this.
-  const boom: RunResult = { stdout: "", stderr: "no wezterm mux", code: 1 };
+  const boom: RunResult = stubRun({ stdout: "", stderr: "no wezterm mux", code: 1 });
   const { deps, tmuxCalls } = spyDeps({
     findTmuxHostPanes: () => Promise.resolve([hostPane(1)]),
     setWeztermTabTitle: () => Promise.resolve(boom),
@@ -288,7 +289,7 @@ test("rename: a tmux rename still succeeds when the tab retitle fails", async ()
 
 test("rename: a failed tmux rename leaves the tab title alone", async () => {
   // The tab must keep showing the name the session actually still has.
-  const fail: RunResult = { stdout: "", stderr: "duplicate session: renamed", code: 1 };
+  const fail: RunResult = stubRun({ stdout: "", stderr: "duplicate session: renamed", code: 1 });
   const { deps, wezCalls } = spyDeps({
     findTmuxHostPanes: () => Promise.resolve([hostPane(1)]),
     renameTmuxSession: () => Promise.resolve(fail),
@@ -320,7 +321,7 @@ test("rename: tmux wins when a session has both handles", async () => {
 });
 
 test("rename: a failed tmux rename surfaces stderr", async () => {
-  const fail: RunResult = { stdout: "", stderr: "duplicate session: renamed", code: 1 };
+  const fail: RunResult = stubRun({ stdout: "", stderr: "duplicate session: renamed", code: 1 });
   const { deps } = spyDeps({ renameTmuxSession: () => Promise.resolve(fail) });
   const r = await rename(mkSession({ tmux }), "renamed", deps);
 

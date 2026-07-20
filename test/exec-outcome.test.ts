@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { run } from "../src/server/util/exec.ts";
+import { wasRefused } from "../src/server/inspector/github.ts";
 
 // `run` is how everything in this app talks to `gh`, and the Inspector is the one caller
 // whose commands PUBLISH - a review carrying up to eight comments on a public pull
@@ -63,4 +64,34 @@ test("an overflow is named as itself, and is not an unknown outcome", () => {
     assert.equal(res.outcomeUnknown, false, "an overflow is a fact about the response");
     assert.match(res.stderr, /maxBuffer/i, "and it has to be legible to a caller");
   });
+});
+
+// ---- the rule, at the one place that reads it ----
+
+// `wasRefused` is the single statement of what an outcome means to the code that may
+// have already published. Everything that is not a positive "GitHub refused us" has to
+// land on the same side, because that side costs a delayed round and the other side
+// costs a duplicate comment on a public pull request.
+test("only a positive refusal frees a round to be said again", () => {
+  assert.equal(
+    wasRefused({ ok: false, error: "422", outcomeUnknown: false }),
+    true,
+    "GitHub answered and said no: nothing was published",
+  );
+});
+
+test("every way of not knowing reads as 'it may already be published'", () => {
+  for (const [name, res] of [
+    ["the gh process died", { ok: false, error: "killed", outcomeUnknown: true }],
+    ["the flag never travelled", { ok: false, error: "something" }],
+    ["a success is not a refusal", { ok: true }],
+  ] as const) {
+    assert.equal(wasRefused(res), false, name);
+  }
+});
+
+// The absent case is the one that matters: an optional boolean read as `!flag` would
+// call it a refusal, and this is the assertion that stops that reading coming back.
+test("a result carrying no verdict at all is never treated as a refusal", () => {
+  assert.equal(wasRefused({ ok: false }), false);
 });

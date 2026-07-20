@@ -32,6 +32,10 @@ files:
   - skills/**/*
   - build/trayTemplate.png
   - build/trayTemplate@2x.png
+  # The SEED for Foreman's instructions setting, read at the app root by
+  # `foremanInstructionsPath()`. Shipped as plain markdown rather than baked into the
+  # bundle so it stays the one editable copy - see `src/server/foreman/instructions.ts`.
+  - FOREMAN.md
   - package.json
   - "!node_modules/**/*"
 

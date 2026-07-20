@@ -14,6 +14,7 @@ import {
   ResolveRepoSchema,
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
+  ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
   GateReplySchema,
   HarnessesConfigPatchSchema,
@@ -81,6 +82,12 @@ import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards } from "./standards.ts";
+import {
+  defaultForemanInstructions,
+  foremanInstructions,
+  resetForemanInstructions,
+  setForemanInstructions,
+} from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
@@ -346,6 +353,32 @@ export function buildApp(
     const root = await repoRootOf(session.cwd);
     return c.json(readStandards(root, parsed.data.paths));
   });
+
+  // Foreman's standing instructions - the prose half of its configuration.
+  //
+  // GLOBAL, not per-session, because that is what it is: one setting for the operator, not a
+  // property of whichever session happens to be under review. It reads the stored value if
+  // they have edited it and the shipped `FOREMAN.md` otherwise, so the worker never has to
+  // know which of the two it got.
+  //
+  // A plain string body rather than JSON: the value IS the document, and the settings panel
+  // that will edit it wants a textarea, not a wrapper object.
+  app.get("/api/foreman/instructions", (c) =>
+    c.json({ text: foremanInstructions(), default: defaultForemanInstructions() }),
+  );
+
+  // Replace them, or reset to the shipped default. An empty string is a real choice ("judge
+  // by your own policy alone") and is stored as such; resetting is a separate action, which
+  // is why it is a flag rather than an empty write.
+  app.put("/api/foreman/instructions", async (c) => {
+    const parsed = await parseBody(c, ForemanInstructionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const text = parsed.data.reset
+      ? resetForemanInstructions()
+      : setForemanInstructions(parsed.data.text ?? "");
+    return c.json({ text, default: defaultForemanInstructions() });
+  });
+
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));

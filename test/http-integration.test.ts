@@ -1312,6 +1312,50 @@ test("the standards request carries its paths in a BODY, so a big refactor still
   rmSync(repo, { recursive: true, force: true });
 });
 
+test("the foreman instructions route reads, writes, resets - and is loopback-gated", async () => {
+  // GLOBAL, not per-session: these are one setting for the operator, not a property of
+  // whichever session is under review. The seam worth an integration test is EMPTY vs UNSET -
+  // clearing the box has to survive a round-trip as empty rather than falling back to the
+  // shipped default, because a settings panel that silently undoes a deletion is worse than
+  // one that refuses it.
+  const read = await app.request("/api/foreman/instructions", { headers: LOOPBACK });
+  assert.equal(read.status, 200);
+  const initial = (await read.json()) as { text: string; default: string };
+  assert.equal(initial.text, initial.default, "untouched, so the default applies");
+
+  const put = await app.request("/api/foreman/instructions", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ text: "Escalate anything that touches auth." }),
+  });
+  assert.equal(put.status, 200);
+  assert.equal(((await put.json()) as { text: string }).text, "Escalate anything that touches auth.");
+
+  const cleared = await app.request("/api/foreman/instructions", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ text: "" }),
+  });
+  assert.equal(((await cleared.json()) as { text: string }).text, "", "empty is a choice, not unset");
+
+  const reset = await app.request("/api/foreman/instructions", {
+    method: "PUT",
+    headers: jsonHeaders,
+    body: JSON.stringify({ reset: true }),
+  });
+  assert.equal(((await reset.json()) as { text: string }).text, initial.default, "reset restores it");
+
+  // Neither verb is reachable from a page the user merely visits.
+  for (const method of ["GET", "PUT"]) {
+    const rebound = await app.request("/api/foreman/instructions", {
+      method,
+      headers: { host: "evil.example.com", "content-type": "application/json" },
+      body: method === "PUT" ? JSON.stringify({ reset: true }) : undefined,
+    });
+    assert.equal(rebound.status, 403, `${method} must be loopback-gated`);
+  }
+});
+
 test("a reorder moves the queue's change token, so a second tab learns about it", async () => {
   // `SessionQueueSummary` projects counts and the in-flight item but never `seq`, so
   // a reorder is byte-identical to it and `syncSessionsForQueue`'s equality check

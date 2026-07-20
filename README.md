@@ -741,6 +741,54 @@ process acquires no **lease** and idles as a standby, taking over automatically 
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
 
+### Its standing instructions (`FOREMAN.md`)
+
+Foreman ships with a built-in judgment policy, which is deliberately generic. Beside it sits a
+second, editable half: **standing instructions** written in plain prose, telling it how *you*
+want these calls made. They are read into every review, every work-item verification, **and the
+[cheap tier](#the-cheap-tier)** - that last one matters, because the cheap tier answers routine
+permission asks on its own and never escalates them, so instructions it couldn't see would be
+silently skipped on the highest-volume path in the system.
+
+The defaults ship as [`FOREMAN.md`](FOREMAN.md) at the app root - ordinary markdown you can read
+and edit. Write what you would say if you were looking over its shoulder:
+
+```markdown
+## What I care about, in order
+1. Correctness, then simplicity, then maintainability. Development cost is nearly last.
+2. One abstraction over N special cases. If the options all amount to repeating an
+   implementation per case, ask for a single unified API instead of picking one.
+
+## Judging whether work is done
+Hold these as **blocking**, not advisory:
+- A bug fix with no end-to-end reproduction.
+- A capability that did not update `README.md` in the same change.
+```
+
+Two things make these different from the `AGENTS.md` / `CLAUDE.md` that Foreman *already* reads:
+
+- **They are direction, not evidence.** The standards docs reach the verifier fenced as material
+  to judge, and a finding against them is `advisory` - so it never sends an agent back for
+  another round. These reach it as instructions to follow, so they are the only way to say "this
+  particular thing is not done until X" and have it actually block.
+- **They can only raise your bar, never lower it.** They can make Foreman more careful -
+  escalate something it would have answered, demand more before calling work finished, weigh a
+  trade-off your way. They cannot authorize a destructive action, widen what it may approve on
+  your behalf, retire an escalation rule, or dictate the literal text it sends to a session. That
+  division is deliberate: prose shapes *judgement*, while the switches above grant *authority*,
+  each with its own confirmation and its own repo allowlist. A sentence in a text box should not
+  do a switch's job.
+
+With no instructions the section renders as nothing at all, and a test pins that adding them
+changes only that block, leaving the rest of every prompt byte-for-byte identical.
+
+> **Next:** these move into a dashboard setting, stored in the database and editable from
+> **Settings → Foreman**. `FOREMAN.md` stays the seed a fresh install starts from; once you save
+> your own, the file is only what "Reset to default" restores. The plumbing is already in place -
+> `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
+> distinct so clearing the box means "judge on your own policy" rather than silently reinstating
+> the default.
+
 ### The cheap tier
 
 Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
@@ -1319,6 +1367,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
+| `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler) |

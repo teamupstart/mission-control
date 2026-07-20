@@ -50,6 +50,22 @@ export function skillsDir(): string {
   return envVar("SKILLS_DIR") ?? fileURLToPath(new URL("../../skills", import.meta.url));
 }
 
+/**
+ * The SEED for Foreman's instructions setting: `FOREMAN.md` at the app root.
+ *
+ * `../../FOREMAN.md` for exactly the reason `skillsDir` documents above, and it has to live
+ * in THIS file for the same reason: esbuild collapses the whole server into one bundle, so
+ * `import.meta.url` becomes that bundle's, and only a module already two levels down in the
+ * source tree resolves the same before and after bundling.
+ *
+ * A file rather than a string baked into the bundle, because the point of it being markdown
+ * is that it can be read and edited without a rebuild - and because there must be exactly one
+ * copy of this text, not one in a `.md` for humans and another in a `.ts` for the daemon.
+ */
+export function foremanInstructionsPath(): string {
+  return envVar("FOREMAN_INSTRUCTIONS") ?? fileURLToPath(new URL("../../FOREMAN.md", import.meta.url));
+}
+
 /** Resolve the CLI to launch for a dispatched agent, overridable per agent. */
 export function resolveAgentBin(agent: "claude" | "codex"): string {
   if (agent === "claude") return envVar("CLAUDE_BIN") ?? "claude";

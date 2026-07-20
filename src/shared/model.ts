@@ -1,8 +1,10 @@
 // Pure, dependency-free helpers for turning a raw model identifier into a
-// friendly display name and inferring its context-window size. Lives in `shared`
-// because both the daemon (filling SessionMeta) and the web UI (the card's model
-// pill) need identical results - the single source of truth for how a model id
-// like "claude-opus-4-8[1m]" becomes "Opus 4.8" + a 1M window.
+// friendly display name and inferring its context-window size, plus the catalog
+// of models a dispatch can be launched on. Lives in `shared` because both the
+// daemon (filling SessionMeta) and the web UI (the card's model pill, the
+// dispatch and Harnesses pickers) need identical results - the single source of
+// truth for how a model id like "claude-opus-4-8[1m]" becomes "Opus 4.8" + a 1M
+// window, and for which ids are offered in the first place.
 
 /** The context-window budget for a model with no size hint (standard Claude). */
 export const DEFAULT_CONTEXT_WINDOW = 200_000;

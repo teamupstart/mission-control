@@ -3,9 +3,10 @@ import { modelChoicesFor } from "@shared/model.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
-// launches. The master-toggle shape is the skills/Foreman pattern - an `.alert-row`
-// checkbox styled as a switch - because that is what this is: a durable on/off that
-// changes what happens to every future dispatch.
+// launches - the auto-mode master toggle, then one default-model row per harness.
+// The master-toggle shape is the skills/Foreman pattern - an `.alert-row` checkbox
+// styled as a switch - because that is what this is: a durable on/off that changes
+// what happens to every future dispatch.
 
 /** The label and blurb for one harness's default-model row. */
 const MODEL_ROWS: { agent: AgentType; label: string }[] = [

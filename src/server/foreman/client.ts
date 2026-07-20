@@ -293,6 +293,19 @@ export class ForemanClient implements ForemanActions {
     return (await res.json()) as StandardsBundle;
   }
 
+  /**
+   * Foreman's standing instructions - the shipped default, or what the operator has since
+   * saved. Empty string when they have chosen to have none.
+   *
+   * GLOBAL, not per-session, because that is what it is: one setting for the operator rather
+   * than a property of whichever session is under review. The caller degrades a failure to ""
+   * (see `readInstructions`), which is the same state as an operator who cleared the box.
+   */
+  async instructions(): Promise<string> {
+    const r = await get<{ text: string }>("/api/foreman/instructions");
+    return typeof r?.text === "string" ? r.text : "";
+  }
+
   // ---- work queues ----
 
   /**

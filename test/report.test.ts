@@ -44,6 +44,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     note: null, cost: null, goal: null,
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...over,
   };
@@ -149,6 +150,7 @@ function parkedGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "feature/x",
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: "parked 0s",
     findingsSummary: "1 awaiting",
     gateStep: "review",
@@ -232,6 +234,7 @@ function runningMidStep(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "feature/x",
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: "2 awaiting, 7 auto-fix",
     gateStep: null,

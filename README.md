@@ -336,6 +336,41 @@ prompt is pasted, then the Enter that submits it is swallowed. The text is sitti
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
+### Shadow reading: Claude's own session state
+
+Claude Code ships `claude agents --json`, which lists every live session - background and
+interactive, including ones you started by hand - with `pid`, `sessionId`, `cwd`, `status`
+(`idle` / `busy` / `waiting`) and `waitingFor` (`permission prompt` vs `input needed`).
+That overlaps three things this daemon works out the hard way: the `ps`-to-tty-to-pane
+correlation, the permission-mode footer parse, and the heuristic that decides whether a
+notification is a real question or an idle nudge.
+
+It is **not** wired into discovery, because on the machine this was written on the two
+views joined 11 of 11 sessions by `sessionId` but agreed on state for only 7 of them. The
+join rate says the identity plumbing is redundant; the disagreement rate says the state is
+not a drop-in replacement, and some of those gaps are probably bugs on our side - this is
+the first time there has been a second opinion to check against.
+
+So it runs as a **shadow**: off by default, and when on it only logs.
+
+```bash
+MISSION_AGENTS_SHADOW_MS=30000 npm run daemon
+```
+
+```
+[agents-shadow] mission=6 claude=17 joined=6 unjoined=0 agree=3 disagree=3 skipped=0 claude-only=11
+[agents-shadow]   sid=ae07d2ea pid=68926 mission=working claude=idle
+```
+
+`skipped` is counted separately so `agree + disagree` is never mistaken for the whole
+population: it covers records Claude reported without a status, and sessions in a state
+Claude has no analogue for (`awaiting_review` is a Foreman concept). Codex sessions are
+excluded entirely - `claude agents --json` cannot see them. `claude-only` is the count of
+sessions Claude knows about and this daemon does not, which is usually background agents.
+
+Nothing here changes behaviour. It exists to turn "should we adopt this?" into a decision
+backed by days of data rather than one sample.
+
 ### Goal
 
 Every card carries a one-sentence **Goal**: what that session is currently trying to
@@ -768,6 +803,79 @@ Only one worker drives the sessions at a time. `npm run foreman` twice is safe: 
 process acquires no **lease** and idles as a standby, taking over automatically if the
 leader dies. That matters because two workers would double-answer a prompt - or, with work
 queues below, type the same work instruction into a live agent twice.
+
+### Its standing instructions (`FOREMAN.md`)
+
+Foreman ships with a built-in judgment policy, which is deliberately generic. Beside it sits a
+second, editable half: **standing instructions** written in plain prose, telling it how *you*
+want these calls made. They are read into every review, every work-item verification, **and the
+[cheap tier](#the-cheap-tier)** - that last one matters, because the cheap tier answers routine
+permission asks on its own and never escalates them, so instructions it couldn't see would be
+silently skipped on the highest-volume path in the system.
+
+The defaults ship as [`FOREMAN.md`](FOREMAN.md) at the app root - ordinary markdown you can read
+and edit. Write what you would say if you were looking over its shoulder:
+
+```markdown
+## What I care about, in order
+1. Correctness, then simplicity, then maintainability. Development cost is nearly last.
+2. One abstraction over N special cases. If the options all amount to repeating an
+   implementation per case, ask for a single unified API instead of picking one.
+
+## Judging whether work is done
+Hold these as **blocking**, not advisory:
+- A bug fix with no end-to-end reproduction.
+- A capability that did not update `README.md` in the same change.
+```
+
+Two things make these different from the `AGENTS.md` / `CLAUDE.md` that Foreman *already* reads:
+
+- **They are direction, not evidence.** The standards docs reach the verifier fenced as material
+  to judge, and a finding against them is `advisory` - so it never sends an agent back for
+  another round. These reach it as instructions to follow, so they are the only way to say "this
+  particular thing is not done until X" and have it actually block.
+- **They can only raise your bar, never lower it.** They can make Foreman more careful -
+  escalate something it would have answered, demand more before calling work finished, weigh a
+  trade-off your way. They cannot authorize a destructive action, widen what it may approve on
+  your behalf, retire an escalation rule, or dictate the literal text it sends to a session. That
+  division is deliberate: prose shapes *judgement*, while the switches above grant *authority*,
+  each with its own confirmation and its own repo allowlist. A sentence in a text box should not
+  do a switch's job.
+
+With no instructions the section renders as nothing at all, and a test pins that adding them
+changes only that block, leaving the rest of every prompt byte-for-byte identical.
+
+> **Next:** these move into a dashboard setting, stored in the database and editable from
+> **Settings → Foreman**. `FOREMAN.md` stays the seed a fresh install starts from; once you save
+> your own, the file is only what "Reset to default" restores. The plumbing is already in place -
+> `GET`/`PUT /api/foreman/instructions`, stored under `app_config`, with empty and unset kept
+> distinct so clearing the box means "judge on your own policy" rather than silently reinstating
+> the default.
+
+### Which model Foreman runs as
+
+Foreman spawns a fresh, tool-less `claude -p` for four different jobs, and each one picks its
+own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
+
+| Call | Default | Config key | What it does |
+|---|---|---|---|
+| Review | `claude-opus-4-8` | `reviewModel` | Judges a stuck session's pending question - answer, escalate, or leave it |
+| Verify | `claude-opus-4-8` | `verifyModel` | Reads the diff and decides whether a queued work item is done |
+| Triage | `claude-haiku-4-5` | `triageModel` | The [cheap tier](#the-cheap-tier)'s Tier 1 router - buckets the ask, never solves it |
+| Backlog | `claude-sonnet-5` | `backlogModel` | Reads the [backlog](#backlog-autopilot-foreman-schedules-the-fleet) once per change and orders it by what depends on what |
+
+Each field resolves the same way: **your setting, then the environment variable, then the
+shipped default**. Clearing a field means "fall back", not "run with no model" - so emptying the
+box hands the decision to `FOREMAN_REVIEW_MODEL` (or the default), it never spawns the CLI
+without a `--model`. The panel prints which of the three is in force, because an environment
+variable set in the daemon's shell outranks the box and would otherwise be invisible from the
+browser.
+
+Any id your `claude` CLI accepts works - the fields are free text, not a fixed list.
+
+> Before this existed, Review and Verify passed no `--model` at all and silently inherited
+> whatever the CLI happened to be logged in as. If you relied on that, set the two fields to
+> match it; otherwise they now pin to Opus explicitly.
 
 ### The cheap tier
 
@@ -1205,6 +1313,114 @@ duplicate assignments are flagged inline, and you can reset any one shortcut (or
 them) to its default. The arrow keys and <kbd>Esc</kbd> drive navigation and can't be
 reassigned.
 
+## Inspector (automated PR review)
+
+The Inspector reviews the pull requests **Mission Control opened** - and only those -
+against a repo-root `INSPECTOR.md`, leaves inline review comments for what it finds,
+answers replies in its own threads, re-reviews on every push, and resolves its own
+threads once a push fixes what they were about.
+
+It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
+separate acts in Settings → Inspector, and the first two are reversible without anyone
+else seeing anything.
+
+### Only our pull requests
+
+This is the whole consent model, so it is worth being precise about. Mission Control
+learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
+`gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
+opened on the same branch. Neither adopts anything.
+
+A PR is adopted for review only from a signal that *proves* we opened it:
+
+- the hook saw the agent run **`gh pr create`** (matched on the command, not the output -
+  `gh pr view` prints the same URL), or
+- **no-mistakes reported it itself**, in the `pr:` line of `axi status`, from the process
+  that ran the `pr` step.
+
+Adopted PRs are recorded durably and stay adopted while they are open, even after the
+session that opened them exits. A PR with no adoption record is never touched. Adoption is
+not consent to post - that is `mode` plus the allowlist - so a PR is recorded whenever the
+proof arrives, including while the Inspector is switched off. That single local insert is
+the only thing it does while off; it runs no `gh` and no model.
+
+### Knowing its own comments
+
+A comment counts as the Inspector's own only if **both** are true: it was written by the
+login `gh` is authenticated as, **and** it carries a hidden marker
+(`<!-- mission-inspector:v1 … -->`) at the very start of its body. That is what decides
+which threads get resolved and which questions get answered.
+
+Neither half is enough alone, for different reasons. The account is shared - you comment
+under it, other agents run as you, a second Mission Control on another machine posts as
+you - so the author cannot tell our comments from those; the marker can. And the marker's
+prefix is a fixed public string whose fingerprints are visible in any PR's page source, so
+anyone who can comment on the pull request can paste one; the author check is what stops a
+forged comment being read as ours. If `gh` cannot say who we are, nothing counts as ours
+and nothing is resolved or answered.
+
+The marker must be at the *start* of a body to count. GitHub's quote-reply prefixes every
+line with `> `, so a human quoting one of our comments would otherwise be mistaken for us
+and never answered.
+
+### What it can read, and why that is a trade
+
+The reviewer runs `claude -p` with **`Read`, `Grep`, `Glob`** in the reviewed worktree.
+Reviewing a diff without being able to open a file misses most of what matters - whether
+a change breaks a caller three files away, whether there is a test - so the grant is
+deliberate. It also means a pull request diff (which anyone can author) reaches a model
+that can read the filesystem, whose output is published publicly.
+
+Five things stand in the way of that:
+
+1. **Tool allowlist** - reading only. No `Bash`, no `Write`/`Edit`, no `WebFetch`, no MCP.
+2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys, `.ssh`,
+   `.aws`, `.git/config`, and Mission Control's own state - denied for all three of
+   `Read`, `Grep` and `Glob`, since `Grep` prints the lines of any path it is given.
+3. **Working directory** is the reviewed worktree; under `-p` a read outside it has nobody
+   to approve it, so it fails.
+4. **Every finding must name a file the PR changed.** One that doesn't is discarded - so
+   "read a secret and repeat it" produces a comment with nowhere to land.
+5. **A secret scrubber** on every outbound string, including the review summary, which is
+   the one output rule 4 does not constrain.
+
+It never approves or requests changes; it comments. It does not chase comments to
+resolution - it surfaces issues and resolves what later pushes fix.
+
+### INSPECTOR.md
+
+Put one at the repo root. It tells the Inspector what the project cares about and, as
+importantly, what not to comment on - an automated reviewer that pattern-matches style
+nits is worse than none. This repo's own is [`INSPECTOR.md`](INSPECTOR.md). A repo without
+one is reviewed against a built-in default brief instead - general engineering judgement,
+with the same insistence on a low noise floor - so the Inspector still works on a repo
+nobody has configured. It's read fresh each round, so editing it changes the next review.
+
+The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
+against the contract the repo actually asserts.
+
+### On the card
+
+A session whose pull request has been adopted grows a `⌕` chip beside its PR chip, and the
+mark next to the glyph is where the review stands: no mark at all means adopted but not
+looked at yet, `✓` means reviewed with nothing outstanding, a number is the count of open
+findings, and `!` means the last round didn't complete. It's a mark rather than a word
+because a word costs the card title the width it needs; the sentence is in the tooltip. In
+`dry-run` the chip is set apart - a dashed border, a dotted underline in the rail - and the
+tooltip says nothing was posted.
+
+Cards, board tiles and the console detail all carry it, and there it opens the pull
+request. The console rail carries the same mark without the link, and only when there is
+something to say - open findings or a failed round - because a rail line is scanned rather
+than read.
+
+### Dry run
+
+`dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
+them, then records them instead of publishing. **Settings → Inspector → Recent
+inspections** is where you read what it would have said. Run it there on a few of your own
+PRs before you let it speak.
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)
@@ -1365,6 +1581,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, dispatch worktrees) |
 | `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
+| `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
@@ -1372,16 +1589,24 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
+| `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
-| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler) |
-| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler) pass it instead |
+| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
+| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
+| `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
+| `MISSION_INSPECTOR_MODEL` | CLI default | Inspector: the model both the review and the follow-up replies run on. The stored config's `model` wins where it is set (`PUT /api/inspector/config`; the settings panel doesn't expose it), then this, then the `claude` CLI's own default (the most capable, and the priciest) |
+| `MISSION_INSPECTOR_TIMEOUT_MS` | `180000` | Inspector: hard cap on one review. Larger than the Foreman reviewer's 120s because this one has tool round-trips inside it |
+| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `90000` | Inspector: hard cap on one follow-up reply - a much smaller job than a review |
+| `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
+| `FOREMAN_REVIEW_MODEL` | `claude-opus-4-8` | Foreman [models](#which-model-foreman-runs-as): the full reviewer (the `reviewModel` config wins over this) |
+| `FOREMAN_VERIFY_MODEL` | `claude-opus-4-8` | Foreman [models](#which-model-foreman-runs-as): the work-queue verifier (the `verifyModel` config wins over this) |
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |

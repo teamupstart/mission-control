@@ -3,12 +3,12 @@ import type { ForemanConfig } from "@shared/protocol.ts";
 import type { ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
-import { reviewSession } from "./review.ts";
+import { reviewModel, reviewSession } from "./review.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import { parsePaneDialog } from "../discovery/pane-dialog.ts";
-import type { ReviewInput } from "./prompt.ts";
+import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import {
   applyVerdict,
   episodeFromPlan,
@@ -40,7 +40,8 @@ import type { QueueActions } from "./queue-apply.ts";
 import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
-import { verifyItem } from "./queue-verify.ts";
+import { verifyItem, verifyModel } from "./queue-verify.ts";
+import type { StandardsBundle } from "../standards.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
@@ -862,9 +863,7 @@ async function processPromptedWrapup(
     return false;
   }
 
-  const standards = await client
-    .standards(session.id, changedPaths(diff.patch))
-    .catch(() => ({ docs: [], truncated: false }));
+  const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
   // The SAME verifier the queue uses, deliberately. "Did this diff satisfy this ask?"
   // is one question, and a second prompt for it would be a second thing to keep true.
@@ -882,8 +881,9 @@ async function processPromptedWrapup(
     transcriptTruncated: window.truncated,
     standards: standards.docs,
     standardsTruncated: standards.truncated,
+    instructions,
     priorGaps: [],
-  });
+  }, verifyModel(cfg));
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
@@ -1090,9 +1090,7 @@ async function runVerify(
     return;
   }
 
-  const standards = await client
-    .standards(session.id, changedPaths(diff.patch))
-    .catch(() => ({ docs: [], truncated: false }));
+  const { standards, instructions } = await judgingContext(client, session, diff.patch);
 
   const result = await verifyItem({
     session: { name: session.name, cwd: session.cwd, gitBranch: session.gitBranch },
@@ -1107,8 +1105,9 @@ async function runVerify(
     transcriptTruncated: window.truncated,
     standards: standards.docs,
     standardsTruncated: standards.truncated,
+    instructions,
     priorGaps: item.gaps,
-  });
+  }, verifyModel(cfg));
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -1184,6 +1183,30 @@ async function failVerify(
   log(`${session.name}: verify failed, will retry (${reason})`);
 }
 
+/**
+ * What a verify judges an item AGAINST: this repo's standards, and the operator's own
+ * instructions. Shared by the two verify entry points (the work queue and the prompted
+ * wrap-up), which call the same `verifyItem` with the same shape and had this block
+ * byte-for-byte twice - including the fallback literal, which is the part that must not drift.
+ *
+ * Both degrade to ABSENT rather than holding the tick, and that rule is why it is worth one
+ * function: a repo with no FOREMAN.md is the ordinary case and must verify exactly as it did
+ * before the file existed, so a failed read has to be indistinguishable from "there is none".
+ * Two copies of that reasoning are two chances for one of them to start holding the tick
+ * instead.
+ */
+async function judgingContext(
+  client: ForemanClient,
+  session: Session,
+  patch: string,
+): Promise<{ standards: StandardsBundle; instructions: string }> {
+  const [standards, instructions] = await Promise.all([
+    client.standards(session.id, changedPaths(patch)).catch(() => ({ docs: [], truncated: false })),
+    readInstructions(client),
+  ]);
+  return { standards, instructions };
+}
+
 /** The repo-relative paths a unified diff touches - what standards docs apply. */
 function changedPaths(patch: string): string[] {
   const out = new Set<string>();
@@ -1233,7 +1256,19 @@ async function processSession(
   // repainted between two captures would have us validating an answer to a question the
   // model never saw. It also has to precede `decide`, because the CHEAP tier can answer an
   // access prompt too, and a menu it answered in prose must be caught by the same gate.
-  const pane = await paneFor(client, session, pending);
+  // ONE read of the operator's FOREMAN.md per evaluation, threaded exactly like `pane`
+  // above and for a related reason. Whichever tiers run must be reading the SAME
+  // instructions - in `shadow` both run concurrently and their verdicts are compared, so
+  // two independent reads could have them diverge over an edit that landed between them
+  // and log it as a tier disagreement. It also spares a repeated `git rev-parse
+  // --show-toplevel` subprocess: the route resolves the repo root per call and caches
+  // nothing, so the `on` path used to pay for it twice whenever an ask routed up.
+  //
+  // Null on failure, like every other read of this file - see `ForemanClient.prefs`.
+  const [pane, instructions] = await Promise.all([
+    paneFor(client, session, pending),
+    readInstructions(client),
+  ]);
   const ctx: ReviewContext = {
     sessionId: session.id,
     promptMarker: pending.marker,
@@ -1251,7 +1286,7 @@ async function processSession(
   // the outcome was already handled - a transient review failure that will retry, or a
   // give-up note that was already written - so there's nothing left to apply. That still
   // counts as work: a `claude -p` was spawned, so the loop must not hurry back.
-  const decision = await decide(client, cfg, session, pending, ctx, pane, queueItem);
+  const decision = await decide(client, cfg, session, pending, ctx, { pane, instructions, queueItem });
   if (!decision) return true;
   const { verdict, tier } = decision;
 
@@ -1369,31 +1404,30 @@ async function decide(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `processSession`. */
-  pane: string | null,
-  queueItem?: ReviewInput["queueItem"],
+  /** What the caller captured once for this evaluation - see `processSession`. */
+  captured: CapturedInputs,
 ): Promise<Decision> {
   switch (triagePosture(cfg.triage)) {
     case "off":
-      return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
+      return fullReviewOnly(client, cfg, session, pending, ctx, captured);
     case "shadow":
-      return shadowBoth(client, cfg, session, pending, ctx, pane, queueItem);
+      return shadowBoth(client, cfg, session, pending, ctx, captured);
     case "on":
-      return cheapTierDecides(client, cfg, session, pending, ctx, pane, queueItem);
+      return cheapTierDecides(client, cfg, session, pending, ctx, captured);
   }
 }
 
 /** `off`: the pre-triage behaviour - every new marker gets a full review. */
 async function fullReviewOnly(
   client: ForemanClient,
+  cfg: ForemanConfig,
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `processSession`. */
-  pane: string | null,
-  queueItem?: ReviewInput["queueItem"],
+  /** What the caller captured once for this evaluation - see `processSession`. */
+  captured: CapturedInputs,
 ): Promise<Decision> {
-  const r = await fullReview(client, session, pending, ctx, pane, queueItem);
+  const r = await fullReview(client, cfg, session, pending, ctx, captured);
   return r && { verdict: r.verdict, tier: 2 };
 }
 
@@ -1407,13 +1441,15 @@ async function shadowBoth(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `processSession`. */
-  pane: string | null,
-  queueItem?: ReviewInput["queueItem"],
+  /** What the caller captured once for this evaluation - see `processSession`. */
+  captured: CapturedInputs,
 ): Promise<Decision> {
   const [cheap, r] = await Promise.all([
-    triageSession(triageDeps(client), pending, session, cfg, pane),
-    fullReview(client, session, pending, ctx, pane, queueItem),
+    // The same `prefs` object to both, which is the point of reading it once: these two
+    // verdicts are COMPARED below, so a tier reading different instructions than its
+    // counterpart would surface as a divergence in the log rather than as what it is.
+    triageSession(triageDeps(client), pending, session, cfg, captured),
+    fullReview(client, cfg, session, pending, ctx, captured),
   ]);
   if (!r) return null; // full review failed + handled; don't act on the cheap tier
   log(
@@ -1430,11 +1466,10 @@ async function cheapTierDecides(
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `processSession`. */
-  pane: string | null,
-  queueItem?: ReviewInput["queueItem"],
+  /** What the caller captured once for this evaluation - see `processSession`. */
+  captured: CapturedInputs,
 ): Promise<Decision> {
-  const cheap = await triageSession(triageDeps(client), pending, session, cfg, pane);
+  const cheap = await triageSession(triageDeps(client), pending, session, cfg, captured);
   if (cheap.kind === "dispose" && !menuBlocksAnswer(cheap.verdict, ctx)) {
     log(`${session.name}: tier ${cheap.tier} disposed -> ${cheap.verdict.action} (${cheap.reason})`);
     return { verdict: cheap.verdict, tier: cheap.tier };
@@ -1447,7 +1482,7 @@ async function cheapTierDecides(
   // escalates it there - the fallback stays, it just stops being the first stop.
   const why = cheap.kind === "route-up" ? cheap.reason : "menu-needs-a-row";
   log(`${session.name}: routed up to full review (${why})`);
-  return fullReviewOnly(client, session, pending, ctx, pane, queueItem);
+  return fullReviewOnly(client, cfg, session, pending, ctx, captured);
 }
 
 /**
@@ -1458,12 +1493,12 @@ async function cheapTierDecides(
  */
 async function fullReview(
   client: ForemanClient,
+  cfg: ForemanConfig,
   session: Session,
   pending: Pending,
   ctx: ReviewContext,
-  /** The child's screen, captured once by the caller - see `processSession`. */
-  pane: string | null,
-  queueItem?: ReviewInput["queueItem"],
+  /** What the caller captured once for this evaluation - see `processSession`. */
+  captured: CapturedInputs,
 ): Promise<{ verdict: Verdict } | null> {
   const window = await client
     .transcript(session.id)
@@ -1483,15 +1518,15 @@ async function fullReview(
     question: pending.question,
     transcript: window.messages,
     truncated: window.truncated,
-    // The section the reviewer reads the actual ask from - see `ReviewInput.pane`.
-    pane,
-    // Without this the two subsystems actively fight: the reviewer can answer "no,
-    // don't do that" to a question about the very item Foreman commissioned, or
-    // escalate something it could have answered trivially had it known the intent.
-    queueItem,
+    // The screen the reviewer reads the actual ask from, the item Foreman itself
+    // commissioned, and how this operator wants such calls made - all captured once by
+    // `processSession` so every tier judges from the same evidence. Spread rather than
+    // listed, so a new `CapturedInputs` field reaches the reviewer without a fourth
+    // place to remember.
+    ...captured,
   };
 
-  const result = await reviewSession(input);
+  const result = await reviewSession(input, reviewModel(cfg));
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a
@@ -1509,6 +1544,38 @@ async function fullReview(
   }
   reviewFailures.onSuccess(session.id);
   return { verdict: result.verdict };
+}
+
+/**
+ * Foreman's standing instructions, or "" when they cannot be read.
+ *
+ * ONE fetch per evaluation, handed to whichever tiers run - the same rule `pane` follows, and
+ * for a sharper reason here: in `shadow` mode both tiers run concurrently and their verdicts
+ * are COMPARED, so two reads straddling an edit would be logged as a tier divergence when it
+ * was really an input one.
+ *
+ * Empty on failure, and that is not a silent degrade: a daemon that cannot answer is
+ * indistinguishable from an operator who cleared the box, and both mean "judge by your own
+ * policy". It is logged on the transition into and out of failure rather than every tick,
+ * because the loop revisits a session every BETWEEN_MS and a line per pass buries the one
+ * that mattered.
+ */
+let instructionsUnreadable = false;
+async function readInstructions(client: ForemanClient): Promise<string> {
+  try {
+    const text = await client.instructions();
+    if (instructionsUnreadable) {
+      instructionsUnreadable = false;
+      log("Foreman instructions readable again");
+    }
+    return text;
+  } catch (err) {
+    if (!instructionsUnreadable) {
+      instructionsUnreadable = true;
+      log(`could NOT read Foreman's instructions (${String(err)}) - judging on policy alone`);
+    }
+    return "";
+  }
 }
 
 /** Adapt the daemon client to the cheap tier's read-only dependency surface. */

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, realpa
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetPreview, resetToOrigin } from "../src/server/actions.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 import { gitIn, mkCloneOnBranch, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 
@@ -17,7 +18,7 @@ function sess(cwd: string | null, branch: string | null = "main"): Session {
     permissionMode: null, wezterm: null, tmux: null, agentSessionId: null, transcriptPath: null,
     instrumented: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, nomistakes: null, nomistakesFixes: [], task: null,
-    nomistakesNarration: null, prUrl: null, prNumber: null, prState: null, prChecks: null,
+    nomistakesNarration: null, prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null,
     meta: null, note: null, cost: null, goal: null, queue: null, orphanedQueue: null, paneDialog: null,
   };
 }
@@ -184,7 +185,7 @@ function withFakePane(clone: string, screens: (string | null)[]) {
   };
   const deps = {
     // Exit 0 with empty output: tmux took the keystrokes, and the pane is in no mode.
-    exec: async () => ({ stdout: "", stderr: "", code: 0 }),
+    exec: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
     capture: async () => (screens.length ? screens.shift()! : screens[screens.length - 1] ?? null),
     sleep: async () => {},
   };

@@ -5,6 +5,7 @@ import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
 import { hasPendingCommand, hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
+import { stubRun } from "../src/server/util/exec.ts";
 
 // Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, Enter, read back -
 // and the ORDER is the whole fix, so these tests assert the sequence rather than the
@@ -50,7 +51,7 @@ function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
         const argv = [bin, ...args].join(" ");
         events.push({ kind: "exec", argv });
         if (isEnter(argv)) entersSeen++;
-        return { stdout: "", stderr: "", code: 0 };
+        return stubRun({ stdout: "", stderr: "", code: 0 });
       },
       capture: async () => {
         events.push({ kind: "capture" });
@@ -154,7 +155,7 @@ test("an unreadable pane ends the retry rather than spending a blind keystroke",
   const deps: InjectDeps = {
     exec: async (bin, args) => {
       events.push({ kind: "exec", argv: [bin, ...args].join(" ") });
-      return { stdout: "", stderr: "", code: 0 };
+      return stubRun({ stdout: "", stderr: "", code: 0 });
     },
     capture: async () => null,
     sleep: async () => {},
@@ -170,7 +171,7 @@ test("a paste that never left the buffer is still reported as retryable", async 
   // `pasted: false` is the ONLY state a caller may re-deliver from, so a failure before the
   // paste must keep saying so.
   const deps: InjectDeps = {
-    exec: async (_bin, args) => ({ stdout: "", stderr: "no such pane", code: args.includes("paste-buffer") ? 1 : 0 }),
+    exec: async (_bin, args) => (stubRun({ stdout: "", stderr: "no such pane", code: args.includes("paste-buffer") ? 1 : 0 })),
     capture: async () => EMPTY_COMPOSER,
     sleep: async () => {},
   };

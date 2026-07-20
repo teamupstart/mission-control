@@ -5,9 +5,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
+import { RailRow } from "../src/web/components/layouts/RailRow.tsx";
 import {
   AgentDot,
   CostChip,
+  InspectorChip,
   PrChip,
   RuntimeMetaRow,
   SessionTitle,
@@ -32,6 +34,20 @@ import type { Session, SessionCost } from "../src/shared/types.ts";
  *
  * `createElement` rather than JSX because the runner's glob only matches .test.ts.
  */
+
+/** An adopted-PR summary, defaulting to the ordinary "reviewed, found things" shape. */
+function insp(over: Partial<NonNullable<Session["inspector"]>> = {}): Session["inspector"] {
+  return {
+    prKey: "o/r#7",
+    url: "https://example.test/pr/7",
+    mode: "live",
+    open: 1,
+    round: 1,
+    lastReviewedAt: 1_700_000_000_000,
+    failed: false,
+    ...over,
+  };
+}
 
 function card(over: Partial<Session> = {}): string {
   return renderToStaticMarkup(
@@ -78,6 +94,47 @@ test("the card's PR chip is the shared PrChip", () => {
       `card should render the shared PrChip for ${JSON.stringify(over)}`,
     );
   }
+});
+
+// The Inspector chip is drawn by FOUR surfaces, and the two that share `session-bits`
+// must share this one too. The board tile and the rail render it in their own
+// vocabularies (a `.tile-flag`, a bare glyph), but they still take the DECISION of what
+// it says from `inspectorChipView` - so what "clean" or "3 findings" means can't drift
+// between layouts even where the markup does.
+test("the card's inspector chip is the shared InspectorChip", () => {
+  const cases: Partial<Session>[] = [
+    // Findings outstanding - the state the chip exists for.
+    { inspector: insp({ open: 3, round: 2 }) },
+    // Reviewed and clean, which must not look like "not reviewed".
+    { inspector: insp({ open: 0, round: 1 }) },
+    // Adopted but not yet looked at.
+    { inspector: insp({ open: 0, round: 0 }) },
+    // Dry run: the review happened, the comment did not - a distinction the chip carries.
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    // Failed, which never occurs in a healthy fleet and so is only ever exercised here.
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    assert.ok(
+      card(over).includes(bit(InspectorChip, { session })),
+      `card should render the shared InspectorChip for ${JSON.stringify(over.inspector)}`,
+    );
+  }
+});
+
+// A PR the Inspector never adopted renders NOTHING, and that silence is the feature: the
+// Inspector only adopts what it can prove Mission Control opened, so a card with a PR
+// chip and no inspector chip is telling you that PR came from somewhere else.
+test("a PR that was never adopted gets no inspector chip at all", () => {
+  const over: Partial<Session> = {
+    prUrl: "https://example.test/pr/7",
+    prNumber: 7,
+    prState: "open",
+    inspector: null,
+  };
+  assert.equal(bit(InspectorChip, { session: mkSession(over) }), "");
+  assert.ok(!card(over).includes("insp-chip"));
 });
 
 test("the card's state badge is the shared StateBadge", () => {
@@ -193,6 +250,7 @@ test("card and console detail agree on every shared leaf", () => {
     cost: {
       costUsd: 1.24, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
     },
+    inspector: insp({ open: 3, round: 2 }),
   };
   const session = mkSession(over);
   const detail = renderToStaticMarkup(
@@ -232,10 +290,74 @@ test("card and console detail agree on every shared leaf", () => {
     ["AgentDot", bit(AgentDot, { agent: session.agent })],
     ["PrChip", bit(PrChip, { session })],
     ["StateBadge", bit(StateBadge, { session, onOpenReviews: () => {} })],
+    ["InspectorChip", bit(InspectorChip, { session })],
     ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta! })],
     ["CostChip", bit(CostChip, { cost: session.cost })],
   ] as const) {
     assert.ok(html.includes(fragment), `card should contain the shared ${name}`);
     assert.ok(detail.includes(fragment), `console detail should contain the shared ${name}`);
   }
+});
+
+// Dry run means the review happened and NOTHING was published. That is the distinction
+// the whole feature's safety story rests on, so it cannot be legible on the card and
+// invisible on the other two surfaces - a bare `⌕ 3` must not read the same whether
+// those three findings are public review comments or were only recorded here.
+//
+// The mark vocabularies differ by design (a pill, a `.tile-flag`, a glyph), so this
+// asserts each surface carries the shared `insp-dry` hook rather than identical markup.
+test("all three inspector surfaces show dry run, and none of them shows it when live", () => {
+  const dry = insp({ open: 3, round: 2, mode: "dry-run" });
+  const live = insp({ open: 3, round: 2, mode: "live" });
+
+  const tile = (i: Session["inspector"]): string =>
+    renderToStaticMarkup(
+      createElement(SessionTile, {
+        session: mkSession({ inspector: i }),
+        gateNeedsYou: false,
+        onOpen: () => {},
+        draggingRepo: null,
+        onDropped: () => {},
+        onDropError: () => {},
+        onDropConfirm: () => {},
+      }),
+    );
+  const rail = (i: Session["inspector"]): string =>
+    renderToStaticMarkup(
+      createElement(RailRow, {
+        session: mkSession({ inspector: i }),
+        selected: false,
+        gateNeedsYou: false,
+        onSelect: () => {},
+      }),
+    );
+
+  for (const [name, render] of [
+    ["card", (i: Session["inspector"]) => card({ inspector: i })],
+    ["tile", tile],
+    ["rail", rail],
+  ] as const) {
+    assert.match(render(dry), /insp-dry/, `${name} should mark a dry-run review`);
+    assert.doesNotMatch(render(live), /insp-dry/, `${name} must not mark a live review`);
+  }
+});
+
+// The chip's only unconditional child is an aria-hidden glyph, and in the queued state
+// the mark is empty - so without a name it announces as nothing at all, and otherwise as
+// a bare "3". The tooltip's aria-describedby is a description, and only while open.
+test("the inspector chip and its tile twin have an accessible name", () => {
+  const session = mkSession({ inspector: insp({ open: 0, round: 0 }) });
+  assert.match(bit(InspectorChip, { session }), /aria-label="Inspector: adopted for review/);
+  const tile = renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      gateNeedsYou: false,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+      onDropConfirm: () => {},
+    }),
+  );
+  assert.match(tile, /aria-label="Inspector: adopted for review/);
 });

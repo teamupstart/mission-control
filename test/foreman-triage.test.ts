@@ -561,7 +561,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     transcriptPath: null, instrumented: true, hooksSeen: true, activity: "Approve?",
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [],
-    nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, meta: null, note: null, cost: null, goal: null,
+    nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null, meta: null, note: null, cost: null, goal: null,
     queue: null, orphanedQueue: null, paneDialog: null,
     ...over,
   };
@@ -602,14 +602,14 @@ test("triageSession: Tier 0 disposes without ever calling the model", async () =
     pend({ situation: "non-input-review", reviewKind: "diff", reviewTitle: "T" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   assert.equal(calls, 0, "Tier 0 short-circuits before spawning Haiku");
 });
 
 test("triageSession: an answerable surface runs Tier 1 and disposes on a routine-access reply", async () => {
-  const out = await triageSession(deps(), pend({ situation: "terminal-pane" }), mkSession(), cfg(), null);
+  const out = await triageSession(deps(), pend({ situation: "terminal-pane" }), mkSession(), cfg(), { pane: null, instructions: "" });
   assert.equal(out.kind, "dispose");
   if (out.kind === "dispose") {
     assert.equal(out.tier, 1);
@@ -627,7 +627,7 @@ test("triageSession: a destructive command in the transcript prose escalates a t
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession({ activity: "Claude needs your permission" }),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -641,7 +641,7 @@ test("triageSession: a clean transcript still lets the routine-access answer thr
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession({ activity: "Claude needs your permission" }),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -658,7 +658,7 @@ test("triageSession: an EMPTY window routes up rather than auto-answering (the d
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession({ activity: "Claude needs your permission" }),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
@@ -674,7 +674,7 @@ test("triageSession: a window of pure TOOL CALLS routes up (tool names name no c
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession({ activity: "Claude needs your permission" }),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
@@ -697,7 +697,7 @@ test("triageSession: a prose-free window routes a GATE-PARKED ask up, never auto
     }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
@@ -712,7 +712,7 @@ test("triageSession: an `unavailable` window routes up with its OWN reason, not 
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-file");
@@ -727,7 +727,7 @@ test("triageSession: an INPUT REVIEW with no transcript at all still answers", a
     pend({ situation: "input-review", surface: "input-review", question: "Can I install the lodash dependency?", inputReviewId: "r1", canSend: false }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -742,7 +742,7 @@ test("triageSession: a transcript FETCH FAILURE routes up rather than auto-answe
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up");
   // A daemon that failed to answer is not a session without a transcript - keep them apart.
@@ -759,7 +759,7 @@ test("triageSession: an empty window still allows the SAFE directions (escalate)
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -777,7 +777,7 @@ test("triageSession: the window is bounded to TIER1_TURNS, so old history can't 
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -793,7 +793,7 @@ test("triageSession: a destructive command in a RECENT turn still forces escalat
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -817,7 +817,7 @@ test("triageSession: the router prompt keeps the GOAL turns plus the recent ones
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.ok(prompt.includes("GOAL-0"), "the opening turns carry what the session is for");
   assert.ok(prompt.includes("RECENT-0"), "the recent neighbourhood of the ask is kept");
@@ -838,7 +838,7 @@ test("triageSession: a short transcript reaches the router whole, with no duplic
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(prompt.match(/ONLY-0/g)?.length, 1, "the overlapping turn appears exactly once");
   assert.ok(prompt.includes("ONLY-2"));
@@ -856,7 +856,7 @@ test("triageSession: the denylist scan does NOT reach back into the goal turns",
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -885,7 +885,7 @@ test("triageSession (truncated): a destructive string in a HEAD turn does NOT fo
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -900,7 +900,7 @@ test("triageSession (truncated): a destructive string in a genuine RECENT turn s
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -919,7 +919,7 @@ test("triageSession (truncated): HEAD prose cannot satisfy the no-context gate f
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up", "must NOT type an approval into the pane");
   if (out.kind === "route-up") assert.equal(out.reason, "no-transcript-context");
@@ -934,12 +934,12 @@ test("triageSession (truncated): a window with NO headCount can never take the a
   // an unplaceable window is worthless as corroboration on either surface.
   for (const situation of ["terminal-pane", "input-review"] as const) {
     const out = await triageSession(
-      deps({ transcript: async () => ({ messages: [msg("Running the unit tests for the refactor.")], truncated: true }) }),
-      pend({ situation, question: "Claude needs your permission" }),
-      mkSession(),
-      cfg(),
-      null,
-    );
+    deps({ transcript: async () => ({ messages: [msg("Running the unit tests for the refactor.")], truncated: true }) }),
+    pend({ situation, question: "Claude needs your permission" }),
+    mkSession(),
+    cfg(),
+    { pane: null, instructions: "" },
+  );
     assert.equal(out.kind, "route-up", `${situation}: must not act on turns it cannot place`);
     if (out.kind === "route-up") assert.equal(out.reason, "no-window-boundary");
   }
@@ -959,7 +959,7 @@ test("triageSession (truncated): no headCount still escalates a destructive ask 
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind !== "dispose") return;
@@ -975,7 +975,7 @@ test("triageSession: an untruncated window needs no headCount - every turn is co
     pend({ situation: "terminal-pane", question: "Claude needs your permission" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "dispose");
   if (out.kind === "dispose") assert.equal(out.verdict.action, "answer");
@@ -994,7 +994,7 @@ test("triageSession (truncated): the router still gets the opening goal turns", 
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.ok(prompt.includes("GOAL-0"), "the goal the user set must reach the router");
   assert.ok(prompt.includes("RECENT"), "so must the pending ask");
@@ -1007,7 +1007,7 @@ test("triageSession: a router reply with no confidence routes up as unparseable,
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.equal(out.reason, "tier1-unparseable", "an honest diagnosis of a broken router");
@@ -1022,7 +1022,7 @@ test("triageSession: a router TIMEOUT routes up (the shorter Tier 1 budget degra
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.match(out.reason, /tier1-failed.*timed out/);
@@ -1034,7 +1034,7 @@ test("triageSession: a router spawn failure routes up (fail-safe to the full rev
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.match(out.reason, /tier1-failed/);
@@ -1046,7 +1046,7 @@ test("triageSession: unparseable router output routes up", async () => {
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg(),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(out.kind, "route-up");
   if (out.kind === "route-up") assert.equal(out.reason, "tier1-unparseable");
@@ -1059,7 +1059,7 @@ test("triageSession: config triageModel overrides the router model", async () =>
     pend({ situation: "terminal-pane" }),
     mkSession(),
     cfg({ triageModel: "claude-custom-router" }),
-    null,
+    { pane: null, instructions: "" },
   );
   assert.equal(usedModel, "claude-custom-router");
 });

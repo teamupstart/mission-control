@@ -17,9 +17,11 @@ import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
 import { startPoller } from "./discovery/poller.ts";
+import { startAgentsShadow } from "./discovery/agents-shadow.ts";
 import { startNomistakesPoller } from "./nomistakes.ts";
 import { startPoolReaper } from "./pool.ts";
 import { startPrPoller } from "./pr.ts";
+import { startInspector } from "./inspector/worker.ts";
 import { startRuntimeMetaPoller } from "./runtime-meta.ts";
 import { startGoalRefiner } from "./goal/refiner.ts";
 import { startAwayWatcher } from "./away/watcher.ts";
@@ -56,8 +58,11 @@ const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
 const stopPoller = startPoller(registry);
+// Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
+const stopAgentsShadow = startAgentsShadow(registry);
 const stopNomistakes = startNomistakesPoller(registry);
 const stopPrPoller = startPrPoller(registry);
+const stopInspector = startInspector(registry);
 const stopRuntimeMeta = startRuntimeMetaPoller(registry);
 const stopGoalRefiner = startGoalRefiner(registry);
 const away = startAwayWatcher(registry);
@@ -92,8 +97,10 @@ const server = serve({ fetch: app.fetch, hostname: HOST, port: PORT }, (info) =>
 
 function shutdown(): void {
   stopPoller();
+  stopAgentsShadow();
   stopNomistakes();
   stopPrPoller();
+  stopInspector();
   stopRuntimeMeta();
   stopGoalRefiner();
   away.stop();

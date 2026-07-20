@@ -87,6 +87,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prNumber: null,
     prState: null,
     prChecks: null,
+    inspector: null,
     meta: null,
     note: null,
     cost: null,

@@ -17,6 +17,7 @@ import {
   AgentDot,
   CostChip,
   GoalLine,
+  InspectorChip,
   PrChip,
   RuntimeMetaRow,
   SessionTitle,
@@ -148,6 +149,7 @@ export function ConsoleDetail({
           )}
         </div>
         <PrChip session={session} />
+        <InspectorChip session={session} />
         <StateBadge session={session} onOpenReviews={() => view.onOpenReviews(session.id)} />
         <span className="detail-head-spacer" />
         {session.meta && <RuntimeMetaRow meta={session.meta} />}

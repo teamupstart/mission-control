@@ -1,10 +1,18 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DB_PATH } from "./config.ts";
+import { DB_PATH, envVar } from "./config.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
+  InspectorComment,
+  InspectorCommentStatus,
+  InspectorFailKind,
+  InspectorInspection,
+  InspectorPr,
+  InspectorPrState,
+  InspectorSeverity,
+  InspectorSource,
   NmFixReplySource,
   NoteDisposition,
   PaneDialogSummary,
@@ -36,8 +44,40 @@ import { normalizeLabels } from "@shared/task.ts";
  */
 let db: DatabaseSync;
 
+/**
+ * Refuse to open the operator's real state dir from inside the test runner.
+ *
+ * Twice now a test has destroyed live state: the state-dir rename once moved
+ * `~/.fleet-control` out from under a running daemon (see migrate-state.ts), and a
+ * branch's config test ran `DELETE FROM app_config` against the real db on every
+ * `npm test`, wiping every setting the operator had saved - repeatedly, since agents
+ * run the suite before every PR. Both had the same shape: a test file that imports
+ * server modules without redirecting the state dir first, failing silently into
+ * someone's home directory.
+ *
+ * The check is here rather than in `stateDir()` because resolution has to stay
+ * side-effect free and is evaluated at module load by files that never touch the db
+ * (health.test.ts imports routes.ts and is rightly hermetic without any env). Opening
+ * the db is the moment real damage becomes possible, so it is the moment to refuse.
+ *
+ * Comparing DB_PATH against the CURRENT override catches both mistakes: no override
+ * at all, and an override set after `config.ts` had already resolved the real home -
+ * the same wipe with an alibi.
+ */
+function assertTestStateIsolation(): void {
+  if (!process.env.NODE_TEST_CONTEXT) return;
+  const override = envVar("HOME");
+  if (override && DB_PATH.startsWith(override)) return;
+  throw new Error(
+    `refusing to open ${DB_PATH} under the test runner: this is the machine's real ` +
+      "state dir. Set MISSION_HOME (or HARNESS_HOME) to a fresh temp dir BEFORE " +
+      "importing anything that resolves it - see ui-config-store.test.ts for the pattern.",
+  );
+}
+
 export function openDb(): DatabaseSync {
   if (db) return db;
+  assertTestStateIsolation();
   mkdirSync(dirname(DB_PATH), { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");
@@ -310,6 +350,61 @@ export function openDb(): DatabaseSync {
     -- sweep, and the table only ever grows: every /clear mints a new note key and so
     -- a new row.
     CREATE INDEX IF NOT EXISTS idx_fq_cwd ON foreman_queues(cwd);
+
+    -- The Inspector's ADOPTION ledger. A row here is the permission to comment on a
+    -- pull request, and the absence of one is why we don't comment on everyone else's.
+    -- Rows are written only from a signal that PROVES we opened the PR, and they
+    -- outlive the session that did (a PR is not done when its session exits).
+    CREATE TABLE IF NOT EXISTS inspector_prs (
+      key              TEXT PRIMARY KEY,  -- "owner/repo#123"
+      url              TEXT NOT NULL,
+      owner            TEXT NOT NULL,
+      repo             TEXT NOT NULL,
+      number           INTEGER NOT NULL,
+      repo_root        TEXT,              -- INSPECTOR.md + standards + the allowlist check
+      cwd              TEXT,              -- a checkout to run gh from
+      session_id       TEXT,              -- nullable: the PR outlives the session
+      source           TEXT NOT NULL,     -- hook | no-mistakes (how we know it's ours)
+      state            TEXT NOT NULL,     -- open | closed
+      head_sha         TEXT,              -- head as of the last completed review
+      round            INTEGER NOT NULL DEFAULT 0,
+      last_reviewed_at INTEGER,
+      last_error       TEXT,
+      fail_count       INTEGER NOT NULL DEFAULT 0,  -- consecutive failures, for the backoff
+      last_fail_kind   TEXT,              -- push-fixable | persistent (may a push skip the wait)
+      next_attempt_at  INTEGER,          -- not before this; null = due now
+      last_attempt_sha TEXT,             -- the head the backoff was earned on
+      adopted_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_inspector_prs_state ON inspector_prs(state);
+
+    -- The Inspector's PROVENANCE ledger: one row per ISSUE per PR, not per comment.
+    --
+    -- The unique index is the dedup, and it is here rather than in code on purpose:
+    -- "don't post the same complaint twice" is the rule that keeps an automated
+    -- reviewer tolerable, and a rule enforced by a code path is a rule someone
+    -- eventually routes around. The fingerprint deliberately excludes the line number,
+    -- so a push that shifts code down doesn't re-raise everything.
+    CREATE TABLE IF NOT EXISTS inspector_comments (
+      id                  TEXT PRIMARY KEY,  -- our uuid, also embedded in the marker
+      pr_key              TEXT NOT NULL,
+      fingerprint         TEXT NOT NULL,     -- sha1(path + normalized title)
+      path                TEXT,
+      line                INTEGER,
+      title               TEXT NOT NULL,
+      severity            TEXT NOT NULL,
+      round               INTEGER NOT NULL,
+      status              TEXT NOT NULL,     -- drafted | posting | open | resolved
+      replies             INTEGER NOT NULL DEFAULT 0,
+      answered_comment_id INTEGER,           -- newest foreign comment we've answered
+      created_at          INTEGER NOT NULL,
+      updated_at          INTEGER NOT NULL
+    );
+    -- No index on (pr_key) alone: it is the leftmost prefix of the unique index below,
+    -- so it can serve no query that one cannot, and it costs a write per row.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
+      ON inspector_comments(pr_key, fingerprint);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -404,6 +499,38 @@ function migrate(d: DatabaseSync): void {
   // the harness default", which is the truthful answer for every task dispatched before
   // a model could be chosen at all.
   addColumn(d, "tasks", "model", "TEXT");
+
+  // `fail_count` / `next_attempt_at`: the Inspector's retry backoff. Same window as
+  // `foreman_episodes.resolved_by` above - `inspector_prs` has never shipped, so the
+  // only dbs carrying it are the ones this feature was developed against - but CREATE
+  // TABLE IF NOT EXISTS still will not add a column to a table that exists, and the
+  // INSERT names both, so without these every adoption on such a db would fail.
+  //
+  // `fail_count` defaults to 0 and `next_attempt_at` is nullable, so a row written
+  // before the backoff existed reads as "no failures, due now" - which is the truthful
+  // answer for a row nothing had yet counted failures for.
+  addColumn(d, "inspector_prs", "fail_count", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "inspector_prs", "next_attempt_at", "INTEGER");
+  // `last_attempt_sha`: the head a backoff was earned on, so a new push can cut the wait
+  // short. Same unshipped-table window as the two above, and nullable for the same
+  // reason - a row written before it existed has attempted nothing we can name, and the
+  // backoff on it stays fully in force until something does.
+  addColumn(d, "inspector_prs", "last_attempt_sha", "TEXT");
+  // `last_fail_kind`: which of the two failure classes earned the wait now in force, so
+  // the push-escape can be unlimited for the class a push is the remedy for and capped
+  // for the class it cannot touch. Same unshipped-table window as the three above.
+  // Nullable, and NULL reads as "nothing has failed" - which is also the safe reading if
+  // it somehow survives alongside a non-zero `fail_count`, since an unnamed class falls
+  // under the cap rather than escaping it.
+  addColumn(d, "inspector_prs", "last_fail_kind", "TEXT");
+
+  // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
+  // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
+  // than merely removed from the CREATE, or a db created before this build keeps
+  // paying for it forever. `comment_id` / `thread_id` are left where they are: SQLite
+  // column drops are the expensive kind of migration, the columns are nullable, and
+  // every INSERT names its columns, so a leftover one is inert.
+  d.exec(`DROP INDEX IF EXISTS idx_inspector_comments_pr;`);
 
   // Goals need no migration: `session_goals` is a NEW table, and CREATE TABLE IF NOT EXISTS
   // creates it on an upgraded db exactly as on a fresh one. An existing install simply has no
@@ -1927,4 +2054,291 @@ export function setAppConfig(key: string, value: unknown): void {
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(key, JSON.stringify(value));
+}
+
+// ---- Inspector: the adoption + provenance ledgers ----
+//
+// Everything below is read and written ONLY by the Inspector (daemon-side). The two
+// tables answer the two questions that make automated PR review safe to run at all:
+// "is this PR ours to comment on?" and "is this comment ours to resolve?".
+
+interface InspectorPrRow {
+  key: string;
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  repo_root: string | null;
+  cwd: string | null;
+  session_id: string | null;
+  source: string;
+  state: string;
+  head_sha: string | null;
+  round: number;
+  last_reviewed_at: number | null;
+  last_error: string | null;
+  fail_count: number;
+  last_fail_kind: string | null;
+  next_attempt_at: number | null;
+  last_attempt_sha: string | null;
+  adopted_at: number;
+  updated_at: number;
+}
+
+function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
+  return {
+    key: r.key,
+    url: r.url,
+    owner: r.owner,
+    repo: r.repo,
+    number: r.number,
+    repoRoot: r.repo_root,
+    cwd: r.cwd,
+    sessionId: r.session_id,
+    source: r.source as InspectorSource,
+    state: r.state as InspectorPrState,
+    headSha: r.head_sha,
+    round: r.round,
+    lastReviewedAt: r.last_reviewed_at,
+    lastError: r.last_error,
+    failCount: r.fail_count,
+    lastFailKind: (r.last_fail_kind as InspectorFailKind | null) ?? null,
+    nextAttemptAt: r.next_attempt_at,
+    lastAttemptSha: r.last_attempt_sha,
+    adoptedAt: r.adopted_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Adopt a PR for review, idempotently. Returns true when this call is what adopted it.
+ *
+ * `DO NOTHING` rather than an upsert, and that is the whole design of the function:
+ * adoption is a fact about the past ("we opened this"), so a later sighting must never
+ * be able to rewrite it. Both signals - the hook's `gh pr create` and no-mistakes' own
+ * `pr:` line - land here, and the second one to arrive is a no-op instead of a
+ * re-adoption that would reset the head sha and re-review a PR from scratch.
+ */
+export function adoptInspectorPr(pr: InspectorPr): boolean {
+  const res = openDb()
+    .prepare(
+      `INSERT INTO inspector_prs
+         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+          head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
+          next_attempt_at, last_attempt_sha, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO NOTHING`,
+    )
+    .run(
+      pr.key,
+      pr.url,
+      pr.owner,
+      pr.repo,
+      pr.number,
+      pr.repoRoot,
+      pr.cwd,
+      pr.sessionId,
+      pr.source,
+      pr.state,
+      pr.headSha,
+      pr.round,
+      pr.lastReviewedAt,
+      pr.lastError,
+      pr.failCount,
+      pr.lastFailKind,
+      pr.nextAttemptAt,
+      pr.lastAttemptSha,
+      pr.adoptedAt,
+      pr.updatedAt,
+    );
+  return Number(res.changes) > 0;
+}
+
+/**
+ * Refresh the mutable half of a ledger row after a tick.
+ *
+ * `cwd` and `repo_root` are deliberately NOT writable here. They record where the PR was
+ * opened from, which is a fact about the past; the worktree behind `cwd` gets reaped and
+ * pooled worktrees get reused, so the value is only ever a hint. Resolving a directory
+ * that still exists is the tick's job, once per pass, and it falls back to `repo_root`
+ * because git's common dir outlives any worktree of the repo - see `liveDir` in
+ * `inspector/worker.ts`. Identity columns (key/owner/repo/number/source/adopted_at) are
+ * untouched by construction.
+ */
+export function updateInspectorPr(
+  key: string,
+  patch: {
+    state?: InspectorPrState;
+    headSha?: string | null;
+    round?: number;
+    lastReviewedAt?: number | null;
+    lastError?: string | null;
+    failCount?: number;
+    lastFailKind?: InspectorFailKind | null;
+    nextAttemptAt?: number | null;
+    lastAttemptSha?: string | null;
+  },
+  now: number,
+): void {
+  const cur = getInspectorPr(key);
+  if (!cur) return;
+  const next = { ...cur, ...patch };
+  openDb()
+    .prepare(
+      `UPDATE inspector_prs
+          SET state = ?, head_sha = ?, round = ?,
+              last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
+              next_attempt_at = ?, last_attempt_sha = ?, updated_at = ?
+        WHERE key = ?`,
+    )
+    .run(
+      next.state,
+      next.headSha,
+      next.round,
+      next.lastReviewedAt,
+      next.lastError,
+      next.failCount,
+      next.lastFailKind,
+      next.nextAttemptAt,
+      next.lastAttemptSha,
+      now,
+      key,
+    );
+}
+
+export function getInspectorPr(key: string): InspectorPr | null {
+  const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
+    | InspectorPrRow
+    | undefined;
+  return r ? rowToInspectorPr(r) : null;
+}
+
+/** Every PR still worth polling - what the tick iterates. */
+export function loadOpenInspectorPrs(): InspectorPr[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM inspector_prs WHERE state = 'open' ORDER BY adopted_at ASC`)
+    .all() as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
+}
+
+interface InspectorCommentRow {
+  id: string;
+  pr_key: string;
+  fingerprint: string;
+  path: string | null;
+  line: number | null;
+  title: string;
+  severity: string;
+  round: number;
+  status: string;
+  replies: number;
+  answered_comment_id: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
+  return {
+    id: r.id,
+    prKey: r.pr_key,
+    fingerprint: r.fingerprint,
+    path: r.path,
+    line: r.line,
+    title: r.title,
+    severity: r.severity as InspectorSeverity,
+    round: r.round,
+    status: r.status as InspectorCommentStatus,
+    replies: r.replies,
+    answeredCommentId: r.answered_comment_id,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Record (or re-record) one issue on one PR.
+ *
+ * The conflict target is `(pr_key, fingerprint)` - the ISSUE's identity - so a finding
+ * the reviewer raises again in a later round updates its row instead of minting a
+ * second one. That is also what lets a resolved-then-regressed issue come back: the
+ * row flips out of `resolved` and gets a fresh comment id, rather than being blocked
+ * by a primary key it can't reuse.
+ */
+export function upsertInspectorComment(c: InspectorComment): void {
+  openDb()
+    .prepare(
+      `INSERT INTO inspector_comments
+         (id, pr_key, fingerprint, path, line, title, severity,
+          round, status, replies, answered_comment_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
+         path = excluded.path,
+         line = excluded.line,
+         title = excluded.title,
+         severity = excluded.severity,
+         round = excluded.round,
+         status = excluded.status,
+         replies = excluded.replies,
+         answered_comment_id = excluded.answered_comment_id,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      c.id,
+      c.prKey,
+      c.fingerprint,
+      c.path,
+      c.line,
+      c.title,
+      c.severity,
+      c.round,
+      c.status,
+      c.replies,
+      c.answeredCommentId,
+      c.createdAt,
+      c.updatedAt,
+    );
+}
+
+export function loadInspectorComments(prKey: string): InspectorComment[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM inspector_comments WHERE pr_key = ? ORDER BY created_at ASC`)
+    .all(prKey) as unknown as InspectorCommentRow[];
+  return rows.map(rowToInspectorComment);
+}
+
+/**
+ * Every ledger row with its finding tallies - the settings panel's list, and what the
+ * per-session chip is derived from.
+ *
+ * One grouped query rather than a load-then-count-per-row loop: this runs on the
+ * daemon's single synchronous SQLite handle, the same one serving hook ingest and SSE,
+ * and the panel polls it.
+ *
+ * `limit` is OPTIONAL, and the default is "all of them", because the two callers want
+ * different things. The settings panel is a display and wants the recent slice; the
+ * registry builds the per-session chip out of this and must not be truncated - rows are
+ * never deleted, so a cap would eventually drop live PRs off the bottom, and an absent
+ * chip is documented in three places as meaning "that PR came from somewhere else".
+ */
+export function loadInspectorInspections(limit?: number): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT p.*,
+              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted','posting') THEN 1 ELSE 0 END), 0) AS open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
+         FROM inspector_prs p
+         LEFT JOIN inspector_comments c ON c.pr_key = p.key
+        GROUP BY p.key
+        ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC
+        LIMIT ?`,
+    )
+    .all(limit ?? -1) as unknown as (InspectorPrRow & {
+    open_findings: number;
+    resolved_findings: number;
+  })[];
+  return rows.map((r) => ({
+    ...rowToInspectorPr(r),
+    openFindings: Number(r.open_findings),
+    resolvedFindings: Number(r.resolved_findings),
+  }));
 }

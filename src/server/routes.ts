@@ -14,10 +14,12 @@ import {
   ResolveRepoSchema,
   EditWorkItemSchema,
   ForemanConfigPatchSchema,
+  ForemanInstructionsSchema,
   ForemanHeartbeatSchema,
   GateReplySchema,
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
+  InspectorConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -76,15 +78,22 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
+import { getInspectorConfig, setInspectorConfig } from "./inspector/config.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards } from "./standards.ts";
+import {
+  defaultForemanInstructions,
+  foremanInstructions,
+  resetForemanInstructions,
+  setForemanInstructions,
+} from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
-import { dropGateReply, getSkillsAcks, logGateReply } from "./db.ts";
+import { dropGateReply, getSkillsAcks, loadInspectorInspections, logGateReply } from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -346,6 +355,32 @@ export function buildApp(
     const root = await repoRootOf(session.cwd);
     return c.json(readStandards(root, parsed.data.paths));
   });
+
+  // Foreman's standing instructions - the prose half of its configuration.
+  //
+  // GLOBAL, not per-session, because that is what it is: one setting for the operator, not a
+  // property of whichever session happens to be under review. It reads the stored value if
+  // they have edited it and the shipped `FOREMAN.md` otherwise, so the worker never has to
+  // know which of the two it got.
+  //
+  // A plain string body rather than JSON: the value IS the document, and the settings panel
+  // that will edit it wants a textarea, not a wrapper object.
+  app.get("/api/foreman/instructions", (c) =>
+    c.json({ text: foremanInstructions(), default: defaultForemanInstructions() }),
+  );
+
+  // Replace them, or reset to the shipped default. An empty string is a real choice ("judge
+  // by your own policy alone") and is stored as such; resetting is a separate action, which
+  // is why it is a flag rather than an empty write.
+  app.put("/api/foreman/instructions", async (c) => {
+    const parsed = await parseBody(c, ForemanInstructionsSchema);
+    if (!parsed.ok) return parsed.res;
+    const text = parsed.data.reset
+      ? resetForemanInstructions()
+      : setForemanInstructions(parsed.data.text ?? "");
+    return c.json({ text, default: defaultForemanInstructions() });
+  });
+
   // Diff of a session's worktree/branch vs its source branch (localhost read).
   app.get("/api/sessions/:id/diff", async (c) => {
     const session = registry.getSession(c.req.param("id"));
@@ -1104,6 +1139,25 @@ export function buildApp(
     if (synced.refused.length > 0) return c.json({ error: synced.refused.join("; ") }, 409);
     return c.json(skillsView());
   });
+
+    // --- Inspector: automated review of the PRs Mission Control opened ---
+  app.get("/api/inspector/config", (c) => c.json(getInspectorConfig()));
+  app.put("/api/inspector/config", async (c) => {
+    const parsed = await parseBody(c, InspectorConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const next = setInspectorConfig(parsed.data);
+    // The per-session chip bakes `mode` in when the summary is resolved, and the tick
+    // that would otherwise re-resolve it only runs while the feature is ENABLED. Without
+    // this, flipping live -> dry-run leaves every card claiming the last review was
+    // posted publicly, and flipping enabled -> off freezes the chips in whatever mode
+    // was in force, indefinitely. This chip's whole job is that distinction.
+    registry.refreshInspections();
+    return c.json(next);
+  });
+  // The ledger, newest first. This is what makes dry-run legible: without somewhere to
+  // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
+  // Capped because it is a display; the registry's copy is deliberately not.
+  app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections(50)));
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));

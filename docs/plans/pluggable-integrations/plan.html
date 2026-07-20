@@ -118,7 +118,7 @@
 <thead><tr><th>Capability</th><th>Where it is hardcoded</th></tr></thead>
 <tbody>
 <tr><td>Process detection</td><td><code>discovery/processes.ts:47-90</code> &mdash; literal argv signatures per agent</td></tr>
-<tr><td>Binary resolution</td><td><strong>three</strong> independent paths: <code>config.ts:54-57</code>, <code>claude-cli.ts:26</code>, <code>main/integrations.ts:184</code></td></tr>
+<tr><td>Binary resolution</td><td><strong>three</strong> independent paths: <code>config.ts</code> <code>AGENT_BINS</code> (a total map since Phase 0), <code>claude-cli.ts:26</code>, <code>main/integrations.ts:184</code></td></tr>
 <tr><td>Transcript</td><td><code>transcript.ts:51</code> hard <code>return null</code> for non-Claude; Anthropic JSONL shape throughout (<code>:115-155</code>, <code>:500-505</code>, <code>:584</code>)</td></tr>
 <tr><td>Rollout (codex)</td><td><code>codex-rollout.ts</code> &mdash; metadata only, no message parsing</td></tr>
 <tr><td>Dispatch point</td><td><code>runtime-meta.ts:43-58</code> &mdash; an explicit <code>if claude &hellip; else if codex</code>. This is where the interface belongs.</td></tr>
@@ -134,9 +134,9 @@
 </table>
 </div>
 
-<p>The union itself is written out <strong>three</strong> times (<code>shared/types.ts:7</code>, <code>shared/protocol.ts:249</code>, <code>web/lib/api.ts:216</code>) and <code>AGENT_LABEL</code> <strong>twice</strong> (<code>session-bits.tsx:24</code>, <code>TranscriptPanel.tsx:26</code>).</p>
+<p>The union itself was written out <strong>three</strong> times (<code>shared/types.ts</code>, <code>shared/protocol.ts</code>, <code>web/lib/api.ts</code>) and <code>AGENT_LABEL</code> <strong>twice</strong>, holding different values for the same key - <code>session-bits.tsx</code> said &ldquo;Claude Code&rdquo; where <code>TranscriptPanel.tsx</code> said &ldquo;claude&rdquo;. <strong>Phase 0 collapsed both</strong>: <code>AGENT_TYPES</code> (<code>shared/types.ts</code>) is the one source the zod enum and the dashboard's dispatch input now derive from, and <code>AGENT_NAMES</code> (<code>shared/agent.ts</code>) holds the two registers as named fields (<code>label</code>, <code>speaker</code>) so neither can be mistaken for drift.</p>
 
-<p>Only <strong>four</strong> <code>Record&lt;AgentType, &hellip;&gt;</code> maps would fail to compile on a new agent (<code>shared/goal.ts:16</code>, <code>goal/source.ts:55</code>, <code>session-bits.tsx:24</code>, <code>TranscriptPanel.tsx:26</code>). Everything else silently does nothing. That asymmetry is the core problem.</p>
+<p>Before Phase 0, only <strong>four</strong> <code>Record&lt;AgentType, &hellip;&gt;</code> maps would fail to compile on a new agent. Everything else silently does nothing, and that asymmetry is the core problem. Phase 0 took it to <strong>six</strong> - <code>shared/agent.ts</code>, <code>shared/cost.ts</code>, <code>shared/goal.ts</code>, <code>shared/model.ts</code>, <code>server/config.ts</code>, <code>server/goal/source.ts</code> - which is the list <code>session-contracts.test.ts</code> pins by adding a probe agent id and asserting each one fails to typecheck. Every row in the table above is still silent.</p>
 
 <h3>Terminal coupling (tmux / wezterm)</h3>
 <p><code>wezterm.ts</code> and <code>tmux.ts</code> are <strong>not parallel</strong> &mdash; they diverge in shape, in where their code lives, and in which capabilities exist at all:</p>
@@ -156,7 +156,7 @@
 </table>
 </div>
 
-<p>Duplicated pane-token functions, in <strong>two spellings</strong>: <code>actions.ts:66-70</code> and <code>pane-mode.ts:187-189</code> emit <code>wezterm:</code>; <code>registry.ts:2055-2065</code> and <code>foreman/queue-apply.ts:146</code> emit <code>wez:</code>. Each subsystem is internally consistent, so there is no live defect &mdash; but it is four copies of one function waiting for a fifth backend.</p>
+<p>Duplicated pane-token functions, in <strong>two spellings</strong>: <code>actions.ts</code> (the write lock) and <code>pane-mode.ts</code> (the capture-miss counter) emitted <code>wezterm:</code>; <code>registry.ts</code> (the hook overlay) and <code>foreman/queue-apply.ts</code> (the pane-recreated guard) emitted <code>wez:</code>. Each subsystem was internally consistent, so there was no live defect - but it was four copies of one function waiting for a fifth backend. <strong>Phase 0 collapsed them</strong> into <code>paneToken</code> (<code>shared/pane.ts</code>) on the <code>wezterm:</code> spelling, tmux being unabbreviated too; no token is persisted, so the format was free to change. <code>test/pane-lock.test.ts</code> pins the agreement.</p>
 
 <h2>The design</h2>
 
@@ -330,12 +330,12 @@
 </ol>
 
 <h2>Sequence</h2>
-<p>Phase 0 lands first because it shrinks every later diff and carries no behavior change. Phase 3 is deliberately last: it is the only phase that can lose someone's worktree.</p>
+<p>Phase 0 landed first because it shrinks every later diff and carries no behavior change. Phase 3 is deliberately last: it is the only phase that can lose someone's worktree.</p>
 <div class="scroll">
 <table>
 <thead><tr><th>Phase</th><th>Items</th></tr></thead>
 <tbody>
-<tr><td>0 &mdash; Seams</td><td>Single agent-union source; unified pane token; extract the already-neutral helpers (<code>readTailLines</code>, capture-miss tolerance) out of the Claude modules</td></tr>
+<tr><td>0 &mdash; Seams <strong>(landed)</strong></td><td><code>AGENT_TYPES</code> + <code>AGENT_NAMES</code> as the one agent-union source (<code>shared/types.ts</code>, <code>shared/agent.ts</code>); one pane token (<code>shared/pane.ts</code>); the already-neutral helpers lifted out of the Claude modules into <code>server/util/file-tail.ts</code> (<code>readTailLines</code>) and <code>server/discovery/capture-tolerance.ts</code> (capture-miss tolerance)</td></tr>
 <tr><td>1 &mdash; Harness</td><td>Interface + registry; then detection/bin, transcript, hooks&rarr;state, TUI, capability guards, UI</td></tr>
 <tr><td>2 &mdash; Terminal</td><td><code>Multiplexer</code> + <code>TerminalEmulator</code> interfaces; enumeration, pane I/O, focus/spawn/kill</td></tr>
 <tr><td>3 &mdash; Structural</td><td><code>Session</code> handle list; <code>Task.tmuxSession</code> migration; de-tmux user-visible strings</td></tr>
@@ -365,7 +365,7 @@
 <h2>Fixes found along the way</h2>
 <p>Real defects, each folded into the migration item that rewrites its file rather than queued separately. The item that owns each fix is named in brackets.</p>
 <ul>
-<li><strong>[Phase 1 &mdash; TUI]</strong> <code>pane-mode.ts:124-125</code> &mdash; <code>annotatePaneState</code> filters to Claude, so <code>paneDialog</code> is never set for Codex. Since <code>activePaneDialog</code> is the only hookless &ldquo;needs-you&rdquo; evidence (<code>shared/session.ts:172</code>), <strong>a Codex session parked on a prompt reads as idle</strong>. The most user-visible of the six.</li>
+<li><strong>[Phase 1 &mdash; TUI]</strong> <code>pane-mode.ts:126-133</code> &mdash; <code>annotatePaneState</code> filters to Claude, so <code>paneDialog</code> is never set for Codex. Since <code>activePaneDialog</code> is the only hookless &ldquo;needs-you&rdquo; evidence (<code>shared/session.ts:172</code>), <strong>a Codex session parked on a prompt reads as idle</strong>. The most user-visible of the six.</li>
 <li><strong>[Phase 1 &mdash; TUI]</strong> <code>pane-paste.ts:37</code> + <code>actions.ts:344-379</code> &mdash; submit verification looks for Claude's paste placeholder, so for Codex <code>hasPendingPaste</code> is always false and <code>awaitPasteSubmitted</code> returns <code>ok</code> after one Enter with zero evidence.</li>
 <li><strong>[Phase 1 &mdash; guards]</strong> <code>actions.ts:1418</code> &mdash; <code>resetToOrigin</code> sends <code>/clear</code>, a Claude slash command, to <strong>every</strong> agent type, ungated.</li>
 <li><strong>[Phase 1 &mdash; hooks]</strong> <code>dispatcher.ts:148-161</code> &mdash; every dispatch waits <code>HOOK_READY_MS</code> (20s) for a hook, including for agents that will never send one. Codex pays 20s of dead time per dispatch.</li>

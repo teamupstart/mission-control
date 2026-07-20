@@ -180,9 +180,70 @@ function topoOrder(order: string[], deps: Map<string, string[]>): string[] {
   return out;
 }
 
+/** How many backlog items one model call is asked about. Keeps a prompt a prompt. */
+export const BACKLOG_CHUNK = Number(process.env.FOREMAN_BACKLOG_CHUNK || 80);
+
+/**
+ * How many chunks are actually READ, however long the backlog is.
+ *
+ * The bound is on model calls, not on coverage. Every backlog item still gets an entry
+ * (`sanitizePlan` appends the ones no chunk described, unblocked), so the stored plan
+ * covers the backlog and `planStale` goes false whatever its size - which is the whole
+ * reason coverage is the staleness test. What the items past this window lose is the
+ * dependency READ, not their place in the plan: they are treated as depending on
+ * nothing until they rise into the window and a later replan describes them.
+ *
+ * Sized so a replan costs a bounded number of calls on the worker's single loop, which
+ * also drives queue drain and needs-you triage.
+ */
+export const BACKLOG_MAX_CHUNKS = Number(process.env.FOREMAN_BACKLOG_MAX_CHUNKS || 5);
+
+/** The groups one plan is read in: backlog order, capped at `BACKLOG_MAX_CHUNKS`. */
+export function backlogChunks(backlog: Task[]): Task[][] {
+  const out: Task[][] = [];
+  for (let i = 0; i < backlog.length && out.length < BACKLOG_MAX_CHUNKS; i += BACKLOG_CHUNK) {
+    out.push(backlog.slice(i, i + BACKLOG_CHUNK));
+  }
+  return out;
+}
+
+/**
+ * Fold the chunks' replies into one report over the whole backlog.
+ *
+ * Each chunk's entries are restricted to the ids that chunk OWNED. A chunk is shown the
+ * other items so it can depend on them, and a model shown an id will sometimes emit an
+ * entry for it; letting that through would have one item described twice, with the last
+ * chunk to mention it silently winning over the chunk that actually read it.
+ *
+ * The graph is left to `sanitizePlan`, deliberately, and over the MERGED report: a cycle
+ * can span two chunks (chunk 2 waits on chunk 1 while chunk 1 waits back), and neither
+ * chunk could see it on its own.
+ */
+export function mergeChunkReports(reports: BacklogReport[], groups: Task[][]): BacklogReport {
+  const tasks: BacklogReport["tasks"] = [];
+  let note: string | undefined;
+  reports.forEach((report, i) => {
+    const own = new Set((groups[i] ?? []).map((t) => t.id));
+    for (const t of report.tasks) if (own.has(t.id)) tasks.push(t);
+    // The head's reading of the backlog is the one worth showing; a later chunk saw a
+    // slice and would describe it as if it were the whole thing.
+    if (!note && report.note?.trim()) note = report.note;
+  });
+  return { tasks, note };
+}
+
 /**
  * Read the backlog's dependencies. Never throws - a failure is reported as a value so
  * the worker can count it toward the serial-mode fallback rather than dying on it.
+ *
+ * Read in chunks, because a backlog can be longer than one sensible prompt. Each chunk
+ * is shown the ids and titles of everything else, so a dependency that crosses a chunk
+ * boundary can still be stated, and the merged reply is sanitized as one graph.
+ *
+ * A failed chunk fails the whole plan rather than yielding a partial one. A partial plan
+ * is indistinguishable from a complete one once stored - the items the failed chunk owned
+ * would read as "depends on nothing", which is exactly the wrong answer to be confident
+ * about - and reporting the failure is what lets the worker degrade to serial mode.
  *
  * `backlog` is what gets planned; the model is shown nothing else, because the tasks
  * that already left the backlog are either finished (nothing to wait for) or running
@@ -206,12 +267,17 @@ export async function planBacklog(
     };
   }
 
-  const result = await runStructured(
-    buildBacklogPrompt(backlog),
-    (raw) => parseModelJson(raw, BacklogReportSchema),
-    "The backlog planner",
-    { model, timeoutMs: BACKLOG_TIMEOUT_MS },
-  );
-  if (result.kind === "failed") return result;
-  return { kind: "ok", plan: sanitizePlan(result.value, backlog) };
+  const groups = backlogChunks(backlog);
+  const reports: BacklogReport[] = [];
+  for (const group of groups) {
+    const result = await runStructured(
+      buildBacklogPrompt(group, groups.length > 1 ? backlog : []),
+      (raw) => parseModelJson(raw, BacklogReportSchema),
+      "The backlog planner",
+      { model, timeoutMs: BACKLOG_TIMEOUT_MS },
+    );
+    if (result.kind === "failed") return result;
+    reports.push(result.value);
+  }
+  return { kind: "ok", plan: sanitizePlan(mergeChunkReports(reports, groups), backlog) };
 }

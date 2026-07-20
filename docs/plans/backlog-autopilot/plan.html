@@ -284,10 +284,16 @@
     times per cooldown. A daemon that refuses to <strong>store</strong> a plan keeps its own
     count and backoff, and at the same cap degrades the same way rather than halting the
     autopilot outright.</p>
-  <p>One plan covers at most <strong>400</strong> backlog items, held below the route schema's
-    500-entry cap so a full plan is always storable. Coverage is asked over that same head -
-    otherwise a larger backlog could never be covered and would replan forever - and the tail
-    rides the existing "items the plan does not name go last, oldest first" rule.</p>
+  <p>A long backlog is read in <strong>batches</strong> of 80, each shown the ids and titles of
+    the items outside it so a cross-batch dependency can still be stated, and the replies are
+    merged into one graph before the cycle break and topological emit run - a cycle can span two
+    batches, and neither batch could see it alone. A failed batch fails the whole plan, because
+    a partial plan looks exactly like a complete one once stored.</p>
+  <p>At most 5 batches run per read, which bounds the model calls a replan costs - but not the
+    coverage: every item no batch described is still planned, waiting on nothing. That split is
+    load-bearing. Staleness is coverage, so a plan that could only ever cover a window would go
+    stale the moment a dispatch promoted an uncovered item into it, costing a full read per
+    launched task.</p>
 
   <h2>What the board shows</h2>
   <ul>

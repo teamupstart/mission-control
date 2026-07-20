@@ -57,8 +57,16 @@ RULES:
 - "dependsOn" defaults to []. Most real backlogs are mostly independent - a reply where everything
   depends on something is almost certainly wrong.`;
 
-/** Assemble the planner prompt for one backlog. */
-export function buildBacklogPrompt(tasks: Task[]): string {
+/**
+ * Assemble the planner prompt for one batch of the backlog.
+ *
+ * `all` is the whole backlog when the read is split across several calls, and empty
+ * when one call covers it. A dependency that crosses a batch boundary is a real one -
+ * the migration in batch 1 that the route in batch 2 builds on - and a batch that could
+ * not name it would report the route as unblocked, which is the failure this feature
+ * exists to prevent. Only ids and titles, so the context costs a line each.
+ */
+export function buildBacklogPrompt(tasks: Task[], all: Task[] = []): string {
   const lines: string[] = [PLANNER, "", "## The backlog", ""];
   for (const t of tasks) {
     lines.push(`### id: ${t.id}`);
@@ -72,6 +80,19 @@ export function buildBacklogPrompt(tasks: Task[]): string {
     lines.push("```");
     lines.push(capped(t.intent));
     lines.push("```");
+    lines.push("");
+  }
+  const mine = new Set(tasks.map((t) => t.id));
+  const others = all.filter((t) => !mine.has(t.id));
+  if (others.length > 0) {
+    lines.push("## Other tasks in the same backlog, being read separately");
+    lines.push("");
+    lines.push(
+      'You may list these ids in "dependsOn" when one of YOUR tasks builds on them. Do NOT include',
+      'an entry for any of them in "tasks" - another pass is describing them.',
+      "",
+    );
+    for (const t of others) lines.push(`- ${t.id}: ${t.title}`);
     lines.push("");
   }
   lines.push(

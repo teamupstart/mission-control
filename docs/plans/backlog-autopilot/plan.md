@@ -117,11 +117,21 @@ backoff (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`, doubling), since a refused write is
 broken planner - but at the same cap it causes the same DEGRADATION, so a permanently
 broken route schedules serially instead of switching the autopilot off.
 
-A plan may cover at most `PLANNABLE_LIMIT` (400) items, held below the route schema's
-500-entry cap so a full plan is always storable. `planStale` asks its coverage question
-over that same head, or an oversized backlog could never be covered and would replan
-forever; the tail rides the existing "items the plan does not name go last, oldest
-first" rule.
+A backlog longer than `BACKLOG_CHUNK` (80) is read in batches, each shown the ids and
+titles of the items outside it so a cross-batch dependency can still be stated, and the
+replies are merged into ONE report before `sanitizePlan` runs - the cycle break and the
+topological emit have to see the merged graph, since a cycle can span two batches and
+neither batch could see it alone. A failed batch fails the whole plan: a partial plan is
+indistinguishable from a complete one once stored, and its unread items would read as
+"depends on nothing", which is the wrong thing to be confident about.
+
+At most `BACKLOG_MAX_CHUNKS` (5) batches run, so a replan costs a bounded number of model
+calls. That bounds the READ, not the coverage: `sanitizePlan` still appends every item no
+batch described, so the stored plan names the whole backlog and `planStale` goes false at
+any size. The distinction is load-bearing - coverage is the staleness test, so a plan that
+could only ever cover a window would be stale again the moment a dispatch promoted an
+uncovered item into it, i.e. a full read per launched task. `PLANNABLE_LIMIT` (2000, equal
+to the route schema's entry cap) is only the ceiling that keeps a plan storable.
 
 ### `src/server/backlog.ts` + routes - where the plan lives
 

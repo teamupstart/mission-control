@@ -376,6 +376,23 @@ function backlogSerial(now: number): boolean {
   return backlogStoreFailures >= PLAN_FAILURE_CAP && now < backlogStoreRetryAt;
 }
 
+/**
+ * Whether the daemon's answer positively means nothing was typed and nothing started.
+ *
+ * The documented refusals only: 404 for a task that is gone, 409 for a state conflict
+ * (already dispatched, agent busy, wrong repo, pane locked). Those leave the task
+ * exactly where it was, so the guard can be released and the item tried again at once.
+ *
+ * Anything else HOLDS the guard, and a 500 is the case that matters: `TaskManager.assign`
+ * types the prompt before it claims the row, and the claim is a synchronous SQLite write
+ * that can throw. That answer means the agent may already be working on the task while
+ * the row still reads `backlog` - releasing there would type the same task into the same
+ * pane again on the very next tick.
+ */
+function taskRefused(status: number): boolean {
+  return status === 404 || status === 409;
+}
+
 /** Exponential, capped: 15s, 30s, 60s ... 10m. */
 function storeBackoffMs(failures: number): number {
   const wait = PLAN_STORE_BACKOFF_MS * 2 ** Math.max(0, failures - 1);
@@ -510,11 +527,11 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     recentlyActed.set(action.task.id, now);
     const r = await client.assignTask(action.task.id, action.session.id);
     if (!r.ok) {
-      // An answered refusal is positive knowledge that nothing was typed - the daemon
-      // re-checks and every refusal path returns before or after a failed injection -
-      // so the stamp is released. Holding it would walk the whole ready set out of
-      // reach one item per tick while a single pane stayed locked.
-      recentlyActed.delete(action.task.id);
+      // Released only on a documented refusal, which is positive knowledge that nothing
+      // was typed; held on anything that leaves us unsure whether text reached the pane.
+      // Holding it always would walk the whole ready set out of reach one item per tick
+      // while a single pane stayed locked.
+      if (taskRefused(r.status)) recentlyActed.delete(action.task.id);
       noteBacklog(`could not hand "${oneLine(action.task.title)}" over - ${r.error}`);
       return false;
     }
@@ -526,7 +543,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   recentlyActed.set(action.task.id, now);
   const r = await client.dispatchTask(action.task.id);
   if (!r.ok) {
-    recentlyActed.delete(action.task.id);
+    if (taskRefused(r.status)) recentlyActed.delete(action.task.id);
     noteBacklog(`could not launch "${oneLine(action.task.title)}" - ${r.error}`);
     return false;
   }

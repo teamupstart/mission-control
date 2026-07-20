@@ -36,17 +36,23 @@ export function planEntries(plan: BacklogPlan | null): Map<string, BacklogPlanEn
 /**
  * How many backlog items one plan may describe.
  *
- * Held BELOW `BacklogPlanSchema`'s `.max(500)` (src/shared/protocol.ts) on purpose: a
- * plan larger than the wire schema accepts is a body the daemon refuses every single
- * time, which turns a big backlog into a permanently failing write rather than a slow
- * one. `backlog-plan-http.test.ts` pins the two together, since nothing else would
- * notice them drifting apart.
+ * A ceiling on COVERAGE, and not the same thing as how much of the backlog gets a
+ * dependency read - that is `BACKLOG_MAX_CHUNKS` in backlog-plan.ts, is much smaller,
+ * and is what actually costs model calls. Coverage is cheap: an item no chunk described
+ * still gets an entry saying it waits on nothing.
  *
- * Everything past the limit is simply unplanned, which the readers below already have
- * an answer for: unnamed items are unblocked and go last, oldest first. So a 900-item
- * backlog gets a real dependency read on the part of it that is about to run.
+ * The two must not be conflated, because a coverage ceiling below the backlog's size
+ * has a nasty cost profile. `planStale` is coverage, so every dispatch would promote an
+ * uncovered item into the covered window and make the plan stale again - a full read
+ * per launched task, which is exactly the "model call on every dispatch" that choosing
+ * coverage over a fingerprint was meant to avoid. Hence a ceiling set where no real
+ * backlog reaches it, rather than one sized to the read.
+ *
+ * Held at `BacklogPlanSchema`'s `.max(...)` (src/shared/protocol.ts), since a plan the
+ * wire schema refuses is a write that fails every time. `backlog-plan-http.test.ts`
+ * pins the two together, as nothing else would notice them drifting apart.
  */
-export const PLANNABLE_LIMIT = 400;
+export const PLANNABLE_LIMIT = 2000;
 
 /** The head of the backlog a plan is expected to cover. See `PLANNABLE_LIMIT`. */
 export function plannableBacklog(tasks: Task[]): Task[] {

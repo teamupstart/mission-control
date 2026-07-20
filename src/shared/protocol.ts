@@ -400,6 +400,11 @@ export type AssignTask = z.infer<typeof AssignTaskSchema>;
  * dangling ids are refused by `sanitizePlan` BEFORE the worker posts, because those
  * are judgments about the current task list that a wire schema cannot make. What this
  * schema guarantees is only that the stored value has the shape every reader assumes.
+ *
+ * The entry cap is a bound on the stored row, not a budget: a plan is expected to name
+ * every backlog item, since `planStale` is coverage and a plan that could never cover
+ * the backlog would be regenerated on every dispatch. It mirrors `PLANNABLE_LIMIT`
+ * (src/shared/backlog.ts), which is what the worker actually plans up to.
  */
 export const BacklogPlanSchema = z.object({
   entries: z
@@ -410,7 +415,7 @@ export const BacklogPlanSchema = z.object({
         reason: z.string().nullable().optional().default(null),
       }),
     )
-    .max(500),
+    .max(2000),
   note: z.string().nullable().optional().default(null),
 });
 export type BacklogPlanInput = z.infer<typeof BacklogPlanSchema>;

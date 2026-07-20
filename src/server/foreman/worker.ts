@@ -1513,11 +1513,19 @@ async function fullReview(
   return { verdict: result.verdict };
 }
 
-/** Adapt the daemon client to the cheap tier's read-only dependency surface. */
 /**
  * Sessions whose last FOREMAN.md read failed, so the log says so ONCE per outage rather
  * than every tick. Keyed by session id; an entry is cleared the moment a read succeeds.
+ *
+ * Bounded, like both of its neighbours (`EvaluationDebounce` prunes on every successful
+ * claim, `ReviewFailureTracker` deletes on success or marker change). This worker runs for
+ * days, and a session whose read failed and which then vanishes - a closed tab, an ended
+ * tmux session - would otherwise leave its id here forever. The cap is generous next to
+ * any real fleet: reaching it at all means reads are failing across more sessions than a
+ * machine plausibly runs, and the only cost of dropping the oldest entry is one repeated
+ * log line if that session comes back still broken.
  */
+const PREFS_UNREADABLE_MAX = 256;
 const prefsUnreadable = new Set<string>();
 
 /**
@@ -1548,6 +1556,11 @@ async function readPrefs(client: ForemanClient, session: Session): Promise<Stand
     return doc;
   } catch (err) {
     if (!prefsUnreadable.has(session.id)) {
+      // Insertion-ordered, so the first key is the oldest - evict it before adding.
+      if (prefsUnreadable.size >= PREFS_UNREADABLE_MAX) {
+        const oldest = prefsUnreadable.values().next().value;
+        if (oldest !== undefined) prefsUnreadable.delete(oldest);
+      }
       prefsUnreadable.add(session.id);
       log(
         `${session.name}: could NOT read FOREMAN.md (${String(err)}) - ` +
@@ -1557,6 +1570,8 @@ async function readPrefs(client: ForemanClient, session: Session): Promise<Stand
     return null;
   }
 }
+
+/** Adapt the daemon client to the cheap tier's read-only dependency surface. */
 
 function triageDeps(client: ForemanClient): TriageDeps {
   return {

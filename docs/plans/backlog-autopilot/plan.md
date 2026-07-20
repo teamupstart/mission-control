@@ -84,9 +84,10 @@ an agent, and counting only the session list would launch a second one into the 
 **A free agent** is a stricter thing than an idle-looking one: `reportBucket === "idle"`,
 `settledIdle` past the settle window, `hooksSeen` (an autopilot that cannot observe a
 session must not type a whole task into it), a pane to type into, an empty work queue,
-no non-terminal task already bound to it, the same `repoRoot` as the task, and
-allowlisted. `TaskManager.assign` re-checks the ones it can, because a session can go
-busy between the decision and the POST.
+no non-terminal task already bound to it, the same `repoRoot` as the task, the same
+harness the task was filed for (a Codex task is never typed into a Claude pane unasked,
+though a human's drag still may), and allowlisted. `TaskManager.assign` re-checks the
+ones it can, because a session can go busy between the decision and the POST.
 
 ### `src/server/foreman/backlog-plan.ts` + `backlog-prompt.ts` - the dependency read
 
@@ -165,11 +166,13 @@ reading a log.
 ## Testing
 
 - `backlog-machine.test.ts` - the precedence table: off, empty, stale plan, assign
-  preferred over dispatch, at-capacity, blocked-only, serial fallback, dry-run.
-- `backlog-plan.test.ts` - `sanitizePlan` on a cycle, a self-dep, an unknown id, a
-  missing entry; `blockersFor` across every dependency status; `planStale`.
-- `backlog-routes.test.ts` - the plan round-trips through `buildApp` and a bad body is
-  refused.
+  preferred over dispatch, assignment at the ceiling, capacity including mid-provision,
+  blocked-only, un-allowlisted, serial fallback, dry-run.
+- `backlog-plan.test.ts` - `sanitizePlan` on a two- and a three-task cycle, a self-dep,
+  an unknown id, a forgotten entry; `blockersFor` across every dependency status;
+  ordering and `planStale`.
+- `backlog-plan-http.test.ts` - the plan round-trips through `buildApp`, cannot be
+  back-dated, replaces rather than merges, and a malformed body is refused.
 
 ## Out of scope
 

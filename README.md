@@ -1266,7 +1266,7 @@ make init              # one-time bootstrap (deps, build, hooks, treehouse + no-
 make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
-npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
+npm run foreman        # Foreman worker (needs-you queue, work queues, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
 npm run typecheck      # tsc --noEmit

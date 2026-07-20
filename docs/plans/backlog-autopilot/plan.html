@@ -236,7 +236,8 @@
       under idle by default. Right for a readout, wrong for an autopilot, which would have no
       way to tell it was mid-thought.</li>
     <li>a pane, an empty work queue, no non-terminal task of ours bound to it, the same
-      <code>repoRoot</code>, and allowlisted.</li>
+      <code>repoRoot</code>, the same harness the task was filed for (a Codex task is never
+      typed into a Claude pane unasked, though a human's drag still may), and allowlisted.</li>
   </ul>
   <p><code>TaskManager.assign</code> re-checks what it can, because an agent can go busy
     between the decision and the POST.</p>

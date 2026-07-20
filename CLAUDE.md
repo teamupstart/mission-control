@@ -157,9 +157,10 @@ reached through a symlink.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.
-- **Shared predicates**: `foremanAllowlisted` (`@shared/foreman.ts`) and `composeWrapup`
-  (`@shared/queue.ts`) are shared with the server so both decide identically. Do not copy them
-  into a component.
+- **Shared predicates**: `foremanAllowlisted` (`@shared/foreman.ts`), `composeWrapup`
+  (`@shared/queue.ts`), and the backlog autopilot's `readyBacklog` / `blockersIn` /
+  `nextUpTaskId` (`@shared/backlog.ts`) are shared with the server so both decide identically.
+  Do not copy them into a component.
 
 ## Styles
 

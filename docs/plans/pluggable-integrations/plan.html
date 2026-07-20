@@ -183,6 +183,12 @@
   runInThread: ((threadKey: string, prompt: string, opts: RunOpts) =&gt; Promise&lt;string&gt;) | null;
 }</code></pre>
 
+<p>There are now <strong>three</strong> model-resolution patterns to unify, not one, and the registry should absorb the best of them rather than add a fourth:</p>
+<ul>
+<li><code>@shared/foreman-models.ts</code> (from #108) &mdash; Foreman&rsquo;s four roles, each resolving config key, then env var, then fallback, with the <em>source</em> reported honestly so the settings panel cannot render a default the worker does not use. This is the shape to keep.</li>
+<li><code>task-title.ts:20</code>, <code>away/digest.ts:17</code>, <code>goal/refiner.ts:39</code> &mdash; still the bare <code>envVar(...) ?? "claude-haiku-4-5"</code> pattern, with no config key and nothing surfacing it.</li>
+<li><code>inspector/worker.ts:92</code> &mdash; <code>cfg.model ?? envVar("INSPECTOR_MODEL")</code>, a third spelling.</li>
+</ul>
 <p><code>RunOpts</code> cannot be just <code>{ model, timeoutMs }</code>. The Inspector already grants tools and pays for it with a working directory and a <code>--settings</code> deny-list (<code>ClaudeRunOptions.tools</code> / <code>cwd</code> / <code>settings</code>), so the interface has to carry a <em>sandboxing</em> shape, not only a model id &mdash; and a runner backed by something other than <code>claude -p</code> has to be able to say it cannot honour one. Treat <code>tools</code> as the capability boundary it is: the default of every tool disabled is what makes it safe to embed untrusted transcript and repo text in a prompt, and that default must survive being put behind an interface.</p>
 
 <p>Also note the naming collision to avoid: phase 4 is titled &ldquo;Headless&rdquo;, and this plan means <em>which model does offline work</em>. It does not mean driving an agent without a terminal &mdash; that is the <code>control</code> capability on the Harness axis. Rename one of them before both exist in the codebase.</p>

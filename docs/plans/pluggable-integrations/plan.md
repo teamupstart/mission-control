@@ -109,6 +109,17 @@ interface LlmRunner {
 }
 ```
 
+There are now **three** model-resolution patterns to unify, not one, and the registry
+should absorb the best of them rather than add a fourth:
+
+- `@shared/foreman-models.ts` (from #108) - Foreman's four roles, each resolving
+  config key, then env var, then fallback, with the *source* reported honestly so the
+  settings panel cannot render a default the worker does not use. This is the shape to
+  keep.
+- `task-title.ts:20`, `away/digest.ts:17`, `goal/refiner.ts:39` - still the bare
+  `envVar(...) ?? "claude-haiku-4-5"` pattern, with no config key and nothing surfacing it.
+- `inspector/worker.ts:92` - `cfg.model ?? envVar("INSPECTOR_MODEL")`, a third spelling.
+
 `RunOpts` cannot be just `{ model, timeoutMs }`. The Inspector already grants tools and
 pays for it with a working directory and a `--settings` deny-list (`ClaudeRunOptions.tools`
 / `cwd` / `settings`), so the interface has to carry a *sandboxing* shape, not only a model

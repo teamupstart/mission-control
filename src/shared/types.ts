@@ -5,7 +5,18 @@
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { SkillEnforcement } from "./skills.ts";
 
-export type AgentType = "claude" | "codex";
+/**
+ * Every agent harness Mission Control can drive. THE source of the union - the
+ * zod enum in `protocol.ts` and the dashboard's dispatch input both derive from
+ * this array, so a new id is added here and nowhere else.
+ *
+ * A tuple rather than a bare union because half the consumers need the ids as
+ * VALUES (a `z.enum`, a `<select>`), and a union alone cannot produce them - which
+ * is how three hand-kept copies of two strings came to exist.
+ */
+export const AGENT_TYPES = ["claude", "codex"] as const;
+
+export type AgentType = (typeof AGENT_TYPES)[number];
 
 /**
  * Lifecycle of a tracked agent session.

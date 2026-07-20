@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import { AGENT_TYPES } from "./types.ts";
 
 /**
  * `normalizeLabels`, but absent stays absent.
@@ -324,7 +325,7 @@ export const DispatchSchema = z.object({
   intent: z.string().min(1),
   title: z.string().optional(),
   kind: z.enum(["ship", "scout"]).default("ship"),
-  agent: z.enum(["claude", "codex"]).default("claude"),
+  agent: z.enum(AGENT_TYPES).default("claude"),
   /**
    * Run this agent on a specific model instead of the harness default. Omitted
    * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
@@ -403,7 +404,7 @@ export const UpdateTaskSchema = z
     intent: z.string().min(1).optional(),
     title: z.string().optional(),
     kind: z.enum(["ship", "scout"]).optional(),
-    agent: z.enum(["claude", "codex"]).optional(),
+    agent: z.enum(AGENT_TYPES).optional(),
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),

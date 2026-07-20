@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withPaneLock } from "../src/server/actions.ts";
+import { paneToken } from "../src/shared/pane.ts";
+import { overlayKeyFromEnv, sessionKey } from "../src/server/registry.ts";
+import { paneKeyOf } from "../src/server/foreman/queue-apply.ts";
 import type { Session } from "../src/shared/types.ts";
 
 // The pane write lock. It used to guard only permission-mode cycling; the skills
@@ -10,6 +13,13 @@ import type { Session } from "../src/shared/types.ts";
 // Every public write in actions.ts is a real subprocess, so this is the only place
 // the guard's own semantics can be asserted: who wins, who is refused, and - the one
 // that matters most - whether a key is ever left held.
+//
+// It also pins the pane TOKEN, at the bottom of the file. The lock is one of four
+// subsystems that key on a pane, and they used to build the token four times in two
+// spellings - `wezterm:` here and in the capture-miss counter, `wez:` in the registry
+// overlay and the Foreman's send guard. Nothing was broken, because each subsystem only
+// ever compared the token against itself; the fifth copy, written for a third terminal
+// backend, is where a mismatch becomes a session whose hooks bind to nothing.
 
 type Handles = Pick<Session, "tmux" | "wezterm">;
 
@@ -146,4 +156,50 @@ test("tmux wins when a session has both handles, exactly as the writes resolve",
   assert.equal(await withPaneLock(weztermPane(7), () => "busy", async () => "wrote"), "wrote");
   g.release();
   await first;
+});
+
+// ---- the token itself: one spelling, four subsystems ----
+
+/** A `Session` is only ever read for its two handles by the functions under test. */
+const asSession = (h: Handles): Session => h as Session;
+
+test("every subsystem that keys on a pane spells the token identically", () => {
+  // The write lock (here), the registry's hook overlay, and the Foreman's
+  // pane-recreated guard. They are three separate processes' worth of code keying
+  // three separate maps, and each is internally consistent whatever it emits - so a
+  // divergence is invisible until two of them have to agree about one pane.
+  for (const h of [tmuxPane("%3"), weztermPane(7)]) {
+    const token = paneToken(h);
+    assert.ok(token, "a session with a handle has a token");
+    assert.equal(sessionKey(asSession(h)), token, "registry overlay key");
+    assert.equal(paneKeyOf(asSession(h)), token, "foreman send guard key");
+  }
+});
+
+test("a hook's env and the discovered session agree, which is what makes binding work", () => {
+  // The one place two subsystems' tokens are genuinely compared: an overlay is stored
+  // under the key built from the hook's captured env, and found again under the key
+  // built from the session discovery saw. The env carries pane ids as strings and
+  // discovery as a number, so the two paths cannot share a code path - only a spelling.
+  assert.equal(overlayKeyFromEnv({ tmuxPane: "%3" }), paneToken(tmuxPane("%3")));
+  assert.equal(overlayKeyFromEnv({ weztermPane: "7" }), paneToken(weztermPane(7)));
+});
+
+test("the token names its backend, so two backends' pane ids can never collide", () => {
+  // tmux pane "1" and wezterm pane 1 are different panes. A bare id would make the
+  // registry hand one session's hook overlay to another's card.
+  assert.notEqual(paneToken(tmuxPane("1")), paneToken(weztermPane(1)));
+});
+
+test("wezterm pane 0 has a token - presence of the handle decides, not truthiness of the id", () => {
+  // The id is a number, so a `if (paneId)` reading of it would silently un-handle the
+  // first pane wezterm ever numbers, and that session would lock against nothing.
+  assert.equal(paneToken(weztermPane(0)), "wezterm:0");
+});
+
+test("a handleless session has no token at all", () => {
+  assert.equal(paneToken(NO_PANE), null);
+  assert.equal(sessionKey(asSession(NO_PANE)), null);
+  assert.equal(paneKeyOf(asSession(NO_PANE)), null);
+  assert.equal(overlayKeyFromEnv({}), null);
 });

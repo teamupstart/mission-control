@@ -1,5 +1,7 @@
 import type { PermissionMode } from "@shared/types.ts";
+import { paneToken } from "@shared/pane.ts";
 import type { DiscoveredSession } from "./correlate.ts";
+import { forgetPanesExcept, paneReadLost, paneReadOk } from "./capture-tolerance.ts";
 import { capturePaneText, type PaneHandles } from "./pane-capture.ts";
 import { parsePaneDialog } from "./pane-dialog.ts";
 
@@ -122,11 +124,16 @@ export async function readPaneModeLine(session: PaneHandles): Promise<PaneModeLi
  * Codex has no permission-mode concept and doesn't render these dialogs, so it's skipped.
  */
 export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<void> {
-  const claude = sessions.filter((s) => s.agent === "claude" && (s.tmux || s.wezterm));
-  forgetPanesExcept(new Set(claude.map(paneKey)));
+  // The token IS the handle check: a session with no pane has no token, and one without
+  // a token has nothing to capture and nothing to count misses against.
+  const keyed = sessions.flatMap((s) => {
+    if (s.agent !== "claude") return [];
+    const key = paneToken(s);
+    return key ? [{ s, key }] : [];
+  });
+  forgetPanesExcept(new Set(keyed.map((k) => k.key)));
   await Promise.all(
-    claude.map(async (s) => {
-      const key = paneKey(s);
+    keyed.map(async ({ s, key }) => {
       const text = await capturePaneText(s);
       // A failed capture is not "no dialog" - it is no information, and saying null here
       // would clear a live menu off the card on one flaky tmux call. So the last dialog
@@ -145,64 +152,4 @@ export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<
       s.paneDialog = parsePaneDialog(text);
     }),
   );
-}
-
-/**
- * How many consecutive unreadable captures a remembered dialog survives.
- *
- * Three, at the poller's 1.5s tick: long enough to ride out the flaky `tmux capture-pane`
- * this tolerance exists for (a loaded box timing out at `CAPTURE_TIMEOUT_MS` is the common
- * one), short enough that a pane which is really gone stops being drawn within seconds.
- */
-const CAPTURE_MISS_TOLERANCE = 3;
-
-/** Consecutive failed captures per pane. Cleared the moment one succeeds. */
-const captureMisses = new Map<string, number>();
-
-/**
- * Record a failed capture of `key`, and say whether to stop believing what it last showed.
- *
- * Exported for its own test: the rule is a counter with two ways to be wrong in opposite
- * directions (drop a live menu on one flake, or keep a dead one forever), and it is
- * otherwise reachable only through a real `tmux` subprocess.
- */
-export function paneReadLost(key: string): boolean {
-  const missed = (captureMisses.get(key) ?? 0) + 1;
-  if (missed < CAPTURE_MISS_TOLERANCE) {
-    captureMisses.set(key, missed);
-    return false;
-  }
-  // Given up: the count goes with the dialog, so a pane that comes back is trusted from a
-  // clean slate rather than one strike from being dropped again.
-  captureMisses.delete(key);
-  return true;
-}
-
-/** Record a successful capture of `key` - one good read forgives every miss before it. */
-export function paneReadOk(key: string): void {
-  captureMisses.delete(key);
-}
-
-/** The counter's key for a session, which is the pane and not the session. */
-function paneKey(s: Pick<DiscoveredSession, "tmux" | "wezterm">): string {
-  return s.tmux ? `tmux:${s.tmux.paneId}` : `wezterm:${s.wezterm!.paneId}`;
-}
-
-/**
- * Drop the miss counts of every pane not in `live`, at the top of each sweep.
- *
- * A pane whose handle vanishes mid-run is filtered out of `claude` above, so it is never
- * annotated again and never reaches the miss/ok calls that would clear it - its count sits
- * in the map for the life of the process. That leaks, but the reason it is a BUG is that
- * the key is a tmux pane id and tmux reuses those: after a restart a brand-new `%1`
- * inherits the dead one's two strikes and is one flaky capture away from having a dialog
- * dropped out from under the human on the first tick it ever showed one.
- */
-function forgetPanesExcept(live: Set<string>): void {
-  for (const key of captureMisses.keys()) if (!live.has(key)) captureMisses.delete(key);
-}
-
-/** Whether a pane is currently carrying failed-capture strikes. For the counter's test. */
-export function paneMissCount(key: string): number {
-  return captureMisses.get(key) ?? 0;
 }

@@ -40,6 +40,7 @@ import type {
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
+import { paneToken, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -241,7 +242,7 @@ export class Registry extends EventEmitter {
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
   private goals = new Map<string, SessionGoal>();
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  /** overlay keyed by pane token ("tmux:%12" | "wez:12"). */
+  /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
   private overlays = new Map<string, HookOverlay>();
   /** Transcript-derived state keyed by the SAME pane token; consulted only when a
    *  session has no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
@@ -2426,18 +2427,23 @@ function isTerminalTask(status: Task["status"]): boolean {
   return status === "done" || status === "failed" || status === "cancelled";
 }
 
-/** Pane token for a hook's captured env: tmux pane wins over the outer wezterm pane. */
+/**
+ * Pane token for a hook's captured env: tmux pane wins over the outer wezterm pane.
+ *
+ * Built from the same two constructors `paneToken` uses, so a hook's key and the
+ * discovered session's key are spelled identically - which is the whole mechanism
+ * by which an overlay finds its session (`test/hooks.test.ts` pins the agreement).
+ * The env carries pane ids as STRINGS, so it cannot go through `paneToken` itself.
+ */
 export function overlayKeyFromEnv(env: HookIngest["env"]): string | null {
-  if (env.tmuxPane) return `tmux:${env.tmuxPane}`;
-  if (env.weztermPane) return `wez:${env.weztermPane}`;
+  if (env.tmuxPane) return tmuxPaneToken(env.tmuxPane);
+  if (env.weztermPane) return weztermPaneToken(env.weztermPane);
   return null;
 }
 
 /** Pane token for a discovered session: its own pane, tmux preferred. */
 export function sessionKey(s: Session): string | null {
-  if (s.tmux) return `tmux:${s.tmux.paneId}`;
-  if (s.wezterm) return `wez:${s.wezterm.paneId}`;
-  return null;
+  return paneToken(s);
 }
 
 /** The permission modes Claude reports; anything else is treated as unknown. */

@@ -13,6 +13,7 @@ import {
   type PaneDialog,
 } from "./discovery/pane-dialog.ts";
 import { dialogIdentity } from "@shared/session.ts";
+import { paneToken } from "@shared/pane.ts";
 import { listTmuxClients, readTmuxPaneMode } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
@@ -55,21 +56,6 @@ const PANE_BUSY = "another write is already in flight for this session's pane";
 const driving = new Set<string>();
 
 /**
- * The pane a session's writes land on, or null when it has no handle.
- *
- * Keyed on the PANE and not on `session.id`, because the pane is the thing being
- * protected and the id is not stable: it's synthetic for an uninstrumented session
- * and churns as pids/ttys change, so two reads of "the same session" can key
- * differently while addressing one pane. tmux wins when both exist, exactly as every
- * write below resolves its target.
- */
-function paneKey(s: Pick<Session, "tmux" | "wezterm">): string | null {
-  if (s.tmux) return `tmux:${s.tmux.paneId}`;
-  if (s.wezterm) return `wezterm:${s.wezterm.paneId}`;
-  return null;
-}
-
-/**
  * Serialize writes to one pane. Every public write below goes through this.
  *
  * It began life narrower - one set guarding permission-mode cycling, where two
@@ -101,7 +87,7 @@ export async function withPaneLock<T>(
   busy: () => T,
   write: () => Promise<T>,
 ): Promise<T> {
-  const key = paneKey(session);
+  const key = paneToken(session);
   if (key === null) return write();
   if (driving.has(key)) return busy();
   driving.add(key);

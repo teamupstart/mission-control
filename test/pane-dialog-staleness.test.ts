@@ -27,8 +27,12 @@ process.env.MISSION_HOME = home;
 // open the live db - which it silently did until openDb learned to refuse.
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
-const { annotatePaneState, paneMissCount, paneReadLost, paneReadOk } = await import(
-  "../src/server/discovery/pane-mode.ts"
+const { annotatePaneState } = await import("../src/server/discovery/pane-mode.ts");
+// The counter is harness-neutral and lives beside the parser, not inside it - but it is
+// the SAME module instance the parser uses, which is what makes the prune assertion below
+// (drive `annotatePaneState`, read the count) mean anything.
+const { paneMissCount, paneReadLost, paneReadOk } = await import(
+  "../src/server/discovery/capture-tolerance.ts"
 );
 
 after(() => rmSync(home, { recursive: true, force: true }));

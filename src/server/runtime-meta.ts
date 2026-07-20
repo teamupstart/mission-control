@@ -4,9 +4,9 @@ import {
   computeRuntimeMeta,
   computeSessionActivity,
   PASSIVE_TAIL_BYTES,
-  readTailLines,
   resolveTranscriptPath,
 } from "./transcript.ts";
+import { readTailLines } from "./util/file-tail.ts";
 import { findRolloutForSession, readRolloutMeta } from "./codex-rollout.ts";
 import type { Registry } from "./registry.ts";
 import type { Session } from "@shared/types.ts";

@@ -7,6 +7,7 @@ import type {
   TranscriptStreamMsg,
   TurnOrigin,
 } from "@shared/types.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -22,8 +23,6 @@ import {
   useImageDrop,
   type PendingAttachment,
 } from "./ImageDrop.tsx";
-
-const AGENT_LABEL: Record<AgentType, string> = { claude: "claude", codex: "codex" };
 
 /** Who typed a turn, when it wasn't the human. "mission control" rather than "harness"
  *  because that's the name on the window the reader is looking at. */
@@ -279,9 +278,9 @@ export function TranscriptPanel({
                   <ForemanEpisodeCard episode={row.episode} />
                 </div>
               ) : row.kind === "tools" ? (
-                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_LABEL[agent]} />
+                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_NAMES[agent].speaker} />
               ) : (
-                <Turn key={row.id} m={row.message} agentLabel={AGENT_LABEL[agent]} />
+                <Turn key={row.id} m={row.message} agentLabel={AGENT_NAMES[agent].speaker} />
               ),
             )}
           </>

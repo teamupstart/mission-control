@@ -8,13 +8,13 @@ import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
 import { ModePicker } from "./ModePicker.tsx";
 import { NomistakesStrip } from "./NomistakesStrip.tsx";
 import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
+import { AGENT_NAMES } from "@shared/agent.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
 import {
-  AGENT_LABEL,
   AgentDot,
   CostChip,
   GoalLine,
@@ -312,7 +312,7 @@ export function SessionCard({
       )}
 
       <footer className="card-foot">
-        <span className="agent-name">{AGENT_LABEL[session.agent]}</span>
+        <span className="agent-name">{AGENT_NAMES[session.agent].label}</span>
         {session.nomistakesGated && (
           <Tooltip label="This repo is gated by no-mistakes - changes run the gate before they can land">
             <span className="gated">◇ gated</span>

@@ -1,4 +1,5 @@
 import type {
+  AgentType,
   AssignResetConfirm,
   BacklogPlan,
   ForemanEpisode,
@@ -269,7 +270,7 @@ export interface DispatchInput {
   intent: string;
   title?: string;
   kind: "ship" | "scout";
-  agent: "claude" | "codex";
+  agent: AgentType;
   /** Optional urgency; omitted or null means unset, which is not the same as "low". */
   priority?: TaskPriority | null;
   /** Optional free-form tags; the server normalizes them. */

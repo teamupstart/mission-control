@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
+import type { AgentType } from "@shared/types.ts";
 import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
 
 /** Runtime coordinates and the `MISSION_`/legacy env resolution live in the shared
@@ -67,7 +68,7 @@ export function foremanInstructionsPath(): string {
 }
 
 /** Resolve the CLI to launch for a dispatched agent, overridable per agent. */
-export function resolveAgentBin(agent: "claude" | "codex"): string {
+export function resolveAgentBin(agent: AgentType): string {
   if (agent === "claude") return envVar("CLAUDE_BIN") ?? "claude";
   return envVar("CODEX_BIN") ?? "codex";
 }

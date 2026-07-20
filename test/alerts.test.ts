@@ -62,6 +62,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     note: null, cost: null, goal: null,
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...over,
   };
@@ -104,6 +105,7 @@ test("a new pending review alerts as a review, a parked gate as a gate", () => {
     branch: "x",
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: "parked 1m",
     findingsSummary: null,
     gateStep: "review",
@@ -150,11 +152,13 @@ test("a menu replaced by a DIFFERENT one with no observed gap still alerts", () 
   const first = mkSession({
     id: "a",
     state: "idle",
+    inspector: null,
     paneDialog: { prompt: "Run npm test?", options: [{ number: 1, label: "Yes" }], highlighted: 1 },
   });
   const second = mkSession({
     id: "a",
     state: "idle",
+    inspector: null,
     paneDialog: {
       prompt: "Which database?",
       options: [{ number: 1, label: "Postgres" }, { number: 2, label: "SQLite" }],
@@ -256,6 +260,7 @@ test("backgrounding a no-mistakes run is not 'went idle'", () => {
     branch: "feature/x",
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

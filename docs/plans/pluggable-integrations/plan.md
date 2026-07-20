@@ -74,10 +74,53 @@ The request was "one interface per integration point". The investigation says th
    hook/MCP installation. (`claude`, `codex`, `pi`)
 2. **Terminal** - which itself splits in two (below).
 3. **Headless runner** - the `claude -p` calls behind Foreman triage, goal refinement, task
-   titling and away digests (`claude-cli.ts`, plus four hardcoded `claude-haiku-4-5`
+   titling, away digests and the Inspector (`claude-cli.ts`, plus their per-caller model
    constants). This is a *model provider* axis, orthogonal to which agent the observed
    session runs. Keep it separate; conflating it would mean you cannot review a Pi session
    with Claude, or a Claude session with a cheaper local model.
+
+#### `LlmRunner` must guarantee context isolation, not just shape
+
+"One-shot text completion with a model id and a prompt" describes the signature and misses
+the contract. Today the guarantee comes from three flags that are **absent** in
+`claude-cli.ts` - no `--resume`, no `--continue`, no `--session-id` - which is why that
+file now carries a comment saying so. Without one of those, every run mints a new session
+with an empty context.
+
+That is a correctness property, because the Foreman reviews *many* sessions. Any
+implementation that carried context between calls would grow it monotonically across every
+session it ever looked at, and let session A's transcript influence the verdict on session
+B. The tempting version is a warm held-open process to skip the spawn: measured, that is
+~1.8-2.4s of a 4-6s call, and the prompt cache is server-side so a cold process still gets
+a cache read. Almost nothing to buy, a correctness property to lose.
+
+So the interface states isolation explicitly, and offers the only safe form of memory as a
+named opt-in:
+
+```ts
+interface LlmRunner {
+  /** Fresh context every call. The default, and what Foreman requires. */
+  run(prompt: string, opts: RunOpts): Promise<string>;
+  /**
+   * Optional: one conversation per SUPERVISED SESSION, never one shared across sessions.
+   * `claude -p --session-id <uuid>` then `--resume`. Null when unsupported.
+   */
+  runInThread: ((threadKey: string, prompt: string, opts: RunOpts) => Promise<string>) | null;
+}
+```
+
+`RunOpts` cannot be just `{ model, timeoutMs }`. The Inspector already grants tools and
+pays for it with a working directory and a `--settings` deny-list (`ClaudeRunOptions.tools`
+/ `cwd` / `settings`), so the interface has to carry a *sandboxing* shape, not only a model
+id - and a runner backed by something other than `claude -p` has to be able to say it
+cannot honour one. Treat `tools` as the capability boundary it is: the default of every
+tool disabled is what makes it safe to embed untrusted transcript and repo text in a
+prompt, and that default must survive being put behind an interface.
+
+Also note the naming collision to avoid: phase 4 is titled "Headless", and this plan means
+*which model does offline work*. It does not mean driving an agent without a terminal -
+that is the `control` capability on the Harness axis. Rename one of them before both exist
+in the codebase.
 
 ### Terminal is two interfaces, because tmux and wezterm are not peers
 
@@ -155,15 +198,50 @@ interface Harness {
   detect: DetectSpec;             // argv signatures, background-process exclusions
   bin: BinSpec;                   // env vars, fallback, launch argv
 
+  control:    ControlSpec;             // how a turn is DELIVERED - see below
   transcript: TranscriptSpec | null;   // null => no transcript pane, by declaration
   hooks:      HookSpec | null;         // null => no push instrumentation; skip the 20s wait
-  tui:        TuiSpec | null;          // mode line, dialog grammar, paste placeholder, settle ms
+  tui:        TuiSpec | null;          // mode line, dialog grammar - PARSING only
   permissionModes: PermissionModeSpec | null;
   skills:     SkillSpec | null;
   mcp:        McpSpec | null;
   models:     ModelSpec;               // label(id), defaultWindow(id)
 }
 ```
+
+#### `control` is separate from `tui`, and not nullable
+
+An earlier draft of this interface had no `control` slot: prompt delivery lived partly in
+the Terminal axis and partly inside `tui`, whose spec carried the paste placeholder and
+`PASTE_SETTLE_MS`. That is wrong in a way worth stating, because the whole point of this
+refactor is to outlive the current backends.
+
+`PASTE_SETTLE_MS = 400` is a measured property of an undocumented input-coalescing window
+in one Claude build (`actions.ts:307` records the measurements). Putting it in the harness
+contract makes "you talk to an agent by typing into its terminal" a permanent
+architectural assumption - and every live third-party tool that drives Claude Code
+programmatically has already stopped doing that, in favour of
+`claude -p --input-format stream-json --output-format stream-json`, which takes follow-up
+turns on a live process with no keystrokes involved. Codex exposes the same thing as a
+JSON-RPC `turn/steer`.
+
+So delivery gets its own capability, and it is **required** - every harness must say how
+you talk to it:
+
+```ts
+type ControlSpec =
+  | { kind: "keystroke"; settleMs: number; pastePlaceholder: RegExp | null }
+  | { kind: "stream-json" };
+```
+
+`tui` keeps mode-line and dialog *parsing*, which is about reading a screen; `settleMs` is
+about writing to one and moves here. The split means a second `ControlSpec` variant is a
+new implementation behind an existing slot, rather than an interface change every migrated
+call site has to absorb.
+
+Note this is the seam that makes headless dispatch possible later; it is not a commitment
+to build it now. Sessions a human owns will keep `kind: "keystroke"` regardless, because
+we do not own their pty.
 
 The win is mechanical: every `if (session.agent !== "claude") return null` becomes
 `if (!harness.transcript) return null`. The guard now states *why*, and a new harness that

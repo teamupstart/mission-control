@@ -3,6 +3,7 @@ import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
 import { parseModelJson, runStructured } from "../claude-cli.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
+import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
 // The backlog dependency read: one fresh, tool-less `claude -p` over every backlog
 // item, returning an order and a `dependsOn` list per item.
@@ -17,7 +18,7 @@ import { buildBacklogPrompt } from "./backlog-prompt.ts";
  * router is a bucketing made once per prompt. The cost profile is opposite, so the
  * default is too.
  */
-export const DEFAULT_BACKLOG_MODEL = "claude-sonnet-5";
+export const DEFAULT_BACKLOG_MODEL = FOREMAN_MODEL_SPECS.backlog.fallback;
 
 /** The planner's wall-clock cap. Generous: it runs rarely and blocks nothing live. */
 const BACKLOG_TIMEOUT_MS = Number(process.env.FOREMAN_BACKLOG_TIMEOUT_MS || 90_000);
@@ -25,12 +26,11 @@ const BACKLOG_TIMEOUT_MS = Number(process.env.FOREMAN_BACKLOG_TIMEOUT_MS || 90_0
 /**
  * Which model reads the backlog: config, then env, then the default.
  *
- * `||` and not `??`, exactly as `triageModel` does it - `backlogModel` is an optional
- * free-text field, and a config that holds an empty string is a human who cleared the
- * box, not one asking the CLI to be spawned with no model id at all.
+ * The empty-string-is-a-cleared-box rule this function used to state is now enforced for
+ * all four roles at once inside `resolveForemanModel`.
  */
 export function backlogModel(cfg: { backlogModel?: string }): string {
-  return cfg.backlogModel || process.env.FOREMAN_BACKLOG_MODEL || DEFAULT_BACKLOG_MODEL;
+  return resolveForemanModel("backlog", cfg, process.env).id;
 }
 
 /** What the model returns, before any of it is believed. See `sanitizePlan`. */

@@ -48,6 +48,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     note: null, cost: null, goal: null,
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...p,
   };

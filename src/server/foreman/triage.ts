@@ -4,6 +4,7 @@ import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import { parseModelJson } from "../claude-cli.ts";
+import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import type { Pending } from "./pending.ts";
@@ -19,8 +20,14 @@ import type { Pending } from "./pending.ts";
 // can do is waste one Opus call (routed up needlessly) or hand you a session Foreman
 // could have handled - never a wrong action.
 
-/** Tier 1's cheap router model, unless overridden by config or FOREMAN_TRIAGE_MODEL. */
-export const DEFAULT_TRIAGE_MODEL = "claude-haiku-4-5";
+/**
+ * Tier 1's cheap router model, unless overridden by config or FOREMAN_TRIAGE_MODEL.
+ *
+ * Re-exported from the shared spec rather than declared here: the settings panel renders
+ * this same value, and two copies of a default is how a panel starts lying about what
+ * the worker spawns.
+ */
+export const DEFAULT_TRIAGE_MODEL = FOREMAN_MODEL_SPECS.triage.fallback;
 /**
  * The RECENT turns Tier 1 works from - a smaller window than the full reviewer's 48.
  *
@@ -530,7 +537,7 @@ export function triagePosture(triage: unknown): TriagePosture {
 
 /** The triage model from config, then env, then the Haiku default. */
 export function triageModel(cfg: ForemanConfig): string {
-  return cfg.triageModel || process.env.FOREMAN_TRIAGE_MODEL || DEFAULT_TRIAGE_MODEL;
+  return resolveForemanModel("triage", cfg, process.env).id;
 }
 
 /**

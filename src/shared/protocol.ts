@@ -47,6 +47,15 @@ export const HookIngestSchema = z.object({
   // link `gh pr create` prints). Optimistically decorates the session's card;
   // the PR poller is the source of truth that later confirms or clears it.
   prUrl: z.string().url().optional(),
+  // True when the hook saw the agent RUN `gh pr create` - not merely print a PR URL.
+  //
+  // The distinction is the whole of the Inspector's consent model. `prUrl` above is a
+  // loose text match that `gh pr view` trips just as readily: fine for a chip the
+  // poller retracts a tick later, useless as grounds for writing to GitHub. This is
+  // read off the command line itself, and it is what adopts a PR for review.
+  //
+  // Absent (not `false`) when it doesn't match, and absent on every non-Bash event.
+  prCreated: z.boolean().optional(),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
@@ -548,8 +557,15 @@ export type SetGoal = z.infer<typeof SetGoalSchema>;
 export const ForemanConfigSchema = z.object({
   enabled: z.boolean().default(false),
   mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
-  /** Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live. */
-  repoAllowlist: z.array(z.string()).default([]),
+  /**
+   * Repo roots Foreman may act in when live (realpaths). Empty = act nowhere live.
+   *
+   * `min(1)` is the consent gate, not tidiness: `cwdAllowlisted` compares against
+   * `` `${root}/` ``, so a blank entry becomes "/" and every absolute path matches it.
+   * One empty string in this array silently grants consent EVERYWHERE, for Foreman and
+   * - through the same shared predicate - for the Inspector.
+   */
+  repoAllowlist: z.array(z.string().min(1)).default([]),
   /** Whether Foreman may auto-approve non-destructive access asks (still gated by risk). */
   autoApproveAccess: z.boolean().default(true),
   /**
@@ -564,9 +580,31 @@ export const ForemanConfigSchema = z.object({
   triage: z.enum(["off", "shadow", "on"]).default("shadow"),
   /**
    * Model id for the Tier 1 triage call (a cheap router, not the full reviewer). Falls
-   * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default, in the worker.
+   * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default.
+   *
+   * All four model fields resolve through one shared ladder - `resolveForemanModel`
+   * (`@shared/foreman-models.ts`) - so the worker's `--model` and the settings panel's
+   * readout can never disagree. Empty means "fall through", not "spawn with no model".
    */
   triageModel: z.string().optional(),
+  /**
+   * Model id for the full reviewer - the call that judges a stuck session's pending
+   * question. Falls back to FOREMAN_REVIEW_MODEL, then an Opus default.
+   *
+   * Before this existed the reviewer passed no `--model` at all and silently inherited
+   * whatever the `claude` CLI was logged in as, which made the question "what does
+   * Foreman run as?" unanswerable. See `FOREMAN_MODEL_SPECS`.
+   */
+  reviewModel: z.string().optional(),
+  /**
+   * Model id for the work-queue verifier - the call that reads a diff and decides
+   * whether an item is done. Falls back to FOREMAN_VERIFY_MODEL, then an Opus default.
+   *
+   * Separate from `reviewModel` despite the same default: the verifier runs once per
+   * queued item on a repo diff, so it is the one most worth stepping down when a queue
+   * is long, and doing that must not also cheapen the reviewer.
+   */
+  verifyModel: z.string().optional(),
   /**
    * How many rounds the SAME gap may survive before the item escalates. Counted
    * per gap, not per attempt, so an agent working through several distinct gaps
@@ -636,8 +674,8 @@ export const ForemanConfigSchema = z.object({
   maxSessions: z.number().int().min(1).max(20).default(3),
   /**
    * Model id for the backlog dependency read. Falls back to the FOREMAN_BACKLOG_MODEL
-   * env var, then a Sonnet default, in the worker. Not the triage router's model: this
-   * is a judgment call over prose the human wrote, not a bucketing.
+   * env var, then a Sonnet default. Not the triage router's model: this is a judgment
+   * call over prose the human wrote, not a bucketing.
    */
   backlogModel: z.string().optional(),
 });
@@ -769,6 +807,53 @@ export const SkillsConfigPatchSchema = SkillsConfigSchema.pick({ enabled: true, 
 export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
 
 // ---- Harnesses (dispatch-time defaults for launched sessions) ----
+
+/**
+ * The Inspector's consent model, in one object.
+ *
+ * Every default here is the OFF position, and that is not caution theatre: this is the
+ * only subsystem that writes to a public place under the operator's GitHub identity.
+ * `enabled: false` means it never runs; `mode: "dry-run"` means it computes findings
+ * and posts none; an empty `repoAllowlist` means it acts nowhere. Turning it on is
+ * three deliberate acts, and the first two are reversible without anyone else seeing.
+ */
+export const InspectorConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /**
+   * `dry-run` still adopts PRs, reviews them, and records what it WOULD say - which is
+   * the point. A preview mode that reviews nothing tells you nothing about whether the
+   * reviewer is any good on your repo.
+   */
+  mode: z.enum(["dry-run", "live"]).default("dry-run"),
+  /**
+   * Repos the operator has trusted. Empty = act nowhere. Same rule as Foreman's,
+   * including the `min(1)`: a blank entry would match every absolute path and turn the
+   * one gate that decides whether anything writes to a public PR into a no-op.
+   */
+  repoAllowlist: z.array(z.string().min(1)).default([]),
+  /**
+   * Overrides the review model, for both the review pass and the follow-up replies.
+   * Undefined falls back to `INSPECTOR_MODEL`, and then to the CLI's own default.
+   *
+   * `ModelIdSchema` rather than a bare string because this value becomes a `--model`
+   * argument: an id starting with `-` would be read as a flag rather than rejected.
+   */
+  model: ModelIdSchema.optional(),
+  /**
+   * Ceiling on inline comments per round. A reviewer that leaves thirty notes on one
+   * push is one nobody reads, and the cap is what turns "be thorough" into "lead with
+   * what matters" - the planner sorts by severity before it truncates.
+   */
+  maxCommentsPerRound: z.number().int().min(1).max(20).default(8),
+});
+export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
+
+/** Partial update of the Inspector config from the dashboard. */
+export const InspectorConfigPatchSchema = InspectorConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
 /**
  * Defaults the harness applies to the sessions IT dispatches - never to the

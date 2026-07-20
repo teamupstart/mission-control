@@ -2,8 +2,10 @@ import { useRef, useState } from "react";
 import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
+import { useInspector } from "../useInspector.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
+import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
@@ -27,6 +29,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "harnesses", label: "Harnesses", icon: "⚙" },
   { id: "foreman", label: "Foreman", icon: "●" },
   { id: "cost", label: "Cost", icon: "$" },
+  { id: "inspector", label: "Inspector", icon: "⌕" },
 ] as const;
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
@@ -89,6 +92,9 @@ export function SettingsModal({
   // Owned here rather than by App, like `skills`: nothing outside this modal reads the
   // harnesses config, so it polls only while the modal is open.
   const harnesses = useHarnesses();
+  // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
+  // modal reads the Inspector config, so it polls only while the modal is open.
+  const inspector = useInspector();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
   // Escape is Overlay's, and stays a plain BUBBLE-phase listener there with no "is a
@@ -149,6 +155,8 @@ export function SettingsModal({
         return <ForemanSettingsPanel state={foreman} />;
       case "cost":
         return <CostSettingsPanel state={cost} />;
+      case "inspector":
+        return <InspectorSettingsPanel state={inspector} />;
     }
   }
 

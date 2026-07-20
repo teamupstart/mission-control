@@ -79,6 +79,104 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
   );
 }
 
+/**
+ * What the Inspector has to say about this session's pull request, in one chip.
+ *
+ * Renders nothing at all unless the PR was ADOPTED, and that silence is meaningful: the
+ * Inspector only adopts PRs it can prove Mission Control opened, so a card showing a PR
+ * chip and no inspector chip is telling you that PR came from somewhere else and will
+ * never be commented on.
+ *
+ * Counts rather than findings. The card's job is to say whether to go and look; the pull
+ * request is where you look.
+ */
+export type InspectorTone = "insp-failed" | "insp-queued" | "insp-clean" | "insp-findings";
+
+export interface InspectorChipView {
+  mark: string;
+  /**
+   * A union rather than a string, because the rail FILTERS on it. These double as CSS
+   * class names, so a rename that updated the helper and `styles.css` would silently
+   * turn the rail's suppression off with no type error anywhere.
+   */
+  tone: InspectorTone;
+  /**
+   * Reviewed but posted nothing. Its own field rather than prose folded into `title`,
+   * so every surface can render the distinction instead of only the one that happens to
+   * check `mode` itself. This is the difference the feature's safety story rests on: a
+   * bare `⌕ 3` must not read the same whether those three findings are public review
+   * comments or were merely recorded.
+   */
+  dry: boolean;
+  title: string;
+}
+
+export function inspectorChipView(inspector: Session["inspector"]): InspectorChipView | null {
+  if (!inspector) return null;
+  const dry = inspector.mode === "dry-run";
+  const suffix = dry ? " (dry run - nothing was posted)" : "";
+  if (inspector.failed) {
+    return {
+      mark: "!",
+      tone: "insp-failed",
+      dry,
+      title: `Inspector: the last review of this pull request did not complete${suffix}`,
+    };
+  }
+  if (inspector.round === 0) {
+    // Glyph alone. "Adopted, not looked at yet" is the least urgent thing this chip can
+    // say, and it should not cost a single character more than its own presence.
+    return {
+      mark: "",
+      tone: "insp-queued",
+      dry,
+      title: `Inspector: adopted for review, not looked at yet${suffix}`,
+    };
+  }
+  if (inspector.open === 0) {
+    return {
+      mark: "✓",
+      tone: "insp-clean",
+      dry,
+      title: `Inspector: reviewed, nothing outstanding${suffix}`,
+    };
+  }
+  return {
+    mark: `${inspector.open}`,
+    tone: "insp-findings",
+    dry,
+    title:
+      `Inspector: ${inspector.open} open finding${inspector.open === 1 ? "" : "s"} ` +
+      `after ${inspector.round} round${inspector.round === 1 ? "" : "s"}${suffix}`,
+  };
+}
+
+/** The Inspector chip. Shared by all four session surfaces - see CLAUDE.md on parity. */
+export function InspectorChip({ session }: { session: Session }): React.JSX.Element | null {
+  const view = inspectorChipView(session.inspector);
+  if (!view || !session.inspector) return null;
+  return (
+    <Tooltip label={view.title}>
+      <a
+        className={`insp-chip ${view.tone}${view.dry ? " insp-dry" : ""}`}
+        href={session.inspector.url}
+        target="_blank"
+        rel="noreferrer"
+        // The glyph is decorative and the mark is a bare "3" or "✓" - and nothing at all
+        // in the queued state - so without this the link has no accessible name. The
+        // tooltip's `aria-describedby` is a description, and only while it is open.
+        aria-label={view.title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <span className="insp-glyph" aria-hidden>
+          ⌕
+        </span>
+        {view.mark && <span className="insp-label">{view.mark}</span>}
+      </a>
+    </Tooltip>
+  );
+}
+
 /** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   if (!session.prUrl) return null;

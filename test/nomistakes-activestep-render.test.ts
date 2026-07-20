@@ -34,6 +34,7 @@ function run(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "mancej/custom-skills",
     startedAt: 1784200665602,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

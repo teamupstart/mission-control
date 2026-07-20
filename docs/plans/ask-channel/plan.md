@@ -284,10 +284,30 @@ But an operator whose `MISSION_HOME` is `~/daemon-state`, or one edit putting th
 "daemon" into the prompt's prose, would make every dispatched session undetectable - it never
 binds, and the dispatch fails `READY_TIMEOUT_MS` later as "agent session never appeared".
 
-The filter was narrowed rather than the prompt: what makes a process a daemon is the
-SUBCOMMAND it was invoked with, so the patterns now run against the command HEAD - argv0 plus
-the leading non-flag tokens - and argument text cannot reach the decision. Both known
-invocations (`claude daemon run …`, `claude mcp serve`) still match.
-`process-background-filter.test.ts` covers both, plus a `--mcp-config` path containing
-"daemon", prompt prose containing "daemon" and "mcp serve", and a line built from the REAL
-`REDIRECT_PROMPT`, so an edit that would blind discovery fails there instead of in production.
+The filter was fixed rather than the prompt. The first attempt narrowed the patterns to the
+command HEAD, which removed the coupling but was written against two plausible-looking forms
+rather than the machine: `ps` shows FIVE background Claude Code processes, and only
+`claude daemon run …` names its role in head position. The pty-host and spare workers name
+theirs as a subcommand (`claude bg-pty-host …`, `claude bg-spare …`) or as a flag on the app
+bundle with no subcommand at all (`…/ClaudeCode.app/Contents/MacOS/claude --bg-pty-host …`),
+so head-matching dropped four of the five. They had all been caught only by ACCIDENT before,
+because their socket path contains `cc-daemon-501` and that satisfied a `\bdaemon\b` search of
+the whole line. That accident was load-bearing.
+
+So the heuristic is gone entirely, replaced by an explicit allowlist matched at a fixed argv
+POSITION: `BACKGROUND_SUBCOMMANDS` (`daemon`, `bg-pty-host`, `bg-spare`, `mcp serve`) or
+`BACKGROUND_FLAGS` (`--bg-pty-host`, `--bg-spare`), read from argv[1] alone (argv[2] as well,
+for `mcp serve`'s second word). Both lists are append-only: a form we miss becomes a phantom
+session in the dashboard, and a form we match too eagerly makes a real agent disappear from
+it.
+
+Position, not just whole tokens, because a token scan of the entire argv still had the hole
+one rung up. Checking that on the live machine caught it: a headless `claude -p` whose prompt
+happened to quote the token `--bg-pty-host` was classified as a pty host. Prose quoting a flag
+is prose; argv[1] is the one slot no argument VALUE can occupy, and every real form declares
+its role there.
+
+`process-background-filter.test.ts` is built from the five real `ps` lines verbatim rather
+than from invented ones, which is the point of the finding, plus `claude mcp serve`, a bare
+interactive `claude`, a full dispatched argv, a `--mcp-config` path containing "daemon", and
+prompt prose containing "daemon" and "mcp serve".

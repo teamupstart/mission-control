@@ -90,40 +90,52 @@ export function classifyAgent(command: string): AgentType | null {
 }
 
 /**
- * The flag-free head of a command: argv0 plus the arguments that sit in
- * SUBCOMMAND position, stopping at the first flag-looking token.
+ * Claude Code's own background invocations, by the subcommand that names the role.
+ * `mcp serve` is two tokens; the rest are one.
  *
- * `claude daemon run --json-path ...` -> `claude daemon run`
- * `claude --model x --mcp-config /srv/daemon/mcp.json` -> `claude`
+ * APPEND-ONLY as new ones appear. Both directions of a mistake here are costly: a
+ * form we miss becomes a phantom session in the dashboard, and a form we match too
+ * eagerly makes a real agent silently disappear from it.
  */
-function commandHead(command: string): string {
-  const head: string[] = [];
-  for (const tok of command.split(/\s+/)) {
-    if (!tok) continue;
-    if (tok.startsWith("-")) break;
-    head.push(tok);
-  }
-  return head.join(" ");
-}
+const BACKGROUND_SUBCOMMANDS = new Set(["daemon", "bg-pty-host", "bg-spare", "mcp serve"]);
 
 /**
- * Exclude background/daemon processes that match a signature but aren't
- * interactive sessions (e.g. `claude daemon run ...`, `claude mcp serve`).
- * Interactive sessions are additionally required to have a tty by the caller,
- * but this catches the case defensively.
+ * The same roles again, as the flags the app bundle takes when it is spawned with no
+ * subcommand at all (`.../ClaudeCode.app/Contents/MacOS/claude --bg-pty-host <sock>`).
+ * Matched as a whole token in flag position, never as a substring.
+ */
+const BACKGROUND_FLAGS = new Set(["--bg-pty-host", "--bg-spare"]);
+
+/**
+ * Exclude background processes that carry an agent signature but are not interactive
+ * sessions: `claude daemon run …`, `claude mcp serve`, and the pty-host / spare
+ * workers Claude Code keeps alive beside a session. Interactive sessions are
+ * additionally required to have a tty by the caller, but this catches the case
+ * defensively.
  *
- * Matched against the command HEAD, never the whole argv, because what makes a
- * process a daemon is the SUBCOMMAND it was invoked with - not a word that
- * happens to appear in an argument. A dispatched session's argv carries both a
- * state-dir path (`--mcp-config <MISSION_HOME>/ask-channel/mcp.json`) and the
- * ~1.2KB inline redirect prompt (`ask-channel.ts`), so matching argument text
- * would let an operator's `MISSION_HOME` of `~/daemon-state`, or one edit to
- * that prompt's prose, make every dispatched agent undetectable - it would never
- * bind to a session and would simply vanish from the dashboard.
+ * Decided over TOKENS against an explicit allowlist, never by searching the raw
+ * string. A dispatched session's argv now carries a state-dir path (`--mcp-config
+ * <MISSION_HOME>/ask-channel/mcp.json`) and the entire ~1.2KB inline redirect prompt
+ * (`ask-channel.ts`), so any substring test hands the decision to text we do not
+ * control: an operator whose `MISSION_HOME` is `~/daemon-state`, or one edit putting
+ * the word "daemon" into that prompt's prose, would make every dispatched agent
+ * undetectable. It would never bind to a session and would simply vanish.
+ *
+ * The workers were previously caught only by ACCIDENT - their socket path contains
+ * `cc-daemon-501`, which satisfied a `\bdaemon\b` search of the whole line. Naming
+ * them is what stops that accident from being load-bearing.
+ *
+ * Only argv[1] and argv[2] are ever looked at, because that is where every real form
+ * declares its role and it is the one position no argument VALUE can occupy. Scanning
+ * further would reopen the hole one rung up: a `claude -p '<prompt>'` whose prompt
+ * merely quotes the token `--bg-pty-host` is prose, not a pty host, and was observed
+ * matching a whole-argv token scan.
  */
 export function isBackgroundAgent(command: string): boolean {
-  const head = commandHead(command);
-  return /\bclaude\b.*\bdaemon\b/.test(head) || head.includes("mcp serve");
+  const [, one, two] = command.split(/\s+/).filter(Boolean);
+  if (one === undefined) return false;
+  if (BACKGROUND_FLAGS.has(one) || BACKGROUND_SUBCOMMANDS.has(one)) return true;
+  return two !== undefined && BACKGROUND_SUBCOMMANDS.has(`${one} ${two}`);
 }
 
 function parseStart(raw: string): number {

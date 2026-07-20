@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clampPrompt, substantivePrompt } from "../src/server/transcript.ts";
+import { substantivePrompt } from "../src/server/harness/claude/scaffolding.ts";
+import { clampPrompt } from "../src/server/util/prompt-text.ts";
 
 // Every fixture below is a real shape lifted from this machine's transcripts or from the
 // daemon's own `session_events`, not an invented one - the filter exists because 53% of

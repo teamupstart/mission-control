@@ -1,0 +1,189 @@
+import type { AgentType, MetaSource, Session, ThinkingLevel, TranscriptMessage } from "@shared/types.ts";
+
+// The Harness axis: one object per agent, holding what the daemon needs FROM that agent.
+//
+// This exists because the alternative was ~35 `if (session.agent !== "claude") return null`
+// guards, each of which silently does nothing for a new harness rather than failing to
+// compile. `HARNESSES` (index.ts) is a `Record<AgentType, Harness>`, so a new agent id
+// cannot compile until every capability below is either implemented or explicitly declared
+// `null` - the same trick `SESSION_FIELD_COMPARATORS` plays on a new `Session` field.
+//
+// Capabilities are OPTIONAL SUB-OBJECTS rather than methods on one fat interface, and
+// `null` is a first-class answer meaning "this harness genuinely does not have this",
+// not a stub. A flat interface would force every adapter to stub the capabilities it
+// lacks, and stubs are where silent breakage lives: an empty array reads as "there are no
+// messages" when the truth is "this file never carried messages".
+//
+// Types only, no `node:` imports and no implementations - the specs live in
+// `harness/<agent>/`, and `transcript.ts` supplies the format-agnostic machinery they
+// build on. Naming (`label`, `speaker`) is deliberately NOT here: `AGENT_NAMES`
+// (`@shared/agent.ts`) already owns it and the web bundle imports that.
+
+/** What a passive read yields about a session's live runtime, all optional. */
+export interface RuntimeMetaRead {
+  modelId: string | null;
+  /** Tokens occupying the context window (input + cache), excludes output. */
+  contextTokens: number | null;
+  contextWindow: number | null;
+  /** 0-100, rounded; null when tokens/window couldn't be determined. */
+  contextPct: number | null;
+  longContext: boolean;
+  thinkingLevel: ThinkingLevel | null;
+}
+
+/** What a passive read yields about a session's liveness. */
+export interface SessionActivityRead {
+  /**
+   * `idle` ONLY when the newest main-chain record is an assistant turn that ended
+   * cleanly; everything else - a pending tool call, a tool result the agent hasn't
+   * answered yet, a bare user prompt - reads `working`. The bias is deliberate: a
+   * false `working` merely makes the queue wait, a false `idle` types into a busy
+   * session, so the ambiguous tails all fall to `working`.
+   */
+  state: "idle" | "working";
+  /** Epoch ms of that newest datable main-chain record. */
+  lastActivity: number;
+}
+
+/**
+ * One bounded passive read of a session's file, feeding both axes the poller wants.
+ *
+ * One call rather than two because for a JSONL transcript both answers come out of the
+ * same tail read, and a poller that asked twice would double the I/O of its own hot loop.
+ */
+export interface TranscriptPassiveRead {
+  /** Runtime metadata, or null when this read found none. */
+  meta: RuntimeMetaRead | null;
+  /**
+   * Idle/working, or null when this harness's passive source carries no liveness signal
+   * at all - as distinct from "carried none this tick". Both are a no-op at the registry
+   * (a briefly unreadable file must never clear a good reading), so the two collapse
+   * safely here; what must NOT collapse is a harness that cannot answer looking like one
+   * that answered "nothing yet" forever.
+   */
+  activity: SessionActivityRead | null;
+}
+
+export interface TranscriptWindow {
+  /** Opening turns then recent turns, de-duped; empty when unreadable. */
+  messages: TranscriptMessage[];
+  /** True when turns between the head and the tail were dropped for size. */
+  truncated: boolean;
+  /**
+   * How many leading `messages` came from the opening slice - the boundary of the elided
+   * middle. Non-zero only when `truncated`, where `messages[headCount - 1]` and
+   * `messages[headCount]` sit next to each other in the array but far apart in the session.
+   * A reader that wants the genuinely recent turns must therefore slice forward from here
+   * rather than back from the end: the tail's turn count is byte-bounded, so when it yields
+   * fewer turns than the head, slicing from the end runs back into the opening. 0 when the
+   * file was returned whole and every turn is contiguous.
+   */
+  headCount: number;
+}
+
+/**
+ * A window read forward from a byte offset.
+ *
+ * `reset: true` means the file is now SHORTER than the offset - the transcript was
+ * cleared (a `/clear`), so the anchor is meaningless. Callers must treat that as a
+ * verify-infrastructure failure and escalate, NOT judge the item against a near-empty
+ * window and invent gaps.
+ */
+export interface TranscriptSince extends TranscriptWindow {
+  reset?: boolean;
+}
+
+/** Turns plus the byte offset a live stream resumes from. */
+export interface TranscriptStreamRead {
+  messages: TranscriptMessage[];
+  pos: number;
+}
+
+/**
+ * Reading a harness's file as CONVERSATION.
+ *
+ * Split from `TranscriptSpec` because "there is a file we can read runtime facts out of"
+ * and "that file contains the turns" are separate claims, and Codex is the live proof:
+ * its rollout carries model / effort / token counts and no messages. Folding the two
+ * would have that harness answering every window read with `[]`, which reads as "this
+ * session has said nothing" - a wrong answer that no caller can tell from a right one.
+ */
+export interface TranscriptMessages {
+  /**
+   * The opening `headTurns` (so the goal the user set is always present) plus the most
+   * recent `tailTurns`. A small file comes back whole; a large one comes back head+tail
+   * with the middle elided (`truncated`).
+   */
+  window(path: string, headTurns?: number, tailTurns?: number): TranscriptWindow;
+  /** Turns appended after a byte offset - how the work queue scopes a window to one item. */
+  since(path: string, offset: number, maxBytes?: number): TranscriptSince;
+  /**
+   * The file's current byte size - the anchor `since` reads from, recorded when a work
+   * item is delivered. Null when the file is missing.
+   */
+  size(path: string): number | null;
+  /** Recent history for a live stream, plus the offset to resume from. Throws if unreadable. */
+  initial(path: string): TranscriptStreamRead;
+  /** Whatever complete turns were appended since `pos`. Throws if unreadable. */
+  appended(path: string, pos: number): TranscriptStreamRead;
+  /**
+   * The "what's happening now" narration for the no-mistakes strip, or null when there
+   * is none. Null is also the right answer for a harness with no such notion - it is a
+   * one-line status, so absence degrades to showing nothing rather than to being wrong.
+   */
+  narration(path: string): string | null;
+}
+
+/**
+ * Reading a harness's own record of a session off disk.
+ *
+ * `null` on `Harness` means the harness writes nothing we can read: no transcript pane,
+ * no passive runtime metadata, no hook-free idle signal - by declaration rather than by a
+ * guard somewhere returning null for reasons the call site has to guess at.
+ */
+export interface TranscriptSpec {
+  /**
+   * Where a reading from this source came from, for `applyRuntimeMeta`'s provenance -
+   * which is what lets a fresh statusLine reading outrank a passive one.
+   */
+  metaSource: MetaSource;
+  /**
+   * The file backing this session, or null when there isn't one (yet). Callers must
+   * treat null as "nothing to read", never as an error.
+   *
+   * May be expensive: a harness that has to SEARCH for its file caches that inside the
+   * spec (see `retain`). Check the capability you actually need first - asking a
+   * messages-less harness to locate a file it only holds metadata in is a directory walk
+   * for an answer nobody uses.
+   */
+  locate(session: Session): string | null;
+  /** One bounded read of that file for the passive poller. Cheap enough for a hot loop. */
+  passiveRead(path: string): TranscriptPassiveRead;
+  /** Conversation reading, or null when the file carries metadata but no messages. */
+  messages: TranscriptMessages | null;
+  /**
+   * Drop cached per-session state for sessions that are no longer live; `null` when
+   * `locate` keeps none.
+   *
+   * The poller calls this each tick with the ids it still sees. It lives on the spec so
+   * that a harness whose lookup is a filesystem walk can cache it WITHOUT the generic
+   * poller growing a per-vendor cache - which is where that cache started.
+   */
+  retain: ((live: ReadonlySet<string>) => void) | null;
+}
+
+/**
+ * One agent, and everything the daemon needs from it.
+ *
+ * More capabilities land here as the pluggable-integrations migration proceeds
+ * (`detect`, `bin`, `control`, `hooks`, `tui`, `permissionModes`, `skills`, `mcp`,
+ * `models` - see `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own
+ * slot, so adding one is a new field every harness must answer rather than an interface
+ * change every migrated call site has to absorb.
+ */
+export interface Harness {
+  /** Matches this harness's key in `HARNESSES`. */
+  id: AgentType;
+  /** How this harness records a session on disk, or null when it records nothing. */
+  transcript: TranscriptSpec | null;
+}

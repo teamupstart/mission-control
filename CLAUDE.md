@@ -45,8 +45,9 @@ top-level collection, also extend the `snapshot` case, `registry.snapshot()`, an
 Harnesses rows all derive from it. `AgentType` is that array's element type, so every
 `Record<AgentType, …>` then fails to compile until the new harness has said what it is
 called (`AGENT_NAMES`, `@shared/agent.ts`), which binary it launches (`AGENT_BINS`,
-`server/config.ts`), which models it offers, and how it answers goals and cost. Fill each in
-rather than defaulting one. Test: `session-contracts.test.ts`, which pins that list.
+`server/config.ts`), which models it offers, which of its capabilities exist at all
+(`HARNESSES`, `src/server/harness/index.ts`), and how it answers goals and cost. Fill each
+in rather than defaulting one. Test: `session-contracts.test.ts`, which pins that list.
 
 ## Layout parity
 
@@ -189,6 +190,16 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   order), plus a dispatch branch in `App.tsx`, usually an `ActionBarHandle` method and its
   registration, a `CommandBar` keycap, a README table row, and a `keybindings.test.ts` case. A
   new group also needs a `GROUPS` entry in `KeyboardPanel`.
+- **Harnesses (the agent axis)**: `HARNESSES` (`src/server/harness/index.ts`) + a spec per
+  capability under `src/server/harness/<agent>/`. The `Record<AgentType, Harness>` is the
+  enforcement - a new agent id that declares nothing does not compile, and every capability
+  is either implemented or explicitly `null`. **`null` is a first-class answer, never a
+  stub**: `HARNESSES.codex.transcript.messages` is null because a rollout carries metadata
+  and no turns, and every reader then takes the one already-tested "unavailable" path
+  instead of an empty window that reads as "this session said nothing". Reach a capability
+  through the registry (`sessionMessages`, `transcriptFor`), never by testing `s.agent`;
+  each phase of `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
+  `harness-transcript.test.ts`, `session-contracts.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the
   enforcement - a new id that is not implemented does not compile, and every capability is

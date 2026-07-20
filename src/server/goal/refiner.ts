@@ -6,7 +6,7 @@ import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import type { Registry } from "../registry.ts";
 import type { Session, SessionGoal } from "@shared/types.ts";
 import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
-import { goalSourceFor } from "./source.ts";
+import { readGoalWindow } from "./source.ts";
 
 // Tier 2: rewrite each session's raw prompt into the sentence its card shows, with one
 // headless `claude -p` on Haiku.
@@ -152,7 +152,7 @@ async function refine(
           // The sentence being upgraded, so "unchanged" is available as an answer.
           currentGoal: goal.text,
           prompt: goal.prompt,
-          window: goalSourceFor(s.agent).readWindow(s),
+          window: readGoalWindow(s),
         }),
         (raw) => parseModelJson(raw, GoalSchema),
         "Goal",

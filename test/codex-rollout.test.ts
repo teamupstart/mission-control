@@ -7,7 +7,7 @@ import {
   findRolloutForSession,
   parseRolloutMeta,
   parseSessionMeta,
-} from "../src/server/codex-rollout.ts";
+} from "../src/server/harness/codex/rollout.ts";
 import type { Session } from "@shared/types.ts";
 
 // Records shaped like real Codex rollout JSONL lines.
@@ -98,9 +98,13 @@ test("findRolloutForSession matches cwd and the nearest start time", () => {
   assert.equal(findRolloutForSession(s, root), join(root, "2026", "07", "12", "rollout-2026-07-12T11-00-00-ccc.jsonl"));
 });
 
-test("findRolloutForSession returns null for no cwd match and non-codex sessions", () => {
+// It used to also assert that a `claude` session got null from here. That check moved
+// UP, to `HARNESSES` (`harness/index.ts`): which reader runs is the registry's decision
+// now, so a rollout scan is unreachable for a Claude session and a guard restating it
+// inside this function would be the agent hardcode the migration removed. What is left is
+// what this function actually decides - whether a rollout matches.
+test("findRolloutForSession returns null when no rollout matches the cwd", () => {
   const root = seedRollouts();
   assert.equal(findRolloutForSession(codexSession({ cwd: "/nowhere", startedAt: 0 }), root), null);
-  assert.equal(findRolloutForSession(codexSession({ agent: "claude" }), root), null);
   assert.equal(findRolloutForSession(codexSession({ cwd: null }), root), null);
 });

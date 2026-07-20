@@ -3,7 +3,17 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readTranscriptWindow } from "../src/server/transcript.ts";
+import { claudeTranscript } from "../src/server/harness/claude/transcript.ts";
+
+// What is at stake: a reader that asks for "the session's turns" must get the opening ask
+// AND the recent context out of a file too big to parse, and must be told when the middle
+// went missing - a window that silently drops the goal is one the Foreman then judges a
+// session against the last ten minutes of it.
+//
+// Driven through the harness capability rather than a bare function, because that is how
+// every caller reaches it; the byte arithmetic lives in `transcript.ts` and the record
+// shape in `harness/claude/`, and this exercises the pair as assembled.
+const messages = claudeTranscript.messages!;
 
 const dir = mkdtempSync(join(tmpdir(), "mission-window-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -24,7 +34,7 @@ test("a small transcript is returned whole, not truncated", () => {
     path,
     [turn("user", "the goal", 0), turn("assistant", "on it", 1), turn("user", "thanks", 2)].join("\n"),
   );
-  const w = readTranscriptWindow(path);
+  const w = messages.window(path);
   assert.equal(w.truncated, false);
   assert.equal(w.headCount, 0, "no split, so every turn is contiguous");
   assert.equal(w.messages.length, 3);
@@ -41,7 +51,7 @@ test("a large transcript returns the opening goal + recent tail, marked truncate
   lines.push(turn("assistant", "THE FINAL TURN", 901));
   writeFileSync(path, lines.join("\n"));
 
-  const w = readTranscriptWindow(path, 12, 48);
+  const w = messages.window(path, 12, 48);
   assert.equal(w.truncated, true);
   // The opening goal is always present (head window)...
   assert.equal(w.messages[0]?.text, "THE ORIGINAL GOAL");
@@ -57,6 +67,6 @@ test("a large transcript returns the opening goal + recent tail, marked truncate
 });
 
 test("a missing file yields an empty, non-truncated window", () => {
-  const w = readTranscriptWindow(join(dir, "nope.jsonl"));
+  const w = messages.window(join(dir, "nope.jsonl"));
   assert.deepEqual(w, { messages: [], truncated: false, headCount: 0 });
 });

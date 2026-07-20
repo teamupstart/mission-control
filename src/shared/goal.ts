@@ -5,11 +5,13 @@ import type { AgentType } from "./types.ts";
  *
  * Shared because two layers need the same answer and must not drift: the card renders it as
  * the empty state, and the daemon's refiner uses it to skip sessions it could never
- * summarise. When Codex gains a reader, set its entry to null and implement `readWindow` in
- * `server/goal/source.ts` - those two edits are the whole seam.
+ * summarise. When Codex gains a reader, set its entry to null and give that harness a
+ * `transcript.messages` capability (`server/harness/codex/transcript.ts`) - those two edits
+ * are the whole seam, and `harness-transcript.test.ts` fails until both are made.
  *
  * Codex is honest rather than hopeful. It has no hooks, so no prompt ever reaches the
- * daemon; `codex-rollout.ts` parses only model / effort / token metadata - no messages - and
+ * daemon; `harness/codex/rollout.ts` parses only model / effort / token metadata - no
+ * messages - and
  * a rollout's session association is fuzzy (cwd + closest start time). No rollout file has
  * ever existed on this machine, so the extraction is unverified and must not be promised.
  */

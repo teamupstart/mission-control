@@ -57,13 +57,8 @@ import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
-import {
-  readTranscriptSince,
-  readTranscriptWindow,
-  resolveTranscriptPath,
-  transcriptSize,
-  transcriptStreamHandler,
-} from "./transcript.ts";
+import { sessionMessages } from "./harness/index.ts";
+import { transcriptStreamHandler } from "./transcript-stream.ts";
 import {
   claimForemanLease,
   foremanStatus,
@@ -297,13 +292,17 @@ export function buildApp(
   app.get("/api/sessions/:id/transcript", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const path = resolveTranscriptPath(session);
-    if (!path) return c.json({ messages: [], truncated: false, unavailable: true });
+    // `unavailable` covers every reason there are no turns to serve - the harness keeps
+    // no conversation (Codex's rollout is metadata only), or its file hasn't appeared
+    // yet - because the readers downstream degrade the same way for all of them: Tier 1
+    // routes UP rather than judging a session it couldn't read.
+    const t = sessionMessages(session);
+    if (!t) return c.json({ messages: [], truncated: false, unavailable: true });
     const since = Number(c.req.query("since"));
-    if (Number.isFinite(since) && since >= 0) return c.json(readTranscriptSince(path, since));
+    if (Number.isFinite(since) && since >= 0) return c.json(t.read.since(t.path, since));
     const turns = Number(c.req.query("turns"));
     const tail = Number.isFinite(turns) && turns > 0 ? Math.min(turns, 200) : 48;
-    return c.json(readTranscriptWindow(path, 12, tail));
+    return c.json(t.read.window(t.path, 12, tail));
   });
 
   // The child's rendered screen - the only place an ask that is BLOCKING on the user
@@ -327,8 +326,8 @@ export function buildApp(
   app.get("/api/sessions/:id/transcript/size", (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    const path = resolveTranscriptPath(session);
-    return c.json({ size: path ? transcriptSize(path) : null });
+    const t = sessionMessages(session);
+    return c.json({ size: t ? t.read.size(t.path) : null });
   });
 
   // The repo standards the queue verifier judges an item's diff against.

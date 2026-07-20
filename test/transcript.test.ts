@@ -3,16 +3,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseLines } from "../src/server/transcript.ts";
+import {
+  latestTodoNarration,
+  resolveTranscriptPath,
+  toMessage,
+  TOOL_INPUT_CAP,
+} from "../src/server/harness/claude/transcript.ts";
 import {
   computeRuntimeMeta,
   computeSessionActivity,
   latestEffortLevel,
-  latestTodoNarration,
-  parseLines,
-  resolveTranscriptPath,
-  toMessage,
-  TOOL_INPUT_CAP,
-} from "../src/server/transcript.ts";
+} from "../src/server/harness/claude/meta.ts";
 import type { Session } from "@shared/types.ts";
 
 // Records shaped like real Claude Code JSONL transcript lines.
@@ -72,7 +74,7 @@ const sidechain = JSON.stringify({
 const meta = JSON.stringify({ type: "file-history-snapshot", uuid: "m1" });
 
 test("parseLines keeps prompts + assistant turns, drops sidechains/tool-results/meta", () => {
-  const msgs = parseLines([asstText, asstTool, userPrompt, userToolResult, sidechain, meta, ""]);
+  const msgs = parseLines([asstText, asstTool, userPrompt, userToolResult, sidechain, meta, ""], toMessage);
   assert.deepEqual(
     msgs.map((m) => m.id),
     ["a1", "a2", "u1"],
@@ -216,7 +218,7 @@ test("an assistant turn is never scrubbed - it isn't the channel the plumbing ar
 });
 
 test("parseLines honors the tail limit and ignores malformed lines", () => {
-  const msgs = parseLines([asstText, "{not json", asstTool, userPrompt], 2);
+  const msgs = parseLines([asstText, "{not json", asstTool, userPrompt], toMessage, 2);
   assert.deepEqual(
     msgs.map((m) => m.id),
     ["a2", "u1"],
@@ -414,9 +416,13 @@ test("resolveTranscriptPath returns null when neither locates a file", () => {
   assert.equal(resolveTranscriptPath(s, root), null);
 });
 
-test("resolveTranscriptPath ignores non-claude, id-less, and cwd-less sessions", () => {
+// The "non-claude session" case that used to be asserted here is gone, and not because it
+// stopped mattering: this resolver is reachable only through `HARNESSES.claude`, so the
+// decision moved UP to the registry, where `harness-transcript.test.ts` pins it. Left in
+// place it would have gone quietly green - the probe session it used has no file under a
+// fresh root either way, so it would have passed with the agent check deleted.
+test("resolveTranscriptPath has nothing to derive from without an id or a cwd", () => {
   const root = mkdtempSync(join(tmpdir(), "proj-"));
-  assert.equal(resolveTranscriptPath(session({ agent: "codex" }), root), null);
   assert.equal(resolveTranscriptPath(session({ agentSessionId: null }), root), null);
   assert.equal(resolveTranscriptPath(session({ cwd: null }), root), null);
 });

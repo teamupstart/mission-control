@@ -291,7 +291,12 @@ const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
   ["src/shared/goal.ts", "string | null"],
   ["src/shared/model.ts", "readonly ModelChoice[]"],
   ["src/server/config.ts", "AgentBin"],
-  ["src/server/goal/source.ts", "GoalSource"],
+  // The harness registry, which subsumes what `goal/source.ts` used to be pinned for: its
+  // per-agent `GoalSource` record was the transcript capability spelled twice, and the
+  // reader now derives from `HARNESSES[agent].transcript.messages`. Strictly stronger -
+  // one entry here forces a decision about every capability at once, and every phase of
+  // the pluggable-integrations migration adds another to that list.
+  ["src/server/harness/index.ts", "Harness"],
 ];
 
 /**

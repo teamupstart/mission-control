@@ -3,8 +3,12 @@ import type { HarnessesConfig, HarnessesConfigPatch } from "@shared/protocol.ts"
 import type { AgentType } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
-// The "Harnesses" settings section, mirroring foreman/config.ts and skills/config.ts:
+// The "Harnesses" SETTINGS section, mirroring foreman/config.ts and skills/config.ts:
 // a schema-validated blob over the `app_config` KV, so a new key needs no migration.
+//
+// Not the harness registry, despite the neighbouring name: what an agent CAN DO lives in
+// `src/server/harness/` (`HARNESSES`, and one spec per capability). This is what the
+// operator chose in the panel of the same name.
 //
 // This is the only durable home for dispatch-time defaults. The dispatcher reads it
 // at dispatch time (not construction), so a toggle mid-batch is honoured by the next

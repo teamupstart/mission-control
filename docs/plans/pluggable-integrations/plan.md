@@ -41,12 +41,21 @@ collapsed both**: `AGENT_TYPES` (`shared/types.ts`) is the one source the zod en
 dashboard's dispatch input now derive from, and `AGENT_NAMES` (`shared/agent.ts`) holds the
 two registers as named fields (`label`, `speaker`) so neither can be mistaken for drift.
 
+**The first three rows are closed.** `Harness.transcript` (`server/harness/types.ts`) now
+owns transcript, rollout, and the dispatch point between them: `runtime-meta.ts` names no
+agent, Claude's JSONL shape lives in `harness/claude/`, the rollout in `harness/codex/`,
+and the byte windowing that belongs to neither sits in `transcript.ts` behind a supplied
+line parser. See "`transcript`, as landed" below.
+
 Before Phase 0, only **four** `Record<AgentType, …>` maps would fail to compile on a new
 agent. Everything else silently does nothing, and that asymmetry is the core problem. Phase 0
 took it to **six** - `shared/agent.ts`, `shared/cost.ts`, `shared/goal.ts`, `shared/model.ts`,
 `server/config.ts`, `server/goal/source.ts` - which is the list `session-contracts.test.ts`
-pins by adding a probe agent id and asserting each one fails to typecheck. Every row in the
-table above is still silent.
+pins by adding a probe agent id and asserting each one fails to typecheck. The transcript
+item swapped the last of those for `server/harness/index.ts`: the per-agent `GoalSource`
+record WAS this capability spelled twice, and one `Harness` entry forces a decision about
+every capability at once rather than about one reader. Every remaining row in the table
+above is still silent.
 
 ### Terminal coupling (tmux / wezterm)
 
@@ -308,6 +317,39 @@ The win is mechanical: every `if (session.agent !== "claude") return null` becom
 genuinely lacks transcripts gets the identical, already-tested degradation path instead of a
 code change.
 
+#### `transcript`, as landed
+
+`HARNESSES` (`src/server/harness/index.ts`) is the `Record<AgentType, Harness>`;
+`harness/types.ts` holds the interface; `harness/claude/` and `harness/codex/` hold the two
+specs. Four deltas from the sketch, each forced by something real:
+
+- **No `label` / `accent` on `Harness`.** `AGENT_NAMES` (`@shared/agent.ts`) already owns
+  naming and the web bundle imports it; a second register on a server-only object is the
+  exact defect Phase 0 collapsed, re-created one layer down. The remaining slots arrive
+  with their phases rather than landing as `null` placeholders nobody has designed.
+- **The capability splits in two: `TranscriptSpec` and its `messages`.** "There is a file
+  we can read runtime facts out of" and "that file contains the turns" are separate claims,
+  and Codex is the proof - its rollout carries model / effort / tokens and no conversation.
+  `messages: null` is that stated once, where every reader sees it; the alternative was a
+  window read answering `[]`, which says "this session has said nothing" and is a wrong
+  answer no caller can distinguish from a right one.
+- **One `passiveRead` per tick, not one call per axis.** Claude's runtime metadata and its
+  hook-free idle/working signal come out of the same tail read, and the poller would
+  otherwise double the I/O of its own hot loop.
+- **`retain`, because the cache belongs to the spec.** Finding a rollout is a dated
+  directory walk, so it is cached - and that cache used to sit in the generic poller as a
+  `Map<string, CodexBinding>` plus a Codex rescan constant. A third harness that also has
+  to search would have added a second map beside it. The poller now hands each harness the
+  live ids and lets it prune its own.
+
+`transcript.ts` keeps what is about bytes rather than about a vendor - head/tail windows,
+the forward-from-an-offset read, the stream reads - and takes the line parser from the
+harness. `server/goal/source.ts`'s `Record<AgentType, GoalSource>` is gone: it was this
+capability spelled a second time, and `session-contracts.test.ts` pins `HARNESSES` in its
+place. Tests: `harness-transcript.test.ts` (the registry, and that a null capability
+degrades to the byte-identical `{unavailable: true}` / `{size: null}` a missing file
+produces), `session-contracts.test.ts`.
+
 ### Compiler enforcement
 
 The codebase already has this pattern - `SESSION_FIELD_COMPARATORS` (`registry.ts`) makes a
@@ -341,7 +383,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | Phase | Items |
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_NAMES` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry; then detection/bin, transcript, hooks->state, TUI, capability guards, UI |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; then detection/bin, hooks->state, TUI, capability guards, UI |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
@@ -393,8 +435,12 @@ separately. The item that owns each fix is named in brackets.
 - **[Phase 1 - hooks]** `dispatcher.ts:148-161` - every dispatch waits `HOOK_READY_MS` (20s)
   for a hook, including for agents that will never send one. Codex pays 20s of dead time per
   dispatch.
-- **[Phase 1 - transcript]** `registry.ts:700` - `findSessionByEnv` hardcodes
-  `s.agent === "claude"` inside an otherwise generic env->session fallback.
+- **[Phase 1 - transcript, FIXED]** `registry.ts:700` - `findSessionByEnv` hardcoded
+  `s.agent === "claude"` inside an otherwise generic env->session fallback. The condition is
+  gone: that branch's safety is UNIQUENESS (exactly one session in the cwd), and filtering
+  by agent did not make the match safer - it hid the one ambiguity that matters, a Claude
+  and a Codex session sharing a worktree, and bound the caller to the Claude card with full
+  confidence.
 - **[Phase 1 - UI]** `styles.css:2657` - `--claude` doubles as the Foreman accent colour; the
   comment admits it. `AgentDot` renders `agent-${agent}`, so a new harness gets an unstyled
   dot.

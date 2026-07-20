@@ -117,8 +117,21 @@ const RULE_CHAR = "[\\p{Pd}\\u2212\\u2500-\\u257F\\u23AF\\u23BA-\\u23BD\\u02D7\\
  */
 const LOW_LINE = "[_\\uFF3F\\u2017]";
 
-/** Whitespace, plus the invisibles that read as nothing but are not `\s` - see `markerPattern`. */
-const GAP = "(?:\\s|[\\u200B-\\u200D\\u2060\\uFEFF\\u00AD])+";
+/**
+ * Whitespace, plus the invisibles that read as nothing but are not `\s` - see `markerPattern`.
+ *
+ * ONE character class, never an alternation. This was `(?:\s|[…﻿…])+`, and `\s` already
+ * matches U+FEFF - so every U+FEFF had two ways to match and the engine explored all of them.
+ * That is catastrophic, not merely slow: measured on the assembled pattern it doubled per
+ * character (n=19 10ms, n=20 21ms, n=21 41ms), so roughly forty of them never return. Worse
+ * than the quadratic run this file already fixed once, and reachable from every channel
+ * `fromChild` guards - a transcript, a tool argument, a pane, a status line.
+ *
+ * A single class cannot be ambiguous, so the shape is the fix rather than the contents:
+ * overlapping members are now harmless by construction, which matters because `\s`'s exact
+ * membership is not something a reader should have to hold in their head to edit this line.
+ */
+const GAP = "[\\s\\u200B-\\u200D\\u2060\\uFEFF\\u00AD]+";
 
 /**
  * Longest rule run the matcher will consider, so the pattern stays linear - see `dressing`.
@@ -213,6 +226,30 @@ function markerPattern(phrase: string): RegExp {
 const END_PHRASE = markerPattern("END OF THE OPERATOR'S STANDING INSTRUCTIONS");
 /** The opening heading, however it has been dressed up. */
 const HEADING_PHRASE = markerPattern(PREFS_HEADING);
+/**
+ * The verify prompt's OWN evidence fence, matched the same way.
+ *
+ * `defangDelimiters` already denies these phrases to the operator's file; the child had them
+ * for free. Whoever emits the fence decides where evidence stops, and the verify POLICY says
+ * in as many words that its instructions are "above the first delimiter" - so a transcript
+ * turn printing `----- END UNTRUSTED EVIDENCE -----` closes the block early and puts
+ * everything after it on the side the model reads as direction, from inside the block that
+ * exists to stop exactly that.
+ *
+ * This change widened the opening rather than creating it: the private renderer that was
+ * deleted printed every tool call as `[object Object]`, so serialized arguments - the most
+ * attacker-shaped text in a transcript - could not carry the line. They render verbatim now.
+ *
+ * Three spellings, because the dressing has to sit NEXT to the phrase to read as a frame and
+ * the real literals put a word in between: `----- BEGIN UNTRUSTED EVIDENCE (…) -----`. Matching
+ * the bare phrase alone missed the opening fence entirely - the `-----` is adjacent to `BEGIN`,
+ * not to `UNTRUSTED`.
+ */
+const FENCE_PHRASES = [
+  markerPattern("BEGIN UNTRUSTED EVIDENCE"),
+  markerPattern("END UNTRUSTED EVIDENCE"),
+  markerPattern("UNTRUSTED EVIDENCE"),
+];
 
 /**
  * The single gate every CHILD-CONTROLLED string passes through on its way into a prompt.
@@ -265,9 +302,12 @@ export function fromChild<T extends string | null | undefined>(text: T): T {
  * should see that the child tried this, and a silently vanished line teaches nobody.
  */
 export function stripPrefsMarkers(text: string): string {
-  return text
+  let out = text
     .replace(END_PHRASE, "[redacted: forged section marker]")
     .replace(HEADING_PHRASE, "[redacted: forged section heading]");
+  // The verifier's fence too - the child must not be able to say where evidence stops.
+  for (const fence of FENCE_PHRASES) out = out.replace(fence, "[redacted: forged evidence fence]");
+  return out;
 }
 
 /**

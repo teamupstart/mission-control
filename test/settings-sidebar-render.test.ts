@@ -51,6 +51,7 @@ const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
 const COST_ONLY = /Track what the fleet costs/; // the telemetry master toggle label
+const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -207,4 +208,26 @@ test("the pane is a tabpanel labelled by the active tab", () => {
     // That label points at a tab that actually exists in the rail.
     assert.match(html, new RegExp(`id="settings-tab-${active.id}"`));
   }
+});
+
+// The Inspector is the only category whose switches cause something to be PUBLISHED, so
+// "is its panel reachable" is a slightly bigger question here than for the others: a
+// category that silently fails to render is one whose live/dry-run state nobody can see
+// or change, while the daemon goes on acting on whatever was last stored.
+test("Inspector is a category of its own: its panel shows, the others don't", () => {
+  const html = render("inspector");
+  assert.match(html, INSPECTOR_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, SKILLS_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⌕<\/span>Inspector/);
+});
+
+// Ships off, and ships not-live. A static render runs no effects, so this is the
+// pre-poll state - which is exactly the state a first-run user sees, and it must not
+// show a mode that would post anything.
+test("the Inspector panel's defaults are the off position", () => {
+  const html = render("inspector");
+  // No checked master toggle, and no live-mode warning banner.
+  assert.doesNotMatch(html, /inspector-live-warn/);
+  assert.match(html, /Dry run - review and record findings, post nothing/);
 });

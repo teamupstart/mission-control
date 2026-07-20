@@ -26,6 +26,8 @@ import type {
   TaskSummary,
   WorkItem,
   WorkItemState,
+  InspectorInspection,
+  InspectorSummary,
 } from "@shared/types.ts";
 import type {
   HookIngest,
@@ -87,9 +89,24 @@ import {
   upsertSessionNote,
   upsertTask as dbUpsertTask,
   upsertUsageCell,
+  loadInspectorInspections,
 } from "./db.ts";
 import type { UsageCol } from "./db.ts";
 import { unref } from "./util/timers.ts";
+import { getInspectorConfig } from "./inspector/config.ts";
+import { parsePrUrl } from "./inspector/github.ts";
+
+/**
+ * A pull request a session's agent was PROVEN to have just opened, carried to whoever
+ * is keeping the adoption ledger. Everything but `url` is context for that row: which
+ * session, and which checkout to run `gh` from later.
+ */
+export interface PrOpened {
+  url: string;
+  sessionId: string;
+  cwd: string | null;
+  repoRoot: string | null;
+}
 
 /** An open-or-merged PR the poller matched to a session's current branch. */
 export type PrMatch = {
@@ -263,6 +280,8 @@ export class Registry extends EventEmitter {
   private nmDismissed = new Map<string, Set<string>>();
   /** Whether a discovery sweep has ever completed - see `sessionsObserved`. */
   private sweptSessions = false;
+  /** The Inspector's ledger, by PR key. Rebuilt from the DB; see `refreshInspections`. */
+  private inspections = new Map<string, InspectorInspection>();
   private lastQueuePrune = 0;
   /**
    * The last rate-limit reading any session's statusLine reported.
@@ -289,6 +308,7 @@ export class Registry extends EventEmitter {
     // or failed-but-alive) so their live resources get reconciled, even if newer
     // terminal tasks would push them past the recent cap.
     for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
+    for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
   }
 
   snapshot(): {
@@ -315,6 +335,23 @@ export class Registry extends EventEmitter {
   subscribe(fn: (e: ServerEvent) => void): () => void {
     this.on("event", fn);
     return () => this.off("event", fn);
+  }
+
+  /**
+   * Fired when a hook PROVED a session's agent just ran `gh pr create`.
+   *
+   * Separate from `subscribe` because this is not a state change anyone renders - it
+   * is a one-shot fact about consent, and the only listener is the Inspector's
+   * adoption ledger. Pushed rather than polled precisely because nothing persists it:
+   * `Session.prUrl` is rebuilt from the OS every sweep and says nothing about who
+   * opened the PR, so if this event isn't caught as it happens the proof is gone and
+   * the PR is indistinguishable from a stranger's forever after.
+   *
+   * Listeners must not throw; `applyHook` is on the hook-ingest path.
+   */
+  onPrOpened(fn: (e: PrOpened) => void): () => void {
+    this.on("pr_opened", fn);
+    return () => this.off("pr_opened", fn);
   }
 
   private emitEvent(e: ServerEvent): void {
@@ -499,6 +536,9 @@ export class Registry extends EventEmitter {
       nomistakesFixes: prev?.nomistakesFixes ?? [],
       task: this.taskSummaryFor(d.syntheticId, d.cwd),
       nomistakesNarration: prev?.nomistakesNarration ?? null,
+      // Carried forward like the PR fields for the same reason: discovery cannot see it.
+      // Re-resolved from the ledger just below, once cwd/prUrl are settled.
+      inspector: prev?.inspector ?? null,
       prUrl: prev?.prUrl ?? null,
       prNumber: prev?.prNumber ?? null,
       prState: prev?.prState ?? null,
@@ -561,6 +601,7 @@ export class Registry extends EventEmitter {
     base.cost =
       prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
+    base.inspector = this.inspectorSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
     // runs per session while `applyDiscovery` is still filling the map. Carry the
@@ -633,6 +674,10 @@ export class Registry extends EventEmitter {
       next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
+      // A hook is how a PR url first reaches a card, and the summary is keyed on it -
+      // so resolving here is what makes the chip appear on the same event that
+      // produced the PR, rather than up to a poll tick later.
+      next.inspector = this.inspectorSummaryFor(next);
       this.rememberAgentSession(next, target.agentSessionId);
       this.sessions.set(next.id, next);
       logEvent(next.id, ts, evt.event, { activity, state });
@@ -642,6 +687,23 @@ export class Registry extends EventEmitter {
       // shipping the pre-goal object and the card would show the change only on the next
       // unrelated event.
       this.captureGoalPrompt(next, evt, now);
+      // Last of all, and only on the proof-grade signal. `prUrl` alone is a text match
+      // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. The
+      // listener writes a durable adoption row, so this firing is the only chance to
+      // record that this PR is ours - but it must never be able to break hook ingest,
+      // hence the guard.
+      if (evt.prCreated && evt.prUrl) {
+        try {
+          this.emit("pr_opened", {
+            url: evt.prUrl,
+            sessionId: next.id,
+            cwd: next.cwd,
+            repoRoot: next.repoRoot,
+          } satisfies PrOpened);
+        } catch (err) {
+          console.error("[registry] pr_opened listener threw:", err);
+        }
+      }
     }
     this.pruneOverlays(now);
   }
@@ -1014,6 +1076,12 @@ export class Registry extends EventEmitter {
       if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
         continue;
       const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
+      // `prUrl` is the key the Inspector summary hangs off, so changing it here without
+      // re-resolving leaves the chip answering for the PREVIOUS pull request - or, on the
+      // ordinary startup ordering (this poller runs seconds after the first sweep, which
+      // saw no PR yet), leaves an adopted PR with no chip at all until something unrelated
+      // happens to rebuild the session. Same reason `applyHook` re-resolves.
+      next.inspector = this.inspectorSummaryFor(next);
       this.sessions.set(id, next);
       this.emitSession(next);
     }
@@ -1873,6 +1941,53 @@ export class Registry extends EventEmitter {
    * that cwd may be doing something else entirely, so rebinding is always an
    * explicit click, never automatic.
    */
+  /**
+   * The Inspector's state for this session's pull request, keyed on `prUrl`.
+   *
+   * Keyed on the PR rather than the session because that is what the ledger is about:
+   * a PR outlives the session that opened it, gets reviewed after that session exits,
+   * and can be shown on a different session that later checks out the same branch.
+   *
+   * Null when the PR was never adopted, and that is INFORMATION rather than an absence:
+   * the Inspector only adopts what it can prove Mission Control opened, so a card with
+   * a PR chip and no inspector chip is saying that PR came from somewhere else.
+   */
+  private inspectorSummaryFor(s: Session): InspectorSummary | null {
+    if (!s.prUrl) return null;
+    const parsed = parsePrUrl(s.prUrl);
+    if (!parsed) return null;
+    const row = this.inspections.get(parsed.key);
+    if (!row) return null;
+    return {
+      prKey: row.key,
+      url: row.url,
+      mode: getInspectorConfig().mode,
+      open: row.openFindings,
+      round: row.round,
+      lastReviewedAt: row.lastReviewedAt,
+      failed: row.lastError !== null,
+    };
+  }
+
+  /**
+   * Re-read the ledger and push any changed summary onto its session.
+   *
+   * Called by the Inspector at the end of a tick rather than on a timer: a review round
+   * is minutes of work and then one moment where the counts change, so polling the DB
+   * per sweep would be constant reads to observe an event that happens rarely.
+   */
+  refreshInspections(): void {
+    this.inspections.clear();
+    for (const row of loadInspectorInspections()) this.inspections.set(row.key, row);
+    for (const [id, s] of this.sessions) {
+      const next = this.inspectorSummaryFor(s);
+      if (JSON.stringify(next) === JSON.stringify(s.inspector)) continue;
+      const updated: Session = { ...s, inspector: next };
+      this.sessions.set(id, updated);
+      this.emitSession(updated);
+    }
+  }
+
   private orphanedQueueFor(s: Session): OrphanedQueueHint | null {
     if (!s.cwd) return null;
     // No sweep yet means no evidence, only an empty map - and "no live session holds
@@ -2640,6 +2755,9 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   queue: byJson,
   orphanedQueue: byJson,
   prChecks: byValue,
+  // byJson: a small object the chip renders as a unit - counts, mode and a timestamp
+  // that all change together at the end of a review round.
+  inspector: byJson,
   // Load-bearing: a dialog opening is a tick where almost nothing ELSE changes.
   // `permissionMode` is sticky and so doesn't flip when the menu covers the
   // footer, and a session parked on a question is by definition not doing

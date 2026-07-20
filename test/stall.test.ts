@@ -57,6 +57,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     goal: null,
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...over,
   };
@@ -105,6 +106,7 @@ function mkGate(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "b",
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: "review",

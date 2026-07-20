@@ -269,6 +269,8 @@ interface NmRun {
   branch: string;
   status: string;
   head: string | null;
+  /** The PR this run's `pr` step opened, if it has reached that step. */
+  pr: string | null;
   awaitingAgent: string | null;
   findingsSummary: string | null;
   steps: NmStep[];
@@ -303,6 +305,7 @@ export function parseAxiStatus(out: string): NmRun | null {
     branch: "",
     status: "",
     head: null,
+    pr: null,
     awaitingAgent: null,
     findingsSummary: null,
     steps: [],
@@ -466,6 +469,8 @@ function assignRunScalar(run: NmRun, line: string): void {
   if (status !== null) return void (run.status = status);
   const head = scalar(line, "head");
   if (head !== null) return void (run.head = head);
+  const pr = scalar(line, "pr");
+  if (pr !== null) return void (run.pr = pr);
   const awaiting = scalar(line, "awaiting_agent");
   if (awaiting !== null) return void (run.awaitingAgent = awaiting);
   const findings = scalar(line, "findings");
@@ -516,6 +521,7 @@ export function summarize(run: NmRun | null): NmRunSummary | null {
     branch: run.branch,
     startedAt: ulidTime(run.id),
     endedAt: null,
+    prUrl: run.pr,
     awaitingAgent: run.awaitingAgent,
     findingsSummary: run.findingsSummary,
     gateStep: run.gate?.step ?? null,

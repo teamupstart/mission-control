@@ -14,10 +14,23 @@ export interface RunResult {
 export function run(
   bin: string,
   args: string[],
-  opts: { timeoutMs?: number; cwd?: string; env?: NodeJS.ProcessEnv } = {},
+  opts: {
+    timeoutMs?: number;
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    /**
+     * Text to write to the child's stdin.
+     *
+     * Exists so a JSON body can be piped rather than crammed onto a command line -
+     * `gh api --input -` is the only sane way to POST a whole review with its inline
+     * comments, and argv is both size-limited and the wrong place for text a model
+     * wrote.
+     */
+    input?: string;
+  } = {},
 ): Promise<RunResult> {
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       bin,
       args,
       {
@@ -37,5 +50,14 @@ export function run(
         resolve({ stdout: stdout ?? "", stderr: stderr ?? "", code });
       },
     );
+    if (opts.input !== undefined) {
+      // An unhandled `error` on stdin THROWS rather than rejecting, taking the caller's
+      // process down instead of failing this one run - and a child that exits before
+      // reading a large body (auth failure, bad flags) gives exactly that via EPIPE.
+      // Swallowed because it isn't the diagnosis: the callback above still reports the
+      // real exit code and stderr.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts.input);
+    }
   });
 }

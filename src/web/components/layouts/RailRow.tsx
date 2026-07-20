@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot } from "../session-bits.tsx";
+import { AgentDot, inspectorChipView } from "../session-bits.tsx";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -68,6 +68,19 @@ export function RailRow({
           {session.prNumber && (
             <span className={`rail-pr pr-${session.prState ?? "open"}`}>#{session.prNumber}</span>
           )}
+          {/* The rail is glyph-and-count only - it has one line of room and a name to fit
+              in it - so the Inspector shows as ⌕ plus its count, and nothing when there
+              is nothing outstanding. The DECISION is the shared one; only the rendering
+              is this terse. */}
+          {(() => {
+            const insp = inspectorChipView(session.inspector);
+            if (!insp || insp.tone === "insp-clean" || insp.tone === "insp-queued") return null;
+            return (
+              <span className={`rail-insp ${insp.tone}`} title={insp.title}>
+                ⌕{insp.mark}
+              </span>
+            );
+          })()}
           <span className="rail-seen">
             {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
           </span>

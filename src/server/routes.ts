@@ -19,6 +19,7 @@ import {
   GateReplySchema,
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
+  InspectorConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -77,6 +78,7 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
+import { getInspectorConfig, setInspectorConfig } from "./inspector/config.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -91,7 +93,7 @@ import {
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
-import { dropGateReply, getSkillsAcks, logGateReply } from "./db.ts";
+import { dropGateReply, getSkillsAcks, loadInspectorInspections, logGateReply } from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -1158,6 +1160,17 @@ export function buildApp(
     if (synced.refused.length > 0) return c.json({ error: synced.refused.join("; ") }, 409);
     return c.json(skillsView());
   });
+
+    // --- Inspector: automated review of the PRs Mission Control opened ---
+  app.get("/api/inspector/config", (c) => c.json(getInspectorConfig()));
+  app.put("/api/inspector/config", async (c) => {
+    const parsed = await parseBody(c, InspectorConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setInspectorConfig(parsed.data));
+  });
+  // The ledger, newest first. This is what makes dry-run legible: without somewhere to
+  // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
+  app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections()));
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));

@@ -79,6 +79,77 @@ export function GoalLine({ session }: { session: Session }): React.JSX.Element |
   );
 }
 
+/**
+ * What the Inspector has to say about this session's pull request, in one chip.
+ *
+ * Renders nothing at all unless the PR was ADOPTED, and that silence is meaningful: the
+ * Inspector only adopts PRs it can prove Mission Control opened, so a card showing a PR
+ * chip and no inspector chip is telling you that PR came from somewhere else and will
+ * never be commented on.
+ *
+ * Counts rather than findings. The card's job is to say whether to go and look; the pull
+ * request is where you look.
+ */
+export function inspectorChipView(
+  inspector: Session["inspector"],
+): { mark: string; tone: string; title: string } | null {
+  if (!inspector) return null;
+  const dry = inspector.mode === "dry-run";
+  const suffix = dry ? " (dry run - nothing was posted)" : "";
+  if (inspector.failed) {
+    return {
+      mark: "!",
+      tone: "insp-failed",
+      title: `Inspector: the last review of this pull request did not complete${suffix}`,
+    };
+  }
+  if (inspector.round === 0) {
+    // Glyph alone. "Adopted, not looked at yet" is the least urgent thing this chip can
+    // say, and it should not cost a single character more than its own presence.
+    return {
+      mark: "",
+      tone: "insp-queued",
+      title: `Inspector: adopted for review, not looked at yet${suffix}`,
+    };
+  }
+  if (inspector.open === 0) {
+    return {
+      mark: "✓",
+      tone: "insp-clean",
+      title: `Inspector: reviewed, nothing outstanding${suffix}`,
+    };
+  }
+  return {
+    mark: `${inspector.open}`,
+    tone: "insp-findings",
+    title:
+      `Inspector: ${inspector.open} open finding${inspector.open === 1 ? "" : "s"} ` +
+      `after ${inspector.round} round${inspector.round === 1 ? "" : "s"}${suffix}`,
+  };
+}
+
+/** The Inspector chip. Shared by all four session surfaces - see CLAUDE.md on parity. */
+export function InspectorChip({ session }: { session: Session }): React.JSX.Element | null {
+  const view = inspectorChipView(session.inspector);
+  if (!view || !session.inspector) return null;
+  return (
+    <Tooltip label={view.title}>
+      <a
+        className={`insp-chip ${view.tone}${session.inspector.mode === "dry-run" ? " insp-dry" : ""}`}
+        href={session.inspector.url}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <span className="insp-glyph" aria-hidden>
+          ⌕
+        </span>
+        {view.mark && <span className="insp-label">{view.mark}</span>}
+      </a>
+    </Tooltip>
+  );
+}
+
 /** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   if (!session.prUrl) return null;

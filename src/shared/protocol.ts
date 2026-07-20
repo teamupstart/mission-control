@@ -47,6 +47,15 @@ export const HookIngestSchema = z.object({
   // link `gh pr create` prints). Optimistically decorates the session's card;
   // the PR poller is the source of truth that later confirms or clears it.
   prUrl: z.string().url().optional(),
+  // True when the hook saw the agent RUN `gh pr create` - not merely print a PR URL.
+  //
+  // The distinction is the whole of the Inspector's consent model. `prUrl` above is a
+  // loose text match that `gh pr view` trips just as readily: fine for a chip the
+  // poller retracts a tick later, useless as grounds for writing to GitHub. This is
+  // read off the command line itself, and it is what adopts a PR for review.
+  //
+  // Absent (not `false`) when it doesn't match, and absent on every non-Bash event.
+  prCreated: z.boolean().optional(),
 });
 
 export type HookIngest = z.infer<typeof HookIngestSchema>;
@@ -781,6 +790,43 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
  * because flipping a session into `auto` lets it act without stopping for prompts,
  * which is a posture the operator opts into, not a default.
  */
+/**
+ * The Inspector's consent model, in one object.
+ *
+ * Every default here is the OFF position, and that is not caution theatre: this is the
+ * only subsystem that writes to a public place under the operator's GitHub identity.
+ * `enabled: false` means it never runs; `mode: "dry-run"` means it computes findings
+ * and posts none; an empty `repoAllowlist` means it acts nowhere. Turning it on is
+ * three deliberate acts, and the first two are reversible without anyone else seeing.
+ */
+export const InspectorConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  /**
+   * `dry-run` still adopts PRs, reviews them, and records what it WOULD say - which is
+   * the point. A preview mode that reviews nothing tells you nothing about whether the
+   * reviewer is any good on your repo.
+   */
+  mode: z.enum(["dry-run", "live"]).default("dry-run"),
+  /** Repos the operator has trusted. Empty = act nowhere. Same rule as Foreman's. */
+  repoAllowlist: z.array(z.string()).default([]),
+  /** Overrides the review model. Undefined inherits the CLI default. */
+  model: z.string().optional(),
+  /**
+   * Ceiling on inline comments per round. A reviewer that leaves thirty notes on one
+   * push is one nobody reads, and the cap is what turns "be thorough" into "lead with
+   * what matters" - the planner sorts by severity before it truncates.
+   */
+  maxCommentsPerRound: z.number().int().min(1).max(20).default(8),
+});
+export type InspectorConfig = z.infer<typeof InspectorConfigSchema>;
+
+/** Partial update of the Inspector config from the dashboard. */
+export const InspectorConfigPatchSchema = InspectorConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
+
 export const HarnessesConfigSchema = z.object({
   /**
    * When on, every Claude session dispatched from Mission Control is driven to `auto`

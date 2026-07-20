@@ -5,6 +5,13 @@ import { DB_PATH } from "./config.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
+  InspectorComment,
+  InspectorCommentStatus,
+  InspectorInspection,
+  InspectorPr,
+  InspectorPrState,
+  InspectorSeverity,
+  InspectorSource,
   NmFixReplySource,
   NoteDisposition,
   PaneDialogSummary,
@@ -310,6 +317,58 @@ export function openDb(): DatabaseSync {
     -- sweep, and the table only ever grows: every /clear mints a new note key and so
     -- a new row.
     CREATE INDEX IF NOT EXISTS idx_fq_cwd ON foreman_queues(cwd);
+
+    -- The Inspector's ADOPTION ledger. A row here is the permission to comment on a
+    -- pull request, and the absence of one is why we don't comment on everyone else's.
+    -- Rows are written only from a signal that PROVES we opened the PR, and they
+    -- outlive the session that did (a PR is not done when its session exits).
+    CREATE TABLE IF NOT EXISTS inspector_prs (
+      key              TEXT PRIMARY KEY,  -- "owner/repo#123"
+      url              TEXT NOT NULL,
+      owner            TEXT NOT NULL,
+      repo             TEXT NOT NULL,
+      number           INTEGER NOT NULL,
+      repo_root        TEXT,              -- INSPECTOR.md + standards + the allowlist check
+      cwd              TEXT,              -- a checkout to run gh from
+      session_id       TEXT,              -- nullable: the PR outlives the session
+      source           TEXT NOT NULL,     -- hook | no-mistakes (how we know it's ours)
+      state            TEXT NOT NULL,     -- open | closed
+      head_sha         TEXT,              -- head as of the last completed review
+      round            INTEGER NOT NULL DEFAULT 0,
+      last_reviewed_at INTEGER,
+      last_error       TEXT,
+      adopted_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_inspector_prs_state ON inspector_prs(state);
+
+    -- The Inspector's PROVENANCE ledger: one row per ISSUE per PR, not per comment.
+    --
+    -- The unique index is the dedup, and it is here rather than in code on purpose:
+    -- "don't post the same complaint twice" is the rule that keeps an automated
+    -- reviewer tolerable, and a rule enforced by a code path is a rule someone
+    -- eventually routes around. The fingerprint deliberately excludes the line number,
+    -- so a push that shifts code down doesn't re-raise everything.
+    CREATE TABLE IF NOT EXISTS inspector_comments (
+      id                  TEXT PRIMARY KEY,  -- our uuid, also embedded in the marker
+      pr_key              TEXT NOT NULL,
+      fingerprint         TEXT NOT NULL,     -- sha1(path + normalized title)
+      path                TEXT,
+      line                INTEGER,
+      title               TEXT NOT NULL,
+      severity            TEXT NOT NULL,
+      comment_id          INTEGER,           -- GitHub's id; null while 'drafted'
+      thread_id           TEXT,              -- GraphQL node id, learned after posting
+      round               INTEGER NOT NULL,
+      status              TEXT NOT NULL,     -- drafted | open | resolved
+      replies             INTEGER NOT NULL DEFAULT 0,
+      answered_comment_id INTEGER,           -- newest foreign comment we've answered
+      created_at          INTEGER NOT NULL,
+      updated_at          INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_inspector_comments_pr ON inspector_comments(pr_key);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_inspector_comments_fp
+      ON inspector_comments(pr_key, fingerprint);
   `);
   db.exec(inFlightIndexSql());
   migrate(db);
@@ -1927,4 +1986,271 @@ export function setAppConfig(key: string, value: unknown): void {
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     )
     .run(key, JSON.stringify(value));
+}
+
+// ---- Inspector: the adoption + provenance ledgers ----
+//
+// Everything below is read and written ONLY by the Inspector (daemon-side). The two
+// tables answer the two questions that make automated PR review safe to run at all:
+// "is this PR ours to comment on?" and "is this comment ours to resolve?".
+
+interface InspectorPrRow {
+  key: string;
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  repo_root: string | null;
+  cwd: string | null;
+  session_id: string | null;
+  source: string;
+  state: string;
+  head_sha: string | null;
+  round: number;
+  last_reviewed_at: number | null;
+  last_error: string | null;
+  adopted_at: number;
+  updated_at: number;
+}
+
+function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
+  return {
+    key: r.key,
+    url: r.url,
+    owner: r.owner,
+    repo: r.repo,
+    number: r.number,
+    repoRoot: r.repo_root,
+    cwd: r.cwd,
+    sessionId: r.session_id,
+    source: r.source as InspectorSource,
+    state: r.state as InspectorPrState,
+    headSha: r.head_sha,
+    round: r.round,
+    lastReviewedAt: r.last_reviewed_at,
+    lastError: r.last_error,
+    adoptedAt: r.adopted_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Adopt a PR for review, idempotently. Returns true when this call is what adopted it.
+ *
+ * `DO NOTHING` rather than an upsert, and that is the whole design of the function:
+ * adoption is a fact about the past ("we opened this"), so a later sighting must never
+ * be able to rewrite it. Both signals - the hook's `gh pr create` and no-mistakes' own
+ * `pr:` line - land here, and the second one to arrive is a no-op instead of a
+ * re-adoption that would reset the head sha and re-review a PR from scratch.
+ */
+export function adoptInspectorPr(pr: InspectorPr): boolean {
+  const res = openDb()
+    .prepare(
+      `INSERT INTO inspector_prs
+         (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
+          head_sha, round, last_reviewed_at, last_error, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key) DO NOTHING`,
+    )
+    .run(
+      pr.key,
+      pr.url,
+      pr.owner,
+      pr.repo,
+      pr.number,
+      pr.repoRoot,
+      pr.cwd,
+      pr.sessionId,
+      pr.source,
+      pr.state,
+      pr.headSha,
+      pr.round,
+      pr.lastReviewedAt,
+      pr.lastError,
+      pr.adoptedAt,
+      pr.updatedAt,
+    );
+  return Number(res.changes) > 0;
+}
+
+/**
+ * Refresh the mutable half of a ledger row after a tick.
+ *
+ * `cwd` is updated too, and deliberately: the worktree a PR was opened from gets
+ * reaped, and a row pinned to a dead directory can never run `gh` again. Identity
+ * columns (key/owner/repo/number/source/adopted_at) are untouched by construction.
+ */
+export function updateInspectorPr(
+  key: string,
+  patch: {
+    cwd?: string | null;
+    repoRoot?: string | null;
+    state?: InspectorPrState;
+    headSha?: string | null;
+    round?: number;
+    lastReviewedAt?: number | null;
+    lastError?: string | null;
+  },
+  now: number,
+): void {
+  const cur = getInspectorPr(key);
+  if (!cur) return;
+  const next = { ...cur, ...patch };
+  openDb()
+    .prepare(
+      `UPDATE inspector_prs
+          SET cwd = ?, repo_root = ?, state = ?, head_sha = ?, round = ?,
+              last_reviewed_at = ?, last_error = ?, updated_at = ?
+        WHERE key = ?`,
+    )
+    .run(
+      next.cwd,
+      next.repoRoot,
+      next.state,
+      next.headSha,
+      next.round,
+      next.lastReviewedAt,
+      next.lastError,
+      now,
+      key,
+    );
+}
+
+export function getInspectorPr(key: string): InspectorPr | null {
+  const r = openDb().prepare(`SELECT * FROM inspector_prs WHERE key = ?`).get(key) as
+    | InspectorPrRow
+    | undefined;
+  return r ? rowToInspectorPr(r) : null;
+}
+
+/** Every PR still worth polling - what the tick iterates. */
+export function loadOpenInspectorPrs(): InspectorPr[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM inspector_prs WHERE state = 'open' ORDER BY adopted_at ASC`)
+    .all() as unknown as InspectorPrRow[];
+  return rows.map(rowToInspectorPr);
+}
+
+interface InspectorCommentRow {
+  id: string;
+  pr_key: string;
+  fingerprint: string;
+  path: string | null;
+  line: number | null;
+  title: string;
+  severity: string;
+  comment_id: number | null;
+  thread_id: string | null;
+  round: number;
+  status: string;
+  replies: number;
+  answered_comment_id: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function rowToInspectorComment(r: InspectorCommentRow): InspectorComment {
+  return {
+    id: r.id,
+    prKey: r.pr_key,
+    fingerprint: r.fingerprint,
+    path: r.path,
+    line: r.line,
+    title: r.title,
+    severity: r.severity as InspectorSeverity,
+    commentId: r.comment_id,
+    threadId: r.thread_id,
+    round: r.round,
+    status: r.status as InspectorCommentStatus,
+    replies: r.replies,
+    answeredCommentId: r.answered_comment_id,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Record (or re-record) one issue on one PR.
+ *
+ * The conflict target is `(pr_key, fingerprint)` - the ISSUE's identity - so a finding
+ * the reviewer raises again in a later round updates its row instead of minting a
+ * second one. That is also what lets a resolved-then-regressed issue come back: the
+ * row flips out of `resolved` and gets a fresh comment id, rather than being blocked
+ * by a primary key it can't reuse.
+ */
+export function upsertInspectorComment(c: InspectorComment): void {
+  openDb()
+    .prepare(
+      `INSERT INTO inspector_comments
+         (id, pr_key, fingerprint, path, line, title, severity, comment_id, thread_id,
+          round, status, replies, answered_comment_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(pr_key, fingerprint) DO UPDATE SET
+         path = excluded.path,
+         line = excluded.line,
+         title = excluded.title,
+         severity = excluded.severity,
+         comment_id = excluded.comment_id,
+         thread_id = excluded.thread_id,
+         round = excluded.round,
+         status = excluded.status,
+         replies = excluded.replies,
+         answered_comment_id = excluded.answered_comment_id,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      c.id,
+      c.prKey,
+      c.fingerprint,
+      c.path,
+      c.line,
+      c.title,
+      c.severity,
+      c.commentId,
+      c.threadId,
+      c.round,
+      c.status,
+      c.replies,
+      c.answeredCommentId,
+      c.createdAt,
+      c.updatedAt,
+    );
+}
+
+export function loadInspectorComments(prKey: string): InspectorComment[] {
+  const rows = openDb()
+    .prepare(`SELECT * FROM inspector_comments WHERE pr_key = ? ORDER BY created_at ASC`)
+    .all(prKey) as unknown as InspectorCommentRow[];
+  return rows.map(rowToInspectorComment);
+}
+
+/**
+ * Every ledger row with its finding tallies - the settings panel's list, and what the
+ * per-session chip is derived from.
+ *
+ * One grouped query rather than a load-then-count-per-row loop: this runs on the
+ * daemon's single synchronous SQLite handle, the same one serving hook ingest and SSE,
+ * and the panel polls it.
+ */
+export function loadInspectorInspections(limit = 50): InspectorInspection[] {
+  const rows = openDb()
+    .prepare(
+      `SELECT p.*,
+              COALESCE(SUM(CASE WHEN c.status IN ('open','drafted') THEN 1 ELSE 0 END), 0) AS open_findings,
+              COALESCE(SUM(CASE WHEN c.status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_findings
+         FROM inspector_prs p
+         LEFT JOIN inspector_comments c ON c.pr_key = p.key
+        GROUP BY p.key
+        ORDER BY COALESCE(p.last_reviewed_at, p.adopted_at) DESC
+        LIMIT ?`,
+    )
+    .all(limit) as unknown as (InspectorPrRow & {
+    open_findings: number;
+    resolved_findings: number;
+  })[];
+  return rows.map((r) => ({
+    ...rowToInspectorPr(r),
+    openFindings: Number(r.open_findings),
+    resolvedFindings: Number(r.resolved_findings),
+  }));
 }

@@ -342,6 +342,15 @@ export interface Session {
    * `submit-options` for a form (see `multiSelect`) - which re-reads the pane and refuses
    * unless the rows still read as the labels the human was shown.
    */
+  /**
+   * The Inspector's state for this session's pull request, or null when there is no PR
+   * or the Inspector never adopted it.
+   *
+   * Null is the overwhelmingly common case and MEANS SOMETHING: the Inspector only
+   * adopts PRs it can prove Mission Control opened, so a card showing a PR chip and no
+   * inspector chip is telling you that PR came from somewhere else.
+   */
+  inspector: InspectorSummary | null;
   paneDialog: PaneDialog | null;
 }
 
@@ -1069,6 +1078,17 @@ export interface NmRunSummary {
    * `axi status` dates the end, so it can only be timed by watching (see timeRun).
    */
   endedAt: number | null;
+  /**
+   * The pull request this run's own `pr` step opened, or null before it gets there.
+   *
+   * This is the ONE signal in the app that PROVES Mission Control opened a PR - it is
+   * reported by the process that ran the step, not inferred from a branch or sniffed
+   * out of a tool result. The Inspector adopts a PR for review off the back of it, so
+   * dropping it here (as this did until the Inspector landed) is not a cosmetic loss:
+   * it is the difference between reviewing our own PRs and having no way to tell ours
+   * from a stranger's.
+   */
+  prUrl: string | null;
   /** e.g. "parked 1m30s" while awaiting an agent decision, else null. */
   awaitingAgent: string | null;
   /** e.g. "1 awaiting" / "1 auto-fix". */
@@ -1297,6 +1317,121 @@ export interface MissionReport {
   recent: Task[];
   /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
   recentTruncated: boolean;
+}
+
+// ---- Inspector (automated PR review) ----
+//
+// The Inspector reviews pull requests MISSION CONTROL OPENED, and only those. Every
+// type here hangs off that sentence: `InspectorPr` is the adoption ledger that answers
+// "is this one ours?", and `InspectorComment` is the provenance ledger that answers
+// "did we write this?". Both questions have to survive a daemon restart, which is why
+// this is durable state and not a poller's in-memory map.
+
+/** How far the Inspector may go. `dry-run` computes everything and posts nothing. */
+export type InspectorMode = "dry-run" | "live";
+
+/**
+ * How a PR came to be adopted. Recorded because the two signals have genuinely
+ * different strength, and a row whose provenance is unknown is one nobody can audit.
+ */
+export type InspectorSource = "hook" | "no-mistakes";
+
+/** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
+export type InspectorPrState = "open" | "closed";
+
+export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
+
+/**
+ * `drafted` is a dry-run finding: computed, deduped, never posted. It occupies the
+ * fingerprint slot so the preview is stable across ticks, and switching to live must
+ * treat it as NOT YET POSTED - otherwise dry-run permanently swallows everything it
+ * previewed.
+ */
+export type InspectorCommentStatus = "drafted" | "open" | "resolved";
+
+/** One adopted pull request. The row's existence IS the permission to comment on it. */
+export interface InspectorPr {
+  /** "owner/repo#123" - stable across clones, worktrees and session churn. */
+  key: string;
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  /** The repo this PR belongs to, for INSPECTOR.md + standards + the allowlist check. */
+  repoRoot: string | null;
+  /** A checkout to run `gh` from. May go stale when the session's worktree is reaped. */
+  cwd: string | null;
+  /** The session that opened it. Nullable: a PR outlives the session, deliberately. */
+  sessionId: string | null;
+  source: InspectorSource;
+  state: InspectorPrState;
+  /**
+   * The head commit as of the last completed review. The re-review trigger is simply
+   * `headRefOid !== headSha`, which is why it is stored rather than timestamped: a
+   * force-push backwards still differs, and a no-op tick still costs nothing.
+   */
+  headSha: string | null;
+  /** Completed review rounds. Also the runaway guard. */
+  round: number;
+  lastReviewedAt: number | null;
+  /** Why the last attempt failed, or null. Surfaced, never silently retried forever. */
+  lastError: string | null;
+  adoptedAt: number;
+  updatedAt: number;
+}
+
+/**
+ * One issue the Inspector raised on one PR.
+ *
+ * Keyed by `fingerprint`, which is the identity of the ISSUE (path + normalized title)
+ * rather than of the comment - so a push that shifts the code down does not produce a
+ * second copy of the same complaint. `UNIQUE(pr_key, fingerprint)` makes that a
+ * property of the database instead of a code path someone can forget.
+ */
+export interface InspectorComment {
+  id: string;
+  prKey: string;
+  fingerprint: string;
+  path: string | null;
+  line: number | null;
+  title: string;
+  severity: InspectorSeverity;
+  /** GitHub's review-comment id. Null while `drafted` - there is no comment yet. */
+  commentId: number | null;
+  /** The GraphQL review-thread node id, learned on the read after posting. */
+  threadId: string | null;
+  round: number;
+  status: InspectorCommentStatus;
+  /** Follow-up replies we have written in this thread. Capped, so bots can't ping-pong. */
+  replies: number;
+  /** The newest foreign comment we have answered, so we never answer one twice. */
+  answeredCommentId: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * The compact per-session view, denormalized onto a Session card like `TaskSummary`.
+ * Deliberately counts rather than findings: the card says whether to go look, and the
+ * PR itself is where you look.
+ */
+export interface InspectorSummary {
+  prKey: string;
+  url: string;
+  mode: InspectorMode;
+  /** Findings currently surfaced - posted in live mode, previewed in dry-run. */
+  open: number;
+  /** Completed review rounds. Zero means adopted but not yet looked at. */
+  round: number;
+  lastReviewedAt: number | null;
+  /** True when the last attempt errored, so the chip can say so instead of "clean". */
+  failed: boolean;
+}
+
+/** A ledger row plus its finding tallies - what the settings panel lists. */
+export interface InspectorInspection extends InspectorPr {
+  openFindings: number;
+  resolvedFindings: number;
 }
 
 // ---- SSE events (daemon -> UI) ----

@@ -2,6 +2,7 @@ import type {
   BacklogPlan,
   ForemanEpisode,
   ForemanStatus,
+  InspectorInspection,
   NmFixDetail,
   PermissionMode,
   ResetPreview,
@@ -20,6 +21,8 @@ import type {
   CostTelemetryStatus,
   HarnessesConfig,
   HarnessesConfigPatch,
+  InspectorConfig,
+  InspectorConfigPatch,
   ResolveEpisode,
   SetNote,
   SkillsConfigPatch,
@@ -75,6 +78,8 @@ export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
  * another checkout) and a panel showing only the intent would be confidently wrong.
  */
 export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/config");
+export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspector/config");
+export const fetchInspectorPrs = () => fetchJson<InspectorInspection[]>("/api/inspector/prs");
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**
@@ -332,6 +337,7 @@ export const api = {
 
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
+  setInspectorConfig: (cfg: InspectorConfigPatch) => put(`/api/inspector/config`, cfg),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),

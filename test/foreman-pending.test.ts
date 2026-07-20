@@ -43,6 +43,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     note: null, cost: null, goal: null,
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...over,
   };
@@ -139,6 +140,7 @@ function mkGateParked(over: Partial<Session> = {}): Session {
       branch: "feat/x",
       startedAt: 1000,
       endedAt: null,
+      prUrl: null,
       awaitingAgent: "parked 1m30s",
       findingsSummary: "1 awaiting",
       gateStep: "review",

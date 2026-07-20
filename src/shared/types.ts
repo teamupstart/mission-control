@@ -1280,7 +1280,11 @@ export interface PlanDecisionOption {
   recommended?: boolean;
 }
 
-/** One question the human answers when resolving a `plan-decisions` review. */
+/**
+ * One question the human answers when resolving a `plan-decisions` review - or the single
+ * question an `input` review carries when the agent asked with discrete options rather than
+ * open prose (see `server/ask-channel.ts`).
+ */
 export interface PlanDecision {
   /** Stable id for this question. */
   id: string;
@@ -1305,7 +1309,10 @@ export interface ReviewItem {
    * `plan-decisions`), or an optional comment on approve/reject.
    */
   response: string | null;
-  /** The decision points to answer; present only for kind `plan-decisions`. */
+  /**
+   * The decision points to answer: many for `plan-decisions`, exactly one for an `input`
+   * whose agent supplied discrete options, absent for a free-text `input`.
+   */
   decisions?: PlanDecision[] | null;
   createdAt: number; // epoch ms
   resolvedAt: number | null;

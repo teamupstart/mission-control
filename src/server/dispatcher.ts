@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { AgentType, Session, Task, WorktreeProvider } from "@shared/types.ts";
 import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
+import { askChannelArgs } from "./ask-channel.ts";
 import { injectPrompt, setPermissionMode } from "./actions.ts";
 import { getHarnessesConfig, resolveDispatchModel } from "./harnesses.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
@@ -72,7 +73,17 @@ export class Dispatcher {
       // in force NOW. Both CLIs spell the flag `--model <id>`; null means pass nothing
       // and let the harness's own configuration decide.
       const model = resolveDispatchModel(task.agent, task.model);
-      const agentArgs = model ? ["--model", model] : [];
+      // The ask channel rides along on every dispatch: it takes Claude's built-in
+      // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
+      // a clarifying question arrives as structured arguments in the dashboard rather than
+      // as a menu we read off the child's screen. Scoped to dispatch for the same reason
+      // `applyAutoMode` is - we only reconfigure agents WE launched, never one the operator
+      // started and we merely discovered. It returns nothing rather than half its flags if
+      // the MCP bundle is missing; see `askChannelArgs`.
+      const agentArgs = [
+        ...(model ? ["--model", model] : []),
+        ...(await askChannelArgs(task.agent)),
+      ];
 
       const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
       this.patch(taskId, { tmuxSession });
@@ -452,11 +463,16 @@ export async function teardownWorktree(task: {
  * The split is best-effort - a shell pane is a convenience, so if tmux can't add it
  * we keep the agent session rather than failing the whole dispatch.
  *
- * `agentArgs` (today: `--model <id>`) are appended to the binary. tmux joins the
- * trailing arguments with spaces and runs the result through a shell rather than
- * exec'ing the argv, so a value carrying a quote or a glob would be interpreted
- * rather than passed - which is why model ids are constrained to a safe charset at
- * the schema (`ModelIdSchema`) before they can ever be stored.
+ * `agentArgs` (`--model <id>`, plus the ask channel's four flags) are appended to the
+ * binary. This comment used to say tmux joins the trailing arguments with spaces and runs
+ * the result through a shell rather than exec'ing the argv. Measured on tmux 3.6b, it does
+ * not: `$HOME`, `a*b` and `two words` each arrive as one unmodified argv element, because
+ * tmux >= 3.3 uses multiple arguments as the argv directly. That matters now that the argv
+ * carries filesystem paths, whose charset we do not control the way we control a model id's.
+ *
+ * `ModelIdSchema` still constrains model ids to a safe charset, and stays that way: it is
+ * free, and the old description did hold on the older tmux that joined-and-shelled a single
+ * command string.
  */
 export async function spawnDetachedSession(
   sessionName: string,

@@ -1995,12 +1995,6 @@ body {
   overflow: hidden;
   background: var(--bg-2);
 }
-.question {
-  margin: 0;
-  padding: 14px 16px;
-  font-size: 14px;
-  line-height: 1.5;
-}
 .review-actions {
   display: flex;
   align-items: center;

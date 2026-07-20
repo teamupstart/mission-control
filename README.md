@@ -472,11 +472,36 @@ launches. It exposes five tools:
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
-- `request_input(question)` - ask a question and **block** for the answer
+- `request_input(question, options?)` - ask a question and **block** for the answer.
+  With `options` the human gets clickable choices (radios, or checkboxes with
+  `multiSelect`, plus an optional free-text "Other"); without them, a text box
 - `report_status(activity)` - update the session's activity line
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
+
+Registering it by hand as above covers sessions **you** start. Sessions the dashboard
+dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+### The ask channel
+
+Sessions the dashboard **dispatches** do not use Claude's built-in `AskUserQuestion`.
+It is disallowed on the spawn, and the agent is pointed at `request_input` instead, so
+a clarifying question arrives as structured arguments in the dashboard rather than as a
+menu drawn on a terminal nobody is watching.
+
+Four flags go on together or not at all (`src/server/ask-channel.ts`): `--mcp-config`
+supplies the tool, `--allowed-tools` pre-approves it so calling it doesn't itself raise a
+permission prompt, `--disallowed-tools` removes the built-in, and
+`--append-system-prompt-file` tells the agent where to go instead. If the MCP bundle is
+missing (`npm run build` never ran), **none** of them are passed and the session keeps the
+built-in menu: an agent with nowhere to ask is worse than one with a menu we can read.
+
+The redirect is not optional. Measured on live sessions, `--disallowed-tools` on its own
+does not send the agent anywhere - it asks its question in prose and ends the turn.
+
+Sessions **you** start are untouched: they keep the built-in menu, which the dashboard
+still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
 ## Dispatch an agent
 

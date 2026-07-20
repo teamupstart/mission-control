@@ -155,17 +155,66 @@ server.registerTool(
   },
 );
 
+// This is the replacement for Claude's built-in `AskUserQuestion`, which dispatched sessions
+// have taken away from them (see `src/server/ask-channel.ts`). It therefore has to cover what
+// the built-in covered: a question with discrete options, answered by clicking one. `options`
+// is optional so the same tool still serves a genuinely open-ended ask - one tool for the
+// redirect prompt to name, with the agent choosing the SHAPE from the question rather than
+// choosing between two tools.
 server.registerTool(
   "request_input",
   {
     title: "Ask the human a question",
     description:
-      "Ask the human a question in the Mission Control dashboard and BLOCK until they answer. Returns their answer.",
-    inputSchema: { question: z.string().describe("The question to ask") },
+      "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
+      "they answer. Returns their answer. Pass `options` whenever the answer is a choice " +
+      "between discrete alternatives - they become real controls the human clicks, which is " +
+      "faster and less ambiguous than free text. Omit `options` only for open-ended asks. " +
+      "Your terminal is not being read, so this is the ONLY way to reach your human: never " +
+      "ask a question as prose and end your turn.",
+    inputSchema: {
+      question: z.string().describe("The question to ask"),
+      options: z
+        .array(
+          z.object({
+            label: z.string().describe("What the human reads on the control"),
+            detail: z.string().optional().describe("Optional one-line elaboration"),
+            recommended: z
+              .boolean()
+              .optional()
+              .describe("Marks a suggested choice; does not preselect"),
+          }),
+        )
+        .optional()
+        .describe("Discrete choices. Omit entirely for a free-text answer."),
+      multiSelect: z
+        .boolean()
+        .optional()
+        .describe("Checkboxes (choose many) when true, radios (choose one) otherwise"),
+      allowOther: z
+        .boolean()
+        .optional()
+        .describe("Adds a free-text 'Other' field for an answer outside the options"),
+    },
   },
-  async ({ question }) => {
+  async ({ question, options, multiSelect, allowOther }) => {
     try {
-      const id = await createReview("input", question, question);
+      // Option ids are positional and generated here rather than asked of the agent. The
+      // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a
+      // wire-level handle between the form and its submit - making the agent invent stable
+      // ids for something it never reads back would be ceremony with a chance of collision.
+      const decisions = options?.length
+        ? [
+            {
+              id: "q",
+              question,
+              options: options.map((o, i) => ({ ...o, id: `o${i}` })),
+              multiSelect,
+              allowOther,
+            },
+          ]
+        : undefined;
+      const id = await createReview("input", question, question, decisions);
       const review = await waitForResolution(id);
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {

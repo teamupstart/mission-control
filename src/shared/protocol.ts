@@ -218,6 +218,17 @@ export type PlanDecisionInput = z.infer<typeof PlanDecisionSchema>;
  * A `plan-decisions` review must carry at least one decision: the whole point of the
  * kind is that the human answers something, and a decision-less one would reach the
  * dashboard as a form that can only resolve the review on an empty response.
+ *
+ * `input` MAY carry decisions too, and carries exactly one when it does - that is
+ * `request_input` asking with discrete options, the replacement for Claude's built-in
+ * `AskUserQuestion` menu (see `server/ask-channel.ts`). It reuses this shape rather than
+ * growing a parallel one because `PlanDecision` already IS the question-with-options form,
+ * and `DecisionForm` already renders it; the only difference is that an `input` has no plan
+ * above it. The bound is asserted here rather than left to convention, because everything
+ * downstream - the single `<fieldset>`, the "you answered" lead line - reads the one
+ * question by position.
+ *
+ * `plan` and `diff` take no decisions at all: there is no control to render them on.
  */
 export const CreateReviewSchema = z
   .object({
@@ -227,11 +238,19 @@ export const CreateReviewSchema = z
     kind: z.enum(["plan", "diff", "input", "plan-decisions"]),
     title: z.string().min(1),
     body: z.string(),
-    // Present only for kind `plan-decisions`; the questions the human answers.
+    /** The questions the human answers: many for `plan-decisions`, exactly one for `input`. */
     decisions: z.array(PlanDecisionSchema).optional(),
   })
   .refine((r) => r.kind !== "plan-decisions" || (r.decisions?.length ?? 0) > 0, {
     message: "kind 'plan-decisions' requires at least one decision",
+    path: ["decisions"],
+  })
+  .refine((r) => r.kind !== "input" || (r.decisions?.length ?? 0) <= 1, {
+    message: "kind 'input' carries at most one decision",
+    path: ["decisions"],
+  })
+  .refine((r) => r.kind === "plan-decisions" || r.kind === "input" || !r.decisions?.length, {
+    message: "only kinds 'plan-decisions' and 'input' can carry decisions",
     path: ["decisions"],
   });
 export type CreateReview = z.infer<typeof CreateReviewSchema>;

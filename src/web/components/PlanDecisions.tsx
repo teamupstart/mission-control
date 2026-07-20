@@ -20,8 +20,14 @@ function isAnswered(d: PlanDecision, a: { selected: string[]; other: string } | 
  * Format the selections into the response string the agent receives verbatim as its
  * tool result. Deterministic and human-legible (it also shows in the transcript), one
  * block per question with the chosen labels and any free-text note.
+ *
+ * `lead` names what was answered, because this form now serves two askers: a
+ * `plan-decisions` review resolving several choices about a plan, and an `input` review
+ * where `request_input` asked one question with options - the replacement for Claude's
+ * built-in `AskUserQuestion`. Telling the second one "Plan decisions submitted" would hand
+ * the agent a plan it never wrote.
  */
-function formatResponse(decisions: PlanDecision[], answers: Answers): string {
+function formatResponse(decisions: PlanDecision[], answers: Answers, lead: string): string {
   const blocks = decisions.map((d) => {
     const a = answers[d.id] ?? { selected: [], other: "" };
     const labels = d.options.filter((o) => a.selected.includes(o.id)).map((o) => o.label);
@@ -31,7 +37,7 @@ function formatResponse(decisions: PlanDecision[], answers: Answers): string {
     if (!labels.length && !(d.allowOther && a.other.trim())) lines.push("  → (no selection)");
     return lines.join("\n");
   });
-  return `Plan decisions submitted:\n\n${blocks.join("\n\n")}`;
+  return `${lead}\n\n${blocks.join("\n\n")}`;
 }
 
 /**
@@ -43,10 +49,24 @@ export function DecisionForm({
   decisions,
   busy,
   onSubmit,
+  /** Opening line of the response the agent receives - see `formatResponse`. */
+  lead = "Plan decisions submitted:",
+  /**
+   * Drop the visible `<legend>`, because the caller already displays the question.
+   *
+   * For an `input` review the question IS the review's title, so the modal prints it in the
+   * header and a legend beneath it says the same sentence twice. The text still reaches
+   * assistive tech as the fieldset's `aria-label` - the group needs a name whether or not
+   * one is drawn. A `plan-decisions` form has several questions under one plan title and
+   * always shows them.
+   */
+  hideQuestions = false,
 }: {
   decisions: PlanDecision[];
   busy: boolean;
   onSubmit: (response: string) => void;
+  lead?: string;
+  hideQuestions?: boolean;
 }): React.JSX.Element {
   const [answers, setAnswers] = useState<Answers>({});
 
@@ -81,8 +101,12 @@ export function DecisionForm({
   return (
     <div className="decisions">
       {decisions.map((d) => (
-        <fieldset key={d.id} className="decision">
-          <legend className="decision-q">{d.question}</legend>
+        <fieldset
+          key={d.id}
+          className="decision"
+          aria-label={hideQuestions ? d.question : undefined}
+        >
+          {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
           {d.options.map((o) => (
             <label key={o.id} className="decision-option">
               <input
@@ -116,7 +140,7 @@ export function DecisionForm({
         <button
           className="btn btn-approve"
           disabled={busy || !complete}
-          onClick={() => onSubmit(formatResponse(decisions, answers))}
+          onClick={() => onSubmit(formatResponse(decisions, answers, lead))}
         >
           Submit
         </button>

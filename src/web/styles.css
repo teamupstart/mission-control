@@ -8,7 +8,11 @@
   --border-soft: #1b2129;
   --fg: #e7ebf1;
   --muted: #939eae;
-  --dim: #5d6775;
+  /* The bottom of the text ramp - help blurbs, hints, row descriptions, most of it set
+     at 11.5px. It has to clear 4.5:1 on every surface it lands on, and --panel-2 is the
+     lightest of those, so that is the one it is tuned against (4.7:1). Anything darker
+     reads as disabled rather than secondary at this size. */
+  --dim: #7c8798;
 
   --working: #4a9eff;
   --idle: #35c08a;

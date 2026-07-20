@@ -381,7 +381,9 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
 ```
 
 Once on, every card carries a **spend badge** beside its model / thinking / context row,
-and the topbar carries the fleet's **spend today** plus **5h** and **7d** plan meters.
+and the topbar grows a foldable **Usage** row carrying the fleet's **spend today** plus
+**5h** and **7d** plan meters. Folding the row away keeps today's spend visible beside
+the toggle, and the choice persists per machine like the layout.
 
 Two sources, each used for the one thing only it can do:
 
@@ -1505,12 +1507,12 @@ that looks perfectly healthy would help nobody.
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](#cost-telemetry) installers edit. Overridable so tests never touch your real one |
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
-shortcuts, alert delivery, and message formatting all live in the daemon's database
-(`app_config`), alongside the Foreman, Skills, Harnesses, and Cost settings - so they are
-the same in every tab, on `localhost` and `127.0.0.1` alike, in the desktop app and in a
-browser, and they survive an upgrade. The browser keeps a copy in `localStorage`, but only
-as a cache so the dashboard paints your layout in the first frame; deleting it costs one
-request, not a preference.
+shortcuts, alert delivery, message formatting, and the usage row's fold all live in the
+daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, and Cost
+settings - so they are the same in every tab, on `localhost` and `127.0.0.1` alike, in the
+desktop app and in a browser, and they survive an upgrade. The browser keeps a copy in
+`localStorage`, but only as a cache so the dashboard paints your layout in the first
+frame; deleting it costs one request, not a preference.
 
 [Cost telemetry](#cost-telemetry) is not configured by the environment - it is a switch in
 **Settings → Cost** (or `npm run install-telemetry`), which writes these keys into your

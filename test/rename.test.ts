@@ -4,19 +4,19 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  rename,
-  validateSessionName,
-  validateSessionNameAgainstTasks,
-  type RenameDeps,
-} from "../src/server/actions.ts";
+import type { RenameDeps } from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { WeztermPane } from "../src/server/discovery/wezterm.ts";
 import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
 
-// Isolate the daemon's SQLite DB before the Registry (which reads config/db) loads.
+// Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
+// static import of actions.ts here once sat above this line; hoisting evaluated it first,
+// config.ts stamped the real home, and every run of this file quietly opened the live db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-rename-"));
+const { rename, validateSessionName, validateSessionNameAgainstTasks } = await import(
+  "../src/server/actions.ts"
+);
 const { Registry } = await import("../src/server/registry.ts");
 
 const tmux: TmuxInfo = { session: "work", window: "0", windowIndex: 0, paneId: "%3" };

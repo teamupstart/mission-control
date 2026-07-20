@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PaneDialog } from "../src/shared/types.ts";
-import { annotatePaneState, paneMissCount, paneReadLost, paneReadOk } from "../src/server/discovery/pane-mode.ts";
 
 // How long a dialog nobody can read any more goes on being offered.
 //
@@ -23,8 +22,14 @@ import { annotatePaneState, paneMissCount, paneReadLost, paneReadOk } from "../s
 const home = mkdtempSync(join(tmpdir(), "mission-pane-staleness-"));
 process.env.MISSION_HOME = home;
 
+// All value imports of server modules load AFTER the override: a static import above
+// would be hoisted past it, config.ts would stamp the real home, and this file would
+// open the live db - which it silently did until openDb learned to refuse.
 const { openDb } = await import("../src/server/db.ts");
 const { Registry } = await import("../src/server/registry.ts");
+const { annotatePaneState, paneMissCount, paneReadLost, paneReadOk } = await import(
+  "../src/server/discovery/pane-mode.ts"
+);
 
 after(() => rmSync(home, { recursive: true, force: true }));
 

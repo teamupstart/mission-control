@@ -200,7 +200,11 @@ are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`
 2. **Tests.** `node:test` + `node:assert/strict`, flat in `test/` as `<feature>-<aspect>.test.ts`.
    React via `renderToStaticMarkup` from `react-dom/server` - no jsdom, no testing-library.
    Route tests call `buildApp(...)` with stub registries. Open each file with a comment about
-   what is at stake, not what the test does.
+   what is at stake, not what the test does. A test that touches the db or state dir must set
+   `HARNESS_HOME` to a fresh temp dir **before importing anything that resolves it** (the
+   ui-config-store.test.ts preamble); `openDb` refuses the real state dir under the test
+   runner, so skipping this fails loudly instead of wiping the operator's live settings.
+   Test: `db-isolation.test.ts`.
 3. **Plans.** `docs/plans/<name>/plan.md` is the source of truth with a self-contained
    `plan.html` beside it (`skills/html-plans/SKILL.md`). Open choices go through the
    `request_plan_decisions` MCP tool, not prose. `todo/*.md` is in-flight notes, a different

@@ -85,6 +85,7 @@ function coerce(raw: Partial<UiConfig> | null): UiConfig {
       sound: raw?.alerts?.sound ?? UI_CONFIG_DEFAULTS.alerts.sound,
     },
     richText: raw?.richText ?? UI_CONFIG_DEFAULTS.richText,
+    usageBarCollapsed: raw?.usageBarCollapsed ?? UI_CONFIG_DEFAULTS.usageBarCollapsed,
   };
 }
 

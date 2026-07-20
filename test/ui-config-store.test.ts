@@ -34,6 +34,7 @@ test("an unset key reads as the shipped defaults", () => {
   assert.equal(config.richText, true);
   assert.deepEqual(config.alerts, { notifications: false, sound: true });
   assert.deepEqual(config.keybindings, {});
+  assert.equal(config.usageBarCollapsed, false);
 });
 
 test("the defaults the schema applies are the ones the web paints from", () => {

@@ -959,6 +959,7 @@ export const UI_CONFIG_DEFAULTS = {
   keybindings: {},
   alerts: { notifications: false, sound: true },
   richText: true,
+  usageBarCollapsed: false,
 } as const;
 
 export const UiConfigSchema = z.object({
@@ -980,6 +981,8 @@ export const UiConfigSchema = z.object({
     .default(UI_CONFIG_DEFAULTS.alerts),
   /** Render agent/human turns as markdown. On by default: agents write markdown. */
   richText: z.boolean().default(UI_CONFIG_DEFAULTS.richText),
+  /** Whether the topbar's fleet-cost/rate-limit strip is folded away. */
+  usageBarCollapsed: z.boolean().default(UI_CONFIG_DEFAULTS.usageBarCollapsed),
 });
 export type UiConfig = z.infer<typeof UiConfigSchema>;
 

@@ -236,9 +236,45 @@ body {
   color: var(--working);
 }
 
-/* The fleet cost strip: today's spend and the plan meters. INSIDE the topbar, because
-   --topbar-h is measured off the header with a ResizeObserver - a sibling placed after
-   </header> would overflow focus mode by exactly this strip's height. */
+/* The topbar's foldable second row: today's spend and the plan meters. `flex-basis: 100%`
+   on a flex-wrap parent forces it onto its own line unconditionally, so it can never
+   interleave with the session-count pills the way it used to. Still INSIDE the topbar,
+   because --topbar-h is measured off the header with a ResizeObserver - a sibling placed
+   after </header> would overflow focus mode by exactly this row's height. */
+.topbar-usage {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 12px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border-soft);
+}
+.topbar-usage-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.topbar-usage-toggle:hover {
+  color: var(--fg);
+}
+.topbar-usage-caret {
+  font-size: 10px;
+  color: var(--dim);
+}
+.topbar-usage-compact {
+  color: var(--cost);
+  font-variant-numeric: tabular-nums;
+}
+
 .fleet-cost {
   display: flex;
   align-items: center;

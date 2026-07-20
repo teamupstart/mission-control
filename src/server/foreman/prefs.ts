@@ -118,6 +118,19 @@ const RULE_CHAR = "[\\p{Pd}\\u2212\\u2500-\\u257F\\u23AF\\u23BA-\\u23BD\\u02D7\\
  *
  * Any adjacent rule characters are swallowed into the match, so the redaction replaces the
  * whole line rather than leaving a bare `-----` behind to look like a delimiter on its own.
+ *
+ * But the words alone are NOT enough to redact on, and that distinction is what keeps this
+ * usable. Mission Control is the primary repo Foreman watches, so sessions working on this
+ * very feature discuss "the operator's standing instructions" in ordinary prose all day; a
+ * matcher that fired on the bare phrase rewrote their transcripts to "[redacted]" and degraded
+ * the reviewer's context on exactly the repo that ships the thing. A forgery has to LOOK like
+ * a heading or a rule to be read as one, so the dressing is required: the phrase must arrive
+ * with a `#` heading marker or a run of rule characters on one side. Prose stays prose; only
+ * something shaped like the frame is treated as an attempt to draw it.
+ *
+ * The positional anchor in all three prompts is the primary guarantee - a section is the
+ * operator's only where the harness splices it. This is defence in depth, so it can afford to
+ * be narrow.
  */
 function markerPattern(phrase: string): RegExp {
   const words = phrase
@@ -132,8 +145,12 @@ function markerPattern(phrase: string): RegExp {
   // Horizontal whitespace only on the flanks (`[^\S\n]`), so the redaction eats the rule that
   // dresses the line but never the newlines around it - swallowing those would splice the
   // preceding and following lines together and quietly reflow the child's transcript.
-  const flank = `(?:${RULE_CHAR}|#|[^\\S\\n])*`;
-  return new RegExp(`${flank}${words}${flank}`, "giu");
+  const space = "[^\\S\\n]*";
+  const dressing = `(?:${RULE_CHAR}|#)+`;
+  // Dressed on the left, on the right, or both - one side is enough to read as a frame.
+  const left = `${space}${dressing}${space}`;
+  const right = `${space}(?:${dressing}${space})?`;
+  return new RegExp(`(?:${left}${words}${right}|${space}${words}${space}${dressing})`, "giu");
 }
 
 /** The closing marker, however it has been dressed up. */

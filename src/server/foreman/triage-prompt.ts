@@ -1,5 +1,5 @@
-import { formatTranscript, paneSection } from "./prompt.ts";
-import { prefsSection, stripPrefsMarkers } from "./prefs.ts";
+import { formatTranscript, fromChild, paneSection } from "./prompt.ts";
+import { prefsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
 
 // The Tier 1 routing prompt, handed to a cheap model (Haiku) in a fresh process. Unlike
@@ -65,16 +65,16 @@ export function buildTriagePrompt(input: ReviewInput): string {
     // so the two tiers cannot read the same file and reach different conclusions.
     ...prefsSection(input.prefs),
     "## The session",
-    `name: ${session.name}`,
+    `name: ${fromChild(session.name)}`,
     `cwd: ${session.cwd ?? "(unknown)"}`,
     `branch: ${session.gitBranch ?? "(none)"}`,
     `state: ${session.state}`,
-    `goal (what this session is trying to solve): ${session.goal ?? "(not known yet)"}`,
+    `goal (what this session is trying to solve): ${fromChild(session.goal) ?? "(not known yet)"}`,
     `reply surface: ${surface}`,
     "",
     "## The pending question",
     // Child-controlled, exactly as in `buildReviewPrompt` - and this tier can dispose.
-    stripPrefsMarkers(question.trim()) ||
+    fromChild(question.trim()) ||
       "(no explicit question text - read the ask off the terminal screen below)",
     "",
     truncated

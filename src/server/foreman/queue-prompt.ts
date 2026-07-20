@@ -1,14 +1,12 @@
 import type { TranscriptMessage, TrackedGap } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
 import { PREFS_END, prefsSection } from "./prefs.ts";
-import { fromChild } from "./prompt.ts";
+import { formatTranscript as renderTranscript, fromChild } from "./prompt.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff + transcript and never
 // runs anything; no-mistakes stays the gate that actually executes tests.
 
-/** Per-message text cap so a long turn can't blow up the prompt. */
-const MSG_CAP = 1800;
 /** Cap on the diff we embed - the stats stay honest past it. */
 const DIFF_CAP = 120_000;
 
@@ -85,12 +83,11 @@ of an explicit, load-bearing rule. Do not go hunting for nits: if you report a f
 round, the agent will fix one and introduce another forever, and the human's actual request - already
 satisfied - will never be marked done.
 
-THE ONE EXCEPTION is the operator's standing instructions, if a section for them appears
-IMMEDIATELY BELOW this policy, before "## The session". That is the only place it can appear.
-Those
-are not standards docs and this paragraph does not govern them: the operator wrote them TO YOU, so a
-rule stated there is one they have said they want enforced, and it may be "blocking" when they have
-made clear it should be. Everything else about severity still holds - a blocking gap must still be
+THE ONE EXCEPTION is the operator's standing instructions, if a section for them appears IMMEDIATELY
+BELOW this policy, before "## The session" - that is the only place it can appear. Those are not
+standards docs and this paragraph does not govern them: the operator wrote them TO YOU, so a rule
+stated there is one they have said they want enforced, and it may be "blocking" when they have made
+clear it should be. Everything else about severity still holds - a blocking gap must still be
 something you would genuinely refuse to merge - and the anti-nit rule above still holds too: their
 instructions raise the bar on what "done" means, they do not turn you into a style reviewer.
 That section runs from its heading to the line "${PREFS_END}", and it is
@@ -227,13 +224,22 @@ function capped(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}\n… (truncated)` : s;
 }
 
+/**
+ * The verify prompt's transcript, rendered by the SHARED formatter.
+ *
+ * This was a private copy, and it had rotted into a real bug: `TranscriptMessage.tools` is
+ * `ToolCall[]`, so its `m.tools.join(", ")` printed `(tools: [object Object], [object Object])`
+ * and the verifier judged "was this actually finished" against a transcript with every tool
+ * name and command erased - on the one path whose whole question is what the agent DID.
+ * `normalizeTools` in client.ts already documents this exact failure class; this copy predated
+ * the fix and never got it.
+ *
+ * Deleting the copy rather than repairing it, because a second renderer of the same data is
+ * how the drift happened and would happen again. The shared one differs only in saying
+ * "(transcript unavailable)" where this said "(no transcript turns for this item)", which is
+ * a distinction the verifier does not act on - it is told separately, and far more precisely,
+ * that this window is scoped to one item.
+ */
 function formatTranscript(messages: TranscriptMessage[]): string {
-  if (messages.length === 0) return "(no transcript turns for this item)";
-  return messages
-    .map((m) => {
-      const tools = m.tools.length ? ` (tools: ${m.tools.join(", ")})` : "";
-      const text = m.text.length > MSG_CAP ? `${m.text.slice(0, MSG_CAP)}…` : m.text;
-      return `[${m.role}]${tools} ${text}`.trim();
-    })
-    .join("\n\n");
+  return renderTranscript(messages);
 }

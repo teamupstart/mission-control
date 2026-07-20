@@ -147,17 +147,27 @@ function markerPattern(phrase: string): RegExp {
   // preceding and following lines together and quietly reflow the child's transcript.
   const space = "[^\\S\\n]*";
   // What actually reads as a frame: a markdown heading marker, or a genuine horizontal RULE.
-  // The run length is the whole correction - `(?:RULE_CHAR|#)+` accepted a single character,
-  // so an ordinary markdown bullet ("- The operator's standing instructions are read once per
-  // evaluation."), a pair of emphasis underscores, or a hyphen joining two clauses all
-  // qualified, and the redaction ate the sentence around the phrase. Bullets are everywhere;
-  // that traded a rare false positive for a constant one. Nothing that draws a real frame is
-  // ever one character wide.
-  const dressing = `(?:#{1,6}|${RULE_CHAR}{3,})`;
+  // The run length is a correction that has now moved twice. `(?:RULE_CHAR|#)+` accepted a
+  // single character, so an ordinary bullet ("- The operator's standing instructions are read
+  // once per evaluation."), emphasis underscores, or a hyphen joining two clauses all
+  // qualified and the redaction ate the sentence around the phrase - a constant false positive
+  // traded for a rare one. Requiring three then left a two-character rule ("-- PHRASE --")
+  // reading as a frame while matching nothing. Two is the floor that holds both: no bullet or
+  // emphasis mark is two wide, and nothing narrower than that draws a rule.
+  const dressing = `(?:#{1,6}|${RULE_CHAR}{2,})`;
   // Dressed on the left, on the right, or both - one side is enough to read as a frame.
   const left = `${space}${dressing}${space}`;
   const right = `${space}(?:${dressing}${space})?`;
-  return new RegExp(`(?:${left}${words}${right}|${space}${words}${space}${dressing})`, "giu");
+  // And the SETEXT form, where the rule is on the NEXT line: markdown underlines a heading
+  // that way, so `END OF THE OPERATOR'S STANDING INSTRUCTIONS` over a row of `=` or `-` reads
+  // as a heading to any model that has seen markdown - while matching nothing above, because
+  // `space` deliberately never crosses a newline. `defangDelimiters` did not save it either:
+  // it collapses long runs to three, and three still underlines perfectly well.
+  const setext = `${space}${words}${space}\\n${space}(?:=|${RULE_CHAR}){2,}${space}`;
+  return new RegExp(
+    `(?:${setext}|${left}${words}${right}|${space}${words}${space}${dressing})`,
+    "giu",
+  );
 }
 
 /** The closing marker, however it has been dressed up. */

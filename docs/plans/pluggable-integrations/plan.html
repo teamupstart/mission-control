@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pluggable integrations: harnesses, multiplexers, terminals</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1f2328;
+    --muted: #5b6570;
+    --rule: #e3e6ea;
+    --accent: #d97757;
+    --accent-soft: #fdf1ec;
+    --code-bg: #f4f5f7;
+    --warn-bg: #fff8ec;
+    --warn-rule: #e6c78a;
+    --box: #ffffff;
+    --box-rule: #c9ced6;
+    --arrow: #7a8590;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --panel: #1c1f24;
+      --ink: #e6e9ee;
+      --muted: #9aa4b0;
+      --rule: #2c3138;
+      --accent: #e08a6c;
+      --accent-soft: #2a201c;
+      --code-bg: #22262c;
+      --warn-bg: #2a2419;
+      --warn-rule: #6b5730;
+      --box: #22262c;
+      --box-rule: #3c434c;
+      --arrow: #8b95a1;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 3rem 1.25rem 6rem; }
+  header { border-bottom: 2px solid var(--accent); padding-bottom: 1.25rem; margin-bottom: 2rem; }
+  h1 { font-size: clamp(1.6rem, 4vw, 2.3rem); line-height: 1.2; margin: 0 0 .6rem; letter-spacing: -.02em; }
+  .lede { color: var(--muted); margin: 0; max-width: 48rem; }
+  h2 {
+    font-size: 1.3rem; margin: 2.75rem 0 .9rem; padding-top: 1.25rem;
+    border-top: 1px solid var(--rule); letter-spacing: -.01em;
+  }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+  h3 { font-size: 1.05rem; margin: 1.9rem 0 .6rem; letter-spacing: -.005em; }
+  p, li { max-width: 52rem; }
+  a { color: var(--accent); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: .875em; background: var(--code-bg); padding: .12em .38em; border-radius: 4px;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 1rem 1.1rem; overflow-x: auto; font-size: .85rem; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .callout {
+    background: var(--accent-soft); border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent); border-radius: 6px;
+    padding: .9rem 1.1rem; margin: 1.25rem 0;
+  }
+  .callout p { margin: 0; }
+  .scroll { overflow-x: auto; margin: 1.1rem 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: .9rem; }
+  th, td { text-align: left; padding: .6rem .85rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; background: var(--code-bg); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  figure { margin: 1.5rem 0; }
+  figure .scroll { margin: 0; padding: 1.25rem .75rem; }
+  figcaption { color: var(--muted); font-size: .84rem; margin-top: .55rem; }
+  svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .b-label { font: 600 13px ui-sans-serif, -apple-system, sans-serif; fill: var(--ink); }
+  .b-sub { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: var(--muted); }
+  .b-note { font: italic 11.5px ui-sans-serif, -apple-system, sans-serif; fill: var(--muted); }
+  .b-title { font: 600 12px ui-sans-serif, -apple-system, sans-serif; fill: var(--muted); letter-spacing: .08em; }
+  .box { fill: var(--box); stroke: var(--box-rule); stroke-width: 1.5; }
+  .box-accent { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .grp { fill: none; stroke: var(--rule); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .arr { stroke: var(--arrow); stroke-width: 1.6; fill: none; }
+  .arr-dash { stroke: var(--accent); stroke-width: 1.6; fill: none; stroke-dasharray: 4 3; }
+  ul, ol { padding-left: 1.35rem; }
+  li { margin: .3rem 0; }
+  .foot { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Pluggable integrations: harnesses, multiplexers, terminals</h1>
+  <p class="lede">Mission Control hardcodes three vendors: Claude Code, tmux, and WezTerm. Adding a fourth agent (<code>pi</code>), a different multiplexer (<code>cmux</code>, <code>zellij</code>), or a different terminal (Ghostty, iTerm2) currently means editing dozens of unrelated files and hoping you found them all.</p>
+</header>
+
+<p>This plan defines the interfaces those integrations should sit behind, and sequences the migration of the existing code onto them.</p>
+
+<h2>The finding, in one sentence</h2>
+<div class="callout">
+<p>There is no abstraction today &mdash; <code>src/server/harnesses.ts</code> is a 24-line settings blob, not a harness registry &mdash; and the ~35 <code>if (agent !== "claude")</code> guards plus ~20 open-coded <code>if (session.tmux) &hellip; else if (session.wezterm) &hellip;</code> branches mean <strong>a new integration degrades silently rather than failing to compile</strong>.</p>
+</div>
+
+<h2>Evidence</h2>
+
+<h3>Agent coupling (claude / codex)</h3>
+<div class="scroll">
+<table>
+<thead><tr><th>Capability</th><th>Where it is hardcoded</th></tr></thead>
+<tbody>
+<tr><td>Process detection</td><td><code>discovery/processes.ts:47-90</code> &mdash; literal argv signatures per agent</td></tr>
+<tr><td>Binary resolution</td><td><strong>three</strong> independent paths: <code>config.ts:54-57</code>, <code>claude-cli.ts:26</code>, <code>main/integrations.ts:184</code></td></tr>
+<tr><td>Transcript</td><td><code>transcript.ts:51</code> hard <code>return null</code> for non-Claude; Anthropic JSONL shape throughout (<code>:115-155</code>, <code>:500-505</code>, <code>:584</code>)</td></tr>
+<tr><td>Rollout (codex)</td><td><code>codex-rollout.ts</code> &mdash; metadata only, no message parsing</td></tr>
+<tr><td>Dispatch point</td><td><code>runtime-meta.ts:43-58</code> &mdash; an explicit <code>if claude &hellip; else if codex</code>. This is where the interface belongs.</td></tr>
+<tr><td>Hook &rarr; state</td><td><code>registry.ts:2141-2172</code> <code>hookToState</code> &mdash; Claude's event vocabulary; <code>:2137</code> <code>isIdleNudge</code> matches Claude's literal notification text</td></tr>
+<tr><td>TUI mode line</td><td><code>discovery/pane-mode.ts:33-96</code> &mdash; Claude footer glyphs and mode strings</td></tr>
+<tr><td>TUI dialogs</td><td><code>discovery/pane-dialog.ts</code> &mdash; 397 lines of Claude menu grammar</td></tr>
+<tr><td>Paste settle</td><td><code>actions.ts:311</code> <code>PASTE_SETTLE_MS = 400</code>, measured against Claude Code 2.1.215</td></tr>
+<tr><td>Paste placeholder</td><td><code>discovery/pane-paste.ts:37</code> &mdash; Claude's <code>[Pasted text #N]</code></td></tr>
+<tr><td>Skills</td><td><code>skills/reconcile.ts:48-53</code>, <code>shared/skills.ts:73</code> <code>/reload-skills</code></td></tr>
+<tr><td>Hooks + MCP install</td><td><code>hooks/install.mjs</code> and <code>main/integrations.ts:183-206</code> &mdash; <code>~/.claude/settings.json</code> and <code>claude mcp add</code> only</td></tr>
+<tr><td>Model windows</td><td><code>shared/model.ts:96-101</code> &mdash; only Claude families get a non-200k default</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The union itself is written out <strong>three</strong> times (<code>shared/types.ts:7</code>, <code>shared/protocol.ts:249</code>, <code>web/lib/api.ts:216</code>) and <code>AGENT_LABEL</code> <strong>twice</strong> (<code>session-bits.tsx:24</code>, <code>TranscriptPanel.tsx:26</code>).</p>
+
+<p>Only <strong>four</strong> <code>Record&lt;AgentType, &hellip;&gt;</code> maps would fail to compile on a new agent (<code>shared/goal.ts:16</code>, <code>goal/source.ts:55</code>, <code>session-bits.tsx:24</code>, <code>TranscriptPanel.tsx:26</code>). Everything else silently does nothing. That asymmetry is the core problem.</p>
+
+<h3>Terminal coupling (tmux / wezterm)</h3>
+<p><code>wezterm.ts</code> and <code>tmux.ts</code> are <strong>not parallel</strong> &mdash; they diverge in shape, in where their code lives, and in which capabilities exist at all:</p>
+<div class="scroll">
+<table>
+<thead><tr><th></th><th>wezterm.ts</th><th>tmux.ts</th></tr></thead>
+<tbody>
+<tr><td>bin resolution</td><td><code>resolveWeztermBin()</code>, <code>WEZTERM_BIN</code></td><td>literal <code>"tmux"</code> at ~19 inline call sites</td></tr>
+<tr><td>pane id type</td><td><code>number</code></td><td><code>string</code> (<code>"%3"</code>)</td></tr>
+<tr><td>cwd</td><td><code>file://</code> URL, needs <code>weztermCwdToPath</code></td><td>plain path</td></tr>
+<tr><td>spawn</td><td><code>spawnWeztermTab</code> (used only as a focus fallback)</td><td>lives in <code>dispatcher.ts:449-468</code>, not in <code>tmux.ts</code></td></tr>
+<tr><td>retitle</td><td><code>setWeztermTabTitle</code></td><td>inline in <code>actions.ts:1090</code></td></tr>
+<tr><td>copy-mode probe</td><td>none &mdash; no such concept</td><td><code>readTmuxPaneMode:57-71</code></td></tr>
+<tr><td>focus</td><td><code>activateWeztermPane:83-87</code></td><td>cannot focus alone</td></tr>
+<tr><td>kill group</td><td>none &mdash; SIGTERM only (<code>actions.ts:1234</code>)</td><td><code>kill-session</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Duplicated pane-token functions, in <strong>two spellings</strong>: <code>actions.ts:66-70</code> and <code>pane-mode.ts:187-189</code> emit <code>wezterm:</code>; <code>registry.ts:2055-2065</code> and <code>foreman/queue-apply.ts:146</code> emit <code>wez:</code>. Each subsystem is internally consistent, so there is no live defect &mdash; but it is four copies of one function waiting for a fifth backend.</p>
+
+<h2>The design</h2>
+
+<h3>Three axes, not one</h3>
+<p>The request was &ldquo;one interface per integration point&rdquo;. The investigation says there are <strong>three</strong> axes, and folding them together would be the design error:</p>
+<ol>
+<li><strong>Harness</strong> &mdash; the agent process. Detection, transcript, live state, TUI grammar, skills, hook/MCP installation. (<code>claude</code>, <code>codex</code>, <code>pi</code>)</li>
+<li><strong>Terminal</strong> &mdash; which itself splits in two (below).</li>
+<li><strong>Headless runner</strong> &mdash; the <code>claude -p</code> calls behind Foreman triage, goal refinement, task titling and away digests (<code>claude-cli.ts</code>, plus four hardcoded <code>claude-haiku-4-5</code> constants). This is a <em>model provider</em> axis, orthogonal to which agent the observed session runs. Keep it separate; conflating it would mean you cannot review a Pi session with Claude, or a Claude session with a cheaper local model.</li>
+</ol>
+
+<h3>Terminal is two interfaces, because tmux and wezterm are not peers</h3>
+<p>A tmux pane lives <em>inside</em> a wezterm pane. <code>wezterm.ts:117-140</code> exists solely to join them by shared tty, and <code>actions.ts:1149-1185</code> shows focus for a tmux session is a <strong>composition</strong>: select-pane, then select-window, then find the hosting wezterm tab, then activate it, then fall back to spawning <code>tmux attach</code> in a new tab.</p>
+<p>So:</p>
+<ul>
+<li><strong><code>Multiplexer</code></strong> &mdash; named persistent sessions, panes, splits, detach/reattach, copy-mode. Can address a pane; generally <em>cannot</em> raise a window. (tmux, zellij, screen, cmux)</li>
+<li><strong><code>TerminalEmulator</code></strong> &mdash; windows and tabs, focus/raise, spawn, tab titles. No persistence, no session names. (wezterm, Ghostty, iTerm2, kitty, Terminal.app)</li>
+</ul>
+<p>Plus a documented composition rule: a session may hold a multiplexer handle, an emulator handle, or both; writes prefer the innermost (multiplexer), focus walks outward.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 700 220" role="img" aria-label="Nesting: a wezterm pane contains a tmux pane, which contains the agent process. Writes go innermost first; focus walks outward.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--arrow)"/>
+    </marker>
+    <marker id="ah-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+  <text x="20" y="26" class="b-title">NESTING TODAY</text>
+  <rect class="grp" x="18" y="40" width="664" height="86" rx="10"/>
+  <rect class="box" x="42" y="62" width="176" height="44" rx="7"/>
+  <text class="b-label" x="130" y="80" text-anchor="middle">wezterm pane</text>
+  <text class="b-sub" x="130" y="96" text-anchor="middle">emulator</text>
+  <line class="arr" x1="222" y1="84" x2="266" y2="84" marker-end="url(#ah)"/>
+  <rect class="box" x="270" y="62" width="176" height="44" rx="7"/>
+  <text class="b-label" x="358" y="80" text-anchor="middle">tmux pane</text>
+  <text class="b-sub" x="358" y="96" text-anchor="middle">multiplexer</text>
+  <line class="arr" x1="450" y1="84" x2="494" y2="84" marker-end="url(#ah)"/>
+  <rect class="box-accent" x="498" y="62" width="160" height="44" rx="7"/>
+  <text class="b-label" x="578" y="80" text-anchor="middle">agent process</text>
+  <text class="b-sub" x="578" y="96" text-anchor="middle">harness</text>
+  <path class="arr-dash" d="M560,126 C560,158 400,158 372,140" marker-end="url(#ah-a)"/>
+  <text class="b-note" x="466" y="172" text-anchor="middle">writes: innermost first</text>
+  <path class="arr-dash" d="M330,140 C300,160 150,160 140,128" marker-end="url(#ah-a)"/>
+  <text class="b-note" x="228" y="196" text-anchor="middle">focus: walks outward</text>
+</svg>
+</div>
+<figcaption>Writes prefer the multiplexer pane; focus must walk out to the emulator to raise a window.</figcaption>
+</figure>
+
+<h3>How the call graph changes</h3>
+<p>Today <code>correlate.ts</code> and <code>actions.ts</code> import the two backend modules directly, so every new backend edits both. After the migration they resolve an adapter from a registry and never name a vendor.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 700 300" role="img" aria-label="Before: correlate.ts and actions.ts each import tmux.ts and wezterm.ts directly. After: both call a registry, which resolves tmux, wezterm, or ghostty adapters.">
+  <text x="20" y="24" class="b-title">BEFORE</text>
+  <rect class="grp" x="18" y="34" width="316" height="240" rx="10"/>
+  <rect class="box" x="42" y="52" width="120" height="36" rx="6"/>
+  <text class="b-label" x="102" y="75" text-anchor="middle">correlate.ts</text>
+  <rect class="box" x="190" y="52" width="120" height="36" rx="6"/>
+  <text class="b-label" x="250" y="75" text-anchor="middle">actions.ts</text>
+  <rect class="box" x="42" y="206" width="120" height="36" rx="6"/>
+  <text class="b-label" x="102" y="229" text-anchor="middle">tmux.ts</text>
+  <rect class="box" x="190" y="206" width="120" height="36" rx="6"/>
+  <text class="b-label" x="250" y="229" text-anchor="middle">wezterm.ts</text>
+  <line class="arr" x1="102" y1="90" x2="102" y2="202" marker-end="url(#ah)"/>
+  <line class="arr" x1="250" y1="90" x2="250" y2="202" marker-end="url(#ah)"/>
+  <line class="arr" x1="118" y1="90" x2="236" y2="202" marker-end="url(#ah)"/>
+  <line class="arr" x1="234" y1="90" x2="118" y2="202" marker-end="url(#ah)"/>
+
+  <text x="378" y="24" class="b-title">AFTER</text>
+  <rect class="grp" x="366" y="34" width="316" height="240" rx="10"/>
+  <rect class="box" x="390" y="52" width="120" height="36" rx="6"/>
+  <text class="b-label" x="450" y="75" text-anchor="middle">correlate.ts</text>
+  <rect class="box" x="538" y="52" width="120" height="36" rx="6"/>
+  <text class="b-label" x="598" y="75" text-anchor="middle">actions.ts</text>
+  <rect class="box-accent" x="414" y="126" width="220" height="46" rx="7"/>
+  <text class="b-label" x="524" y="146" text-anchor="middle">MULTIPLEXERS / EMULATORS</text>
+  <text class="b-sub" x="524" y="162" text-anchor="middle">registries</text>
+  <line class="arr" x1="450" y1="90" x2="490" y2="122" marker-end="url(#ah)"/>
+  <line class="arr" x1="598" y1="90" x2="558" y2="122" marker-end="url(#ah)"/>
+  <rect class="box" x="382" y="222" width="88" height="34" rx="6"/>
+  <text class="b-label" x="426" y="244" text-anchor="middle">tmux</text>
+  <rect class="box" x="480" y="222" width="88" height="34" rx="6"/>
+  <text class="b-label" x="524" y="244" text-anchor="middle">wezterm</text>
+  <rect class="box" x="578" y="222" width="88" height="34" rx="6"/>
+  <text class="b-label" x="622" y="244" text-anchor="middle">ghostty</text>
+  <line class="arr" x1="492" y1="174" x2="440" y2="218" marker-end="url(#ah)"/>
+  <line class="arr" x1="524" y1="174" x2="524" y2="218" marker-end="url(#ah)"/>
+  <line class="arr" x1="556" y1="174" x2="608" y2="218" marker-end="url(#ah)"/>
+</svg>
+</div>
+<figcaption>The vendor names move out of the call sites and into adapters behind a registry.</figcaption>
+</figure>
+
+<h3>Capability objects, not fat interfaces</h3>
+<p>This is the load-bearing decision. The candidate backends have genuinely different capabilities:</p>
+<ul>
+<li>Ghostty has no scripting CLI at all &mdash; it can be <em>launched into</em>, but not enumerated or captured.</li>
+<li>iTerm2 scripts via AppleScript/Python, not a flag-parsing CLI.</li>
+<li>tmux has copy-mode; wezterm has no equivalent.</li>
+<li>wezterm can raise a window; tmux cannot.</li>
+<li>Codex has no permission modes, no skills, no <code>/clear</code>.</li>
+</ul>
+<p>A flat interface with fifteen required methods forces every adapter to stub eight of them, and stubs are where silent breakage lives. Instead: a small required core plus <strong>optional capability sub-objects</strong>, where <code>null</code> is a first-class, meaningful value.</p>
+
+<pre><code>interface Harness {
+  id: HarnessId;
+  label: string;                  // "Claude Code"
+  accent: string;                 // CSS custom property name
+  detect: DetectSpec;             // argv signatures, background-process exclusions
+  bin: BinSpec;                   // env vars, fallback, launch argv
+
+  transcript: TranscriptSpec | null;   // null =&gt; no transcript pane, by declaration
+  hooks:      HookSpec | null;         // null =&gt; no push instrumentation; skip the 20s wait
+  tui:        TuiSpec | null;          // mode line, dialog grammar, paste placeholder, settle ms
+  permissionModes: PermissionModeSpec | null;
+  skills:     SkillSpec | null;
+  mcp:        McpSpec | null;
+  models:     ModelSpec;               // label(id), defaultWindow(id)
+}</code></pre>
+
+<p>The win is mechanical: every <code>if (session.agent !== "claude") return null</code> becomes <code>if (!harness.transcript) return null</code>. The guard now states <em>why</em>, and a new harness that genuinely lacks transcripts gets the identical, already-tested degradation path instead of a code change.</p>
+
+<h3>Compiler enforcement</h3>
+<p>The codebase already has this pattern &mdash; <code>SESSION_FIELD_COMPARATORS</code> (<code>registry.ts</code>) makes a new <code>Session</code> field fail typecheck until it is given a comparator, and <code>session-contracts.test.ts</code> guards it.</p>
+<p>Apply the same shape here: <code>HARNESSES: Record&lt;HarnessId, Harness&gt;</code>, <code>MULTIPLEXERS: Record&lt;MultiplexerId, Multiplexer&gt;</code>, <code>EMULATORS: Record&lt;EmulatorId, TerminalEmulator&gt;</code>. A new id then cannot compile until every capability is either implemented or explicitly declared <code>null</code>. &ldquo;I forgot skills exist&rdquo; stops being a possible outcome.</p>
+
+<h2>Structural blockers</h2>
+<p>Three places assume exactly two backends as <em>named fields</em>, and no adapter work can land cleanly until they become lists:</p>
+<ol>
+<li><code>DiscoveryInput</code> (<code>correlate.ts:78-82</code>) &mdash; <code>{ procs, tmux, wezterm }</code>, with <code>gatherDiscoveryInput</code> unconditionally <code>Promise.all</code>-ing both listers.</li>
+<li><code>Session.tmux</code> / <code>Session.wezterm</code> (<code>shared/types.ts:140-141</code>) &mdash; two nullable siblings, with per-field SSE comparators at <code>registry.ts:2237-2238</code> and ~20 call sites doing <code>Boolean(s.tmux || s.wezterm)</code> as a stand-in for &ldquo;can we type here?&rdquo;.</li>
+<li><code>Task.tmuxSession</code> (<code>shared/types.ts:830</code>) &mdash; persisted as <code>tmux_session</code> (<code>db.ts:109</code>) and driving <strong>destructive teardown</strong> (<code>dispatcher.ts:408-421</code>). Generalizing it is a schema migration, not a rename, and needs an <code>addColumn</code> call in <code>migrate()</code>.</li>
+</ol>
+
+<h2>Sequence</h2>
+<p>Phase 0 lands first because it shrinks every later diff and carries no behavior change. Phase 3 is deliberately last: it is the only phase that can lose someone's worktree.</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Phase</th><th>Items</th></tr></thead>
+<tbody>
+<tr><td>0 &mdash; Seams</td><td>Single agent-union source; unified pane token; extract the already-neutral helpers (<code>readTailLines</code>, capture-miss tolerance) out of the Claude modules</td></tr>
+<tr><td>1 &mdash; Harness</td><td>Interface + registry; then detection/bin, transcript, hooks&rarr;state, TUI, capability guards, UI</td></tr>
+<tr><td>2 &mdash; Terminal</td><td><code>Multiplexer</code> + <code>TerminalEmulator</code> interfaces; enumeration, pane I/O, focus/spawn/kill</td></tr>
+<tr><td>3 &mdash; Structural</td><td><code>Session</code> handle list; <code>Task.tmuxSession</code> migration; de-tmux user-visible strings</td></tr>
+<tr><td>4 &mdash; Headless</td><td><code>LlmRunner</code> interface; migrate Foreman triage, goal refiner, task titling, away digest</td></tr>
+<tr><td>5 &mdash; Proof</td><td>A third adapter on each axis, written <em>only</em> against the interface</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Decisions taken</h3>
+<ul>
+<li><strong>All four candidate adapters are queued</strong> (Ghostty, cmux, iTerm2, pi), not just one per axis. Ghostty and iTerm2 together are the real test of the emulator boundary: one has no scripting CLI, the other scripts via AppleScript/Python rather than a flag-parsing binary. If the interface only fits things shaped like <code>wezterm cli</code>, both will expose it.</li>
+<li><strong>The headless-runner axis is in scope</strong> (Phase 4). Foreman should be able to triage a Pi session with Pi, or run titling on a cheaper local model. It stays a <em>separate</em> interface from <code>Harness</code> &mdash; the observed agent and the evaluating model are independent choices.</li>
+<li><strong>The six drive-by defects are folded into the migration items</strong>, not queued separately. Each is fixed by the phase that rewrites its file, and the item says so explicitly, so the fix lands with a test rather than as a patch that the refactor later reverts.</li>
+</ul>
+
+<h2>Acceptance</h2>
+<p>The migration is not done when the interfaces exist. It is done when a new implementation can be added without touching shared code. Phase 5 is the test:</p>
+<ul>
+<li>A <strong><code>pi</code> harness</strong> that discovers, names, focuses, and accepts typed input &mdash; and whose unsupported capabilities are visibly disabled in the UI rather than silently absent. Spike first, as <code>todo/codex-instrumentation.md</code> did for Codex.</li>
+<li>A <strong>Ghostty</strong> emulator adapter, which supports spawn and focus but <strong>not</strong> enumeration or capture &mdash; proving the capability-null path is real and not decorative.</li>
+<li>An <strong>iTerm2</strong> emulator adapter, driven by AppleScript/Python rather than a CLI &mdash; proving the boundary is not accidentally shaped like &ldquo;a binary we pass flags to&rdquo;.</li>
+<li>A <strong>cmux</strong> multiplexer adapter &mdash; the same exercise on the multiplexer axis.</li>
+</ul>
+<div class="callout"><p>If any of the four requires editing a file outside its own adapter, the interface is wrong.</p></div>
+
+<h2>Fixes found along the way</h2>
+<p>Real defects, each folded into the migration item that rewrites its file rather than queued separately. The item that owns each fix is named in brackets.</p>
+<ul>
+<li><strong>[Phase 1 &mdash; TUI]</strong> <code>pane-mode.ts:124-125</code> &mdash; <code>annotatePaneState</code> filters to Claude, so <code>paneDialog</code> is never set for Codex. Since <code>activePaneDialog</code> is the only hookless &ldquo;needs-you&rdquo; evidence (<code>shared/session.ts:172</code>), <strong>a Codex session parked on a prompt reads as idle</strong>. The most user-visible of the six.</li>
+<li><strong>[Phase 1 &mdash; TUI]</strong> <code>pane-paste.ts:37</code> + <code>actions.ts:344-379</code> &mdash; submit verification looks for Claude's paste placeholder, so for Codex <code>hasPendingPaste</code> is always false and <code>awaitPasteSubmitted</code> returns <code>ok</code> after one Enter with zero evidence.</li>
+<li><strong>[Phase 1 &mdash; guards]</strong> <code>actions.ts:1418</code> &mdash; <code>resetToOrigin</code> sends <code>/clear</code>, a Claude slash command, to <strong>every</strong> agent type, ungated.</li>
+<li><strong>[Phase 1 &mdash; hooks]</strong> <code>dispatcher.ts:148-161</code> &mdash; every dispatch waits <code>HOOK_READY_MS</code> (20s) for a hook, including for agents that will never send one. Codex pays 20s of dead time per dispatch.</li>
+<li><strong>[Phase 1 &mdash; transcript]</strong> <code>registry.ts:700</code> &mdash; <code>findSessionByEnv</code> hardcodes <code>s.agent === "claude"</code> inside an otherwise generic env&rarr;session fallback.</li>
+<li><strong>[Phase 1 &mdash; UI]</strong> <code>styles.css:2657</code> &mdash; <code>--claude</code> doubles as the Foreman accent colour; the comment admits it. <code>AgentDot</code> renders <code>agent-${agent}</code>, so a new harness gets an unstyled dot.</li>
+</ul>
+
+<h2>Prior art in this repo</h2>
+<p><code>todo/codex-instrumentation.md</code> is a parked spike on exactly the Phase 1 question for Codex (hook-vs-wrapper, blocked on a Codex login). Its conclusion &mdash; that the <code>HookIngestSchema</code> &rarr; <code>POST /hooks/:event</code> &rarr; registry-overlay pipeline is already agent-agnostic and reusable &mdash; is confirmed by this investigation and should be folded into the <code>HookSpec</code> design rather than rediscovered.</p>
+
+<p class="foot">Source of truth: <code>docs/plans/pluggable-integrations/plan.md</code>. This page is a rendering of it.</p>
+
+</div>
+</body>
+</html>

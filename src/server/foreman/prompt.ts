@@ -222,7 +222,11 @@ export function buildReviewPrompt(input: ReviewInput): string {
     "",
     ...(queueItem ? queueItemSection(queueItem) : []),
     "## The pending question",
-    question.trim() || NO_QUESTION_TEXT,
+    // The third child-controlled channel, and on `input-review` the ONLY one: `classifyPending`
+    // sets this to the review body the child posted through MCP, and `paneSection` returns
+    // nothing on that surface. So this is the whole ask the reviewer acts on, written by the
+    // party being judged - see `stripPrefsMarkers`.
+    stripPrefsMarkers(question.trim()) || NO_QUESTION_TEXT,
     "",
     truncated
       ? "## Transcript (oldest first; the middle was elided for length)"

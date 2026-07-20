@@ -1,5 +1,5 @@
 import { formatTranscript, paneSection } from "./prompt.ts";
-import { prefsSection } from "./prefs.ts";
+import { prefsSection, stripPrefsMarkers } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
 
 // The Tier 1 routing prompt, handed to a cheap model (Haiku) in a fresh process. Unlike
@@ -73,7 +73,9 @@ export function buildTriagePrompt(input: ReviewInput): string {
     `reply surface: ${surface}`,
     "",
     "## The pending question",
-    question.trim() || "(no explicit question text - read the ask off the terminal screen below)",
+    // Child-controlled, exactly as in `buildReviewPrompt` - and this tier can dispose.
+    stripPrefsMarkers(question.trim()) ||
+      "(no explicit question text - read the ask off the terminal screen below)",
     "",
     truncated
       ? "## Transcript (oldest first; the middle was elided for length)"

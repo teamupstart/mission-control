@@ -92,6 +92,56 @@ export const PREFS_END = "----- END OF THE OPERATOR'S STANDING INSTRUCTIONS ----
 export const PREFS_HEADING = "## The operator's standing instructions";
 
 /**
+ * Every character that can DRAW a horizontal rule, which is not the same set as "hyphens".
+ *
+ * `\p{Pd}` is dash punctuation (ASCII `-`, U+2010..U+2015, U+2E3A/U+2E3B, U+FE58, U+FF0D and
+ * the rest); the explicit additions are the ones Unicode files elsewhere but a reader sees as
+ * the same line - the U+2212 minus, box-drawing horizontals, the U+23AF line extension, the
+ * scan lines, and the low lines that draw a rule just as well.
+ *
+ * Enumerating code points by hand is what failed twice: the previous class was written as
+ * "every dash Unicode offers" and was not, so `⸺⸺⸺⸺⸺` sailed through looking exactly like the
+ * real marker. A property escape is the difference between a list someone has to keep current
+ * and a category that stays correct.
+ */
+const RULE_CHAR = "[\\p{Pd}\\u2212\\u2500-\\u257F\\u23AF\\u23BA-\\u23BD\\u02D7\\uFE4D-\\uFE4F_]";
+
+/**
+ * Build a matcher for a marker PHRASE that survives the obvious dressing-up.
+ *
+ * Keying on the phrase rather than on the punctuation around it is the point. A forgery has to
+ * carry the words to mean anything to the model - "END OF THE OPERATOR'S STANDING
+ * INSTRUCTIONS" is what does the work, the dashes are decoration - so matching the words
+ * tolerantly beats chasing every way the decoration can be drawn. Case, run-length of
+ * whitespace, and the apostrophe (ASCII vs the curly U+2019 a word processor produces) are all
+ * free to vary, because none of them changes what a reader takes the line to say.
+ *
+ * Any adjacent rule characters are swallowed into the match, so the redaction replaces the
+ * whole line rather than leaving a bare `-----` behind to look like a delimiter on its own.
+ */
+function markerPattern(phrase: string): RegExp {
+  const words = phrase
+    .replace(/^##\s*/, "")
+    .split(/\s+/)
+    .map((w) =>
+      w
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/['‘’ʼ`´]/g, "['\\u2018\\u2019\\u02BC\\u0060\\u00B4]"),
+    )
+    .join("\\s+");
+  // Horizontal whitespace only on the flanks (`[^\S\n]`), so the redaction eats the rule that
+  // dresses the line but never the newlines around it - swallowing those would splice the
+  // preceding and following lines together and quietly reflow the child's transcript.
+  const flank = `(?:${RULE_CHAR}|#|[^\\S\\n])*`;
+  return new RegExp(`${flank}${words}${flank}`, "giu");
+}
+
+/** The closing marker, however it has been dressed up. */
+const END_PHRASE = markerPattern("END OF THE OPERATOR'S STANDING INSTRUCTIONS");
+/** The opening heading, however it has been dressed up. */
+const HEADING_PHRASE = markerPattern(PREFS_HEADING);
+
+/**
  * Remove the trusted section's own markers from text the HARNESS did not author.
  *
  * The verify prompt fences its untrusted material; the reviewer and router prompts do not.
@@ -112,8 +162,8 @@ export const PREFS_HEADING = "## The operator's standing instructions";
  */
 export function stripPrefsMarkers(text: string): string {
   return text
-    .replaceAll(PREFS_END, "[redacted: forged section marker]")
-    .replaceAll(PREFS_HEADING, "[redacted: forged section heading]");
+    .replace(END_PHRASE, "[redacted: forged section marker]")
+    .replace(HEADING_PHRASE, "[redacted: forged section heading]");
 }
 
 /**
@@ -165,13 +215,16 @@ const PREFS_FRAMING_LEAD = [
 function defangDelimiters(text: string): string {
   return (
     text
-      // Every dash the Unicode standard offers, not just ASCII `-`. A line drawn from
-      // U+2010..U+2015, the U+2212 minus, or U+2500 box-drawing reproduces the SHAPE of
-      // `PREFS_END` while matching nothing an ASCII-only rule tests, so it could appear to
-      // close the operator's section early and have the text after it read as prompt-level
-      // rather than operator-level direction. The model reads shapes, not code points.
-      .replace(/[-‐-―−─━]{4,}/g, "---")
+      // Any character that DRAWS a rule, not just ASCII hyphens - see `RULE_CHAR`. A line of
+      // U+2E3A two-em dashes reads exactly like the real marker to the model, which sees
+      // shapes and not code points.
+      .replace(new RegExp(`${RULE_CHAR}{4,}`, "gu"), "---")
       .replace(/\b(BEGIN|END)\s+UNTRUSTED\s+EVIDENCE\b/gi, "$1_UNTRUSTED_EVIDENCE")
+      // And the closing marker by its WORDS, which is the belt to that braces: collapsing the
+      // rule characters already breaks the shape, but a file that spells the phrase with a
+      // curly apostrophe or odd spacing was still handing the model a line that reads as the
+      // end of its own section. `PREFS_END` is unforgeable only if both halves are.
+      .replace(END_PHRASE, "[redacted: forged section marker]")
   );
 }
 

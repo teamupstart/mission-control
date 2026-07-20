@@ -51,8 +51,10 @@ test("renders every question and option", () => {
 
 test("single-select renders radios, multi-select renders checkboxes", () => {
   const html = render();
-  assert.match(html, /type="radio"[^>]*name="store"/);
-  assert.match(html, /type="checkbox"[^>]*name="providers"/);
+  // The group name is the decision id under a per-form prefix, because a `name` is
+  // document-scoped and several forms can share one document - see `namePrefix`.
+  assert.match(html, /type="radio"[^>]*name="[^"]*-store"/);
+  assert.match(html, /type="checkbox"[^>]*name="[^"]*-providers"/);
 });
 
 test("a recommended option shows the hint and details render", () => {

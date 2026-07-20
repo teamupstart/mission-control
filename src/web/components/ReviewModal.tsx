@@ -82,17 +82,17 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
       {/*
         An `input` shows its body only when it SAYS something the header does not.
 
-        `request_input` sends the question as the title and as the body, so the two are equal
-        in every review the tool produces today, and printing both put the same sentence on
-        screen twice - once as the `<h3>`, again as a paragraph directly beneath, with a third
-        copy possible as the form's legend. Suppressing it there is the fix.
+        `request_input` sends a clipped question as the title and the whole question as the
+        body, so the two are equal whenever the question fit in a heading - and printing both
+        then put the same sentence on screen twice, once as the `<h3>` and again as a paragraph
+        directly beneath, with a third copy possible as the form's legend.
 
-        But suppressing it unconditionally would hard-code that equality into the modal with
-        nothing enforcing it, and would flatten a long or multi-line free-text question into a
-        bold heading with its newlines collapsed. So the test is `body !== title` rather than
-        the kind: whenever a body carries something of its own, it is rendered as the readable
-        paragraph it used to be. The whole block is skipped when there is nothing to put in it,
-        because `.review-content` is a bordered, margined box and an empty one is an artifact.
+        But suppressing it unconditionally would flatten a long or multi-line free-text
+        question into a bold heading with its newlines collapsed. So the test is
+        `body !== title` rather than the kind: past the clip the body says something the header
+        does not, and it is rendered as the readable paragraph it should be. The whole block is
+        skipped when there is nothing to put in it, because `.review-content` is a bordered,
+        margined box and an empty one is an artifact.
       */}
       {showsBody(review) && (
         <div className="review-content">
@@ -118,6 +118,10 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
           busy={busy}
           lead={decisionLead(review.kind)}
           hideQuestions={review.kind === "input"}
+          // Review ids are unique, and every pending review of a session is drawn into this
+          // one document - see `namePrefix`, without which two option-carrying `input` reviews
+          // share a radio group and answering one silently clears the other.
+          namePrefix={review.id}
           onSubmit={(response) => void resolve("answer", response)}
         />
       ) : review.kind === "plan-decisions" ? null : review.kind === "input" ? (

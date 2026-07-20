@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { BASE_URL, captureTerminalEnv, readToken } from "@shared/harness-runtime.mjs";
+import { titleLine } from "@shared/title.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
 // it's a child of the agent it inherits the terminal env (TMUX_PANE /
@@ -221,7 +222,15 @@ server.registerTool(
             },
           ]
         : undefined;
-      const id = await createReview("input", question, question, decisions);
+      // The title is a HEADING and the body is the question itself, so a long or multi-line
+      // ask is readable rather than folded into a bold one-liner with its newlines collapsed.
+      // Sending the question as both (which this did) made them equal for every review the
+      // tool produced, and the modal's de-duplication then suppressed the readable paragraph
+      // in every case - including the ones it exists to protect. `titleLine` is the shared
+      // clipper (word boundary, ellipsis, `TITLE_MAX_CHARS`), so a heading here and a heading
+      // on a task card are cut the same way; a question already short enough comes back
+      // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
+      const id = await createReview("input", titleLine(question), question, decisions);
       const review = await waitForResolution(id);
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {

@@ -440,7 +440,7 @@ question-inviting prompt. <strong>Nothing below is inferred from a diff.</strong
     </tr>
     <tr class="arm-c">
       <td>C</td>
-      <td>B + <code>--append-system-prompt-file</code> redirect</td>
+      <td>B + the <code>--append-system-prompt</code> redirect</td>
       <td><strong>Still prose.</strong> The agent said so explicitly: <em>"my instructions say to ask you questions via a Mission Control <code>request_input</code> tool, but that tool isn't actually registered in this session (I checked)."</em></td>
     </tr>
     <tr class="arm-d">
@@ -524,10 +524,10 @@ that carries decisions renders the <code>DecisionForm</code> instead of the text
 <p>A new <code>src/server/ask-channel.ts</code> owns the whole contract and returns one argv
 fragment:</p>
 
-<pre><code>--mcp-config              &lt;STATE_DIR&gt;/ask-channel/mcp.json
---allowed-tools           mcp__mission-control__request_input
---disallowed-tools        AskUserQuestion
---append-system-prompt-file &lt;STATE_DIR&gt;/ask-channel/redirect.md</code></pre>
+<pre><code>--mcp-config            &lt;STATE_DIR&gt;/ask-channel/mcp.json
+--allowed-tools         mcp__mission-control__request_input
+--disallowed-tools      AskUserQuestion
+--append-system-prompt  &lt;the redirect prompt itself, inline&gt;</code></pre>
 
 <figure>
   <div class="diagram">
@@ -558,8 +558,8 @@ fragment:</p>
       <rect x="382" y="14" width="304" height="86" rx="9" class="n-good"/>
       <text x="534" y="36" text-anchor="middle" class="ttl">all four flags, together</text>
       <text x="534" y="55" text-anchor="middle" class="sub">--mcp-config &middot; --allowed-tools</text>
-      <text x="534" y="71" text-anchor="middle" class="sub">--disallowed-tools &middot; --append-system-prompt-file</text>
-      <text x="534" y="90" text-anchor="middle" class="sub">files written on demand, self-healing</text>
+      <text x="534" y="71" text-anchor="middle" class="sub">--disallowed-tools &middot; --append-system-prompt</text>
+      <text x="534" y="90" text-anchor="middle" class="sub">mcp.json written on demand, self-healing</text>
 
       <rect x="382" y="154" width="304" height="58" rx="9" class="n-fill"/>
       <text x="534" y="177" text-anchor="middle" class="ttl">nothing at all</text>
@@ -577,7 +577,10 @@ makes it safe. If the MCP server bundle is missing, the function returns <strong
 all</strong> - a session with <code>AskUserQuestion</code> intact is the status quo, whereas one with
 it removed and no replacement is arm B.</p>
 
-<p>Both files are written into the state dir on demand, self-healing on every dispatch.</p>
+<p><code>mcp.json</code> is written into the state dir on demand, self-healing on every dispatch, and
+atomically (temp file + <code>rename</code>) so a concurrently-starting <code>claude</code> can never
+read it torn. The redirect needs no file: it travels inline as
+<code>--append-system-prompt</code>'s value.</p>
 
 <h3>3 &middot; Scope: dispatched sessions only</h3>
 
@@ -622,9 +625,11 @@ control.</p>
 <h2>Tests</h2>
 
 <ul>
-  <li><code>ask-channel.test.ts</code> - the argv fragment's shape; that it is empty when the MCP
-    bundle is absent (never disallow without provide); that codex gets nothing; that the two files
-    are written and refreshed.</li>
+  <li><code>ask-channel.test.ts</code> - the argv fragment's shape, including that the redirect
+    travels as the flag's own inline value; that it is empty when the MCP bundle is absent or the
+    state dir cannot be written (never disallow without provide, and never throw into a dispatch);
+    that codex gets nothing; that <code>mcp.json</code> is written, refreshed, and left with no
+    stray temp file.</li>
   <li><code>review-input-decisions.test.ts</code> - <code>request_input</code> with options produces
     an <code>input</code> review carrying one decision; the schema accepts it;
     <code>ReviewModal</code> renders the form rather than the textarea.</li>
@@ -650,8 +655,8 @@ control.</p>
   <li><strong>The channel rested on an undocumented flag.</strong>
     <code>--append-system-prompt-file</code> is absent from <code>claude --help</code>, and Claude
     Code hard-errors on unknown options, so on a CLI without it every dispatch died at spawn and
-    surfaced as "agent session never appeared". There is now a one-time, per-binary
-    <code>--help</code> probe; anything inconclusive counts as unsupported.</li>
+    surfaced as "agent session never appeared". Round 1 added a one-time, per-binary
+    <code>--help</code> probe for it; round 2 removed the flag instead (see below).</li>
   <li><strong>The tool description over-claimed.</strong> It asserted "your terminal is not being
     read" to every session on the machine, including human-started ones that keep
     <code>AskUserQuestion</code> and are being watched. That claim is dispatch-scoped and now lives
@@ -659,7 +664,8 @@ control.</p>
   <li><strong>The modal hid too much.</strong> Suppressing an <code>input</code> body outright
     hard-coded <code>title === body</code> into the UI and flattened long free-text questions into a
     heading. The test is now <code>body !== title</code> (<code>showsBody</code>), so a body with
-    content of its own still renders as a paragraph.</li>
+    content of its own still renders as a paragraph. (Round 2 found that escape hatch was
+    unreachable, and fixed the producer - see below.)</li>
   <li><strong>The channel files were written non-atomically.</strong> A torn <code>mcp.json</code>
     means no <code>request_input</code> while <code>--disallowed-tools</code> still applies - arm B.
     Writes now go to a temp file and <code>rename</code>.</li>
@@ -669,6 +675,51 @@ control.</p>
 in the code, and the daemon reset the shared checkout to <code>main</code> mid-run (its own "reset
 checkouts before assigning" behaviour). The commit survived; the work continued in a dedicated
 worktree.</p>
+
+<h2>Review round 2</h2>
+
+<p>Four findings, all fixed. Two were the operator's call.</p>
+
+<ul>
+  <li><strong>The probe never returned true, so the whole feature was inert.</strong> Round 1's fix
+    grepped <code>claude --help</code> for the literal <code>--append-system-prompt-file</code>. Real
+    <code>claude</code> (2.1.216) prints the two variants folded together as
+    <code>--append-system-prompt[-file]</code>, so the literal never appears, the probe always
+    answered "unsupported", and every dispatch silently kept the built-in menu. It passed its tests
+    only because the stub binary echoed the literal string - the test asserted the assumption rather
+    than the world.
+    <br>
+    The fix simplifies rather than hardens: the channel now passes the documented
+    <code>--append-system-prompt &lt;text&gt;</code> with the prompt <strong>inline</strong>. That
+    deletes the probe, its cache, the <code>agentBin</code> parameter threaded in for it,
+    <code>redirect.md</code>, and the second <code>writeIfChanged</code> call. Passing ~1.2KB as one
+    argv element was measured before it was chosen: 1260 bytes arrived byte-identical through tmux,
+    including <code>$HOME</code>, <code>a*b</code> globs, both quote styles, backticks,
+    <code>$(cmd)</code>, semicolons, pipes, ampersands and newlines. The accepted tradeoff is that
+    the prompt is visible in a dispatched agent's <code>ps</code> line; it is a static instruction
+    with no secrets in it. <code>writeIfChanged</code> stays for <code>mcp.json</code>, atomicity
+    included.</li>
+  <li><strong>Round 1's <code>showsBody</code> escape hatch could never fire.</strong>
+    <code>request_input</code> sent the question as BOTH title and body, so
+    <code>body !== title</code> was false for every review the tool produced, and a long or
+    multi-line question rendered only as the flex-row <code>&lt;h3&gt;</code> - the
+    <code>white-space: pre-wrap</code> added to <code>.question</code> in the same change was
+    unreachable. Fixed at the producer, where the duplication was: the review now takes
+    <code>titleLine(question)</code> as its title (the shared clipper, word boundary and ellipsis at
+    <code>TITLE_MAX_CHARS</code>) and the whole question as its body. A short question still clips to
+    itself, so the equal case stays de-duplicated; past the clip the readable paragraph is back.</li>
+  <li><strong>Two pending questions shared one radio group.</strong> <code>DecisionForm</code> used
+    the decision id as the group <code>name</code>, and <code>request_input</code> hardcodes that id
+    as <code>q</code>. A <code>name</code> is document-scoped and <code>ReviewModal</code> draws every
+    pending review into one document, so two option-carrying <code>input</code> reviews - an
+    abandoned ask still pending while the agent asks again - collided: clicking in one unchecked the
+    other in the DOM while React re-rendered only the card that changed, leaving the first showing no
+    selection with its Submit still enabled. The form now takes a <code>namePrefix</code> and the
+    modal passes the review id. The decision id is untouched, because it is echoed back in the
+    response payload.</li>
+  <li><strong><code>MISSION_MCP_SERVER</code> was undocumented.</strong> New env var, no
+    Configuration row. Added.</li>
+</ul>
 
 <footer>
   Rendered from <code>docs/plans/ask-channel/plan.md</code>, which stays the source of truth.

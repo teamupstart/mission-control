@@ -79,13 +79,11 @@ export class Dispatcher {
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
       // `applyAutoMode` is - we only reconfigure agents WE launched, never one the operator
       // started and we merely discovered. It returns nothing rather than half its flags on
-      // ANY failure - a missing bundle, a CLI without the redirect flag, an unwritable state
-      // dir - and never throws, so it cannot sink a dispatch that is otherwise fine; see
-      // `askChannelArgs`. `agentBin` is passed so its capability probe asks the binary this
-      // dispatch will actually spawn.
+      // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
+      // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
       const agentArgs = [
         ...(model ? ["--model", model] : []),
-        ...(await askChannelArgs(task.agent, agentBin)),
+        ...(await askChannelArgs(task.agent)),
       ];
 
       const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
@@ -470,8 +468,11 @@ export async function teardownWorktree(task: {
  * binary. This comment used to say tmux joins the trailing arguments with spaces and runs
  * the result through a shell rather than exec'ing the argv. Measured on tmux 3.6b, it does
  * not: `$HOME`, `a*b` and `two words` each arrive as one unmodified argv element, because
- * tmux >= 3.3 uses multiple arguments as the argv directly. That matters now that the argv
- * carries filesystem paths, whose charset we do not control the way we control a model id's.
+ * tmux >= 3.3 uses multiple arguments as the argv directly. Measured again at size for the
+ * ask channel's inline `--append-system-prompt`: 1260 bytes carrying `$HOME`, globs, both
+ * quote styles, backticks, `$(cmd)`, semicolons, pipes, ampersands and newlines arrived
+ * byte-identical. That matters now that the argv carries filesystem paths and a whole
+ * system-prompt appendix, whose charset we do not control the way we control a model id's.
  *
  * `ModelIdSchema` still constrains model ids to a safe charset, and stays that way: it is
  * free, and the old description did hold on the older tmux that joined-and-shelled a single

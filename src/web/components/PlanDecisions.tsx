@@ -54,19 +54,35 @@ export function DecisionForm({
   /**
    * Drop the visible `<legend>`, because the caller already displays the question.
    *
-   * For an `input` review the question IS the review's title, so the modal prints it in the
-   * header and a legend beneath it says the same sentence twice. The text still reaches
-   * assistive tech as the fieldset's `aria-label` - the group needs a name whether or not
-   * one is drawn. A `plan-decisions` form has several questions under one plan title and
-   * always shows them.
+   * For an `input` review the question is already above the form - as the review's title,
+   * and in full as the body paragraph when the title had to be clipped - so a legend beneath
+   * it says the same sentence a third time. The text still reaches assistive tech as the
+   * fieldset's `aria-label` - the group needs a name whether or not one is drawn. A
+   * `plan-decisions` form has several questions under one plan title and always shows them.
    */
   hideQuestions = false,
+  /**
+   * Namespace for the radio/checkbox `name` attributes this form emits.
+   *
+   * A group `name` is DOCUMENT-scoped, not component-scoped, and `ReviewModal` renders every
+   * pending review of a session into one document. `request_input` hardcodes its decision id
+   * as `q`, so two option-carrying `input` reviews - an abandoned ask still pending while the
+   * agent asks again - would put two radio groups on screen under the same name. The browser
+   * then treats them as ONE group: clicking in the second unchecks the first in the DOM,
+   * while React re-renders only the card whose state changed, so the first card shows nothing
+   * selected even though its state still holds a selection and its Submit stays enabled.
+   *
+   * Defaulted rather than required because a form rendered on its own cannot collide, and
+   * because the decision id itself must stay untouched - it is echoed in the response payload.
+   */
+  namePrefix = "d",
 }: {
   decisions: PlanDecision[];
   busy: boolean;
   onSubmit: (response: string) => void;
   lead?: string;
   hideQuestions?: boolean;
+  namePrefix?: string;
 }): React.JSX.Element {
   const [answers, setAnswers] = useState<Answers>({});
 
@@ -111,7 +127,7 @@ export function DecisionForm({
             <label key={o.id} className="decision-option">
               <input
                 type={d.multiSelect ? "checkbox" : "radio"}
-                name={d.id}
+                name={`${namePrefix}-${d.id}`}
                 checked={get(d.id).selected.includes(o.id)}
                 onChange={(e) => choose(d, o.id, e.target.checked)}
                 disabled={busy}

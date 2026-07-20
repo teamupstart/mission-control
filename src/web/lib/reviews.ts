@@ -28,14 +28,16 @@ export function reviewDecisions(review: ReviewItem): PlanDecision[] | null {
 /**
  * Should the review's body be drawn under its header?
  *
- * Only `input` is ever in doubt. `request_input` sends the question as the title AND as the
- * body, so for every review the tool produces today the two are identical, and drawing both
- * printed the same sentence twice - once as the `<h3>`, again as a paragraph beneath it.
+ * Only `input` is ever in doubt. `request_input` sends a CLIPPED question as the title and
+ * the whole question as the body (`titleLine`, `src/mcp/server.ts`), so the two are equal
+ * exactly when the question was short enough to survive the clip - and there, drawing both
+ * printed the same sentence twice, once as the `<h3>` and again as a paragraph beneath it.
  *
  * The test is `body !== title` rather than the kind, deliberately. Suppressing `input` bodies
- * outright would hard-code that equality into the UI with nothing enforcing it, and would
- * flatten a long or multi-line free-text question into a bold heading with its newlines
- * collapsed. Whenever a body carries something the header does not already say, it is shown.
+ * outright would flatten a long or multi-line free-text question into a bold heading with its
+ * newlines collapsed, which is the case this rule most has to protect: past the clip the two
+ * genuinely differ, and the body renders as the readable, `pre-wrap` paragraph it should be.
+ * Whenever a body carries something the header does not already say, it is shown.
  *
  * `plan` and `diff` bodies ARE the content, and always render.
  */

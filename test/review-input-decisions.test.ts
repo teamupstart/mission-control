@@ -6,6 +6,7 @@ import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { CreateReviewSchema } from "../src/shared/protocol.ts";
 import { reviewDecisions, decisionLead, showsBody } from "../src/web/lib/reviews.ts";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
+import { titleLine, TITLE_MAX_CHARS } from "../src/shared/title.ts";
 
 // What is at stake: the question has to arrive as ARGUMENTS, not as a picture of a menu.
 //
@@ -136,13 +137,60 @@ test("multiSelect asks for checkboxes", () => {
 });
 
 test("an input body is shown only when it says something the header does not", () => {
-  // `request_input` sends the question as title AND body, so rendering both printed the same
-  // sentence twice. Suppressing it unconditionally would instead hard-code that equality into
-  // the modal and flatten a long, multi-line free-text question into a bold heading.
+  // `request_input` sends a CLIPPED question as the title and the whole one as the body, so
+  // the two are equal exactly when the question fit in a heading. Rendering both there printed
+  // the same sentence twice; suppressing it unconditionally would instead flatten a long,
+  // multi-line free-text question into a bold heading with its newlines collapsed.
   const same = review({ title: "Pick one", body: "Pick one" });
   const differs = review({ title: "Pick one", body: "Line one\nLine two, at length." });
   assert.equal(showsBody(same), false, "equal title and body must not print twice");
   assert.equal(showsBody(differs), true, "a body with its own content is still readable prose");
   // Kinds that carry real content are untouched by the rule.
   assert.equal(showsBody(review({ kind: "plan", title: "T", body: "# plan" })), true);
+});
+
+test("what request_input actually sends reaches showsBody both ways", () => {
+  // The rule above is only worth anything if the producer can produce both cases. It could
+  // not: `request_input` sent the question as title AND body, so `body !== title` never fired
+  // for any review the tool made, and the readable `pre-wrap` paragraph was unreachable for
+  // exactly the long questions it exists to carry. `titleLine` is what the producer now uses.
+  const short = "Pick one";
+  const long =
+    "Should the migration run in one transaction, or in batches?\n" +
+    "The table has 40 million rows and the replica lag budget is 5 seconds.";
+
+  assert.equal(titleLine(short), short, "a short question is its own heading");
+  assert.equal(showsBody(review({ title: titleLine(short), body: short })), false);
+
+  assert.notEqual(titleLine(long), long, "a long or multi-line question is clipped to a line");
+  assert.ok(titleLine(long).length <= TITLE_MAX_CHARS + 1, "clipped to the shared bound");
+  assert.equal(
+    showsBody(review({ title: titleLine(long), body: long })),
+    true,
+    "the full question still reaches the human as the readable paragraph",
+  );
+});
+
+test("two forms in one document do not share a radio group", () => {
+  // `ReviewModal` draws every pending review of a session into ONE document, and
+  // `request_input` hardcodes its decision id as `q`. Sharing a `name` makes the browser treat
+  // both cards' radios as a single group: clicking in the second unchecks the first in the
+  // DOM, while React re-renders only the card whose state changed - so the first shows nothing
+  // selected while its state still holds a selection and its Submit stays enabled.
+  const render = (namePrefix: string): string =>
+    renderToStaticMarkup(
+      createElement(DecisionForm, { decisions: [decision], busy: false, onSubmit: () => {}, namePrefix }),
+    );
+  const names = (html: string): string[] =>
+    [...html.matchAll(/name="([^"]+)"/g)].map((m) => m[1] ?? "");
+
+  const first = names(render("r1"));
+  const second = names(render("r2"));
+  assert.ok(first.length > 0, "the radios are named at all");
+  assert.equal(new Set([...first, ...second]).size, 2, "one group per form, never one shared");
+  // The id itself must survive untouched - it is echoed back in the response payload.
+  assert.ok(
+    first.every((n) => n.endsWith(`-${decision.id}`)),
+    "the prefix namespaces the id rather than replacing it",
+  );
 });

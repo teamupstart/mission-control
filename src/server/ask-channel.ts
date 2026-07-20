@@ -49,10 +49,9 @@ import { run } from "./util/exec.ts";
 // one without the other. User-scope registration still serves human-started sessions; it is
 // just no longer what this rests on.
 
-/** The subdirectory holding the two files the spawn argv points at. */
+/** The subdirectory holding the one file the spawn argv points at. */
 const CHANNEL_DIR = join(STATE_DIR, "ask-channel");
 const MCP_CONFIG_PATH = join(CHANNEL_DIR, "mcp.json");
-const REDIRECT_PATH = join(CHANNEL_DIR, "redirect.md");
 
 /** What the MCP server is registered as, and therefore the prefix its tools carry. */
 const SERVER_NAME = "mission-control";
@@ -73,6 +72,21 @@ export const DISALLOWED_TOOL = "AskUserQuestion";
  * It also states WHY, because a rule with a reason survives paraphrase and summarisation
  * into a long context better than a bare prohibition, and because the reason is true and
  * checkable: the human really is watching a dashboard rather than the child's screen.
+ *
+ * Passed INLINE as one argv element, which was measured before it was chosen rather than
+ * assumed: 1260 bytes of this shape arrived byte-identical through `tmux new-session`,
+ * including `$HOME`, `a*b` globs, double and single quotes, backticks, `$(cmd)`, semicolons,
+ * pipes, ampersands and newlines. That is the same finding recorded on `spawnDetachedSession`
+ * - tmux >= 3.3 uses the trailing arguments as the argv directly and does not reshell them.
+ *
+ * The accepted tradeoff: a dispatched agent's `ps` line now carries this prompt. That is
+ * fine. It is a static instruction with no secrets in it, and the alternative - a file and
+ * `--append-system-prompt-file` - buys that cosmetic tidiness with an UNDOCUMENTED flag,
+ * a second file to keep in sync, and a capability probe that has to guess from `--help`
+ * prose whether the flag exists. It guessed wrong: `claude --help` prints the two variants
+ * folded together as `--append-system-prompt[-file]`, so the literal never appears and the
+ * probe disabled the channel on every dispatch. `--append-system-prompt <text>` is listed
+ * plainly in the option table, so there is nothing left to probe for.
  */
 const REDIRECT_PROMPT = `## Asking your human a question
 
@@ -139,45 +153,10 @@ async function resolveMcpRuntime(): Promise<McpRuntime> {
 }
 
 /**
- * Does this `claude` accept `--append-system-prompt-file`?
- *
- * Asked rather than assumed because the flag is HIDDEN: `claude --help` lists
- * `--append-system-prompt` and `--system-prompt` but not the file variants, which surface
- * only inside the `--bare` blurb. Claude Code hard-errors on an unknown option, so on a CLI
- * without it the child exits the instant it is spawned, tmux tears the session down, and the
- * dispatch fails `READY_TIMEOUT_MS` later as "agent session never appeared" - a message
- * pointing nowhere near the real cause, on EVERY dispatch.
- *
- * `--help` is the probe rather than a trial run: it is the one invocation that cannot start a
- * session, touch the worktree, or block on auth, and Commander lists every registered option
- * including the hidden ones. Bounded and non-interactive, with stdin closed.
- *
- * Inconclusive counts as unsupported. A timeout, a crash, a missing binary - none of them is
- * evidence the flag exists, and the safe direction is unambiguous: no ask channel leaves the
- * built-in menu in place, which is merely the status quo.
- */
-async function supportsAppendSystemPromptFile(bin: string): Promise<boolean> {
-  const r = await run(bin, ["--help"], { timeoutMs: 15000 });
-  if (r.code !== 0 || r.outcomeUnknown) return false;
-  return r.stdout.includes("--append-system-prompt-file");
-}
-
-/** Resolved once per daemon lifetime, keyed by binary - the CLI cannot change under us mid-run. */
-const cachedFlagSupport = new Map<string, boolean>();
-
-async function flagSupported(bin: string): Promise<boolean> {
-  const hit = cachedFlagSupport.get(bin);
-  if (hit !== undefined) return hit;
-  const ok = await supportsAppendSystemPromptFile(bin);
-  cachedFlagSupport.set(bin, ok);
-  return ok;
-}
-
-/**
  * Write `file` only when its content would change, and ATOMICALLY when it does.
  *
- * The skip is an optimisation; the atomicity is not. These two paths are what the spawn argv
- * points at, so a plain `writeFileSync` over them can be read half-written by a `claude` that
+ * The skip is an optimisation; the atomicity is not. This path is what the spawn argv
+ * points at, so a plain `writeFileSync` over it can be read half-written by a `claude` that
  * a concurrent dispatch started moments earlier. A truncated `mcp.json` means no
  * `request_input` while `--disallowed-tools` still applies - arm B exactly, the one state
  * this module exists to prevent. Temp file in the SAME directory (so the rename cannot cross
@@ -210,14 +189,14 @@ function writeIfChanged(path: string, content: string): void {
  * ALL FOUR FLAGS OR NONE. That is the entire contract of this function, and the reason it
  * returns an array rather than exposing its pieces:
  *
- *   --mcp-config                  supplies `request_input`
- *   --allowed-tools               pre-approves it, so calling it does not itself raise a
- *                                 permission menu (arm D stopped on exactly that prompt -
- *                                 without this we trade one menu for another). Verified
- *                                 separately: `--allowed-tools` ADDS an auto-approve rule
- *                                 and does not restrict the toolset.
- *   --disallowed-tools            removes the built-in
- *   --append-system-prompt-file   tells the agent where to go instead
+ *   --mcp-config             supplies `request_input`
+ *   --allowed-tools          pre-approves it, so calling it does not itself raise a
+ *                            permission menu (arm D stopped on exactly that prompt -
+ *                            without this we trade one menu for another). Verified
+ *                            separately: `--allowed-tools` ADDS an auto-approve rule
+ *                            and does not restrict the toolset.
+ *   --disallowed-tools       removes the built-in
+ *   --append-system-prompt   tells the agent where to go instead, inline
  *
  * Returns EMPTY whenever anything at all goes wrong, and that direction is the whole point.
  * A session with `AskUserQuestion` intact is merely the status quo - pane-dialog reads its
@@ -231,12 +210,9 @@ function writeIfChanged(path: string, content: string): void {
  * would have launched fine never launches. Setting up the ask channel is best-effort by
  * construction; failing to set it up is never a reason to fail the task.
  *
- * `agentBin` is the resolved CLI this dispatch will actually spawn, so the capability probe
- * asks the same binary rather than whatever `claude` happens to be first on some other PATH.
- *
  * Claude-only: these are Claude's flags, and codex has no equivalent.
  */
-export async function askChannelArgs(agent: AgentType, agentBin: string): Promise<string[]> {
+export async function askChannelArgs(agent: AgentType): Promise<string[]> {
   if (agent !== "claude") return [];
 
   try {
@@ -246,17 +222,6 @@ export async function askChannelArgs(agent: AgentType, agentBin: string): Promis
         `[mission-control] MCP server bundle not found at ${server} - dispatched sessions will ` +
           `keep Claude's built-in ${DISALLOWED_TOOL} menu (run: npm run build). ` +
           `Disallowing it without a replacement would leave the agent no way to ask at all.`,
-      );
-      return [];
-    }
-
-    if (!(await flagSupported(agentBin))) {
-      console.warn(
-        `[mission-control] ${agentBin} does not accept --append-system-prompt-file, so there is ` +
-          `no way to tell a dispatched agent to use ${ASK_TOOL} instead of ${DISALLOWED_TOOL} - ` +
-          `keeping the built-in menu. Update Claude Code (the flag exists in 2.1.x) to enable ` +
-          `the ask channel. Disallowing the built-in without the redirect would leave the agent ` +
-          `asking into a terminal nobody reads.`,
       );
       return [];
     }
@@ -275,7 +240,6 @@ export async function askChannelArgs(agent: AgentType, agentBin: string): Promis
         2,
       ),
     );
-    writeIfChanged(REDIRECT_PATH, REDIRECT_PROMPT);
 
     return [
       "--mcp-config",
@@ -284,8 +248,8 @@ export async function askChannelArgs(agent: AgentType, agentBin: string): Promis
       ASK_TOOL,
       "--disallowed-tools",
       DISALLOWED_TOOL,
-      "--append-system-prompt-file",
-      REDIRECT_PATH,
+      "--append-system-prompt",
+      REDIRECT_PROMPT,
     ];
   } catch (err) {
     console.warn(
@@ -297,5 +261,8 @@ export async function askChannelArgs(agent: AgentType, agentBin: string): Promis
   }
 }
 
-/** The paths the argv points at - for tests and for anyone debugging a dispatched session. */
-export const askChannelPaths = { dir: CHANNEL_DIR, mcpConfig: MCP_CONFIG_PATH, redirect: REDIRECT_PATH };
+/** The path the argv points at - for tests and for anyone debugging a dispatched session. */
+export const askChannelPaths = { dir: CHANNEL_DIR, mcpConfig: MCP_CONFIG_PATH };
+
+/** The redirect appended to a dispatched agent's system prompt - exported for tests. */
+export const askChannelPrompt = REDIRECT_PROMPT;

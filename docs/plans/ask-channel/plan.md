@@ -35,7 +35,7 @@ question-inviting prompt. **Nothing below is inferred from a diff.**
 |---|---|---|
 | A | (control, no flags) | Renders an `AskUserQuestion` menu - the status quo. |
 | B | `--disallowed-tools AskUserQuestion` | Agent asked **in prose and stopped.** Never attempted the tool, never sought an alternative. |
-| C | B + `--append-system-prompt-file` redirect | **Still prose.** The agent said so explicitly: *"my instructions say to ask you questions via a Mission Control `request_input` tool, but that tool isn't actually registered in this session (I checked)."* |
+| C | B + the `--append-system-prompt` redirect | **Still prose.** The agent said so explicitly: *"my instructions say to ask you questions via a Mission Control `request_input` tool, but that tool isn't actually registered in this session (I checked)."* |
 | D | C + `--mcp-config` | Agent called `request_input(question: "Which linter should I set up…")` and **blocked**. Review appeared in the dashboard; answering `biome` over HTTP resumed it with *"Biome it is."* |
 
 ### Arm B is the risk, confirmed
@@ -97,10 +97,10 @@ widening. `ReviewModal` gains one branch: an `input` review that carries decisio
 A new `src/server/ask-channel.ts` owns the whole contract and returns one argv fragment:
 
 ```
---mcp-config              <STATE_DIR>/ask-channel/mcp.json
---allowed-tools           mcp__mission-control__request_input
---disallowed-tools        AskUserQuestion
---append-system-prompt-file <STATE_DIR>/ask-channel/redirect.md
+--mcp-config            <STATE_DIR>/ask-channel/mcp.json
+--allowed-tools         mcp__mission-control__request_input
+--disallowed-tools      AskUserQuestion
+--append-system-prompt  <the redirect prompt itself, inline>
 ```
 
 They are produced by a single function so the dangerous half can never ship without the half that
@@ -108,7 +108,9 @@ makes it safe. If the MCP server bundle is missing, the function returns **nothi
 session with `AskUserQuestion` intact is the status quo, whereas one with it removed and no
 replacement is arm B.
 
-Both files are written into the state dir on demand, self-healing on every dispatch.
+`mcp.json` is written into the state dir on demand, self-healing on every dispatch, and
+atomically (temp file + `rename`) so a concurrently-starting `claude` can never read it torn.
+The redirect needs no file: it travels inline as `--append-system-prompt`'s value.
 
 ### 3. Scope: dispatched sessions only
 
@@ -147,9 +149,10 @@ This matters here because the argv now carries filesystem paths, whose charset w
 
 ## Tests
 
-- `ask-channel.test.ts` - the argv fragment's shape; that it is empty when the MCP bundle is
-  absent (never disallow without provide); that codex gets nothing; that the two files are
-  written and refreshed.
+- `ask-channel.test.ts` - the argv fragment's shape, including that the redirect travels as the
+  flag's own inline value; that it is empty when the MCP bundle is absent or the state dir
+  cannot be written (never disallow without provide, and never throw into a dispatch); that
+  codex gets nothing; that `mcp.json` is written, refreshed, and left with no stray temp file.
 - `review-input-decisions.test.ts` - `request_input` with options produces an `input` review
   carrying one decision; the schema accepts it; `ReviewModal` renders the form rather than the
   textarea.
@@ -173,8 +176,8 @@ by selecting a row.
 
 **The channel rested on an undocumented flag.** `--append-system-prompt-file` is absent from
 `claude --help`, and Claude Code hard-errors on unknown options, so on a CLI without it every
-dispatch died at spawn and surfaced as "agent session never appeared". There is now a
-one-time, per-binary `--help` probe; anything inconclusive counts as unsupported.
+dispatch died at spawn and surfaced as "agent session never appeared". Round 1 added a
+one-time, per-binary `--help` probe for it; round 2 removed the flag instead (see below).
 
 **The tool description over-claimed.** It asserted "your terminal is not being read" to every
 session on the machine, including human-started ones that keep `AskUserQuestion` and are being
@@ -183,6 +186,7 @@ watched. That claim is dispatch-scoped and now lives only in `REDIRECT_PROMPT`.
 **The modal hid too much.** Suppressing an `input` body outright hard-coded `title === body`
 into the UI and flattened long free-text questions into a heading. The test is now
 `body !== title` (`showsBody`), so a body with content of its own still renders as a paragraph.
+(Round 2 found that escape hatch was unreachable, and fixed the producer - see below.)
 
 **The channel files were written non-atomically.** A torn `mcp.json` means no `request_input`
 while `--disallowed-tools` still applies - arm B. Writes now go to a temp file and `rename`.
@@ -191,3 +195,43 @@ One note on the run itself: the first fix round died on an account session limit
 anything in the code, and the daemon reset the shared checkout to `main` mid-run (its own
 "reset checkouts before assigning" behaviour). The commit survived; the work continued in a
 dedicated worktree.
+
+## Review round 2
+
+Four findings, all fixed. Two were the operator's call.
+
+**The probe never returned true, so the whole feature was inert.** Round 1's fix grepped
+`claude --help` for the literal `--append-system-prompt-file`. Real `claude` (2.1.216) prints
+the two variants folded together as `--append-system-prompt[-file]`, so the literal never
+appears, the probe always answered "unsupported", and every dispatch silently kept the
+built-in menu. It passed its tests only because the stub binary echoed the literal string -
+the test asserted the assumption rather than the world.
+
+The fix simplifies rather than hardens: the channel now passes the documented
+`--append-system-prompt <text>` with the prompt INLINE. That deletes the probe, its cache,
+the `agentBin` parameter threaded in for it, `redirect.md`, and the second `writeIfChanged`
+call. Passing ~1.2KB as one argv element was measured before it was chosen: 1260 bytes
+arrived byte-identical through tmux, including `$HOME`, `a*b` globs, both quote styles,
+backticks, `$(cmd)`, semicolons, pipes, ampersands and newlines. The accepted tradeoff is
+that the prompt is visible in a dispatched agent's `ps` line; it is a static instruction with
+no secrets in it. `writeIfChanged` stays for `mcp.json`, atomicity included.
+
+**Round 1's `showsBody` escape hatch could never fire.** `request_input` sent the question as
+BOTH title and body, so `body !== title` was false for every review the tool produced, and a
+long or multi-line question rendered only as the flex-row `<h3>` - the `white-space: pre-wrap`
+added to `.question` in the same change was unreachable. Fixed at the producer, where the
+duplication was: the review now takes `titleLine(question)` as its title (the shared clipper,
+word boundary and ellipsis at `TITLE_MAX_CHARS`) and the whole question as its body. A short
+question still clips to itself, so the equal case stays de-duplicated; past the clip the
+readable paragraph is back.
+
+**Two pending questions shared one radio group.** `DecisionForm` used the decision id as the
+group `name`, and `request_input` hardcodes that id as `q`. A `name` is document-scoped and
+`ReviewModal` draws every pending review into one document, so two option-carrying `input`
+reviews - an abandoned ask still pending while the agent asks again - collided: clicking in
+one unchecked the other in the DOM while React re-rendered only the card that changed, leaving
+the first showing no selection with its Submit still enabled. The form now takes a
+`namePrefix` and the modal passes the review id. The decision id is untouched, because it is
+echoed back in the response payload.
+
+**`MISSION_MCP_SERVER` was undocumented.** New env var, no Configuration row. Added.

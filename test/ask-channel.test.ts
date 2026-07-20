@@ -46,14 +46,15 @@ test("the disallow never ships without the replacement, the pre-approval and the
   // Each of the other three answers a way the disallow alone fails.
   assert.equal(flag(args, "--mcp-config"), askChannelPaths.mcpConfig, "supplies request_input");
   assert.equal(flag(args, "--allowed-tools"), ASK_TOOL, "so calling it is not itself a menu");
-  // The redirect travels INLINE, as the flag's own value. `--append-system-prompt` is listed
-  // plainly in `claude --help`; the `-file` variant is not, and asserting a path here instead
-  // would only prove that we built one, not that the CLI would have accepted the flag.
-  assert.equal(
-    flag(args, "--append-system-prompt"),
-    askChannelPrompt,
-    "tells the agent where to go instead",
-  );
+  // The redirect travels INLINE, as the flag's own value. This asserts the TEXT and not just
+  // the flag on purpose: the predecessor of this line checked that a path had been built and
+  // passed while the CLI was rejecting the flag that path was attached to, so the feature was
+  // inert and the suite was green. A flag is only evidence of intent; the value is the world.
+  const redirect = flag(args, "--append-system-prompt");
+  assert.equal(redirect, askChannelPrompt, "tells the agent where to go instead");
+  assert.doesNotMatch(String(redirect), /^\S*\/\S*$/, "the prompt itself, never a path to it");
+  assert.match(String(redirect), /NEVER ask a question as ordinary prose and end your turn/);
+  assert.match(String(redirect), new RegExp(ASK_TOOL), "and names the tool it is redirecting to");
 });
 
 test("a missing MCP bundle disarms the whole channel, not half of it", async () => {

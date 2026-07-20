@@ -506,8 +506,11 @@ The redirect is not optional. Measured on live sessions, `--disallowed-tools` on
 does not send the agent anywhere - it asks its question in prose and ends the turn. It rides
 inline on `--append-system-prompt` rather than in a file: that flag is listed plainly in
 `claude --help`, so there is nothing to probe for, and tmux passes the whole prompt through
-as one unmodified argv element. The tradeoff is that a dispatched agent's `ps` line carries
-it, which is fine - it is a static instruction with no secrets in it.
+as one unmodified argv element. That combination is verified end to end, not inferred - a
+dispatched agent given a question-inviting prompt calls `request_input` with structured
+options and blocks, with no permission prompt, and resumes when the review is answered in the
+dashboard. The tradeoff is that a dispatched agent's `ps` line carries the prompt, which is
+fine - it is a static instruction with no secrets in it.
 
 Sessions **you** start are untouched: they keep the built-in menu, which the dashboard
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.

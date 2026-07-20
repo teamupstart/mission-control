@@ -38,6 +38,14 @@ question-inviting prompt. **Nothing below is inferred from a diff.**
 | C | B + the `--append-system-prompt` redirect | **Still prose.** The agent said so explicitly: *"my instructions say to ask you questions via a Mission Control `request_input` tool, but that tool isn't actually registered in this session (I checked)."* |
 | D | C + `--mcp-config` | Agent called `request_input(question: "Which linter should I set up…")` and **blocked**. Review appeared in the dashboard; answering `biome` over HTTP resumed it with *"Biome it is."* |
 
+Arms C and D delivered the redirect with `--append-system-prompt-file <path>`, which is what
+shipped first. That variant is gone: review round 2 showed its capability probe could never
+return true, and the documented `--append-system-prompt <text>` replaced it. Arm D was then
+**re-run against the running daemon on the flag that actually ships** - see
+[Re-verified on the inline flag](#re-verified-on-the-inline-flag). Everything the arms
+established about the DESIGN (a disallowed tool does not redirect itself; provide must be
+atomic with disallow) is unchanged by which flag carries the prompt.
+
 ### Arm B is the risk, confirmed
 
 The task asked us to prove that `--disallowed-tools` does not degrade into the agent simply
@@ -235,3 +243,51 @@ the first showing no selection with its Submit still enabled. The form now takes
 echoed back in the response payload.
 
 **`MISSION_MCP_SERVER` was undocumented.** New env var, no Configuration row. Added.
+
+## Review round 3
+
+### Re-verified on the inline flag
+
+Round 2 swapped the redirect's delivery mechanism, and the only end-to-end evidence on record
+had been collected on the mechanism it replaced. Round 2's tests asserted the argv's shape,
+which is exactly the shape of the failure round 2 was fixing: round 1 typechecked and passed
+its tests while being completely inert.
+
+So arm D was run again, against the running daemon, on the shipped commit. `askChannelArgs`
+emitted 8 argv elements (4 flags) with a 1292-byte inline prompt; the agent was spawned
+through the real `spawnDetachedSession`, was given a question-inviting prompt, and called
+`mcp__mission-control__request_input` with three structured options (biome / eslint / oxlint),
+blocking with **no permission prompt**. Resolving the review from the dashboard returned the
+answer and the session resumed.
+
+That closes the one open question - whether Claude Code applies `--append-system-prompt` in
+INTERACTIVE mode, some prompt flags having historically been `--print`-only - and confirms a
+~1.2KB multi-line value survives tmux intact.
+
+Measured alongside it, on the title/body split: a 54-character question keeps `title === body`
+and stays de-duplicated, while a long multi-line one clips to *"Should the retry policy use
+exponential backoff with…"*, so `title !== body` and the `pre-wrap` paragraph renders.
+
+The `ask-channel.test.ts` assertion was tightened to match: it now asserts the element after
+`--append-system-prompt` IS the prompt text, not merely that the flag is present.
+
+### The dispatch argv reached the process filter
+
+`isBackgroundAgent` (`discovery/processes.ts`) decided "this is a daemon, not a session" by
+content-matching the WHOLE `ps` command string for `claude ... daemon` and `mcp serve`. That
+was safe while a dispatched line was `<claude> --model <id>`. It is not now: the line is
+~1594 characters and carries `--mcp-config <MISSION_HOME>/ask-channel/mcp.json` plus the whole
+inline prompt.
+
+Measured on the live process: today's line matches neither pattern, so nothing was broken.
+But an operator whose `MISSION_HOME` is `~/daemon-state`, or one edit putting the word
+"daemon" into the prompt's prose, would make every dispatched session undetectable - it never
+binds, and the dispatch fails `READY_TIMEOUT_MS` later as "agent session never appeared".
+
+The filter was narrowed rather than the prompt: what makes a process a daemon is the
+SUBCOMMAND it was invoked with, so the patterns now run against the command HEAD - argv0 plus
+the leading non-flag tokens - and argument text cannot reach the decision. Both known
+invocations (`claude daemon run …`, `claude mcp serve`) still match.
+`process-background-filter.test.ts` covers both, plus a `--mcp-config` path containing
+"daemon", prompt prose containing "daemon" and "mcp serve", and a line built from the REAL
+`REDIRECT_PROMPT`, so an edit that would blind discovery fails there instead of in production.

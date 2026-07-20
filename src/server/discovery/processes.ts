@@ -90,13 +90,40 @@ export function classifyAgent(command: string): AgentType | null {
 }
 
 /**
- * Exclude background/daemon processes that match a signature but aren't
- * interactive sessions (e.g. `claude daemon run ...`). Interactive sessions are
- * additionally required to have a tty by the caller, but this catches the case
- * defensively.
+ * The flag-free head of a command: argv0 plus the arguments that sit in
+ * SUBCOMMAND position, stopping at the first flag-looking token.
+ *
+ * `claude daemon run --json-path ...` -> `claude daemon run`
+ * `claude --model x --mcp-config /srv/daemon/mcp.json` -> `claude`
  */
-function isBackgroundAgent(command: string): boolean {
-  return /\bclaude\b.*\bdaemon\b/.test(command) || command.includes("mcp serve");
+function commandHead(command: string): string {
+  const head: string[] = [];
+  for (const tok of command.split(/\s+/)) {
+    if (!tok) continue;
+    if (tok.startsWith("-")) break;
+    head.push(tok);
+  }
+  return head.join(" ");
+}
+
+/**
+ * Exclude background/daemon processes that match a signature but aren't
+ * interactive sessions (e.g. `claude daemon run ...`, `claude mcp serve`).
+ * Interactive sessions are additionally required to have a tty by the caller,
+ * but this catches the case defensively.
+ *
+ * Matched against the command HEAD, never the whole argv, because what makes a
+ * process a daemon is the SUBCOMMAND it was invoked with - not a word that
+ * happens to appear in an argument. A dispatched session's argv carries both a
+ * state-dir path (`--mcp-config <MISSION_HOME>/ask-channel/mcp.json`) and the
+ * ~1.2KB inline redirect prompt (`ask-channel.ts`), so matching argument text
+ * would let an operator's `MISSION_HOME` of `~/daemon-state`, or one edit to
+ * that prompt's prose, make every dispatched agent undetectable - it would never
+ * bind to a session and would simply vanish from the dashboard.
+ */
+export function isBackgroundAgent(command: string): boolean {
+  const head = commandHead(command);
+  return /\bclaude\b.*\bdaemon\b/.test(head) || head.includes("mcp serve");
 }
 
 function parseStart(raw: string): number {

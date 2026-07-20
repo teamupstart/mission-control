@@ -117,10 +117,61 @@ cannot honour one. Treat `tools` as the capability boundary it is: the default o
 tool disabled is what makes it safe to embed untrusted transcript and repo text in a
 prompt, and that default must survive being put behind an interface.
 
-Also note the naming collision to avoid: phase 4 is titled "Headless", and this plan means
+Also note the naming collision to avoid: phase 4 was titled "Headless", and this plan means
 *which model does offline work*. It does not mean driving an agent without a terminal -
 that is the `control` capability on the Harness axis. Rename one of them before both exist
 in the codebase.
+
+**Resolved, that way round.** The phase is renamed to "LLM runner" below and the new code
+says `llm`, never `headless`. "Headless" keeps the meaning it already has on disk -
+`HEADLESS_CWD`, `MISSION_HEADLESS`, `headlessTranscriptDir`, `goal/prune.ts` - which is an
+offline run of the app's own, and one of those is read by a hook script installed globally
+from a checkout that may lag this code, so it was never the cheap side to rename. The
+Harness-axis capability stays `control`; it must not acquire "headless" as a nickname.
+
+#### As landed
+
+`@shared/llm.ts` holds the contract (pure, no `node:` imports - the web bundle imports it),
+`src/server/llm/claude.ts` the `claude -p` implementation, `src/server/llm/index.ts` the
+`Record<LlmRunnerId, LlmRunner>`. Three deltas from the sketch above, each forced by a real
+caller:
+
+- **`RunOpts.grant`, one object, not three sibling options.** `tools` / `cwd` / `denyPaths`
+  are one decision - the tools are what make an untrusted prompt dangerous, the cwd is what
+  bounds them, the deny list is what carves the credential stores back out - so a shape that
+  let a caller pass one without the others would make the unsafe call the easy one. A
+  runner declares `sandbox: LlmSandboxSpec | null`, and a grant it cannot fully honour is
+  refused before the spawn rather than partly applied (`grantRefusal`). `denyPaths` are
+  provider-neutral globs; rendering them into `claude`'s `--settings` is the runner's job,
+  and `llm-runner-contract.test.ts` pins that rendering byte-for-byte against the
+  Inspector's live constant so migrating that call site is a provable no-op.
+- **`run()` returns the model's text, envelope already off.** The envelope exists because
+  the runner passed `--output-format json`; a caller unwrapping it is undoing its own
+  runner's flag.
+- **`litter: LlmLitterSpec | null` and `killLiveRuns()`.** What a run leaves behind is part
+  of the contract, not an implementation detail: nothing read or deleted these transcripts
+  until `goal/prune.ts` existed, by which point 153 of 250 sampled on one machine were the
+  app's own.
+
+`runInThread` is `null` for `claude`, matching today's behaviour exactly - the shape is
+`--session-id <uuid>` then `--resume`, and nothing wants it yet.
+
+#### Which model, as opposed to how it is called
+
+Deliberately NOT in `@shared/llm.ts`, because a third spelling of this is the actual mess:
+
+- `@shared/foreman-models.ts` is already the right shape - four roles, each resolving
+  config key -> env var -> shipped fallback, and *reporting which of the three won* so the
+  settings panel cannot display a default the worker does not spawn with. Pure and in
+  `shared` for the same reason `cost.ts` is: the worker spawns with the answer and the
+  panel renders it.
+- `task-title.ts:20`, `away/digest.ts:17`, `goal/refiner.ts:39` are bare
+  `envVar(…) ?? "claude-haiku-4-5"` - no config key, nothing surfacing them in the UI.
+- `inspector/worker.ts:92` is `cfg.model ?? envVar("INSPECTOR_MODEL")`, a third spelling.
+
+The next item generalises `foreman-models.ts` to hold every role and moves those four onto
+it. It does not start a second list under `llm.ts`; a runner answers "how is a model
+called", a role answers "which model", and only the first one is the runner's.
 
 ### Terminal is two interfaces, because tmux and wezterm are not peers
 
@@ -284,7 +335,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 1 - Harness | Interface + registry; then detection/bin, transcript, hooks->state, TUI, capability guards, UI |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
-| 4 - Headless | `LlmRunner` interface; migrate Foreman triage, goal refiner, task titling, away digest |
+| 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface |
 
 ### Decisions taken

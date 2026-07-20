@@ -560,6 +560,15 @@ whose commits are on origin under its own ref can be fetched back by name, so an
 that shipped is still a drop target (which is what a squash-merged PR needs, since the
 landed commit has a different SHA and never appears on `origin/main`).
 
+**The agent is renamed after the task it takes**, the way a dispatched one is named when
+its tmux session is cut - so a recycled agent's card is titled by its work rather than by
+the pooled worktree it was handed out as, or by the task it finished ten minutes ago. This
+happens after the task has been typed, and never fails the assign: if the terminal can't be
+renamed (no tmux or wezterm handle, or the name is already spoken for) the old name simply
+stands. It applies to [the backlog
+autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
+is where a stale name is most confusing - nobody watched that handover happen.
+
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the

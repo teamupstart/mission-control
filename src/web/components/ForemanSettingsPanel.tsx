@@ -2,10 +2,18 @@ import { useEffect, useRef, useState } from "react";
 import type { ForemanState } from "../useForeman.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
+import {
+  FOREMAN_MODEL_ROLES,
+  FOREMAN_MODEL_SPECS,
+  FOREMAN_MODEL_SUGGESTIONS,
+} from "@shared/foreman-models.ts";
+import type { ForemanModelRole, ResolvedForemanModel } from "@shared/foreman-models.ts";
+import type { ForemanConfigPatch } from "@shared/protocol.ts";
 
 // Foreman's set-once configuration, as a settings category. The topbar popover keeps the
 // in-the-moment knobs (enable, mode, work queues, on-drain); the durable posture lives
-// here: the cheap-tier stance, and the list of repos Foreman is trusted to send in live.
+// here: the cheap-tier stance, which model each call runs as, and the list of repos
+// Foreman is trusted to send in live.
 
 const TIER_LABEL: Record<"off" | "shadow" | "on", string> = {
   off: "Off - full review for every prompt",
@@ -18,8 +26,119 @@ export function candidateRepos(repos: string[], allowlist: string[]): string[] {
   return repos.filter((r) => !allowlist.includes(r));
 }
 
+/**
+ * The line under a model field saying WHERE the value in the box came from.
+ *
+ * Deliberately does not name the model: the id is already sitting in the input directly
+ * above (as the placeholder, when the box is empty), and printing it twice inside 60px
+ * reads as two facts when it is one. What an empty greyed box genuinely cannot tell you
+ * is which of two very different things it means - a shipped default, or an env var set
+ * outside the app that silently outranks anything you type here. That is this line's
+ * whole job.
+ *
+ * Silent for `config`, where the box shows your own value and there is nothing to explain.
+ */
+export function modelSourceNote(
+  resolved: ResolvedForemanModel | undefined,
+  envVar: string,
+): string | null {
+  if (!resolved || resolved.source === "config") return null;
+  return resolved.source === "env"
+    ? `From ${envVar} in the daemon's environment.`
+    : "Shipped default.";
+}
+
+/**
+ * One model field.
+ *
+ * Uncontrolled-with-a-draft rather than bound straight to config, because `useForeman`
+ * re-polls every 4s: an input driven by that would drop a character every time a poll
+ * landed mid-word. The draft is the truth while you are typing, and re-syncs from config
+ * only when the box is not focused - so an edit made in another tab still shows up here
+ * without ever fighting the keyboard.
+ *
+ * Commit is on blur and on Enter, and only when the value actually changed, so tabbing
+ * through the four fields doesn't write four times.
+ */
+function ModelField({
+  role,
+  value,
+  resolved,
+  disabled,
+  onCommit,
+}: {
+  role: ForemanModelRole;
+  value: string;
+  resolved: ResolvedForemanModel | undefined;
+  disabled: boolean;
+  onCommit: (next: string) => void;
+}): React.JSX.Element {
+  const spec = FOREMAN_MODEL_SPECS[role];
+  const [draft, setDraft] = useState(value);
+  const focused = useRef(false);
+  // Whether this box has been TYPED IN since it was focused. Without it, blurring a box
+  // you only clicked into would write its stale draft back: the poll can't refresh a
+  // focused field, so a value changed elsewhere (another tab, the env, a direct PUT)
+  // would be silently reverted by a click-in-click-out that changed nothing. Commit is
+  // for edits, and "I put the cursor here" is not one.
+  const dirty = useRef(false);
+  useEffect(() => {
+    if (!focused.current) setDraft(value);
+  }, [value]);
+
+  const commit = (): void => {
+    const next = draft.trim();
+    setDraft(next);
+    if (dirty.current && next !== value) onCommit(next);
+    dirty.current = false;
+  };
+
+  const note = modelSourceNote(resolved, spec.envVar);
+  return (
+    <div className="foreman-model-row">
+      <label className="foreman-model-label" htmlFor={`foreman-model-${role}`}>
+        {spec.label}
+      </label>
+      <input
+        id={`foreman-model-${role}`}
+        className="field-input mono foreman-model-input"
+        type="text"
+        spellCheck={false}
+        autoComplete="off"
+        // The resolved id, not the shipped fallback: an empty box under a set env var
+        // must not advertise a default that env var is overriding.
+        placeholder={resolved?.id ?? spec.fallback}
+        value={draft}
+        disabled={disabled}
+        onFocus={() => (focused.current = true)}
+        onChange={(e) => {
+          dirty.current = true;
+          setDraft(e.target.value);
+        }}
+        onBlur={() => {
+          focused.current = false;
+          commit();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          // Escape abandons the edit rather than committing it, matching every other
+          // compose box in the app.
+          if (e.key === "Escape") {
+            setDraft(value);
+            dirty.current = false;
+            focused.current = false;
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <p className="settings-hint foreman-model-blurb">{spec.blurb}</p>
+      {note && <p className="foreman-model-source">{note}</p>}
+    </div>
+  );
+}
+
 export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.JSX.Element {
-  const { config, update, error } = state;
+  const { config, status, update, error } = state;
   const [repos, setRepos] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
@@ -99,6 +218,43 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
           </label>
         ))}
       </fieldset>
+
+      <div className="foreman-models">
+        <p className="settings-group-label">Models</p>
+        <p className="settings-hint foreman-models-hint">
+          Foreman spawns a fresh, tool-less <code>claude -p</code> for each of these. Leave a
+          field empty to accept the value shown in it. Review and Verify are the expensive
+          calls; Triage and Backlog are deliberately cheaper.
+        </p>
+        {/* Named in prose rather than offered in a picker: a native <datalist> is
+            browser chrome this theme can't touch (which is why `RepoCombobox` exists),
+            and a combobox is a lot of widget for three ids. Any id the CLI accepts works. */}
+        <p className="settings-hint foreman-models-hint">
+          Common ids:{" "}
+          {FOREMAN_MODEL_SUGGESTIONS.map((id, i) => (
+            <span key={id}>
+              {i > 0 && ", "}
+              <code>{id}</code>
+            </span>
+          ))}
+          . Any model your <code>claude</code> CLI accepts will do.
+        </p>
+        {FOREMAN_MODEL_ROLES.map((role) => (
+          <ModelField
+            key={role}
+            role={role}
+            value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
+            resolved={status?.models?.[role]}
+            disabled={!config}
+            onCommit={(next) =>
+              // An empty box is a cleared override, and must be STORED as empty so the
+              // env/default ladder takes over again - not dropped from the patch, which
+              // would leave the old value in place and look like the edit didn't stick.
+              void update({ [FOREMAN_MODEL_SPECS[role].configKey]: next } as ForemanConfigPatch)
+            }
+          />
+        ))}
+      </div>
 
       <div className="foreman-repos">
         <p className="settings-group-label">Live repositories</p>

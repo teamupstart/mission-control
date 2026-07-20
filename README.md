@@ -789,6 +789,31 @@ changes only that block, leaving the rest of every prompt byte-for-byte identica
 > distinct so clearing the box means "judge on your own policy" rather than silently reinstating
 > the default.
 
+### Which model Foreman runs as
+
+Foreman spawns a fresh, tool-less `claude -p` for four different jobs, and each one picks its
+own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
+
+| Call | Default | Config key | What it does |
+|---|---|---|---|
+| Review | `claude-opus-4-8` | `reviewModel` | Judges a stuck session's pending question - answer, escalate, or leave it |
+| Verify | `claude-opus-4-8` | `verifyModel` | Reads the diff and decides whether a queued work item is done |
+| Triage | `claude-haiku-4-5` | `triageModel` | The [cheap tier](#the-cheap-tier)'s Tier 1 router - buckets the ask, never solves it |
+| Backlog | `claude-sonnet-5` | `backlogModel` | Reads the [backlog](#backlog-autopilot-foreman-schedules-the-fleet) once per change and orders it by what depends on what |
+
+Each field resolves the same way: **your setting, then the environment variable, then the
+shipped default**. Clearing a field means "fall back", not "run with no model" - so emptying the
+box hands the decision to `FOREMAN_REVIEW_MODEL` (or the default), it never spawns the CLI
+without a `--model`. The panel prints which of the three is in force, because an environment
+variable set in the daemon's shell outranks the box and would otherwise be invisible from the
+browser.
+
+Any id your `claude` CLI accepts works - the fields are free text, not a fixed list.
+
+> Before this existed, Review and Verify passed no `--model` at all and silently inherited
+> whatever the CLI happened to be logged in as. If you relied on that, set the two fields to
+> match it; otherwise they now pin to Opus explicitly.
+
 ### The cheap tier
 
 Not every blocked session needs the expensive reviewer, so a **cheap tier** sits in front of
@@ -1491,6 +1516,8 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
+| `FOREMAN_REVIEW_MODEL` | `claude-opus-4-8` | Foreman [models](#which-model-foreman-runs-as): the full reviewer (the `reviewModel` config wins over this) |
+| `FOREMAN_VERIFY_MODEL` | `claude-opus-4-8` | Foreman [models](#which-model-foreman-runs-as): the work-queue verifier (the `verifyModel` config wins over this) |
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |

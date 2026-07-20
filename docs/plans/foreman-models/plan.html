@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foreman models: name what it runs as</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1b1f24;
+    --muted: #5b6572;
+    --dim: #7c8798;
+    --rule: #e3e7ec;
+    --panel: #f6f8fa;
+    --panel-2: #eef1f5;
+    --accent: #2f6feb;
+    --code-bg: #f2f4f7;
+    --ok: #1a7f4b;
+    --warn: #9a6700;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9aa7b4;
+      --dim: #7c8798;
+      --rule: #232a33;
+      --panel: #141a21;
+      --panel-2: #1a212a;
+      --accent: #6ea8fe;
+      --code-bg: #161b22;
+      --ok: #56d18a;
+      --warn: #d9a441;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.015em; }
+  h2 {
+    font-size: 20px; margin: 44px 0 12px; padding-top: 18px;
+    border-top: 1px solid var(--rule); letter-spacing: -0.01em;
+  }
+  h3 { font-size: 16px; margin: 28px 0 8px; }
+  p { margin: 0 0 14px; }
+  .lede { font-size: 17.5px; color: var(--muted); margin-bottom: 20px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin: 0 0 7px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 0.88em; background: var(--code-bg); padding: 0.15em 0.4em;
+    border-radius: 5px; border: 1px solid var(--rule);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; margin: 0 0 16px;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: 13px; }
+  blockquote {
+    margin: 0 0 18px; padding: 12px 16px; background: var(--panel);
+    border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; color: var(--muted);
+  }
+  blockquote p:last-child { margin-bottom: 0; }
+  blockquote strong { color: var(--fg); }
+  .tablewrap { overflow-x: auto; margin: 0 0 18px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--dim); font-weight: 640; }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+  figure { margin: 0 0 20px; }
+  figure svg { width: 100%; height: auto; display: block; }
+  figcaption { font-size: 13px; color: var(--dim); margin-top: 8px; text-align: center; }
+  .diagram { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 18px 14px; overflow-x: auto; }
+  .meta { font-size: 13px; color: var(--dim); margin-bottom: 32px; }
+  .verified li::marker { color: var(--ok); }
+  strong { font-weight: 640; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Foreman models: name what it runs as, and let the operator change it</h1>
+<p class="meta">docs/plans/foreman-models/plan.md</p>
+
+<p class="lede">Give each of Foreman's four <code>claude -p</code> calls an explicit,
+configurable model, and show in <strong>Settings → Foreman → Models</strong> what each one
+is actually running as - including when an environment variable is quietly outranking the
+box.</p>
+
+<blockquote>
+<p><strong>Decided:</strong> four separate knobs (Review / Verify / Triage / Backlog) rather
+than one shared "Foreman model" (Decision 1); Review and Verify default to a
+<strong>named</strong> <code>claude-opus-4-8</code> rather than continuing to inherit the
+CLI's default (Decision 2).</p>
+</blockquote>
+
+<h2>Why</h2>
+<p>Asked "which model does the Foreman run as?", the codebase had no answer.</p>
+<ol>
+  <li><strong>Two of the four calls named no model at all.</strong> <code>reviewSession</code>
+    (<code>review.ts:26</code>) and <code>verifyItem</code> (<code>queue-verify.ts:156</code>)
+    called <code>runStructured</code> with no <code>model</code> option, and
+    <code>runClaudeText</code> only passes <code>--model</code> when it is given one. Both
+    therefore inherited whatever the local <code>claude</code> CLI happened to be logged in
+    as - which <code>claude-cli.ts:199</code> already flags in a comment as <em>"the most
+    expensive and least predictable choice - every cheap caller should name a model."</em>
+    The reviewer prompt's own comments call it "an Opus call", but nothing made that true.</li>
+  <li><strong>The two knobs that did exist were invisible.</strong> <code>triageModel</code>
+    and <code>backlogModel</code> were config fields with env fallbacks and no UI anywhere -
+    <code>ForemanSettingsPanel</code> never mentioned them. Setting them meant editing
+    <code>app_config</code> or exporting a shell variable.</li>
+  <li><strong>Every other headless caller in the repo already names its model.</strong>
+    <code>task-title.ts</code>, <code>goal/refiner.ts</code>, and <code>away/digest.ts</code>
+    each declare one, with a comment explaining why. Foreman - by far the biggest spender -
+    was the exception.</li>
+</ol>
+
+<h2>The four calls</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Role</th><th>Default</th><th>Config key</th><th>Env var</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>Review</td><td><code>claude-opus-4-8</code></td><td><code>reviewModel</code></td><td><code>FOREMAN_REVIEW_MODEL</code></td><td>Judges a stuck session's pending question</td></tr>
+    <tr><td>Verify</td><td><code>claude-opus-4-8</code></td><td><code>verifyModel</code></td><td><code>FOREMAN_VERIFY_MODEL</code></td><td>Reads the diff, decides if a queued item is done</td></tr>
+    <tr><td>Triage</td><td><code>claude-haiku-4-5</code></td><td><code>triageModel</code></td><td><code>FOREMAN_TRIAGE_MODEL</code></td><td>The cheap Tier 1 router in front of Review</td></tr>
+    <tr><td>Backlog</td><td><code>claude-sonnet-5</code></td><td><code>backlogModel</code></td><td><code>FOREMAN_BACKLOG_MODEL</code></td><td>Orders the backlog by what depends on what</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Four and not one: the cost profiles genuinely differ, and the existing code argues the
+split at length. Triage exists precisely to keep a per-prompt bucketing off the reviewer's
+model; the backlog planner is a rare prose judgment. Collapsing them into one setting would
+have made Triage expensive to make Review configurable. Verify is split from Review despite
+sharing a default because it runs once per queued item on a repo diff - it is the one most
+worth stepping down when a queue is long, and doing that must not cheapen the reviewer too.</p>
+
+<h2>One ladder, resolved once</h2>
+<p><code>@shared/foreman-models.ts</code> owns the roles, their specs, and the resolution:</p>
+<pre><code>config value  →  env var  →  shipped default</code></pre>
+
+<p><code>||</code> and not <code>??</code> at every rung: these are optional free-text fields,
+and an empty string is a human who cleared the box, never a request to spawn the CLI with no
+<code>--model</code>. That rule was previously stated in a comment on <code>backlogModel</code>
+and enforced only there; it now holds for all four by construction.</p>
+
+<p>The module is <strong>pure</strong> and takes <code>env</code> as a parameter rather than
+reading <code>process.env</code>, because the web bundle imports it and there is no
+<code>process</code> in the browser.</p>
+
+<h3>Who decides the model</h3>
+<figure>
+<div class="diagram">
+<svg viewBox="0 0 860 396" role="img" aria-label="Before: the worker asks runClaudeText, which omits --model for review and verify, so the Claude CLI's own default decides; the dashboard cannot see any of it. After: one shared resolver feeds both the worker's spawn and the daemon's status readout, which the dashboard renders.">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9a441"/>
+    </marker>
+  </defs>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="currentColor" color="currentColor">
+
+    <text x="12" y="20" font-size="12.5" font-weight="700" letter-spacing="0.08em">BEFORE</text>
+
+    <rect x="12" y="34" width="150" height="46" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="87" y="55" text-anchor="middle">Foreman worker</text>
+    <text x="87" y="70" text-anchor="middle" font-size="10.5" opacity="0.65">4 calls</text>
+
+    <line x1="162" y1="57" x2="228" y2="57" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#ar)"/>
+
+    <rect x="230" y="34" width="164" height="46" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="312" y="55" text-anchor="middle">runClaudeText</text>
+    <text x="312" y="70" text-anchor="middle" font-size="10.5" opacity="0.65">--model, or not</text>
+
+    <line x1="394" y1="47" x2="470" y2="47" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#ar)"/>
+    <text x="432" y="38" text-anchor="middle" font-size="10">triage/backlog</text>
+
+    <line x1="394" y1="70" x2="470" y2="70" stroke="#d9a441" stroke-width="1.6" marker-end="url(#arw)"/>
+    <text x="432" y="88" text-anchor="middle" font-size="10" fill="#d9a441">review/verify</text>
+
+    <rect x="472" y="26" width="150" height="40" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="547" y="50" text-anchor="middle" font-size="11">config / env</text>
+
+    <rect x="472" y="76" width="150" height="44" rx="8" fill="none" stroke="#d9a441" stroke-width="1.6"/>
+    <text x="547" y="94" text-anchor="middle" font-size="11" fill="#d9a441">claude CLI default</text>
+    <text x="547" y="109" text-anchor="middle" font-size="10" fill="#d9a441">whatever it is</text>
+
+    <rect x="660" y="34" width="186" height="86" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.25" stroke-dasharray="4 4"/>
+    <text x="753" y="70" text-anchor="middle" opacity="0.55">Dashboard</text>
+    <text x="753" y="88" text-anchor="middle" font-size="10.5" opacity="0.55">no readout at all</text>
+
+    <line x1="12" y1="150" x2="848" y2="150" stroke="currentColor" stroke-opacity="0.18"/>
+
+    <text x="12" y="182" font-size="12.5" font-weight="700" letter-spacing="0.08em">AFTER</text>
+
+    <rect x="12" y="196" width="150" height="46" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="87" y="217" text-anchor="middle">Foreman worker</text>
+    <text x="87" y="232" text-anchor="middle" font-size="10.5" opacity="0.65">4 calls</text>
+
+    <rect x="12" y="300" width="150" height="46" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="87" y="321" text-anchor="middle">Daemon</text>
+    <text x="87" y="336" text-anchor="middle" font-size="10.5" opacity="0.65">foremanStatus</text>
+
+    <line x1="162" y1="219" x2="286" y2="255" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#ar)"/>
+    <line x1="162" y1="323" x2="286" y2="287" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#ar)"/>
+
+    <rect x="288" y="248" width="196" height="46" rx="8" fill="none" stroke="currentColor" stroke-width="1.6"/>
+    <text x="386" y="268" text-anchor="middle" font-weight="600">resolveForemanModel</text>
+    <text x="386" y="283" text-anchor="middle" font-size="10.5" opacity="0.7">config → env → default</text>
+
+    <line x1="484" y1="271" x2="556" y2="271" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#ar)"/>
+
+    <rect x="558" y="248" width="150" height="46" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="633" y="268" text-anchor="middle" font-size="11">{ id, source }</text>
+    <text x="633" y="283" text-anchor="middle" font-size="10" opacity="0.65">one answer</text>
+
+    <line x1="708" y1="271" x2="756" y2="271" stroke="currentColor" stroke-opacity="0.5" marker-end="url(#ar)"/>
+    <rect x="758" y="240" width="90" height="62" rx="8" fill="none" stroke="currentColor" stroke-opacity="0.45"/>
+    <text x="803" y="266" text-anchor="middle" font-size="11">Dashboard</text>
+    <text x="803" y="282" text-anchor="middle" font-size="10" opacity="0.65">shows it</text>
+  </g>
+</svg>
+</div>
+<figcaption>Before, two of the four calls fell through to the CLI's own default and nothing
+could report it. After, one resolver answers for both the spawn and the readout.</figcaption>
+</figure>
+
+<h3>Why the daemon reports the resolution</h3>
+<p>The panel cannot resolve this itself. It can see the config, but the <strong>env layer is
+invisible to the browser</strong> - so a panel rendering <code>config || default</code> would
+confidently print <code>claude-haiku-4-5 (default)</code> while a
+<code>FOREMAN_TRIAGE_MODEL</code> in the daemon's shell ran something else. That is the same
+class of wrong answer this feature exists to remove.</p>
+
+<p>So <code>foremanStatus</code> resolves all four server-side and serves them on
+<code>ForemanStatus.models</code>, each carrying its <code>source</code>
+(<code>config</code> / <code>env</code> / <code>default</code>). The panel renders the
+resolved id as the field's placeholder and explains the source underneath.</p>
+
+<p>Caveat, recorded honestly: the daemon resolves from its <strong>own</strong> env, which is
+the worker's env in every supported way of running the stack (<code>make start</code> puts
+both under one <code>concurrently</code> shell). Hand-starting the worker with a different
+environment is the one case this readout cannot see.</p>
+
+<h2>The panel</h2>
+<p>Each row is label, free-text input, a one-line blurb about what the call does, and - only
+when the value did <em>not</em> come from the box - a line naming its source.</p>
+<ul>
+  <li><strong>Placeholder is the resolved id, not the shipped fallback.</strong> An empty box
+    under a set env var must not advertise a default that env var is overriding.</li>
+  <li><strong>The source line never repeats the id.</strong> It is already in the input
+    directly above; printing it twice within 60px reads as two facts when it is one. The line
+    answers the one question an empty greyed box genuinely cannot: <em>default, or env var?</em></li>
+  <li><strong>Free text, no picker.</strong> Common ids are named in prose. A native
+    <code>&lt;datalist&gt;</code> is browser chrome this theme cannot touch (which is why
+    <code>RepoCombobox</code> exists), and a combobox is a lot of widget for three
+    suggestions. Any id the CLI accepts must keep working.</li>
+</ul>
+
+<h3>Draft handling</h3>
+<p><code>useForeman</code> re-polls every 4s, so a field bound straight to config would drop a
+character whenever a poll landed mid-word. Each row keeps a local draft, re-syncs from config
+only while unfocused, and commits on blur or Enter. Escape abandons the edit, matching every
+other compose box in the app.</p>
+<p>A <code>dirty</code> ref gates the commit: blurring a box you only clicked into must not
+write its stale draft back. Because a focused field cannot be refreshed by the poll, a value
+changed elsewhere would otherwise be silently reverted by a click-in-click-out that typed
+nothing.</p>
+
+<h2>Surfaces touched</h2>
+<div class="tablewrap">
+<table>
+  <thead><tr><th>File</th><th>Change</th></tr></thead>
+  <tbody>
+    <tr><td><code>src/shared/foreman-models.ts</code></td><td><strong>New.</strong> Roles, specs, <code>resolveForemanModel(s)</code>, suggestions.</td></tr>
+    <tr><td><code>src/shared/protocol.ts</code></td><td><code>reviewModel</code> + <code>verifyModel</code> on <code>ForemanConfigSchema</code>.</td></tr>
+    <tr><td><code>src/shared/types.ts</code></td><td><code>ForemanStatus.models</code>.</td></tr>
+    <tr><td><code>src/server/foreman/config.ts</code></td><td><code>foremanStatus</code> resolves from <code>process.env</code>.</td></tr>
+    <tr><td><code>src/server/foreman/review.ts</code></td><td><code>reviewSession(input, model)</code>; <code>reviewModel(cfg)</code>.</td></tr>
+    <tr><td><code>src/server/foreman/queue-verify.ts</code></td><td><code>verifyItem(input, model)</code>; <code>verifyModel(cfg)</code>.</td></tr>
+    <tr><td><code>src/server/foreman/triage.ts</code></td><td><code>triageModel</code> delegates; <code>DEFAULT_TRIAGE_MODEL</code> re-exports the spec.</td></tr>
+    <tr><td><code>src/server/foreman/backlog-plan.ts</code></td><td>Same, for backlog.</td></tr>
+    <tr><td><code>src/server/foreman/worker.ts</code></td><td>Threads <code>cfg</code> into <code>fullReview</code>; passes models at all three call sites.</td></tr>
+    <tr><td><code>src/web/components/ForemanSettingsPanel.tsx</code></td><td>The Models group + <code>ModelField</code> + <code>modelSourceNote</code>.</td></tr>
+    <tr><td><code>src/web/styles.css</code></td><td><code>.foreman-models*</code> / <code>.foreman-model-*</code> in the Foreman settings section.</td></tr>
+    <tr><td><code>README.md</code></td><td>"Which model Foreman runs as" + two env-var rows.</td></tr>
+    <tr><td><code>test/foreman-models.test.ts</code></td><td><strong>New.</strong> The ladder, the no-second-default rule, the panel copy.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><code>model</code> is a <strong>required</strong> parameter on <code>reviewSession</code>
+and <code>verifyItem</code>, not optional with a default. Optional is how they acquired the
+CLI-inherited default in the first place; making it required is what stops a future call site
+quietly re-acquiring it.</p>
+
+<h2>Behaviour change</h2>
+<p>Review and Verify now pin to <code>claude-opus-4-8</code> instead of following the CLI. For
+anyone whose CLI default was already Opus, nothing changes. For anyone else, this is the
+point: the two calls stop drifting with an unrelated setting. The README says so, and the
+fields are there to set it back.</p>
+
+<h2>Verified</h2>
+<p>Against an isolated daemon + Vite from this worktree (<code>MISSION_HOME</code> /
+<code>MISSION_PORT</code>), not the <code>:5173</code> main checkout:</p>
+<ul class="verified">
+  <li><code>/api/foreman/status</code> reports all four roles with sources.</li>
+  <li>Writing <code>reviewModel</code> → <code>source: "config"</code>; clearing it to
+    <code>""</code> → falls back to <code>default</code>, never an empty <code>--model</code>.</li>
+  <li>Restarting with <code>FOREMAN_TRIAGE_MODEL</code> set → that row reports
+    <code>source: "env"</code> and the panel names the variable.</li>
+  <li>Typing into Review and blurring persists, and the value survives a poll cycle.</li>
+</ul>
+
+</div>
+</body>
+</html>

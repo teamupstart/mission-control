@@ -37,6 +37,7 @@ function runOn(branch: string): NmRunSummary {
     branch,
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

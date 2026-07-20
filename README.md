@@ -1225,6 +1225,114 @@ duplicate assignments are flagged inline, and you can reset any one shortcut (or
 them) to its default. The arrow keys and <kbd>Esc</kbd> drive navigation and can't be
 reassigned.
 
+## Inspector (automated PR review)
+
+The Inspector reviews the pull requests **Mission Control opened** - and only those -
+against a repo-root `INSPECTOR.md`, leaves inline review comments for what it finds,
+answers replies in its own threads, re-reviews on every push, and resolves its own
+threads once a push fixes what they were about.
+
+It ships **off**, in **dry run**, trusting **no repositories**. Turning it on is three
+separate acts in Settings → Inspector, and the first two are reversible without anyone
+else seeing anything.
+
+### Only our pull requests
+
+This is the whole consent model, so it is worth being precise about. Mission Control
+learns about PRs two loose ways - a URL sniffed out of any `Bash` result, and
+`gh pr list --head <branch>` - and neither can tell a PR you opened from one a colleague
+opened on the same branch. Neither adopts anything.
+
+A PR is adopted for review only from a signal that *proves* we opened it:
+
+- the hook saw the agent run **`gh pr create`** (matched on the command, not the output -
+  `gh pr view` prints the same URL), or
+- **no-mistakes reported it itself**, in the `pr:` line of `axi status`, from the process
+  that ran the `pr` step.
+
+Adopted PRs are recorded durably and stay adopted while they are open, even after the
+session that opened them exits. A PR with no adoption record is never touched. Adoption is
+not consent to post - that is `mode` plus the allowlist - so a PR is recorded whenever the
+proof arrives, including while the Inspector is switched off. That single local insert is
+the only thing it does while off; it runs no `gh` and no model.
+
+### Knowing its own comments
+
+A comment counts as the Inspector's own only if **both** are true: it was written by the
+login `gh` is authenticated as, **and** it carries a hidden marker
+(`<!-- mission-inspector:v1 … -->`) at the very start of its body. That is what decides
+which threads get resolved and which questions get answered.
+
+Neither half is enough alone, for different reasons. The account is shared - you comment
+under it, other agents run as you, a second Mission Control on another machine posts as
+you - so the author cannot tell our comments from those; the marker can. And the marker's
+prefix is a fixed public string whose fingerprints are visible in any PR's page source, so
+anyone who can comment on the pull request can paste one; the author check is what stops a
+forged comment being read as ours. If `gh` cannot say who we are, nothing counts as ours
+and nothing is resolved or answered.
+
+The marker must be at the *start* of a body to count. GitHub's quote-reply prefixes every
+line with `> `, so a human quoting one of our comments would otherwise be mistaken for us
+and never answered.
+
+### What it can read, and why that is a trade
+
+The reviewer runs `claude -p` with **`Read`, `Grep`, `Glob`** in the reviewed worktree.
+Reviewing a diff without being able to open a file misses most of what matters - whether
+a change breaks a caller three files away, whether there is a test - so the grant is
+deliberate. It also means a pull request diff (which anyone can author) reaches a model
+that can read the filesystem, whose output is published publicly.
+
+Five things stand in the way of that:
+
+1. **Tool allowlist** - reading only. No `Bash`, no `Write`/`Edit`, no `WebFetch`, no MCP.
+2. **Path deny rules** handed to Claude Code itself, covering `.env*`, keys, `.ssh`,
+   `.aws`, `.git/config`, and Mission Control's own state - denied for all three of
+   `Read`, `Grep` and `Glob`, since `Grep` prints the lines of any path it is given.
+3. **Working directory** is the reviewed worktree; under `-p` a read outside it has nobody
+   to approve it, so it fails.
+4. **Every finding must name a file the PR changed.** One that doesn't is discarded - so
+   "read a secret and repeat it" produces a comment with nowhere to land.
+5. **A secret scrubber** on every outbound string, including the review summary, which is
+   the one output rule 4 does not constrain.
+
+It never approves or requests changes; it comments. It does not chase comments to
+resolution - it surfaces issues and resolves what later pushes fix.
+
+### INSPECTOR.md
+
+Put one at the repo root. It tells the Inspector what the project cares about and, as
+importantly, what not to comment on - an automated reviewer that pattern-matches style
+nits is worse than none. This repo's own is [`INSPECTOR.md`](INSPECTOR.md). A repo without
+one is reviewed against a built-in default brief instead - general engineering judgement,
+with the same insistence on a low noise floor - so the Inspector still works on a repo
+nobody has configured. It's read fresh each round, so editing it changes the next review.
+
+The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
+against the contract the repo actually asserts.
+
+### On the card
+
+A session whose pull request has been adopted grows a `⌕` chip beside its PR chip, and the
+mark next to the glyph is where the review stands: no mark at all means adopted but not
+looked at yet, `✓` means reviewed with nothing outstanding, a number is the count of open
+findings, and `!` means the last round didn't complete. It's a mark rather than a word
+because a word costs the card title the width it needs; the sentence is in the tooltip. In
+`dry-run` the chip is set apart - a dashed border, a dotted underline in the rail - and the
+tooltip says nothing was posted.
+
+Cards, board tiles and the console detail all carry it, and there it opens the pull
+request. The console rail carries the same mark without the link, and only when there is
+something to say - open findings or a failed round - because a rail line is scanned rather
+than read.
+
+### Dry run
+
+`dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
+them, then records them instead of publishing. **Settings → Inspector → Recent
+inspections** is where you read what it would have said. Run it there on a few of your own
+PRs before you let it speak.
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)
@@ -1395,8 +1503,13 @@ that looks perfectly healthy would help nobody.
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
-| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler) |
-| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler) pass it instead |
+| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
+| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
+| `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
+| `MISSION_INSPECTOR_MODEL` | CLI default | Inspector: the model both the review and the follow-up replies run on. The stored config's `model` wins where it is set (`PUT /api/inspector/config`; the settings panel doesn't expose it), then this, then the `claude` CLI's own default (the most capable, and the priciest) |
+| `MISSION_INSPECTOR_TIMEOUT_MS` | `180000` | Inspector: hard cap on one review. Larger than the Foreman reviewer's 120s because this one has tool round-trips inside it |
+| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `90000` | Inspector: hard cap on one follow-up reply - a much smaller job than a review |
+| `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |

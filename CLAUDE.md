@@ -16,10 +16,14 @@ how to run it, read `README.md`.
 | `src/main` + `src/preload` | `index.ts` | Electron shell. Spawns the daemon. |
 | `src/mcp` | `server.ts` | MCP tools, stdio child of Claude Code. Reaches the daemon over HTTP. |
 | `src/server/foreman` | `worker.ts` | Auto-responder. Separate process, HTTP only. |
+| `src/server/inspector` | `worker.ts` | Reviews the PRs we opened. In the daemon, not the Foreman. |
 | `hooks/` | `harness-hook.mjs` | Bare node per Claude hook event. POSTs to the daemon. |
 
 - The Foreman is a separate process and **never touches the DB**. If it needs state, add a
   route.
+- The **Inspector is in the daemon**, deliberately: Electron never starts the Foreman
+  worker, so a packaged build would silently not have the feature, and every piece of its
+  state has to survive a restart. Do not move it.
 - The live channel is SSE only. The web app does not poll.
 
 ## Compiler-enforced contracts
@@ -130,6 +134,12 @@ and `hookToState` in `registry.ts`. Hand-kept; nothing catches drift.
 **New mutating route** → add a zod schema in `protocol.ts` and go through `parseBody`. Never
 hand-parse a body.
 
+**PR provenance is two signals, and `prUrl` is not one of them.** `prUrl` (hook sniff) and
+the `gh pr list` poller both match PRs we did not open; only `prCreated` (the hook matching
+the `gh pr create` COMMAND) and `NmRunSummary.prUrl` (no-mistakes reporting its own `pr:`
+line) prove authorship, and only those reach `adoptPr`. Loosening that means commenting on
+strangers' pull requests. Test: `inspector-adoption.test.ts`.
+
 **New column on an existing table** → editing the `CREATE TABLE IF NOT EXISTS` block is not
 enough. Add an `addColumn` call in `migrate()` (`src/server/db.ts`). New tables need nothing.
 
@@ -154,6 +164,12 @@ reached through a symlink.
 `src/shared/skills.ts`, and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback chain in
 `src/shared/harness-runtime.mjs`.
 
+**Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
+marker `mission-inspector:v1` (`src/server/inspector/marker.ts`). Comments carrying it are
+live on pull requests right now. Changing the prefix does not migrate them, it ORPHANS
+them - each becomes unrecognisable, so it is never resolved and its issue is re-posted as a
+duplicate. A new format gets a new version tag parsed **alongside** this one.
+
 ## Registries - extend these, do not start a parallel list
 
 - **Settings panels**: `SETTINGS_CATEGORIES` in `SettingsModal.tsx` + a `case` in
@@ -166,10 +182,12 @@ reached through a symlink.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.
-- **Shared predicates**: `foremanAllowlisted` (`@shared/foreman.ts`), `composeWrapup`
+- **Shared predicates**: `repoAllowlisted` (`@shared/allowlist.ts`, re-exported as
+  `foremanAllowlisted` from `@shared/foreman.ts` for Foreman's own callers), `composeWrapup`
   (`@shared/queue.ts`), `costTone` / `costIsNotable` (`@shared/cost.ts`), and the backlog
   autopilot's `readyBacklog` / `blockersIn` / `nextUpTaskId` (`@shared/backlog.ts`) are shared
-  so every surface, and the server, decides identically. Do not copy them into a component.
+  so every surface, and the server, decides identically. Do not copy them into a component. A
+  third consent gate extends `allowlist.ts`; it does not start a matcher.
 - **`~/.claude/settings.json` writers**: `hooks/install.mjs`, `src/main/integrations.ts`, and
   the daemon (via `src/server/cost.ts`). The telemetry `env` block has ONE definition in
   `@shared/claude-settings.ts` - three copies of six keys is how half a block gets left

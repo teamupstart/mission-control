@@ -326,6 +326,15 @@ export interface Session {
    */
   prChecks: PrChecks | null;
   /**
+   * The Inspector's state for this session's pull request, or null when there is no PR
+   * or the Inspector never adopted it.
+   *
+   * Null is the overwhelmingly common case and MEANS SOMETHING: the Inspector only
+   * adopts PRs it can prove Mission Control opened, so a card showing a PR chip and no
+   * inspector chip is telling you that PR came from somewhere else.
+   */
+  inspector: InspectorSummary | null;
+  /**
    * The option dialog this session's pane is showing right now - a permission prompt, an
    * `AskUserQuestion` clarification menu, the folder-trust check - or null when it isn't
    * showing one. Read off the pane each poll by `annotatePaneState`.
@@ -1086,6 +1095,17 @@ export interface NmRunSummary {
    * `axi status` dates the end, so it can only be timed by watching (see timeRun).
    */
   endedAt: number | null;
+  /**
+   * The pull request this run's own `pr` step opened, or null before it gets there.
+   *
+   * This is the ONE signal in the app that PROVES Mission Control opened a PR - it is
+   * reported by the process that ran the step, not inferred from a branch or sniffed
+   * out of a tool result. The Inspector adopts a PR for review off the back of it, so
+   * dropping it here (as this did until the Inspector landed) is not a cosmetic loss:
+   * it is the difference between reviewing our own PRs and having no way to tell ours
+   * from a stranger's.
+   */
+  prUrl: string | null;
   /** e.g. "parked 1m30s" while awaiting an agent decision, else null. */
   awaitingAgent: string | null;
   /** e.g. "1 awaiting" / "1 auto-fix". */
@@ -1314,6 +1334,164 @@ export interface MissionReport {
   recent: Task[];
   /** True when `recent` was capped, so the digest can say so instead of lying by omission. */
   recentTruncated: boolean;
+}
+
+// ---- Inspector (automated PR review) ----
+//
+// The Inspector reviews pull requests MISSION CONTROL OPENED, and only those. Every
+// type here hangs off that sentence: `InspectorPr` is the adoption ledger that answers
+// "is this one ours?", and `InspectorComment` is the provenance ledger that answers
+// "did we write this?". Both questions have to survive a daemon restart, which is why
+// this is durable state and not a poller's in-memory map.
+
+/** How far the Inspector may go. `dry-run` computes everything and posts nothing. */
+export type InspectorMode = "dry-run" | "live";
+
+/**
+ * How a PR came to be adopted. Recorded because the two signals have genuinely
+ * different strength, and a row whose provenance is unknown is one nobody can audit.
+ */
+export type InspectorSource = "hook" | "no-mistakes";
+
+/** Whether the PR is still worth polling. Merged and closed-unmerged are both "closed". */
+export type InspectorPrState = "open" | "closed";
+
+/**
+ * What a failed attempt says about whether the NEXT PUSH is worth trying immediately.
+ *
+ * `push-fixable` is a failure that is a property of the head itself, so pushing is the
+ * remedy and the only one - a diff too large to hold in memory is declined until the
+ * author shrinks it. `persistent` is everything else: `gh` refused us, the model could
+ * not answer in time for a diff nobody has meaningfully changed. Pushing buys nothing
+ * there, so those are the failures the push-escape is capped on.
+ */
+export type InspectorFailKind = "push-fixable" | "persistent";
+
+export type InspectorSeverity = "blocker" | "major" | "minor" | "nit";
+
+/**
+ * `drafted` is a dry-run finding: computed, deduped, never posted. It occupies the
+ * fingerprint slot so the preview is stable across ticks, and switching to live must
+ * treat it as NOT YET POSTED - otherwise dry-run permanently swallows everything it
+ * previewed.
+ *
+ * `posting` is the crash window made visible. The review is written to this ledger
+ * BEFORE the POST that publishes it, because the other order loses: a POST that reaches
+ * GitHub and whose response times out leaves no row, so the next tick re-reviews the
+ * same push, finds nothing recorded, and posts every comment a second time under the
+ * operator's name. A `posting` row is read as "already raised" for dedup, so the
+ * duplicate cannot happen; the next round reconciles it against the live threads.
+ */
+export type InspectorCommentStatus = "drafted" | "posting" | "open" | "resolved";
+
+/** One adopted pull request. The row's existence IS the permission to comment on it. */
+export interface InspectorPr {
+  /** "owner/repo#123" - stable across clones, worktrees and session churn. */
+  key: string;
+  url: string;
+  owner: string;
+  repo: string;
+  number: number;
+  /** The repo this PR belongs to, for INSPECTOR.md + standards + the allowlist check. */
+  repoRoot: string | null;
+  /** A checkout to run `gh` from. May go stale when the session's worktree is reaped. */
+  cwd: string | null;
+  /** The session that opened it. Nullable: a PR outlives the session, deliberately. */
+  sessionId: string | null;
+  source: InspectorSource;
+  state: InspectorPrState;
+  /**
+   * The head commit as of the last completed review. The re-review trigger is simply
+   * `headRefOid !== headSha`, which is why it is stored rather than timestamped: a
+   * force-push backwards still differs, and a no-op tick still costs nothing.
+   */
+  headSha: string | null;
+  /** Completed review rounds. Also the runaway guard. */
+  round: number;
+  lastReviewedAt: number | null;
+  /** Why the last attempt failed, or null. Surfaced, never silently retried forever. */
+  lastError: string | null;
+  /**
+   * Consecutive failed attempts. Reset by any attempt that completes.
+   *
+   * `round` counts SUCCESSES, so it can never stop a PR that fails permanently - a
+   * reaped worktree, revoked `gh` access, a diff the model cannot answer for inside the
+   * timeout. Each such tick costs up to two full `claude -p` runs, so failures have to
+   * be counted separately from progress in order to be backed off.
+   */
+  failCount: number;
+  /**
+   * What the wait currently in force was earned by, or null when nothing has failed.
+   *
+   * The wait was set by the LAST failure, so the last failure is what decides whether a
+   * push is entitled to end it early. Reset alongside `failCount` by a completed round.
+   */
+  lastFailKind: InspectorFailKind | null;
+  /** Epoch ms before which this PR is not retried. Null when it is due now. */
+  nextAttemptAt: number | null;
+  /**
+   * The head we last STARTED work on, whether or not that work finished.
+   *
+   * Distinct from `headSha`, which records the last head we successfully reviewed, and
+   * the distinction is what makes the backoff both effective and escapable. Keyed on
+   * `headSha` the backoff would never apply at all to a PR whose review has never
+   * succeeded - the common case, since a failed round does not advance it - and keyed on
+   * nothing it would outlast the push that earned it, so a diff force-pushed down to
+   * three lines would sit out the full wait a huge one bought.
+   */
+  lastAttemptSha: string | null;
+  adoptedAt: number;
+  updatedAt: number;
+}
+
+/**
+ * One issue the Inspector raised on one PR.
+ *
+ * Keyed by `fingerprint`, which is the identity of the ISSUE (path + normalized title)
+ * rather than of the comment - so a push that shifts the code down does not produce a
+ * second copy of the same complaint. `UNIQUE(pr_key, fingerprint)` makes that a
+ * property of the database instead of a code path someone can forget.
+ */
+export interface InspectorComment {
+  id: string;
+  prKey: string;
+  fingerprint: string;
+  path: string | null;
+  line: number | null;
+  title: string;
+  severity: InspectorSeverity;
+  round: number;
+  status: InspectorCommentStatus;
+  /** Follow-up replies we have written in this thread. Capped, so bots can't ping-pong. */
+  replies: number;
+  /** The newest foreign comment we have answered, so we never answer one twice. */
+  answeredCommentId: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * The compact per-session view, denormalized onto a Session card like `TaskSummary`.
+ * Deliberately counts rather than findings: the card says whether to go look, and the
+ * PR itself is where you look.
+ */
+export interface InspectorSummary {
+  prKey: string;
+  url: string;
+  mode: InspectorMode;
+  /** Findings currently surfaced - posted in live mode, previewed in dry-run. */
+  open: number;
+  /** Completed review rounds. Zero means adopted but not yet looked at. */
+  round: number;
+  lastReviewedAt: number | null;
+  /** True when the last attempt errored, so the chip can say so instead of "clean". */
+  failed: boolean;
+}
+
+/** A ledger row plus its finding tallies - what the settings panel lists. */
+export interface InspectorInspection extends InspectorPr {
+  openFindings: number;
+  resolvedFindings: number;
 }
 
 // ---- SSE events (daemon -> UI) ----

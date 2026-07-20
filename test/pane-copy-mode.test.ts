@@ -9,7 +9,7 @@ import {
   type PaneDeps,
 } from "../src/server/actions.ts";
 import { readTmuxPaneMode } from "../src/server/discovery/tmux.ts";
-import { run, type RunResult } from "../src/server/util/exec.ts";
+import { run, stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
 
 // A tmux pane in copy-mode routes every key to tmux's OWN key table. `send-keys` and
@@ -31,7 +31,7 @@ import type { Session, TmuxInfo } from "@shared/types.ts";
 const tmuxSession = (paneId = "%1"): Session =>
   ({ id: "s1", agent: "claude", tmux: { session: "s", window: "w", windowIndex: 0, paneId }, wezterm: null }) as Session;
 
-const ok = (stdout: string): RunResult => ({ stdout, stderr: "", code: 0 });
+const ok = (stdout: string): RunResult => stubRun({ stdout, stderr: "", code: 0 });
 
 /**
  * Answer the mode probe with `inMode`, and record everything else that was attempted.
@@ -69,7 +69,7 @@ const menu = (cursor: number): string =>
 
 test("the probe reads a mode only from an explicit in-mode flag", async () => {
   const probe = (out: string, code = 0) =>
-    readTmuxPaneMode("%1", async () => ({ stdout: out, stderr: "", code }));
+    readTmuxPaneMode("%1", async () => stubRun({ stdout: out, stderr: "", code }));
 
   assert.equal(await probe("1 copy-mode"), "copy-mode");
   assert.equal(await probe("1 view-mode"), "view-mode");
@@ -82,7 +82,7 @@ test("a probe that cannot answer reads as 'not in a mode', not as 'blocked'", as
   // write on the machine - a total outage, traded for the single swallowed keystroke this
   // guard exists to catch. Absence of evidence is not evidence of copy-mode.
   const probe = (out: string, code = 0) =>
-    readTmuxPaneMode("%1", async () => ({ stdout: out, stderr: "", code }));
+    readTmuxPaneMode("%1", async () => stubRun({ stdout: out, stderr: "", code }));
 
   assert.equal(await probe("", 1), null, "no such pane / no tmux server");
   assert.equal(await probe(""), null, "empty output");

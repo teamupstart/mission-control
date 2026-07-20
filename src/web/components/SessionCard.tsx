@@ -18,6 +18,7 @@ import {
   AgentDot,
   CostChip,
   GoalLine,
+  InspectorChip,
   PrChip,
   RuntimeMetaRow,
   SessionTitle,
@@ -186,6 +187,7 @@ export function SessionCard({
           {!renaming && <span className="name-source">{subtitle(session)}</span>}
         </div>
         <PrChip session={session} />
+        <InspectorChip session={session} />
         <StateBadge session={session} onOpenReviews={onOpenReviews} />
         {attention &&
           session.note &&

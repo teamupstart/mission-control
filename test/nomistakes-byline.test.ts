@@ -338,6 +338,7 @@ function nmRun(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "feature",
     startedAt: null,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: "parked 1m30s",
     findingsSummary: "1 awaiting",
     gateStep: "review",

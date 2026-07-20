@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -424,30 +425,9 @@ test("renameSession on an unknown session id is a safe no-op", () => {
 
 // ---- Registry.renameSession (dispatched task binding) ----
 
-function mkTask(over: Partial<Task> = {}): Task {
-  return {
-    id: "t1",
-    title: "T",
-    intent: "do the thing",
-    kind: "ship",
-    agent: "claude",
-    repoRoot: "/repo",
-    worktreePath: "/wt/work",
-    branch: null,
-    provider: null,
-    tmuxSession: "work",
-    sessionId: "s1",
-    status: "running",
-    outcome: null,
-    outcomeUrl: null,
-    error: null,
-    createdAt: 0,
-    updatedAt: 0,
-    dispatchedAt: null,
-    completedAt: null,
-    ...over,
-  };
-}
+/** The shared task fixture with this file's defaults on top. */
+const mkTask = (over: Partial<Task> = {}): Task =>
+  baseTask({ worktreePath: "/wt/work", tmuxSession: "work", sessionId: "s1", status: "running", createdAt: 0, updatedAt: 0, ...over });
 
 function taskOf(r: InstanceType<typeof Registry>, id = "t1"): Task | undefined {
   return r.snapshot().tasks.find((t) => t.id === id);

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { AgentType, Task, TaskKind } from "@shared/types.ts";
+import type { AgentType, Task, TaskKind, TaskPriority } from "@shared/types.ts";
 import type { UpdateTask } from "@shared/protocol.ts";
+import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
 import { injectPrompt, kill } from "./actions.ts";
@@ -12,6 +13,10 @@ export interface CreateTaskInput {
   title?: string;
   kind: TaskKind;
   agent: AgentType;
+  /** Optional urgency. Omitted means unset, which is not the same as `low`. */
+  priority?: TaskPriority | null;
+  /** Optional tags, already normalized by the schema that parsed them. */
+  labels?: string[];
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
@@ -83,6 +88,8 @@ export class TaskManager {
       intent: input.intent,
       kind: input.kind,
       agent: input.agent,
+      priority: input.priority ?? null,
+      labels: input.labels ?? [],
       repoRoot: input.repoRoot,
       worktreePath: null,
       branch: null,
@@ -178,14 +185,21 @@ export class TaskManager {
   }
 
   /**
-   * Edit a task that is still in the backlog - the dispatch modal, reopened on a card.
+   * Edit a task - the dispatch modal reopened on a card, or the backlog column's
+   * priority picker.
    *
-   * Only the backlog is editable, and that boundary is the whole rule. The moment a task
-   * dispatches, its title is baked into a git branch and a tmux session name that nothing
-   * downstream can rename (see `autoTitleThenDispatch`), and its intent has already been
-   * typed at an agent - so an edit after that point would change the card and nothing
-   * else, which is worse than a refusal. Every other status is a conflict the caller
-   * shows, not retries.
+   * The status guard applies to the PROVISIONING fields only, and that split is the
+   * whole rule. The moment a task dispatches, its title is baked into a git branch and a
+   * tmux session name that nothing downstream can rename (see `autoTitleThenDispatch`),
+   * and its intent has already been typed at an agent - so an edit to those after that
+   * point would change the card and nothing else, which is worse than a refusal. Every
+   * other status is a conflict the caller shows, not retries.
+   *
+   * `priority` and `labels` are exempt because nothing is provisioned from them. They
+   * are annotation, so re-marking a RUNNING task `blocker` is safe, and re-marking a
+   * finished one keeps the record honest - the two things the guard above is protecting
+   * simply are not at stake. Refusing them would make the board's priority picker dead
+   * the instant its card was dispatched, for no reason anyone could name.
    *
    * Waits out any in-flight titling for the same reason `dispatch` does, inverted: the
    * model writes the whole row back when it lands, so an edit applied before it would be
@@ -195,7 +209,7 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
-    if (t.status !== "backlog") {
+    if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
     const intent = patch.intent?.trim() ?? t.intent;
@@ -212,6 +226,10 @@ export class TaskManager {
       title: title === undefined ? t.title : title || deriveTitle(intent),
       kind: patch.kind ?? t.kind,
       agent: patch.agent ?? t.agent,
+      // Read by `in`, not by truthiness: `priority: null` is a caller deliberately
+      // clearing the field back to unset, and `?? t.priority` would silently ignore them.
+      priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
+      labels: patch.labels ?? t.labels,
       updatedAt: Date.now(),
     };
     this.registry.upsertTask(next);

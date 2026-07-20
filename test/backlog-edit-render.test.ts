@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -18,30 +19,10 @@ import { BacklogColumn } from "../src/web/components/layouts/BacklogColumn.tsx";
 // of you, and one whose buttons still say "Dispatch" and "Add to backlog" is offering
 // to create a second copy of the row it is sitting on.
 
-function mkTask(over: Partial<Task> = {}): Task {
-  return {
-    id: "t1",
-    title: "Rip out the legacy poller",
-    intent: "rip out the legacy poller and its dead config",
-    kind: "scout",
-    agent: "codex",
-    repoRoot: "/Users/dev/work/harness",
-    worktreePath: null,
-    branch: null,
-    provider: null,
-    tmuxSession: null,
-    sessionId: null,
-    status: "backlog",
-    outcome: null,
-    outcomeUrl: null,
-    error: null,
-    createdAt: 1000,
-    updatedAt: 1000,
-    dispatchedAt: null,
-    completedAt: null,
-    ...over,
-  };
-}
+/** The shared task fixture with this file's defaults on top. */
+const mkTask = (over: Partial<Task> = {}): Task =>
+  baseTask({ title: "Rip out the legacy poller", intent: "rip out the legacy poller and its dead config",
+            kind: "scout", agent: "codex", repoRoot: "/Users/dev/work/harness", ...over });
 
 const editor = (task: Task): string =>
   renderToStaticMarkup(

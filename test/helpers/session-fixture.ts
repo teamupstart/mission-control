@@ -1,4 +1,4 @@
-import type { NmRunSummary, Session, SessionMeta } from "../../src/shared/types.ts";
+import type { NmRunSummary, Session, SessionMeta, Task } from "../../src/shared/types.ts";
 
 /**
  * A representative session for the board's render tests, and the one place a required
@@ -87,6 +87,43 @@ export function mkSession(over: Partial<Session> = {}): Session {
     queue: null,
     orphanedQueue: null,
     paneDialog: null,
+    ...over,
+  };
+}
+
+/**
+ * A representative dispatched task, and - like `mkSession` above - the ONE place a
+ * required field has to be added when the `Task` type grows.
+ *
+ * Six test files kept private copies of this before `priority`/`labels` existed, so
+ * adding two required fields broke six fixtures in six places. That is the cost this
+ * helper removes: the next field is one edit here, and every test that does not care
+ * about it keeps compiling.
+ */
+export function mkTask(over: Partial<Task> = {}): Task {
+  const now = 1000;
+  return {
+    id: "t1",
+    title: "T",
+    intent: "do the thing",
+    kind: "ship",
+    agent: "claude",
+    priority: null,
+    labels: [],
+    repoRoot: "/repo",
+    worktreePath: null,
+    branch: null,
+    provider: null,
+    tmuxSession: null,
+    sessionId: null,
+    status: "backlog",
+    outcome: null,
+    outcomeUrl: null,
+    error: null,
+    createdAt: now,
+    updatedAt: now,
+    dispatchedAt: null,
+    completedAt: null,
     ...over,
   };
 }

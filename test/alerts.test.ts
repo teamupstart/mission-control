@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import {
   batchSeverity,
@@ -66,30 +67,9 @@ function mkSession(over: Partial<Session> = {}): Session {
   };
 }
 
-function mkTask(over: Partial<Task> = {}): Task {
-  return {
-    id: "t",
-    title: "T",
-    intent: "do",
-    kind: "ship",
-    agent: "claude",
-    repoRoot: "/repo",
-    worktreePath: null,
-    branch: null,
-    provider: null,
-    tmuxSession: null,
-    sessionId: null,
-    status: "running",
-    outcome: null,
-    outcomeUrl: null,
-    error: null,
-    createdAt: 0,
-    updatedAt: 0,
-    dispatchedAt: null,
-    completedAt: null,
-    ...over,
-  };
-}
+/** The shared task fixture with this file's defaults on top. */
+const mkTask = (over: Partial<Task> = {}): Task =>
+  baseTask({ id: "t", intent: "do", status: "running", createdAt: 0, updatedAt: 0, ...over });
 
 const scope = (sessions: Session[], tasks: Task[] = [], stalls: Stall[] = []): AlertScope => ({
   sessions,

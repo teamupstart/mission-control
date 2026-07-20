@@ -1,4 +1,5 @@
 import { test, after } from "node:test";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,30 +24,9 @@ after(() => rmSync(home, { recursive: true, force: true }));
  * can pick the wrong target has to be a refusal rather than a best effort.
  */
 
-function mkTask(over: Partial<Task> = {}): Task {
-  return {
-    id: "t1",
-    title: "T",
-    intent: "do the thing",
-    kind: "ship",
-    agent: "claude",
-    repoRoot: "/repo",
-    worktreePath: null,
-    branch: null,
-    provider: null,
-    tmuxSession: null,
-    sessionId: null,
-    status: "backlog",
-    outcome: null,
-    outcomeUrl: null,
-    error: null,
-    createdAt: 1000,
-    updatedAt: 1000,
-    dispatchedAt: null,
-    completedAt: null,
-    ...over,
-  };
-}
+/** The shared task fixture with this file's defaults on top. */
+const mkTask = (over: Partial<Task> = {}): Task =>
+  baseTask({ ...over });
 
 function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {

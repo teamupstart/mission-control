@@ -32,6 +32,16 @@
   --pr-open: #3fb950;
   --pr-merged: var(--purple);
 
+  /* Task priority. Reuses the session-state ramp rather than inventing a fifth hue,
+     so "orange means look at me" reads the same on a card and on a backlog chip.
+     `low` is deliberately the dim grey and NOT a colour: marking something low should
+     make it recede, and only `blocker` earns the danger red. There is no token for
+     unset - an unprioritised task renders no chip at all. */
+  --prio-low: var(--dim);
+  --prio-med: var(--working);
+  --prio-high: var(--attention);
+  --prio-blocker: var(--danger);
+
   --radius: 13px;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
@@ -2943,6 +2953,75 @@ kbd {
   border-left-color: var(--idle);
 }
 
+/* ---- task triage marks (priority + labels) ----
+   Both are OPTIONAL on a task and both render nothing when unset, so these rules only
+   ever fire on a task somebody actually triaged. Deliberately sized to sit inline next
+   to `.task-kind` without out-shouting it: the kind says what the task IS, priority
+   says how loud it is, and only `blocker` gets to be red. Drawn by `PriorityChip` /
+   `LabelChips` in session-bits.tsx, which the board's backlog card, the roundup panel
+   and the dispatch form all share. */
+.task-priority {
+  flex: none;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 640;
+  padding: 2px 6px;
+  border-radius: 5px;
+  color: var(--prio-color, var(--muted));
+  background: color-mix(in oklab, var(--prio-color, var(--muted)) 15%, transparent);
+}
+.prio-low {
+  --prio-color: var(--prio-low);
+}
+.prio-med {
+  --prio-color: var(--prio-med);
+}
+.prio-high {
+  --prio-color: var(--prio-high);
+}
+.prio-blocker {
+  --prio-color: var(--prio-blocker);
+  /* The one priority that gets an outline as well as a fill - a blocker should be
+     findable in peripheral vision on a board of thirty cards. */
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--prio-blocker) 55%, transparent);
+}
+.task-labels {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* NOWRAP, and it is load-bearing. In the roundup this group shares one flex line with
+     the task title, so a wrapping group grows tall and takes the width the title needed -
+     the row rendered a three-line stack of tags beside a title clipped to "Bloc…". Kept
+     on one line it shrinks instead, and the "+N" chip reports whatever did not fit. */
+  /* Does not shrink: the chips are already bounded (capped count, each ellipsised at
+     14ch), so when a row runs out of width the thing that should give way is the repo
+     path beside them - it is the least identifying item on the line and is already
+     abbreviated. Letting both shrink is what rendered "inf…" and "fla…". */
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.task-label {
+  font-size: 10px;
+  line-height: 1.5;
+  padding: 1px 6px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  /* A long tag truncates rather than wrapping the row it sits in - the count of tags
+     is the signal at a glance, the full text is in the group's title attribute. */
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-label-more {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- PR chip (open pull request for the session's branch) ---- */
 /* PR chip - lives in the card header, just left of the status badge. Color and
    glyph encode the PR's state: green pull-request for open, purple merge for
@@ -3118,6 +3197,16 @@ kbd {
 .combobox-option.is-active {
   color: #fff;
   background: color-mix(in oklab, var(--working) 20%, var(--panel-2));
+}
+/* Live preview of the labels the comma-separated field will actually store. Lives
+   inside the Labels field so it reads as that input's output; the `.field` above it is
+   a flex column, so this just becomes the next row under the input. */
+.dispatch-label-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
 }
 .dispatch-error {
   margin: 0;
@@ -3345,6 +3434,30 @@ kbd {
   gap: 8px;
   min-width: 0;
   flex: 1;
+}
+/* A backlog row stacks its two lines instead of competing for one - see the comment at
+   the Backlog section in ReportPanel.tsx. Only the backlog opts in; a session row has
+   no labels and still fits on a single line. */
+.report-row-stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+.report-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.report-line-sub {
+  gap: 6px;
+}
+/* The path is the flexible one on this line, so it absorbs the remainder and ellipsises
+   rather than squeezing the label chips. */
+.report-line-sub .report-sub {
+  flex: 1 1 0;
+  min-width: 0;
 }
 .report-name {
   font-size: 13px;
@@ -5835,6 +5948,15 @@ kbd {
   outline-offset: 2px;
   border-radius: 4px;
 }
+/* Triage marks sit between the title and the foot, so priority reads with the title
+   rather than getting lost among the kind/agent/age metadata below it. */
+.bl-marks {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
 .bl-foot {
   display: flex;
   align-items: center;
@@ -5842,6 +5964,64 @@ kbd {
   flex-wrap: wrap;
   font-size: 10px;
   color: var(--dim);
+}
+/* The priority control, styled AS the chip rather than beside one - see the comment in
+   BacklogColumn.tsx. `appearance: none` is what lets a native select carry the same
+   colour, casing and radius the read-only `.task-priority` chip uses, so the same
+   priority looks identical whether you are reading it in the roundup or setting it
+   here. `--prio-color` is inherited from the `.prio-*` class the chip rules define. */
+.bl-prio select {
+  font: inherit;
+  font-size: 10px;
+  font-weight: 640;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  appearance: none;
+  /* Without this a select is as wide as its WIDEST option, so "LOW" and "MEDIUM" would
+     each sit in a box cut for "BLOCKER" - chips with visibly unequal trailing space in a
+     column you read by shape. `field-sizing` shrinks it to the option actually showing;
+     where it is unsupported the old widest-option sizing is the harmless fallback. */
+  field-sizing: content;
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  color: var(--prio-color, var(--muted));
+  background: color-mix(in oklab, var(--prio-color, var(--muted)) 15%, transparent);
+}
+/* Unset is the quiet state: lowercase, dim and unfilled, so an untriaged backlog reads
+   as untriaged rather than as a column of lit dropdowns. It stays present (unlike the
+   read-only chip, which renders nothing) because this is the surface triage happens on
+   and a control you cannot see is a control nobody uses. */
+.bl-prio.is-unset select {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--dim);
+  background: transparent;
+}
+.bl-prio select:hover:not(:disabled),
+.bl-prio select:focus-visible {
+  border-color: color-mix(in oklab, var(--prio-color, var(--border)) 55%, var(--border));
+}
+.bl-prio.is-unset select:hover:not(:disabled),
+.bl-prio.is-unset select:focus-visible {
+  color: var(--fg);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+.bl-prio select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+/* The option list is a native popup, so it needs explicit colours - inherited
+   uppercase/dim styling would otherwise make the menu unreadable against the OS chrome. */
+.bl-prio option {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: var(--fg);
+  background: var(--panel);
 }
 .bl-kind,
 .bl-agent {

@@ -17,6 +17,7 @@ import type {
   SessionQueue,
   Task,
   TaskKind,
+  TaskPriority,
   TaskStatus,
   TrackedGap,
   WorkItem,
@@ -24,6 +25,7 @@ import type {
   WorktreeProvider,
 } from "@shared/types.ts";
 import { IN_FLIGHT_ITEM_STATES, TERMINAL_ITEM_STATES } from "@shared/queue.ts";
+import { normalizeLabels } from "@shared/task.ts";
 
 /**
  * Durable state. Live sessions are intentionally NOT persisted - they're rebuilt
@@ -102,6 +104,8 @@ export function openDb(): DatabaseSync {
       intent        TEXT NOT NULL,
       kind          TEXT NOT NULL,
       agent         TEXT NOT NULL,
+      priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
+      labels        TEXT,               -- JSON array of strings, NULL = none
       repo_root     TEXT NOT NULL,
       worktree_path TEXT,
       branch        TEXT,
@@ -293,6 +297,16 @@ function migrate(d: DatabaseSync): void {
   // the backlog on the next start. `tasks.status` is bare TEXT with no CHECK
   // constraint, so rewriting the value in place is safe.
   d.exec(`UPDATE tasks SET status='backlog' WHERE status='queued';`);
+
+  // `priority` / `labels`: the optional triage fields, added to `tasks` long after it
+  // shipped - so every existing install only gets them through these ALTERs, and
+  // without them every task write on an upgraded db would fail. Both nullable with no
+  // default, which reads truthfully rather than merely harmlessly: a task filed before
+  // triage existed has no priority and no labels, and NULL is exactly that. It is also
+  // a different answer from `low` and from `[]`-set-deliberately, which is why the
+  // column is not `TEXT NOT NULL DEFAULT ''`.
+  addColumn(d, "tasks", "priority", "TEXT");
+  addColumn(d, "tasks", "labels", "TEXT");
 
   // `proposed_payload`: what a drafted item would actually type. CREATE TABLE IF
   // NOT EXISTS won't add a column to a table that already exists, so an ALTER is
@@ -966,6 +980,8 @@ interface TaskRow {
   intent: string;
   kind: string;
   agent: string;
+  priority: string | null;
+  labels: string | null;
   repo_root: string;
   worktree_path: string | null;
   branch: string | null;
@@ -982,6 +998,18 @@ interface TaskRow {
   completed_at: number | null;
 }
 
+/** Read a `tasks.labels` blob back as a clean string array; anything unusable is none. */
+function parseLabels(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return normalizeLabels(parsed.filter((v): v is string => typeof v === "string"));
+  } catch {
+    return [];
+  }
+}
+
 function rowToTask(r: TaskRow): Task {
   return {
     id: r.id,
@@ -989,6 +1017,13 @@ function rowToTask(r: TaskRow): Task {
     intent: r.intent,
     kind: r.kind as TaskKind,
     agent: r.agent as Task["agent"],
+    priority: r.priority as TaskPriority | null,
+    // Re-normalized on the way out, not merely parsed. The column is plain TEXT and
+    // this row may predate the cap (or have been written by an older build), so the
+    // shared cleaner is what guarantees a caller never sees a duplicate or an
+    // unbounded tag. A malformed blob reads as no labels rather than throwing - one
+    // bad row must not take out `listTasks` and with it the whole backlog.
+    labels: parseLabels(r.labels),
     repoRoot: r.repo_root,
     worktreePath: r.worktree_path,
     branch: r.branch,
@@ -1010,12 +1045,13 @@ export function upsertTask(t: Task): void {
   openDb()
     .prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, repo_root, worktree_path, branch, provider, tmux_session,
-         session_id, status, outcome, outcome_url, error, created_at, updated_at,
-         dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         id, title, intent, kind, agent, priority, labels, repo_root, worktree_path, branch,
+         provider, tmux_session, session_id, status, outcome, outcome_url, error,
+         created_at, updated_at, dispatched_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
+         priority=excluded.priority, labels=excluded.labels,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
@@ -1023,7 +1059,12 @@ export function upsertTask(t: Task): void {
          completed_at=excluded.completed_at`,
     )
     .run(
-      t.id, t.title, t.intent, t.kind, t.agent, t.repoRoot, t.worktreePath, t.branch, t.provider,
+      t.id, t.title, t.intent, t.kind, t.agent, t.priority,
+      // Stored as NULL rather than "[]" when empty, so the column reads the same for a
+      // task filed before labels existed and one filed today with none - there is no
+      // third state to tell apart, and `parseLabels` maps both back to [].
+      t.labels.length > 0 ? JSON.stringify(t.labels) : null,
+      t.repoRoot, t.worktreePath, t.branch, t.provider,
       t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );

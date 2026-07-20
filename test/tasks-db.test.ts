@@ -1,4 +1,5 @@
 import { test, after } from "node:test";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,31 +19,9 @@ const { Registry } = await import("../src/server/registry.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-function mkTask(over: Partial<Task> = {}): Task {
-  const now = 1000;
-  return {
-    id: "t1",
-    title: "T",
-    intent: "do the thing",
-    kind: "ship",
-    agent: "claude",
-    repoRoot: "/repo",
-    worktreePath: null,
-    branch: null,
-    provider: null,
-    tmuxSession: null,
-    sessionId: null,
-    status: "backlog",
-    outcome: null,
-    outcomeUrl: null,
-    error: null,
-    createdAt: now,
-    updatedAt: now,
-    dispatchedAt: null,
-    completedAt: null,
-    ...over,
-  };
-}
+/** The shared task fixture with this file's defaults on top. */
+const mkTask = (over: Partial<Task> = {}): Task =>
+  baseTask({ ...over });
 
 function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {

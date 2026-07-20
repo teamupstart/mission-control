@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plan: Task sources</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg-2: #f5f7fa; --fg: #1a1f27; --muted: #5d6775;
+    --border: #d9dee6; --border-soft: #e6eaf0; --accent: #b46a00; --link: #0b6bcb;
+    --code-bg: #f2f4f8; --panel: #ffffff; --panel-2: #eef1f6; --sel: #dceafe;
+    --ok: #157347; --no: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0e13; --bg-2: #12161d; --fg: #e7ebf1; --muted: #939eae;
+      --border: #232a34; --border-soft: #1b2129; --accent: #f6a733; --link: #6aa9ee;
+      --code-bg: #12161d; --panel: #0f131a; --panel-2: #161b23; --sel: #17263b;
+      --ok: #4ade80; --no: #f27a72;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: 48px 24px;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 29px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  h4 { font-size: 14px; margin: 18px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  p, li { color: var(--fg); }
+  a { color: var(--link); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em; background: var(--code-bg); padding: 1.5px 5px; border-radius: 5px;
+    border: 1px solid var(--border-soft);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border-soft); border-radius: 10px;
+    padding: 14px 16px; overflow-x: auto; font-size: 13px; line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; }
+  .status {
+    display: inline-block; font-size: 12px; font-weight: 640; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    padding: 3px 10px; border-radius: 999px; margin-bottom: 20px;
+  }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  strong { font-weight: 660; }
+  .muted { color: var(--muted); }
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  th { color: var(--muted); font-weight: 640; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  blockquote {
+    margin: 16px 0; padding: 10px 16px; border-left: 3px solid var(--accent);
+    background: color-mix(in oklab, var(--accent) 7%, transparent); border-radius: 0 8px 8px 0;
+  }
+  blockquote p { margin: 4px 0; }
+  .yes { color: var(--ok); font-weight: 660; }
+  .no { color: var(--no); font-weight: 660; }
+  figure { margin: 20px 0; }
+  figure svg { max-width: 100%; height: auto; display: block; }
+  figcaption { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .diagram { border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-2); padding: 12px; overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Plan: Task sources</h1>
+  <p class="muted">A shared interface for pulling work <em>into</em> the backlog from systems that already hold it - GitHub issues first, but nothing in the interface should know that.</p>
+  <span class="status">Scoped · sources return candidates, the daemon writes · no auto-dispatch</span>
+
+  <h2>The problem</h2>
+  <p>Every task in Mission Control is typed by a human into the dispatch form. That is the
+    only door. Meanwhile the work already exists somewhere: open issues, a triage board, an
+    on-call queue, a spreadsheet of flaky tests. Re-typing it is the friction, and the
+    re-typing is why the backlog is usually emptier than the real backlog.</p>
+  <p>The obvious fix - "add a GitHub integration" - is the wrong shape. It puts
+    <code>gh issue list</code> in the middle of the dispatcher, and the second source
+    (Linear, Jira, a cron that files a task when a nightly build fails) either copies all of
+    it or bolts a second special case onto the same code. So: <strong>one interface, many
+    implementations, and the daemon owns everything the implementations must not be trusted
+    to get right.</strong></p>
+
+  <h2>What a task source is</h2>
+  <p>A task source <strong>reads an external system on a schedule and returns candidate
+    tasks</strong>. That is the whole contract. It does not write to the database, it does
+    not dispatch anything, and it does not decide whether a candidate is new.</p>
+  <p>That split is the point of the design:</p>
+  <ul>
+    <li><strong>The daemon is the only writer of the DB</strong> (<code>CLAUDE.md</code>),
+      and a task source is not the daemon. Returning data instead of writing rows keeps that
+      invariant true by construction, rather than by every implementer remembering it.</li>
+    <li><strong>De-duplication, normalization and caps get enforced once.</strong> A source
+      that got dedupe wrong would re-file the same issue every sweep, forever. Making that
+      impossible to get wrong is worth more than the flexibility of letting each source try.</li>
+    <li><strong>It makes a source a pure function to test.</strong>
+      <code>sweep(config) -&gt; candidates</code> needs no database, no registry, no HTTP.</li>
+  </ul>
+
+  <h3>Sources never type into a pane</h3>
+  <p>This is the safety boundary, and the README already has the paragraph that explains why
+    it matters (<em>"The daemon is no longer strictly reactive - read this before adding
+    another autonomous writer"</em>). The skills reload loop types into live panes on its own
+    schedule, and needs <code>settledIdle</code> plus a pane read plus <code>withPaneLock</code>
+    before it dares.</p>
+  <blockquote>
+    <p><strong>A task source needs none of that, because it writes backlog rows and nothing
+      else.</strong> The worst a broken source can do is file junk into a list, which a human
+      then reads and deletes. Nothing is provisioned, no worktree is cut, no keystroke is sent.</p>
+  </blockquote>
+  <p>Auto-dispatching swept work is therefore <strong>explicitly out of scope</strong>, and
+    not because it is hard: it is a different risk class, and it would need its own gate (an
+    allowlist, a rate limit, a dry-run mode) of exactly the kind Foreman already carries. If
+    it is ever wanted it is a separate change with a separate argument.</p>
+
+  <h2>Data flow</h2>
+  <figure>
+    <div class="diagram">
+      <svg viewBox="0 0 820 300" role="img" aria-label="A sweeper loop inside the daemon calls the GitHub issues source, which shells out to the gh CLI and returns candidate tasks to ingest. Ingest de-duplicates against a seen table and is the only step that writes to the tasks table, which reaches the dashboard over SSE. No arrow reaches a terminal pane.">
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+          </marker>
+        </defs>
+        <g fill="none" stroke="currentColor" stroke-width="1.4" color="var(--muted)">
+          <!-- daemon boundary -->
+          <rect x="120" y="18" width="480" height="200" rx="14" stroke-dasharray="5 5" opacity="0.55" />
+        </g>
+        <text x="132" y="38" font-size="11" fill="var(--muted)" letter-spacing="0.08em">THE DAEMON (sole DB writer)</text>
+
+        <g font-size="12.5" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+          <!-- config -->
+          <rect x="136" y="52" width="120" height="40" rx="9" fill="var(--panel-2)" stroke="var(--border)" />
+          <text x="196" y="70" text-anchor="middle" fill="var(--fg)">app_config</text>
+          <text x="196" y="84" text-anchor="middle" fill="var(--muted)" font-size="10.5">taskSources</text>
+
+          <!-- sweeper -->
+          <rect x="136" y="118" width="120" height="46" rx="9" fill="var(--panel-2)" stroke="var(--border)" />
+          <text x="196" y="139" text-anchor="middle" fill="var(--fg)">sweeper loop</text>
+          <text x="196" y="153" text-anchor="middle" fill="var(--muted)" font-size="10.5">every intervalMs</text>
+
+          <!-- source -->
+          <rect x="300" y="118" width="126" height="46" rx="9" fill="var(--panel-2)" stroke="var(--border)" />
+          <text x="363" y="139" text-anchor="middle" fill="var(--fg)">source impl</text>
+          <text x="363" y="153" text-anchor="middle" fill="var(--muted)" font-size="10.5">github-issues</text>
+
+          <!-- ingest -->
+          <rect x="468" y="118" width="112" height="46" rx="9" fill="var(--sel)" stroke="var(--link)" />
+          <text x="524" y="139" text-anchor="middle" fill="var(--fg)">ingest</text>
+          <text x="524" y="153" text-anchor="middle" fill="var(--muted)" font-size="10.5">the only writer</text>
+
+          <!-- seen -->
+          <rect x="468" y="52" width="112" height="40" rx="9" fill="var(--panel-2)" stroke="var(--border)" />
+          <text x="524" y="70" text-anchor="middle" fill="var(--fg)">task_source_seen</text>
+          <text x="524" y="84" text-anchor="middle" fill="var(--muted)" font-size="10.5">outlives the task</text>
+
+          <!-- gh -->
+          <rect x="300" y="228" width="126" height="44" rx="9" fill="var(--bg-2)" stroke="var(--border)" />
+          <text x="363" y="249" text-anchor="middle" fill="var(--fg)">gh CLI</text>
+          <text x="363" y="263" text-anchor="middle" fill="var(--muted)" font-size="10.5">your existing auth</text>
+
+          <!-- tasks db -->
+          <rect x="644" y="118" width="150" height="46" rx="9" fill="var(--panel-2)" stroke="var(--border)" />
+          <text x="719" y="139" text-anchor="middle" fill="var(--fg)">SQLite tasks</text>
+          <text x="719" y="153" text-anchor="middle" fill="var(--muted)" font-size="10.5">status = backlog</text>
+
+          <!-- dashboard -->
+          <rect x="644" y="52" width="150" height="40" rx="9" fill="var(--panel-2)" stroke="var(--border)" />
+          <text x="719" y="70" text-anchor="middle" fill="var(--fg)">Dashboard backlog</text>
+          <text x="719" y="84" text-anchor="middle" fill="var(--muted)" font-size="10.5">over SSE</text>
+
+          <!-- panes: the thing NOT reached -->
+          <rect x="644" y="228" width="150" height="44" rx="9" fill="none" stroke="var(--no)" stroke-dasharray="4 4" />
+          <text x="719" y="249" text-anchor="middle" fill="var(--muted)">terminal panes</text>
+          <text x="719" y="263" text-anchor="middle" fill="var(--no)" font-size="10.5">never reached</text>
+        </g>
+
+        <g stroke="var(--muted)" stroke-width="1.5" fill="none" marker-end="url(#a)" color="var(--muted)">
+          <path d="M196,92 L196,116" />
+          <path d="M258,141 L296,141" />
+          <path d="M426,141 L464,141" />
+          <path d="M580,141 L640,141" />
+          <path d="M719,116 L719,94" />
+          <path d="M355,166 L355,224" />
+          <path d="M371,224 L371,168" />
+          <path d="M516,116 L516,94" />
+          <path d="M532,94 L532,116" />
+        </g>
+        <text x="272" y="134" font-size="10" fill="var(--muted)">sweep()</text>
+        <text x="432" y="134" font-size="10" fill="var(--muted)">candidates</text>
+        <text x="592" y="134" font-size="10" fill="var(--muted)">create()</text>
+        <text x="542" y="108" font-size="10" fill="var(--muted)">dedupe</text>
+      </svg>
+    </div>
+    <figcaption>The load-bearing arrows: the source only ever <em>returns</em> to ingest,
+      ingest is the only step that touches the database, and nothing in this picture reaches
+      a terminal pane - which is what makes a task source safe without the gate the skills
+      reload loop needs.</figcaption>
+  </figure>
+
+  <h2>The interface</h2>
+  <p>Lives in <code>src/shared/task-source.ts</code>, imported by both the server and the
+    settings UI.</p>
+<pre><code>/** Where a candidate came from - the identity a sweep is de-duplicated on. */
+export interface TaskSourceRef {
+  sourceId: string;
+  /**
+   * Stable id in the EXTERNAL system, e.g. "owner/repo#123". Must be stable across
+   * sweeps for the same underlying item and unique within the source; it is half of
+   * the de-duplication key and nothing else is.
+   */
+  externalId: string;
+  url: string | null;
+}
+
+/**
+ * One item a source proposes for the backlog. Deliberately the shape of a TASK, not a
+ * passthrough of the external record - deciding what an issue's *intent* should say is
+ * the part that needs judgement, and the part the source is uniquely able to do.
+ */
+export interface TaskCandidate {
+  ref: TaskSourceRef;
+  title: string;
+  intent: string;
+  repoRoot: string;
+  kind?: TaskKind;
+  agent?: AgentType;
+  priority?: TaskPriority | null;
+  labels?: string[];
+}
+
+export interface SweepResult {
+  items: TaskCandidate[];
+  /**
+   * A failure NEVER retracts anything: an unreachable API means "unknown", not "there
+   * is no work" - the same stance pr.ts takes when `gh` is missing.
+   */
+  error: string | null;
+}
+
+export interface TaskSourceImpl&lt;C&gt; {
+  /** APPEND-ONLY - it is persisted in config. */
+  kind: string;
+  label: string;
+  blurb: string;
+  configSchema: z.ZodType&lt;C&gt;;
+  /**
+   * "Can this run at all?" - null when fine, else a sentence naming the fix. Separate
+   * from sweep so settings can tell a misconfigured source from an empty one, which is
+   * the difference between "nothing to do" and "silently broken for a week".
+   */
+  preflight(config: C): Promise&lt;string | null&gt;;
+  sweep(config: C, ctx: SweepContext): Promise&lt;SweepResult&gt;;
+}</code></pre>
+
+  <h3>Configuration</h3>
+  <p>One generic wrapper around each kind's own blob, persisted in <code>app_config</code>
+    under <code>taskSources</code> - the same schema-validated-KV pattern as
+    <code>harnesses.ts</code>, which means <strong>no migration for a new key</strong>.
+    Fields: <code>id</code>, <code>kind</code>, <code>label</code>, <code>enabled</code>,
+    <code>repoRoot</code>, <code>intervalMs</code> (clamped), <code>defaults</code> (kind,
+    agent, priority, labels), <code>maxPerSweep</code>, and the kind-specific
+    <code>config</code>.</p>
+  <p><code>enabled: false</code> by default is deliberate: adding a source is configuration,
+    turning it on is consent, and they should be two separate acts.</p>
+
+  <h2>Ingest - the part sources don't get to do</h2>
+  <ol>
+    <li><strong>Drop anything already seen</strong>, keyed <code>(sourceId, externalId)</code>.</li>
+    <li><strong>Resolve and validate <code>repoRoot</code></strong> through the same
+      <code>resolveRepoRoot</code> the dispatch route uses.</li>
+    <li><strong>Normalize</strong> through <code>DispatchSchema</code>, so
+      <code>normalizeLabels</code> and the priority enum apply to a machine-authored task
+      exactly as to a typed one.</li>
+    <li><strong>Cap</strong> at <code>maxPerSweep</code>, and log what was dropped. A silent
+      truncation reads as "that's all there was".</li>
+    <li><strong>Create</strong> through <code>TaskManager.create({ …, backlog: true })</code>
+      - the same path the dispatch form takes.</li>
+    <li><strong>Record the seen row</strong>, in the same transaction as the insert.</li>
+  </ol>
+
+  <h3>Why <code>task_source_seen</code> is its own table</h3>
+  <p>The obvious design is to put <code>source_id</code> / <code>external_id</code> on
+    <code>tasks</code> and de-duplicate against that. It is wrong for one reason, and it is
+    the reason that matters:</p>
+  <blockquote>
+    <p><strong>A task you deleted must stay deleted.</strong> Dedupe against
+      <code>tasks</code> means deleting a swept task makes it un-seen, so the next sweep
+      files it again - the source becomes impossible to say no to, and the delete button
+      becomes a snooze button that doesn't even snooze.</p>
+  </blockquote>
+  <p>So a seen row <strong>outlives the task</strong>. The columns on <code>tasks</code> still
+    exist (<code>source_id</code>, <code>external_id</code>, <code>source_url</code>) but they
+    are for the <em>link back</em>, not for identity. Both are needed; they answer different
+    questions.</p>
+  <ul>
+    <li><strong>Re-filing something you deleted</strong> is a deliberate act: "Forget seen
+      items" on the source in settings.</li>
+    <li><strong>Updating an already-seen item</strong> (its labels changed upstream) is
+      <em>not</em> in v1. A sweep files new work; it does not reconcile old work. Re-syncing
+      has to decide what happens when a human has edited the task since, and deserves its own
+      design rather than being smuggled in.</li>
+  </ul>
+
+  <h2>The sweeper</h2>
+  <p><code>startTaskSourceSweeper()</code> starts in <code>src/server/index.ts</code> beside
+    the eight existing pollers, following the canonical shape from
+    <code>discovery/poller.ts</code>: a self-rescheduling <code>setTimeout</code> (never
+    <code>setInterval</code>, so ticks cannot overlap), <code>unref()</code> so it never holds
+    the process open, try/catch <em>inside</em> the tick so one bad sweep never kills the
+    loop, and a returned stop closure wired into <code>shutdown()</code>. It runs in the
+    daemon because ingest writes to the DB, and the port bind is the mutex.</p>
+
+  <h2>The GitHub issues source</h2>
+  <p><strong>Auth is <code>gh</code>, and there is no credential to store.</strong>
+    <code>src/server/pr.ts</code> already shells out to <code>gh</code> with <code>cwd</code>
+    set to a checkout, letting it resolve both the repo and the user's existing
+    <code>gh auth</code>. Doing the same here means this feature adds no token storage, no
+    OAuth flow and no new secret to leak.</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Config</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>repo</code></td><td>empty = whatever <code>gh</code> resolves from <code>repoRoot</code>'s origin</td></tr>
+      <tr><td><code>labelsAny</code></td><td>match issues carrying any of these; empty = no label filter</td></tr>
+      <tr><td><code>assignedToMe</code></td><td>only issues assigned to the authenticated <code>gh</code> user</td></tr>
+      <tr><td><code>unassignedOnly</code></td><td>the "up for grabs" sweep. Mutually exclusive with the above - the schema <strong>refuses both</strong>, since together they select nothing and a filter that silently matches nothing is the worst failure for a background sweep</td></tr>
+      <tr><td><code>priorityFrom</code></td><td>GitHub label → task priority, e.g. <code>{"P0": "blocker"}</code></td></tr>
+      <tr><td><code>copyLabels</code></td><td>copy the issue's labels onto the task</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>One call, with a timeout, through the existing <code>run()</code> helper (which never
+    throws on a missing binary). A non-zero exit becomes <code>{items: [], error}</code> -
+    never an empty success, so a broken <code>gh</code> cannot read as "no issues".</p>
+<pre><code>gh issue list --state open --limit &lt;n&gt; [--label …] [--assignee @me] [--milestone …]
+  --json number,title,body,url,labels,assignees,updatedAt</code></pre>
+  <p>The <code>externalId</code> is <code>owner/repo#number</code> taken from the issue URL,
+    so it stays stable even if <code>repo</code> is reconfigured. Copied labels go through
+    <code>normalizeLabels</code> - which is exactly why that function preserves case, since
+    <code>Type: Bug</code> must still match the issue it came from.</p>
+
+  <h2>Settings</h2>
+  <p>A new <strong>Task sources</strong> category - the registry extension
+    <code>CLAUDE.md</code> describes: an entry in <code>SETTINGS_CATEGORIES</code>, a
+    <code>case</code> in <code>renderCategory</code>, and a new discriminator in
+    <code>settings-sidebar-render.test.ts</code>. The panel follows
+    <code>HarnessesPanel.tsx</code>, with a <code>useTaskSources()</code> hook polling at 4s
+    with optimistic apply and revert-on-refusal.</p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Route</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET /api/task-sources/config</code></td><td>configured sources plus derived status</td></tr>
+      <tr><td><code>PUT /api/task-sources/config</code></td><td>upsert/remove, through <code>parseBody</code></td></tr>
+      <tr><td><code>POST /api/task-sources/:id/sweep</code></td><td>sweep now; returns what it filed</td></tr>
+      <tr><td><code>POST /api/task-sources/:id/preflight</code></td><td>"is this actually going to work?"</td></tr>
+      <tr><td><code>DELETE /api/task-sources/:id/seen</code></td><td>forget seen items</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>What ships, and what does not</h2>
+  <p><span class="yes">In:</span> the shared interface, the registry, the sweeper, ingest with
+    its seen table, the GitHub issues implementation, the Settings category, README, tests.</p>
+  <p><span class="no">Out, deliberately:</span></p>
+  <ul>
+    <li>auto-dispatching swept tasks - a different risk class, see above</li>
+    <li>re-syncing an already-seen item when it changes upstream</li>
+    <li>any source other than GitHub issues; the interface is the deliverable, and a second
+      implementation is the proof it works, which can come later</li>
+    <li>writing back to the external system (closing an issue when the task lands)</li>
+  </ul>
+
+  <h2>Tests</h2>
+  <ul>
+    <li><code>task-source-contract.test.ts</code> - every registered kind has a unique
+      appended id, a schema that accepts <code>{}</code>, and a <code>preflight</code> that
+      never throws.</li>
+    <li><code>task-source-ingest.test.ts</code> - the load-bearing one: a re-sweep files
+      nothing; <strong>an item whose task was deleted still files nothing</strong>; a
+      non-repo <code>repoRoot</code> is refused; labels and priority go through the shared
+      normalizer; the cap is reported, not silent.</li>
+    <li><code>github-issues-map.test.ts</code> - <code>gh</code> JSON fixtures to candidates,
+      a non-zero exit becoming an error rather than an empty success, and the
+      mutually-exclusive assignee filters being refused by the schema.</li>
+    <li><code>task-sources-panel.test.ts</code> plus the sidebar discriminator.</li>
+  </ul>
+
+  <h2>Open decisions</h2>
+  <p class="muted">Both are called here rather than left implicit; both are cheap to reverse.</p>
+  <ol>
+    <li><strong>Swept tasks land in the backlog only, never dispatched.</strong> Recommended,
+      and assumed by everything above.</li>
+    <li><strong>A deleted task stays deleted</strong> until you explicitly "Forget seen
+      items". The alternative - dedupe against live tasks - makes delete meaningless.</li>
+  </ol>
+</main>
+</body>
+</html>

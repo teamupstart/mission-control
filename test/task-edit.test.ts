@@ -1,4 +1,5 @@
 import { test, after } from "node:test";
+import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,30 +25,9 @@ after(() => rmSync(home, { recursive: true, force: true }));
  * disagreeing with the terminal it is meant to describe. Refusing is the honest answer.
  */
 
-function mkTask(over: Partial<Task> = {}): Task {
-  return {
-    id: "t1",
-    title: "Wire The Thing Up",
-    intent: "wire the thing up",
-    kind: "ship",
-    agent: "claude",
-    repoRoot: "/repo",
-    worktreePath: null,
-    branch: null,
-    provider: null,
-    tmuxSession: null,
-    sessionId: null,
-    status: "backlog",
-    outcome: null,
-    outcomeUrl: null,
-    error: null,
-    createdAt: 1000,
-    updatedAt: 1000,
-    dispatchedAt: null,
-    completedAt: null,
-    ...over,
-  };
-}
+/** The shared task fixture with this file's defaults on top. */
+const mkTask = (over: Partial<Task> = {}): Task =>
+  baseTask({ title: "Wire The Thing Up", intent: "wire the thing up", ...over });
 
 function setup(over: Partial<Task> = {}) {
   const r = new Registry();

@@ -37,7 +37,7 @@ import {
 import type { PromptedConfig } from "./prompted-wrapup.ts";
 import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
-import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
+import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem } from "./queue-verify.ts";
@@ -561,8 +561,12 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       // The session, not the task, is what was wrong with this pairing - the same task
       // is very likely fine on the next agent, or in a fresh worktree. Stamped on a
       // documented refusal only: a 5xx or a dropped connection says nothing about the
-      // session, and could have typed.
-      if (taskRefused(r.status)) refusedAssign.set(action.session.id, now);
+      // session, and could have typed. And only when the daemon attributes the refusal
+      // to the session, since a task that left the backlog says nothing about the agent
+      // that was offered it - see `assignRefusalParksSession`.
+      if (taskRefused(r.status) && assignRefusalParksSession(r.scope)) {
+        refusedAssign.set(action.session.id, now);
+      }
       noteBacklog(`could not hand "${oneLine(action.task.title)}" over - ${r.error}`);
       return false;
     }

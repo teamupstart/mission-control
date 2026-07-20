@@ -11,6 +11,7 @@ import { withOverlayHost } from "./helpers/overlay-host.ts";
 // ReviewModal is deliberately NOT imported: it pulls in react-diff-view, which imports a
 // .css file Node can't load. It is covered by the source-derived suite below, which is
 // why that suite exists rather than being a weaker duplicate of the runtime one.
+import { AssignResetModal } from "../src/web/components/AssignResetModal.tsx";
 import { ResetModal } from "../src/web/components/ResetModal.tsx";
 import { SettingsModal } from "../src/web/components/SettingsModal.tsx";
 import { ReportPanel } from "../src/web/components/ReportPanel.tsx";
@@ -145,6 +146,17 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
   {
     name: "ResetModal",
     el: () => createElement(ResetModal, { session: mkSession(), onClose: () => {} }),
+  },
+  {
+    name: "AssignResetModal",
+    el: () =>
+      createElement(AssignResetModal, {
+        session: mkSession(),
+        taskId: "t1",
+        taskTitle: "Wire it up",
+        confirm: { queuedItems: 1, clearsContext: true, branch: "feature/held" },
+        onClose: () => {},
+      }),
   },
   {
     name: "SettingsModal",

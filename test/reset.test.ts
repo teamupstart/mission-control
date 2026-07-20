@@ -170,6 +170,59 @@ test("resetToOrigin with clear:true reports cleared:false when the session has n
   assert.equal(r.cleared, false);
 });
 
+/**
+ * A session with a pane, and a fake terminal behind it that plays back `screens` one
+ * capture at a time.
+ *
+ * `cleared` is the only claim in the result that depends on the AGENT rather than on
+ * git, and it is the one a caller types behind - so it has to be driven, not assumed.
+ */
+function withFakePane(clone: string, screens: (string | null)[]) {
+  const session = {
+    ...sess(clone),
+    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+  };
+  const deps = {
+    // Exit 0 with empty output: tmux took the keystrokes, and the pane is in no mode.
+    exec: async () => ({ stdout: "", stderr: "", code: 0 }),
+    capture: async () => (screens.length ? screens.shift()! : screens[screens.length - 1] ?? null),
+    sleep: async () => {},
+  };
+  return { session, deps };
+}
+
+test("resetToOrigin reports cleared only once the agent has ACTED on the /clear", async () => {
+  // tmux accepting the keystrokes is not the event that matters. `TaskManager.assign`
+  // pastes a task's intent behind this, and a `/clear` processed after that paste wipes
+  // the prompt off the composer while every check downstream still reads success.
+  const { clone } = mkOriginAndClone();
+  const { session, deps } = withFakePane(clone, [
+    "❯ ", // before: the composer as it was
+    "❯ /clear", // typed, not yet acted on - the window the race lives in
+    "welcome back", // the screen the clear leaves behind
+  ]);
+  const r = await resetToOrigin(session, true, deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.cleared, true);
+});
+
+test("a /clear that sits in the composer is never reported as cleared", async () => {
+  const { clone } = mkOriginAndClone();
+  const { session, deps } = withFakePane(clone, ["❯ ", "❯ /clear"]);
+  const r = await resetToOrigin(session, true, deps);
+  assert.equal(r.ok, true, "the git half landed, and that is still true");
+  assert.equal(r.cleared, false, "an unacted /clear must not read as a cleared context");
+});
+
+test("a pane we cannot read reports cleared:false rather than assuming the best", async () => {
+  // "I could not see it happen" and "it happened" are the two answers this must never
+  // collapse: the caller uses this one to decide whether it is safe to type.
+  const { clone } = mkOriginAndClone();
+  const { session, deps } = withFakePane(clone, [null]);
+  const r = await resetToOrigin(session, true, deps);
+  assert.equal(r.cleared, false);
+});
+
 test("reset degrades gracefully outside a repo and with no working dir", async () => {
   const notRepo = realpathSync(mkdtempSync(join(tmpdir(), "harness-reset-nogit-")));
   const p = await resetPreview(sess(notRepo));

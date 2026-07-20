@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   activeAgentCount,
   agentIsFree,
+  assignRefusalParksSession,
   decideBacklogTick,
 } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
@@ -660,4 +661,25 @@ test("a plan that arrives after the cap is used again - exhaustion never sticks 
     cfg: cfg({ planExhausted: true }),
   });
   assert.equal(a.kind, "dispatch");
+});
+
+// ---- who a refused assign was about ------------------------------------------------------
+
+test("a task-scoped refusal leaves the session assignable", () => {
+  // A human dispatching a task between the machine's decision and the worker's request
+  // is the ordinary way this happens: the daemon answers "no such task" or "task is
+  // running, not in the backlog", both of which are facts about the TASK. Parking the
+  // agent for ten minutes over one takes a perfectly free agent off the backlog, so the
+  // next item cuts a fresh worktree instead of reusing it.
+  assert.equal(assignRefusalParksSession("task"), false);
+});
+
+test("a session-scoped refusal parks it, and so does a refusal that will not say", () => {
+  // The refusals worth remembering are sticky - a checkout holding uncommitted work, a
+  // wedged pane - and retrying them every 4s parks the whole backlog behind one session.
+  assert.equal(assignRefusalParksSession("session"), true);
+  // An absent scope is a daemon older than the field. The worker is started separately,
+  // so a skew between them is an ordinary upgrade-window state, and the wrong answer to
+  // fail toward is the one that loops.
+  assert.equal(assignRefusalParksSession(undefined), true);
 });

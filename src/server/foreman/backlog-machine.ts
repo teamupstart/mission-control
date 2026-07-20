@@ -1,4 +1,4 @@
-import type { BacklogPlan, Session, Task } from "@shared/types.ts";
+import type { AssignRefusalScope, BacklogPlan, Session, Task } from "@shared/types.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
 import { backlogIndex, blockersIn, plannableBacklog, planStale, readyBacklog } from "@shared/backlog.ts";
 import { cwdAllowlisted, foremanAllowlisted } from "@shared/foreman.ts";
@@ -354,4 +354,23 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     task: head,
     why: `${active}/${cfg.maxSessions} agents running`,
   };
+}
+
+/**
+ * Whether a refused assign should take the SESSION off the target list for a while.
+ *
+ * The counterpart to `unassignable`: that set is only worth keeping for refusals a
+ * different task would hit too. A 404 for a task a human dispatched a second earlier,
+ * or a 409 saying the task has left the backlog, is a fact about the TASK - parking the
+ * agent for ten minutes over it takes a perfectly free agent off the backlog and sends
+ * the next item to a fresh worktree instead.
+ *
+ * An ABSENT scope parks, and that default is deliberate: a daemon older than the field
+ * cannot tell us, and the worker is started separately from the daemon, so a version
+ * skew between them is an ordinary upgrade-window state. Parking a session that did not
+ * deserve it costs one worktree for ten minutes; not parking one that did puts the
+ * autopilot back on the same doomed pairing every 4s.
+ */
+export function assignRefusalParksSession(scope: AssignRefusalScope | undefined): boolean {
+  return scope !== "task";
 }

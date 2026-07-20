@@ -1198,10 +1198,17 @@ export function buildApp(
   // 500: every way it fails (task already dispatched, agent busy, agent in another
   // repo, pane locked) is a state conflict the operator can see and resolve on the
   // board - and in none of them was anything typed at the agent.
+  //
+  // "The handover would discard something" is one of those refusals, and it carries a
+  // `resetConfirm` breakdown for the caller to render. Answering it is a re-POST with
+  // `confirmReset`, not a second preview route: one round trip, and no window between
+  // reading the loss and acting on it in which the loss can change.
   app.post("/api/tasks/:id/assign", async (c) => {
     const parsed = await parseBody(c, AssignTaskSchema);
     if (!parsed.ok) return parsed.res;
-    const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId);
+    const r = await tasks.assign(c.req.param("id"), parsed.data.sessionId, {
+      confirmReset: parsed.data.confirmReset,
+    });
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 

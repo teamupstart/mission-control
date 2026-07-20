@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
-import type { Task } from "../src/shared/types.ts";
+import type { ResetResult, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
@@ -13,8 +13,15 @@ const home = mkdtempSync(join(tmpdir(), "mission-assign-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
+const { QueueManager } = await import("../src/server/queue.ts");
 
-after(() => rmSync(home, { recursive: true, force: true }));
+/** Every git fixture this file built, removed together - they are whole checkouts. */
+const roots: string[] = [];
+
+after(() => {
+  rmSync(home, { recursive: true, force: true });
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
 
 /**
  * Assigning a backlog task to an agent that is ALREADY running - what the board's
@@ -57,20 +64,27 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
  * turn. Without this every case below would stop at the busy check and pass without
  * ever reaching the rule it means to test.
  */
+let agentN = 0;
+
 function setup(session: Partial<DiscoveredSession> = {}) {
   const r = new Registry();
   const disc = mkDiscovered(session);
+  // A fresh agent session id per fixture, because the work queue is stored against it -
+  // reusing one would hand the next fixture the previous test's queue, on real rows in
+  // a real database, and a case about an agent holding nothing would silently be about
+  // an agent holding two things.
+  const agentSessionId = `agent-${++agentN}`;
   r.applyDiscovery([disc]);
   r.applyHook({
     event: "Stop",
-    sessionId: "agent-1",
+    sessionId: agentSessionId,
     cwd: disc.cwd,
     transcriptPath: null,
     env: {},
   });
   const live = r.snapshot().sessions[0]!;
   assert.equal(live.state, "idle", "fixture must actually be idle");
-  return { r, tasks: new TaskManager(r), sessionId: live.id };
+  return { r, tasks: new TaskManager(r), sessionId: live.id, agentSessionId };
 }
 
 test("a task that isn't in the backlog is refused", async () => {
@@ -93,13 +107,13 @@ test("an unknown task or session is refused rather than half-applied", async () 
 });
 
 test("a busy agent is refused - the prompt would land mid-turn", async () => {
-  const { r, tasks } = setup();
+  const { r, tasks, agentSessionId } = setup();
   r.upsertTask(mkTask());
   // Back to working: the agent picked something up between the hover and the drop,
   // which is exactly the race the server-side re-check exists for.
   r.applyHook({
     event: "UserPromptSubmit",
-    sessionId: "agent-1",
+    sessionId: agentSessionId,
     cwd: "/repo",
     transcriptPath: null,
     env: {},
@@ -140,16 +154,40 @@ test("an agent with no repo at all is refused", async () => {
  * questions about, or it passes for the wrong reason.
  */
 function setupInRepo(prefix: string) {
-  const { clone } = mkOriginAndClone(prefix);
+  const { root, clone } = mkOriginAndClone(prefix);
+  roots.push(root);
   return { clone, ...setup({ cwd: clone, gitRoot: clone, repoRoot: clone }) };
 }
 
-test("a pane that refuses the prompt leaves the task in the backlog, droppable again", async () => {
-  // The fixture session has neither a tmux nor a wezterm handle, so `injectPrompt`
-  // refuses before writing anything. That is the case that must not leave a task
-  // marked `running` with nothing running it - the operator would see it vanish from
-  // the backlog and never start.
+/**
+ * A pane that says yes to the readiness probe. The fixture sessions have no tmux or
+ * wezterm handle, so the real probe refuses them BEFORE the reset - which is the point of
+ * the probe, and the reason every case that means to reach the reset has to stub it.
+ */
+const paneReady = async (): Promise<{ ok: boolean }> => ({ ok: true });
+
+/**
+ * A reset that landed AND was seen to clear the agent. Stubbed wherever the case is
+ * about what happens after the handover: the real one sends `/clear` to a pane these
+ * fixtures do not have, so it can never report the clear confirmed - which is itself
+ * pinned, below.
+ */
+const cleanReset = async (): Promise<ResetResult> => ({
+  ok: true,
+  error: null,
+  root: null,
+  cleared: true,
+  detached: true,
+});
+
+test("a pane that cannot take a prompt is refused BEFORE the agent is touched", async () => {
+  // The fixture session has neither a tmux nor a wezterm handle, so the readiness probe
+  // refuses it. The ordering is what is pinned here: this used to be discovered only
+  // after the reset had detached the checkout, dropped the work queue and cleared the
+  // agent's context - stripping an agent for a task that then went straight back to the
+  // backlog. Nothing may be done to an agent we cannot type into.
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-pane-");
+  gitIn(clone, "checkout", "-qb", "feature/mine");
   r.upsertTask(mkTask({ repoRoot: clone }));
   const res = await tasks.assign("t1", sessionId);
   assert.equal(res.ok, false);
@@ -157,6 +195,11 @@ test("a pane that refuses the prompt leaves the task in the backlog, droppable a
   assert.equal(after.status, "backlog");
   assert.equal(after.sessionId, null);
   assert.equal(after.dispatchedAt, null);
+  assert.equal(
+    gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+    "feature/mine",
+    "the checkout must be untouched - nothing was typed, so nothing was reset",
+  );
 });
 
 test("a retriage made while the prompt is being typed survives the assignment", async () => {
@@ -171,9 +214,13 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   // reaching the injection window it exists to pin, with nothing saying so.
   const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-retriage-");
   r.upsertTask(mkTask({ repoRoot: clone, priority: "low", labels: ["infra"] }));
-  const res = await tasks.assign("t1", sessionId, async () => {
-    await tasks.update("t1", { priority: "blocker", labels: ["infra", "urgent"] });
-    return { ok: true, pasted: true };
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => {
+      await tasks.update("t1", { priority: "blocker", labels: ["infra", "urgent"] });
+      return { ok: true, pasted: true };
+    },
   });
   assert.equal(res.ok, true);
   const after = r.getTask("t1")!;
@@ -181,6 +228,55 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   assert.equal(after.sessionId, sessionId);
   assert.equal(after.priority, "blocker");
   assert.deepEqual(after.labels, ["infra", "urgent"]);
+});
+
+test("an agent that went busy between the checks and the reset is not reset anyway", async () => {
+  // The idle check happens several git invocations before the reset, and the reset
+  // itself spends up to 30s in a fetch. An agent a human woke up inside that window
+  // must not have its checkout taken apart under them.
+  const { r, tasks, sessionId, clone, agentSessionId } = setupInRepo("mission-assign-woke-");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+  const res = await tasks.assign("t1", sessionId, {
+    confirmReset: true,
+    reset: cleanReset,
+    paneReady: async () => {
+      // The human types at their agent while we are still deciding.
+      r.applyHook({
+        event: "UserPromptSubmit",
+        sessionId: agentSessionId,
+        cwd: clone,
+        transcriptPath: null,
+        env: {},
+        prompt: "actually, do this instead",
+      });
+      return { ok: true };
+    },
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /stopped being idle/);
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+test("a /clear the agent was never seen acting on fails the assign rather than claiming it", async () => {
+  // `sendText` returns as soon as tmux takes the keystrokes, so a `/clear` processed
+  // AFTER the prompt is pasted wipes that prompt off the composer - and the pane read
+  // that follows the paste then finds nothing pending and calls it a success. That is a
+  // task marked running with nothing running it. Unconfirmed means unassigned.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-unclear-");
+  let typed = false;
+  r.upsertTask(mkTask({ repoRoot: clone }));
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: async () => ({ ok: true, error: null, root: clone, cleared: false, detached: true }),
+    inject: async () => {
+      typed = true;
+      return { ok: true, pasted: true };
+    },
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /clear/);
+  assert.equal(typed, false, "the prompt must not be typed behind an unconfirmed /clear");
+  assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
 // ---- the reset that hands the agent over clean -----------------------------------------
@@ -198,9 +294,10 @@ test("a checkout holding uncommitted work refuses the assign instead of resettin
   writeFileSync(join(clone, "keep.txt"), "base\nwork in progress\n");
   r.upsertTask(mkTask({ repoRoot: clone }));
 
-  const res = await tasks.assign("t1", sessionId);
+  const res = await tasks.assign("t1", sessionId, { paneReady, confirmReset: true });
   assert.equal(res.ok, false);
   assert.match(res.error!, /cannot be reset/);
+  assert.equal(res.scope, "session", "the checkout is the agent's problem, not the task's");
   // The refusal has to be the whole story: the task is still droppable, and - the part
   // that would be unrecoverable - the work is still on disk.
   assert.equal(r.getTask("t1")?.status, "backlog");
@@ -213,7 +310,7 @@ test("a commit that never reached origin is work too, and refuses the same way",
   gitIn(clone, "commit", "-qam", "work nobody pushed");
   r.upsertTask(mkTask({ repoRoot: clone }));
 
-  const res = await tasks.assign("t1", sessionId);
+  const res = await tasks.assign("t1", sessionId, { paneReady, confirmReset: true });
   assert.equal(res.ok, false);
   assert.match(res.error!, /cannot be reset/);
   assert.equal(gitIn(clone, "log", "-1", "--format=%s"), "work nobody pushed");
@@ -228,9 +325,9 @@ test("a clean agent is reset onto origin's default branch and released from its 
   const originHead = gitIn(clone, "rev-parse", "origin/main");
 
   r.upsertTask(mkTask({ repoRoot: clone }));
-  // The pane refusal is expected and irrelevant here - it happens AFTER the reset, which
-  // is the ordering being pinned: the checkout is prepared before anything is typed.
-  await tasks.assign("t1", sessionId);
+  // Confirmed, because releasing that branch is a loss the drop has to be told about -
+  // see the confirmation cases below. The REAL reset runs here, which is the point.
+  const res = await tasks.assign("t1", sessionId, { paneReady, confirmReset: true });
 
   assert.equal(gitIn(clone, "rev-parse", "HEAD"), originHead);
   // `--abbrev-ref` answers the literal string "HEAD" on a detached checkout, which is
@@ -240,6 +337,86 @@ test("a clean agent is reset onto origin's default branch and released from its 
     "HEAD",
     "the finished branch must be released, or the next task commits onto its PR",
   );
+  // These fixtures have no pane, so the `/clear` cannot be sent, let alone confirmed -
+  // and an unconfirmed clear stops the assign rather than typing behind it.
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /clear/);
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+// ---- asking before spending what the reset cannot give back ------------------------------
+//
+// `resetWouldDestroyWork` only covers what git holds. The work queue, the agent's context
+// and the branch name are losses origin cannot undo, and the drag gesture used to spend
+// all three with no dialog at all - while the identical operation behind the card's reset
+// control has a confirm and a loss preview. So the daemon refuses and says what it would
+// cost; saying yes is the same POST with the flag set.
+
+test("an agent holding a work queue refuses the drop, and changes nothing while it asks", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-queue-");
+  const queues = new QueueManager(r);
+  assert.ok(queues.add(sessionId, "finish the migration"), "the fixture must hold a queue");
+  gitIn(clone, "checkout", "-qb", "feature/held");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+
+  const res = await tasks.assign("t1", sessionId, { paneReady });
+  assert.equal(res.ok, false);
+  assert.equal(res.scope, "session");
+  // The breakdown travels WITH the refusal, so the dialog and the action cannot disagree
+  // about a queue that moved in between.
+  assert.equal(res.resetConfirm?.queuedItems, 1);
+  assert.equal(res.resetConfirm?.branch, "feature/held");
+  assert.equal(res.resetConfirm?.clearsContext, false, "this fixture has no pane to clear");
+  // Nothing may have happened while it was only asking.
+  assert.equal(r.getSession(sessionId)?.queue?.openCount, 1, "the queue is intact");
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"), "feature/held");
+});
+
+test("the same drop with the confirmation goes through", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-queue-yes-");
+  const queues = new QueueManager(r);
+  assert.ok(queues.add(sessionId, "finish the migration"));
+  r.upsertTask(mkTask({ repoRoot: clone }));
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true }),
+    confirmReset: true,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(r.getTask("t1")?.status, "running");
+});
+
+test("a clean, queue-less agent takes the drop with no confirmation at all", async () => {
+  // The gesture must stay one gesture where there is nothing to lose: a pooled worktree
+  // is handed out detached with an empty queue, which is exactly this shape.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-nothing-");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true }),
+  });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.resetConfirm, undefined);
+  assert.equal(r.getTask("t1")?.status, "running");
+});
+
+test("a refusal says whether the TASK or the SESSION was the problem", async () => {
+  // The autopilot parks a session for ten minutes after a session-scoped refusal. A
+  // human dispatching a task between the machine's decision and its request must not
+  // cost a perfectly free agent that parking - so a task-scoped refusal says so.
+  const { r, tasks, sessionId } = setup();
+  r.upsertTask(mkTask({ status: "running" }));
+  assert.equal((await tasks.assign("t1", sessionId)).scope, "task");
+  assert.equal((await tasks.assign("nope", sessionId)).scope, "task");
+  // A backlog task, so the refusal below is about the session and nothing else.
+  r.upsertTask(mkTask({ id: "t2" }));
+  assert.equal((await tasks.assign("t2", "no-such-session")).scope, "session");
 });
 
 test("an assigned task never claims a worktree - cancel must not remove one", () => {

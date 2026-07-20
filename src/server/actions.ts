@@ -3,7 +3,7 @@ import type { FormOutcome } from "@shared/protocol.ts";
 import { resolveWeztermBin } from "./config.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
-import { hasPendingPaste } from "./discovery/pane-paste.ts";
+import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import {
   hasUnansweredWarning,
   optionRowMiss,
@@ -377,6 +377,28 @@ async function awaitPasteSubmitted(
 
 const PASTE_NOT_SUBMITTED =
   "the prompt was pasted but Claude never took the Enter - it is sitting in the composer unsubmitted";
+
+/**
+ * Whether this session could take a prompt RIGHT NOW, without sending one.
+ *
+ * The point is the caller that has something destructive to do first. `TaskManager.assign`
+ * resets the agent's checkout - detaching it, wiping its work queue, clearing its context
+ * - and then types. Discovering only afterwards that the pane has no handle, or is in
+ * copy-mode with a human reading their scrollback, leaves an agent stripped for a task
+ * that went straight back to the backlog. Asking first costs one `display-message`.
+ *
+ * It is a PROBE, not a lock: the pane can be entered a millisecond later, which is the
+ * same sub-frame race `tmuxWriteBlock` documents and the same one `injectPrompt` re-runs
+ * the check for. This shrinks a minutes-long window to that race; it does not close it.
+ */
+export async function paneAcceptsPrompt(
+  session: Session,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<ActionResult> {
+  if (session.tmux) return (await tmuxWriteBlock(session.tmux.paneId, deps.exec)) ?? { ok: true };
+  if (session.wezterm) return { ok: true };
+  return { ok: false, error: NO_HANDLE };
+}
 
 /**
  * Deliver a whole prompt (possibly multi-line) into a session's input as a single
@@ -1308,17 +1330,28 @@ async function releaseBranch(root: string, branch: string | null, target: string
  * null when it would destroy nothing.
  *
  * The guard in front of `TaskManager.assign`'s reset, and deliberately NOT `resetPreview`
- * even though they ask a very similar question. Two differences, both load-bearing:
+ * even though they ask a very similar question. Three differences, all load-bearing:
  *
+ *  - The question is "can this be RECOVERED if we discard it", not "did it land". A
+ *    commit reachable from any `origin/*` ref can be fetched back by name, so throwing
+ *    the checkout away costs nothing; a commit no remote ref holds exists only here.
+ *    Asking "is it on origin/main" instead is what refused every agent that had shipped:
+ *    a squash merge gives the landed change a new SHA, so the branch's own commits are
+ *    never on origin/main no matter how thoroughly the work is safe.
  *  - It does not fetch. `resetPreview` fetches because it backs a confirm dialog that
  *    must not understate the loss, and it can afford ~30s because a human is reading it.
  *    This runs on Foreman's 4s loop, where a network round trip per candidate agent is a
- *    cost the scheduler should not carry. Reading the LOCAL `origin/*` ref only ever
- *    makes the answer more conservative - a stale ref reports commits as unpushed that
- *    are in fact merged - and every error here is a refusal, which is the safe way to be
+ *    cost the scheduler should not carry. Reading the LOCAL remote-tracking refs only
+ *    ever makes the answer more conservative - a ref we have not fetched yet cannot
+ *    vouch for a commit - and every error here is a refusal, which is the safe way to be
  *    wrong.
  *  - It answers a yes/no, not a breakdown, because the caller has no dialog to draw. It
  *    has a decision to make and a sentence to log.
+ *
+ * The one hole, written down so nobody rediscovers it as a bug: a remote that DELETES the
+ * head branch on merge, followed by a `fetch --prune` in this clone, takes those commits
+ * off every remote-tracking ref and this refuses the agent again. Accepted - it fails
+ * toward refusing, which costs a worktree and never work.
  *
  * A git failure of any kind reports "cannot tell", which refuses. We are about to run
  * `reset --hard` and `clean -fd` in a directory nobody is looking at; "I could not check"
@@ -1337,14 +1370,41 @@ export async function resetWouldDestroyWork(session: Session): Promise<string | 
   const changed = status.stdout.split("\n").filter((l) => l.trim()).length;
   if (changed > 0) return `it has ${changed} uncommitted file(s)`;
 
+  // Commits on HEAD that NO origin ref holds - the only ones a discard would end. A
+  // pushed branch's commits are reachable from its own `origin/<branch>` ref, so an
+  // agent that shipped reads 0 here whether its PR is open or merged; a commit that was
+  // only ever committed locally reads 1 and refuses.
+  const stranded = await git(root, ["rev-list", "--count", "HEAD", "--not", "--remotes=origin"]);
+  if (stranded.code !== 0) return "its commits could not be compared against origin";
+  const n = Number(stranded.stdout.trim()) || 0;
+  return n > 0 ? `it has ${n} commit(s) no origin ref has` : null;
+}
+
+/**
+ * The branch a reset would take this checkout OFF, or null when the reset leaves it
+ * holding whatever name it holds now.
+ *
+ * Exists so the drag-onto-an-agent confirm can NAME what the gesture releases. Detaching
+ * is not a loss `resetWouldDestroyWork` covers - the commits are safe on origin by the
+ * time it says yes - but it is still a thing done to someone's checkout without asking,
+ * and "your branch will be released" is the sentence that makes the drop honest.
+ *
+ * Mirrors `releaseBranch`'s rule rather than restating it loosely: an already-detached
+ * checkout and one sitting on the repo's default branch both answer null, because
+ * neither of them ends up anywhere else.
+ */
+export async function branchReleasedByReset(session: Session): Promise<string | null> {
+  if (!session.cwd) return null;
+  const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) return null;
+  const root = top.stdout.trim();
+  // `symbolic-ref` is the exact question, failing precisely when HEAD is detached - see
+  // `resetToOrigin`, which reads the branch the same way for the same reason.
+  const held = await git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const branch = held.code === 0 ? held.stdout.trim() : "";
+  if (!branch) return null;
   const target = await remoteDefaultRef(root);
-  if (!target) return "it has no origin/main (or origin/master) to reset onto";
-  // Commits on HEAD that the default branch does not contain. On a detached, freshly
-  // reset checkout this is 0, which is the shape autopilot hands back.
-  const ahead = await git(root, ["rev-list", "--count", `${target}..HEAD`]);
-  if (ahead.code !== 0) return "its commits could not be compared against origin";
-  const n = Number(ahead.stdout.trim()) || 0;
-  return n > 0 ? `it has ${n} commit(s) not on ${target}` : null;
+  return target && branch === defaultBranchOf(target) ? null : branch;
 }
 
 /**
@@ -1415,8 +1475,16 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
  * a session with no pane reports `cleared: false`, and a checkout that couldn't be
  * detached reports `detached: false`, rather than either failing the whole
  * operation and telling the caller a reset that DID happen did not.
+ *
+ * `cleared` means the agent ACTED on the `/clear`, not that tmux took the keystrokes -
+ * see `awaitClearProcessed`. The caller that depends on the difference is
+ * `TaskManager.assign`, which types a task's intent immediately afterwards.
  */
-export async function resetToOrigin(session: Session, clear: boolean): Promise<ResetResult> {
+export async function resetToOrigin(
+  session: Session,
+  clear: boolean,
+  deps: InjectDeps = defaultInjectDeps,
+): Promise<ResetResult> {
   if (!session.cwd) {
     return { ok: false, error: "session has no working directory", root: null, cleared: false, detached: false };
   }
@@ -1458,6 +1526,48 @@ export async function resetToOrigin(session: Session, clear: boolean): Promise<R
   const detached = await releaseBranch(root, branch, target);
 
   if (!clear) return { ok: true, error: null, root, cleared: false, detached };
-  const sent = await sendText(session, "/clear", true);
-  return { ok: true, error: null, root, cleared: sent.ok, detached };
+  // Read the screen BEFORE the keystrokes, so "nothing has happened yet" is a state we
+  // can recognise rather than one we mistake for a clear that already landed.
+  const before = await deps.capture(session);
+  const sent = await sendText(session, "/clear", true, deps);
+  const cleared = sent.ok && (await awaitClearProcessed(session, before, deps));
+  return { ok: true, error: null, root, cleared, detached };
+}
+
+/** How long to give the agent to act on a `/clear` before we stop claiming it did. */
+const CLEAR_TIMEOUT_MS = 5000;
+/** How often to re-read the pane while waiting for that. */
+const CLEAR_POLL_MS = 100;
+/** That wait as a count of reads, for the reason `SUBMIT_POLLS` is one. */
+const CLEAR_POLLS = Math.ceil(CLEAR_TIMEOUT_MS / CLEAR_POLL_MS);
+
+/**
+ * Wait until the pane shows the `/clear` was actually acted on.
+ *
+ * `sendText` resolves when tmux has taken the keystrokes, which is not the same event:
+ * Claude processes the command whenever it gets round to it. The caller that cannot
+ * live with the difference is `TaskManager.assign`, which pastes a task's intent behind
+ * this - a `/clear` processed after that paste wipes the composer, `awaitPasteSubmitted`
+ * then sees no pending paste and reports success, and the task is marked running with
+ * nothing running it. That is the exact failure the type-before-claim ordering exists to
+ * prevent, arriving silently.
+ *
+ * Two conditions, and both are needed. The screen must have CHANGED (an unchanged
+ * capture is the window before Claude has even echoed the command), and the command must
+ * no longer be in the composer (a screen showing `> /clear` has changed but proves the
+ * opposite of what we want). A capture we cannot read is not evidence of anything, so it
+ * ends the wait as a false - "I could not see it happen" must not read as "it happened".
+ */
+async function awaitClearProcessed(
+  session: Session,
+  before: string | null,
+  deps: InjectDeps,
+): Promise<boolean> {
+  for (let poll = 0; poll < CLEAR_POLLS; poll++) {
+    await deps.sleep(CLEAR_POLL_MS);
+    const now = await deps.capture(session);
+    if (now === null) return false;
+    if (now !== before && !hasPendingCommand(now, "/clear")) return true;
+  }
+  return false;
 }

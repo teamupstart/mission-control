@@ -495,6 +495,34 @@ dispatched or queued, or when you hit **Clear** to start a fresh one - either wa
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
 
+### Hand a shelved task to an agent that's already running
+
+On the [Board](#layout-cards-console-or-board), **drag a backlog card onto an idle
+agent** in the same repo and it starts there instead of in a new worktree. The task owns
+no checkout of its own - the agent keeps the one it had - which is exactly why cancelling
+it later never runs `git worktree remove` over a directory the harness didn't create.
+
+**The drop resets that agent's checkout first**, the same reset the card's **reset**
+control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release
+the branch, `/clear`. Without it the next task inherits the last one's branch and context,
+and no-mistakes - seeing a non-default branch - validates and pushes onto it, putting two
+unrelated tasks in one PR.
+
+So the drop **asks first whenever there's something to lose**: a dialog naming the agent's
+queued work items, the branch being released, and the context being cleared, and nothing
+happens until you confirm it. An agent with nothing to lose - no work queue, already
+detached, which is how a pooled worktree is handed out - takes the task in one gesture,
+with no dialog. What the dialog lists is what the daemon saw when it refused, not a second
+look, so it can't disagree with what the confirmation then does.
+
+**Committed work is never the thing you're asked about.** If the checkout holds anything
+that isn't recoverable from origin - uncommitted files, untracked files, or commits no
+`origin/*` ref has - the assign is **refused outright** and the task stays in the backlog
+with a line saying what's in the way. Work that's been pushed doesn't block it: a branch
+whose commits are on origin under its own ref can be fetched back by name, so an agent
+that shipped is still a drop target (which is what a squash-merged PR needs, since the
+landed commit has a different SHA and never appears on `origin/main`).
+
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the
@@ -962,17 +990,18 @@ blocks; it lingers on the card so you can see the work landed. This narrows *aut
 only - dragging a task onto that agent yourself still works, because that's you saying
 "yes, that one".
 
-**A reused agent is reset before it's handed anything.** It keeps its own checkout, so
-without this the next task inherits the last one's branch and context - and no-mistakes,
-seeing a non-default branch, would validate and push onto it, putting two unrelated tasks
-in one PR. So an assign runs the same reset the card's **reset** control does first
-(`git reset --hard` onto origin's default branch, `git clean -fd`, release the branch,
-`/clear`), and the agent starts from main with a fresh context and an empty work queue. If
-the checkout is holding anything that reset would destroy - uncommitted files, or commits
-origin doesn't have - **the assign is refused instead**, and the task goes back to the
-backlog with a line saying what's in the way. The Reset button has a confirm dialog and a
-loss preview in front of it; this one has nobody watching, so the only thing it may not do
-is quietly discard your work.
+**A reused agent is reset before it's handed anything** - the same reset, and the same
+refusals, as [dragging a card onto an agent
+yourself](#hand-a-shelved-task-to-an-agent-thats-already-running). It keeps its own
+checkout, so without this the next task inherits the last one's branch and context, and
+the agent would push two unrelated tasks into one PR. A checkout holding anything origin
+can't give back sends the task straight back to the backlog with a line saying what's in
+the way; nobody is watching this one, so the only thing it may not do is quietly discard
+your work.
+
+Autopilot **confirms the rest of that reset unattended**, and it has already ruled out
+what the confirmation protects: an agent is only "free" here with an empty work queue,
+and clearing the context is how a handover works at all.
 
 On the **board**, the Backlog column shows Foreman's reading: a **blocked** chip naming
 what an item waits on, a **next up** mark on the one it would take next, and - for a

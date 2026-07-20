@@ -410,6 +410,16 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
+  /**
+   * The caller has accepted what the handover reset discards beyond git state - the
+   * agent's work queue, its context, the branch it stands on.
+   *
+   * Defaults to FALSE, which is the whole safety property: an assign that would take
+   * any of that is refused until someone says yes, and the refusal carries the
+   * breakdown (`AssignResetConfirm`) so the caller can show what it is agreeing to. A
+   * caller that simply forgets the flag gets the safe answer.
+   */
+  confirmReset: z.boolean().optional().default(false),
 });
 export type AssignTask = z.infer<typeof AssignTaskSchema>;
 

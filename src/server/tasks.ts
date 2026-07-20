@@ -1,10 +1,26 @@
 import { randomUUID } from "node:crypto";
-import type { AgentType, Task, TaskKind, TaskPriority } from "@shared/types.ts";
+import type {
+  AgentType,
+  AssignRefusalScope,
+  AssignResetConfirm,
+  ResetResult,
+  Session,
+  Task,
+  TaskKind,
+  TaskPriority,
+} from "@shared/types.ts";
 import type { UpdateTask } from "@shared/protocol.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
-import { injectPrompt, kill, resetWouldDestroyWork } from "./actions.ts";
+import {
+  branchReleasedByReset,
+  injectPrompt,
+  kill,
+  paneAcceptsPrompt,
+  resetWouldDestroyWork,
+  type ActionResult,
+} from "./actions.ts";
 import { resetSession } from "./reset.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
@@ -27,6 +43,49 @@ export interface CreateTaskInput {
 export interface Ok {
   ok: boolean;
   error?: string;
+}
+
+/** The seams and the one decision `TaskManager.assign` takes from its caller. */
+export interface AssignOptions {
+  /**
+   * The caller has accepted what the handover reset discards beyond git state. False -
+   * the default, and what an omitted flag gets - means a reset with anything to lose is
+   * refused with the breakdown attached instead of run.
+   */
+  confirmReset?: boolean;
+  /** Deliver the task's intent to the agent. The one call that types. */
+  inject?: typeof injectPrompt;
+  /** Ask whether the pane could take a prompt, before anything is done to the agent. */
+  paneReady?: (session: Session) => Promise<ActionResult>;
+  /** Hand the agent's checkout back in the shape a fresh one starts in. */
+  reset?: (session: Session) => Promise<ResetResult>;
+}
+
+/**
+ * An assign's answer. A refusal says whose fault it is, and - when the caller only has
+ * to say yes - exactly what saying yes would spend.
+ */
+export interface AssignOutcome extends Ok {
+  scope?: AssignRefusalScope;
+  resetConfirm?: AssignResetConfirm;
+}
+
+/** Whether the handover would take anything the caller has not already agreed to. */
+function needsResetConfirm(c: AssignResetConfirm): boolean {
+  // `clearsContext` is deliberately NOT a trigger, though it IS reported. Every agent
+  // that can be assigned at all has a pane, so treating the `/clear` as something to ask
+  // about would put a dialog in front of every drop - including onto a pooled worktree
+  // sitting detached with nothing in it, which is the case that must stay one gesture.
+  return c.queuedItems > 0 || c.branch != null;
+}
+
+/** The loss in one sentence, for the refusal a caller may show as-is. */
+function describeResetLoss(c: AssignResetConfirm): string {
+  const parts: string[] = [];
+  if (c.queuedItems > 0) parts.push(`${c.queuedItems} queued work item(s)`);
+  if (c.branch) parts.push(`the branch ${c.branch}`);
+  if (c.clearsContext) parts.push("the agent's context");
+  return parts.join(", ");
 }
 
 /**
@@ -259,39 +318,74 @@ export class TaskManager {
    *
    * That reuse is what the reset below is for: the agent keeps the checkout, so unless
    * something puts it back to origin's default branch the new task inherits the last
-   * one's branch and context. It also means an assign now CLEARS the session's work
-   * queue, because the reset does - those items were authored against a branch that no
-   * longer exists.
+   * one's branch and context. It also means an assign CLEARS the session's work queue,
+   * because the reset does - those items were authored against a branch that no longer
+   * exists.
    *
-   * Every refusal below is a state conflict the caller should surface, not retry.
+   * Which is why an assign that would take any of that ASKS FIRST. `resetWouldDestroyWork`
+   * covers only what git holds; the queue, the context and the branch name are losses
+   * origin cannot undo, and a drag gesture that spends them unannounced is the same
+   * unconfirmed destruction the Reset button's dialog exists to prevent. An agent with
+   * nothing to lose - empty queue, no branch - still takes a task in one gesture.
    *
-   * `inject` is a parameter for the same reason it is one on `injectPrompt` itself: it
-   * is the only call here that leaves the process, and the window it holds open is
-   * where this method's one ordering rule can be broken.
+   * Every refusal below is a state conflict the caller should surface, not retry, and
+   * each says whose fault it is (`scope`) - see `AssignRefusalScope`.
+   *
+   * `inject` and `paneReady` are parameters for the same reason `inject` is one on
+   * `injectPrompt` itself: they are the calls here that leave the process, and the
+   * window they hold open is where this method's ordering rules can be broken.
    */
-  async assign(id: string, sessionId: string, inject = injectPrompt): Promise<Ok> {
+  async assign(id: string, sessionId: string, opts: AssignOptions = {}): Promise<AssignOutcome> {
+    const inject = opts.inject ?? injectPrompt;
+    const paneReady = opts.paneReady ?? paneAcceptsPrompt;
+    const reset = opts.reset ?? ((s: Session) => resetSession(this.registry, s, true));
+
     const t = this.registry.getTask(id);
-    if (!t) return { ok: false, error: "no such task" };
-    if (t.status !== "backlog") return { ok: false, error: `task is ${t.status}, not in the backlog` };
+    if (!t) return { ok: false, error: "no such task", scope: "task" };
+    if (t.status !== "backlog") {
+      return { ok: false, error: `task is ${t.status}, not in the backlog`, scope: "task" };
+    }
 
     const s = this.registry.getSession(sessionId);
-    if (!s) return { ok: false, error: "no such session" };
+    if (!s) return { ok: false, error: "no such session", scope: "session" };
     if (s.state !== "idle") {
-      return { ok: false, error: `that agent is ${s.state.replace("_", " ")} - drop onto an idle one` };
+      return {
+        ok: false,
+        error: `that agent is ${s.state.replace("_", " ")} - drop onto an idle one`,
+        scope: "session",
+      };
     }
     // Reports idle, but something is already parked on it waiting for the human. The
     // dashboard files such a session under "needs you" rather than "idle" and won't
     // offer it as a target; refuse it here too, so the API can't route around a rule
     // the operator can see being applied on screen.
     if (s.pendingReviews > 0) {
-      return { ok: false, error: "that agent has a review waiting on you - clear it first" };
+      return {
+        ok: false,
+        error: "that agent has a review waiting on you - clear it first",
+        scope: "session",
+      };
     }
     // Running a task's intent against the wrong checkout is the one way this gesture
     // does damage you cannot undo from the dashboard, so a mismatch is refused rather
     // than best-efforted. Compared on repoRoot, not cwd: a linked worktree of the
     // task's repo is a legitimate home for it, a different repo never is.
     if (!s.repoRoot || s.repoRoot !== t.repoRoot) {
-      return { ok: false, error: `that agent is in a different repo (${s.repoRoot ?? "no repo"})` };
+      return {
+        ok: false,
+        error: `that agent is in a different repo (${s.repoRoot ?? "no repo"})`,
+        scope: "session",
+      };
+    }
+    // Asked BEFORE the reset, and that ordering is the whole reason it is a separate
+    // probe. Everything below strips the agent - detaches its checkout, drops its work
+    // queue, wipes its context - for the sake of a prompt that is typed at the very end.
+    // Finding out then that the pane has no handle, or that a human is sitting in
+    // copy-mode reading their scrollback, leaves an agent taken apart for a task that
+    // goes straight back to the backlog.
+    const pane = await paneReady(s);
+    if (!pane.ok) {
+      return { ok: false, error: pane.error ?? "that agent's pane cannot take a prompt", scope: "session" };
     }
 
     // A reused agent starts the new task from origin's default branch with a cleared
@@ -306,25 +400,62 @@ export class TaskManager {
     // over in the shape a freshly dispatched one starts in.
     //
     // Guarded rather than unconditional, and the guard REFUSES rather than proceeding.
-    // A reset is destructive and nobody is watching this one: the button has a confirm
-    // dialog with a loss preview in front of it, and this has neither. So a checkout
-    // holding work sends the task back to the backlog with a sentence saying what is in
-    // the way, which the operator can act on - the one outcome we cannot offer is
-    // silently discarding it.
+    // A reset is destructive and the autopilot's is unwatched: the button has a confirm
+    // dialog with a loss preview in front of it. So a checkout holding work sends the
+    // task back to the backlog with a sentence saying what is in the way, which the
+    // operator can act on - the one outcome we cannot offer is silently discarding it.
     const holding = await resetWouldDestroyWork(s);
     if (holding) {
-      return { ok: false, error: `that agent's checkout cannot be reset - ${holding}` };
+      return { ok: false, error: `that agent's checkout cannot be reset - ${holding}`, scope: "session" };
     }
-    const reset = await resetSession(this.registry, s, true);
-    if (!reset.ok) {
-      return { ok: false, error: `could not reset that agent's checkout - ${reset.error}` };
+    // Git is not the whole loss. The reset also drops the agent's work queue, wipes its
+    // context and takes its branch away, and none of that is recoverable from origin -
+    // so the human drag gesture is told what it is about to spend and asked once. The
+    // breakdown travels WITH the refusal so the dialog and the action cannot disagree
+    // about a queue that moved in between.
+    if (!opts.confirmReset) {
+      const confirm = await this.resetConfirmFor(s);
+      if (needsResetConfirm(confirm)) {
+        return {
+          ok: false,
+          error: `resetting that agent first would discard ${describeResetLoss(confirm)}`,
+          scope: "session",
+          resetConfirm: confirm,
+        };
+      }
+    }
+    // Re-read immediately before the destructive step. The idle check above is by now
+    // several git invocations old, and the reset itself spends up to 30s in a fetch -
+    // an agent a human woke up in that window must not be reset out from under them.
+    const fresh = this.registry.getSession(sessionId);
+    if (!fresh || fresh.state !== "idle" || fresh.pendingReviews > 0) {
+      return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
+    }
+
+    const done = await reset(s);
+    if (!done.ok) {
+      return { ok: false, error: `could not reset that agent's checkout - ${done.error}`, scope: "session" };
+    }
+    // `cleared` means the agent was SEEN acting on the `/clear`, not that tmux took the
+    // keystrokes. Believing the weaker one is how a task gets claimed with nothing
+    // running it: a `/clear` processed after the paste below wipes the prompt off the
+    // composer, and the pane read that follows the paste finds nothing pending and calls
+    // that success. Unconfirmed, the task stays in the backlog.
+    if (!done.cleared) {
+      return {
+        ok: false,
+        error: "could not confirm the agent cleared its context, so the task was not typed",
+        scope: "session",
+      };
     }
 
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
     const r = await inject(s, t.intent);
-    if (!r.ok) return { ok: false, error: r.error ?? "could not type into the agent's pane" };
+    if (!r.ok) {
+      return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
+    }
 
     // Merge onto the LATEST snapshot, not the one read before the injection, for the
     // same reason `cancel` and `reclaim` do it: typing into a pane takes long enough
@@ -341,6 +472,23 @@ export class TaskManager {
       updatedAt: now,
     });
     return { ok: true };
+  }
+
+  /**
+   * What the handover reset would take from this agent that git cannot give back.
+   *
+   * Read from the registry and the checkout at the moment of deciding, and returned
+   * with the refusal, so the dialog the operator answers describes the same state the
+   * assign will act on.
+   */
+  private async resetConfirmFor(s: Session): Promise<AssignResetConfirm> {
+    return {
+      queuedItems: s.queue?.openCount ?? 0,
+      // A pane is what `/clear` needs, and `assign` has already refused a session
+      // without one by the time this is asked.
+      clearsContext: Boolean(s.tmux || s.wezterm),
+      branch: await branchReleasedByReset(s),
+    };
   }
 
   /**

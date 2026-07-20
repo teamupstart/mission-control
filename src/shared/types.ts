@@ -1458,7 +1458,12 @@ export interface ResetResult {
    * callers can act on the sessions sharing it without re-resolving it.
    */
   root: string | null;
-  /** True when `/clear` was sent to the agent after the git reset landed. */
+  /**
+   * True when the agent was seen ACTING on the `/clear` sent after the git reset - not
+   * merely that the keystrokes were accepted. The two differ by however long Claude
+   * takes to process the command, and a caller that types behind this (see
+   * `TaskManager.assign`) has its prompt wiped if it believes the wrong one.
+   */
   cleared: boolean;
   /**
    * True when the checkout ends up holding no branch at all - standing on a
@@ -1472,3 +1477,31 @@ export interface ResetResult {
    */
   detached: boolean;
 }
+
+/**
+ * What assigning a backlog task to a running agent would take from that agent BEYOND
+ * what git can hand back, sent with the refusal that asks for a confirmation.
+ *
+ * Carried on the refusal rather than served by a preview route on purpose: a preview is
+ * a second round trip with a window in the middle, and the thing being described - the
+ * queue, the branch - can move inside that window. This is what the daemon saw at the
+ * moment it decided, so the dialog and the action cannot disagree.
+ */
+export interface AssignResetConfirm {
+  /** Open work-queue items on that session, which the reset drops. */
+  queuedItems: number;
+  /** Whether the agent's conversation is wiped (`/clear`) as part of the handover. */
+  clearsContext: boolean;
+  /** The branch the checkout is released from, or null when nothing is released. */
+  branch: string | null;
+}
+
+/**
+ * Who a refused assign is ABOUT, so a caller can tell "this agent is unusable" from
+ * "this task is gone".
+ *
+ * The autopilot is the caller that needs it: it parks a session for ten minutes after a
+ * session-scoped refusal, and doing that over a task a human dispatched a second earlier
+ * would take a perfectly free agent off the backlog for no reason at all.
+ */
+export type AssignRefusalScope = "task" | "session";

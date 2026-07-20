@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
-import { hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
+import { hasPendingCommand, hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
 
@@ -218,6 +218,19 @@ test("nothing on screen is not evidence of a pending paste", () => {
   // This gates a keystroke, so the unknown case must read as "no".
   assert.equal(hasPendingPaste(null), false);
   assert.equal(hasPendingPaste(""), false);
+});
+
+test("a slash command still in the composer is what marks a /clear as unacted on", () => {
+  // The caller is a reset that sends `/clear` and then wants to paste a task behind it.
+  // A `/clear` the agent has not processed yet wipes that paste when it finally lands,
+  // and every check downstream still reads success - so the composer is read first.
+  assert.equal(hasPendingCommand("❯ /clear\n⏵⏵ auto mode on", "/clear"), true);
+  assert.equal(hasPendingCommand(EMPTY_COMPOSER, "/clear"), false);
+  // The command ECHOED up in the transcript is history, not a keystroke in flight -
+  // counting it would mean the wait could never end.
+  const transcript = `❯ /clear\n${Array.from({ length: 20 }, (_, i) => `output line ${i}`).join("\n")}\n❯\n⏵⏵ auto mode on`;
+  assert.equal(hasPendingCommand(transcript, "/clear"), false);
+  assert.equal(hasPendingCommand(null, "/clear"), false);
 });
 
 // ---- against a real pane ----

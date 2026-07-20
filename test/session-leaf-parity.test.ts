@@ -151,6 +151,7 @@ test("the board tile's agent dot and context meter are the shared ones", () => {
       draggingRepo: null,
       onDropped: () => {},
       onDropError: () => {},
+      onDropConfirm: () => {},
     }),
   );
   assert.ok(
@@ -173,6 +174,7 @@ test("the board tile's cost badge is the shared CostChip", () => {
       draggingRepo: null,
       onDropped: () => {},
       onDropError: () => {},
+      onDropConfirm: () => {},
     }),
   );
   assert.ok(tile.includes(bit(CostChip, { cost })), "tile should render the shared CostChip");

@@ -564,9 +564,31 @@ export const ForemanConfigSchema = z.object({
   triage: z.enum(["off", "shadow", "on"]).default("shadow"),
   /**
    * Model id for the Tier 1 triage call (a cheap router, not the full reviewer). Falls
-   * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default, in the worker.
+   * back to the FOREMAN_TRIAGE_MODEL env var, then a Haiku default.
+   *
+   * All four model fields resolve through one shared ladder - `resolveForemanModel`
+   * (`@shared/foreman-models.ts`) - so the worker's `--model` and the settings panel's
+   * readout can never disagree. Empty means "fall through", not "spawn with no model".
    */
   triageModel: z.string().optional(),
+  /**
+   * Model id for the full reviewer - the call that judges a stuck session's pending
+   * question. Falls back to FOREMAN_REVIEW_MODEL, then an Opus default.
+   *
+   * Before this existed the reviewer passed no `--model` at all and silently inherited
+   * whatever the `claude` CLI was logged in as, which made the question "what does
+   * Foreman run as?" unanswerable. See `FOREMAN_MODEL_SPECS`.
+   */
+  reviewModel: z.string().optional(),
+  /**
+   * Model id for the work-queue verifier - the call that reads a diff and decides
+   * whether an item is done. Falls back to FOREMAN_VERIFY_MODEL, then an Opus default.
+   *
+   * Separate from `reviewModel` despite the same default: the verifier runs once per
+   * queued item on a repo diff, so it is the one most worth stepping down when a queue
+   * is long, and doing that must not also cheapen the reviewer.
+   */
+  verifyModel: z.string().optional(),
   /**
    * How many rounds the SAME gap may survive before the item escalates. Counted
    * per gap, not per attempt, so an agent working through several distinct gaps
@@ -636,8 +658,8 @@ export const ForemanConfigSchema = z.object({
   maxSessions: z.number().int().min(1).max(20).default(3),
   /**
    * Model id for the backlog dependency read. Falls back to the FOREMAN_BACKLOG_MODEL
-   * env var, then a Sonnet default, in the worker. Not the triage router's model: this
-   * is a judgment call over prose the human wrote, not a bucketing.
+   * env var, then a Sonnet default. Not the triage router's model: this is a judgment
+   * call over prose the human wrote, not a bucketing.
    */
   backlogModel: z.string().optional(),
 });

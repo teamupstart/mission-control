@@ -4555,6 +4555,49 @@ kbd {
 .foreman-settings-blurb {
   margin: 0 0 14px;
 }
+.foreman-models {
+  margin-top: 20px;
+}
+.foreman-models-hint {
+  margin: 4px 0 10px;
+}
+.foreman-models-hint code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+}
+.foreman-model-row {
+  padding: 10px 12px;
+  margin-top: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+}
+.foreman-model-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--muted);
+}
+/* Narrower than full width: a model id is short, and a box stretched to the panel's
+   width reads as a prose field and invites pasting a sentence into it. */
+.foreman-model-input {
+  max-width: 260px;
+  font-size: 12px;
+}
+.foreman-model-blurb {
+  margin: 8px 0 0;
+}
+/* The "actually running as" line. Dimmer than the blurb above it and set in the mono
+   face, because the id inside it is the one thing here you might want to copy. */
+.foreman-model-source {
+  margin: 4px 0 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
 .foreman-repos {
   margin-top: 20px;
 }

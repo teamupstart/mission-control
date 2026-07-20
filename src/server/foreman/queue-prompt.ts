@@ -1,7 +1,13 @@
 import type { TranscriptMessage, TrackedGap } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
-import { PREFS_END, prefsSection } from "./prefs.ts";
-import { formatTranscript as renderTranscript, fromChild } from "./prompt.ts";
+import { PREFS_END, fromChild, prefsSection } from "./prefs.ts";
+// The SHARED transcript renderer. This module used to keep a private copy, and it had rotted
+// into a real bug: `TranscriptMessage.tools` is `ToolCall[]`, so its `m.tools.join(", ")`
+// printed `(tools: [object Object])` and the verifier judged "was this actually finished" -
+// a question entirely about what the agent DID - against a transcript with every tool name
+// and command erased. A second renderer of the same data is how that drift happened, so the
+// copy is gone; the empty-window wording each surface needs is a parameter instead.
+import { formatTranscript } from "./prompt.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff + transcript and never
@@ -127,7 +133,7 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     ...prefsSection(input.prefs),
     "## The session",
     `name: ${fromChild(input.session.name)}`,
-    `cwd: ${input.session.cwd ?? "(unknown)"}`,
+    `cwd: ${fromChild(input.session.cwd) ?? "(unknown)"}`,
     `branch: ${input.session.gitBranch ?? "(none)"}`,
     "",
     "## What the human asked for (THE thing to judge)",
@@ -190,7 +196,7 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     input.transcriptTruncated
       ? "## What the agent did (transcript since this item was delivered; truncated for length)"
       : "## What the agent did (transcript since this item was delivered)",
-    formatTranscript(input.transcript),
+    formatTranscript(input.transcript, "(no transcript turns for this item)"),
     "",
   );
 
@@ -224,22 +230,3 @@ function capped(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}\n… (truncated)` : s;
 }
 
-/**
- * The verify prompt's transcript, rendered by the SHARED formatter.
- *
- * This was a private copy, and it had rotted into a real bug: `TranscriptMessage.tools` is
- * `ToolCall[]`, so its `m.tools.join(", ")` printed `(tools: [object Object], [object Object])`
- * and the verifier judged "was this actually finished" against a transcript with every tool
- * name and command erased - on the one path whose whole question is what the agent DID.
- * `normalizeTools` in client.ts already documents this exact failure class; this copy predated
- * the fix and never got it.
- *
- * Deleting the copy rather than repairing it, because a second renderer of the same data is
- * how the drift happened and would happen again. The shared one differs only in saying
- * "(transcript unavailable)" where this said "(no transcript turns for this item)", which is
- * a distinction the verifier does not act on - it is told separately, and far more precisely,
- * that this window is scoped to one item.
- */
-function formatTranscript(messages: TranscriptMessage[]): string {
-  return renderTranscript(messages);
-}

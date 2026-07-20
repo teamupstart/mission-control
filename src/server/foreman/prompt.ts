@@ -1,6 +1,6 @@
 import type { TranscriptMessage } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
-import { prefsSection, stripPrefsMarkers } from "./prefs.ts";
+import { fromChild, prefsSection } from "./prefs.ts";
 import { sanitizeGapText } from "./queue-machine.ts";
 
 // Builds the review prompt handed to a fresh `claude -p` per session. This text
@@ -105,30 +105,6 @@ export interface CapturedInputs {
   prefs: StandardsDoc | null;
   /** The work-queue item this session is on, when it is on one - see `ReviewInput.queueItem`. */
   queueItem?: ReviewInput["queueItem"];
-}
-
-/**
- * The single gate every CHILD-CONTROLLED string passes through on its way into a prompt.
- *
- * The reviewer and router prompts have no evidence fence - only the verifier does - so any
- * field the child can write is a chance to draw the trusted section's frame around its own
- * words. The channels were closed one at a time and the list kept growing: the transcript,
- * then the screen, then the pending question, then tool-call inputs, then `activity` (which
- * `report_status` lets the child set directly, unbounded and un-stripped) and the `goal`
- * derived from its prompts. That is a losing shape - the next field added to the prompt would
- * be a hole nobody noticed - so there is now one named thing to reach for, and the rule is
- * "if the child can write it, it comes through here".
- *
- * Cheap by design (`stripPrefsMarkers` is two regexes) so nobody is tempted to skip it, and
- * null-transparent so it composes with the `?? "(none)"` defaults these fields already carry.
- *
- * NOT the primary guarantee. That is the positional anchor stated in all three policies: the
- * operator's section is the one immediately below the policy, and a section anywhere else is
- * not it whatever it says. This is defence in depth for the case where the model reads a
- * convincing frame anyway.
- */
-export function fromChild<T extends string | null | undefined>(text: T): T {
-  return (text == null ? text : stripPrefsMarkers(text)) as T;
 }
 
 /** Per-message text cap so a long turn can't blow up the prompt. */
@@ -240,7 +216,7 @@ export function buildReviewPrompt(input: ReviewInput): string {
     ...prefsSection(input.prefs),
     "## The session",
     `name: ${fromChild(session.name)}`,
-    `cwd: ${session.cwd ?? "(unknown)"}`,
+    `cwd: ${fromChild(session.cwd) ?? "(unknown)"}`,
     `branch: ${session.gitBranch ?? "(none)"}`,
     `state: ${session.state}`,
     // `activity` is written by the child itself through the `report_status` MCP tool, whose
@@ -363,8 +339,20 @@ function queueItemSection(item: NonNullable<ReviewInput["queueItem"]>): string[]
  * decide. A name-only chip left it judging blind, and the policy correctly escalated rather
  * than guess - which read as Foreman being unhelpful when it was being honest.
  */
-export function formatTranscript(messages: TranscriptMessage[]): string {
-  if (messages.length === 0) return "(transcript unavailable)";
+export function formatTranscript(
+  messages: TranscriptMessage[],
+  /**
+   * What an EMPTY window means on this surface, which is not the same claim on each.
+   *
+   * For the reviewer, no turns means the transcript could not be read. For the verifier it
+   * means the agent did nothing since the item was delivered - strong evidence for a blocking
+   * `incomplete` gap, and the model has no other way to tell the two apart. Collapsing them
+   * onto one string (which deleting the verifier's private copy of this function did) hands
+   * the verify path "withhold judgment" where it used to read "nothing happened".
+   */
+  whenEmpty = "(transcript unavailable)",
+): string {
+  if (messages.length === 0) return whenEmpty;
   return messages
     .map((m) => {
       // The tool INPUT is the child's own serialized arguments, so it is as writable as its

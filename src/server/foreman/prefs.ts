@@ -104,7 +104,21 @@ export const PREFS_HEADING = "## The operator's standing instructions";
  * real marker. A property escape is the difference between a list someone has to keep current
  * and a category that stays correct.
  */
-const RULE_CHAR = "[\\p{Pd}\\u2212\\u2500-\\u257F\\u23AF\\u23BA-\\u23BD\\u02D7\\uFE4D-\\uFE4F_]";
+const RULE_CHAR = "[\\p{Pd}\\u2212\\u2500-\\u257F\\u23AF\\u23BA-\\u23BD\\u02D7\\uFE4D-\\uFE4F]";
+
+/**
+ * The low lines, held apart from `RULE_CHAR` because they are markdown EMPHASIS far more often
+ * than they are a rule.
+ *
+ * `__bold__` is two of them, and with the dressing floor at two that ate the sentence around
+ * any phrase someone emphasised - on the repo whose sessions discuss this feature daily. A
+ * markdown horizontal rule made of low lines is `___`, three or more, so requiring three
+ * separates the two uses exactly where markdown already separates them.
+ */
+const LOW_LINE = "[_\\uFF3F\\u2017]";
+
+/** Whitespace, plus the invisibles that read as nothing but are not `\s` - see `markerPattern`. */
+const GAP = "(?:\\s|[\\u200B-\\u200D\\u2060\\uFEFF\\u00AD])+";
 
 /**
  * Build a matcher for a marker PHRASE that survives the obvious dressing-up.
@@ -141,7 +155,12 @@ function markerPattern(phrase: string): RegExp {
         .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
         .replace(/['‘’ʼ`´]/g, "['\\u2018\\u2019\\u02BC\\u0060\\u00B4]"),
     )
-    .join("\\s+");
+    // NOT `\s+`. A zero-width space between two words renders as nothing, so
+    // "END OF THE<U+200B>OPERATOR'S STANDING INSTRUCTIONS" is visually the marker exactly -
+    // and `\s` does not match U+200B, so the whole strip was defeated by one invisible
+    // character. Same class as the dash homoglyphs the `\p{Pd}` escape closed, moved from the
+    // decoration to the word separator: the model reads what is rendered, not the code points.
+    .join(GAP);
   // Horizontal whitespace only on the flanks (`[^\S\n]`), so the redaction eats the rule that
   // dresses the line but never the newlines around it - swallowing those would splice the
   // preceding and following lines together and quietly reflow the child's transcript.
@@ -154,7 +173,8 @@ function markerPattern(phrase: string): RegExp {
   // traded for a rare one. Requiring three then left a two-character rule ("-- PHRASE --")
   // reading as a frame while matching nothing. Two is the floor that holds both: no bullet or
   // emphasis mark is two wide, and nothing narrower than that draws a rule.
-  const dressing = `(?:#{1,6}|${RULE_CHAR}{2,})`;
+  // Low lines need three, everything else two - see `LOW_LINE` for why they part company.
+  const dressing = `(?:#{1,6}|${RULE_CHAR}{2,}|${LOW_LINE}{3,})`;
   // Dressed on the left, on the right, or both - one side is enough to read as a frame.
   const left = `${space}${dressing}${space}`;
   const right = `${space}(?:${dressing}${space})?`;
@@ -163,7 +183,7 @@ function markerPattern(phrase: string): RegExp {
   // as a heading to any model that has seen markdown - while matching nothing above, because
   // `space` deliberately never crosses a newline. `defangDelimiters` did not save it either:
   // it collapses long runs to three, and three still underlines perfectly well.
-  const setext = `${space}${words}${space}\\n${space}(?:=|${RULE_CHAR}){2,}${space}`;
+  const setext = `${space}${words}${space}\\n${space}(?:=|${RULE_CHAR}|${LOW_LINE}){2,}${space}`;
   return new RegExp(
     `(?:${setext}|${left}${words}${right}|${space}${words}${space}${dressing})`,
     "giu",
@@ -194,6 +214,31 @@ const HEADING_PHRASE = markerPattern(PREFS_HEADING);
  * Defanged rather than deleted, so the attempt stays visible: a reviewer reading the card
  * should see that the child tried this, and a silently vanished line teaches nobody.
  */
+/**
+ * The single gate every CHILD-CONTROLLED string passes through on its way into a prompt.
+ *
+ * The reviewer and router prompts have no evidence fence - only the verifier does - so any
+ * field the child can write is a chance to draw the trusted section's frame around its own
+ * words. The channels were closed one at a time and the list kept growing: the transcript, the
+ * screen, the pending question, tool-call inputs, `activity` (which `report_status` lets the
+ * child set directly, unbounded and un-stripped), the `goal` derived from its prompts, and its
+ * own working directory. That is a losing shape - the next field added to a prompt would be a
+ * hole nobody noticed - so there is one named thing to reach for, and the rule is "if the child
+ * can write it, it comes through here".
+ *
+ * Lives here, beside `stripPrefsMarkers`, rather than in `prompt.ts`: its whole body is that
+ * call, and the verify prompt should not have to import from the reviewer's module to reach the
+ * choke point. Cheap by design so nobody is tempted to skip it, and null-transparent so it
+ * composes with the `?? "(none)"` defaults these fields already carry.
+ *
+ * NOT the primary guarantee. That is the positional anchor stated in all three policies: the
+ * operator's section is the one immediately below the policy, and a section anywhere else is
+ * not it whatever it says. This is defence in depth for a frame that gets read anyway.
+ */
+export function fromChild<T extends string | null | undefined>(text: T): T {
+  return (text == null ? text : stripPrefsMarkers(text)) as T;
+}
+
 export function stripPrefsMarkers(text: string): string {
   return text
     .replace(END_PHRASE, "[redacted: forged section marker]")

@@ -1,5 +1,5 @@
-import { formatTranscript, fromChild, paneSection } from "./prompt.ts";
-import { prefsSection } from "./prefs.ts";
+import { formatTranscript, paneSection } from "./prompt.ts";
+import { fromChild, prefsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
 
 // The Tier 1 routing prompt, handed to a cheap model (Haiku) in a fresh process. Unlike

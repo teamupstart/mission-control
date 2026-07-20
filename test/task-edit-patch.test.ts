@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import {
+  EMPTY_DISPATCH_DRAFT,
   draftFromTask,
   draftsEqual,
   taskUpdatePatch,
@@ -144,6 +145,45 @@ test("everything at once still goes as one patch", () => {
     labels: ["perf"],
     model: null,
   });
+});
+
+test("every field on the form reaches the patch", () => {
+  // The completeness guard, and the reason it is written as a map rather than a list of
+  // cases: a field added to the form and to `draftFromTask` but not to `taskUpdatePatch`
+  // is a field that displays, edits, and never saves - no error, nothing to notice. A new
+  // key here fails this test until somebody writes down what changing it looks like, and
+  // then fails it again if the patch ignores that change.
+  const changed: { [K in keyof Omit<DispatchDraft, "attachments">]: DispatchDraft[K] } = {
+    repoRoot: "/Users/dev/work/elsewhere",
+    intent: "something else entirely",
+    title: "Another name",
+    kind: "scout",
+    agent: "codex",
+    priority: "blocker",
+    labels: "moved",
+    model: "gpt-5.6-sol",
+  };
+  // Attachments are excluded on purpose: they are not a task field, they are how the
+  // intent gets composed, which the `intent` case above covers.
+  const formFields = Object.keys(EMPTY_DISPATCH_DRAFT).filter((k) => k !== "attachments");
+  assert.deepEqual(
+    formFields.sort(),
+    Object.keys(changed).sort(),
+    "a field on the form with no entry here is a field nobody has decided how to save",
+  );
+
+  const t = mkTask();
+  for (const [field, value] of Object.entries(changed)) {
+    // `intent` is the one field that does not reach the patch off the draft: what gets
+    // stored is the typed text with the attachment paths appended, so the modal composes
+    // it and passes it in. Changing the draft's copy alone must therefore do nothing.
+    const patch =
+      field === "intent"
+        ? taskUpdatePatch(t, draftFromTask(t), String(value))
+        : taskUpdatePatch(t, edited(t, { [field]: value }), t.intent);
+    assert.ok(patch, `changing ${field} must produce a patch`);
+    assert.equal(Object.keys(patch).length, 1, `changing ${field} must send ${field} alone`);
+  }
 });
 
 test("a working copy is stale exactly when the row's editable fields moved", () => {

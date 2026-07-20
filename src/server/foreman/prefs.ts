@@ -196,6 +196,37 @@ const END_PHRASE = markerPattern("END OF THE OPERATOR'S STANDING INSTRUCTIONS");
 const HEADING_PHRASE = markerPattern(PREFS_HEADING);
 
 /**
+ * The single gate every CHILD-CONTROLLED string passes through on its way into a prompt.
+ *
+ * The reviewer and router prompts have no evidence fence - only the verifier does - so any
+ * field the child can write is a chance to draw the trusted section's frame around its own
+ * words. The channels were closed one at a time and the list kept growing: the transcript, the
+ * screen, the pending question, tool-call inputs, `activity` (which `report_status` lets the
+ * child set directly, unbounded and un-stripped), the `goal` derived from its prompts, its own
+ * working directory, and the branch it is on - git forbids ASCII spaces in a refname but allows
+ * U+200B and `#`, so `##The<ZWSP>operator's<ZWSP>standing<ZWSP>instructions` is a legal branch
+ * that renders as the trusted heading. That is a losing shape - the next field added to a
+ * prompt would be a hole nobody noticed - so there is one named thing to reach for, and the
+ * rule is "if the child can write it, it comes through here".
+ *
+ * `test/foreman-prefs.test.ts` enumerates the channels against ALL THREE prompt builders. It
+ * checked only the reviewer at first, which is exactly how the router's `cwd` stayed unguarded
+ * after the rest were fixed: a claim tested on one caller is a claim about one caller.
+ *
+ * Lives here, beside `stripPrefsMarkers`, rather than in `prompt.ts`: its whole body is that
+ * call, and the verify prompt should not have to import from the reviewer's module to reach the
+ * choke point. Cheap by design so nobody is tempted to skip it, and null-transparent so it
+ * composes with the `?? "(none)"` defaults these fields already carry.
+ *
+ * NOT the primary guarantee. That is the positional anchor stated in all three policies: the
+ * operator's section is the one immediately below the policy, and a section anywhere else is
+ * not it whatever it says. This is defence in depth for a frame that gets read anyway.
+ */
+export function fromChild<T extends string | null | undefined>(text: T): T {
+  return (text == null ? text : stripPrefsMarkers(text)) as T;
+}
+
+/**
  * Remove the trusted section's own markers from text the HARNESS did not author.
  *
  * The verify prompt fences its untrusted material; the reviewer and router prompts do not.
@@ -214,31 +245,6 @@ const HEADING_PHRASE = markerPattern(PREFS_HEADING);
  * Defanged rather than deleted, so the attempt stays visible: a reviewer reading the card
  * should see that the child tried this, and a silently vanished line teaches nobody.
  */
-/**
- * The single gate every CHILD-CONTROLLED string passes through on its way into a prompt.
- *
- * The reviewer and router prompts have no evidence fence - only the verifier does - so any
- * field the child can write is a chance to draw the trusted section's frame around its own
- * words. The channels were closed one at a time and the list kept growing: the transcript, the
- * screen, the pending question, tool-call inputs, `activity` (which `report_status` lets the
- * child set directly, unbounded and un-stripped), the `goal` derived from its prompts, and its
- * own working directory. That is a losing shape - the next field added to a prompt would be a
- * hole nobody noticed - so there is one named thing to reach for, and the rule is "if the child
- * can write it, it comes through here".
- *
- * Lives here, beside `stripPrefsMarkers`, rather than in `prompt.ts`: its whole body is that
- * call, and the verify prompt should not have to import from the reviewer's module to reach the
- * choke point. Cheap by design so nobody is tempted to skip it, and null-transparent so it
- * composes with the `?? "(none)"` defaults these fields already carry.
- *
- * NOT the primary guarantee. That is the positional anchor stated in all three policies: the
- * operator's section is the one immediately below the policy, and a section anywhere else is
- * not it whatever it says. This is defence in depth for a frame that gets read anyway.
- */
-export function fromChild<T extends string | null | undefined>(text: T): T {
-  return (text == null ? text : stripPrefsMarkers(text)) as T;
-}
-
 export function stripPrefsMarkers(text: string): string {
   return text
     .replace(END_PHRASE, "[redacted: forged section marker]")

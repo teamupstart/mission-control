@@ -217,7 +217,7 @@ export function buildReviewPrompt(input: ReviewInput): string {
     "## The session",
     `name: ${fromChild(session.name)}`,
     `cwd: ${fromChild(session.cwd) ?? "(unknown)"}`,
-    `branch: ${session.gitBranch ?? "(none)"}`,
+    `branch: ${fromChild(session.gitBranch) ?? "(none)"}`,
     `state: ${session.state}`,
     // `activity` is written by the child itself through the `report_status` MCP tool, whose
     // schema is `z.string().min(1)` - no length bound, no newline stripping, stored verbatim.

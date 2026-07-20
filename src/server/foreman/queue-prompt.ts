@@ -15,6 +15,12 @@ import { formatTranscript } from "./prompt.ts";
 
 /** Cap on the diff we embed - the stats stay honest past it. */
 const DIFF_CAP = 120_000;
+/**
+ * Cap on the rendered transcript. Smaller than the diff's, deliberately: the diff IS the work
+ * being judged, while the transcript is corroboration for how it got there, and the diff cap
+ * was already sized against a whole item's changes.
+ */
+const TRANSCRIPT_CAP = 60_000;
 
 export interface VerifyInput {
   session: { name: string; cwd: string | null; gitBranch: string | null };
@@ -134,7 +140,7 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     "## The session",
     `name: ${fromChild(input.session.name)}`,
     `cwd: ${fromChild(input.session.cwd) ?? "(unknown)"}`,
-    `branch: ${input.session.gitBranch ?? "(none)"}`,
+    `branch: ${fromChild(input.session.gitBranch) ?? "(none)"}`,
     "",
     "## What the human asked for (THE thing to judge)",
     // Above the fence, so it is read as direction. Human-authored from the dashboard on the
@@ -192,11 +198,20 @@ export function buildVerifyPrompt(input: VerifyInput): string {
   }
   lines.push("", input.diff.trim() ? capped(input.diff, DIFF_CAP) : "(no changes were made)", "");
 
+  // Capped like the diff and the standards beside it, and it needs to be for a reason this
+  // change created: the deleted private renderer printed every tool call as `[object Object]`,
+  // about fifteen characters, so the transcript block could not grow no matter what ran.
+  // Rendering them properly restores up to TOOL_INPUT_CAP (1800) per call with no per-window
+  // count bound, over a source window capped only at 512KB - so a long item could add several
+  // hundred KB on top of the 120KB diff, on every verify. The header says so when it bites,
+  // exactly as the diff's does, because a verifier silently judging a truncated record is the
+  // failure this whole file keeps guarding against.
+  const transcript = formatTranscript(input.transcript, "(no transcript turns for this item)");
   lines.push(
-    input.transcriptTruncated
+    input.transcriptTruncated || transcript.length > TRANSCRIPT_CAP
       ? "## What the agent did (transcript since this item was delivered; truncated for length)"
       : "## What the agent did (transcript since this item was delivered)",
-    formatTranscript(input.transcript, "(no transcript turns for this item)"),
+    capped(transcript, TRANSCRIPT_CAP),
     "",
   );
 

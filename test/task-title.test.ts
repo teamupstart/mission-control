@@ -151,10 +151,11 @@ test("the shipped per-attempt budget is above real model latency", () => {
       "tsx",
       "--input-type=module",
       "-e",
-      // `String(...)`, not the number itself: `console.log` of a number goes through
-      // `util.inspect`, which paints it yellow whenever colour is forced - and an agent
-      // harness commonly exports `FORCE_COLOR`. The ANSI codes then parse back as NaN and
-      // this fails claiming the shipped budget regressed. Strings are never colourised.
+      // `String(...)`, not the number itself. `console.log` routes a non-string through
+      // util.inspect, which colorizes whenever FORCE_COLOR is set - and it is, in any
+      // terminal that exports it, because the child inherits the env we hand it. The
+      // number then arrives wrapped in ANSI and `Number()` reads NaN, so this test failed
+      // only on a developer's machine and passed on CI. A string is never inspected.
       'const m = await import("./src/server/task-title.ts"); console.log(String(m.TITLE_TIMEOUT_MS));',
     ],
     { cwd: fileURLToPath(new URL("..", import.meta.url)), env, encoding: "utf8" },

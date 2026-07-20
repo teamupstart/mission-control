@@ -58,19 +58,40 @@ test("every editable field can actually be changed", async () => {
     title: "Parser audit",
     kind: "scout",
     agent: "codex",
+    model: "gpt-5.6-sol",
   });
   assert.equal(res.ok, true);
   const t = r.getTask("t1")!;
   assert.deepEqual(
-    { repoRoot: t.repoRoot, intent: t.intent, title: t.title, kind: t.kind, agent: t.agent },
+    {
+      repoRoot: t.repoRoot,
+      intent: t.intent,
+      title: t.title,
+      kind: t.kind,
+      agent: t.agent,
+      model: t.model,
+    },
     {
       repoRoot: "/other",
       intent: "audit the parser",
       title: "Parser audit",
       kind: "scout",
       agent: "codex",
+      model: "gpt-5.6-sol",
     },
   );
+});
+
+test("a null model clears the override, where an absent one leaves it standing", async () => {
+  // The same absent-versus-empty split the title makes, on the one other field where a
+  // stored value can be taken back OFF the row. Collapsing the two would make "follow the
+  // harness default again" unsayable: the picker's default option would save as a no-op
+  // and the task would keep launching on a model the operator had just deselected.
+  const { r, tasks } = setup({ model: "claude-opus-4-8" });
+  await tasks.update("t1", { intent: "still opus" });
+  assert.equal(r.getTask("t1")!.model, "claude-opus-4-8");
+  await tasks.update("t1", { model: null });
+  assert.equal(r.getTask("t1")!.model, null);
 });
 
 test("emptying the title re-derives one from the intent as it NOW reads", async () => {

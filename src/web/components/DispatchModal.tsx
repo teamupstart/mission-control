@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Task, TaskKind, AgentType, TaskPriority } from "@shared/types.ts";
+import type { HarnessesConfig } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES, normalizeLabels } from "@shared/task.ts";
-import { api, fetchRepos } from "../lib/api.ts";
+import { modelChoicesFor } from "@shared/model.ts";
+import { api, fetchHarnessesConfig, fetchRepos } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import {
   AttachmentStrip,
@@ -35,6 +37,12 @@ type DispatchDraft = {
    * comma intact; parsing on every keystroke would eat the separator as you type it.
    */
   labels: string;
+  /**
+   * Model override, or "" to follow the configured default for `agent`. Empty is
+   * stored rather than the resolved default so the choice stays a deferral: the
+   * daemon reads the default when it launches, which is what a shelved task needs.
+   */
+  model: string;
   /** Images dropped on the task box; sent as paths appended to the intent. */
   attachments: PendingAttachment[];
 };
@@ -47,6 +55,7 @@ const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   agent: "claude",
   priority: "",
   labels: "",
+  model: "",
   attachments: [],
 };
 
@@ -73,7 +82,8 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.attachments.length === 0 &&
     d.kind === EMPTY_DISPATCH_DRAFT.kind &&
     d.agent === EMPTY_DISPATCH_DRAFT.agent &&
-    d.priority === EMPTY_DISPATCH_DRAFT.priority
+    d.priority === EMPTY_DISPATCH_DRAFT.priority &&
+    d.model === EMPTY_DISPATCH_DRAFT.model
   );
 }
 
@@ -96,6 +106,9 @@ function draftFromTask(t: Task): DispatchDraft {
     // reopened and saved unchanged must not acquire one.
     priority: t.priority ?? "",
     labels: t.labels.join(", "),
+    // A stored null is the deferral, and it reads back as the same empty option it was
+    // picked from - so reopening a shelved task shows "Default", not a model it never chose.
+    model: t.model ?? "",
     attachments: [],
   };
 }
@@ -125,9 +138,31 @@ function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.agent === b.agent &&
     a.priority === b.priority &&
     a.labels === b.labels &&
+    a.model === b.model &&
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
   );
+}
+
+/**
+ * What the "no override" option is called - the auto-recommended choice, so it names
+ * the model the dispatch will really run on rather than saying a bare "Default" the
+ * operator would have to open Settings to decode.
+ *
+ * Three readings, all honest: the configured default by name; "the harness decides"
+ * when no default is set (nothing is passed to the CLI, so its own configuration
+ * wins); and a plain "Default" in the instant before the config lands, which never
+ * claims a model it can't see.
+ */
+function defaultModelOptionLabel(
+  agent: AgentType,
+  defaults: HarnessesConfig["defaultModel"] | null,
+): string {
+  if (!defaults) return "Default";
+  const id = defaults[agent];
+  if (!id) return "Default - whatever the harness is set to";
+  const label = modelChoicesFor(agent, id).find((m) => m.id === id)?.label ?? id;
+  return `Default - ${label}`;
 }
 
 /**
@@ -301,6 +336,10 @@ function DispatchModal({
   const editing = mode.kind === "edit" ? mode.task : null;
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
+  // The configured per-harness default models, so the picker can NAME the model this
+  // dispatch will actually run on instead of an unhelpful bare "Default". Null until
+  // the fetch lands (and if it fails), which the "Default" option's label handles.
+  const [defaults, setDefaults] = useState<HarnessesConfig["defaultModel"] | null>(null);
   // Which action is in flight, not merely whether one is: both footer buttons submit,
   // and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch">(null);
@@ -321,14 +360,19 @@ function DispatchModal({
     intentRef.current?.focus();
   }, []);
 
-  // Index the workspace's repos so the base can be searched/picked. Re-fetched on
-  // every open so a freshly-cloned repo shows up without a full app reload.
+  // Index the workspace's repos so the base can be searched/picked, and read the
+  // harness defaults so the model picker can show which model "Default" means.
+  // Re-fetched on every open so a freshly-cloned repo - or a default just changed in
+  // Settings - shows up without a full app reload.
   useEffect(() => {
     let alive = true;
     void fetchRepos().then((list) => {
       if (!alive) return;
       setRepos(list);
       setReposLoading(false);
+    });
+    void fetchHarnessesConfig().then((cfg) => {
+      if (alive && cfg) setDefaults(cfg.defaultModel);
     });
     return () => {
       alive = false;
@@ -375,9 +419,23 @@ function DispatchModal({
     // right meaning: on create, "no title given, go and summarize one"; on update,
     // "drop the title I had, derive it from the intent as it now reads". Only the
     // create path can express the first as an absent field.
+    //
+    // "No model" splits the same way, and neither half pins a model: create omits the
+    // field, update sends an explicit null to take an override back off a row that has
+    // one. Either way the daemon resolves the default at launch, so a task shelved
+    // today runs on the default in force when it is finally picked up.
     const r = editing
-      ? await api.updateTask(editing.id, { ...fields, title: submitted.title.trim() })
-      : await api.dispatch({ ...fields, title: submitted.title.trim() || undefined, backlog: !dispatchNow });
+      ? await api.updateTask(editing.id, {
+          ...fields,
+          title: submitted.title.trim(),
+          model: submitted.model || null,
+        })
+      : await api.dispatch({
+          ...fields,
+          title: submitted.title.trim() || undefined,
+          model: submitted.model || undefined,
+          backlog: !dispatchNow,
+        });
     // An edit is a save first and a launch second, so the two are two calls: the save
     // has landed by the time the dispatch is asked for, and a refused dispatch leaves
     // the modal open over a task whose text is already stored - nothing to lose, and
@@ -442,13 +500,47 @@ function DispatchModal({
             <select
               className="field-input"
               value={draft.agent}
-              onChange={(e) => update({ agent: e.target.value as AgentType })}
+              // Switching harness drops the model with it: the ids don't cross over,
+              // so keeping one would leave a Claude model selected for Codex - which
+              // the dispatch would then actually try to launch. Back to the default,
+              // which is per-agent and always right for the harness now chosen.
+              onChange={(e) => update({ agent: e.target.value as AgentType, model: "" })}
             >
               <option value="claude">Claude Code</option>
               <option value="codex">Codex</option>
             </select>
           </label>
         </div>
+
+        {/* Its own row rather than a third column beside Kind and Agent: the option
+            labels name a model AND say when to reach for it, which is wider than a
+            third of this modal - squeezed into one it clipped its own text against
+            the select's chevron. */}
+        <label className="field">
+          <span className="field-label">
+            Model{" "}
+            <span className="field-hint">
+              {draft.model ? "overriding the default for this task" : "set in Settings → Harnesses"}
+            </span>
+          </span>
+          <select
+            className="field-input"
+            value={draft.model}
+            onChange={(e) => update({ model: e.target.value })}
+          >
+            <option value="">{defaultModelOptionLabel(draft.agent, defaults)}</option>
+            {/* The draft's own id is folded in, for the same reason the Settings picker
+                folds in the stored default: reopening a shelved task can seed this from a
+                row naming a model this build's catalog doesn't list, and an unlisted value
+                renders the select on nothing - reading as "Default" over a task that is
+                pinned, and saving as one on the next edit. */}
+            {modelChoicesFor(draft.agent, draft.model).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} - {m.hint}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <div className="field-row">
           <label className="field">

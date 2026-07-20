@@ -833,6 +833,13 @@ export interface Task {
    * trimmed, deduped and capped.
    */
   labels: string[];
+  /**
+   * Model override for this task, or null to follow the harness default configured
+   * in Settings. Null is NOT "the default as it stood when this was shelved" - the
+   * default is resolved at dispatch time, so a backlogged task launches on whatever
+   * is configured then.
+   */
+  model: string | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */

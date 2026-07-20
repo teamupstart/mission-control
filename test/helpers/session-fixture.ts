@@ -110,6 +110,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     agent: "claude",
     priority: null,
     labels: [],
+    model: null,
     repoRoot: "/repo",
     worktreePath: null,
     branch: null,

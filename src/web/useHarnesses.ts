@@ -68,7 +68,14 @@ export function useHarnesses(): HarnessesState {
     async (patch: HarnessesConfigPatch): Promise<void> => {
       const before = configRef.current;
       if (!before) return;
-      setConfig({ ...before, ...patch });
+      // Mirrors the server's merge (see `setHarnessesConfig`): `defaultModel` merges
+      // per-agent, so a patch naming only Claude doesn't blank the Codex row on the
+      // optimistic pass and then flick it back when the refetch lands.
+      setConfig({
+        ...before,
+        ...patch,
+        defaultModel: { ...before.defaultModel, ...(patch.defaultModel ?? {}) },
+      });
       const res = await api.setHarnessesConfig(patch);
       if (!res.ok) {
         setConfig(before);

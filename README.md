@@ -379,6 +379,15 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    ad-hoc git/build/inspection is one attach away, and
 3. injects your task as its first prompt once passive discovery binds the session.
 
+**Model** starts on the default configured for the chosen harness (see [Default
+model](#default-model)) and names it, so you can see what the task will run on without
+opening Settings. Pick a different one to override it for this task alone - more
+horsepower for a gnarly refactor, something cheap and fast for a one-line fix - and the
+daemon launches the agent with `--model <id>`. Switching **Agent** resets the model,
+since a Claude id means nothing to Codex. Leaving it on **Default** stores no model at
+all rather than pinning today's, so a task you shelve now picks up the default in force
+when it's actually dispatched.
+
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
@@ -407,7 +416,9 @@ leaves the form open with your fields intact so you can retry.
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
 [Roundup](#roundup) panel. Every field is editable: repo, kind, agent, title, and the task
-text itself, plus more screenshots dropped onto it. **Save** keeps it in the backlog;
+text itself, plus more screenshots dropped onto it. **Model** included - and putting it
+back on **Default** un-pins it, so the task goes back to following whatever the harness
+default is when it finally launches. **Save** keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
@@ -456,6 +467,29 @@ changed at any point in a task's life, including while its agent is running
 (`PATCH /api/tasks/:id`). They are deliberately *not* shown on session cards yet: the
 card, rail and tile each have their own mark vocabulary and adding a fourth signal to all
 three is its own change.
+
+### Default model
+
+**Settings → Harnesses → Default model** sets the model each harness launches on when a
+dispatch doesn't name one - one row per harness, because a Claude model id is not
+something Codex can run. The dispatch form starts on it, so choosing well here is usually
+the last time you have to think about models; the per-task picker is for the exceptions.
+
+Both ship as **Harness default**, which means Mission Control passes **no `--model` flag
+at all** and the CLI keeps using whatever you configured in the harness itself
+(`/model`, `~/.claude/settings.json`, `~/.codex/config.toml`). That's a real setting, not
+an empty one - it's how you tell Mission Control to stay out of the way, and you can
+always put a row back to it.
+
+The default is read **when a task launches**, not when it's created, so changing it also
+changes what a task already sitting in the backlog will run on. Like every setting in
+this section it applies **only to sessions Mission Control dispatched** - a session you
+started yourself and the app merely discovered is never touched.
+
+Both model lists are maintained in `src/shared/model.ts`; a model released after your
+build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
+`/api/harnesses/config`) still shows and still applies rather than being silently
+dropped.
 
 ## Roundup
 

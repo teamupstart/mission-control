@@ -17,6 +17,8 @@ export interface CreateTaskInput {
   priority?: TaskPriority | null;
   /** Optional tags, already normalized by the schema that parsed them. */
   labels?: string[];
+  /** Launch this agent on a specific model; omitted follows the harness default. */
+  model?: string;
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
@@ -90,6 +92,10 @@ export class TaskManager {
       agent: input.agent,
       priority: input.priority ?? null,
       labels: input.labels ?? [],
+      // Stored as an override, not a resolved value: unset means the dispatcher asks
+      // the harness config at launch time, so shelving a task doesn't freeze the
+      // default it happened to see (see `resolveDispatchModel`).
+      model: input.model ?? null,
       repoRoot: input.repoRoot,
       worktreePath: null,
       branch: null,
@@ -230,6 +236,9 @@ export class TaskManager {
       // clearing the field back to unset, and `?? t.priority` would silently ignore them.
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
+      // `undefined` leaves the override as it stands; `null` is the caller clearing it,
+      // which is a value the row can hold and so cannot go through `??`.
+      model: patch.model === undefined ? t.model : patch.model,
       updatedAt: Date.now(),
     };
     this.registry.upsertTask(next);

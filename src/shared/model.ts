@@ -70,6 +70,66 @@ export function modelLabel(id: string | null | undefined): string | null {
     .join(" ");
 }
 
+// ---- the pickable model catalog (dispatch-time model selection) ----
+
+/**
+ * A model the operator can pick for a dispatched agent. `id` is passed verbatim to
+ * the agent binary's `--model` flag; `label` is what the picker shows.
+ */
+export interface ModelChoice {
+  id: string;
+  label: string;
+  /** One short line on when to reach for it, shown beside the label in the picker. */
+  hint: string;
+}
+
+/**
+ * The models each harness offers, best-first.
+ *
+ * Hand-maintained on purpose: neither CLI exposes a machine-readable list of the
+ * models the signed-in account may use, so shelling out to discover them would buy
+ * a slow, failure-prone startup dependency and still guess. The cost of drift is
+ * small and bounded - a new model is one line here, and until it is added the
+ * operator can still reach it, because `--model` is only ever passed through and a
+ * value stored by another version is preserved in the picker (see `modelChoicesFor`).
+ *
+ * Order matters: the picker renders it as written, so the most capable model per
+ * harness leads. Ids only - no `[1m]` markers - because these are pasted onto a
+ * command line (`ModelIdSchema` in protocol.ts enforces that shape).
+ */
+export const MODEL_CATALOG: Record<"claude" | "codex", readonly ModelChoice[]> = {
+  claude: [
+    { id: "claude-fable-5", label: "Fable 5", hint: "most capable, hardest work" },
+    { id: "claude-opus-4-8", label: "Opus 4.8", hint: "strong all-rounder" },
+    { id: "claude-sonnet-5", label: "Sonnet 5", hint: "near-Opus, cheaper" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, simple tasks" },
+  ],
+  codex: [
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", hint: "most capable" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", hint: "balanced" },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", hint: "fastest" },
+    { id: "gpt-5.5", label: "GPT-5.5", hint: "previous generation" },
+  ],
+};
+
+/**
+ * The catalog for one harness, with `extra` folded in when it isn't already there.
+ *
+ * The `extra` argument is what keeps a hand-maintained catalog from silently eating
+ * a stored value: a default set on a newer build (or typed straight into the config
+ * route) would otherwise be absent from the `<select>`, which renders as "no model
+ * chosen" and would overwrite the real setting on the next unrelated edit. Passing
+ * the stored id here keeps it selectable and honest about being off-catalog.
+ */
+export function modelChoicesFor(
+  agent: "claude" | "codex",
+  extra?: string | null,
+): readonly ModelChoice[] {
+  const known = MODEL_CATALOG[agent];
+  if (!extra || known.some((c) => c.id === extra)) return known;
+  return [...known, { id: extra, label: modelLabel(extra) ?? extra, hint: "not in this build" }];
+}
+
 /**
  * Infer a model's context-window size from its id. Prefer an explicit size that
  * a caller already has (e.g. Claude's statusLine payload or Codex's rollout);

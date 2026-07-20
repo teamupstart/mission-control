@@ -4266,6 +4266,35 @@ kbd {
   gap: 7px;
   flex-wrap: wrap;
 }
+/* Sub-heading inside the section, splitting the master toggle from the per-harness
+   default-model rows. Sized between the section h3 and a row label so it reads as a
+   division of this section rather than a new one. */
+.harnesses-subhead {
+  margin-top: 18px;
+}
+.harnesses-subhead h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+/* The default-model picker. Matches `.alert-row select` - the app's existing inline
+   select - but without its `margin-left: auto`, since `.kb-row-controls` already
+   parks it at the end of the row. Sized to fit the longest catalog entry so swapping
+   models can't jog the row width. */
+.harnesses-select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  max-width: 250px;
+}
+.harnesses-select:disabled {
+  opacity: 0.55;
+}
 
 /* ---- Foreman (auto-responder) ---- */
 .foremanbar {

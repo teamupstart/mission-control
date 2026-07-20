@@ -18,8 +18,21 @@ function mkState(config: HarnessesConfig | null, over: Partial<HarnessesState> =
   return { config, update: async () => {}, error: null, ...over };
 }
 
-function render(config: HarnessesConfig | null, over: Partial<HarnessesState> = {}): string {
-  return renderToStaticMarkup(createElement(HarnessesPanel, { state: mkState(config, over) }));
+/** A full config from the one or two keys a test actually cares about. */
+function mkConfig(over: Partial<HarnessesConfig>): HarnessesConfig {
+  return {
+    autoModeOnDispatch: false,
+    defaultModel: { claude: null, codex: null },
+    ...over,
+  };
+}
+
+function render(
+  config: Partial<HarnessesConfig> | null,
+  over: Partial<HarnessesState> = {},
+): string {
+  const state = mkState(config ? mkConfig(config) : null, over);
+  return renderToStaticMarkup(createElement(HarnessesPanel, { state }));
 }
 
 test("the panel scopes the toggle to dispatched sessions before you click anything", () => {
@@ -60,4 +73,46 @@ test("a rejected edit says so", () => {
     render({ autoModeOnDispatch: false }, { error: "That didn't stick: no." }),
     /That didn&#x27;t stick: no\./,
   );
+});
+
+// ---- default model rows ----
+
+test("both harnesses get their own default-model row", () => {
+  // One row per harness, because a model id is not portable across them - a single
+  // shared picker would offer Codex models to Claude.
+  const html = render({});
+  assert.match(html, /Default model/);
+  assert.match(html, /aria-label="Default model for dispatched Claude Code sessions"/);
+  assert.match(html, /aria-label="Default model for dispatched Codex sessions"/);
+});
+
+test("no default reads as 'the harness decides', not as an empty setting", () => {
+  // The shipped state is real and has to describe itself: nothing is passed to the CLI,
+  // so the harness's own configured model wins. "Blank" would look like a broken read.
+  const html = render({});
+  assert.match(html, /Harness default/);
+  assert.match(html, /no --model flag/);
+});
+
+test("a configured default names the flag the dispatcher will actually pass", () => {
+  const html = render({ defaultModel: { claude: "claude-opus-4-8", codex: null } });
+  assert.match(html, /--model claude-opus-4-8/);
+  // Selected, so reopening Settings shows the setting rather than resetting it.
+  assert.match(html, /<option value="claude-opus-4-8" selected/);
+});
+
+test("a default this build doesn't know is still shown as selected", () => {
+  // Set by a newer build or straight at the route. Dropping it would render the select
+  // on its empty option - claiming "no default" for a setting that has one, and writing
+  // that lie back on the operator's next unrelated edit.
+  const html = render({ defaultModel: { claude: "claude-opus-9-9", codex: null } });
+  assert.match(html, /<option value="claude-opus-9-9" selected/);
+  assert.match(html, /not in this build/);
+});
+
+test("the model pickers are disabled until the first config read lands", () => {
+  // Same race as the switch: a writable select on a config we haven't read yet would
+  // patch a default over a value we never saw.
+  const html = render(null);
+  assert.match(html, /<select[^>]*disabled/);
 });

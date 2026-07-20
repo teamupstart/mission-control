@@ -351,6 +351,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     agent: "claude",
     priority: null,
     labels: [],
+    model: null,
     repoRoot: "/repo",
     worktreePath: "/wt/stale-xyzzy",
     branch: null,

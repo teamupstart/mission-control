@@ -168,6 +168,23 @@
 <li><strong>Headless runner</strong> &mdash; the <code>claude -p</code> calls behind Foreman triage, goal refinement, task titling and away digests (<code>claude-cli.ts</code>, plus four hardcoded <code>claude-haiku-4-5</code> constants). This is a <em>model provider</em> axis, orthogonal to which agent the observed session runs. Keep it separate; conflating it would mean you cannot review a Pi session with Claude, or a Claude session with a cheaper local model.</li>
 </ol>
 
+<h4><code>LlmRunner</code> must guarantee context isolation, not just shape</h4>
+<p>&ldquo;One-shot text completion with a model id and a prompt&rdquo; describes the signature and misses the contract. Today the guarantee comes from three flags that are <strong>absent</strong> in <code>claude-cli.ts</code> &mdash; no <code>--resume</code>, no <code>--continue</code>, no <code>--session-id</code> &mdash; which is why that file now carries a comment saying so. Without one of those, every run mints a new session with an empty context.</p>
+<p>That is a correctness property, because the Foreman reviews <em>many</em> sessions. Any implementation that carried context between calls would grow it monotonically across every session it ever looked at, and let session A&rsquo;s transcript influence the verdict on session B. The tempting version is a warm held-open process to skip the spawn: measured, that is ~1.8&ndash;2.4s of a 4&ndash;6s call, and the prompt cache is server-side so a cold process still gets a cache read. Almost nothing to buy, a correctness property to lose.</p>
+<p>So the interface states isolation explicitly, and offers the only safe form of memory as a named opt-in:</p>
+
+<pre><code>interface LlmRunner {
+  /** Fresh context every call. The default, and what Foreman requires. */
+  run(prompt: string, opts: RunOpts): Promise&lt;string&gt;;
+  /**
+   * Optional: one conversation per SUPERVISED SESSION, never one shared across sessions.
+   * `claude -p --session-id &lt;uuid&gt;` then `--resume`. Null when unsupported.
+   */
+  runInThread: ((threadKey: string, prompt: string, opts: RunOpts) =&gt; Promise&lt;string&gt;) | null;
+}</code></pre>
+
+<p>Also note the naming collision to avoid: phase 4 is titled &ldquo;Headless&rdquo;, and this plan means <em>which model does offline work</em>. It does not mean driving an agent without a terminal &mdash; that is the <code>control</code> capability on the Harness axis. Rename one of them before both exist in the codebase.</p>
+
 <h3>Terminal is two interfaces, because tmux and wezterm are not peers</h3>
 <p>A tmux pane lives <em>inside</em> a wezterm pane. <code>wezterm.ts:117-140</code> exists solely to join them by shared tty, and <code>actions.ts:1149-1185</code> shows focus for a tmux session is a <strong>composition</strong>: select-pane, then select-window, then find the hosting wezterm tab, then activate it, then fall back to spawning <code>tmux attach</code> in a new tab.</p>
 <p>So:</p>
@@ -274,14 +291,27 @@
   detect: DetectSpec;             // argv signatures, background-process exclusions
   bin: BinSpec;                   // env vars, fallback, launch argv
 
+  control:    ControlSpec;             // how a turn is DELIVERED - see below
   transcript: TranscriptSpec | null;   // null =&gt; no transcript pane, by declaration
   hooks:      HookSpec | null;         // null =&gt; no push instrumentation; skip the 20s wait
-  tui:        TuiSpec | null;          // mode line, dialog grammar, paste placeholder, settle ms
+  tui:        TuiSpec | null;          // mode line, dialog grammar - PARSING only
   permissionModes: PermissionModeSpec | null;
   skills:     SkillSpec | null;
   mcp:        McpSpec | null;
   models:     ModelSpec;               // label(id), defaultWindow(id)
 }</code></pre>
+
+<h4><code>control</code> is separate from <code>tui</code>, and not nullable</h4>
+<p>An earlier draft of this interface had no <code>control</code> slot: prompt delivery lived partly in the Terminal axis and partly inside <code>tui</code>, whose spec carried the paste placeholder and <code>PASTE_SETTLE_MS</code>. That is wrong in a way worth stating, because the whole point of this refactor is to outlive the current backends.</p>
+<p><code>PASTE_SETTLE_MS = 400</code> is a measured property of an undocumented input-coalescing window in one Claude build (<code>actions.ts:307</code> records the measurements). Putting it in the harness contract makes &ldquo;you talk to an agent by typing into its terminal&rdquo; a permanent architectural assumption &mdash; and every live third-party tool that drives Claude Code programmatically has already stopped doing that, in favour of <code>claude -p --input-format stream-json --output-format stream-json</code>, which takes follow-up turns on a live process with no keystrokes involved. Codex exposes the same thing as a JSON-RPC <code>turn/steer</code>.</p>
+<p>So delivery gets its own capability, and it is <strong>required</strong> &mdash; every harness must say how you talk to it:</p>
+
+<pre><code>type ControlSpec =
+  | { kind: "keystroke"; settleMs: number; pastePlaceholder: RegExp | null }
+  | { kind: "stream-json" };</code></pre>
+
+<p><code>tui</code> keeps mode-line and dialog <em>parsing</em>, which is about reading a screen; <code>settleMs</code> is about writing to one and moves here. The split means a second <code>ControlSpec</code> variant is a new implementation behind an existing slot, rather than an interface change every migrated call site has to absorb.</p>
+<p>Note this is the seam that makes headless dispatch possible later; it is not a commitment to build it now. Sessions a human owns will keep <code>kind: "keystroke"</code> regardless, because we do not own their pty.</p>
 
 <p>The win is mechanical: every <code>if (session.agent !== "claude") return null</code> becomes <code>if (!harness.transcript) return null</code>. The guard now states <em>why</em>, and a new harness that genuinely lacks transcripts gets the identical, already-tested degradation path instead of a code change.</p>
 

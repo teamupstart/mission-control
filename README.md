@@ -336,6 +336,41 @@ prompt is pasted, then the Enter that submits it is swallowed. The text is sitti
 composer unsubmitted, and the error says exactly that - leave copy-mode and press
 <kbd>Enter</kbd> yourself rather than re-sending, which would paste a second copy.
 
+### Shadow reading: Claude's own session state
+
+Claude Code ships `claude agents --json`, which lists every live session - background and
+interactive, including ones you started by hand - with `pid`, `sessionId`, `cwd`, `status`
+(`idle` / `busy` / `waiting`) and `waitingFor` (`permission prompt` vs `input needed`).
+That overlaps three things this daemon works out the hard way: the `ps`-to-tty-to-pane
+correlation, the permission-mode footer parse, and the heuristic that decides whether a
+notification is a real question or an idle nudge.
+
+It is **not** wired into discovery, because on the machine this was written on the two
+views joined 11 of 11 sessions by `sessionId` but agreed on state for only 7 of them. The
+join rate says the identity plumbing is redundant; the disagreement rate says the state is
+not a drop-in replacement, and some of those gaps are probably bugs on our side - this is
+the first time there has been a second opinion to check against.
+
+So it runs as a **shadow**: off by default, and when on it only logs.
+
+```bash
+MISSION_AGENTS_SHADOW_MS=30000 npm run daemon
+```
+
+```
+[agents-shadow] mission=6 claude=17 joined=6 unjoined=0 agree=3 disagree=3 skipped=0 claude-only=11
+[agents-shadow]   sid=ae07d2ea pid=68926 mission=working claude=idle
+```
+
+`skipped` is counted separately so `agree + disagree` is never mistaken for the whole
+population: it covers records Claude reported without a status, and sessions in a state
+Claude has no analogue for (`awaiting_review` is a Foreman concept). Codex sessions are
+excluded entirely - `claude agents --json` cannot see them. `claude-only` is the count of
+sessions Claude knows about and this daemon does not, which is usually background agents.
+
+Nothing here changes behaviour. It exists to turn "should we adopt this?" into a decision
+backed by days of data rather than one sample.
+
 ### Goal
 
 Every card carries a one-sentence **Goal**: what that session is currently trying to
@@ -1360,6 +1395,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_HOME` | `~/.mission-control` | state dir (db, token, logs, dispatch worktrees) |
 | `MISSION_WORKSPACE_DIRS` | `~/workspace` | colon-separated roots scanned for the dispatch repo picker, and for the treehouse pools the leaked-lease sweep visits |
 | `MISSION_POLL_MS` | `1500` | discovery interval |
+| `MISSION_AGENTS_SHADOW_MS` | `0` (off) | how often to take a [shadow reading](#shadow-reading-claudes-own-session-state) of `claude agents --json` and log where it disagrees with our own discovery. Diagnostic only - it never feeds the registry. `0` or any non-positive value disables it; anything under `5000` is clamped up, since one reading spawns the full `claude` binary |
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |

@@ -4,6 +4,19 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   code: number | null;
+  /**
+   * We killed the child on `timeoutMs`, so whether the command had any EFFECT is
+   * unknown. Distinct from every other non-zero exit, where the command ran to
+   * completion and reported its own failure - a caller writing to a remote has to be
+   * able to tell "it was refused" from "we stopped listening".
+   */
+  timedOut?: boolean;
+  /** stdout exceeded `maxBuffer`. Retrying the same command cannot produce less. */
+  overflowed?: boolean;
+  // Both are OPTIONAL because they narrow a failure rather than describing a result:
+  // `run` always sets them, every consumer reads absent as false, and the many hand-built
+  // stubs that model only stdout/stderr/code stay honest instead of asserting a `false`
+  // they never reasoned about.
 }
 
 /**
@@ -63,10 +76,16 @@ export function run(
           !!err &&
           ((err as { code?: unknown }).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
             /maxBuffer/i.test(err.message ?? ""));
+        // `killed` is set by Node when IT killed the child, which for these options can
+        // only be the `timeout`. A command we stopped listening to may still have done
+        // its work, so this is never "it failed", only "we do not know".
+        const timedOut = !overflowed && !!err && (err as { killed?: unknown }).killed === true;
         resolve({
           stdout: stdout ?? "",
           stderr: overflowed ? (err.message ?? "maxBuffer exceeded") : (stderr ?? ""),
           code,
+          timedOut,
+          overflowed,
         });
       },
     );

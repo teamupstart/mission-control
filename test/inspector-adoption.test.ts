@@ -180,3 +180,53 @@ test("a command that is not a string is never a match", () => {
     assert.equal(opensPullRequest(bad), false);
   }
 });
+
+// ---- the retry backoff ----
+
+// The backoff is the only thing standing between a permanently broken PR and two full
+// `claude -p` runs every poll interval, forever. Its two failure modes are both about
+// reading state that is already stale: an increment derived from the pre-tick snapshot
+// never climbs, and a "things look fine now" reset that cannot see the failure recorded
+// seconds earlier in the same pass hands the backoff its own reset button.
+test("consecutive failures climb rather than restating the same count", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const key = "mancej/ai-harness#56";
+
+  updateInspectorPr(key, { lastError: "first", failCount: 1, nextAttemptAt: 2000 }, 1000);
+  const first = getInspectorPr(key)!;
+  updateInspectorPr(
+    key,
+    { lastError: "second", failCount: first.failCount + 1, nextAttemptAt: 9000 },
+    2000,
+  );
+
+  const row = getInspectorPr(key)!;
+  assert.equal(row.failCount, 2, "the second failure must build on the first, not replace it");
+  assert.equal(row.nextAttemptAt, 9000);
+});
+
+test("a cleared PR is due immediately again", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const key = "mancej/ai-harness#56";
+  updateInspectorPr(key, { lastError: "boom", failCount: 3, nextAttemptAt: 999_999 }, 1000);
+  updateInspectorPr(key, { lastError: null, failCount: 0, nextAttemptAt: null }, 2000);
+
+  const row = getInspectorPr(key)!;
+  assert.equal(row.failCount, 0);
+  assert.equal(row.nextAttemptAt, null, "nothing should hold a healthy PR back");
+  assert.equal(row.lastError, null);
+});
+
+// `cwd` and `repoRoot` record where the PR was opened from - a fact about the past. The
+// worktree behind them gets reaped and pooled worktrees get reused, so the tick resolves
+// a directory that still exists per pass instead. Nothing may quietly rewrite the record.
+test("a ledger update cannot rewrite where the PR came from", () => {
+  adoptPr(URL_1, CTX, "hook", 1000);
+  const key = "mancej/ai-harness#56";
+  updateInspectorPr(key, { headSha: "deadbeef", round: 2 }, 2000);
+
+  const row = getInspectorPr(key)!;
+  assert.equal(row.cwd, CTX.cwd);
+  assert.equal(row.repoRoot, CTX.repoRoot);
+  assert.equal(row.headSha, "deadbeef", "the mutable half still moves");
+});

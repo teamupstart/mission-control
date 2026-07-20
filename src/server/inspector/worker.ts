@@ -170,17 +170,50 @@ function liveDir(pr: InspectorPr): string | null {
 }
 
 /**
+ * What one PR's pass through the tick has already done to its row.
+ *
+ * The tick reads `InspectorPr` once and then writes to it from several places, so the
+ * pre-tick snapshot goes stale the first time anything fails. Two things went wrong
+ * without this: a second failure in the same pass re-derived `failCount` from the stale
+ * snapshot and so never got past 1, and the "nothing pushed" branch cleared a failure
+ * that had been recorded seconds earlier in the same pass - which made the backoff
+ * oscillate between one interval and an immediate retry on the exact case it exists
+ * for, a PR whose head never moves and whose replies keep failing.
+ */
+interface TickState {
+  /** Set by `noteFailure`. Nothing may clear the failure state while this is true. */
+  failed: boolean;
+}
+
+/**
  * Record a failed attempt: the reason, and when to try again.
  *
  * Never advances `headSha` - a transient failure has to be retried against the same
  * push - but it does move the row out of the way for a while, which is what stops a
  * permanently broken PR from costing two model runs every poll interval forever.
+ *
+ * `park` is for a failure that retrying cannot fix (a diff too large to buffer): it
+ * jumps straight to the ceiling instead of climbing to it, since the intervening
+ * attempts would each pay the same cost to learn the same thing.
  */
-function noteFailure(pr: InspectorPr, reason: string, now: number): false {
-  const failCount = pr.failCount + 1;
+function noteFailure(
+  pr: InspectorPr,
+  reason: string,
+  now: number,
+  tick: TickState,
+  opts: { park?: boolean } = {},
+): false {
+  tick.failed = true;
+  // Re-read rather than trusting the snapshot: an earlier failure in this same pass has
+  // already written a higher count, and incrementing the stale one would discard it.
+  const failCount = (getInspectorPr(pr.key)?.failCount ?? pr.failCount) + 1;
   updateInspectorPr(
     pr.key,
-    { lastError: reason, failCount, nextAttemptAt: now + backoffMs(failCount) },
+    {
+      lastError: reason,
+      failCount,
+      nextAttemptAt: now + (opts.park ? BACKOFF_CEILING_MS : backoffMs(failCount)),
+    },
     now,
   );
   return false;
@@ -287,18 +320,20 @@ async function processPr(
   pr: InspectorPr,
   now: number,
 ): Promise<boolean> {
+  const tick: TickState = { failed: false };
+
   // Still inside the backoff from an earlier failure. Cheapest possible check, before
   // any subprocess.
   if (pr.nextAttemptAt !== null && now < pr.nextAttemptAt) return false;
 
   const dir = liveDir(pr);
   if (!dir) {
-    return noteFailure(pr, "the checkout this PR was opened from is gone", now);
+    return noteFailure(pr, "the checkout this PR was opened from is gone", now, tick);
   }
 
   const snap = await fetchPr(dir, pr.owner, pr.repo, pr.number);
   if (!snap.ok || !snap.value) {
-    return noteFailure(pr, snap.error ?? "could not read the pull request", now);
+    return noteFailure(pr, snap.error ?? "could not read the pull request", now, tick);
   }
   const s = snap.value;
 
@@ -313,12 +348,22 @@ async function processPr(
     return true;
   }
   if (pr.round >= MAX_ROUNDS) {
-    return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now);
+    return noteFailure(pr, `stopped after ${MAX_ROUNDS} rounds`, now, tick);
   }
 
-  // Who we are, for every ownership decision below. Resolved once per process; null
-  // means we could not find out, and then nothing on this PR counts as ours.
-  const login = await authenticatedLogin(dir);
+  // Who we are, for every ownership decision below.
+  //
+  // FAIL CLOSED means ABSTAIN, not "fall back to local state". Without the login we
+  // cannot tell our own threads from anyone else's, so we are not entitled to conclude
+  // anything about them - including the negative "that finding has no thread, so close
+  // its row", which would leave the ledger saying resolved while the real thread stayed
+  // open on GitHub. So the whole PR sits this tick out, and it counts as a failure so
+  // the backoff applies rather than us re-asking every poll.
+  const login = await authenticatedLogin(dir, now);
+  if (!login) {
+    return noteFailure(pr, "could not confirm which GitHub account gh speaks for", now, tick);
+  }
+
   const rows = existingByFingerprint(pr.key);
   const post = mayPost(cfg, pr);
   let acted = false;
@@ -340,20 +385,29 @@ async function processPr(
         post,
         login,
         now,
+        tick,
       );
       if (replied) acted = true;
     }
   }
 
   // 2. Nothing pushed since the last review: there is nothing new to say.
+  //
+  // Reaching here having failed nothing means the PR is healthy again, so a stale error
+  // from an earlier tick is cleared. `tick.failed` rather than the pre-tick snapshot,
+  // because a reply that failed moments ago is this tick's news and clearing it would
+  // hand the backoff back its own reset button.
   if (s.headSha && s.headSha === pr.headSha) {
-    if (pr.lastError || pr.failCount > 0) {
-      updateInspectorPr(pr.key, { lastError: null, failCount: 0, nextAttemptAt: null }, now);
+    if (!tick.failed) {
+      const current = getInspectorPr(pr.key);
+      if (current && (current.lastError || current.failCount > 0)) {
+        updateInspectorPr(pr.key, { lastError: null, failCount: 0, nextAttemptAt: null }, now);
+      }
     }
     return acted;
   }
 
-  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now);
+  const reviewed = await reviewRound(cfg, pr, dir, s, rows, post, login, now, tick);
   return acted || reviewed;
 }
 
@@ -366,6 +420,7 @@ async function answerFollowUp(
   post: boolean,
   login: string | null,
   now: number,
+  tick: TickState,
 ): Promise<boolean> {
   // A reply we cannot actually send must not be drafted, spent or stamped. Comments
   // have `drafted` for exactly this and replies have no equivalent: burning a
@@ -397,7 +452,7 @@ async function answerFollowUp(
       settings: DENY_SETTINGS,
     });
   } catch (err) {
-    return noteFailure(pr, `reply failed: ${String(err)}`, now);
+    return noteFailure(pr, `reply failed: ${String(err)}`, now, tick);
   }
 
   const reply = scrubSecrets(resultText(text).trim());
@@ -414,7 +469,7 @@ async function answerFollowUp(
   ].join("\n");
 
   const res = await replyToComment(dir, pr.owner, pr.repo, pr.number, w.newest.databaseId, body);
-  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", now);
+  if (!res.ok) return noteFailure(pr, res.error ?? "reply failed", now, tick);
 
   // Stamp AFTER the send, never before: a failed post that had already recorded the
   // answer would leave someone's question permanently unanswered and invisible.
@@ -434,15 +489,21 @@ async function reviewRound(
   s: PrSnapshot,
   rows: Map<string, InspectorComment>,
   post: boolean,
-  login: string | null,
+  login: string,
   now: number,
+  tick: TickState,
 ): Promise<boolean> {
   const threads = ourThreads(s, login);
   reconcilePosting(rows, threads, login, now);
 
   const diffRes = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
   if (!diffRes.ok || !diffRes.value) {
-    return noteFailure(pr, diffRes.error ?? "could not read the diff", now);
+    // A diff too large to buffer is not a transient failure - the same request returns
+    // the same bytes forever - so it goes straight to the backoff ceiling instead of
+    // paying to rediscover that every poll. A later, smaller push still gets reviewed.
+    return noteFailure(pr, diffRes.error ?? "could not read the diff", now, tick, {
+      park: diffRes.tooLarge,
+    });
   }
   const { diff, truncated } = diffRes.value;
   const paths = changedPaths(diff);
@@ -491,7 +552,7 @@ async function reviewRound(
   if (result.kind !== "ok") {
     // A transient failure must NEVER advance the head sha: doing so would record this
     // push as reviewed and the PR would never be looked at again.
-    return noteFailure(pr, result.reason, now);
+    return noteFailure(pr, result.reason, now, tick);
   }
 
   const round = pr.round + 1;
@@ -574,10 +635,24 @@ async function reviewRound(
       s.headSha,
     );
     if (!res.ok) {
-      // The head sha stays where it is, so this push is reviewed again. The `posting`
-      // rows stay as they are too: only the next round's live thread read can say
-      // whether the review landed, and guessing here is how a duplicate happens.
-      return noteFailure(pr, res.error ?? "could not post the review", now);
+      // The head sha stays where it is, so this push is reviewed again.
+      //
+      // What happens to the rows turns on WHY the post failed. GitHub refusing us is a
+      // fact: nothing was published, so every row goes back to `drafted` and the whole
+      // round is re-plannable - which matters most for the demoted findings, since they
+      // live in the review body and leave no thread for the next round's reconciliation
+      // to find, so left in `posting` they would be promoted to `open` and never
+      // actually said. A TIMEOUT is not a fact: we stopped listening and the review may
+      // well have landed, so those rows stay in `posting` for the live thread read to
+      // adjudicate. Guessing there is how a duplicate public comment happens.
+      if (!res.timedOut) {
+        for (const row of planned) {
+          const reverted: InspectorComment = { ...row, status: "drafted" };
+          rows.set(row.fingerprint, reverted);
+          upsertInspectorComment(reverted);
+        }
+      }
+      return noteFailure(pr, res.error ?? "could not post the review", now, tick);
     }
     // Published. Promote every row this review carried out of `posting`.
     for (const row of planned) upsertInspectorComment({ ...row, status: "open" });
@@ -610,11 +685,15 @@ function closeRow(rows: Map<string, InspectorComment>, fingerprint: string, now:
 /**
  * Decide what happened to rows left in `posting` by an interrupted round.
  *
+ * Only genuinely ambiguous rows reach here: a post GitHub REFUSED has already put its
+ * rows back to `drafted` at the call site, where the refusal was a fact. What is left is
+ * the round whose response we lost - a timeout, or the daemon exiting mid-write.
+ *
  * GitHub is the record, so the live threads answer it: an inline finding whose marker
  * is on a thread was published, and one whose marker is not was never published and is
- * free to be raised again. A demoted finding has no thread either way, so it cannot be
- * checked and is assumed published - erring toward one finding said once too few rather
- * than one public comment said twice.
+ * free to be raised again. A demoted finding lives in the review body and leaves no
+ * thread either way, so it cannot be checked and is assumed published - erring toward
+ * one finding said once too few rather than one public comment said twice.
  *
  * Skipped entirely when the login is unknown, because then `threads` is empty by
  * construction and every row would look unpublished - which is precisely the state that

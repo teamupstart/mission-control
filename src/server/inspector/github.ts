@@ -1,4 +1,5 @@
 import { run } from "../util/exec.ts";
+import type { RunResult } from "../util/exec.ts";
 import { isOurs, parseMarker } from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
@@ -20,11 +21,25 @@ export interface GhResult<T> {
   ok: boolean;
   value?: T;
   error?: string;
+  /**
+   * We stopped listening rather than GitHub refusing us, so whether the request took
+   * effect is UNKNOWN. Only a writer needs this, and it needs it badly: "refused" means
+   * nothing was published and the round can be re-planned, while "unknown" means
+   * re-planning it might say the same thing twice in public.
+   */
+  timedOut?: boolean;
+  /** The response did not fit in the pipe. Retrying the same request cannot produce less. */
+  tooLarge?: boolean;
 }
 
-function fail<T>(what: string, res: { stderr: string; stdout: string; code: number | null }): GhResult<T> {
+function fail<T>(what: string, res: RunResult): GhResult<T> {
   const detail = (res.stderr || res.stdout || "").trim().slice(0, 300);
-  return { ok: false, error: `${what} failed (exit ${res.code}): ${detail}` };
+  return {
+    ok: false,
+    error: `${what} failed (exit ${res.code}): ${detail}`,
+    timedOut: res.timedOut,
+    tooLarge: res.overflowed,
+  };
 }
 
 /**
@@ -34,28 +49,41 @@ function fail<T>(what: string, res: { stderr: string; stdout: string; code: numb
  * marker and this login. Never hardcoded and never derived from a config value - a
  * GitHub App or a bot credential reports a different login and has to keep working.
  *
- * Cached on the FIRST SUCCESS only. A failure is not cached, so a `gh` that was
- * momentarily unavailable is retried on the next tick rather than pinning the whole
- * subsystem into its fail-closed state for the life of the daemon.
+ * A SUCCESS is cached for the life of the process; a failure is cached only briefly.
+ * Neither extreme works on its own: caching failure forever would pin the whole
+ * subsystem into its fail-closed state until a restart, and not caching it at all
+ * spawns one pointless subprocess per adopted PR per sweep for as long as `gh` is
+ * unavailable. A window shorter than the poll interval collapses a sweep's worth of
+ * those into one, and still retries on the next sweep.
  */
-let cachedLogin: string | null = null;
+const LOGIN_FAILURE_TTL_MS = 60_000;
 
-export async function authenticatedLogin(cwd: string | null): Promise<string | null> {
+let cachedLogin: string | null = null;
+let loginFailedUntil = 0;
+
+export async function authenticatedLogin(
+  cwd: string | null,
+  now: number = Date.now(),
+): Promise<string | null> {
   if (cachedLogin) return cachedLogin;
+  if (now < loginFailedUntil) return null;
   const res = await run("gh", ["api", "user", "--jq", ".login"], {
     cwd: cwd ?? undefined,
     timeoutMs: GH_TIMEOUT_MS,
   });
-  if (res.code !== 0) return null;
-  const login = res.stdout.trim();
-  if (!login) return null;
+  const login = res.code === 0 ? res.stdout.trim() : "";
+  if (!login) {
+    loginFailedUntil = now + LOGIN_FAILURE_TTL_MS;
+    return null;
+  }
   cachedLogin = login;
   return login;
 }
 
-/** Drop the cached login. Exists for tests; nothing in the tick calls it. */
+/** Drop the cached login, success or failure. Exists for tests; the tick never calls it. */
 export function resetAuthenticatedLogin(): void {
   cachedLogin = null;
+  loginFailedUntil = 0;
 }
 
 /** Split "https://github.com/owner/repo/pull/123" into its parts, or null. */
@@ -217,13 +245,24 @@ export function ourThreads(snapshot: PrSnapshot, login: string | null): Map<stri
 }
 
 /**
+ * How much of a diff we will hold in memory to slice `maxBytes` off the front of it.
+ *
+ * `gh` hands us the whole diff whatever we intend to keep, so this is a MEMORY ceiling,
+ * not a review budget - the daemon is one process also serving hook ingest and SSE. Far
+ * above the default 8MB, so a regenerated lockfile or a vendored directory no longer
+ * wedges the PR; far below "whatever GitHub will send", so a pathological diff is
+ * declined rather than materialised. Past this the caller gets `tooLarge` and stops
+ * instead of re-buffering the same bytes every poll.
+ */
+const MAX_DIFF_BUFFER_BYTES = 16 * 1024 * 1024;
+
+/**
  * The whole diff, capped.
  *
- * `maxBytes` is the PROMPT budget and is applied after the fact; `maxBuffer` below is
- * the pipe budget, and it has to be far larger because `gh` hands us the entire diff
- * whatever we intend to keep. The default 8MB is not enough for a PR that regenerates
- * a lockfile or vendors a directory, and the overflow arrives as an ordinary failure
- * that the tick would otherwise retry for the life of the pull request.
+ * `maxBytes` is the PROMPT budget and is applied after the fact; `MAX_DIFF_BUFFER_BYTES`
+ * is the pipe budget. A response past the pipe budget comes back flagged `tooLarge`,
+ * which is a different answer from an ordinary failure: retrying cannot produce fewer
+ * bytes, so the tick parks the PR rather than paying for the same overflow every poll.
  */
 export async function fetchDiff(
   cwd: string | null,
@@ -235,8 +274,15 @@ export async function fetchDiff(
   const res = await run(
     "gh",
     ["api", `repos/${owner}/${repo}/pulls/${number}`, "-H", "Accept: application/vnd.github.v3.diff"],
-    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: 128 * 1024 * 1024 },
+    { cwd: cwd ?? undefined, timeoutMs: GH_TIMEOUT_MS, maxBuffer: MAX_DIFF_BUFFER_BYTES },
   );
+  if (res.overflowed) {
+    return {
+      ok: false,
+      tooLarge: true,
+      error: `the diff is larger than ${Math.round(MAX_DIFF_BUFFER_BYTES / 1024 / 1024)}MB, which is too large to review`,
+    };
+  }
   if (res.code !== 0) return fail("gh api (diff)", res);
   const full = res.stdout;
   return {

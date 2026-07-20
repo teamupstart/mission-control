@@ -2104,15 +2104,17 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
 /**
  * Refresh the mutable half of a ledger row after a tick.
  *
- * `cwd` is updated too, and deliberately: the worktree a PR was opened from gets
- * reaped, and a row pinned to a dead directory can never run `gh` again. Identity
- * columns (key/owner/repo/number/source/adopted_at) are untouched by construction.
+ * `cwd` and `repo_root` are deliberately NOT writable here. They record where the PR was
+ * opened from, which is a fact about the past; the worktree behind `cwd` gets reaped and
+ * pooled worktrees get reused, so the value is only ever a hint. Resolving a directory
+ * that still exists is the tick's job, once per pass, and it falls back to `repo_root`
+ * because git's common dir outlives any worktree of the repo - see `liveDir` in
+ * `inspector/worker.ts`. Identity columns (key/owner/repo/number/source/adopted_at) are
+ * untouched by construction.
  */
 export function updateInspectorPr(
   key: string,
   patch: {
-    cwd?: string | null;
-    repoRoot?: string | null;
     state?: InspectorPrState;
     headSha?: string | null;
     round?: number;
@@ -2129,14 +2131,12 @@ export function updateInspectorPr(
   openDb()
     .prepare(
       `UPDATE inspector_prs
-          SET cwd = ?, repo_root = ?, state = ?, head_sha = ?, round = ?,
+          SET state = ?, head_sha = ?, round = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, next_attempt_at = ?,
               updated_at = ?
         WHERE key = ?`,
     )
     .run(
-      next.cwd,
-      next.repoRoot,
       next.state,
       next.headSha,
       next.round,

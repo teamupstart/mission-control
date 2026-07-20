@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fingerprint, formatMarker, isOurs, parseMarker } from "../src/server/inspector/marker.ts";
+import { ourThreads } from "../src/server/inspector/github.ts";
+import type { PrSnapshot, ThreadSnapshot } from "../src/server/inspector/github.ts";
 
 // The Inspector pushes to GitHub as the OPERATOR. On the wire its comments are
 // indistinguishable from the human's, from another agent running as the same user, and
@@ -145,4 +147,51 @@ test("the same complaint about a different file is a different issue", () => {
     fingerprint("src/a.ts", "Reaches into the concrete type"),
     fingerprint("src/a.ts", "Missing null check on the response"),
   );
+});
+
+// ---- the same rule, at the place that decides what may be RESOLVED ----
+
+// `ourThreads` is where ownership stops being a predicate and becomes an action: every
+// fingerprint it returns is a thread the Inspector may close on a public pull request.
+// It keys off the thread's FIRST comment - the one that opened it - so a thread someone
+// else started and we merely replied in is never ours to close.
+function thread(id: string, comments: { body: string; author: string }[]): ThreadSnapshot {
+  return {
+    id,
+    isResolved: false,
+    path: "src/a.ts",
+    comments: comments.map((c) => ({ ...c, databaseId: 1, createdAt: "2026-01-01" })),
+  };
+}
+
+function snapshot(threads: ThreadSnapshot[]): PrSnapshot {
+  return { state: "OPEN", headSha: "sha", title: "t", body: "b", isDraft: false, threads };
+}
+
+test("a thread we opened is ours to resolve", () => {
+  const got = ourThreads(snapshot([thread("T_1", [ours("fp1")])]), US);
+  assert.deepEqual([...got.keys()], ["fp1"]);
+  assert.equal(got.get("fp1")?.threadId, "T_1");
+});
+
+test("a thread opened by someone who copied our marker is NOT ours to resolve", () => {
+  const forged = { ...ours("fp1"), author: "drive-by-contributor" };
+  const got = ourThreads(snapshot([thread("T_1", [forged])]), US);
+  assert.equal(got.size, 0, "closing this would be resolving a stranger's review thread");
+});
+
+// A colleague opens a thread; we reply in it. The reply carries our marker, because that
+// is how we recognise our own voice next round - but replying is not owning.
+test("a thread we only replied in is not ours to resolve", () => {
+  const theirs = { body: "Why is this here?", author: "colleague" };
+  const got = ourThreads(snapshot([thread("T_1", [theirs, ours("fp1")])]), US);
+  assert.equal(got.size, 0);
+});
+
+// FAIL CLOSED, and it has to mean ABSTAIN rather than "assume nothing exists". An empty
+// map read as "that finding has no thread" is what would let the ledger be marked
+// resolved while the real thread stayed open on GitHub.
+test("with the login unknown, no thread is ours", () => {
+  const got = ourThreads(snapshot([thread("T_1", [ours("fp1")])]), null);
+  assert.equal(got.size, 0);
 });

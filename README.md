@@ -827,21 +827,25 @@ board and can click **launch new agent** yourself. Dry-run means dry-run.
 **Dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
 (Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every backlog item's title and intent
 and returns an order plus, for each item, what it must wait for. The reply isn't trusted as
-written: ids that aren't in the backlog are dropped, self-references are dropped, **cycles
-are broken**, and any item the model forgot is appended unblocked. A cycle would deadlock
-two cards forever and look exactly like two cards waiting their turn; a forgotten item
-would leave the plan permanently stale, which is an unbounded replanning loop. The read
-re-runs only when the backlog **gains** an item, so a steady backlog costs nothing. Three
-failures in a row and Foreman stops asking and schedules **one task at a time, oldest
-first** - serial execution satisfies any dependency order by construction, so a broken
-planner degrades to slow rather than to wrong.
+written: ids that aren't in the backlog are dropped, self-references are dropped, **only the
+edges that close a cycle** are cut, and any item the model forgot is appended unblocked. A
+cycle would deadlock two cards forever and look exactly like two cards waiting their turn;
+a forgotten item would leave the plan permanently stale, which is an unbounded replanning
+loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
+the items in, and the plan is stored in dependency order. The read re-runs only when the
+backlog **gains** an item, so a steady backlog costs nothing. Three failures in a row and
+Foreman stops asking and schedules **one task at a time, oldest first** - serial execution
+satisfies any dependency order by construction, so a broken planner degrades to slow rather
+than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
+the read is tried again, so an API blip heals itself instead of waiting for a restart.
 
 **An idle agent is preferred to a new worktree**, and that preference survives the ceiling,
 since it consumes no new session. "Idle" is stricter here than the board's Idle column: the
 agent must be settled, hook-instrumented (an autopilot that can't observe a session must
 not type a whole task into it), have a pane, have no work queue of its own, no review
-waiting on you, and be in the same repo. The daemon re-checks on arrival, because an agent
-can go busy between the decision and the request.
+waiting on you, be in the same repo, and be **the harness the task was filed for** - a
+Codex task is never typed into a Claude pane unasked. The daemon re-checks on arrival,
+because an agent can go busy between the decision and the request.
 
 On the **board**, the Backlog column shows Foreman's reading: a **blocked** chip naming
 what an item waits on, a **next up** mark on the one it would take next, and - for a
@@ -1222,6 +1226,8 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |
 | `FOREMAN_BACKLOG_TIMEOUT_MS` | `90000` | Backlog autopilot: hard cap on one dependency read. Three failures in a row and Foreman schedules serially instead |
+| `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
+| `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |
 | `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |

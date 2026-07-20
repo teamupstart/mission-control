@@ -274,10 +274,13 @@
 
   <h3>When planning breaks</h3>
   <p>Three consecutive failures and the machine stops asking and drops to <strong>serial
-    mode</strong>: one autopilot-launched task in flight at a time, oldest first. Serial
-    execution satisfies every possible dependency order by construction, so a broken planner
-    degrades to <em>slow</em> rather than to <em>wrong</em>. A plan that arrives later is used
-    again immediately - exhaustion never sticks to the data.</p>
+    mode</strong>: one task in flight at a time, oldest first, covering assigns as well as
+    launches - typing a task into an idle agent starts it just as thoroughly as cutting a
+    worktree does. Serial execution satisfies every possible dependency order by construction,
+    so a broken planner degrades to <em>slow</em> rather than to <em>wrong</em>. A plan that
+    arrives later is used again immediately - exhaustion never sticks to the data - and after
+    <code>FOREMAN_BACKLOG_RETRY_MS</code> (10 min) the read itself is retried, so a transient
+    outage heals without a restart.</p>
 
   <h2>What the board shows</h2>
   <ul>

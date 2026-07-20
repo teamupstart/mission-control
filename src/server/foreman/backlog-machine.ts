@@ -58,6 +58,36 @@ export interface BacklogTickInput {
   plan: BacklogPlan | null;
   cfg: BacklogConfig;
   now: number;
+  /**
+   * Tasks the caller has already acted on and has not seen land yet.
+   *
+   * An INPUT rather than a check the worker makes on the answer, because those two
+   * differ in a way that matters: filtering the candidates lets the machine pick the
+   * next item it can act on, while re-judging a decided action parks the whole
+   * autopilot behind one task for as long as the caller's memory lasts. The set is
+   * still the caller's to keep - it is a fact about one process's history, not about
+   * the world - so the machine stays pure and total.
+   */
+  recentlyActed?: ReadonlySet<string>;
+}
+
+/**
+ * Tasks that are executing right now, however they got there, for serial mode.
+ *
+ * Deliberately wider than "the ones autopilot launched": a task assigned to a session
+ * and a task holding a tmux session of ours are indistinguishable on the row today,
+ * and `dispatching` covers the window between the dispatch POST answering and the tmux
+ * spawn - the exact window a sub-second next tick would otherwise launch into. Serial
+ * mode exists because we could NOT read the dependencies, so pausing behind a human's
+ * in-flight task too is the conservative reading, and the cheap one: it costs some
+ * parallelism in a state that is already degraded.
+ */
+function inFlightTasks(tasks: Task[]): number {
+  return tasks.filter(
+    (t) =>
+      t.status === "dispatching" ||
+      (t.status === "running" && (t.tmuxSession !== null || t.sessionId !== null)),
+  ).length;
 }
 
 /**
@@ -141,6 +171,12 @@ function freeAgentFor(
     // legitimate home for it, a different repo never is. The same comparison
     // `TaskManager.assign` refuses on.
     if (s.repoRoot !== task.repoRoot) continue;
+    // The harness the task was FILED for. A dispatch honours `task.agent` by launching
+    // that binary, so an assign that typed a Codex task into a Claude pane would make
+    // the same task mean two different things depending on which path happened to win
+    // the tick. The drag gesture is permissive here on purpose - a human picked that
+    // pane - but nobody picked this one.
+    if (s.agent !== task.agent) continue;
     if (agentIsFree(s, sessions, tasks, cfg, now)) return s;
   }
   return null;
@@ -156,9 +192,12 @@ function freeAgentFor(
  *  3. the plan does not cover the backlog -> replan first, scheduling NOTHING this
  *     tick. Acting on a plan that has never seen the newest item is how two tasks that
  *     conflict get started together. Once planning has failed its cap the machine stops
- *     asking and drops to SERIAL mode instead: one autopilot-launched task at a time,
- *     oldest first. Serial execution satisfies every possible dependency order by
- *     construction, so a broken planner degrades to slow rather than to wrong.
+ *     asking and drops to SERIAL mode instead: one task in flight at a time, oldest
+ *     first. Serial execution satisfies every possible dependency order by
+ *     construction, so a broken planner degrades to slow rather than to wrong. The gate
+ *     covers ASSIGNS as well as launches - typing a task into an idle agent starts it
+ *     just as thoroughly as cutting a worktree does, and serial mode is precisely the
+ *     state in which we cannot say the two are independent.
  *  4. an allowlisted, ready item with a free agent in its repo -> assign. Checked
  *     BEFORE capacity because it consumes no new session, so it is correct at the
  *     ceiling and cheaper below it.
@@ -172,6 +211,7 @@ function freeAgentFor(
  */
 export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   const { tasks, sessions, plan, cfg, now } = input;
+  const acted = input.recentlyActed ?? new Set<string>();
 
   if (!cfg.enabled) return { kind: "none", why: "" };
 
@@ -216,12 +256,32 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     };
   }
 
+  // Serial mode's cap, and it sits AHEAD of both ways of starting something. With no
+  // dependency read to trust, at most one task may be executing at a time.
+  if (serial && inFlightTasks(tasks) > 0) {
+    return {
+      kind: "none",
+      why: "scheduling one at a time - Foreman could not read the backlog's dependencies",
+    };
+  }
+
+  // Items already acted on drop out here rather than being re-judged after a decision,
+  // so one task whose request we never saw the end of costs itself a minute instead of
+  // costing the whole backlog one.
+  const candidates = ready.filter((t) => !acted.has(t.id));
+  if (candidates.length === 0) {
+    return {
+      kind: "none",
+      why: "every ready backlog item was just acted on - waiting for it to land",
+    };
+  }
+
   // Step 4: prefer a free agent anywhere in the ready set, not just for the head. The
   // backlog is a set of items whose ordering constraints are already stated explicitly
   // as dependencies - unlike the work queue, where the human's sequence IS the meaning
   // - so taking a later item that has a home costs the head nothing and saves a
   // worktree. The head is still what gets launched when nothing can be assigned.
-  for (const task of ready) {
+  for (const task of candidates) {
     const session = freeAgentFor(task, sessions, tasks, cfg, now);
     if (!session) continue;
     if (!cfg.mayActLive) {
@@ -238,23 +298,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
     };
   }
 
-  const head = ready[0]!;
-
-  // Serial mode's cap: with no dependency read to trust, at most one task launched by
-  // autopilot may be in flight at a time. Counted over the tasks WE started (they hold a
-  // tmux session of ours), not over the fleet, so a human's own agents neither block
-  // this nor are blocked by it.
-  if (serial) {
-    const ours = tasks.filter(
-      (t) => (t.status === "running" || t.status === "dispatching") && t.tmuxSession !== null,
-    ).length;
-    if (ours > 0) {
-      return {
-        kind: "none",
-        why: "scheduling one at a time - Foreman could not read the backlog's dependencies",
-      };
-    }
-  }
+  const head = candidates[0]!;
 
   const active = activeAgentCount(sessions, tasks);
   if (active >= cfg.maxSessions) {

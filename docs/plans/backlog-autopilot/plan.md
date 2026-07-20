@@ -101,11 +101,19 @@ backlog, drops self-references, drops dependencies on tasks nobody has heard of,
 not tidiness: a cycle deadlocks the backlog forever, and a missing entry leaves the plan
 permanently stale, which is an infinite replanning loop - both silent.
 
+Only the edges that actually close a cycle are cut, so a dependency the model stated
+survives whatever order it listed the items in; the entries are then emitted in
+dependency order.
+
 Planning re-runs only when the plan stops covering the backlog, so a steady backlog
 costs nothing. Three consecutive failures and the machine stops asking and falls back
-to **serial mode**: one autopilot dispatch at a time, oldest first. Serial execution is
-dependency-safe by construction, so a broken planner degrades to slow rather than to
-wrong.
+to **serial mode**: one task in flight at a time, oldest first, assigns included.
+Serial execution is dependency-safe by construction, so a broken planner degrades to
+slow rather than to wrong. The fallback is a cooldown, not a latch - after
+`FOREMAN_BACKLOG_RETRY_MS` the read is tried again, so a transient outage heals itself.
+A daemon that refuses the plan WRITE backs off separately (`FOREMAN_BACKLOG_STORE_BACKOFF_MS`,
+doubling), since a refused write is not a broken planner but would otherwise cost a
+model call every tick.
 
 ### `src/server/backlog.ts` + routes - where the plan lives
 
@@ -122,7 +130,9 @@ tick. It does I/O only: read, ask the machine, perform the one action, log.
 Two guards live in the worker rather than the machine because they are about *this
 process's* recent history, not about the state of the world: a 60s `recentlyActed` set
 so a laggy read cannot double-launch a task, and a change-only logger so a steady
-`none` does not write a line every four seconds.
+`none` does not write a line every four seconds. The acted set is passed INTO the
+machine as an input rather than checked against its answer, so a task we have not seen
+land skips itself instead of parking the whole backlog behind it.
 
 ## What the board shows
 

@@ -22,6 +22,17 @@ export const DEFAULT_BACKLOG_MODEL = "claude-sonnet-5";
 /** The planner's wall-clock cap. Generous: it runs rarely and blocks nothing live. */
 const BACKLOG_TIMEOUT_MS = Number(process.env.FOREMAN_BACKLOG_TIMEOUT_MS || 90_000);
 
+/**
+ * Which model reads the backlog: config, then env, then the default.
+ *
+ * `||` and not `??`, exactly as `triageModel` does it - `backlogModel` is an optional
+ * free-text field, and a config that holds an empty string is a human who cleared the
+ * box, not one asking the CLI to be spawned with no model id at all.
+ */
+export function backlogModel(cfg: { backlogModel?: string }): string {
+  return cfg.backlogModel || process.env.FOREMAN_BACKLOG_MODEL || DEFAULT_BACKLOG_MODEL;
+}
+
 /** What the model returns, before any of it is believed. See `sanitizePlan`. */
 export const BacklogReportSchema = z.object({
   tasks: z.array(
@@ -54,10 +65,13 @@ export type BacklogPlanResult =
  *  - **Self-references dropped.** A task waiting on itself never starts.
  *  - **Cycles broken.** Two tasks waiting on each other deadlock the pair FOREVER, and
  *    invisibly: a blocked card looks exactly like a card correctly waiting its turn.
- *    Broken by walking the model's own order and keeping only the edges that point
- *    BACKWARD in it - which is the ordering it asked for, so the repair follows its
- *    intent rather than overriding it. An edge pointing forward is the model
- *    contradicting itself and is the one to drop.
+ *    Broken by finding the cycles themselves and dropping ONLY the edges that close
+ *    one. The narrowness is the point: the model is asked for a topological order but
+ *    routinely answers in priority order, and a repair that judged edges by position
+ *    in that array would delete perfectly good dependencies - the one thing this
+ *    feature exists to produce - every time it did. The entries are then emitted in a
+ *    topological order derived from the surviving edges, so the model's ordering
+ *    signal still shows through wherever it does not contradict a dependency.
  *  - **Missing entries appended.** A backlog item with no entry leaves `planStale` true
  *    forever, so the worker replans on every single tick - an unbounded loop of Sonnet
  *    calls that produces nothing. Appended unblocked, at the end, which is the safe
@@ -68,8 +82,8 @@ export type BacklogPlanResult =
 export function sanitizePlan(report: BacklogReport, backlog: Task[]): BacklogPlanInput {
   const known = new Set(backlog.map((t) => t.id));
 
-  // The model's order, restricted to real backlog ids and deduplicated. This array is
-  // what "backward" means below, so it has to be settled before any edge is judged.
+  // The model's order, restricted to real backlog ids and deduplicated. It is a
+  // preference, not a constraint: it breaks ties in the topological sort below.
   const order: string[] = [];
   const placed = new Set<string>();
   for (const t of report.tasks) {
@@ -83,26 +97,87 @@ export function sanitizePlan(report: BacklogReport, backlog: Task[]): BacklogPla
     order.push(t.id);
   }
 
-  const rank = new Map(order.map((id, i) => [id, i]));
   const byId = new Map(report.tasks.map((t) => [t.id, t]));
 
-  const entries = order.map((id) => {
-    const raw = byId.get(id);
-    const deps: string[] = [];
-    for (const dep of raw?.dependsOn ?? []) {
+  const deps = new Map<string, string[]>();
+  for (const id of order) {
+    const kept: string[] = [];
+    for (const dep of byId.get(id)?.dependsOn ?? []) {
       if (dep === id) continue; // self-reference
       if (!known.has(dep)) continue; // unknown, or a task already out of the backlog
-      if (deps.includes(dep)) continue; // duplicate
-      // Keep only edges pointing backward in the model's own order. A forward edge is
-      // the reply contradicting itself, and following both directions is what builds a
-      // cycle - so this both breaks cycles and keeps the ordering it asked for.
-      if ((rank.get(dep) ?? Infinity) >= (rank.get(id) ?? -1)) continue;
-      deps.push(dep);
+      if (kept.includes(dep)) continue; // duplicate
+      kept.push(dep);
     }
-    return { taskId: id, dependsOn: deps, reason: raw?.reason?.trim() || null };
-  });
+    deps.set(id, kept);
+  }
+
+  dropCyclicEdges(order, deps);
+
+  const entries = topoOrder(order, deps).map((id) => ({
+    taskId: id,
+    dependsOn: deps.get(id) ?? [],
+    reason: byId.get(id)?.reason?.trim() || null,
+  }));
 
   return { entries, note: report.note?.trim() || null };
+}
+
+/**
+ * Make the graph acyclic in place, dropping as little as possible.
+ *
+ * A depth-first walk in the model's own order: an edge into a node that is still OPEN
+ * on the current stack is the edge that closes a cycle, and it is the only kind
+ * dropped. Every other edge - including one the model listed "out of order", which is
+ * the common case when it answers by priority - survives untouched.
+ *
+ * Some edge of a cycle has to go, and which one is still decided by the model's order:
+ * the walk is ROOTED from the back of that order, which makes the edge it cuts the one
+ * running from an earlier item to a later one - the reply contradicting the sequence it
+ * just asked for. So the repair follows its stated intent where it must choose, without
+ * letting that intent overrule a dependency it also stated.
+ */
+function dropCyclicEdges(order: string[], deps: Map<string, string[]>): void {
+  const state = new Map<string, "open" | "done">();
+  const visit = (id: string): void => {
+    state.set(id, "open");
+    const kept: string[] = [];
+    for (const dep of deps.get(id) ?? []) {
+      const seen = state.get(dep);
+      if (seen === "open") continue;
+      if (seen === undefined) visit(dep);
+      kept.push(dep);
+    }
+    deps.set(id, kept);
+    state.set(id, "done");
+  };
+  for (let i = order.length - 1; i >= 0; i--) {
+    const id = order[i]!;
+    if (!state.has(id)) visit(id);
+  }
+}
+
+/**
+ * Order the ids so every dependency precedes the item that waits on it, breaking ties
+ * by the model's own order.
+ *
+ * `readyBacklog` filters on blockers rather than position, so this ordering is a
+ * READOUT more than a schedule - but it is the readout the board's column and the
+ * "next up" mark are drawn from, and a plan that listed an item above the thing it
+ * waits on would be telling the operator the opposite of what the scheduler will do.
+ *
+ * `deps` must already be acyclic; the fallback below only keeps this total.
+ */
+function topoOrder(order: string[], deps: Map<string, string[]>): string[] {
+  const remaining = [...order];
+  const emitted = new Set<string>();
+  const out: string[] = [];
+  while (remaining.length > 0) {
+    const i = remaining.findIndex((id) => (deps.get(id) ?? []).every((d) => emitted.has(d)));
+    const [id] = remaining.splice(i < 0 ? 0 : i, 1);
+    emitted.add(id!);
+    out.push(id!);
+  }
+  return out;
 }
 
 /**

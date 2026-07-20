@@ -322,6 +322,61 @@ test("an idle agent in a DIFFERENT repo is not a home for the task", () => {
   assert.equal(a.kind, "dispatch");
 });
 
+test("a codex task is not typed into a claude agent - it launches its own instead", () => {
+  // A dispatch honours `task.agent`, so an assign that ignored it would make the same
+  // task mean two different things depending on which path won the tick. The board's
+  // drag gesture is permissive here on purpose; nobody picked this pane.
+  const t = mkTask({ agent: "codex" });
+  const wrongHarness = mkSession({ agent: "claude" });
+  const a = decide({ tasks: [t], sessions: [wrongHarness], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "dispatch");
+});
+
+test("a codex task IS handed to a free codex agent", () => {
+  const t = mkTask({ agent: "codex" });
+  const right = mkSession({ agent: "codex", name: "codex-1" });
+  const a = decide({ tasks: [t], sessions: [right], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.session.name : "", "codex-1");
+});
+
+// ---- tasks the caller just acted on ---------------------------------------------------
+
+test("a task just acted on is skipped, and the next ready item is taken instead", () => {
+  // Head-of-line blocking is the failure here: the machine is deterministic, so parking
+  // on the one task whose request we never saw land would stall the whole backlog for
+  // as long as the caller remembers it.
+  const first = mkTask();
+  const second = mkTask();
+  const a = decideBacklogTick({
+    tasks: [first, second],
+    sessions: [],
+    plan: mkPlan([
+      [first.id, []],
+      [second.id, []],
+    ]),
+    cfg: CFG,
+    now: NOW,
+    recentlyActed: new Set([first.id]),
+  });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", second.id);
+});
+
+test("when every ready item was just acted on, the pause says so", () => {
+  const t = mkTask();
+  const a = decideBacklogTick({
+    tasks: [t],
+    sessions: [],
+    plan: mkPlan([[t.id, []]]),
+    cfg: CFG,
+    now: NOW,
+    recentlyActed: new Set([t.id]),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /just acted on/);
+});
+
 // ---- what counts as free -------------------------------------------------------------
 
 test("an agent that has not settled is not free yet - a pause between turns is not being finished", () => {
@@ -455,7 +510,7 @@ test("when planning has failed its cap the machine schedules anyway, one at a ti
   assert.equal(a.kind === "dispatch" ? a.task.id : "", t1.id);
 });
 
-test("serial mode launches nothing while one of OUR tasks is still in flight", () => {
+test("serial mode launches nothing while a task is still in flight", () => {
   const inFlight = mkTask({ status: "running", tmuxSession: "harness-x" });
   const waiting = mkTask();
   const a = decide({
@@ -467,13 +522,36 @@ test("serial mode launches nothing while one of OUR tasks is still in flight", (
   assert.match(a.kind === "none" ? a.why : "", /one at a time/);
 });
 
-test("serial mode is not blocked by an agent the human started themselves", () => {
-  // An assigned task holds no tmux session of ours, and neither does a hand-started
-  // terminal - so neither is evidence that autopilot has work in flight.
-  const assigned = mkTask({ status: "running", sessionId: "s-human", tmuxSession: null });
+test("serial mode counts a task that is still being provisioned", () => {
+  // The window between the dispatch POST answering and the tmux spawn. The loop skips
+  // its sleep after a successful dispatch, so this is the tick that would launch again -
+  // and counting only tasks that already hold a tmux session would let it.
+  const provisioning = mkTask({ status: "dispatching", tmuxSession: null, sessionId: null });
   const waiting = mkTask();
-  const a = decide({ tasks: [assigned, waiting], plan: null, cfg: cfg({ planExhausted: true }) });
-  assert.equal(a.kind, "dispatch");
+  const a = decide({
+    tasks: [provisioning, waiting],
+    plan: null,
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /one at a time/);
+});
+
+test("serial mode holds the ASSIGN path too, not just the launch path", () => {
+  // Typing a task into an idle agent starts it exactly as thoroughly as cutting a
+  // worktree does, so an assign that skipped the cap would hand out the whole backlog
+  // at once - the failure the cap exists to prevent, by the other door.
+  const inFlight = mkTask({ status: "running", sessionId: "s-other", tmuxSession: null });
+  const waiting = mkTask();
+  const free = mkSession();
+  const a = decide({
+    tasks: [inFlight, waiting],
+    sessions: [free],
+    plan: null,
+    cfg: cfg({ planExhausted: true }),
+  });
+  assert.equal(a.kind, "none");
+  assert.match(a.kind === "none" ? a.why : "", /one at a time/);
 });
 
 test("a plan that arrives after the cap is used again - exhaustion never sticks to the data", () => {

@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizePlan } from "../src/server/foreman/backlog-plan.ts";
+import {
+  DEFAULT_BACKLOG_MODEL,
+  backlogModel,
+  sanitizePlan,
+} from "../src/server/foreman/backlog-plan.ts";
 import type { BacklogReport } from "../src/server/foreman/backlog-plan.ts";
 import {
   blockersFor,
@@ -88,12 +92,36 @@ test("a two-task cycle is broken rather than stored - both would block forever",
     ]),
     [a, b],
   );
-  // The edge kept is the one pointing BACKWARD in the model's own order, so the
-  // ordering it asked for survives and the contradiction is what gets dropped.
-  assert.deepEqual(plan.entries[0]!.dependsOn, []);
-  assert.deepEqual(plan.entries[1]!.dependsOn, [a.id]);
+  const deps = new Map(plan.entries.map((e) => [e.taskId, e.dependsOn]));
+  // Exactly one of the two edges survives - the cut is minimal, not a wipe - and the
+  // one dropped is the model contradicting the sequence it just asked for.
+  assert.equal((deps.get(a.id)?.length ?? 0) + (deps.get(b.id)?.length ?? 0), 1);
+  assert.deepEqual(deps.get(a.id), []);
+  assert.deepEqual(deps.get(b.id), [a.id]);
   // The head is schedulable, which is the property that matters.
   assert.equal(readyBacklog([a, b], stored(plan)).length, 1);
+});
+
+test("a genuine dependency SURVIVES being listed in priority order, not topological order", () => {
+  // The prompt asks for a topological order and the model routinely answers by
+  // priority. Judging edges by position in that array would silently delete the
+  // dependency read, which is the one thing this feature exists to produce: the
+  // route would launch before the migration it builds on.
+  const route = mkTask();
+  const migration = mkTask();
+  const plan = sanitizePlan(
+    report([
+      { id: route.id, dependsOn: [migration.id] },
+      { id: migration.id, dependsOn: [] },
+    ]),
+    [route, migration],
+  );
+  const deps = new Map(plan.entries.map((e) => [e.taskId, e.dependsOn]));
+  assert.deepEqual(deps.get(route.id), [migration.id]);
+  // And the stored order puts the dependency first, so the board reads the same way.
+  assert.deepEqual(plan.entries.map((e) => e.taskId), [migration.id, route.id]);
+  const ready = readyBacklog([route, migration], stored(plan));
+  assert.deepEqual(ready.map((t) => t.id), [migration.id]);
 });
 
 test("a three-task cycle leaves something schedulable", () => {
@@ -108,9 +136,35 @@ test("a three-task cycle leaves something schedulable", () => {
     ]),
     [a, b, c],
   );
+  // One edge cut, two kept: the chain a -> b -> c still holds.
+  assert.equal(plan.entries.reduce((n, e) => n + e.dependsOn.length, 0), 2);
   const ready = readyBacklog([a, b, c], stored(plan));
   assert.equal(ready.length, 1);
   assert.equal(ready[0]!.id, a.id);
+});
+
+test("an acyclic diamond keeps every edge, whatever order the model listed it in", () => {
+  const base = mkTask();
+  const left = mkTask();
+  const right = mkTask();
+  const top = mkTask();
+  const plan = sanitizePlan(
+    report([
+      { id: top.id, dependsOn: [left.id, right.id] },
+      { id: left.id, dependsOn: [base.id] },
+      { id: right.id, dependsOn: [base.id] },
+      { id: base.id, dependsOn: [] },
+    ]),
+    [base, left, right, top],
+  );
+  assert.equal(plan.entries.reduce((n, e) => n + e.dependsOn.length, 0), 4);
+  // Stored in dependency order: every entry comes after everything it waits on.
+  const at = new Map(plan.entries.map((e, i) => [e.taskId, i]));
+  for (const e of plan.entries) {
+    for (const dep of e.dependsOn) assert.ok(at.get(dep)! < at.get(e.taskId)!);
+  }
+  const ready = readyBacklog([base, left, right, top], stored(plan));
+  assert.deepEqual(ready.map((t) => t.id), [base.id]);
 });
 
 test("a task depending on itself never starts, so the self-edge is dropped", () => {
@@ -134,7 +188,7 @@ test("an entry for a task that is not in the backlog is dropped", () => {
   assert.deepEqual(plan.entries.map((e) => e.taskId), [a.id]);
 });
 
-test("a duplicated entry is placed once, at its first mention", () => {
+test("a duplicated entry is stored once - a task cannot be two rows of the plan", () => {
   const a = mkTask();
   const b = mkTask();
   const plan = sanitizePlan(
@@ -145,7 +199,10 @@ test("a duplicated entry is placed once, at its first mention", () => {
     ]),
     [a, b],
   );
-  assert.deepEqual(plan.entries.map((e) => e.taskId), [a.id, b.id]);
+  // The last mention of a task is the one believed, so `a` waits on `b` and the stored
+  // order follows that rather than the position the id first appeared at.
+  assert.equal(plan.entries.length, 2);
+  assert.deepEqual(plan.entries.map((e) => e.taskId), [b.id, a.id]);
 });
 
 test("a repeated dependency cannot inflate a card's blocked count", () => {
@@ -167,6 +224,25 @@ test("blank prose becomes null rather than an empty chip", () => {
   const plan = sanitizePlan(report([{ id: a.id, dependsOn: [], reason: "   " }], "  "), [a]);
   assert.equal(plan.entries[0]!.reason, null);
   assert.equal(plan.note, null);
+});
+
+// ---- which model reads the backlog ----------------------------------------------------
+
+test("a cleared backlogModel falls back instead of spawning the CLI with no model id", () => {
+  const before = process.env.FOREMAN_BACKLOG_MODEL;
+  delete process.env.FOREMAN_BACKLOG_MODEL;
+  try {
+    assert.equal(backlogModel({}), DEFAULT_BACKLOG_MODEL);
+    // The config field is optional free text, so "" is a human who emptied the box.
+    assert.equal(backlogModel({ backlogModel: "" }), DEFAULT_BACKLOG_MODEL);
+    assert.equal(backlogModel({ backlogModel: "claude-opus-4-8" }), "claude-opus-4-8");
+    process.env.FOREMAN_BACKLOG_MODEL = "from-env";
+    assert.equal(backlogModel({ backlogModel: "" }), "from-env");
+    assert.equal(backlogModel({ backlogModel: "claude-opus-4-8" }), "claude-opus-4-8");
+  } finally {
+    if (before === undefined) delete process.env.FOREMAN_BACKLOG_MODEL;
+    else process.env.FOREMAN_BACKLOG_MODEL = before;
+  }
 });
 
 // ---- blockersFor ---------------------------------------------------------------------

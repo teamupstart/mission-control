@@ -39,7 +39,7 @@ import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.t
 import type { QueueActions } from "./queue-apply.ts";
 import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
-import { planBacklog } from "./backlog-plan.ts";
+import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem } from "./queue-verify.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
@@ -284,10 +284,38 @@ async function main(): Promise<void> {
  * more expensive than a task waiting an extra minute.
  */
 const ACTED_TTL_MS = 60_000;
+/**
+ * How long serial mode lasts before the planner is given another chance.
+ *
+ * Exhaustion has to be TIME-BOXED. The cap is there to stop a broken planner burning a
+ * model call every few seconds, and the states that trip it - an API outage, a rate
+ * limit - are overwhelmingly transient, so a permanent latch would mean a two-minute
+ * blip degrades scheduling until somebody notices and restarts the worker. Long enough
+ * that a genuinely broken planner is still costing a call per interval, not per tick.
+ */
+const PLAN_RETRY_MS = Number(process.env.FOREMAN_BACKLOG_RETRY_MS || 10 * 60_000);
+/** First wait after the daemon refuses a plan write; doubles per consecutive failure. */
+const PLAN_STORE_BACKOFF_MS = Number(process.env.FOREMAN_BACKLOG_STORE_BACKOFF_MS || 15_000);
+/** Ceiling on that doubling, so a long outage still retries at a sane rate. */
+const PLAN_STORE_BACKOFF_MAX_MS = 10 * 60_000;
 /** Task id -> when autopilot last acted on it. Deliberately in memory: see ACTED_TTL_MS. */
 const recentlyActed = new Map<string, number>();
 /** Consecutive backlog-planning failures. At PLAN_FAILURE_CAP the machine goes serial. */
 let backlogPlanFailures = 0;
+/** When the last planning failure landed, so PLAN_RETRY_MS can lift serial mode again. */
+let backlogPlanFailedAt = 0;
+/**
+ * Consecutive failures to STORE a plan, counted apart from `backlogPlanFailures`.
+ *
+ * A refused write is not a broken planner, and folding the two together would drop a
+ * perfectly good dependency read into serial mode over a daemon that was restarting.
+ * What it does need is its own brake: the plan never lands, so the machine asks for one
+ * again next tick, and without a wait that is a Sonnet call every IDLE_MS for as long
+ * as the route stays broken.
+ */
+let backlogStoreFailures = 0;
+/** Epoch ms before which the plan path is skipped entirely. See `backlogStoreFailures`. */
+let backlogStoreRetryAt = 0;
 /**
  * The last thing the backlog said, so a steady state is logged ONCE.
  *
@@ -297,13 +325,36 @@ let backlogPlanFailures = 0;
  */
 let lastBacklogNote = "";
 
-/** Drop expired entries, then answer whether this task is still off the table. */
-function actedRecently(taskId: string, now: number): boolean {
+/** Drop expired entries, then hand the machine the ids that are still off the table. */
+function actedTaskIds(now: number): Set<string> {
   for (const [id, at] of recentlyActed) {
     if (now - at >= ACTED_TTL_MS) recentlyActed.delete(id);
   }
-  const at = recentlyActed.get(taskId);
-  return at !== undefined && now - at < ACTED_TTL_MS;
+  return new Set(recentlyActed.keys());
+}
+
+/**
+ * Lift serial mode once the cooldown has run, so a transient outage self-heals.
+ *
+ * Logged unconditionally rather than through `noteBacklog`: this is a transition, and
+ * it is the one an operator staring at "scheduling one at a time" needs to see end.
+ */
+function rearmBacklogPlanning(now: number): void {
+  if (backlogPlanFailures < PLAN_FAILURE_CAP) return;
+  if (now - backlogPlanFailedAt < PLAN_RETRY_MS) return;
+  backlogPlanFailures = 0;
+  backlogPlanFailedAt = 0;
+  lastBacklogNote = "";
+  log(
+    `backlog: retrying the dependency read after ${Math.round(PLAN_RETRY_MS / 1000)}s ` +
+      `of scheduling one at a time`,
+  );
+}
+
+/** Exponential, capped: 15s, 30s, 60s ... 10m. */
+function storeBackoffMs(failures: number): number {
+  const wait = PLAN_STORE_BACKOFF_MS * 2 ** Math.max(0, failures - 1);
+  return Math.min(wait, PLAN_STORE_BACKOFF_MAX_MS);
 }
 
 /** Log a backlog outcome only when it differs from the last one. */
@@ -356,12 +407,17 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   const [sessions, tasks, plan] = snapshot;
 
   const now = Date.now();
+  rearmBacklogPlanning(now);
   const action = decideBacklogTick({
     tasks,
     sessions,
     plan,
     cfg: backlogConfig(cfg),
     now,
+    // The machine skips these and takes the next item it can act on. Kept here rather
+    // than in the machine because it is a fact about THIS PROCESS's recent history, not
+    // about the state of the world.
+    recentlyActed: actedTaskIds(now),
   });
 
   if (action.kind === "none") {
@@ -369,15 +425,15 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     return false;
   }
 
-  // Whatever we are about to do, do not do it to a task we just acted on. Checked here
-  // rather than inside the machine because it is a fact about THIS PROCESS's recent
-  // history, not about the state of the world - the machine stays pure and total.
-  if (action.kind !== "plan" && actedRecently(action.task.id, now)) return false;
-
   if (action.kind === "plan") {
-    const result = await planBacklog(action.tasks, cfg.backlogModel);
+    if (now < backlogStoreRetryAt) {
+      noteBacklog("waiting to retry the plan - the daemon refused the last write");
+      return false;
+    }
+    const result = await planBacklog(action.tasks, backlogModel(cfg));
     if (result.kind === "failed") {
       backlogPlanFailures++;
+      backlogPlanFailedAt = now;
       noteBacklog(
         `could not read the dependencies (${backlogPlanFailures}x): ${result.reason}` +
           (backlogPlanFailures >= PLAN_FAILURE_CAP ? " - scheduling one at a time instead" : ""),
@@ -389,11 +445,19 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     } catch (err) {
       // NOT a planning failure - the model answered fine, the daemon refused the write.
       // Counting it toward the cap would drop a working planner into serial mode over a
-      // broken route, so this leaves the count alone and simply retries next tick.
-      noteBacklog(`planned the backlog but could not store it (${String(err)})`);
+      // broken route, so this backs its OWN counter off instead.
+      backlogStoreFailures++;
+      backlogStoreRetryAt = now + storeBackoffMs(backlogStoreFailures);
+      noteBacklog(
+        `planned the backlog but could not store it (${backlogStoreFailures}x, retrying in ` +
+          `${Math.round(storeBackoffMs(backlogStoreFailures) / 1000)}s): ${String(err)}`,
+      );
       return false;
     }
+    backlogStoreFailures = 0;
+    backlogStoreRetryAt = 0;
     backlogPlanFailures = 0;
+    backlogPlanFailedAt = 0;
     // Reset the change-only log: the next outcome is news whatever it says, because the
     // whole picture just moved.
     lastBacklogNote = "";

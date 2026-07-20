@@ -19,13 +19,17 @@ agents may be running at once.
 
 ## What the human sets
 
-Two knobs, both in the Foreman popover beside the work-queue knobs:
+Three knobs, all in the Foreman popover beside the work-queue knobs:
 
 - **Auto-schedule the backlog** (`autoBacklog`, default off).
 - **Max agents** (`maxSessions`, default 3, range 1-20). The ceiling autopilot will
   not launch past. It counts **every live agent session on the machine**, not just the
   ones Mission launched - "max agents" is a statement about the machine's load, and a
   count that ignored the six sessions you started by hand would not be one.
+- **Open PRs keep an idle agent off the backlog** (`backlogRespectOpenPrs`, default
+  on). An idle agent whose branch still carries an *open* PR is not free; a merged PR
+  never blocks. Autopilot only - a human's drag onto that agent still works. The why
+  lives on the schema field in `src/shared/protocol.ts` and in the README.
 
 `maxSessions` deliberately does **not** block *your* dispatches. Refusing a button you
 clicked because a background scheduler reserved the budget is a worse surprise than
@@ -84,10 +88,13 @@ an agent, and counting only the session list would launch a second one into the 
 **A free agent** is a stricter thing than an idle-looking one: `reportBucket === "idle"`,
 `settledIdle` past the settle window, `hooksSeen` (an autopilot that cannot observe a
 session must not type a whole task into it), a pane to type into, an empty work queue,
-no non-terminal task already bound to it, the same `repoRoot` as the task, the same
-harness the task was filed for (a Codex task is never typed into a Claude pane unasked,
-though a human's drag still may), and allowlisted. `TaskManager.assign` re-checks the
-ones it can, because a session can go busy between the decision and the POST.
+no *open* PR on its branch (`backlogRespectOpenPrs`, on by default; a merged PR does
+not block), no non-terminal task already bound to it, the same `repoRoot` as the task,
+the same harness the task was filed for (a Codex task is never typed into a Claude pane
+unasked, though a human's drag still may), and allowlisted. `TaskManager.assign`
+re-checks the ones it can, because a session can go busy between the decision and the
+POST - and it now resets the agent's checkout before typing, refusing when the reset
+would destroy work (see the README's autopilot section and `agentIsFree`).
 
 ### `src/server/foreman/backlog-plan.ts` + `backlog-prompt.ts` - the dependency read
 
@@ -159,7 +166,7 @@ land skips itself instead of parking the whole backlog behind it.
 - a **next up** marker on the item autopilot would take next,
 - and, for a blocked card, its Launch button reads as the override it is.
 
-The Foreman popover gains the two knobs plus a live `3 / 5 agents` readout and a
+The Foreman popover gains the knobs above plus a live `3 / 5 agents` readout and a
 `4 ready · 2 blocked` line, so "why is nothing launching?" is answerable without
 reading a log.
 

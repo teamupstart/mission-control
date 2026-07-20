@@ -102,6 +102,8 @@ changed and why the rest were left alone.
 
 A reset leaves nothing session-scoped behind: work queue, compose drafts, reply attachments,
 message log. Anything else you add that is session-scoped and survives prompts, clear it too.
+The server-side cleanup has one owner, `resetSession` (`src/server/reset.ts`) - route a new
+reset caller through it, never copy the cleanup into a handler.
 
 ## Overlays
 

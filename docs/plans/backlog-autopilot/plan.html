@@ -104,6 +104,7 @@
       <tbody>
         <tr><td><strong>Auto-schedule the backlog</strong> <code>autoBacklog</code></td><td>off</td><td>arms the autopilot</td></tr>
         <tr><td><strong>Max agents running at once</strong> <code>maxSessions</code></td><td><code>3</code></td><td>the ceiling it will not launch past</td></tr>
+        <tr><td><strong>Open PRs keep an idle agent off the backlog</strong> <code>backlogRespectOpenPrs</code></td><td>on</td><td>an agent whose branch still has an open PR is not handed the next task; a merged PR never blocks</td></tr>
       </tbody>
     </table>
   </div>
@@ -235,12 +236,15 @@
     <li><code>hooksSeen</code> - <code>reportBucket</code> files an uninstrumented session
       under idle by default. Right for a readout, wrong for an autopilot, which would have no
       way to tell it was mid-thought.</li>
-    <li>a pane, an empty work queue, no non-terminal task of ours bound to it, the same
-      <code>repoRoot</code>, the same harness the task was filed for (a Codex task is never
-      typed into a Claude pane unasked, though a human's drag still may), and allowlisted.</li>
+    <li>a pane, an empty work queue, no <em>open</em> PR on its branch
+      (<code>backlogRespectOpenPrs</code>, on by default; a merged PR does not block), no
+      non-terminal task of ours bound to it, the same <code>repoRoot</code>, the same harness
+      the task was filed for (a Codex task is never typed into a Claude pane unasked, though
+      a human's drag still may), and allowlisted.</li>
   </ul>
   <p><code>TaskManager.assign</code> re-checks what it can, because an agent can go busy
-    between the decision and the POST.</p>
+    between the decision and the POST - and it now resets the agent's checkout before
+    typing, refusing when the reset would destroy work.</p>
 
   <h2>The dependency read, and why it is not trusted as written</h2>
   <p>A fresh tool-less <code>claude -p</code> (Sonnet by default, <code>FOREMAN_BACKLOG_MODEL</code>)

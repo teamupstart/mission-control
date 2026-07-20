@@ -1304,6 +1304,50 @@ async function releaseBranch(root: string, branch: string | null, target: string
 }
 
 /**
+ * What an unattended reset of this checkout would destroy, in one human sentence, or
+ * null when it would destroy nothing.
+ *
+ * The guard in front of `TaskManager.assign`'s reset, and deliberately NOT `resetPreview`
+ * even though they ask a very similar question. Two differences, both load-bearing:
+ *
+ *  - It does not fetch. `resetPreview` fetches because it backs a confirm dialog that
+ *    must not understate the loss, and it can afford ~30s because a human is reading it.
+ *    This runs on Foreman's 4s loop, where a network round trip per candidate agent is a
+ *    cost the scheduler should not carry. Reading the LOCAL `origin/*` ref only ever
+ *    makes the answer more conservative - a stale ref reports commits as unpushed that
+ *    are in fact merged - and every error here is a refusal, which is the safe way to be
+ *    wrong.
+ *  - It answers a yes/no, not a breakdown, because the caller has no dialog to draw. It
+ *    has a decision to make and a sentence to log.
+ *
+ * A git failure of any kind reports "cannot tell", which refuses. We are about to run
+ * `reset --hard` and `clean -fd` in a directory nobody is looking at; "I could not check"
+ * has to mean stop.
+ */
+export async function resetWouldDestroyWork(session: Session): Promise<string | null> {
+  if (!session.cwd) return "the session has no working directory";
+  const top = await git(session.cwd, ["rev-parse", "--show-toplevel"]);
+  if (top.code !== 0 || !top.stdout.trim()) return "it is not a git repository";
+  const root = top.stdout.trim();
+
+  // Tracked edits and untracked files alike: `reset --hard` takes the first, `clean -fd`
+  // takes the second. Ignored files (node_modules, .env) are not listed and survive.
+  const status = await git(root, ["status", "--porcelain"]);
+  if (status.code !== 0) return "its working tree could not be read";
+  const changed = status.stdout.split("\n").filter((l) => l.trim()).length;
+  if (changed > 0) return `it has ${changed} uncommitted file(s)`;
+
+  const target = await remoteDefaultRef(root);
+  if (!target) return "it has no origin/main (or origin/master) to reset onto";
+  // Commits on HEAD that the default branch does not contain. On a detached, freshly
+  // reset checkout this is 0, which is the shape autopilot hands back.
+  const ahead = await git(root, ["rev-list", "--count", `${target}..HEAD`]);
+  if (ahead.code !== 0) return "its commits could not be compared against origin";
+  const n = Number(ahead.stdout.trim()) || 0;
+  return n > 0 ? `it has ${n} commit(s) not on ${target}` : null;
+}
+
+/**
  * Fetch origin, then report what a hard reset onto its default branch would
  * permanently discard: uncommitted tracked edits, untracked files (which the
  * follow-up `git clean` removes), and local commits ahead of the target. The

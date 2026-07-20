@@ -29,6 +29,7 @@ const CFG: BacklogConfig = {
   allowlist: ["/repo"],
   mayActLive: true,
   settleMs: 10_000,
+  respectOpenPrs: true,
   planExhausted: false,
 };
 
@@ -110,6 +111,7 @@ const decide = (over: {
   sessions?: Session[];
   plan?: BacklogPlan | null;
   cfg?: BacklogConfig;
+  unassignable?: ReadonlySet<string>;
 }) =>
   decideBacklogTick({
     tasks: over.tasks ?? [],
@@ -117,6 +119,7 @@ const decide = (over: {
     plan: over.plan ?? null,
     cfg: over.cfg ?? CFG,
     now: NOW,
+    unassignable: over.unassignable,
   });
 
 // ---- the switch, and the empty cases -------------------------------------------------
@@ -449,6 +452,82 @@ test("an agent in an un-allowlisted checkout is not typed into", () => {
 test("a pane-less agent has nowhere to be typed at", () => {
   const s = mkSession({ tmux: null, wezterm: null });
   assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+// ---- work still out for review -------------------------------------------------------
+//
+// The gap this closes is the one every other clause above misses by design. An agent
+// that opened a PR and stopped is idle, settled, instrumented, queue-empty and - once
+// its task is marked done - bound to nothing. On every signal the machine had, it was
+// free; the only thing saying otherwise was a PR nobody had reviewed yet.
+
+test("an agent whose branch still has an OPEN pr is not free", () => {
+  const s = mkSession({ prUrl: "https://x/pr/1", prNumber: 1, prState: "open" });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
+});
+
+test("a MERGED pr does not hold an agent - the work landed", () => {
+  // It lingers on the card so you can see the work shipped, which is exactly why the
+  // clause has to read `prState` and not `prUrl`.
+  const s = mkSession({ prUrl: "https://x/pr/1", prNumber: 1, prState: "merged" });
+  assert.equal(agentIsFree(s, [s], [], CFG, NOW), true);
+});
+
+test("an open pr stops holding the agent once the operator turns the knob off", () => {
+  const s = mkSession({ prUrl: "https://x/pr/1", prNumber: 1, prState: "open" });
+  assert.equal(agentIsFree(s, [s], [], cfg({ respectOpenPrs: false }), NOW), true);
+});
+
+test("an agent holding an open pr is passed over for a fresh worktree, not skipped", () => {
+  // The distinction that matters to the fleet: the TASK is still schedulable. Refusing
+  // the agent must cost a worktree, not the item.
+  const t = mkTask();
+  const busy = mkSession({ prUrl: "https://x/pr/1", prNumber: 1, prState: "open" });
+  const a = decide({ tasks: [t], sessions: [busy], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "dispatch");
+  assert.equal(a.kind === "dispatch" ? a.task.id : "", t.id);
+});
+
+test("another agent without a pr still takes the task while one holds an open one", () => {
+  const t = mkTask();
+  const busy = mkSession({ prUrl: "https://x/pr/1", prNumber: 1, prState: "open" });
+  const free = mkSession();
+  const a = decide({ tasks: [t], sessions: [busy, free], plan: mkPlan([[t.id, []]]) });
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.session.id : "", free.id);
+});
+
+// ---- a session that has already refused -----------------------------------------------
+//
+// What is at stake is the whole backlog, not one pairing. An assign refusal is sticky by
+// nature - a checkout holding uncommitted work stays that way until a human acts - so a
+// machine that kept choosing the same free-looking agent would return the same refused
+// action every tick and never reach the dispatch that would have made progress.
+
+test("a session that refused an assign is not offered again", () => {
+  const t = mkTask();
+  const refused = mkSession();
+  const a = decide({
+    tasks: [t],
+    sessions: [refused],
+    plan: mkPlan([[t.id, []]]),
+    unassignable: new Set([refused.id]),
+  });
+  assert.equal(a.kind, "dispatch");
+});
+
+test("excluding one refusing session does not exclude the next agent along", () => {
+  const t = mkTask();
+  const refused = mkSession();
+  const other = mkSession();
+  const a = decide({
+    tasks: [t],
+    sessions: [refused, other],
+    plan: mkPlan([[t.id, []]]),
+    unassignable: new Set([refused.id]),
+  });
+  assert.equal(a.kind, "assign");
+  assert.equal(a.kind === "assign" ? a.session.id : "", other.id);
 });
 
 // ---- the ceiling ---------------------------------------------------------------------

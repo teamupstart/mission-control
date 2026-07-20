@@ -1,9 +1,10 @@
 import { test, after } from "node:test";
 import { mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import type { Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 
@@ -130,13 +131,26 @@ test("an agent with no repo at all is refused", async () => {
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+/**
+ * The same fixture over a REAL checkout, which the reset in `assign` needs.
+ *
+ * `setup()`'s `/repo` is a path that does not exist, so every case above stops at the
+ * reset guard - fine for those, since they are all asserting an EARLIER refusal. Any
+ * test that means to reach the pane has to hand `assign` a directory git can answer
+ * questions about, or it passes for the wrong reason.
+ */
+function setupInRepo(prefix: string) {
+  const { clone } = mkOriginAndClone(prefix);
+  return { clone, ...setup({ cwd: clone, gitRoot: clone, repoRoot: clone }) };
+}
+
 test("a pane that refuses the prompt leaves the task in the backlog, droppable again", async () => {
   // The fixture session has neither a tmux nor a wezterm handle, so `injectPrompt`
   // refuses before writing anything. That is the case that must not leave a task
   // marked `running` with nothing running it - the operator would see it vanish from
   // the backlog and never start.
-  const { r, tasks, sessionId } = setup();
-  r.upsertTask(mkTask());
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-pane-");
+  r.upsertTask(mkTask({ repoRoot: clone }));
   const res = await tasks.assign("t1", sessionId);
   assert.equal(res.ok, false);
   const after = r.getTask("t1")!;
@@ -151,8 +165,12 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   // land inside that window. Merging onto the task as it was read before the injection
   // would write the old priority back over the new one, on a gesture that was only
   // meant to hand the task to an agent, with nothing failing to say so.
-  const { r, tasks, sessionId } = setup();
-  r.upsertTask(mkTask({ priority: "low", labels: ["infra"] }));
+  //
+  // It runs over a REAL checkout because assign resets one before it types: moved back
+  // onto `setup()`'s non-existent /repo, the reset guard refuses first and this stops
+  // reaching the injection window it exists to pin, with nothing saying so.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-retriage-");
+  r.upsertTask(mkTask({ repoRoot: clone, priority: "low", labels: ["infra"] }));
   const res = await tasks.assign("t1", sessionId, async () => {
     await tasks.update("t1", { priority: "blocker", labels: ["infra", "urgent"] });
     return { ok: true, pasted: true };
@@ -163,6 +181,65 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   assert.equal(after.sessionId, sessionId);
   assert.equal(after.priority, "blocker");
   assert.deepEqual(after.labels, ["infra", "urgent"]);
+});
+
+// ---- the reset that hands the agent over clean -----------------------------------------
+//
+// A reused agent keeps its own checkout, so without this it inherits the last task's
+// branch and context: the new work stacks onto a change that may still be out for
+// review, and no-mistakes - seeing a non-default branch - validates and pushes onto it,
+// putting two unrelated tasks in one PR.
+//
+// The reset is destructive and unattended, which is why the guard in front of it refuses
+// rather than proceeding. Nobody confirmed this one.
+
+test("a checkout holding uncommitted work refuses the assign instead of resetting over it", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-dirty-");
+  writeFileSync(join(clone, "keep.txt"), "base\nwork in progress\n");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+
+  const res = await tasks.assign("t1", sessionId);
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /cannot be reset/);
+  // The refusal has to be the whole story: the task is still droppable, and - the part
+  // that would be unrecoverable - the work is still on disk.
+  assert.equal(r.getTask("t1")?.status, "backlog");
+  assert.equal(readFileSync(join(clone, "keep.txt"), "utf8"), "base\nwork in progress\n");
+});
+
+test("a commit that never reached origin is work too, and refuses the same way", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-ahead-");
+  writeFileSync(join(clone, "keep.txt"), "base\nshipped locally\n");
+  gitIn(clone, "commit", "-qam", "work nobody pushed");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+
+  const res = await tasks.assign("t1", sessionId);
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /cannot be reset/);
+  assert.equal(gitIn(clone, "log", "-1", "--format=%s"), "work nobody pushed");
+});
+
+test("a clean agent is reset onto origin's default branch and released from its own", async () => {
+  // The state a recycled agent is actually in: it shipped, the branch is pushed, and it
+  // went idle still standing on it. Assign must hand the next task a checkout that looks
+  // like a freshly dispatched one - on origin's commit, holding no branch.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-clean-");
+  gitIn(clone, "checkout", "-qb", "feature/shipped");
+  const originHead = gitIn(clone, "rev-parse", "origin/main");
+
+  r.upsertTask(mkTask({ repoRoot: clone }));
+  // The pane refusal is expected and irrelevant here - it happens AFTER the reset, which
+  // is the ordering being pinned: the checkout is prepared before anything is typed.
+  await tasks.assign("t1", sessionId);
+
+  assert.equal(gitIn(clone, "rev-parse", "HEAD"), originHead);
+  // `--abbrev-ref` answers the literal string "HEAD" on a detached checkout, which is
+  // the state a pooled worktree is handed out in.
+  assert.equal(
+    gitIn(clone, "rev-parse", "--abbrev-ref", "HEAD"),
+    "HEAD",
+    "the finished branch must be released, or the next task commits onto its PR",
+  );
 });
 
 test("an assigned task never claims a worktree - cancel must not remove one", () => {

@@ -193,7 +193,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     enabled: true, mode: "live", repoAllowlist: ["/repo"], autoApproveAccess: true,
     triage: "on", maxFixAttempts: 3, maxFixRounds: 10,
     wrapupTriggers: ["drain"], wrapup: "ask",
-    autoBacklog: false, maxSessions: 3,
+    autoBacklog: false, maxSessions: 3, backlogRespectOpenPrs: true,
     ...over,
   };
 }

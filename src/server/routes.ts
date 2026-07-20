@@ -82,7 +82,7 @@ import { skillDrift } from "./skills/reconcile.ts";
 import { pendingReloads } from "./skills/reload.ts";
 import { readStandards } from "./standards.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
-import { fixDetail, forgetFixLog } from "./nomistakes-fixes.ts";
+import { fixDetail } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
 import { dropGateReply, getSkillsAcks, logGateReply } from "./db.ts";
 import {
@@ -92,7 +92,6 @@ import {
   kill,
   rename,
   resetPreview,
-  resetToOrigin,
   selectPaneOption,
   sendText,
   setPermissionMode,
@@ -100,6 +99,7 @@ import {
   validateSessionName,
   validateSessionNameAgainstTasks,
 } from "./actions.ts";
+import { resetSession } from "./reset.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
 import { listRepos } from "./repos.ts";
@@ -638,30 +638,9 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, ResetSchema);
     if (!parsed.ok) return parsed.res;
-    // Sample the run the user is looking at BEFORE the reset: the fetch inside can
-    // take ~30s, and the poller may swap or clear the run in that window.
-    const showing = session.nomistakes;
-    const r = await resetToOrigin(session, parsed.data.clear);
-    // The reset discarded the work the run validated, so retire its strip along
-    // with the rest of the card's state. Only on success: a failed reset left the
-    // work - and the run that describes it - in place. Retired against the
-    // checkout it wiped (root + the branch standing in it), not this session, so
-    // it holds for a sibling sharing the checkout and across a restart.
-    if (r.ok && showing) registry.dismissNomistakes(showing, r.root, session.gitBranch);
-    // The fix log needs no dismissal - the reset destroyed the commits it's read
-    // from, so it's empty by construction. But drop the cached read: it's keyed on
-    // HEAD, and the reset moved HEAD, so a stale entry could still be served.
-    if (r.ok && session.cwd) {
-      forgetFixLog(session.cwd);
-      registry.clearNomistakesFixes(session.id);
-    }
-    // The reset discarded the task these queued items were authored for - the branch
-    // is gone and (with `clear`) the agent's context is wiped - so clear the whole
-    // batch. This is the deliberate "start over", the one case that overrides the
-    // re-attach affordance a bare /clear leans on. Keyed on the PRE-reset session,
-    // whose note key still names the queue: a /clear only rotates that key once the
-    // agent processes it, which is after this handler returns.
-    if (r.ok) registry.clearQueue(noteKeyFor(session));
+    // The git reset AND every piece of session-scoped state that described the work it
+    // discarded - see `resetSession`, which `TaskManager.assign` shares.
+    const r = await resetSession(registry, session, parsed.data.clear);
     return c.json(r, r.ok ? 200 : 500);
   });
 

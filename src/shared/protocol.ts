@@ -622,6 +622,28 @@ export const ForemanConfigSchema = z.object({
    */
   autoBacklog: z.boolean().default(false),
   /**
+   * Whether an idle agent whose branch still carries an OPEN pull request is off-limits
+   * to the backlog autopilot.
+   *
+   * On by default, because the default has to be the safe reading of an ambiguous state.
+   * An agent that opened a PR and went quiet looks exactly like an agent that finished:
+   * `reportBucket` files it under idle, its work queue is empty, and once its task is
+   * marked done nothing binds it. Handing it the next backlog item then types into a
+   * checkout still standing on the PR's branch, so the new task's commits land on top of
+   * work that is out for review - and the reviewer's next `git pull` picks up changes
+   * nobody asked that PR for.
+   *
+   * Scoped to AUTOPILOT, like every other knob here. Dropping a task onto an agent from
+   * the board is a human saying "yes, that one", and the same asymmetry already governs
+   * the harness check in `freeAgentFor`: the drag gesture may, the background loop may
+   * not.
+   *
+   * Off is a real choice, not a footgun to hide: a fleet whose PRs auto-merge, or one
+   * where every task is dispatched into its own worktree anyway, is paying for a refusal
+   * that protects nothing.
+   */
+  backlogRespectOpenPrs: z.boolean().default(true),
+  /**
    * The ceiling on how many agents may be running at once before the backlog autopilot
    * stops launching new ones.
    *

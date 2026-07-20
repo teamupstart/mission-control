@@ -4,7 +4,8 @@ import type { UpdateTask } from "@shared/protocol.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
-import { injectPrompt, kill } from "./actions.ts";
+import { injectPrompt, kill, resetWouldDestroyWork } from "./actions.ts";
+import { resetSession } from "./reset.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
@@ -256,6 +257,12 @@ export class TaskManager {
    * `worktreePath` stays null, and that is precisely what keeps a later Cancel from
    * running `git worktree remove --force` over a directory we did not create.
    *
+   * That reuse is what the reset below is for: the agent keeps the checkout, so unless
+   * something puts it back to origin's default branch the new task inherits the last
+   * one's branch and context. It also means an assign now CLEARS the session's work
+   * queue, because the reset does - those items were authored against a branch that no
+   * longer exists.
+   *
    * Every refusal below is a state conflict the caller should surface, not retry.
    *
    * `inject` is a parameter for the same reason it is one on `injectPrompt` itself: it
@@ -285,6 +292,32 @@ export class TaskManager {
     // task's repo is a legitimate home for it, a different repo never is.
     if (!s.repoRoot || s.repoRoot !== t.repoRoot) {
       return { ok: false, error: `that agent is in a different repo (${s.repoRoot ?? "no repo"})` };
+    }
+
+    // A reused agent starts the new task from origin's default branch with a cleared
+    // context, not wherever the last one left it.
+    //
+    // The state this fixes is the ordinary one, not an edge case: an agent that just
+    // shipped is standing on its own feature branch with that work committed. Typing
+    // the next task in stacks unrelated commits on top of it, and no-mistakes, seeing a
+    // non-default branch, validates and pushes onto it - so two tasks arrive in one PR.
+    // `resetSession` is the same operation the Reset button performs (git reset --hard
+    // onto origin/main, clean, detach the branch, /clear), so a recycled agent is handed
+    // over in the shape a freshly dispatched one starts in.
+    //
+    // Guarded rather than unconditional, and the guard REFUSES rather than proceeding.
+    // A reset is destructive and nobody is watching this one: the button has a confirm
+    // dialog with a loss preview in front of it, and this has neither. So a checkout
+    // holding work sends the task back to the backlog with a sentence saying what is in
+    // the way, which the operator can act on - the one outcome we cannot offer is
+    // silently discarding it.
+    const holding = await resetWouldDestroyWork(s);
+    if (holding) {
+      return { ok: false, error: `that agent's checkout cannot be reset - ${holding}` };
+    }
+    const reset = await resetSession(this.registry, s, true);
+    if (!reset.ok) {
+      return { ok: false, error: `could not reset that agent's checkout - ${reset.error}` };
     }
 
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or

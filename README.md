@@ -896,12 +896,13 @@ whole backlog, works out which items depend on which, and then schedules one at 
 onto an agent that's already idle when there is one, or into a fresh worktree when there
 isn't - never past a ceiling you set.
 
-Two knobs, in the Foreman popover under **Backlog**:
+Three knobs, in the Foreman popover under **Backlog**:
 
 | Knob | Default | What it does |
 |---|---|---|
 | **Auto-schedule the backlog** | off | arms the autopilot |
 | **Max agents running at once** | `3` | the ceiling it won't launch past |
+| **Open PRs keep an idle agent off the backlog** | on | an agent whose branch still has an unmerged PR is not handed the next task |
 
 **Max agents counts every live agent on the machine**, not just the ones Mission launched -
 it's a statement about your machine's load, and a count that ignored the six sessions you
@@ -946,9 +947,32 @@ on the shared loop.
 since it consumes no new session. "Idle" is stricter here than the board's Idle column: the
 agent must be settled, hook-instrumented (an autopilot that can't observe a session must
 not type a whole task into it), have a pane, have no work queue of its own, no review
-waiting on you, be in the same repo, and be **the harness the task was filed for** - a
-Codex task is never typed into a Claude pane unasked. The daemon re-checks on arrival,
-because an agent can go busy between the decision and the request.
+waiting on you, **no open PR on its branch**, be in the same repo, and be **the harness the
+task was filed for** - a Codex task is never typed into a Claude pane unasked. The daemon
+re-checks on arrival, because an agent can go busy between the decision and the request.
+
+**An agent that shipped is not an agent that's free.** An agent which opened a PR and went
+quiet looks identical, on every other signal, to one that finished with nothing left to
+protect: it reads idle, its queue is empty, and once you mark its task done nothing binds
+it. Handing it the next item would type into a checkout still standing on the PR's branch,
+so the new work lands on a change that's out for review. So an **unmerged PR keeps the
+agent off the backlog** until it merges - turn off **Open PRs keep an idle agent off the
+backlog** if your PRs auto-merge and you'd rather have the throughput. A *merged* PR never
+blocks; it lingers on the card so you can see the work landed. This narrows *autopilot*
+only - dragging a task onto that agent yourself still works, because that's you saying
+"yes, that one".
+
+**A reused agent is reset before it's handed anything.** It keeps its own checkout, so
+without this the next task inherits the last one's branch and context - and no-mistakes,
+seeing a non-default branch, would validate and push onto it, putting two unrelated tasks
+in one PR. So an assign runs the same reset the card's **reset** control does first
+(`git reset --hard` onto origin's default branch, `git clean -fd`, release the branch,
+`/clear`), and the agent starts from main with a fresh context and an empty work queue. If
+the checkout is holding anything that reset would destroy - uncommitted files, or commits
+origin doesn't have - **the assign is refused instead**, and the task goes back to the
+backlog with a line saying what's in the way. The Reset button has a confirm dialog and a
+loss preview in front of it; this one has nobody watching, so the only thing it may not do
+is quietly discard your work.
 
 On the **board**, the Backlog column shows Foreman's reading: a **blocked** chip naming
 what an item waits on, a **next up** mark on the one it would take next, and - for a

@@ -33,6 +33,11 @@ export interface BacklogConfig {
   /** How long a session must sit idle before it counts as free. Shared with the queue. */
   settleMs: number;
   /**
+   * Whether an idle agent still holding an OPEN PR is off-limits (`backlogRespectOpenPrs`).
+   * See `agentIsFree`.
+   */
+  respectOpenPrs: boolean;
+  /**
    * True once planning has failed `PLAN_FAILURE_CAP` times in a row. The machine stops
    * asking and schedules SERIALLY instead - see `decideBacklogTick` step 3.
    */
@@ -69,6 +74,20 @@ export interface BacklogTickInput {
    * the world - so the machine stays pure and total.
    */
   recentlyActed?: ReadonlySet<string>;
+  /**
+   * Sessions the caller has recently tried and been REFUSED by, which it should stop
+   * offering as assign targets for a while.
+   *
+   * The same shape and the same justification as `recentlyActed`, one level over: a fact
+   * about one process's history, not about the world, so it stays the caller's to keep.
+   * What it prevents is specific and was reachable before this existed. A refused assign
+   * makes the tick return without acting, and the refusals that matter are STICKY - a
+   * checkout holding uncommitted work, a wedged pane - so the machine would pick the same
+   * session and the same task every 4s and never fall through to the dispatch that would
+   * have made progress. One bad session parked the whole backlog. Excluding the session
+   * lets the very next tick try another agent, or cut a fresh worktree.
+   */
+  unassignable?: ReadonlySet<string>;
 }
 
 /**
@@ -134,6 +153,14 @@ export function activeAgentCount(sessions: Session[], tasks: Task[]): number {
  *    a task to an agent that may be mid-thought and would then be unable to tell.
  *  - a pane: there is nowhere to type otherwise.
  *  - an empty work queue: Foreman is already feeding this session, one item at a time.
+ *  - no OPEN PR on its branch. The one clause here that is about the WORK rather than
+ *    the agent, and it exists because the two come apart exactly here: an agent that
+ *    opened a PR and stopped is indistinguishable, on every other signal above, from
+ *    one that finished and has nothing left to protect. Assigning types into a checkout
+ *    still standing on that branch, so the next task's commits land on a change that is
+ *    out for review, and the reviewer pulls work nobody asked that PR for. Configurable
+ *    (`backlogRespectOpenPrs`), on by default. A MERGED PR does not block: it lingers on
+ *    the card so you can see the work landed, and landed work is finished work.
  *  - no non-terminal task bound to it: it is already executing something of ours.
  *  - allowlisted: typing here is a live send, gated exactly like every other one.
  *
@@ -152,6 +179,7 @@ export function agentIsFree(
   if (!s.hooksSeen) return false;
   if (!hasPane(s)) return false;
   if (s.queue && s.queue.openCount > 0) return false;
+  if (cfg.respectOpenPrs && s.prState === "open") return false;
   if (!foremanAllowlisted(s.cwd, s.repoRoot, cfg.allowlist)) return false;
   return !tasks.some(
     (t) => t.sessionId === s.id && (t.status === "running" || t.status === "dispatching"),
@@ -165,8 +193,10 @@ function freeAgentFor(
   tasks: Task[],
   cfg: BacklogConfig,
   now: number,
+  unassignable: ReadonlySet<string>,
 ): Session | null {
   for (const s of sessions) {
+    if (unassignable.has(s.id)) continue;
     // Compared on repoRoot, not cwd - a linked worktree of the task's repo is a
     // legitimate home for it, a different repo never is. The same comparison
     // `TaskManager.assign` refuses on.
@@ -212,6 +242,7 @@ function freeAgentFor(
 export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   const { tasks, sessions, plan, cfg, now } = input;
   const acted = input.recentlyActed ?? new Set<string>();
+  const unassignable = input.unassignable ?? new Set<string>();
 
   if (!cfg.enabled) return { kind: "none", why: "" };
 
@@ -285,7 +316,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
   // - so taking a later item that has a home costs the head nothing and saves a
   // worktree. The head is still what gets launched when nothing can be assigned.
   for (const task of candidates) {
-    const session = freeAgentFor(task, sessions, tasks, cfg, now);
+    const session = freeAgentFor(task, sessions, tasks, cfg, now, unassignable);
     if (!session) continue;
     if (!cfg.mayActLive) {
       return {

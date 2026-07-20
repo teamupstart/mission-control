@@ -25,6 +25,7 @@ const BASE: ForemanConfig = {
   wrapupTriggers: ["drain"],
   wrapup: "ask",
   autoBacklog: false,
+  backlogRespectOpenPrs: true,
   maxSessions: 3,
 };
 
@@ -109,6 +110,38 @@ test("the popover keeps the in-the-moment knobs", () => {
   assert.match(html, /<legend>Work queues<\/legend>/);
   assert.match(html, /<legend>Trigger on<\/legend>/);
   assert.match(html, /<legend>Then<\/legend>/);
+});
+
+test("the backlog group carries the open-PR guard, checked by default", () => {
+  // The knob exists so the refusal is visible and reversible. A guard that silently
+  // withheld agents from the backlog with nothing on screen saying so would read as the
+  // autopilot being broken - which is exactly the report it would generate.
+  const html = renderPopover(mkState({ autoBacklog: true }));
+  assert.match(html, /<legend>Backlog<\/legend>/);
+  assert.match(html, /Open PRs keep an idle agent off the backlog/);
+  // The checkbox before that label is the one carrying `backlogRespectOpenPrs`.
+  const at = html.indexOf("Open PRs keep an idle agent off the backlog");
+  assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/);
+});
+
+test("a daemon too old to know the guard still renders it as on, matching what it does", () => {
+  // A web build ahead of the daemon gets no such key. Rendering it unticked would have
+  // the panel swear the guard is off while the server applies it - and the report that
+  // generates is "autopilot is ignoring my idle agent", with the explanation on screen
+  // saying the opposite.
+  const state = mkState();
+  delete (state.config as Partial<ForemanConfig>).backlogRespectOpenPrs;
+  const html = renderPopover(state);
+  const at = html.indexOf("Open PRs keep an idle agent off the backlog");
+  assert.match(html.slice(0, at).split("<input").pop() ?? "", /checked/);
+});
+
+test("turning the open-PR guard off says what that now allows", () => {
+  const html = renderPopover(mkState({ autoBacklog: true, backlogRespectOpenPrs: false }));
+  assert.match(html, /can be handed the next task/);
+  // And the hint is not shown while the guard is on - it would describe the opposite of
+  // what is happening.
+  assert.doesNotMatch(renderPopover(mkState({ autoBacklog: true })), /can be handed the next task/);
 });
 
 test("the wrap-up trigger group is a multi-select, and the action stays a radio group", () => {

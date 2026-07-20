@@ -124,7 +124,7 @@ export async function runStructured<S extends ZodTypeAny>(
   prompt: string,
   extract: (raw: string) => TypeOf<S> | null,
   label = "The model",
-  opts: { model?: string; timeoutMs?: number } = {},
+  opts: ClaudeRunOptions = {},
 ): Promise<StructuredResult<TypeOf<S>>> {
   const attempts = [
     prompt,
@@ -204,26 +204,57 @@ function jsonCandidates(text: string): string[] {
  * Note this runs through the local `claude` CLI, NOT the Anthropic API: there is no
  * API key in this path, and usage bills through whatever the CLI is logged in as.
  */
-export function runClaudeText(
-  prompt: string,
-  opts: { model?: string; timeoutMs?: number } = {},
-): Promise<string> {
+export interface ClaudeRunOptions {
+  model?: string;
+  timeoutMs?: number;
+  /**
+   * The `--tools` value. Defaults to `""` - EVERY tool disabled - because that is what
+   * makes it safe to embed untrusted transcript and repo text in a prompt, which every
+   * caller here does.
+   *
+   * Overriding it is a security decision, not a convenience. The Inspector does, and
+   * pays for it with four other layers (see `src/server/inspector/`); nothing else
+   * should without the same argument. The default stays `""` precisely so that widening
+   * this for one caller cannot widen it for the others by accident.
+   */
+  tools?: string;
+  /**
+   * Where the run spawns. Defaults to `HEADLESS_CWD` (a temp dir), which is right for
+   * every tool-less caller: with no tools, a working directory is meaningless, and a
+   * real one only risks the run noticing a repo it has no business in.
+   *
+   * A caller that DOES grant tools has to set this, because under `-p` the working
+   * directory is what scopes reads: there is no one to approve a prompt for a file
+   * outside it, so the read fails instead.
+   */
+  cwd?: string;
+  /** A `--settings` JSON string - how a tool-granting caller passes permission rules. */
+  settings?: string;
+}
+
+export function runClaudeText(prompt: string, opts: ClaudeRunOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
-    // `--tools ""` is a valid Claude Code CLI flag (verified to exit 0 with an
-    // empty value) that sets the available-tool list to empty, disabling every
-    // built-in tool. The prompt embeds untrusted child-session transcript text (and,
-    // for the queue verifier, untrusted repo content from the diff), and the
-    // model only ever needs to emit JSON - so a crafted/compromised transcript
-    // must not be able to steer it into invoking tools (a prompt-injection surface).
+    // `--tools` with an empty value is a valid Claude Code CLI flag (verified to exit 0)
+    // that sets the available-tool list to empty, disabling every built-in tool. That is
+    // the DEFAULT here and the reason this module is safe to hand untrusted text: the
+    // prompt embeds child-session transcripts and repo content from a diff, the model
+    // only ever needs to emit JSON, and a crafted transcript must not be able to steer
+    // it into invoking tools.
+    //
+    // `opts.tools` widens that for a caller that has argued for it - today only the
+    // Inspector, which needs to read source to review a diff properly and carries four
+    // other defence layers because of it. The default is empty rather than inherited so
+    // that one caller's grant can never become everyone's.
     // `detached: true` makes the child its own session/process-group leader with no
     // controlling terminal, so the session poller (which groups agents by tty and
     // skips tty-less ones) never discovers this headless run as a phantom
     // session. That covers discovery; `headlessEnv()` covers the other way in - the
     // hooks this run fires - which would otherwise bind it to a real card.
-    const args = ["-p", "--output-format", "json", "--tools", ""];
+    const args = ["-p", "--output-format", "json", "--tools", opts.tools ?? ""];
     if (opts.model) args.push("--model", opts.model);
+    if (opts.settings) args.push("--settings", opts.settings);
     const child = spawn(CLAUDE_BIN, args, {
-      cwd: HEADLESS_CWD,
+      cwd: opts.cwd ?? HEADLESS_CWD,
       stdio: ["pipe", "pipe", "pipe"],
       env: headlessEnv(),
       detached: true,

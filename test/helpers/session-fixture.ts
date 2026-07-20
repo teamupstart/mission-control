@@ -29,6 +29,7 @@ export function nm(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "harness/app-bugfixes",
     startedAt: 0,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,
@@ -87,6 +88,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     goal: { text: "Ensure all worktree changes are in main", source: "model", updatedAt: 0 },
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...over,
   };

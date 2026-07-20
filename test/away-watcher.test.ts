@@ -64,6 +64,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     goal: null,
     queue: null,
     orphanedQueue: null,
+    inspector: null,
     paneDialog: null,
     ...over,
   };

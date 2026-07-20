@@ -11,6 +11,7 @@
 // never blocks or fails the agent - even when the daemon is down.
 
 import { BASE_URL, captureTerminalEnv, readToken } from "../src/shared/harness-runtime.mjs";
+import { opensPullRequest } from "../src/shared/pr-command.mjs";
 
 // A GitHub PR URL as printed by `gh pr create` / `gh pr view`. Scoped to a real
 // pull path so a repo or compare link never masquerades as a PR.
@@ -33,6 +34,28 @@ function sniffPrUrl(payload) {
   const text = typeof field === "string" ? field : JSON.stringify(field);
   const m = PR_URL_RE.exec(text);
   return m ? m[0] : undefined;
+}
+
+/**
+ * Whether this tool call is the agent OPENING a pull request, as opposed to merely
+ * printing one's URL.
+ *
+ * The sniff above answers "a PR URL appeared" and is deliberately loose, because all
+ * it drives is a chip the poller retracts a tick later. This answers "we opened it",
+ * which is a different question with a much higher bar: it is what the Inspector
+ * adopts a PR on, and adopting wrongly means posting review comments on a pull
+ * request that belongs to someone else. The predicate itself lives in
+ * `src/shared/pr-command.mjs` so it can be table-tested; see the note there.
+ *
+ * Returns undefined rather than false when it doesn't match, so the common case adds
+ * nothing to the wire. The command itself is NEVER sent - only this boolean - so a
+ * command line carrying a secret doesn't leave the machine on account of this.
+ */
+function sniffPrCreated(payload) {
+  const event = payload.hook_event_name ?? process.argv[2] ?? "";
+  if (event !== "PostToolUse") return undefined;
+  if (payload.tool_name !== "Bash") return undefined;
+  return opensPullRequest(payload.tool_input?.command) ? true : undefined;
 }
 
 function readStdin() {
@@ -81,6 +104,7 @@ async function main() {
     // known mode rather than clearing it.
     permissionMode: payload.permission_mode,
     prUrl: sniffPrUrl(payload),
+    prCreated: sniffPrCreated(payload),
   };
 
   const ctrl = new AbortController();

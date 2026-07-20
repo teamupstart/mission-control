@@ -170,6 +170,22 @@ test("the run id survives the whole status -> card path", () => {
   assert.equal(summarize(parseAxiStatus(ERROR)), null);
 });
 
+// The PR url is the ONLY thing in this app that proves Mission Control opened a given
+// pull request - it comes from the process that ran the `pr` step, not from a branch
+// match or a regex over some tool's stdout. The Inspector adopts a PR for review off
+// the back of it and refuses to comment on anything it hasn't adopted, so a drop
+// anywhere along this path doesn't degrade a chip, it silently turns the reviewer off.
+//
+// It was in fact dropped for a long time: `assignRunScalar` handled six keys and this
+// wasn't one, so the line was parsed out of the TOON and thrown away.
+test("the PR the run opened survives the whole status -> card path", () => {
+  const card = summarize(parseAxiStatus(WATCHING_CI));
+  assert.equal(card?.prUrl, "https://github.com/mancej/ai-harness/pull/56");
+  // A run that hasn't reached its `pr` step yet reports no PR, rather than "" or a
+  // stale one - "not yet" and "none" have to be the same answer to the adopter.
+  assert.equal(summarize(parseAxiStatus(REVIEW_GATE))?.prUrl, null);
+});
+
 test("returns null for the error / not-initialized case", () => {
   assert.equal(parseAxiStatus(ERROR), null);
   assert.equal(parseAxiStatus("error: not in a git repository"), null);
@@ -204,6 +220,7 @@ function run(over: Partial<NmRunSummary> = {}): NmRunSummary {
     branch: "feature/x",
     startedAt: 1784115419914,
     endedAt: null,
+    prUrl: null,
     awaitingAgent: null,
     findingsSummary: null,
     gateStep: null,

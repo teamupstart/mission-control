@@ -1064,7 +1064,15 @@ cycle would deadlock two cards forever and look exactly like two cards waiting t
 a forgotten item would leave the plan permanently stale, which is an unbounded replanning
 loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
 the items in, and the plan is stored in dependency order. The read re-runs only when the
-backlog **gains** an item, so a steady backlog costs nothing. Three failures in a row and
+backlog **gains** an item, so a steady backlog costs nothing.
+
+**The read's time budget scales with the backlog** (`60s + 15s` an item, capped at 10 min;
+`FOREMAN_BACKLOG_TIMEOUT_MS` pins a flat one instead). It has to: the model writes one entry
+per task, so a two-dozen-item backlog is minutes of wall clock where a handful of items is
+seconds. A fixed cap worked on a short backlog and then stopped working for good once one
+grew past it - every read timed out, so no plan was ever stored, so the autopilot re-read
+the same backlog every tick and scheduled nothing while the board showed ready items and an
+idle fleet. Three failures in a row and
 Foreman stops asking and schedules **one task at a time, oldest first** - serial execution
 satisfies any dependency order by construction, so a broken planner degrades to slow rather
 than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
@@ -1612,7 +1620,7 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
 | `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |
-| `FOREMAN_BACKLOG_TIMEOUT_MS` | `90000` | Backlog autopilot: hard cap on one dependency read. Three failures in a row and Foreman schedules serially instead |
+| `FOREMAN_BACKLOG_TIMEOUT_MS` | scales with the backlog | Backlog autopilot: hard cap on one dependency read. Unset, the budget is `60s + 15s` per backlog item, capped at 10 min - the reply carries one written entry per task, so a fixed cap silently stops working once the backlog outgrows it. Set it to pin a flat ceiling instead. Three failures in a row and Foreman schedules serially |
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |

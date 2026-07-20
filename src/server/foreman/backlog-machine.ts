@@ -100,13 +100,30 @@ export interface BacklogTickInput {
  * mode exists because we could NOT read the dependencies, so pausing behind a human's
  * in-flight task too is the conservative reading, and the cheap one: it costs some
  * parallelism in a state that is already degraded.
+ *
+ * But "executing" has to mean something we can still SEE, which is why the sessions are
+ * read here. A task bound to a session that is gone is not executing anything - it is a
+ * row nothing will ever move, because a `running` task is only reconciled when the
+ * DAEMON restarts (`TaskManager.reconcileOnStartup`), never while it is up. Counting one
+ * turned serial mode from a degradation into a dead end: an agent whose terminal was
+ * closed left a `running` row behind, that row held the count above zero for as long as
+ * the daemon lived, and the fallback that exists so a broken planner "degrades to slow
+ * rather than to wrong" instead scheduled nothing at all, forever. Observed exactly that
+ * way - a backlog of two dozen ready items parked behind one dead row.
+ *
+ * A task with no session yet still counts: `dispatching`, or `running` with a tmux
+ * session we cut, is the discovery window, and that is the one this must not launch into.
  */
-function inFlightTasks(tasks: Task[]): number {
-  return tasks.filter(
-    (t) =>
-      t.status === "dispatching" ||
-      (t.status === "running" && (t.tmuxSession !== null || t.sessionId !== null)),
-  ).length;
+function inFlightTasks(tasks: Task[], sessions: Session[]): number {
+  const live = new Set(sessions.filter((s) => s.state !== "exited").map((s) => s.id));
+  return tasks.filter((t) => {
+    if (t.status === "dispatching") return true;
+    if (t.status !== "running") return false;
+    // Bound to an agent: in flight only while that agent is still one of ours.
+    if (t.sessionId !== null) return live.has(t.sessionId);
+    // Not bound yet, but we cut it a session - the window before discovery finds it.
+    return t.tmuxSession !== null;
+  }).length;
 }
 
 /**
@@ -292,7 +309,7 @@ export function decideBacklogTick(input: BacklogTickInput): BacklogAction {
 
   // Serial mode's cap, and it sits AHEAD of both ways of starting something. With no
   // dependency read to trust, at most one task may be executing at a time.
-  if (serial && inFlightTasks(tasks) > 0) {
+  if (serial && inFlightTasks(tasks, sessions) > 0) {
     return {
       kind: "none",
       why: "scheduling one at a time - Foreman could not read the backlog's dependencies",

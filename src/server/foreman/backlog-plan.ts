@@ -20,8 +20,64 @@ import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models
  */
 export const DEFAULT_BACKLOG_MODEL = FOREMAN_MODEL_SPECS.backlog.fallback;
 
-/** The planner's wall-clock cap. Generous: it runs rarely and blocks nothing live. */
-const BACKLOG_TIMEOUT_MS = Number(process.env.FOREMAN_BACKLOG_TIMEOUT_MS || 90_000);
+/**
+ * Fixed part of the planner's budget: spawning `claude -p` and reading the prompt.
+ * Independent of the backlog's length, which is what the per-item term is for.
+ */
+export const BACKLOG_BASE_MS = 60_000;
+
+/**
+ * Budget added per backlog item, because the reply grows with the backlog: the model is
+ * asked for one entry per task, each carrying a written `reason`.
+ *
+ * Sized off measurement rather than a guess, and off the SLOWEST measurement rather than
+ * the average. The 24-item backlog that produced this comment was timed end to end
+ * against the real CLI at 267s and again at 305s - the same prompt, the same model,
+ * nearly 40s apart, because the run competes with whatever else the operator's machine
+ * is doing. So the spread is the thing being budgeted for, not the mean: ~10.2s an item
+ * at the slow end once `BACKLOG_BASE_MS` is taken off, carried at roughly 2x here.
+ */
+export const BACKLOG_PER_TASK_MS = 20_000;
+
+/**
+ * The hard ceiling, whatever the backlog's length.
+ *
+ * `planBacklog` is awaited on the Foreman worker's single loop, so its budget is also
+ * the longest the fleet's needs-you triage and queue drain can go unattended. The
+ * scaling above has to stop somewhere for that reason, and a backlog long enough to hit
+ * this is one no single call was going to read well anyway.
+ *
+ * What makes a ceiling BELOW the scaling safe is that a timeout is now a degradation
+ * rather than an outage: three of them drop the machine to serial scheduling, which
+ * `inFlightTasks` (backlog-machine.ts) will actually advance. Trading a very long
+ * backlog's dependency read for a responsive fleet is the right way round only because
+ * of that; before it, the same trade stopped scheduling altogether.
+ */
+export const BACKLOG_CEILING_MS = 600_000;
+
+/**
+ * The planner's wall-clock budget for a read of `count` items.
+ *
+ * A CONSTANT was wrong by construction here, and it failed totally rather than
+ * partially. The cost of this call scales with the backlog - one written entry per task
+ * - while a fixed cap does not, so the feature worked on the small backlogs it was
+ * built against and stopped working, permanently and silently, once one grew. 90s could
+ * not cover the 24-item backlog above. Every attempt timed out, so no plan was ever
+ * stored, so `planStale` stayed true, so `decideBacklogTick` answered `plan` on every
+ * single tick: the autopilot spent 90s a pass to schedule nothing while the operator
+ * looked at two dozen ready items and an idle fleet. Backlogs GROW, which is what made
+ * a fixed cap a time bomb rather than a tuning miss.
+ *
+ * `FOREMAN_BACKLOG_TIMEOUT_MS` still overrides the whole calculation, flat: an operator
+ * who sets it is naming a hard ceiling for their own machine, and a value that quietly
+ * grew with their backlog would not be one.
+ */
+export function backlogTimeoutMs(count: number): number {
+  const override = Number(process.env.FOREMAN_BACKLOG_TIMEOUT_MS);
+  if (Number.isFinite(override) && override > 0) return override;
+  const scaled = BACKLOG_BASE_MS + BACKLOG_PER_TASK_MS * Math.max(0, count);
+  return Math.min(scaled, BACKLOG_CEILING_MS);
+}
 
 /**
  * Which model reads the backlog: config, then env, then the default.
@@ -217,7 +273,7 @@ export async function planBacklog(
     buildBacklogPrompt(backlog),
     (raw) => parseModelJson(raw, BacklogReportSchema),
     "The backlog planner",
-    { model, timeoutMs: BACKLOG_TIMEOUT_MS },
+    { model, timeoutMs: backlogTimeoutMs(backlog.length) },
   );
   if (result.kind === "failed") return result;
   return { kind: "ok", plan: sanitizePlan(result.value, backlog) };

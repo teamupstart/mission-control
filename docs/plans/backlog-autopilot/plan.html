@@ -277,6 +277,20 @@
     can say so.
   </div>
 
+  <h3>What one read is allowed to cost</h3>
+  <p>The read's time budget <strong>scales with the backlog</strong> - <code>60s + 20s</code> an
+    item, capped at 10 minutes, with <code>FOREMAN_BACKLOG_TIMEOUT_MS</code> pinning a flat one
+    instead. It has to: the model writes one entry per task, so the same call costs seconds for
+    a handful of items and minutes for two dozen.</p>
+  <div class="why">
+    A fixed cap is an expiry date, not a tuning value. The original 90s worked on the backlogs
+    it was built against and then failed <strong>totally and silently</strong> once one grew
+    past it: a read that never completes stores no plan, a backlog with no plan is stale on
+    every tick, and a stale backlog is re-read forever and scheduled never. The operator's only
+    symptom was two dozen ready items next to an idle fleet, with no error anywhere. Backlogs
+    grow - that is the direction of travel this feature exists for.
+  </div>
+
   <h3>When planning breaks</h3>
   <p>Three consecutive failures and the machine stops asking and drops to <strong>serial
     mode</strong>: one task in flight at a time, oldest first, covering assigns as well as
@@ -289,6 +303,18 @@
     times per cooldown. A daemon that refuses to <strong>store</strong> a plan keeps its own
     count and backoff, and at the same cap degrades the same way rather than halting the
     autopilot outright.</p>
+  <p>"In flight" is judged against the <strong>session list</strong>, not the task row alone. A
+    task with no session yet still counts - that discovery window is exactly what the cap is
+    protecting - but one bound to a session that is gone does not.</p>
+  <div class="why">
+    A <code>running</code> task is only ever reconciled when the <strong>daemon</strong>
+    restarts, so an agent whose terminal was closed leaves a row that reads <code>running</code>
+    for as long as the daemon lives. Counting it turned the fallback into a dead end rather than
+    a degradation: one dead row held the in-flight count above zero forever, and the mode that
+    exists so a broken planner "degrades to slow rather than to wrong" instead scheduled nothing
+    at all. Observed exactly that way, with two dozen ready items parked behind a single row
+    whose process had exited hours earlier.
+  </div>
   <p>One read is <strong>one model call</strong>, over the first 400 backlog items. Reading a
     longer backlog in batches was built and then taken back out: the calls run on the Foreman
     worker's single loop, which also drives queue drain and needs-you triage, so every extra

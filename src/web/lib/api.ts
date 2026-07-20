@@ -1,4 +1,5 @@
 import type {
+  BacklogPlan,
   ForemanEpisode,
   ForemanStatus,
   NmFixDetail,
@@ -46,6 +47,17 @@ async function fetchJson<T>(path: string): Promise<T | null> {
 
 export const fetchForemanConfig = () => fetchJson<ForemanConfig>("/api/foreman/config");
 export const fetchForemanStatus = () => fetchJson<ForemanStatus>("/api/foreman/status");
+/**
+ * Foreman's reading of the backlog - what waits on what, and in what order.
+ *
+ * Polled beside the config rather than streamed: it changes only when the backlog
+ * gains an item, which is far rarer than the SSE traffic it would ride on, and the
+ * board's use of it (a blocked chip, a "next up" marker) is chrome that can be a
+ * poll behind. `null` is the ordinary answer before Foreman has ever read the backlog,
+ * and is indistinguishable here from a failed fetch on purpose - both mean "draw the
+ * column with no plan", which is exactly the pre-autopilot rendering.
+ */
+export const fetchBacklogPlan = () => fetchJson<BacklogPlan>("/api/backlog/plan");
 /** Dispatch-time defaults the harness applies to the sessions it launches. */
 export const fetchHarnessesConfig = () => fetchJson<HarnessesConfig>("/api/harnesses/config");
 /** Away mode: whether you're away, since when, and the stall thresholds. */

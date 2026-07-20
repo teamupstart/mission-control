@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ForemanConfig, ForemanConfigPatch } from "@shared/protocol.ts";
-import type { ForemanStatus } from "@shared/types.ts";
-import { api, fetchForemanConfig, fetchForemanStatus } from "./lib/api.ts";
+import type { BacklogPlan, ForemanStatus } from "@shared/types.ts";
+import { api, fetchBacklogPlan, fetchForemanConfig, fetchForemanStatus } from "./lib/api.ts";
 
 // Foreman config + live status for the topbar control and the per-card notes.
 // Config is edited rarely (a control-panel poll is plenty); status carries the
@@ -24,6 +24,13 @@ function whyItFailed(error: string | undefined): string {
 export interface ForemanState {
   config: ForemanConfig | null;
   status: ForemanStatus | null;
+  /**
+   * Foreman's reading of the backlog, or null when it has never made one (or the read
+   * failed - see `fetchBacklogPlan`). Carried here rather than fetched by the Backlog
+   * column so it rides the poll this hook already runs, and so App stays the single
+   * owner of everything the layouts draw.
+   */
+  backlogPlan: BacklogPlan | null;
   update: (patch: ForemanConfigPatch) => Promise<void>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
@@ -32,6 +39,7 @@ export interface ForemanState {
 export function useForeman(): ForemanState {
   const [config, setConfigState] = useState<ForemanConfig | null>(null);
   const [status, setStatus] = useState<ForemanStatus | null>(null);
+  const [backlogPlan, setBacklogPlan] = useState<BacklogPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.
@@ -45,10 +53,20 @@ export function useForeman(): ForemanState {
   useEffect(() => {
     let alive = true;
     const tick = async (): Promise<void> => {
-      const [c, s] = await Promise.all([fetchForemanConfig(), fetchForemanStatus()]);
+      const [c, s, p] = await Promise.all([
+        fetchForemanConfig(),
+        fetchForemanStatus(),
+        fetchBacklogPlan(),
+      ]);
       if (!alive) return;
       if (c) setConfig(c);
       if (s) setStatus(s);
+      // Written unconditionally, unlike the two above: null is a MEANING here ("Foreman
+      // has no reading of the backlog"), not merely a failed read, and a plan that stuck
+      // on screen after the backlog was cleared would keep blaming a dependency that no
+      // longer exists. The cost of a transient failure is one poll of an unannotated
+      // column, which is the pre-autopilot rendering.
+      setBacklogPlan(p);
     };
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
@@ -85,5 +103,5 @@ export function useForeman(): ForemanState {
     [setConfig],
   );
 
-  return { config, status, update, error };
+  return { config, status, backlogPlan, update, error };
 }

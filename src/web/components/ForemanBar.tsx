@@ -228,6 +228,48 @@ export function ForemanPopover({
       </fieldset>
 
       {/*
+        The backlog autopilot: Foreman scheduling the fleet's backlog rather than one
+        session's queue (docs/plans/backlog-autopilot/plan.md).
+
+        Sits below the work-queue knobs because it is the same kind of knob one level
+        up - and, like the automated wrap-up actions above it, it is gated on live +
+        allowlist in the machine. The hint says so out loud rather than letting a ticked
+        box quietly do nothing, and the readout below it answers the question a stalled
+        backlog always raises: is it the ceiling, or is everything blocked?
+      */}
+      <fieldset className="foreman-knobs" disabled={!enabled}>
+        <legend>Backlog</legend>
+        <label className="alert-row">
+          <input
+            type="checkbox"
+            checked={config.autoBacklog}
+            onChange={(e) => void update({ autoBacklog: e.target.checked })}
+          />
+          Auto-schedule the backlog
+        </label>
+        <NumberSetting
+          value={config.maxSessions}
+          min={1}
+          max={20}
+          label="Max agents running at once"
+          onCommit={(n) => void update({ maxSessions: n })}
+        />
+        {enabled && config.autoBacklog && status && (
+          <p className="alert-hint dim">
+            {status.autopilot.active}/{status.autopilot.max} agents ·{" "}
+            {status.autopilot.ready} ready
+            {status.autopilot.blocked > 0 && ` · ${status.autopilot.blocked} blocked`}
+          </p>
+        )}
+        {enabled && config.autoBacklog && mode !== "live" && (
+          <p className="alert-hint dim">
+            Only launches in Live mode on an allowlisted repo - until then it just works out
+            the order.
+          </p>
+        )}
+      </fieldset>
+
+      {/*
         WHEN a wrap-up fires, then WHAT it does. Two fieldsets rather than one because
         they are two independent choices - any number of triggers, exactly one action -
         and a single group would imply the radios belong to whichever box was last

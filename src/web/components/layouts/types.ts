@@ -1,4 +1,4 @@
-import type { Session, Task } from "@shared/types.ts";
+import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
 
 /**
@@ -17,6 +17,15 @@ export interface SessionViewProps {
   tasks: Task[];
   /** Reopen the dispatch modal over a backlog task, to correct it or send it now. */
   onEditTask: (taskId: string) => void;
+  /**
+   * Foreman's reading of the backlog (dependencies + order), or null when it has none.
+   *
+   * Lives on the shared bundle rather than being fetched by `BacklogColumn`, per the
+   * rule at the top of this file: a layout arranges, it never decides - and a fourth
+   * layout that also wanted to show the backlog would otherwise grow its own fetch and
+   * its own poll.
+   */
+  backlogPlan: BacklogPlan | null;
   /** Sessions whose parked no-mistakes gate actually needs you (computed cross-session). */
   gateAlerts: ReadonlySet<string>;
   selectedId: string | null;

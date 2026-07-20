@@ -24,10 +24,18 @@ const BASE: ForemanConfig = {
   maxFixRounds: 10,
   wrapupTriggers: ["drain"],
   wrapup: "ask",
+  autoBacklog: false,
+  maxSessions: 3,
 };
 
 function mkState(over: Partial<ForemanConfig> = {}): ForemanState {
-  return { config: { ...BASE, ...over }, status: null, update: async () => {}, error: null };
+  return {
+    config: { ...BASE, ...over },
+    status: null,
+    backlogPlan: null,
+    update: async () => {},
+    error: null,
+  };
 }
 
 function renderPanel(state: ForemanState): string {

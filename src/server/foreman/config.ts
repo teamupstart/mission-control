@@ -1,8 +1,11 @@
 import type { ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
-import { reportBucket } from "@shared/session.ts";
+import { backlogTasks, reportBucket } from "@shared/session.ts";
+import { readyBacklog } from "@shared/backlog.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
+import { getBacklogPlan } from "../backlog.ts";
+import { activeAgentCount } from "./backlog-machine.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
 
@@ -93,7 +96,7 @@ function leaderAlive(now: number): boolean {
 /** Live status: config + whether the worker heartbeated + derived queue/counts. */
 export function foremanStatus(registry: Registry, now = Date.now()): ForemanStatus {
   const cfg = getForemanConfig();
-  const sessions = registry.snapshot().sessions;
+  const { sessions, tasks } = registry.snapshot();
   const queueDepth = countNeedsYou(sessions);
 
   // Scope counts to currently-live sessions: registry.listNotes() rehydrates
@@ -110,6 +113,15 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     if (lastActionAt === null || n.updatedAt > lastActionAt) lastActionAt = n.updatedAt;
   }
 
+  // The backlog readout. Derived here from the same `activeAgentCount` and
+  // `readyBacklog` the scheduler decides with, rather than counted a second way, so the
+  // popover's "3 / 5 agents" IS the ceiling being applied and its ready/blocked split
+  // is the same one that governs what gets launched. `ready` deliberately ignores the
+  // repo allowlist - it answers "is the dependency graph holding this up?", and the
+  // allowlist gets its own, separate refusal in the machine's log.
+  const backlog = backlogTasks(tasks);
+  const ready = readyBacklog(tasks, getBacklogPlan()).length;
+
   return {
     enabled: cfg.enabled,
     mode: cfg.mode,
@@ -119,6 +131,13 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     queueDepth,
     counts,
     lastActionAt,
+    autopilot: {
+      on: cfg.autoBacklog,
+      active: activeAgentCount(sessions, tasks),
+      max: cfg.maxSessions,
+      ready,
+      blocked: backlog.length - ready,
+    },
   };
 }
 

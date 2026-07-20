@@ -6087,6 +6087,63 @@ kbd {
   opacity: 0.6;
 }
 
+/* ---- backlog autopilot marks ----
+   Foreman's reading of the backlog, drawn on the same cards: what is waiting on
+   something else, and what it would take next.
+
+   Both are DIM by design. They are a scheduler's opinion sitting on a human's list,
+   so they have to be legible without competing with the title or with the live agents
+   in the columns to the right - a blocked backlog item is not an alert. The one
+   exception is a dependency that stopped (cancelled/failed), which will never clear on
+   its own and is the only one of these that actually needs you. */
+.bl-card.is-blocked {
+  opacity: 0.72;
+}
+.bl-card.is-blocked::before {
+  /* The spine goes flat: the card is still a task, it just isn't going anywhere. */
+  background: var(--dim);
+  opacity: 0.5;
+}
+.bl-card.is-next::before {
+  opacity: 1;
+  box-shadow: 0 0 8px color-mix(in oklab, var(--pr-merged) 55%, transparent);
+}
+.bl-blocked,
+.bl-next {
+  align-self: flex-start;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 1.7;
+  border-radius: 999px;
+  /* `--border`, not `--border-soft`: at this size a soft border disappears against the
+     card and the chip reads as a stray caption under the footer rather than as a mark
+     of the same family as `next up` beside it. Quiet is the intent; invisible is not. */
+  border: 1px solid var(--border);
+  color: var(--dim);
+  /* The intents these summarize can be long; a chip that wrapped to three lines would
+     push the Launch button out of reach on a 232px column. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bl-blocked.is-stopped {
+  color: var(--attention);
+  border-color: color-mix(in oklab, var(--attention) 40%, var(--border));
+}
+.bl-next {
+  color: color-mix(in oklab, var(--pr-merged) 70%, var(--fg));
+  border-color: color-mix(in oklab, var(--pr-merged) 40%, var(--border));
+}
+.bl-plan-note {
+  margin: 0;
+  padding: 6px 10px 2px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--dim);
+  font-style: italic;
+}
+
 /* ---- dragging a backlog card over the board ----
    While a card is in the air the board answers one question and no others: which
    agents may take it. Everything that can't recedes; the ones that can are the only

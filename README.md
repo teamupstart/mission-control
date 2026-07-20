@@ -796,6 +796,76 @@ it runs in any mode - you see Foreman's judgment before it ever types. A queue n
 hook-instrumented Claude session (there's no completion signal otherwise), and the panel
 says so rather than letting you queue work that can't run.
 
+## Backlog autopilot (Foreman schedules the fleet)
+
+A work queue drains one *session*. The **backlog autopilot** drains the *fleet's*
+[backlog](#dispatch-an-agent) - the items you've queued but not started. Foreman reads the
+whole backlog, works out which items depend on which, and then schedules one at a time:
+onto an agent that's already idle when there is one, or into a fresh worktree when there
+isn't - never past a ceiling you set.
+
+Two knobs, in the Foreman popover under **Backlog**:
+
+| Knob | Default | What it does |
+|---|---|---|
+| **Auto-schedule the backlog** | off | arms the autopilot |
+| **Max agents running at once** | `3` | the ceiling it won't launch past |
+
+**Max agents counts every live agent on the machine**, not just the ones Mission launched -
+it's a statement about your machine's load, and a count that ignored the six sessions you
+started by hand wouldn't be one. It bounds *autopilot* only: it never refuses a dispatch
+**you** clicked, because blocking a button you pressed to protect a background scheduler's
+budget is the worse surprise.
+
+**It only ever launches in Live mode, on an allowlisted repo** - the same gate the
+automated wrap-up actions clear, for the same reason. Launching an agent starts unattended
+work, and handing a task to a running agent types a whole prompt into a pane you may be
+sitting in front of; both are more consequential than answering a prompt. In **dry-run**
+and **semi-auto** it still *plans*, so you see the ordering and the dependency read on the
+board and can click **launch new agent** yourself. Dry-run means dry-run.
+
+**Dependencies come from a model, and are treated as one.** A fresh tool-less `claude -p`
+(Sonnet by default - `FOREMAN_BACKLOG_MODEL`) sees every backlog item's title and intent
+and returns an order plus, for each item, what it must wait for. The reply isn't trusted as
+written: ids that aren't in the backlog are dropped, self-references are dropped, **only the
+edges that close a cycle** are cut, and any item the model forgot is appended unblocked. A
+cycle would deadlock two cards forever and look exactly like two cards waiting their turn;
+a forgotten item would leave the plan permanently stale, which is an unbounded replanning
+loop. Every dependency that isn't part of a cycle survives, whatever order the model listed
+the items in, and the plan is stored in dependency order. The read re-runs only when the
+backlog **gains** an item, so a steady backlog costs nothing. Three failures in a row and
+Foreman stops asking and schedules **one task at a time, oldest first** - serial execution
+satisfies any dependency order by construction, so a broken planner degrades to slow rather
+than to wrong. That's a cooldown, not a latch: after `FOREMAN_BACKLOG_RETRY_MS` (10 min)
+one fresh read is tried, so an API blip heals itself instead of waiting for a restart. A
+daemon that refuses to *store* a plan degrades the same way rather than halting, on its own
+counter and its own backoff.
+
+One read, one model call, over the **first 400 backlog items**. Reading a longer backlog in
+several calls was tried and taken back out: they run on the Foreman worker's single loop,
+which also drives queue drain and needs-you triage, so each extra call is another span in
+which nothing else in the fleet is attended to. Past 400 the tail is scheduled **oldest
+first with no dependency information** - and, since staleness is coverage, a dispatch while
+the backlog is that long promotes an unplanned item into the head and costs one replan.
+That is the accepted trade: one call, only above 400, in exchange for a bounded worst case
+on the shared loop.
+
+**An idle agent is preferred to a new worktree**, and that preference survives the ceiling,
+since it consumes no new session. "Idle" is stricter here than the board's Idle column: the
+agent must be settled, hook-instrumented (an autopilot that can't observe a session must
+not type a whole task into it), have a pane, have no work queue of its own, no review
+waiting on you, be in the same repo, and be **the harness the task was filed for** - a
+Codex task is never typed into a Claude pane unasked. The daemon re-checks on arrival,
+because an agent can go busy between the decision and the request.
+
+On the **board**, the Backlog column shows Foreman's reading: a **blocked** chip naming
+what an item waits on, a **next up** mark on the one it would take next, and - for a
+dependency that was cancelled or failed, which will never clear on its own - the attention
+tone. Blocked cards stay draggable and launchable (**launch anyway**): a dependency read is
+a model's opinion, and overruling it should be one gesture. The Foreman popover carries the
+live readout - `2/3 agents · 4 ready · 1 blocked` - so "why is nothing launching?" is
+answerable without reading a log.
+
 ## Half-written text is kept
 
 A session card **keeps what you've typed** until it's actually delivered. Three of its
@@ -1165,6 +1235,11 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_EVAL_DEBOUNCE_MS` | `60000` | Foreman: minimum wall-clock gap between evaluations of the same session |
 | `FOREMAN_TRIAGE_MODEL` | `claude-haiku-4-5` | Foreman [cheap tier](#the-cheap-tier): Tier 1 router model (the `triageModel` config wins over this) |
 | `FOREMAN_TRIAGE_TIMEOUT_MS` | `30000` | Foreman cheap tier: hard cap on the Tier 1 router; a timeout just routes up to the full review |
+| `FOREMAN_BACKLOG_MODEL` | `claude-sonnet-5` | [Backlog autopilot](#backlog-autopilot-foreman-schedules-the-fleet): the model that reads the backlog's dependencies (the `backlogModel` config wins over this) |
+| `FOREMAN_BACKLOG_TIMEOUT_MS` | `90000` | Backlog autopilot: hard cap on one dependency read. Three failures in a row and Foreman schedules serially instead |
+| `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
+| `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
+| `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |
 | `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
 | `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative |
@@ -1191,7 +1266,7 @@ make init              # one-time bootstrap (deps, build, hooks, treehouse + no-
 make session           # start an agent in a fresh, gated worktree
 npm run dev            # daemon + web (dev)
 npm start              # daemon serving built UI
-npm run foreman        # Foreman auto-responder worker (drains the needs-you queue)
+npm run foreman        # Foreman worker (needs-you queue, work queues, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
 npm run typecheck      # tsc --noEmit

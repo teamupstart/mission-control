@@ -83,6 +83,8 @@ test("a backlog card carries a focusable way into the editor, not just a click h
   const html = renderToStaticMarkup(
     createElement(BacklogColumn, {
       tasks: [mkTask()],
+      allTasks: [mkTask()],
+      plan: null,
       onAssignError: () => {},
       onDragging: () => {},
       onEdit: () => {},

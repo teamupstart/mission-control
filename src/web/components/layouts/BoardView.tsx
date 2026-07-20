@@ -74,6 +74,12 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
     >
       <BacklogColumn
         tasks={backlog}
+        // The FULL task list as well as the backlog slice: a dependency very often
+        // points at a task that has already left the backlog (it is running, or done),
+        // and a column that could only see the backlog would report those as
+        // unsatisfied forever.
+        allTasks={props.tasks}
+        plan={props.backlogPlan}
         onAssignError={setDropError}
         onDragging={setDraggingRepo}
         onEdit={props.onEditTask}

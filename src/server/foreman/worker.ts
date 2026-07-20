@@ -37,6 +37,9 @@ import {
 import type { PromptedConfig } from "./prompted-wrapup.ts";
 import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
+import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
+import type { BacklogConfig } from "./backlog-machine.ts";
+import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem } from "./queue-verify.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
 
@@ -220,11 +223,6 @@ async function main(): Promise<void> {
       continue;
     }
 
-    if (targets.length === 0) {
-      await sleep(IDLE_MS);
-      continue;
-    }
-
     // Whether this pass actually moved anything. A non-empty `targets` is NOT the
     // same question, and conflating them spins the loop at BETWEEN_MS forever:
     // `queueWantsATick` selects on `openCount > 0`, which is "this queue has
@@ -237,6 +235,22 @@ async function main(): Promise<void> {
     // not the selector - a pass that changed nothing has, by definition, nothing to
     // hurry back for, and IDLE_MS is the same latency an idle set of sessions already accepts.
     let advanced = false;
+
+    // The FLEET-level step, run before the per-session ones and outside the
+    // "no targets" bail below. The backlog is about sessions that DO NOT EXIST YET, so
+    // gating it on `tickTargets` finding a live session with something to decide is
+    // exactly backwards: the pass where the whole fleet is quiet is the pass most likely
+    // to have capacity to launch into.
+    try {
+      if (await runBacklogAutopilot(client, cfg)) advanced = true;
+    } catch (err) {
+      log(`backlog autopilot failed (${String(err)})`);
+    }
+
+    if (targets.length === 0) {
+      if (!advanced) await sleep(IDLE_MS);
+      continue;
+    }
 
     for (const session of targets) {
       // Honour a mid-drain disable/mode change without finishing the whole list.
@@ -257,6 +271,285 @@ async function main(): Promise<void> {
 
     if (!advanced) await sleep(IDLE_MS);
   }
+}
+
+/**
+ * How long a task autopilot just acted on stays off the table.
+ *
+ * A belt-and-braces guard on top of the daemon's own: `POST /api/tasks/:id/dispatch`
+ * flips the task out of `backlog` before it answers, so the ordinary read already sees
+ * it as taken. This covers the cases where that is not enough - a response that never
+ * arrives (leaving us unsure whether it landed), a daemon restart mid-launch - because
+ * the failure it prevents is two agents and two worktrees on one task, which is far
+ * more expensive than a task waiting an extra minute.
+ */
+const ACTED_TTL_MS = 60_000;
+/**
+ * How long serial mode lasts before the planner is given another chance.
+ *
+ * Exhaustion has to be TIME-BOXED. The cap is there to stop a broken planner burning a
+ * model call every few seconds, and the states that trip it - an API outage, a rate
+ * limit - are overwhelmingly transient, so a permanent latch would mean a two-minute
+ * blip degrades scheduling until somebody notices and restarts the worker. Long enough
+ * that a genuinely broken planner is still costing a call per interval, not per tick.
+ */
+const PLAN_RETRY_MS = Number(process.env.FOREMAN_BACKLOG_RETRY_MS || 10 * 60_000);
+/** First wait after the daemon refuses a plan write; doubles per consecutive failure. */
+const PLAN_STORE_BACKOFF_MS = Number(process.env.FOREMAN_BACKLOG_STORE_BACKOFF_MS || 15_000);
+/** Ceiling on that doubling, so a long outage still retries at a sane rate. */
+const PLAN_STORE_BACKOFF_MAX_MS = 10 * 60_000;
+/** Task id -> when autopilot last acted on it. Deliberately in memory: see ACTED_TTL_MS. */
+const recentlyActed = new Map<string, number>();
+/** Consecutive backlog-planning failures. At PLAN_FAILURE_CAP the machine goes serial. */
+let backlogPlanFailures = 0;
+/** When the last planning failure landed, so PLAN_RETRY_MS can lift serial mode again. */
+let backlogPlanFailedAt = 0;
+/**
+ * Consecutive failures to STORE a plan, counted apart from `backlogPlanFailures`.
+ *
+ * A refused write is not a broken planner, so the two keep their own counts and their
+ * own recovery clocks - a daemon that was restarting must not spend the planner's
+ * strikes. What they share is the DEGRADATION they cause: see `backlogSerial`.
+ *
+ * It also needs its own brake. The plan never lands, so the machine asks for one again
+ * next tick, and without a wait that is a Sonnet call every IDLE_MS for as long as the
+ * route stays broken.
+ */
+let backlogStoreFailures = 0;
+/** Epoch ms before which the plan path is skipped entirely. See `backlogStoreFailures`. */
+let backlogStoreRetryAt = 0;
+/**
+ * The last thing the backlog said, so a steady state is logged ONCE.
+ *
+ * Without this the ordinary resting state of the feature - "at the agent ceiling",
+ * "the backlog is empty" - writes a line every IDLE_MS, forever, which is how a log
+ * stops being read at all. A CHANGE is news; the same answer for the ninth time is not.
+ */
+let lastBacklogNote = "";
+
+/** Drop expired entries, then hand the machine the ids that are still off the table. */
+function actedTaskIds(now: number): Set<string> {
+  for (const [id, at] of recentlyActed) {
+    if (now - at >= ACTED_TTL_MS) recentlyActed.delete(id);
+  }
+  return new Set(recentlyActed.keys());
+}
+
+/**
+ * Lift serial mode once the cooldown has run, so a transient outage self-heals.
+ *
+ * Logged unconditionally rather than through `noteBacklog`: this is a transition, and
+ * it is the one an operator staring at "scheduling one at a time" needs to see end.
+ */
+function rearmBacklogPlanning(now: number): void {
+  if (backlogPlanFailures < PLAN_FAILURE_CAP) return;
+  if (now - backlogPlanFailedAt < PLAN_RETRY_MS) return;
+  // One probe per cooldown, not a fresh set of three. `planBacklog` is a 90s blocking
+  // call on the loop that also drives queue drain and needs-you triage, so a planner
+  // that HANGS rather than erroring would stall everything else for four and a half
+  // minutes every cooldown. A single attempt still self-heals: it clears the count
+  // outright on success.
+  backlogPlanFailures = PLAN_FAILURE_CAP - 1;
+  lastBacklogNote = "";
+  log(
+    `backlog: retrying the dependency read after ${Math.round(PLAN_RETRY_MS / 1000)}s ` +
+      `of scheduling one at a time`,
+  );
+}
+
+/**
+ * Whether scheduling should degrade to serial right now.
+ *
+ * Two independent ways to get here, kept as separate counters because they are
+ * different faults: the planner cannot answer, or the daemon will not store what it
+ * answered. The DEGRADATION is shared on purpose. A refused write used to leave
+ * `planExhausted` false, so the machine kept deciding `plan` and the worker kept
+ * declining to act on it - a broken route silently switched the autopilot off rather
+ * than slowing it down.
+ *
+ * The store half is scoped to its backoff window, so when the wait elapses the machine
+ * asks for a plan again and the write gets one probe. Without that scoping this would
+ * be the permanent latch the planner's cooldown was written to remove.
+ */
+function backlogSerial(now: number): boolean {
+  if (backlogPlanFailures >= PLAN_FAILURE_CAP) return true;
+  return backlogStoreFailures >= PLAN_FAILURE_CAP && now < backlogStoreRetryAt;
+}
+
+/**
+ * Whether the daemon's answer positively means nothing was typed and nothing started.
+ *
+ * The documented refusals only: 404 for a task that is gone, 409 for a state conflict
+ * (already dispatched, agent busy, wrong repo, pane locked). Those leave the task
+ * exactly where it was, so the guard can be released and the item tried again at once.
+ *
+ * Anything else HOLDS the guard, and a 500 is the case that matters: `TaskManager.assign`
+ * types the prompt before it claims the row, and the claim is a synchronous SQLite write
+ * that can throw. That answer means the agent may already be working on the task while
+ * the row still reads `backlog` - releasing there would type the same task into the same
+ * pane again on the very next tick.
+ */
+function taskRefused(status: number): boolean {
+  return status === 404 || status === 409;
+}
+
+/** Exponential, capped: 15s, 30s, 60s ... 10m. */
+function storeBackoffMs(failures: number): number {
+  const wait = PLAN_STORE_BACKOFF_MS * 2 ** Math.max(0, failures - 1);
+  return Math.min(wait, PLAN_STORE_BACKOFF_MAX_MS);
+}
+
+/** Log a backlog outcome only when it differs from the last one. */
+function noteBacklog(msg: string): void {
+  if (!msg || msg === lastBacklogNote) return;
+  lastBacklogNote = msg;
+  log(`backlog: ${msg}`);
+}
+
+/** Policy knobs from config; timings from the module constants, as the queue does. */
+function backlogConfig(cfg: ForemanConfig, now: number): BacklogConfig {
+  return {
+    enabled: cfg.autoBacklog,
+    maxSessions: cfg.maxSessions,
+    allowlist: cfg.repoAllowlist,
+    // The SAME gate the queue's sends and the auto-wrap-up clear. Launching an agent and
+    // typing a task into someone's pane are both live acts; neither happens in dry-run.
+    mayActLive: cfg.mode === "live",
+    settleMs: SETTLE_MS,
+    planExhausted: backlogSerial(now),
+  };
+}
+
+/**
+ * The backlog's tick: ask the pure machine what to do, then do exactly that one thing.
+ *
+ * Same decide-then-act shape as `processTarget`, and for the same reason - all the
+ * precedence lives in `decideBacklogTick`, so it can be read as a table and cannot
+ * drift into the loop. This function only performs I/O and reports whether anything
+ * moved.
+ *
+ * "Anything moved" is judged strictly. A refused assign, a failed plan write and a
+ * failed launch all return FALSE even though work was attempted: the loop reads a true
+ * as "come straight back", and every one of those states persists, so claiming progress
+ * for them turns a broken daemon route into a request storm - and, on the plan path, a
+ * model call every BETWEEN_MS.
+ */
+async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): Promise<boolean> {
+  if (!cfg.autoBacklog) return false;
+
+  // Three reads, concurrently - all cheap loopback GETs against state the daemon already
+  // holds in memory. A failed read decides nothing: the machine's inputs would be
+  // partial, and a partial task list reads as spare capacity.
+  const snapshot = await Promise.all([
+    client.sessions(),
+    client.tasks(),
+    client.backlogPlan().catch(() => null),
+  ]).catch(() => null);
+  if (!snapshot) return false;
+  const [sessions, tasks, plan] = snapshot;
+
+  const now = Date.now();
+  // Read before the re-arm clears it, so a plan that lands can say the degradation
+  // ended. Counter-based rather than `backlogSerial`, which is false during the store
+  // path's probe window and would miss exactly the recovery worth announcing.
+  const degradedBefore =
+    backlogPlanFailures >= PLAN_FAILURE_CAP || backlogStoreFailures >= PLAN_FAILURE_CAP;
+  rearmBacklogPlanning(now);
+  const action = decideBacklogTick({
+    tasks,
+    sessions,
+    plan,
+    cfg: backlogConfig(cfg, now),
+    now,
+    // The machine skips these and takes the next item it can act on. Kept here rather
+    // than in the machine because it is a fact about THIS PROCESS's recent history, not
+    // about the state of the world.
+    recentlyActed: actedTaskIds(now),
+  });
+
+  if (action.kind === "none") {
+    noteBacklog(action.why);
+    return false;
+  }
+
+  if (action.kind === "plan") {
+    if (now < backlogStoreRetryAt) {
+      noteBacklog("waiting to retry the plan - the daemon refused the last write");
+      return false;
+    }
+    const result = await planBacklog(action.tasks, backlogModel(cfg));
+    if (result.kind === "failed") {
+      backlogPlanFailures++;
+      backlogPlanFailedAt = now;
+      noteBacklog(
+        `could not read the dependencies (${backlogPlanFailures}x): ${result.reason}` +
+          (backlogPlanFailures >= PLAN_FAILURE_CAP ? " - scheduling one at a time instead" : ""),
+      );
+      return false;
+    }
+    try {
+      await client.putBacklogPlan(result.plan);
+    } catch (err) {
+      // NOT a planning failure - the model answered fine, the daemon refused the write.
+      // Counted and backed off separately so a broken route does not spend the
+      // planner's strikes, though at its own cap it degrades the same way.
+      backlogStoreFailures++;
+      backlogStoreRetryAt = now + storeBackoffMs(backlogStoreFailures);
+      noteBacklog(
+        `planned the backlog but could not store it (${backlogStoreFailures}x, retrying in ` +
+          `${Math.round(storeBackoffMs(backlogStoreFailures) / 1000)}s)` +
+          (backlogStoreFailures >= PLAN_FAILURE_CAP
+            ? " - scheduling one at a time meanwhile"
+            : "") +
+          `: ${String(err)}`,
+      );
+      return false;
+    }
+    backlogStoreFailures = 0;
+    backlogStoreRetryAt = 0;
+    backlogPlanFailures = 0;
+    backlogPlanFailedAt = 0;
+    // Reset the change-only log: the next outcome is news whatever it says, because the
+    // whole picture just moved.
+    lastBacklogNote = "";
+    log(
+      `backlog: read ${result.plan.entries.length} item(s)` +
+        (result.plan.note ? ` - ${result.plan.note}` : ""),
+    );
+    if (degradedBefore) log("backlog: scheduling from the plan again, not one at a time");
+    return true;
+  }
+
+  if (action.kind === "assign") {
+    // Stamped BEFORE the call, not after: the failure this guards against is a request
+    // whose outcome we never learn, and a stamp that only happens on success is exactly
+    // the one that is missing then.
+    recentlyActed.set(action.task.id, now);
+    const r = await client.assignTask(action.task.id, action.session.id);
+    if (!r.ok) {
+      // Released only on a documented refusal, which is positive knowledge that nothing
+      // was typed; held on anything that leaves us unsure whether text reached the pane.
+      // Holding it always would walk the whole ready set out of reach one item per tick
+      // while a single pane stayed locked.
+      if (taskRefused(r.status)) recentlyActed.delete(action.task.id);
+      noteBacklog(`could not hand "${oneLine(action.task.title)}" over - ${r.error}`);
+      return false;
+    }
+    lastBacklogNote = "";
+    log(`backlog: handed "${oneLine(action.task.title)}" to ${action.session.name} (${action.why})`);
+    return true;
+  }
+
+  recentlyActed.set(action.task.id, now);
+  const r = await client.dispatchTask(action.task.id);
+  if (!r.ok) {
+    if (taskRefused(r.status)) recentlyActed.delete(action.task.id);
+    noteBacklog(`could not launch "${oneLine(action.task.title)}" - ${r.error}`);
+    return false;
+  }
+  lastBacklogNote = "";
+  log(`backlog: launched an agent for "${oneLine(action.task.title)}" (${action.why})`);
+  return true;
 }
 
 /**

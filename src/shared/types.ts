@@ -737,6 +737,26 @@ export interface ForemanStatus {
   counts: { answered: number; escalated: number; pending: number; skipped: number };
   /** epoch ms of the most recent Foreman note, or null. */
   lastActionAt: number | null;
+  /**
+   * The backlog autopilot's live readout: how much of the agent budget is spent, and
+   * how the backlog splits into schedulable and blocked.
+   *
+   * `active` counts EVERY live agent session plus the tasks still mid-provision, which
+   * is the same number `decideBacklogTick` refuses to launch past - so the popover's
+   * "3 / 5 agents" is the ceiling being applied, not a second opinion about it.
+   */
+  autopilot: {
+    /** Whether the backlog autopilot is armed (`autoBacklog` in the config). */
+    on: boolean;
+    /** Live agents + tasks mid-provision. */
+    active: number;
+    /** The configured ceiling (`maxSessions`). */
+    max: number;
+    /** Backlog items with every dependency satisfied - what autopilot may take next. */
+    ready: number;
+    /** Backlog items waiting on another task. */
+    blocked: number;
+  };
 }
 
 // ---- Custom skills ----
@@ -862,6 +882,41 @@ export interface Task {
   updatedAt: number;
   dispatchedAt: number | null;
   completedAt: number | null;
+}
+
+// ---- backlog autopilot (Foreman scheduling the backlog) ----
+
+/**
+ * One backlog task as Foreman's planner read it: what it must wait for, and why.
+ *
+ * `dependsOn` is CYCLE-FREE by construction - `sanitizePlan` breaks any cycle the
+ * model returns before the plan is ever stored. It has to: a cycle deadlocks the two
+ * tasks in it forever, and does so silently, since a blocked item looks exactly like
+ * an item that is correctly waiting its turn.
+ */
+export interface BacklogPlanEntry {
+  taskId: string;
+  /** Task ids that must reach `done` before this one may start. Often empty. */
+  dependsOn: string[];
+  /** One line on what this touches, or why it waits. Shown on the backlog card. */
+  reason: string | null;
+}
+
+/**
+ * Foreman's reading of the backlog: a scheduling order, and the dependencies behind it.
+ *
+ * Stored beside the tasks rather than on them (in `app_config`, like the Foreman
+ * config) because it is Foreman's OPINION about the backlog, not a fact about any one
+ * task - the same reason notes and episodes are not fields on `Session`. It is
+ * regenerated whenever it stops covering the backlog, so it is always a statement
+ * about a set of tasks that actually existed.
+ */
+export interface BacklogPlan {
+  /** In scheduling order, most-ready first. Covers every backlog task at the time it was made. */
+  entries: BacklogPlanEntry[];
+  /** One line on how the planner read the backlog, for the board. */
+  note: string | null;
+  generatedAt: number;
 }
 
 /** Compact task view denormalized onto a Session card (like NmRunSummary). */

@@ -157,6 +157,7 @@ test("card and console detail agree on every shared leaf", () => {
         sessions: [session],
         tasks: [],
         onEditTask: () => {},
+        backlogPlan: null,
         gateAlerts: new Set<string>(),
         selectedId: session.id,
         onSelect: () => {},

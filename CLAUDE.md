@@ -181,6 +181,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   order), plus a dispatch branch in `App.tsx`, usually an `ActionBarHandle` method and its
   registration, a `CommandBar` keycap, a README table row, and a `keybindings.test.ts` case. A
   new group also needs a `GROUPS` entry in `KeyboardPanel`.
+- **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
+  `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the
+  enforcement - a new id that is not implemented does not compile, and every capability is
+  either implemented or explicitly `null`. This is the *model provider* axis, orthogonal to
+  which agent a card runs: keep it out of anything Harness-shaped, or you cannot review a
+  Codex session with Claude. The contract is context isolation, not just the call shape -
+  read `LlmRunner`'s doc before adding one. Test: `llm-runner-contract.test.ts`. WHICH model
+  a given call uses is a different question, owned by `@shared/foreman-models.ts`.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.

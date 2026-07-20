@@ -15,6 +15,15 @@ import type { ZodTypeAny, TypeOf } from "zod";
 // Each caller builds its own `createLimiter` instead - Foreman is near-sequential
 // already, and the daemon caps its goal runs so a busy set of sessions can't fork a subprocess
 // per card.
+//
+// THIS MODULE IS NOW BEHIND AN INTERFACE. `src/server/llm/claude.ts` is the `LlmRunner`
+// implementation and delegates here rather than copying: the arguments below - why
+// `--tools` defaults to empty, why the child is detached, which flags are load-bearing by
+// their ABSENCE - stay next to the code they constrain. New callers should take a runner
+// (`src/server/llm/index.ts`) instead of importing this file; the existing ones are moved
+// across by a later item of the pluggable-integrations plan, which is also when
+// `runStructured` and `createLimiter` - provider-neutral, they only need a `run` - stop
+// naming `claude` at all.
 
 /**
  * The claude binary; overridable so a test/E2E can point at a fake.

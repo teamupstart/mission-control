@@ -160,7 +160,7 @@ export function pushEndsTheWait(pr: Pick<InspectorPr, "failCount" | "lastFailKin
  * rules below, the worktree cwd, the changed-path filter in the planner, and the
  * scrubber on every outbound string.
  */
-const REVIEW_TOOLS = "Read,Grep,Glob";
+export const REVIEW_TOOLS = "Read,Grep,Glob";
 
 /**
  * Path rules handed to Claude Code itself, so they are enforced by the harness rather
@@ -175,7 +175,7 @@ const REVIEW_TOOLS = "Read,Grep,Glob";
  * protects nothing it names; `Glob` confirms the files exist. The grant is what pays
  * for the tool access, so it has to cover the whole grant.
  */
-const DENY_PATHS = [
+export const DENY_PATHS = [
   "**/.env",
   "**/.env.*",
   "**/*.pem",
@@ -193,7 +193,14 @@ const DENY_PATHS = [
   "//Users/*/.mission-control/**",
 ];
 
-const DENY_SETTINGS = JSON.stringify({
+/**
+ * Exported alongside `REVIEW_TOOLS` and `DENY_PATHS` so `llm-runner-contract.test.ts` can
+ * assert that the `LlmRunner` tool grant renders this EXACT string. The Inspector is the
+ * only caller that holds tools, so it is the one that decides whether that interface fits;
+ * pinning the equality now is what makes the item that migrates this call site a provable
+ * no-op rather than a hopeful one.
+ */
+export const DENY_SETTINGS = JSON.stringify({
   permissions: {
     deny: DENY_PATHS.flatMap((p) => [`Read(${p})`, `Grep(${p})`, `Glob(${p})`]),
   },

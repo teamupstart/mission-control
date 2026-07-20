@@ -131,6 +131,29 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* Desktop shell: every floating layer has to cancel the drag region EXPLICITLY.
+
+   The compositor builds the window's drag region from element geometry, and the
+   initial value of -webkit-app-region is `none`, which is not `no-drag` - only an
+   explicit `no-drag` subtracts. So painting a modal on top of the bar does nothing:
+   the rectangle above still belongs to the OS, which swallows the mousedown, and the
+   renderer never sees a click. The button highlights on hover and simply does not fire.
+
+   That is why the settings and dispatch modals' ✕ was mostly dead - the modal starts
+   48px down and its ✕ lands around y=63-86, inside a bar that measures 110-127px tall.
+   The bar's height is not fixed either (the foldable usage row, and wrapping on a narrow
+   window), so the dead zone moves, which reads as a flaky button rather than a rectangle.
+   The alerts popover, which opens at y=57, had the same top strip eaten.
+
+   Anything fixed- or absolute-positioned that can land inside the bar belongs in this
+   list. Test: desktop-drag-region.test.ts. */
+.is-desktop .modal-backdrop,
+.is-desktop .alert-pop,
+.is-desktop .combobox-list,
+.is-desktop .cmdbar {
+  -webkit-app-region: no-drag;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -3347,6 +3370,19 @@ kbd {
 .icon-btn:hover:not(:disabled) {
   color: var(--fg);
   background: var(--panel);
+}
+/* The dismiss ✕ in a panel header, which the padding above left at 26x23 - under the
+   28px the rest of the topbar's icon buttons carry, and small enough that a near miss
+   reads as an unresponsive button. Scoped to the headers so the work queue's dense
+   rows, which share .icon-btn, keep their tighter size. */
+.modal-head .icon-btn,
+.report-head .icon-btn,
+.diff-head .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
 }
 /* Matches .btn:disabled, and the :not() above is half of it: a disabled button still
    takes :hover, so without both it would light up under the cursor while refusing the

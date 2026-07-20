@@ -199,6 +199,24 @@ So:
 Plus a documented composition rule: a session may hold a multiplexer handle, an emulator
 handle, or both; writes prefer the innermost (multiplexer), focus walks outward.
 
+**Landed** in `src/server/terminal/` - `types.ts` (both interfaces, the `Key` vocabulary,
+`BinSpec`), `registry.ts` (`MULTIPLEXERS` / `EMULATORS`, plus `bindPane` and `hostPanesFor`,
+which are the composition rule made executable), `tmux.ts` and `wezterm.ts`. No call site is
+migrated yet; the adapters are mechanism only, and the copy-mode refusal, pane lock, paste
+settle and submit read-back stay in `actions.ts` as the policy that composes them.
+
+Three refinements the sketch above did not have, each forced by the existing code:
+
+- **Keys are named, not written.** tmux takes `BTab`/`Up`, wezterm takes `\x1b[Z`/`\x1b[A`,
+  and each adapter renders a `Record<Key, string>` - so a new key fails typecheck in every
+  backend rather than being typed as literal text into someone's session.
+- **`SpawnResult` splits "a tab opened" from "we can address it".** `spawnWeztermTab`
+  returns a nullable pane id today and the focus fallback reads null as failure, which would
+  make Ghostty - which opens tabs perfectly well and cannot say what it made - look broken.
+- **`TerminalResult.outcomeUnknown` is required**, for the reason `RunResult` carries it: a
+  `paste-buffer` that died rather than answering may be sitting in the composer, and
+  `injectPrompt` re-pastes only on positive evidence of non-delivery.
+
 ```mermaid
 flowchart LR
   subgraph N["nesting today"]

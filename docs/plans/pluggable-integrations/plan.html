@@ -218,6 +218,14 @@
 </ul>
 <p>Plus a documented composition rule: a session may hold a multiplexer handle, an emulator handle, or both; writes prefer the innermost (multiplexer), focus walks outward.</p>
 
+<p><strong>Landed</strong> in <code>src/server/terminal/</code> &mdash; <code>types.ts</code> (both interfaces, the <code>Key</code> vocabulary, <code>BinSpec</code>), <code>registry.ts</code> (<code>MULTIPLEXERS</code> / <code>EMULATORS</code>, plus <code>bindPane</code> and <code>hostPanesFor</code>, which are the composition rule made executable), <code>tmux.ts</code> and <code>wezterm.ts</code>. No call site is migrated yet; the adapters are mechanism only, and the copy-mode refusal, pane lock, paste settle and submit read-back stay in <code>actions.ts</code> as the policy that composes them.</p>
+<p>Three refinements the sketch above did not have, each forced by the existing code:</p>
+<ul>
+<li><strong>Keys are named, not written.</strong> tmux takes <code>BTab</code>/<code>Up</code>, wezterm takes <code>\x1b[Z</code>/<code>\x1b[A</code>, and each adapter renders a <code>Record&lt;Key, string&gt;</code> &mdash; so a new key fails typecheck in every backend rather than being typed as literal text into someone&rsquo;s session.</li>
+<li><strong><code>SpawnResult</code> splits &ldquo;a tab opened&rdquo; from &ldquo;we can address it&rdquo;.</strong> <code>spawnWeztermTab</code> returns a nullable pane id today and the focus fallback reads null as failure, which would make Ghostty &mdash; which opens tabs perfectly well and cannot say what it made &mdash; look broken.</li>
+<li><strong><code>TerminalResult.outcomeUnknown</code> is required</strong>, for the reason <code>RunResult</code> carries it: a <code>paste-buffer</code> that died rather than answering may be sitting in the composer, and <code>injectPrompt</code> re-pastes only on positive evidence of non-delivery.</li>
+</ul>
+
 <figure>
 <div class="scroll">
 <svg viewBox="0 0 700 220" role="img" aria-label="Nesting: a wezterm pane contains a tmux pane, which contains the agent process. Writes go innermost first; focus walks outward.">

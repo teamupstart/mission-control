@@ -17,6 +17,7 @@ import {
   ForemanHeartbeatSchema,
   GateReplySchema,
   HarnessesConfigPatchSchema,
+  UiConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -73,6 +74,7 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -1130,6 +1132,23 @@ export function buildApp(
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     return c.json(setHarnessesConfig(parsed.data));
+  });
+
+  // --- Dashboard UI preferences (localhost only) ---
+  //
+  // Layout, keybindings, alert delivery, rich text. The daemon only stores these; nothing
+  // server-side reads them. They are here because `localStorage` is per-ORIGIN and per
+  // Electron profile, and a rename moved both out from under the operator - see
+  // docs/plans/ui-settings-to-daemon/plan.md.
+  // The GET carries `configured` alongside the config because an unset key parses to the
+  // defaults, and the dashboard's one-time adoption of pre-rename `localStorage` MUST NOT
+  // fire against a config the operator already has.
+  app.get("/api/ui/config", (c) => c.json(uiConfigView()));
+  app.put("/api/ui/config", async (c) => {
+    const parsed = await parseBody(c, UiConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    setUiConfig(parsed.data);
+    return c.json(uiConfigView());
   });
 
   // --- Cost telemetry config (localhost only) ---

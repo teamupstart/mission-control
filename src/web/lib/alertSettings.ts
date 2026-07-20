@@ -1,54 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback } from "react";
+import type { UiConfig } from "@shared/protocol.ts";
+import { uiConfig, updateUiConfig, useUiConfig } from "./uiConfig.ts";
 
 /**
- * Per-machine DELIVERY preferences: how this browser renders alerts it is given.
+ * DELIVERY preferences: how this machine renders alerts it is given.
  *
  * Deliberately does not include away mode. Away state and its thresholds are
  * durable server-side config (see src/server/away/config.ts) because away mode
  * has to survive the tab closing and the stall detector runs in the daemon; what
- * stays here is only what is genuinely local to this browser - whether it may
- * raise an OS notification and whether it may make a sound.
+ * stays here is only what is genuinely about output on this machine - whether it
+ * may raise an OS notification and whether it may make a sound.
+ *
+ * Stored in the daemon (`app_config.ui.alerts`) rather than `localStorage`, which is
+ * per-origin and was reset by the product rename. The stale `ai-harness.alerts` fallback
+ * that used to live here is gone: it named the wrong generation and could never fire, and
+ * `lib/uiCache.ts` now walks all three, once. See `lib/uiConfig.ts`.
  */
-export interface AlertSettings {
-  notifications: boolean;
-  sound: boolean;
-}
+export type AlertSettings = UiConfig["alerts"];
 
-const KEY = "mission-control.alerts";
-const LEGACY_KEY = "ai-harness.alerts";
-const DEFAULTS: AlertSettings = { notifications: false, sound: true };
-
-function load(): AlertSettings {
-  try {
-    // Fall back to the pre-rename key so saved preferences carry over.
-    const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY);
-    if (!raw) return DEFAULTS;
-    // A stored blob from before away mode moved server-side still carries `afk`
-    // and `digestMinutes`; picking fields rather than spreading drops them
-    // instead of resurrecting a flag nothing reads any more.
-    const saved = JSON.parse(raw) as Partial<AlertSettings>;
-    return {
-      notifications: saved.notifications ?? DEFAULTS.notifications,
-      sound: saved.sound ?? DEFAULTS.sound,
-    };
-  } catch {
-    return DEFAULTS;
-  }
-}
-
-/** Alert delivery preferences, persisted per-machine in localStorage. */
+/** Alert delivery preferences, stored in the daemon. */
 export function useAlertSettings(): [AlertSettings, (patch: Partial<AlertSettings>) => void] {
-  const [settings, setSettings] = useState<AlertSettings>(load);
-  useEffect(() => {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(settings));
-    } catch {
-      /* storage unavailable - keep in-memory only */
-    }
-  }, [settings]);
-  const update = useCallback(
-    (patch: Partial<AlertSettings>) => setSettings((s) => ({ ...s, ...patch })),
-    [],
-  );
-  return [settings, update];
+  const alerts = useUiConfig().alerts;
+  // Reads the live value out of the store rather than closing over `alerts`, so the
+  // callback is stable across renders and two toggles in one tick can't clobber each
+  // other. `alerts` is replaced whole, matching the server's shallow field merge.
+  const update = useCallback((patch: Partial<AlertSettings>) => {
+    void updateUiConfig({ alerts: { ...uiConfig().alerts, ...patch } });
+  }, []);
+  return [alerts, update];
 }

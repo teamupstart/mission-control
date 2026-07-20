@@ -806,6 +806,102 @@ export const HarnessesConfigPatchSchema = z
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
 
+// ---- dashboard UI preferences ----
+
+/**
+ * Which arrangement the dashboard is in. Lives here rather than in `src/web/lib/layout.ts`
+ * so the set of valid modes has ONE definition: the daemon validates a stored layout
+ * against the same list the render switch branches on. The labels and descriptions stay
+ * in the web lib - the daemon has no use for prose it never shows.
+ */
+export const LAYOUT_MODES = ["grid", "console", "board"] as const;
+export const LayoutModeSchema = z.enum(LAYOUT_MODES);
+/** Derived from the array, not from the schema, so reading it costs the web no zod. */
+export type LayoutMode = (typeof LAYOUT_MODES)[number];
+
+/**
+ * The operator's dashboard preferences: layout, rebound chords, alert delivery, and
+ * whether messages render as markdown. A schema-validated blob over the `app_config` KV,
+ * exactly like ForemanConfig/SkillsConfig/HarnessesConfig, so a new key needs no migration.
+ *
+ * ONE key rather than four, unlike the settings sections above, and the difference is
+ * server-side behaviour: skills writes symlinks, cost rewrites `~/.claude/settings.json`,
+ * foreman drives a worker. These four are pure display preferences the daemon only stores,
+ * so splitting them would buy four routes and four polls and nothing else.
+ *
+ * They lived in `localStorage` until the Mission Control rename reset all four at once -
+ * that store is keyed by ORIGIN and by Electron profile, and both moved (see
+ * `docs/plans/ui-settings-to-daemon/plan.md`). The daemon is the per-machine store these
+ * always wanted; `localStorage` is now a disposable first-paint cache in `lib/uiCache.ts`.
+ */
+/**
+ * The shipped preferences, as a PLAIN object - the one definition, which the schema
+ * below reads its `.default()`s from.
+ *
+ * Plain rather than derived from the schema (`UiConfigSchema.parse({})`) because the web
+ * needs these synchronously, before any fetch, to paint on a cold cache - and the web
+ * bundle must not pull zod in to get them. That is not hypothetical: zod is absent from
+ * `dist/web` today, and the only reason importing from this module is free is that
+ * everything the web takes from it tree-shakes to a constant. Keep it that way.
+ */
+export const UI_CONFIG_DEFAULTS = {
+  layout: "grid",
+  keybindings: {},
+  alerts: { notifications: false, sound: true },
+  richText: true,
+} as const;
+
+export const UiConfigSchema = z.object({
+  layout: LayoutModeSchema.default(UI_CONFIG_DEFAULTS.layout),
+  /**
+   * Rebound chords, as `ActionId -> chord`. Deliberately a loose record: `ActionId` is a
+   * web-only concept (`src/web/lib/keybindings.ts` owns the action table, and the daemon
+   * has no opinion on what is bindable), and `loadOverrides` already drops entries for
+   * actions it doesn't know. Validating the id set here would mean a build that removed
+   * an action could no longer READ its own config - it would 500 on a stored key instead
+   * of ignoring it, which is the one failure mode this record must not have.
+   */
+  keybindings: z.record(z.string()).default(UI_CONFIG_DEFAULTS.keybindings),
+  alerts: z
+    .object({
+      notifications: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.notifications),
+      sound: z.boolean().default(UI_CONFIG_DEFAULTS.alerts.sound),
+    })
+    .default(UI_CONFIG_DEFAULTS.alerts),
+  /** Render agent/human turns as markdown. On by default: agents write markdown. */
+  richText: z.boolean().default(UI_CONFIG_DEFAULTS.richText),
+});
+export type UiConfig = z.infer<typeof UiConfigSchema>;
+
+/**
+ * Partial update from the dashboard. A plain `.partial()` is right here, unlike
+ * `HarnessesConfigPatchSchema`: every top-level field is owned whole by exactly one panel
+ * (Layout sets `layout`, Keyboard sets `keybindings`, and so on), so replacing a named
+ * field wholesale is what the caller means. Nothing merges per-key, so nothing can be
+ * blanked by a patch that didn't mention it.
+ */
+export const UiConfigPatchSchema = UiConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type UiConfigPatch = z.infer<typeof UiConfigPatchSchema>;
+
+/**
+ * What the daemon reports back: the config, plus whether the operator has ever saved one.
+ *
+ * `configured` exists for exactly one job, and it is not decoration. On a cold origin the
+ * dashboard offers to adopt whatever an older build left in `localStorage` under a
+ * previous product name - and it must only do that when the daemon has NOTHING, or
+ * opening the dashboard on a new port would push months-old strays over the settings the
+ * operator is actually using. A bare `UiConfig` cannot express the difference: an unset
+ * key parses to the defaults, which is byte-identical to deliberately choosing them.
+ */
+export const UiConfigViewSchema = z.object({
+  configured: z.boolean(),
+  config: UiConfigSchema,
+});
+export type UiConfigView = z.infer<typeof UiConfigViewSchema>;
+
 // ---- cost telemetry ----
 
 /**

@@ -4,11 +4,18 @@
 // live here as an editable registry rather than being hard-coded in App. Each
 // action resolves to a *chord* - a canonical string like "s", "cmd+k", "/", or
 // "shift+Tab" - that both the runtime handler and the settings editor compare
-// against. Overrides persist per-machine in localStorage, mirroring the alert
-// settings; a lightweight external store lets every reader (the key handler, the
-// command bar, the settings panel) stay in lockstep without prop-drilling.
+// against. Overrides are stored in the daemon (`app_config.ui.keybindings`), per machine,
+// via the shared config store in `./uiConfig.ts`; this file keeps no copy of them, and
+// only derives the resolved chord map. A lightweight external store lets every reader
+// (the key handler, the command bar, the settings panel) stay in lockstep without
+// prop-drilling.
+//
+// They lived in localStorage until the Mission Control rename reset them: that store is
+// keyed by origin and by Electron profile, and the rename changed both. See
+// docs/plans/ui-settings-to-daemon/plan.md.
 
 import { useCallback, useSyncExternalStore } from "react";
+import { subscribeUiConfig, uiConfig, updateUiConfig } from "./uiConfig.ts";
 
 export type ActionId =
   | "roundup"
@@ -229,55 +236,50 @@ export function isReservedChord(chord: string): boolean {
 
 // ---- store ----------------------------------------------------------------
 
-const STORAGE_KEY = "mission-control.keybindings";
 type Overrides = Partial<Record<ActionId, string>>;
 
-function loadOverrides(): Overrides {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Overrides;
-    // Keep only known actions with non-empty string chords, dropping anything an
-    // older/newer build (or a hand-edit) left behind.
-    const clean: Overrides = {};
-    for (const a of ACTIONS) {
-      const v = parsed[a.id];
-      if (typeof v === "string" && v && v !== a.defaultBinding) clean[a.id] = v;
-    }
-    return clean;
-  } catch {
-    return {};
+/**
+ * Keep only known actions with non-empty chords that actually differ from the default,
+ * dropping anything an older/newer build (or a hand-edit) left behind.
+ *
+ * Applied on every read rather than once at load, because the source is now the shared
+ * config store and can be replaced under us by a hydrate. It is also why the daemon's
+ * schema keeps `keybindings` a loose record: a build that RETIRED an action must be able
+ * to read a config that still mentions it, and drop it here, rather than fail to parse.
+ */
+function sanitize(raw: Record<string, string>): Overrides {
+  const clean: Overrides = {};
+  for (const a of ACTIONS) {
+    const v = raw[a.id];
+    if (typeof v === "string" && v && v !== a.defaultBinding) clean[a.id] = v;
   }
+  return clean;
 }
 
-let overrides: Overrides = loadOverrides();
-const listeners = new Set<() => void>();
+function currentOverrides(): Overrides {
+  return sanitize(uiConfig().keybindings);
+}
 
-// A cached snapshot so useSyncExternalStore gets a stable reference between
-// changes (rebuilt only when overrides actually move).
-function computeResolved(): Record<ActionId, string> {
+function computeResolved(overrides: Overrides): Record<ActionId, string> {
   const out = {} as Record<ActionId, string>;
   for (const a of ACTIONS) out[a.id] = overrides[a.id] ?? a.defaultBinding;
   return out;
 }
-let snapshot = computeResolved();
 
+/**
+ * Write the overrides through to the daemon. This store holds NO copy of them - the
+ * shared config store is the only one - so there is nothing here to keep in step, and a
+ * rebind made in one surface cannot be stale in another.
+ */
 function commit(next: Overrides): void {
-  overrides = next;
-  snapshot = computeResolved();
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides));
-  } catch {
-    /* storage unavailable - keep in-memory only */
-  }
-  for (const l of listeners) l();
+  void updateUiConfig({ keybindings: next as Record<string, string> });
 }
 
 /** Rebind an action. Setting it back to its default clears the override. */
 export function setBinding(id: ActionId, chord: string): void {
   const def = ACTION_BY_ID.get(id);
   if (!def) return;
-  const next: Overrides = { ...overrides };
+  const next: Overrides = { ...currentOverrides() };
   if (chord === def.defaultBinding) delete next[id];
   else next[id] = chord;
   commit(next);
@@ -285,6 +287,7 @@ export function setBinding(id: ActionId, chord: string): void {
 
 /** Drop the override for one action, restoring its default. */
 export function resetBinding(id: ActionId): void {
+  const overrides = currentOverrides();
   if (!(id in overrides)) return;
   const next: Overrides = { ...overrides };
   delete next[id];
@@ -293,7 +296,7 @@ export function resetBinding(id: ActionId): void {
 
 /** Restore every action to its default. */
 export function resetAll(): void {
-  if (Object.keys(overrides).length === 0) return;
+  if (Object.keys(currentOverrides()).length === 0) return;
   commit({});
 }
 
@@ -327,12 +330,23 @@ export interface KeybindingsApi {
 
 // Stable references for useSyncExternalStore so it doesn't re-subscribe on every
 // render (an inline arrow would delete + re-add the listener each commit).
-function subscribe(cb: () => void): () => void {
-  listeners.add(cb);
-  return () => listeners.delete(cb);
-}
+const subscribe = subscribeUiConfig;
+
+// The resolved map is cached against the identity of the record it was derived from, so
+// useSyncExternalStore keeps getting the SAME reference until the overrides actually
+// move. Rebuilding per call would return a fresh object every time and loop the render.
+// Identity is the right key because the config store never mutates in place - every
+// change commits a new object.
+let cachedSource: Record<string, string> | null = null;
+let cachedSnapshot: Record<ActionId, string> = computeResolved({});
+
 function getSnapshot(): Record<ActionId, string> {
-  return snapshot;
+  const source = uiConfig().keybindings;
+  if (source !== cachedSource) {
+    cachedSource = source;
+    cachedSnapshot = computeResolved(sanitize(source));
+  }
+  return cachedSnapshot;
 }
 
 /** Live view of the resolved bindings; re-renders on any rebind/reset. */

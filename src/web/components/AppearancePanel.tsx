@@ -1,4 +1,4 @@
-import { useRichText } from "../lib/rich-text.tsx";
+import { useRichText } from "../lib/rich-text.ts";
 
 /**
  * How messages are drawn. Applies live behind the modal, which is the fastest way to

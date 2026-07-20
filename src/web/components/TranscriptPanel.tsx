@@ -13,7 +13,7 @@ import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { toolChip, transcriptRows } from "../lib/tools.ts";
 import { mergeEpisodes } from "../lib/episodes.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
-import { useRichText } from "../lib/rich-text.tsx";
+import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
 import {
   AttachmentStrip,

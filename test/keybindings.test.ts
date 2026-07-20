@@ -1,10 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// The store reads localStorage at import time and writes on every rebind. Node's
-// built-in global exists but throws without a backing file, which the store would
-// quietly swallow as "storage unavailable" - so stand up a real in-memory one
-// first, then import, to keep the persisted overrides observable here.
+// What is at stake: a rebind has to actually leave the machine now.
+//
+// Overrides used to be this store's own localStorage key. They are the daemon's
+// (`app_config.ui.keybindings`), reached through the shared config store, because
+// localStorage is keyed by ORIGIN and by Electron profile and the product rename moved
+// both - which silently reset every custom chord. localStorage survives only as a
+// first-paint cache. So this file stands up both halves before importing: an in-memory
+// localStorage (Node's built-in throws without a backing file, and the cache would
+// swallow that as "storage unavailable"), and a fetch stub standing in for the daemon.
 const store = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
   configurable: true,
@@ -12,6 +17,24 @@ Object.defineProperty(globalThis, "localStorage", {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, v),
     removeItem: (k: string) => void store.delete(k),
+  },
+});
+
+/** Every config PUT the store made, in order. The rebind's real destination. */
+const puts: Array<Record<string, unknown>> = [];
+/** Flip to make the daemon refuse the next write, so the revert path is reachable. */
+let daemonAccepts = true;
+Object.defineProperty(globalThis, "fetch", {
+  configurable: true,
+  value: (path: string, init?: { method?: string; body?: string }) => {
+    if (init?.method === "PUT" && path === "/api/ui/config") {
+      puts.push(JSON.parse(init.body ?? "{}") as Record<string, unknown>);
+    }
+    return Promise.resolve({
+      ok: daemonAccepts,
+      status: daemonAccepts ? 200 : 400,
+      json: () => Promise.resolve(daemonAccepts ? {} : { error: "refused" }),
+    });
   },
 });
 
@@ -34,9 +57,23 @@ function defaults(): Record<ActionId, string> {
   return out;
 }
 
-/** The overrides the store persists per machine (defaults are never written). */
+/**
+ * The overrides as mirrored into the first-paint cache (defaults are never written).
+ *
+ * The cache is what the next cold load paints from, so it is the observable side of a
+ * rebind; `sent()` covers the durable side. Both, because a rebind that updates one and
+ * not the other is exactly the bug this whole change exists to remove.
+ */
 function stored(): Partial<Record<ActionId, string>> {
-  return JSON.parse(store.get("mission-control.keybindings") ?? "{}");
+  const cached = JSON.parse(store.get("mission-control.ui") ?? "{}") as {
+    keybindings?: Partial<Record<ActionId, string>>;
+  };
+  return cached.keybindings ?? {};
+}
+
+/** The overrides in the most recent PUT to the daemon. */
+function sent(): Partial<Record<ActionId, string>> {
+  return (puts.at(-1)?.keybindings ?? {}) as Partial<Record<ActionId, string>>;
 }
 
 // chordFromEvent only reads key + the modifier flags, so a literal is a complete
@@ -176,10 +213,14 @@ test("reset rebinds and returns to its default like any other action", () => {
   // The settings modal drives rebinds through exactly these calls.
   setBinding("reset", "cmd+Backspace");
   assert.equal(stored().reset, "cmd+Backspace");
+  assert.equal(sent().reset, "cmd+Backspace", "the rebind never reached the daemon");
   assert.equal(chordFromEvent(key("Backspace", { meta: true })), "cmd+Backspace");
 
   resetBinding("reset");
   assert.equal(stored().reset, undefined, "reset-to-default left an override behind");
+  // The absence has to be PUT too. A patch that merged per-key would make dropping an
+  // override unexpressible, since dropping one is exactly an absent key.
+  assert.equal(sent().reset, undefined, "the daemon was never told to drop the override");
 
   // Rebinding straight back to the default is a no-op, not a stored override.
   setBinding("reset", "ctrl+r");
@@ -188,6 +229,27 @@ test("reset rebinds and returns to its default like any other action", () => {
   setBinding("reset", "cmd+Backspace");
   resetAll();
   assert.deepEqual(stored(), {}, "reset-all left overrides behind");
+  assert.deepEqual(sent(), {}, "reset-all never reached the daemon");
+});
+
+test("a rebind the daemon refuses is taken back, not left on screen", async () => {
+  // The chord governs what the runtime handler fires on, so a control showing a binding
+  // the daemon rejected is worse than one that never moved: the key would do nothing.
+  setBinding("filter", "cmd+1");
+  assert.equal(stored().filter, "cmd+1");
+
+  daemonAccepts = false;
+  try {
+    setBinding("filter", "cmd+2");
+    // The optimistic write lands first; the revert is a microtask behind the response.
+    assert.equal(stored().filter, "cmd+2", "the optimistic write should be immediate");
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(stored().filter, "cmd+1", "a refused rebind was left showing");
+  } finally {
+    daemonAccepts = true;
+  }
+
+  resetAll();
 });
 
 test("rebinding reset onto another action's chord is reported as a conflict", () => {

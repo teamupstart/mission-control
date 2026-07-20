@@ -1,0 +1,197 @@
+import { tmuxMultiplexer } from "./tmux.ts";
+import { weztermEmulator } from "./wezterm.ts";
+import type {
+  EmulatorId,
+  EmulatorPane,
+  EmulatorTarget,
+  Key,
+  MultiplexerId,
+  Multiplexer,
+  MuxClient,
+  MuxTarget,
+  TerminalEmulator,
+  TerminalResult,
+} from "./types.ts";
+
+/**
+ * The two backend registries, and the rule for composing a session's handles.
+ *
+ * `Record<MultiplexerId, Multiplexer>` is the same compiler enforcement
+ * `SESSION_FIELD_COMPARATORS` uses in `server/registry.ts`: adding an id to the union
+ * fails typecheck until an adapter exists, and an adapter cannot exist until every
+ * capability is either implemented or explicitly declared null. Nothing here may become a
+ * lookup with a default - a default is how a backend ends up half-integrated and quiet
+ * about it.
+ *
+ * ## The composition rule
+ *
+ * A session may hold a multiplexer handle, an emulator handle, or BOTH - a tmux pane lives
+ * inside a wezterm pane, and `correlate` keeps both handles when one tty maps to each.
+ * Given both:
+ *
+ *   - **Writes and captures prefer the innermost handle.** The agent's real pane is the
+ *     multiplexer pane; the emulator handle addresses the client showing it, so typing
+ *     there types at whatever that client currently displays. `bindPane` is this rule, and
+ *     it is the only place it should be written - it is currently open-coded, identically,
+ *     in `sendText`, `injectPrompt`, `capturePaneText` and `paneKey`.
+ *
+ *   - **Focus walks outward.** Selecting the pane inside the multiplexer
+ *     (`Multiplexer.select`) decides what the session shows; it raises nothing. Bringing it
+ *     in front of a human is then the emulator's job, and for a multiplexer-hosted session
+ *     the emulator handle on the session is NOT the tab to raise: the agent sits on a
+ *     multiplexer pane tty while the tab sits on the client tty. The tab is found by
+ *     joining `Multiplexer.clients` to `TerminalEmulator.list` on that shared tty
+ *     (`hostPanesFor`), and only if no tab hosts it does the walk end at
+ *     `EmulatorSpawn.tab(attachArgv(session))`.
+ *
+ * The second half is why this is two interfaces. Every step of that walk needs a capability
+ * the other axis does not have.
+ */
+
+export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = {
+  tmux: tmuxMultiplexer(),
+};
+
+export const EMULATORS: Record<EmulatorId, TerminalEmulator> = {
+  wezterm: weztermEmulator(),
+};
+
+/** A multiplexer pane on a session: which backend, and how to address it there. */
+export interface MuxHandle extends MuxTarget {
+  backend: MultiplexerId;
+}
+
+/** An emulator pane on a session: which backend, and how to address it there. */
+export interface EmulatorHandle extends EmulatorTarget {
+  backend: EmulatorId;
+}
+
+/**
+ * The terminal handles a session holds. Either may be null; both may be set.
+ *
+ * Structural rather than a slice of `Session`, so the resolvers below stay pure and are
+ * reachable from a test with two object literals. Phase 3 of the migration replaces
+ * `Session.tmux` / `Session.wezterm` with a list this is read from.
+ */
+export interface TerminalHandles {
+  multiplexer: MuxHandle | null;
+  emulator: EmulatorHandle | null;
+}
+
+/** The three write verbs, already aimed at one pane. See `PaneWrite` for their contract. */
+export interface BoundWrite {
+  text(text: string): Promise<TerminalResult>;
+  keys(keys: readonly Key[]): Promise<TerminalResult>;
+  paste: ((text: string) => Promise<TerminalResult>) | null;
+}
+
+/**
+ * One session's pane, with the backend and the target already applied.
+ *
+ * Partial application is the point. A caller holding this cannot ask which vendor it got,
+ * and so cannot branch on one: the difference between a multiplexer target and an emulator
+ * target - the difference that forces `if (session.tmux) … else if (session.wezterm) …`
+ * into twelve functions today - is closed over here. What remains visible are capability
+ * nulls, which callers SHOULD branch on, because those are real differences in what can be
+ * done rather than in who is doing it.
+ */
+export interface BoundPane {
+  kind: "multiplexer" | "emulator";
+  backend: MultiplexerId | EmulatorId;
+  /** Human label for error text ("tmux", "WezTerm"). */
+  label: string;
+  /**
+   * The pane's identity as a string, for lock keys, miss counters and log lines.
+   *
+   * The same spelling `paneToken` (`@shared/pane.ts`) emits, which is where phase 0
+   * collapsed the four copies that used to disagree. Built from `backend.id` rather than by
+   * calling that function, because the resolver is generic over the registries and a third
+   * multiplexer must not need a token function written for it; the agreement is that a
+   * backend id IS its token prefix, and `terminal-registry.test.ts` pins it against
+   * `paneToken` so the two cannot drift apart.
+   */
+  token: string;
+  /** Null when the backend cannot type into a pane at all (an emulator with no scripting). */
+  write: BoundWrite | null;
+  capture: (() => Promise<string | null>) | null;
+  /**
+   * The multiplexer mode swallowing keystrokes right now, or null for none. Null CAPABILITY
+   * means the backend has no such concept - an emulator never does. The two must not be
+   * conflated: "no mode" is evidence a write will land, "cannot ask" is not.
+   */
+  mode: (() => Promise<string | null>) | null;
+}
+
+/**
+ * Resolve a session's handles to the one pane its writes and captures address.
+ *
+ * The innermost handle wins - see the composition rule above. Null means the session has no
+ * pane we can drive, which is a legitimate state (an agent in a terminal we do not
+ * integrate with) and the honest error for every caller that needed one.
+ */
+export function bindPane(handles: TerminalHandles): BoundPane | null {
+  const mux = handles.multiplexer;
+  if (mux) {
+    const backend = MULTIPLEXERS[mux.backend];
+    const target: MuxTarget = mux;
+    // Each capability is read out before being bound, so a null stays a null rather than
+    // becoming a closure that dereferences one.
+    const { write, capture, paneMode } = backend;
+    return {
+      kind: "multiplexer",
+      backend: backend.id,
+      label: backend.label,
+      token: `${backend.id}:${mux.paneId}`,
+      write: {
+        text: (text) => write.text(target, text),
+        keys: (keys) => write.keys(target, keys),
+        paste: write.paste ? (text) => write.paste!(target, text) : null,
+      },
+      capture: capture ? () => capture(target) : null,
+      mode: paneMode ? () => paneMode(target) : null,
+    };
+  }
+  const emu = handles.emulator;
+  if (emu) {
+    const backend = EMULATORS[emu.backend];
+    const target: EmulatorTarget = emu;
+    const { write, capture } = backend;
+    return {
+      kind: "emulator",
+      backend: backend.id,
+      label: backend.label,
+      token: `${backend.id}:${emu.paneId}`,
+      write: write
+        ? {
+            text: (text) => write.text(target, text),
+            keys: (keys) => write.keys(target, keys),
+            paste: write.paste ? (text) => write.paste!(target, text) : null,
+          }
+        : null,
+      capture: capture ? () => capture(target) : null,
+      // An emulator has no session-level input mode to be stuck in. This is the null that
+      // says so, rather than a probe that always answers "not in one".
+      mode: null,
+    };
+  }
+  return null;
+}
+
+/**
+ * The emulator panes whose tabs host a client attached to `session`, in enumeration order.
+ *
+ * The outward half of the composition rule, kept pure because it is a join and not an
+ * effect. Both ttys arrive normalized (`normTty`), so this is an equality test - the
+ * `/dev/` strip that `findSessionHostPanes` does inline is a normalization bug waiting for
+ * a backend that reports the prefix on both sides.
+ */
+export function hostPanesFor(
+  session: string,
+  clients: readonly MuxClient[],
+  panes: readonly EmulatorPane[],
+): EmulatorPane[] {
+  const ttys = new Set(
+    clients.filter((c) => c.session === session && c.tty).map((c) => c.tty as string),
+  );
+  return panes.filter((p) => p.tty && ttys.has(p.tty));
+}

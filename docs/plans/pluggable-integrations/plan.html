@@ -220,6 +220,20 @@
 </ul>
 <p>Plus a documented composition rule: a session may hold a multiplexer handle, an emulator handle, or both; writes prefer the innermost (multiplexer), focus walks outward.</p>
 
+<p><strong>Landed</strong> in <code>src/server/terminal/</code> &mdash; <code>types.ts</code> (both interfaces, the <code>Key</code> vocabulary, <code>BinSpec</code>), <code>registry.ts</code> (<code>MULTIPLEXERS</code> / <code>EMULATORS</code>, plus <code>bindPane</code> and <code>hostPanesFor</code>, which are the composition rule made executable), <code>tmux.ts</code> and <code>wezterm.ts</code>, <code>exec.ts</code> (the subprocess seam the adapters are testable through) and <code>bin.ts</code>. No call site is migrated yet; the adapters are mechanism only, and the copy-mode refusal, pane lock, paste settle and submit read-back stay in <code>actions.ts</code> as the policy that composes them.</p>
+<p><code>bin.ts</code> closes the first row of the divergence table rather than adding to it: <code>resolveWeztermBin</code> moved its body there as <code>resolveBin(BinSpec)</code> and <code>config.ts</code> keeps a one-line wrapper for the call sites this phase does not reach, so the change whose purpose is to stop copies multiplying does not land a fifth copy of bin resolution. Behavior is unchanged (env override, then the first existing candidate, then the bare name on PATH), and no <code>TMUX_BIN</code> env var was invented, because tmux has no such convention.</p>
+<p>Three refinements the sketch above did not have, each forced by the existing code:</p>
+<ul>
+<li><strong>Keys are named, not written.</strong> tmux takes <code>BTab</code>/<code>Up</code>, wezterm takes <code>\x1b[Z</code>/<code>\x1b[A</code>, and each adapter renders a <code>Record&lt;Key, string&gt;</code> &mdash; so a new key fails typecheck in every backend rather than being typed as literal text into someone&rsquo;s session.</li>
+<li><strong><code>SpawnResult</code> splits &ldquo;a tab opened&rdquo; from &ldquo;we can address it&rdquo;.</strong> <code>spawnWeztermTab</code> returns a nullable pane id today and the focus fallback reads null as failure, which would make Ghostty &mdash; which opens tabs perfectly well and cannot say what it made &mdash; look broken. The adapter reads <code>spawnWeztermTabResult</code> instead, which reports the spawn&rsquo;s own <code>RunResult</code> beside the id, so a spawn that was killed rather than answering is not reported as proof that no tab exists.</li>
+<li><strong><code>TerminalResult.outcomeUnknown</code> is required</strong>, for the reason <code>RunResult</code> carries it: a <code>paste-buffer</code> that died rather than answering may be sitting in the composer, and <code>injectPrompt</code> re-pastes only on positive evidence of non-delivery.</li>
+</ul>
+<p>Two things the migration commits will carry that a reader of their diffs must not mistake for a pure move:</p>
+<ul>
+<li><strong>The adapters terminate flag parsing; the inline call sites do not.</strong> <code>send-keys</code>, <code>new-session</code> and <code>wezterm send-text</code> all parse their trailing arguments as options, so a reply beginning with a dash (<code>-v is what broke it</code>) dies in the arg parser and never reaches the pane. Verified on tmux 3.6b and wezterm&rsquo;s clap parser; both fixed by <code>--</code>, and the terminator changes nothing about how what follows is read.</li>
+<li><strong>Every wezterm command in the adapter goes through <code>cli --no-auto-start</code> with <code>weztermEnv()</code>.</strong> The writes in <code>actions.ts</code> and the captures in <code>discovery/pane-capture.ts</code> use neither, so they inherit <code>WEZTERM_UNIX_SOCKET</code> while the pane ids they are given came from <code>listWeztermPanes</code>, which drops it. Routing them through the adapter puts commands and ids on the same mux.</li>
+</ul>
+
 <figure>
 <div class="scroll">
 <svg viewBox="0 0 700 220" role="img" aria-label="Nesting: a wezterm pane contains a tmux pane, which contains the agent process. Writes go innermost first; focus walks outward.">

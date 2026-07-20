@@ -1,8 +1,8 @@
 import { join } from "node:path";
-import { existsSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { AgentType } from "@shared/types.ts";
 import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
+import { resolveBin, WEZTERM_BIN } from "./terminal/bin.ts";
 
 /** Runtime coordinates and the `MISSION_`/legacy env resolution live in the shared
  * runtime module so the daemon, the MCP bridge, and the hook can never disagree.
@@ -109,10 +109,12 @@ export const PR_POLL_MS = Number(envVar("PR_POLL_MS") ?? 20_000);
 /**
  * Resolve the wezterm CLI. It's usually on PATH, but on macOS it ships inside
  * the app bundle and is often not linked, so fall back to the known location.
+ *
+ * The rule moved to `terminal/bin.ts` as `resolveBin`, because it is not wezterm's: every
+ * backend needs an env override and an ordered candidate list, and tmux is currently a
+ * bare literal at ~19 call sites for want of one. This wrapper stays for the call sites
+ * the terminal migration has not reached yet.
  */
 export function resolveWeztermBin(): string {
-  if (process.env.WEZTERM_BIN) return process.env.WEZTERM_BIN;
-  const bundled = "/Applications/WezTerm.app/Contents/MacOS/wezterm";
-  if (existsSync(bundled)) return bundled;
-  return "wezterm"; // hope it's on PATH
+  return resolveBin(WEZTERM_BIN);
 }

@@ -17,6 +17,7 @@ how to run it, read `README.md`.
 | `src/mcp` | `server.ts` | MCP tools, stdio child of Claude Code. Reaches the daemon over HTTP. |
 | `src/server/foreman` | `worker.ts` | Auto-responder. Separate process, HTTP only. |
 | `src/server/inspector` | `worker.ts` | Reviews the PRs we opened. In the daemon, not the Foreman. |
+| `src/server/terminal` | `registry.ts` | tmux/wezterm behind two interfaces. Mechanism only; the write policy stays in `actions.ts`. |
 | `hooks/` | `harness-hook.mjs` | Bare node per Claude hook event. POSTs to the daemon. |
 
 - The Foreman is a separate process and **never touches the DB**. If it needs state, add a
@@ -208,6 +209,19 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   Codex session with Claude. The contract is context isolation, not just the call shape -
   read `LlmRunner`'s doc before adding one. Test: `llm-runner-contract.test.ts`. WHICH model
   a given call uses is a different question, owned by `@shared/foreman-models.ts`.
+- **Terminal backends**: `MULTIPLEXERS` / `EMULATORS` in `src/server/terminal/registry.ts`,
+  typed `Record<MultiplexerId, …>` / `Record<EmulatorId, …>`, so a new id fails typecheck
+  until its adapter is complete. **They are two axes, not one**: a tmux pane lives *inside* a
+  wezterm pane, so a `Multiplexer` has named sessions and a copy-mode probe and cannot raise
+  a window, while a `TerminalEmulator` raises windows and has no persistence. Optional
+  capabilities are `T | null` and null is a declaration - Ghostty has no scripting CLI, so
+  `list` / `write` / `capture` are all legitimately null. Writes bind to the innermost handle
+  (`bindPane`); focus walks outward via `clients` -> `hostPanesFor` -> `spawn(attachArgv)`.
+  Adding a `Key` fails typecheck in every adapter's `Record<Key, string>` until it says what
+  that key looks like in its own convention (tmux `BTab`, wezterm `\x1b[Z`). Tests:
+  `terminal-registry.test.ts`, `terminal-adapters.test.ts`. **Migration in progress** - most
+  call sites still branch on `session.tmux` / `session.wezterm` directly; see
+  `docs/plans/pluggable-integrations/plan.md` phase 2.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.

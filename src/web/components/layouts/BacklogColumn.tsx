@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { BacklogBlocker } from "@shared/backlog.ts";
-import type { BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
+import type { AssignResetConfirm, BacklogPlan, Session, Task, TaskPriority } from "@shared/types.ts";
 import { backlogIndex, blockersIn, nextUpTaskId } from "@shared/backlog.ts";
 import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
@@ -263,14 +263,28 @@ export function canAcceptTask(session: Session, repoRoot: string | null): boolea
   return session.repoRoot != null && session.repoRoot === repoRoot;
 }
 
-/** Hand a dragged task to a session, reporting any refusal to the caller. */
+/**
+ * Hand a dragged task to a session, reporting any refusal to the caller.
+ *
+ * One refusal is not a complaint but a question: the drop resets the agent, and when
+ * that would take its work queue or the branch it stands on, the daemon answers with the
+ * breakdown and changes nothing. That is routed to `onConfirm` rather than shown as an
+ * error, because the operator has a decision to make and the payload already says what
+ * they are deciding about. An agent with nothing to lose never reaches it.
+ */
 export async function dropTaskOnSession(
   e: React.DragEvent,
   session: Session,
   onError: (message: string) => void,
+  onConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void,
 ): Promise<void> {
   const id = e.dataTransfer.getData("application/x-mission-task");
   if (!id) return;
   const r = await api.assignTask(id, session.id);
-  if (!r.ok) onError(r.error ?? "could not hand that to the agent");
+  if (r.ok) return;
+  if (r.resetConfirm) {
+    onConfirm({ taskId: id, confirm: r.resetConfirm });
+    return;
+  }
+  onError(r.error ?? "could not hand that to the agent");
 }

@@ -37,7 +37,7 @@ import {
 import type { PromptedConfig } from "./prompted-wrapup.ts";
 import { applyQueueAction, noteKeyOf, resolveLiveSession } from "./queue-apply.ts";
 import type { QueueActions } from "./queue-apply.ts";
-import { PLAN_FAILURE_CAP, decideBacklogTick } from "./backlog-machine.ts";
+import { PLAN_FAILURE_CAP, assignRefusalParksSession, decideBacklogTick } from "./backlog-machine.ts";
 import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
@@ -301,6 +301,19 @@ const PLAN_STORE_BACKOFF_MS = Number(process.env.FOREMAN_BACKLOG_STORE_BACKOFF_M
 const PLAN_STORE_BACKOFF_MAX_MS = 10 * 60_000;
 /** Task id -> when autopilot last acted on it. Deliberately in memory: see ACTED_TTL_MS. */
 const recentlyActed = new Map<string, number>();
+/**
+ * How long a session that refused an assign stays off the target list.
+ *
+ * Longer than `ACTED_TTL_MS` because the refusals are a different kind of fact. A task
+ * stamp guards a request whose outcome we never learned, which resolves itself in
+ * seconds; an assign refusal is a STATE - a checkout holding uncommitted work, a wedged
+ * pane - that a human has to change. Retrying it every minute would put a `git status`
+ * and a `rev-list` on that session forever for no chance of a different answer, and the
+ * moment the human does clear it the session is picked up on the next expiry anyway.
+ */
+const REFUSED_TTL_MS = 10 * 60_000;
+/** Session id -> when it last refused an assign. See `REFUSED_TTL_MS`. */
+const refusedAssign = new Map<string, number>();
 /** Consecutive backlog-planning failures. At PLAN_FAILURE_CAP the machine goes serial. */
 let backlogPlanFailures = 0;
 /** When the last planning failure landed, so PLAN_RETRY_MS can lift serial mode again. */
@@ -334,6 +347,14 @@ function actedTaskIds(now: number): Set<string> {
     if (now - at >= ACTED_TTL_MS) recentlyActed.delete(id);
   }
   return new Set(recentlyActed.keys());
+}
+
+/** Drop expired entries, then hand the machine the sessions still off the target list. */
+function refusedSessionIds(now: number): Set<string> {
+  for (const [id, at] of refusedAssign) {
+    if (now - at >= REFUSED_TTL_MS) refusedAssign.delete(id);
+  }
+  return new Set(refusedAssign.keys());
 }
 
 /**
@@ -417,6 +438,7 @@ function backlogConfig(cfg: ForemanConfig, now: number): BacklogConfig {
     // typing a task into someone's pane are both live acts; neither happens in dry-run.
     mayActLive: cfg.mode === "live",
     settleMs: SETTLE_MS,
+    respectOpenPrs: cfg.backlogRespectOpenPrs,
     planExhausted: backlogSerial(now),
   };
 }
@@ -466,6 +488,10 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
     // than in the machine because it is a fact about THIS PROCESS's recent history, not
     // about the state of the world.
     recentlyActed: actedTaskIds(now),
+    // Same reasoning, one level over: sessions that have already turned an assign down.
+    // Without this a sticky refusal picks the same pair every tick and the backlog never
+    // reaches the dispatch that would have moved it. See `unassignable`.
+    unassignable: refusedSessionIds(now),
   });
 
   if (action.kind === "none") {
@@ -533,9 +559,19 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       // Holding it always would walk the whole ready set out of reach one item per tick
       // while a single pane stayed locked.
       if (taskRefused(r.status)) recentlyActed.delete(action.task.id);
+      // The session, not the task, is what was wrong with this pairing - the same task
+      // is very likely fine on the next agent, or in a fresh worktree. Stamped on a
+      // documented refusal only: a 5xx or a dropped connection says nothing about the
+      // session, and could have typed. And only when the daemon attributes the refusal
+      // to the session, since a task that left the backlog says nothing about the agent
+      // that was offered it - see `assignRefusalParksSession`.
+      if (taskRefused(r.status) && assignRefusalParksSession(r.scope)) {
+        refusedAssign.set(action.session.id, now);
+      }
       noteBacklog(`could not hand "${oneLine(action.task.title)}" over - ${r.error}`);
       return false;
     }
+    refusedAssign.delete(action.session.id);
     lastBacklogNote = "";
     log(`backlog: handed "${oneLine(action.task.title)}" to ${action.session.name} (${action.why})`);
     return true;

@@ -31,6 +31,7 @@ function render(over: Partial<Session> = {}): string {
       draggingRepo: null,
       onDropped: () => {},
       onDropError: () => {},
+      onDropConfirm: () => {},
     }),
   );
 }

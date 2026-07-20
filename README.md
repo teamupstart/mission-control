@@ -532,6 +532,34 @@ dispatched or queued, or when you hit **Clear** to start a fresh one - either wa
 comes back seeded with that repo, not blank. A submit that fails leaves the form open with
 your fields intact so you can retry.
 
+### Hand a shelved task to an agent that's already running
+
+On the [Board](#layout-cards-console-or-board), **drag a backlog card onto an idle
+agent** in the same repo and it starts there instead of in a new worktree. The task owns
+no checkout of its own - the agent keeps the one it had - which is exactly why cancelling
+it later never runs `git worktree remove` over a directory the harness didn't create.
+
+**The drop resets that agent's checkout first**, the same reset the card's **reset**
+control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release
+the branch, `/clear`. Without it the next task inherits the last one's branch and context,
+and no-mistakes - seeing a non-default branch - validates and pushes onto it, putting two
+unrelated tasks in one PR.
+
+So the drop **asks first whenever there's something to lose**: a dialog naming the agent's
+queued work items, the branch being released, and the context being cleared, and nothing
+happens until you confirm it. An agent with nothing to lose - no work queue, already
+detached, which is how a pooled worktree is handed out - takes the task in one gesture,
+with no dialog. What the dialog lists is what the daemon saw when it refused, not a second
+look, so it can't disagree with what the confirmation then does.
+
+**Committed work is never the thing you're asked about.** If the checkout holds anything
+that isn't recoverable from origin - uncommitted files, untracked files, or commits no
+`origin/*` ref has - the assign is **refused outright** and the task stays in the backlog
+with a line saying what's in the way. Work that's been pushed doesn't block it: a branch
+whose commits are on origin under its own ref can be fetched back by name, so an agent
+that shipped is still a drop target (which is what a squash-merged PR needs, since the
+landed commit has a different SHA and never appears on `origin/main`).
+
 ### Edit a shelved task
 
 **Click a backlog task and it opens back up in the form that wrote it** - on the
@@ -1006,12 +1034,13 @@ whole backlog, works out which items depend on which, and then schedules one at 
 onto an agent that's already idle when there is one, or into a fresh worktree when there
 isn't - never past a ceiling you set.
 
-Two knobs, in the Foreman popover under **Backlog**:
+Three knobs, in the Foreman popover under **Backlog**:
 
 | Knob | Default | What it does |
 |---|---|---|
 | **Auto-schedule the backlog** | off | arms the autopilot |
 | **Max agents running at once** | `3` | the ceiling it won't launch past |
+| **Open PRs keep an idle agent off the backlog** | on | an agent whose branch still has an unmerged PR is not handed the next task |
 
 **Max agents counts every live agent on the machine**, not just the ones Mission launched -
 it's a statement about your machine's load, and a count that ignored the six sessions you
@@ -1056,9 +1085,33 @@ on the shared loop.
 since it consumes no new session. "Idle" is stricter here than the board's Idle column: the
 agent must be settled, hook-instrumented (an autopilot that can't observe a session must
 not type a whole task into it), have a pane, have no work queue of its own, no review
-waiting on you, be in the same repo, and be **the harness the task was filed for** - a
-Codex task is never typed into a Claude pane unasked. The daemon re-checks on arrival,
-because an agent can go busy between the decision and the request.
+waiting on you, **no open PR on its branch**, be in the same repo, and be **the harness the
+task was filed for** - a Codex task is never typed into a Claude pane unasked. The daemon
+re-checks on arrival, because an agent can go busy between the decision and the request.
+
+**An agent that shipped is not an agent that's free.** An agent which opened a PR and went
+quiet looks identical, on every other signal, to one that finished with nothing left to
+protect: it reads idle, its queue is empty, and once you mark its task done nothing binds
+it. Handing it the next item would type into a checkout still standing on the PR's branch,
+so the new work lands on a change that's out for review. So an **unmerged PR keeps the
+agent off the backlog** until it merges - turn off **Open PRs keep an idle agent off the
+backlog** if your PRs auto-merge and you'd rather have the throughput. A *merged* PR never
+blocks; it lingers on the card so you can see the work landed. This narrows *autopilot*
+only - dragging a task onto that agent yourself still works, because that's you saying
+"yes, that one".
+
+**A reused agent is reset before it's handed anything** - the same reset, and the same
+refusals, as [dragging a card onto an agent
+yourself](#hand-a-shelved-task-to-an-agent-thats-already-running). It keeps its own
+checkout, so without this the next task inherits the last one's branch and context, and
+the agent would push two unrelated tasks into one PR. A checkout holding anything origin
+can't give back sends the task straight back to the backlog with a line saying what's in
+the way; nobody is watching this one, so the only thing it may not do is quietly discard
+your work.
+
+Autopilot **confirms the rest of that reset unattended**, and it has already ruled out
+what the confirmation protects: an agent is only "free" here with an empty work queue,
+and clearing the context is how a handover works at all.
 
 On the **board**, the Backlog column shows Foreman's reading: a **blocked** chip naming
 what an item waits on, a **next up** mark on the one it would take next, and - for a

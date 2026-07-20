@@ -45,6 +45,7 @@ export const OVERLAY_IDS = {
   settings: "settings",
   diff: "diff",
   reset: "reset",
+  assignReset: "assign-reset",
   digest: "digest",
 } as const;
 

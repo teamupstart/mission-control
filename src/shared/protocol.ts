@@ -419,6 +419,16 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
+  /**
+   * The caller has accepted what the handover reset discards beyond git state - the
+   * agent's work queue, its context, the branch it stands on.
+   *
+   * Defaults to FALSE, which is the whole safety property: an assign that would take
+   * any of that is refused until someone says yes, and the refusal carries the
+   * breakdown (`AssignResetConfirm`) so the caller can show what it is agreeing to. A
+   * caller that simply forgets the flag gets the safe answer.
+   */
+  confirmReset: z.boolean().optional().default(false),
 });
 export type AssignTask = z.infer<typeof AssignTaskSchema>;
 
@@ -659,6 +669,28 @@ export const ForemanConfigSchema = z.object({
    * and the human can click it themselves. Dry-run means dry-run.
    */
   autoBacklog: z.boolean().default(false),
+  /**
+   * Whether an idle agent whose branch still carries an OPEN pull request is off-limits
+   * to the backlog autopilot.
+   *
+   * On by default, because the default has to be the safe reading of an ambiguous state.
+   * An agent that opened a PR and went quiet looks exactly like an agent that finished:
+   * `reportBucket` files it under idle, its work queue is empty, and once its task is
+   * marked done nothing binds it. Handing it the next backlog item then types into a
+   * checkout still standing on the PR's branch, so the new task's commits land on top of
+   * work that is out for review - and the reviewer's next `git pull` picks up changes
+   * nobody asked that PR for.
+   *
+   * Scoped to AUTOPILOT, like every other knob here. Dropping a task onto an agent from
+   * the board is a human saying "yes, that one", and the same asymmetry already governs
+   * the harness check in `freeAgentFor`: the drag gesture may, the background loop may
+   * not.
+   *
+   * Off is a real choice, not a footgun to hide: a fleet whose PRs auto-merge, or one
+   * where every task is dispatched into its own worktree anyway, is paying for a refusal
+   * that protects nothing.
+   */
+  backlogRespectOpenPrs: z.boolean().default(true),
   /**
    * The ceiling on how many agents may be running at once before the backlog autopilot
    * stops launching new ones.

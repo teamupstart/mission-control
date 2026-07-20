@@ -1,13 +1,21 @@
 import { useState } from "react";
-import type { Session } from "@shared/types.ts";
+import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { backlogTasks } from "@shared/session.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes, groupByTone } from "../../lib/tone.ts";
+import { AssignResetModal } from "../AssignResetModal.tsx";
 import { BacklogColumn } from "./BacklogColumn.tsx";
 import { ConsoleDetail } from "./ConsoleDetail.tsx";
 import { RailRow } from "./RailRow.tsx";
 import { SessionTile } from "./SessionTile.tsx";
 import type { SessionViewProps } from "./types.ts";
+
+/** A drop waiting on the operator's yes: which task, onto which agent, and what it costs. */
+interface PendingDrop {
+  taskId: string;
+  sessionId: string;
+  confirm: AssignResetConfirm;
+}
 
 /**
  * Kanban by state that drills into the console.
@@ -50,6 +58,11 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   // rather than swallowed, because the card silently staying in the backlog looks
   // identical to a drag that simply missed.
   const [dropError, setDropError] = useState<string | null>(null);
+  // A drop the daemon refused pending a yes: the handover would reset an agent that is
+  // holding a work queue or a branch. Held here rather than on the tile because the
+  // dialog outlives the drag - the tile it came from can re-render (or move column)
+  // while the operator is reading it.
+  const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   // The repo of the backlog card currently in the air. Drives which tiles light up as
   // targets, so it has to be state - a tile decides whether it may accept during a
   // render, and nothing about a native drag re-renders the board on its own.
@@ -57,6 +70,17 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
 
   const groups = groupByTone(props.sessions);
   const backlog = backlogTasks(props.tasks);
+  // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
+  // agent has since disappeared, rather than leaving a dialog up over a session that is
+  // no longer on the board.
+  const pendingTarget = pendingDrop
+    ? (() => {
+        const session = props.sessions.find((s) => s.id === pendingDrop.sessionId);
+        if (!session) return null;
+        const task = props.tasks.find((t) => t.id === pendingDrop.taskId);
+        return { ...pendingDrop, session, title: task?.title ?? null };
+      })()
+    : null;
   const selected = props.sessions.find((s) => s.id === props.selectedId) ?? null;
   // The focused column follows the session, not the click: if the open session moves
   // tone (working -> needs input), its column re-scopes with it, and the rail's rows
@@ -162,6 +186,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                       draggingRepo={draggingRepo}
                       onDropped={() => setDraggingRepo(null)}
                       onDropError={setDropError}
+                      onDropConfirm={(p) => setPendingDrop({ ...p, sessionId: s.id })}
                     />
                   ))
                 )}
@@ -194,6 +219,19 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
             ×
           </button>
         </p>
+      )}
+
+      {/* Reconciled against the live lists rather than trusted: a session that went away
+          (or a task that left the backlog) while the dialog was open would otherwise be
+          confirmed against something that no longer exists. */}
+      {pendingTarget && (
+        <AssignResetModal
+          session={pendingTarget.session}
+          taskId={pendingTarget.taskId}
+          taskTitle={pendingTarget.title}
+          confirm={pendingTarget.confirm}
+          onClose={() => setPendingDrop(null)}
+        />
       )}
 
       {/* A flex track that's collapsed to nothing until a session is open, then grows to

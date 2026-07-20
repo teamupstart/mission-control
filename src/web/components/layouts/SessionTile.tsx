@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Session } from "@shared/types.ts";
+import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { AgentDot, CostChip, inspectorChipView, RuntimeMetaRow } from "../session-bits.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
@@ -35,6 +35,7 @@ export function SessionTile({
   draggingRepo,
   onDropped,
   onDropError,
+  onDropConfirm,
 }: {
   session: Session;
   gateNeedsYou: boolean;
@@ -42,6 +43,8 @@ export function SessionTile({
   draggingRepo: string | null;
   onDropped: () => void;
   onDropError: (message: string) => void;
+  /** The drop needs a yes: the handover would take something from this agent. */
+  onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
 }): React.JSX.Element {
   const st = stateDisplay(session);
   // A run always produces a gate line, and the line always carries the run's segments:
@@ -77,7 +80,7 @@ export function SessionTile({
         // Clear the drag here as well as on dragend: a drop that lands inside a
         // re-rendering board can swallow the dragend, leaving every tile lit.
         onDropped();
-        void dropTaskOnSession(e, session, onDropError);
+        void dropTaskOnSession(e, session, onDropError, onDropConfirm);
       }}
     >
       {/* The tile is not a <button> around its content, because the PR flag has to be a

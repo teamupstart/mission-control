@@ -254,6 +254,33 @@ export function ForemanPopover({
           label="Max agents running at once"
           onCommit={(n) => void update({ maxSessions: n })}
         />
+        {/*
+          Nested under the autopilot switch because it only ever narrows what THAT does -
+          the board's own drag-onto-an-agent gesture is unaffected either way, and a knob
+          that looked like it governed both would be lying about the one place it applies.
+        */}
+        <label className="alert-row">
+          {/*
+            `!== false`, not the value itself: a web build newer than the daemon it is
+            talking to gets no such key, and `undefined` would render an unticked box over
+            a server that is applying the guard. That is the one wrong answer this control
+            must not give - it would send someone hunting for why an agent is not being
+            picked up while the panel swears the guard is off. The daemon parses through
+            the schema, so the field is only ever absent, never false-by-omission.
+          */}
+          <input
+            type="checkbox"
+            checked={config.backlogRespectOpenPrs !== false}
+            onChange={(e) => void update({ backlogRespectOpenPrs: e.target.checked })}
+          />
+          Open PRs keep an idle agent off the backlog
+        </label>
+        {enabled && config.autoBacklog && config.backlogRespectOpenPrs === false && (
+          <p className="alert-hint dim">
+            An agent whose PR is still open can be handed the next task - its checkout is
+            reset to the default branch first, so the PR is left where it is.
+          </p>
+        )}
         {enabled && config.autoBacklog && status && (
           <p className="alert-hint dim">
             {status.autopilot.active}/{status.autopilot.max} agents ·{" "}

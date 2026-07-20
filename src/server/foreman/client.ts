@@ -9,6 +9,7 @@ import type {
   SetWorkItemState,
 } from "@shared/protocol.ts";
 import type {
+  AssignRefusalScope,
   BacklogPlan,
   ReviewItem,
   Session,
@@ -45,6 +46,12 @@ export interface TaskActionResult {
   ok: boolean;
   status: number;
   error?: string;
+  /**
+   * Whether a refusal was about the SESSION or the TASK. Absent from a daemon older
+   * than the field, and from every non-assign call - `assignRefusalParksSession` is
+   * where that absence is given a meaning, once.
+   */
+  scope?: AssignRefusalScope;
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -197,12 +204,28 @@ export class ForemanClient implements ForemanActions {
    * error: the session can go busy between the decision and this call, and the daemon
    * re-checks. Nothing was typed in that case, so the task stays in the backlog and the
    * next tick decides again from a fresh snapshot.
+   *
+   * Autopilot may confirm the handover reset unattended because it has already ruled out
+   * everything the confirmation is protecting: `agentIsFree` requires an empty work
+   * queue, and clearing the context is how it hands an agent over at all.
    */
   async assignTask(id: string, sessionId: string): Promise<TaskActionResult> {
-    const res = await send("POST", `/api/tasks/${enc(id)}/assign`, { sessionId });
-    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    const res = await send("POST", `/api/tasks/${enc(id)}/assign`, {
+      sessionId,
+      confirmReset: true,
+    });
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      scope?: AssignRefusalScope;
+    };
     if (res.ok && body.ok !== false) return { ok: true, status: res.status };
-    return { ok: false, status: res.status, error: body.error ?? `assign -> ${res.status}` };
+    return {
+      ok: false,
+      status: res.status,
+      error: body.error ?? `assign -> ${res.status}`,
+      scope: body.scope,
+    };
   }
 
   /**

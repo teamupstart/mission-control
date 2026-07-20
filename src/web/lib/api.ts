@@ -1,4 +1,5 @@
 import type {
+  AssignResetConfirm,
   BacklogPlan,
   ForemanEpisode,
   ForemanStatus,
@@ -39,6 +40,14 @@ export interface ActionResult {
   error?: string;
   /** HTTP status, so a caller can tell a CAS conflict (409) from a real failure. */
   status?: number;
+}
+
+/**
+ * A refused assign, which may be asking rather than complaining: `resetConfirm` present
+ * means nothing was touched and the same POST with `confirmReset` would go through.
+ */
+export interface AssignResult extends ActionResult {
+  resetConfirm?: AssignResetConfirm;
 }
 
 /** GET a JSON endpoint, returning null on any failure (for optional UI data). */
@@ -179,24 +188,37 @@ export async function fetchRepos(): Promise<string[]> {
   }
 }
 
-async function request(method: string, path: string, body?: unknown): Promise<ActionResult> {
+/**
+ * The refusal body is KEPT, not reduced to its message. A route that answers a conflict
+ * with structure - what a destructive action would cost, which the caller then renders -
+ * would otherwise have that structure thrown away here, and every such route would have
+ * to bypass this helper to be usable. `T` is how a caller names what it expects back.
+ */
+async function request<T extends ActionResult = ActionResult>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
   try {
     const res = await fetch(path, {
       method,
       headers: body ? { "content-type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
     });
-    const data = (await res.json().catch(() => ({}))) as ActionResult;
-    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
+    const data = (await res.json().catch(() => ({}))) as T;
+    if (!res.ok) {
+      return { ...data, ok: false, error: data.error ?? `HTTP ${res.status}`, status: res.status };
+    }
     // Task endpoints return the Task object (no `ok` field); a 2xx is success.
     // Errors always arrive as a non-2xx (handled above), so this can't mask one.
     return { ...data, ok: true, status: res.status };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err) } as T;
   }
 }
 
-const post = (path: string, body?: unknown) => request("POST", path, body);
+const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
+  request<T>("POST", path, body);
 const put = (path: string, body?: unknown) => request("PUT", path, body);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
@@ -322,9 +344,15 @@ export const api = {
    */
   updateTask: (id: string, patch: UpdateTask) =>
     post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),
-  /** Hand a backlog task to an agent that is already running, rather than launching one. */
-  assignTask: (id: string, sessionId: string) =>
-    post(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId }),
+  /**
+   * Hand a backlog task to an agent that is already running, rather than launching one.
+   *
+   * The agent is reset first, so an agent holding anything the reset would take - a work
+   * queue, a branch - refuses with a `resetConfirm` breakdown instead. Re-POST with
+   * `confirmReset` once the operator has seen it; a clean agent never gets that far.
+   */
+  assignTask: (id: string, sessionId: string, confirmReset = false) =>
+    post<AssignResult>(`/api/tasks/${encodeURIComponent(id)}/assign`, { sessionId, confirmReset }),
   cancelTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/cancel`),
   reclaimTask: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/reclaim`),
   completeTask: (id: string, outcome: string, outcomeUrl?: string) =>

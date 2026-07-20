@@ -45,10 +45,33 @@ const PASTED_PLACEHOLDER = /\[Pasted text #\d+/;
  */
 export function hasPendingPaste(paneText: string | null): boolean {
   if (!paneText) return false;
+  return composerLines(paneText).some((l) => PASTED_PLACEHOLDER.test(l));
+}
+
+/**
+ * Whether a slash command we typed is still sitting in the composer, unacted on.
+ *
+ * The caller that needs this is a `/clear` with a prompt queued up behind it. `sendText`
+ * returns as soon as tmux has taken the keystrokes, which says nothing about whether
+ * Claude has processed the command yet - and a `/clear` processed AFTER the next prompt
+ * is pasted wipes that prompt off the screen, leaving a task marked running with nothing
+ * running it. Seeing the command leave the composer is the only on-screen evidence that
+ * the agent actually acted on it.
+ *
+ * Scoped to the composer lines for the same reason `hasPendingPaste` is: the command
+ * being ECHOED somewhere up in the transcript is history, not a pending keystroke, and
+ * treating it as pending would mean the wait could never end.
+ */
+export function hasPendingCommand(paneText: string | null, command: string): boolean {
+  if (!paneText) return false;
+  return composerLines(paneText).some((l) => l.endsWith(command));
+}
+
+/** The trailing non-empty lines that may hold the composer. See `COMPOSER_SCAN_LINES`. */
+function composerLines(paneText: string): string[] {
   return paneText
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean)
-    .slice(-COMPOSER_SCAN_LINES)
-    .some((l) => PASTED_PLACEHOLDER.test(l));
+    .slice(-COMPOSER_SCAN_LINES);
 }

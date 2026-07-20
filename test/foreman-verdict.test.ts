@@ -36,6 +36,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     wrapupTriggers: ["drain"],
     wrapup: "ask",
     autoBacklog: false,
+    backlogRespectOpenPrs: true,
     maxSessions: 3,
     ...over,
   };

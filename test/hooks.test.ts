@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hookToState, isIdleNudge, overlayKeyFromEnv, sessionKey } from "../src/server/registry.ts";
+import { overlayKeyFromEnv, sessionKey } from "../src/server/registry.ts";
+import { claudeHooks, isIdleNudge } from "../src/server/harness/claude/hooks.ts";
 import { reportBucket } from "../src/shared/session.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { Session } from "../src/shared/types.ts";
 
 function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
-  return { sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
+  return { agent: "claude", sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
 }
 
 function sessionFixture(p: Partial<Session> = {}): Session {
@@ -54,13 +55,13 @@ function sessionFixture(p: Partial<Session> = {}): Session {
   };
 }
 
-test("hookToState maps lifecycle events to session states", () => {
-  assert.equal(hookToState(evt({ event: "UserPromptSubmit", prompt: "do x" })).state, "working");
-  assert.equal(hookToState(evt({ event: "PreToolUse", toolName: "Bash" })).state, "working");
-  assert.equal(hookToState(evt({ event: "Notification", message: "need perms" })).state, "awaiting_input");
-  assert.equal(hookToState(evt({ event: "Stop" })).state, "idle");
-  assert.equal(hookToState(evt({ event: "SessionStart", source: "startup" })).state, "idle");
-  assert.equal(hookToState(evt({ event: "SessionEnd", reason: "clear" })).state, "exited");
+test("the Claude hook spec maps lifecycle events to session states", () => {
+  assert.equal(claudeHooks.toState(evt({ event: "UserPromptSubmit", prompt: "do x" })).state, "working");
+  assert.equal(claudeHooks.toState(evt({ event: "PreToolUse", toolName: "Bash" })).state, "working");
+  assert.equal(claudeHooks.toState(evt({ event: "Notification", message: "need perms" })).state, "awaiting_input");
+  assert.equal(claudeHooks.toState(evt({ event: "Stop" })).state, "idle");
+  assert.equal(claudeHooks.toState(evt({ event: "SessionStart", source: "startup" })).state, "idle");
+  assert.equal(claudeHooks.toState(evt({ event: "SessionEnd", reason: "clear" })).state, "exited");
 });
 
 // Regression: Claude Code fires `Notification` for two unrelated things - a real
@@ -76,20 +77,20 @@ const OBSERVED_IDLE_NUDGE = "Claude is waiting for your input"; // 41 of 61
 const OBSERVED_PERMISSION = "Claude needs your permission"; // 19 of 61
 const OBSERVED_PLAN_APPROVAL = "Claude Code needs your approval for the plan"; // 1 of 61
 
-test("hookToState maps Claude's idle nudge to idle, never to awaiting_input", () => {
-  const idle = hookToState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE }));
+test("the Claude hook spec maps its idle nudge to idle, never to awaiting_input", () => {
+  const idle = claudeHooks.toState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE }));
   assert.notEqual(idle.state, "awaiting_input");
   assert.equal(idle.state, "idle");
   assert.equal(idle.activity, "idle"); // reads exactly like Stop - it's the same situation
 
   // Every observed ask still needs you...
   for (const ask of [OBSERVED_PERMISSION, OBSERVED_PLAN_APPROVAL]) {
-    assert.equal(hookToState(evt({ event: "Notification", message: ask })).state, "awaiting_input", ask);
+    assert.equal(claudeHooks.toState(evt({ event: "Notification", message: ask })).state, "awaiting_input", ask);
   }
   // ...and so does anything we don't positively recognize as the nudge, so a
   // wording we've never seen errs toward asking for you rather than vanishing.
-  assert.equal(hookToState(evt({ event: "Notification", message: "some future notice" })).state, "awaiting_input");
-  assert.equal(hookToState(evt({ event: "Notification" })).state, "awaiting_input");
+  assert.equal(claudeHooks.toState(evt({ event: "Notification", message: "some future notice" })).state, "awaiting_input");
+  assert.equal(claudeHooks.toState(evt({ event: "Notification" })).state, "awaiting_input");
 });
 
 test("isIdleNudge recognizes only the idle notification", () => {
@@ -105,22 +106,22 @@ test("isIdleNudge recognizes only the idle notification", () => {
 // into the one bucket that's meant to be pure signal.
 test("a session parked by the idle nudge reports idle, not needs-you", () => {
   const s = sessionFixture({
-    state: hookToState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE })).state,
+    state: claudeHooks.toState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE })).state,
     instrumented: true,
   });
   assert.equal(reportBucket(s, [s]), "idle");
 
   const asking = sessionFixture({
-    state: hookToState(evt({ event: "Notification", message: OBSERVED_PERMISSION })).state,
+    state: claudeHooks.toState(evt({ event: "Notification", message: OBSERVED_PERMISSION })).state,
     instrumented: true,
   });
   assert.equal(reportBucket(asking, [asking]), "needs-you");
 });
 
-test("hookToState surfaces a readable activity line", () => {
-  assert.equal(hookToState(evt({ event: "PreToolUse", toolName: "Edit" })).activity, "running Edit");
-  assert.equal(hookToState(evt({ event: "UserPromptSubmit", prompt: "refactor  the   parser" })).activity, "refactor the parser");
-  assert.equal(hookToState(evt({ event: "Notification", message: "grant access" })).activity, "grant access");
+test("the Claude hook spec surfaces a readable activity line", () => {
+  assert.equal(claudeHooks.toState(evt({ event: "PreToolUse", toolName: "Edit" })).activity, "running Edit");
+  assert.equal(claudeHooks.toState(evt({ event: "UserPromptSubmit", prompt: "refactor  the   parser" })).activity, "refactor the parser");
+  assert.equal(claudeHooks.toState(evt({ event: "Notification", message: "grant access" })).activity, "grant access");
 });
 
 test("overlayKeyFromEnv prefers the tmux pane over the outer wezterm pane", () => {

@@ -25,7 +25,7 @@ silently rather than failing to compile**.
 | Transcript | `transcript.ts:51` hard `return null` for non-Claude; Anthropic JSONL shape throughout (`:115-155`, `:500-505`, `:584`) |
 | Rollout (codex) | `codex-rollout.ts` - metadata only, no message parsing |
 | Dispatch point | `runtime-meta.ts:43-58` - an explicit `if claude … else if codex`. This is where the interface belongs. |
-| Hook -> state | `registry.ts:2141-2172` `hookToState` - Claude's event vocabulary; `:2137` `isIdleNudge` matches Claude's literal notification text |
+| ~~Hook -> state~~ | **Closed.** `Harness.hooks` - see "`hooks`, as landed" below |
 | TUI mode line | `discovery/pane-mode.ts:33-96` - Claude footer glyphs and mode strings |
 | TUI dialogs | `discovery/pane-dialog.ts` - 397 lines of Claude menu grammar |
 | Paste settle | `actions.ts:311` `PASTE_SETTLE_MS = 400`, measured against Claude Code 2.1.215 |
@@ -41,7 +41,7 @@ collapsed both**: `AGENT_TYPES` (`shared/types.ts`) is the one source the zod en
 dashboard's dispatch input now derive from, and `AGENT_NAMES` (`shared/agent.ts`) holds the
 two registers as named fields (`label`, `speaker`) so neither can be mistaken for drift.
 
-**The first three rows are closed.** `Harness.transcript` (`server/harness/types.ts`) now
+**The first three rows and the hook row are closed.** `Harness.transcript` (`server/harness/types.ts`) now
 owns transcript, rollout, and the dispatch point between them: `runtime-meta.ts` names no
 agent, Claude's JSONL shape lives in `harness/claude/`, the rollout in `harness/codex/`,
 and the byte windowing that belongs to neither sits in `transcript.ts` behind a supplied
@@ -393,6 +393,46 @@ place. Tests: `harness-transcript.test.ts` (the registry, and that a null capabi
 degrades to the byte-identical `{unavailable: true}` / `{size: null}` a missing file
 produces), `session-contracts.test.ts`.
 
+#### `hooks`, as landed
+
+`HookSpec` (`harness/types.ts`) and `harness/claude/hooks.ts`. What moved off `registry.ts`
+is `hookToState`'s nine-case switch, `isIdleNudge`'s match on Claude's literal notification
+text, and goal capture's `evt.event !== "UserPromptSubmit"` gate - the last folded together
+with `substantivePrompt` into one `promptText`, because "which event carries a prompt" and
+"what inside it a human typed" are the same harness's answer and were being asked one layer
+apart.
+
+The transport did NOT move, deliberately and as `todo/codex-instrumentation.md` predicted:
+`HookIngestSchema`, `POST /hooks/:event` and the pane-keyed overlay name no vendor and are
+reused as-is. `hooks/harness-hook.mjs` keeps Claude's payload key mapping and the two PR
+sniffs and hands the rest to `@shared/hook-bridge.mjs`, which is stdin, the POST, the
+timeouts and exit 0. A second agent's bridge is another file that size.
+
+Four things the sketch above did not have:
+
+- **The ingest declares its agent.** `HookIngest.agent`, defaulted to `claude`, because an
+  event has to be interpretable before a session is resolved and the pane it arrived on
+  says nothing about who is in it now. Defaulted rather than required for the reason
+  `harness-runtime.mjs`'s env chain is append-only: the bridge is installed into
+  `~/.claude/settings.json` from a checkout that may lag this code by any amount.
+- **The overlay is agent-scoped, which is a live bug fix.** Overlays are keyed by pane and
+  a pane outlives the agent in it. Quit Claude, start Codex in the same tmux pane, and the
+  Codex card inherited Claude's state, activity, permission mode, `agentSessionId` and
+  `transcriptPath` - reported as `instrumented`, from an agent that pushes nothing, with
+  the wrong key under its note and queue. `HookOverlay.agent` and the matching check in
+  `findSessionForHook` are what keep a null `hooks` on the passive path rather than pinned.
+- **The event vocabulary is the spec's**, so `EVENTS` / `MATCHER_EVENTS` are gone from both
+  installers. That was the one item in this plan whose duplication CLAUDE.md documented
+  rather than fixed; `harness-hooks.test.ts` now fails if either installer names an event
+  itself. `harness/claude/hooks.ts` is kept to types and pure functions because the Electron
+  main bundle imports it.
+- **[Phase 1 - hooks, FIXED]** `dispatcher.ts`'s `awaitReady` gates its 20-second wait on
+  `hooksFor(agent)`. "Hooks aren't installed" is worth waiting out; "this agent has no
+  hooks" is 20 seconds of certain silence, which Codex paid on every dispatch.
+
+Tests: `harness-hooks.test.ts` (the three things a hookless harness is owed, plus the
+installer drift guard), `hooks.test.ts` (the Claude vocabulary itself, now against the spec).
+
 ### Compiler enforcement
 
 The codebase already has this pattern - `SESSION_FIELD_COMPARATORS` (`registry.ts`) makes a
@@ -426,7 +466,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | Phase | Items |
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_NAMES` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; then detection/bin, hooks->state, TUI, capability guards, UI |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; then detection/bin, TUI, capability guards, UI |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
@@ -475,9 +515,9 @@ separately. The item that owns each fix is named in brackets.
   `awaitPasteSubmitted` returns `ok` after one Enter with zero evidence.
 - **[Phase 1 - guards]** `actions.ts:1418` - `resetToOrigin` sends `/clear`, a Claude slash
   command, to **every** agent type, ungated.
-- **[Phase 1 - hooks]** `dispatcher.ts:148-161` - every dispatch waits `HOOK_READY_MS` (20s)
-  for a hook, including for agents that will never send one. Codex pays 20s of dead time per
-  dispatch.
+- **[Phase 1 - hooks, FIXED]** `dispatcher.ts` - every dispatch waited `HOOK_READY_MS` (20s)
+  for a hook, including for agents that will never send one. `awaitReady` now gates that wait
+  on `hooksFor(agent)`; see "`hooks`, as landed".
 - **[Phase 1 - transcript, FIXED]** `registry.ts:700` - `findSessionByEnv` hardcoded
   `s.agent === "claude"` inside an otherwise generic env->session fallback. The condition is
   gone: that branch's safety is UNIQUENESS (exactly one session in the cwd), and filtering
@@ -493,5 +533,10 @@ separately. The item that owns each fix is named in brackets.
 `todo/codex-instrumentation.md` is a parked spike on exactly the Phase 1 question for Codex
 (hook-vs-wrapper, blocked on a Codex login). Its conclusion - that the
 `HookIngestSchema` -> `POST /hooks/:event` -> registry-overlay pipeline is already
-agent-agnostic and reusable - is confirmed by this investigation and should be folded into
-the `HookSpec` design rather than rediscovered.
+agent-agnostic and reusable - is confirmed by this investigation, and `HookSpec` was built
+on it rather than around it: the pipeline is untouched, and what landed is the vocabulary
+above it plus a payload mapper below it. Its "follow-on work once the path is chosen" list
+now has homes rather than open questions - a Codex live-state mapping is
+`HARNESSES.codex.hooks`, no longer null; the rollout parser is
+`HARNESSES.codex.transcript.messages`, still null. The spike itself is unchanged: it decides
+hook-vs-wrapper, and it is still blocked on a Codex login.

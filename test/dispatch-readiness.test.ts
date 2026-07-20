@@ -53,6 +53,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 /** The hook the agent fires once its input loop exists. */
 function sessionStart(registry: InstanceType<typeof Registry>, paneId = "%1"): void {
   registry.applyHook({
+    agent: "claude",
     event: "SessionStart",
     sessionId: "agent-1",
     cwd: CWD,
@@ -121,6 +122,7 @@ test("waitForPromptAcceptedAtCwd resolves true on the working transition", async
   // Subscribe BEFORE typing - the hook can beat the caller's next line.
   const accepted = registry.waitForPromptAcceptedAtCwd(CWD, 5000);
   registry.applyHook({
+    agent: "claude",
     event: "UserPromptSubmit",
     sessionId: "agent-1",
     cwd: CWD,
@@ -151,6 +153,7 @@ test("waitForPromptAcceptedAtCwd ignores a `working` session at a DIFFERENT cwd"
 
   const accepted = registry.waitForPromptAcceptedAtCwd(CWD, BRIEF_MS);
   registry.applyHook({
+    agent: "claude",
     event: "UserPromptSubmit",
     sessionId: "agent-2",
     cwd: "/wt/task-2",

@@ -76,6 +76,7 @@ function setup(session: Partial<DiscoveredSession> = {}) {
   const agentSessionId = `agent-${++agentN}`;
   r.applyDiscovery([disc]);
   r.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: agentSessionId,
     cwd: disc.cwd,
@@ -112,6 +113,7 @@ test("a busy agent is refused - the prompt would land mid-turn", async () => {
   // Back to working: the agent picked something up between the hover and the drop,
   // which is exactly the race the server-side re-check exists for.
   r.applyHook({
+    agent: "claude",
     event: "UserPromptSubmit",
     sessionId: agentSessionId,
     cwd: "/repo",
@@ -251,6 +253,7 @@ test("an agent that went busy between the checks and the reset is not reset anyw
     paneReady: async () => {
       // The human types at their agent while we are still deciding.
       r.applyHook({
+        agent: "claude",
         event: "UserPromptSubmit",
         sessionId: agentSessionId,
         cwd: clone,

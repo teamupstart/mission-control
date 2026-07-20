@@ -29,6 +29,17 @@ const EnvSchema = z
  */
 export const HookIngestSchema = z.object({
   event: z.string(),
+  /**
+   * Which harness's bridge sent this, and therefore whose event vocabulary `event` and
+   * the payload fields below are written in. The daemon reads it to pick a `HookSpec`
+   * (`harness/index.ts`); nothing else can tell a Claude `Stop` from another agent's.
+   *
+   * Defaulted rather than required, and the default can only ever be `claude`: the hook
+   * script is installed into `~/.claude/settings.json` from a checkout that may lag this
+   * code by any amount, so an ingest with no `agent` is by definition from the only
+   * bridge that existed when it was installed. A second bridge sends the field.
+   */
+  agent: z.enum(AGENT_TYPES).optional().default("claude"),
   sessionId: z.string().nullable().optional().default(null),
   cwd: z.string().nullable().optional().default(null),
   transcriptPath: z.string().nullable().optional().default(null),

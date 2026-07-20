@@ -1,4 +1,12 @@
-import type { AgentType, MetaSource, Session, ThinkingLevel, TranscriptMessage } from "@shared/types.ts";
+import type { HookIngest } from "@shared/protocol.ts";
+import type {
+  AgentType,
+  MetaSource,
+  Session,
+  SessionState,
+  ThinkingLevel,
+  TranscriptMessage,
+} from "@shared/types.ts";
 
 // The Harness axis: one object per agent, holding what the daemon needs FROM that agent.
 //
@@ -172,18 +180,83 @@ export interface TranscriptSpec {
   retain: ((live: ReadonlySet<string>) => void) | null;
 }
 
+/** What one ingested hook event says about the session that fired it. */
+export interface HookReading {
+  state: SessionState;
+  /** One line for the card's ticker, or null when the event says nothing worth showing. */
+  activity: string | null;
+}
+
+/**
+ * PUSH instrumentation: an agent that runs a script of ours on its own lifecycle events.
+ *
+ * The transport is deliberately NOT here, because it is not the agent's. `HookIngest`
+ * (`@shared/protocol.ts`), `POST /hooks/:event` and the registry's pane-keyed overlay
+ * carry an event from any bridge to any card and name no vendor - which
+ * `todo/codex-instrumentation.md` established before this interface existed and is the
+ * reason a second harness's bridge is a payload mapper plus this spec, not a pipeline.
+ *
+ * What IS here is everything only the agent can answer: which events it fires, what each
+ * of them means about the session, and which of them carries the human's ask.
+ *
+ * `null` on `Harness` means the agent pushes nothing at us. That is a load-bearing
+ * declaration rather than an absence:
+ *
+ * - The session stays on the PASSIVE path - discovery plus whatever
+ *   `transcript.passiveRead` can see - instead of a hook overlay from a neighbouring
+ *   card's harness pinning it to a state it never reported. `applyHook` refuses an
+ *   ingest for such a harness, and the overlay is agent-scoped so the pane a Claude
+ *   session just vacated cannot speak for the Codex session that replaced it.
+ * - The dispatcher skips the 20-second wait for a first hook (`awaitReady`) rather than
+ *   spending it on a signal that is never coming.
+ */
+export interface HookSpec {
+  /**
+   * Every event the bridge registers for, in install order.
+   *
+   * Declared ONCE, here, because it used to be hand-kept in two installers
+   * (`hooks/install.mjs` and `src/main/integrations.ts`) with nothing catching drift -
+   * and half an event list is a capability that works in the repo and not in the
+   * packaged app, or the reverse.
+   */
+  events: readonly string[];
+  /**
+   * The subset whose settings-file group needs a tool matcher. Claude's per-tool events
+   * take `matcher: "*"`; a harness whose config format has no such notion declares `[]`.
+   */
+  matcherEvents: readonly string[];
+  /**
+   * What an event means for the card: the state it implies, and the line it puts in the
+   * ticker. Every discriminator - the event vocabulary, and any wording inside a payload
+   * field - is this agent's, version by version.
+   */
+  toState(evt: HookIngest): HookReading;
+  /**
+   * The human's own ask, if this event carries one; null for every event that does not,
+   * which is the COMMON case (see `substantivePrompt` for how much of what arrives on a
+   * prompt event no human typed).
+   *
+   * Both halves of the question belong to the agent - which event carries a prompt, and
+   * what inside it is scaffolding - so a harness that never fires one simply answers null
+   * everywhere rather than the registry testing an event name it does not own.
+   */
+  promptText(evt: HookIngest): string | null;
+}
+
 /**
  * One agent, and everything the daemon needs from it.
  *
  * More capabilities land here as the pluggable-integrations migration proceeds
- * (`detect`, `bin`, `control`, `hooks`, `tui`, `permissionModes`, `skills`, `mcp`,
- * `models` - see `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own
- * slot, so adding one is a new field every harness must answer rather than an interface
- * change every migrated call site has to absorb.
+ * (`detect`, `bin`, `control`, `tui`, `permissionModes`, `skills`, `mcp`, `models` - see
+ * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
+ * one is a new field every harness must answer rather than an interface change every
+ * migrated call site has to absorb.
  */
 export interface Harness {
   /** Matches this harness's key in `HARNESSES`. */
   id: AgentType;
   /** How this harness records a session on disk, or null when it records nothing. */
   transcript: TranscriptSpec | null;
+  /** How this harness pushes its lifecycle at us, or null when it pushes nothing. */
+  hooks: HookSpec | null;
 }

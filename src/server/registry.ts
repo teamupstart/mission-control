@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type {
+  AgentType,
   ForemanEpisode,
   MetaSource,
   NmFixSummary,
@@ -49,7 +50,8 @@ import {
 } from "@shared/model.ts";
 import type { DiscoveredSession } from "./discovery/correlate.ts";
 import type { RuntimeMetaRead, SessionActivityRead } from "./harness/types.ts";
-import { substantivePrompt } from "./harness/claude/scaffolding.ts";
+import { hooksFor } from "./harness/index.ts";
+import type { HookSpec } from "./harness/types.ts";
 import { clampPrompt } from "./util/prompt-text.ts";
 import {
   clearQueue as clearQueueDb,
@@ -200,6 +202,15 @@ const NM_DISMISSED_RUNS_PER_CHECKOUT = 8;
 
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
+  /**
+   * The harness whose bridge produced this. Overlays are keyed by PANE, and a pane
+   * outlives the agent in it: quit Claude, start Codex in the same tmux pane, and
+   * without this the Codex card inherits Claude's last state, activity, permission mode
+   * and transcript path - reported as `instrumented`, from an agent that pushes nothing.
+   * A hookless harness is supposed to fall through to the passive path, and this is what
+   * keeps it there.
+   */
+  agent: AgentType;
   agentSessionId: string | null;
   transcriptPath: string | null;
   state: SessionState;
@@ -616,18 +627,29 @@ export class Registry extends EventEmitter {
   // ---- hooks ----
 
   applyHook(evt: HookIngest): void {
+    // Whose vocabulary this event is written in. A harness that declares no hooks has no
+    // way to say what `event` means, and inventing one is how a hookless session gets
+    // pinned: the old switch answered `working` for everything it didn't recognize, so
+    // one stray ingest would have parked the card there until something else moved it.
+    // Refusing leaves the session exactly where it belongs, on the passive path.
+    const spec = hooksFor(evt.agent);
+    if (!spec) return;
     const now = Date.now();
     const ts = evt.ts ?? now;
     const key = overlayKeyFromEnv(evt.env);
-    const { state, activity } = hookToState(evt);
+    const { state, activity } = spec.toState(evt);
 
     // Permission mode is sticky: events that omit it keep the last known value
-    // (from this pane's prior overlay) rather than clearing the card's chip.
-    const priorOverlay = key ? this.overlays.get(key) : undefined;
+    // (from this pane's prior overlay) rather than clearing the card's chip. Only from
+    // an overlay this same harness left - a mode is a Shift+Tab state Claude owns, and
+    // carrying one across an agent change would be a chip nothing can clear.
+    const prior = key ? this.overlays.get(key) : undefined;
+    const priorOverlay = prior?.agent === evt.agent ? prior : undefined;
     const permissionMode =
       normalizePermissionMode(evt.permissionMode) ?? priorOverlay?.permissionMode ?? null;
 
     const overlay: HookOverlay = {
+      agent: evt.agent,
       agentSessionId: evt.sessionId ?? null,
       transcriptPath: evt.transcriptPath ?? null,
       state,
@@ -688,7 +710,7 @@ export class Registry extends EventEmitter {
       // `syncSessionsForGoal`, so running it before the emit above would leave that emit
       // shipping the pre-goal object and the card would show the change only on the next
       // unrelated event.
-      this.captureGoalPrompt(next, evt, now);
+      this.captureGoalPrompt(next, spec, evt, now);
       // Last of all, and only on the proof-grade signal. `prUrl` alone is a text match
       // that `gh pr view` trips; `prCreated` means the command was `gh pr create`. The
       // listener writes a durable adoption row, so this firing is the only chance to
@@ -814,8 +836,20 @@ export class Registry extends EventEmitter {
     }
   }
 
+  /**
+   * The live card this event speaks for, or undefined.
+   *
+   * The agent check is the same property the overlay's is, arriving by the other door:
+   * a pane is reused, and `findSessionByEnv` resolves by pane first. A Claude hook that
+   * landed on the Codex session now in that pane would rewrite its state, its activity
+   * and - worst - its `agentSessionId` and `transcriptPath`, which are the keys its
+   * note, queue and transcript hang off. Not folded into `findSessionByEnv` itself: its
+   * cwd branch deliberately does NOT filter by agent (see the note there), and its other
+   * caller is the MCP channel, which identifies itself differently.
+   */
   private findSessionForHook(evt: HookIngest, key: string | null): Session | undefined {
-    return this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key);
+    const s = this.findSessionByEnv(evt.env, evt.sessionId, evt.cwd, key);
+    return s?.agent === evt.agent ? s : undefined;
   }
 
   /**
@@ -1376,12 +1410,20 @@ export class Registry extends EventEmitter {
     });
   }
 
+  /**
+   * The hook overlay speaking for this session, if any.
+   *
+   * Scoped to the session's own harness on both lookups - see `HookOverlay.agent`. An
+   * overlay left by a different agent is not a stale reading to be aged out, it is a
+   * reading about someone else, so it is skipped rather than returned and TTL'd.
+   */
   private overlayFor(s: Session): HookOverlay | undefined {
     const key = sessionKey(s);
-    if (key && this.overlays.has(key)) return this.overlays.get(key);
+    const byKey = key ? this.overlays.get(key) : undefined;
+    if (byKey && byKey.agent === s.agent) return byKey;
     if (s.agentSessionId) {
       for (const o of this.overlays.values())
-        if (o.agentSessionId === s.agentSessionId) return o;
+        if (o.agent === s.agent && o.agentSessionId === s.agentSessionId) return o;
     }
     return undefined;
   }
@@ -1794,7 +1836,7 @@ export class Registry extends EventEmitter {
    * Goal.
    *
    * The full prompt already arrives on every one of these events and is thrown away:
-   * `hookToState` trims it to 120 chars for `activity`, which is the right thing for a
+   * the spec's `toState` trims it to 120 chars for `activity`, which is the right thing for a
    * ticker ("what is it doing this second") and the wrong length and lifetime for a goal.
    * `evt.prompt` is the only place the whole text exists, and only for this tick.
    *
@@ -1810,14 +1852,14 @@ export class Registry extends EventEmitter {
    * refiner's queue: it says "this prompt has not been summarised yet", so re-stamping it on
    * every new prompt is what makes the goal refresh at all.
    *
-   * `substantivePrompt` is Claude's scaffolding grammar, reached directly rather than
-   * through a capability, because the event carrying it is Claude's too: nothing else
-   * sends a `UserPromptSubmit`. It moves onto `HookSpec` with the rest of the hook
-   * vocabulary rather than being bent onto the transcript capability, which reads files.
+   * WHICH event carries a prompt and WHAT inside it a human actually typed are both the
+   * harness's to answer - `UserPromptSubmit` is Claude's event name and the scaffolding
+   * grammar is Claude's syntax - so both live behind `HookSpec.promptText` and this
+   * reads neither. A harness whose bridge fires no prompt event answers null throughout,
+   * and a session simply has no captured prompt for the refiner to work from.
    */
-  private captureGoalPrompt(s: Session, evt: HookIngest, now: number): void {
-    if (evt.event !== "UserPromptSubmit") return;
-    const prompt = substantivePrompt(evt.prompt);
+  private captureGoalPrompt(s: Session, spec: HookSpec, evt: HookIngest, now: number): void {
+    const prompt = spec.promptText(evt);
     if (!prompt) return;
     this.upsertGoal(
       s.id,
@@ -2587,81 +2629,6 @@ export function unexpiredRateLimits(rl: RateLimits | null, now: number): RateLim
   if (!fiveHour && !sevenDay) return null;
   if (fiveHour === rl.fiveHour && sevenDay === rl.sevenDay) return rl;
   return { ...rl, fiveHour, sevenDay };
-}
-
-/**
- * True when a `Notification` is Claude's idle nudge rather than a real ask.
- *
- * Claude Code fires the same hook for two unrelated things: it needs something from
- * you, and the prompt has simply sat idle for ~60s. Only the first needs you.
- * Treating both as `awaiting_input` made *every* settled session claim it needed
- * you a minute after it went quiet, which is noise in exactly the bucket that is
- * supposed to be signal - and it never recovered, because nothing moves a session
- * out of `awaiting_input` on its own.
- *
- * The message is the only discriminator the payload carries. These are the only
- * three we have ever actually observed, across 61 Notification events in this
- * daemon's own `session_events` log (the counts are real sessions on one machine,
- * so treat them as "what Claude sends", not "all Claude can send"):
- *
- *   41x  "Claude is waiting for your input"              <- the idle nudge
- *   19x  "Claude needs your permission"                  <- a real ask
- *    1x  "Claude Code needs your approval for the plan"  <- a real ask
- *
- * Hence the match is on the nudge, narrowly, and everything else - including any
- * wording a future Claude introduces - keeps its `awaiting_input` meaning. The
- * failure mode is therefore safe by construction: if this string ever changes we
- * regress to the old over-reporting (an idle session says "needs you"), never to
- * swallowing a genuine ask. That asymmetry is the reason to match the nudge rather
- * than to match the asks.
- *
- * Known tradeoff: a session that ends its turn with a question in *prose* (no
- * permission prompt) is indistinguishable from an idle one in the hook stream -
- * both are a `Stop` followed by this same nudge - so it now reads `idle` and won't
- * nag at 60s.
- *
- * Foreman recovers the case it can identify structurally: a parked no-mistakes gate
- * classifies as `gate-parked` (see foreman/pending.ts) off the run summary, and its
- * reviewer reads the relayed finding out of the transcript. A bare prose question with
- * no gate behind it stays invisible - nothing in the hook stream distinguishes it from
- * an idle prompt, and `no-question` disposes it without a model call. Recovering that
- * one needs a signal this stream doesn't carry, not a smarter reader.
- */
-export function isIdleNudge(message: string | undefined | null): boolean {
-  return /waiting for your input/i.test(message ?? "");
-}
-
-/** Map a Claude hook event to a session state + one-line activity. */
-export function hookToState(evt: HookIngest): { state: SessionState; activity: string | null } {
-  const trim = (s: string | undefined, n = 120): string | null =>
-    s ? (s.length > n ? s.slice(0, n - 1) + "…" : s).replace(/\s+/g, " ").trim() : null;
-
-  switch (evt.event) {
-    case "SessionStart":
-      return { state: "idle", activity: evt.source ? `started (${evt.source})` : "started" };
-    case "UserPromptSubmit":
-      return { state: "working", activity: trim(evt.prompt) };
-    case "PreToolUse":
-      return { state: "working", activity: evt.toolName ? `running ${evt.toolName}` : "working" };
-    case "PostToolUse":
-      return { state: "working", activity: evt.toolName ? `${evt.toolName} done` : "working" };
-    case "Notification":
-      // The idle nudge means "still parked at the prompt", which is the same thing
-      // Stop reports - so report it identically rather than inventing a state.
-      return isIdleNudge(evt.message)
-        ? { state: "idle", activity: "idle" }
-        : { state: "awaiting_input", activity: trim(evt.message) ?? "waiting for you" };
-    case "Stop":
-      return { state: "idle", activity: "idle" };
-    case "SubagentStop":
-      return { state: "working", activity: "subagent finished" };
-    case "PreCompact":
-      return { state: "working", activity: "compacting context" };
-    case "SessionEnd":
-      return { state: "exited", activity: evt.reason ? `ended (${evt.reason})` : "ended" };
-    default:
-      return { state: "working", activity: null };
-  }
 }
 
 /** How one `Session` field decides whether a change is worth an emit. */

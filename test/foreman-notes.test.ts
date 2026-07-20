@@ -102,6 +102,7 @@ test("notes rehydrate into a fresh Registry and attach by agent session id", () 
   r.applyDiscovery([mkDiscovered({ syntheticId: "s4", cwd: "/wt/d" })]);
   // Bind the agent session id via a hook so noteKeyFor resolves to "agent-77".
   r.applyHook({
+    agent: "claude",
     event: "SessionStart",
     sessionId: "agent-77",
     cwd: "/wt/d",

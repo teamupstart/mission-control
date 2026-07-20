@@ -39,23 +39,20 @@ import { claudeSkillsDir, uninstallSkillLinks } from "../src/server/skills/recon
 // gets left behind that nothing owns. See src/shared/claude-settings.ts.
 import { otelEnvInstalled, writeOtelEnv } from "../src/shared/claude-settings.ts";
 import { BASE_URL, ensureToken } from "../src/shared/harness-runtime.mjs";
+// The event vocabulary belongs to the harness, not to its installers. Both this script
+// and the packaged app's installer (src/main/integrations.ts) used to carry their own
+// copy of these two lists, hand-kept, with nothing catching the drift - so an event
+// added to one and not the other was a session state that worked from a checkout and
+// not from the .app. Imported from the spec directly rather than through
+// `harness/index.ts` to keep the daemon out of the Electron bundle; see that file.
+import { claudeHooks } from "../src/server/harness/claude/hooks.ts";
 
 const MARKER = "harness-hook.mjs";
 /** Marker identifying our statusLine wrapper command in settings.json. */
 const STATUSLINE_MARKER = "harness-statusline.mjs";
-const EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PostToolUse",
-  "Notification",
-  "Stop",
-  "SubagentStop",
-  "PreCompact",
-  "SessionEnd",
-];
+const EVENTS = claudeHooks.events;
 // Tool events use a matcher; the rest match all invocations.
-const MATCHER_EVENTS = new Set(["PreToolUse", "PostToolUse"]);
+const MATCHER_EVENTS = new Set(claudeHooks.matcherEvents);
 
 const scriptPath = join(dirname(fileURLToPath(import.meta.url)), "harness-hook.mjs");
 const statuslineScriptPath = join(dirname(fileURLToPath(import.meta.url)), "harness-statusline.mjs");

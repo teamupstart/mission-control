@@ -40,6 +40,7 @@ function seeded(): InstanceType<typeof Registry> {
 }
 
 const hook = (over: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest => ({
+  agent: "claude",
   sessionId: null,
   cwd: null,
   transcriptPath: null,

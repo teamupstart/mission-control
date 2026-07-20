@@ -199,13 +199,21 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
 
 ## Styles
 
-`src/web/styles.css` is one 5,700-line file: no preprocessor, no modules, no Tailwind. A
+`src/web/styles.css` is one 7,800-line file: no preprocessor, no modules, no Tailwind. A
 `:root` token block, then ~60 sections in feature order marked `/* ---- name ---- */`. Classes
 are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`, `board-`,
 `console-`, `rail-`, `detail-`).
 
 - **When you remove or rename a `className`, grep `styles.css` for it in the same change.** No
-  linter, no stylelint, no unused-CSS check, no test touches this file.
+  linter, no stylelint, no unused-CSS check catches a class that lost its rule.
+- **In the desktop shell the topbar IS the title bar**, so it carries
+  `-webkit-app-region: drag`. The property's initial value is `none`, which is not `no-drag` -
+  only an explicit `no-drag` subtracts from the region, so painting a layer over the bar does
+  NOT take its own clicks back: the OS keeps the mousedown and the renderer never sees it, and
+  the layer hovers correctly while refusing to fire. **A new floating layer** (fixed, or a
+  `z-index` above the topbar's 10) **goes in the `.is-desktop` no-drag rule**, or is exempted
+  in the test with a reason the test re-checks. Test: `desktop-drag-region.test.ts`, which is
+  the only thing that reads this file.
 - New rules go in the matching section, not at the end.
 - Layout state is root/parent classes and data attributes (`.app-${layout}`,
   `.board[data-focus="<tone>"]`, `.card.expanded`), not per-layout files.

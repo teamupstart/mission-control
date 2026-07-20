@@ -2357,10 +2357,17 @@ body {
   gap: 8px;
   font-weight: 620;
   color: var(--fg);
+  /* Shrinkable, so a long name yields to the keycaps instead of pushing them off. */
+  min-width: 0;
+  max-width: 34vw;
+}
+/* The truncation has to live on the text itself: `text-overflow` does nothing on a
+   flex container, so with the rules up here the squeezed name clipped mid-glyph with
+   no ellipsis to say it had been cut. */
+.cmdbar-name-text {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 34vw;
 }
 .cmdbar-name .agent-dot {
   flex: none;

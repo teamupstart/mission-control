@@ -210,6 +210,7 @@ test("card and console detail agree on every shared leaf", () => {
         onOpenReviews: () => {},
         onOpenDiff: () => {},
         onReset: () => {},
+        onKilled: () => {},
         resetNonces: {},
         registerEl: () => {},
         registerActions: () => {},

@@ -25,7 +25,7 @@ import { useCost } from "./useCost.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
-import { useLayoutMode } from "./lib/layout.ts";
+import { detailLayer, useLayoutMode } from "./lib/layout.ts";
 import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
@@ -147,6 +147,26 @@ export function App(): React.JSX.Element {
   const toggleExpand = useCallback((id: string) => {
     setExpandedId((cur) => (cur === id ? null : id));
   }, []);
+
+  /**
+   * A kill landed: close whatever detail it was ordered from, straight away.
+   *
+   * The session does NOT leave the list when it dies - it is marked `exited` and lingers
+   * ~8s before eviction, and only then does the reconciliation effect below drop the
+   * selection. Until then the board stayed drilled into a transcript that can no longer
+   * change, its action bar already gone, with Escape the only way out. Killing is the one
+   * gesture that ends the reason the detail was open, so it takes the detail with it.
+   *
+   * Which layer that is is the layout's answer, not this callback's - `detailLayer`, the
+   * same split Escape peels one press at a time.
+   */
+  const onKilled = useCallback(
+    (id: string) => {
+      const drop = detailLayer(layout) === "expanded" ? setExpandedId : setSelectedId;
+      drop((cur) => (cur === id ? null : cur));
+    },
+    [layout],
+  );
 
   const closeDispatch = useCallback(() => {
     setDispatchOpen(false);
@@ -296,6 +316,7 @@ export function App(): React.JSX.Element {
       setDiffSessionId(id);
     },
     onReset: setResetSessionId,
+    onKilled,
     resetNonces,
     registerEl,
     registerActions,
@@ -824,7 +845,7 @@ function CommandBar({
     <div ref={barRef} className="cmdbar" role="toolbar" aria-label="Selected session actions">
       <span className="cmdbar-name">
         <AgentDot agent={session.agent} />
-        {session.name || "(unnamed)"}
+        <span className="cmdbar-name-text">{session.name || "(unnamed)"}</span>
       </span>
       <span className="cmdbar-keys">
         {live && (

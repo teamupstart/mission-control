@@ -1077,6 +1077,10 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
   permanently instead of on a bar that floats over them.
 - **Selecting is opening** in the console and the board: the arrow keys move the detail
   with them, and <kbd>Esc</kbd> deselects (emptying the console's pane, or reversing the board's drill-in).
+- **Killing a session closes its detail**, without waiting for the session to disappear -
+  the board goes straight back to its columns, the console empties its pane, and Cards
+  leaves focus mode with the card still selected. A killed session lingers for a few
+  seconds before it's evicted, and there's nothing left to read in it.
 - **The arrow keys follow the shape** - see below.
 
 ## Message formatting

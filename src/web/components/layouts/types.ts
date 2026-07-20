@@ -38,6 +38,13 @@ export interface SessionViewProps {
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
   onReset: (id: string) => void;
+  /**
+   * A kill landed on this session. The detail it was ordered from is now a dead
+   * transcript, so App closes it: the board reverses its drill-in, the console empties
+   * its pane, the grid leaves focus mode. Not driven by the session disappearing - it
+   * lingers ~8s as `exited` first, which is the whole delay this removes.
+   */
+  onKilled: (id: string) => void;
   /** Per-session counter bumped on each reset, so a card can remount its (uncontrolled)
    *  reply box and clear the text a reset discarded. Absent id means never reset (0). */
   resetNonces: Record<string, number>;
@@ -69,6 +76,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onOpenReviews: () => p.onOpenReviews(s.id),
     onOpenDiff: (commit?: string) => p.onOpenDiff(s.id, commit),
     onReset: () => p.onReset(s.id),
+    onKilled: () => p.onKilled(s.id),
     resetNonce: p.resetNonces[s.id] ?? 0,
     registerEl: p.registerEl,
     registerActions: p.registerActions,

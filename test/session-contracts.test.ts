@@ -289,10 +289,25 @@ const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
   ["src/shared/agent.ts", "AgentNames"],
   ["src/shared/cost.ts", "string | null"],
   ["src/shared/goal.ts", "string | null"],
-  ["src/shared/model.ts", "readonly ModelChoice\\[\\]"],
+  ["src/shared/model.ts", "readonly ModelChoice[]"],
   ["src/server/config.ts", "AgentBin"],
   ["src/server/goal/source.ts", "GoalSource"],
 ];
+
+/**
+ * Escape a TYPE NAME for use inside the match pattern below.
+ *
+ * The table above is written the way tsc prints, not the way `RegExp` reads, and the
+ * gap between those is how an assertion here goes quietly green: `string | null`
+ * interpolated raw is an alternation whose right branch is the bare pattern ` null`,
+ * which matches somewhere in tsc's output no matter what happened in the file the row
+ * names. That row then passes with the map deleted - the precise rot this test exists
+ * to catch. Escaping centrally rather than row by row is the point: a hand-escaped
+ * table only holds until the next row someone adds with a `|`, `(` or `?` in it.
+ */
+function asLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 test("a new agent id fails typecheck everywhere it has to be accounted for", () => {
   // The union is now written ONCE, so this probe edits one line - which is itself the
@@ -308,10 +323,10 @@ test("a new agent id fails typecheck everywhere it has to be accounted for", () 
     ),
   );
   for (const [file, type] of AGENT_RECORDS) {
-    const base = file.split("/").pop()!.replace(".", "\\.");
+    const base = asLiteral(file.split("/").pop()!);
     assert.match(
       out,
-      new RegExp(`${base}[^\\n]*error TS2741:[^\\n]*'${PROBE_AGENT}'[^\\n]*${type}`),
+      new RegExp(`${base}[^\\n]*error TS2741:[^\\n]*'${PROBE_AGENT}'[^\\n]*${asLiteral(type)}`),
       `adding an agent id should force a decision in ${file}, got:\n${out}`,
     );
   }

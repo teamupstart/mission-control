@@ -78,6 +78,68 @@ export interface SessionMeta {
   updatedAt: number;
 }
 
+/**
+ * What one session has spent, summed out of the `usage_ledger`.
+ *
+ * Every figure here is Claude Code's OWN arithmetic, consumed over OpenTelemetry rather
+ * than reconstructed from a transcript against a price list we maintain - there is no
+ * rate table anywhere in this app, and deliberately so (see docs/plans/cost-telemetry).
+ * It is still a LOCAL ESTIMATE: Anthropic's own docs say the client-side number may
+ * differ from billing, and on a Pro/Max subscription the dollars are notional entirely.
+ * Anything that renders it says "estimate".
+ *
+ * Null on a session, rather than zero, when the ledger has no rows for its key - "we
+ * have not been told" and "it cost nothing" are different claims and only one of them
+ * is ever true here.
+ */
+export interface SessionCost {
+  /** SUM(cost_usd) over every ledger window for this session's note key. */
+  costUsd: number;
+  /** Token totals by tier. `cacheRead`/`cacheWrite` are billed at different rates. */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** epoch ms of the newest window counted, so a card can say how fresh this is. */
+  updatedAt: number;
+}
+
+/** One subscription rate-limit window, as Claude Code's statusLine payload reports it. */
+export interface RateLimitWindow {
+  /** 0-100. Claude's own number; we never derive it. */
+  usedPercentage: number;
+  /** When the window rolls over, in epoch SECONDS - the unit Claude sends. */
+  resetsAt: number;
+}
+
+/**
+ * The subscription's rate-limit picture, from the statusLine payload.
+ *
+ * The one fact OpenTelemetry cannot supply (there is no quota metric), and the entire
+ * reason the statusLine wrapper is still in the design. Account-global rather than
+ * per-session, so it rides `FleetCost` and is deliberately NOT a `Session` field.
+ *
+ * Present only for Pro/Max subscribers, and only after the first API response of a
+ * session - an API-key user never gets one. Either window may be null on its own.
+ * Absent means "unknown", and must render as nothing rather than as 0%.
+ */
+export interface RateLimits {
+  fiveHour: RateLimitWindow | null;
+  sevenDay: RateLimitWindow | null;
+  /** epoch ms the reading was taken (these are live gauges; they are never persisted). */
+  updatedAt: number;
+}
+
+/** Fleet-wide spend for the topbar strip. A top-level collection, not a session field. */
+export interface FleetCost {
+  /** SUM(cost_usd) since local midnight, across every session on the machine. */
+  spendToday: number;
+  /** SUM(cost_usd) over the last hour - the burn rate, not a projection. */
+  burnPerHour: number;
+  rateLimits: RateLimits | null;
+  updatedAt: number;
+}
+
 export interface WeztermInfo {
   paneId: number;
   tabId: number;
@@ -212,6 +274,18 @@ export interface Session {
    * Codex rollout). Null until we've read the session at least once.
    */
   meta: SessionMeta | null;
+  /**
+   * What this session has spent so far, denormalized off the usage ledger and keyed on
+   * the same stable note key as `note` and `goal` - never on `id`, which re-mints on
+   * every restart while the ledger is meant to outlive the session.
+   *
+   * Null until an OTel export lands for the key, which also means null forever for a
+   * Codex session (it emits no such telemetry, and its own `tokens_used` scalar carries
+   * no tier split and no cost, so it cannot be priced to the same confidence). A Codex
+   * card reads "not tracked" rather than showing a number with a different error bar
+   * beside a Claude one.
+   */
+  cost: SessionCost | null;
   /**
    * The Foreman auto-responder's note for this session: a one-liner Purpose plus
    * the decision brief / audit of what Foreman did. Denormalized like `task`,
@@ -1228,13 +1302,30 @@ export interface MissionReport {
 // ---- SSE events (daemon -> UI) ----
 
 export type ServerEvent =
-  | { type: "snapshot"; sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] }
+  | {
+      type: "snapshot";
+      sessions: Session[];
+      reviews: ReviewItem[];
+      tasks: Task[];
+      /**
+       * Fleet spend at connect time. Carried in the snapshot rather than waited for,
+       * or the topbar strip would sit blank until the next export happened to change
+       * something - up to a whole export interval of a dashboard that looks broken.
+       */
+      fleetCost: FleetCost | null;
+    }
   | { type: "session_upsert"; session: Session }
   | { type: "session_remove"; id: string }
   | { type: "review_upsert"; review: ReviewItem }
   | { type: "review_remove"; id: string }
   | { type: "task_upsert"; task: Task }
-  | { type: "task_remove"; id: string };
+  | { type: "task_remove"; id: string }
+  /**
+   * Fleet-wide spend and the subscription's rate limits. A top-level collection, not a
+   * per-session field: the rate limits are account-global, so hanging them off each
+   * session would ship the same numbers N times and invite N places to disagree.
+   */
+  | { type: "cost_fleet"; fleet: FleetCost };
 
 // ---- session transcript (expanded card) ----
 

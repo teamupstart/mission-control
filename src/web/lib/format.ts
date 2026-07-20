@@ -62,6 +62,39 @@ export function compactTokens(n: number | null | undefined): string {
   return String(n);
 }
 
+/**
+ * A dollar figure for a chip: `$0.42`, `$12.40`, `$1,204`.
+ *
+ * Cents are dropped past three figures because they stop being information there - the
+ * estimate's own error bar is wider than a cent by then, and the extra glyphs cost room
+ * on the tightest surfaces. Below a cent reads as `<$0.01` rather than `$0.00`, since a
+ * session that has spent SOMETHING and one that has spent nothing are different states
+ * and the second one renders no chip at all.
+ */
+export function fmtUsd(usd: number | null | undefined): string {
+  if (usd == null || !Number.isFinite(usd)) return "-";
+  if (usd > 0 && usd < 0.01) return "<$0.01";
+  if (usd >= 1000) return "$" + Math.round(usd).toLocaleString("en-US");
+  return "$" + usd.toFixed(2);
+}
+
+/**
+ * When a rate-limit window rolls over, as a short "in 2h 40m".
+ *
+ * The reset time is the actionable half of a rate limit - "83% used" means something
+ * different an hour before the window turns over than five minutes before - so the meter
+ * says both. Epoch SECONDS in, because that is the unit Claude sends.
+ */
+export function untilReset(resetsAtSeconds: number): string {
+  const ms = resetsAtSeconds * 1000 - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return "now";
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `in ${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `in ${h}h ${m}m` : `in ${h}h`;
+}
+
 export function shortenCwd(cwd: string | null): string {
   if (!cwd) return "-";
   const home = "/Users/";

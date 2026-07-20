@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
+import type { FleetCost, ReviewItem, ServerEvent, Session, Task } from "@shared/types.ts";
 import { dropSessionDrafts } from "./lib/drafts.ts";
 
 /**
@@ -14,6 +14,14 @@ export interface MissionState {
   sessions: Session[];
   reviews: ReviewItem[];
   tasks: Task[];
+  /**
+   * Fleet spend and the subscription's rate limits, for the topbar strip. A single
+   * value rather than a per-session field because that is the shape of the fact: the
+   * rate-limit windows belong to the ACCOUNT, so one copy is the only way for the
+   * dashboard to have exactly one answer. Null until the daemon has anything to say -
+   * which is the ordinary state for anyone who hasn't switched telemetry on.
+   */
+  fleetCost: FleetCost | null;
   connected: boolean;
   /** True once the initial `snapshot` has populated state (distinct from the SSE
    * connection opening). Alerting keys off this so opening the dashboard doesn't
@@ -31,6 +39,7 @@ export function useEventStream(): MissionState {
   const [sessions, setSessions] = useState<Map<string, Session>>(new Map());
   const [reviews, setReviews] = useState<Map<string, ReviewItem>>(new Map());
   const [tasks, setTasks] = useState<Map<string, Task>>(new Map());
+  const [fleetCost, setFleetCost] = useState<FleetCost | null>(null);
   const [connected, setConnected] = useState(false);
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const esRef = useRef<EventSource | null>(null);
@@ -59,6 +68,9 @@ export function useEventStream(): MissionState {
           setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
           setReviews(new Map(msg.reviews.map((r) => [r.id, r])));
           setTasks(new Map(msg.tasks.map((t) => [t.id, t])));
+          // Carried in the snapshot rather than waited for: the strip would otherwise sit
+          // blank until the next export happened to change a figure.
+          setFleetCost(msg.fleetCost);
           setConnected(true);
           setHasSnapshot(true);
           break;
@@ -96,6 +108,9 @@ export function useEventStream(): MissionState {
             return next;
           });
           break;
+        case "cost_fleet":
+          setFleetCost(msg.fleet);
+          break;
         default: {
           // Exhaustiveness: this assignment fails to compile the moment `ServerEvent`
           // grows a variant this switch doesn't handle. Without it the new variant
@@ -126,6 +141,7 @@ export function useEventStream(): MissionState {
     sessions: [...sessions.values()],
     reviews: [...reviews.values()],
     tasks: [...tasks.values()],
+    fleetCost,
     connected,
     hasSnapshot,
   };

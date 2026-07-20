@@ -7,13 +7,14 @@ import { ConsoleDetail } from "../src/web/components/layouts/ConsoleDetail.tsx";
 import { SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
 import {
   AgentDot,
+  CostChip,
   PrChip,
   RuntimeMetaRow,
   SessionTitle,
   StateBadge,
 } from "../src/web/components/session-bits.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
-import type { Session } from "../src/shared/types.ts";
+import type { Session, SessionCost } from "../src/shared/types.ts";
 
 /**
  * The card, the console detail and the board tile must draw their shared leaf pieces from
@@ -118,6 +119,27 @@ test("the card's context meter is the shared RuntimeMetaRow", () => {
   );
 });
 
+test("the card's cost badge is the shared CostChip", () => {
+  // Both sides of the chip's own gate. An unpriced session (no telemetry, or none yet)
+  // renders nothing at all, and that empty case is the one a hand-copied card would get
+  // wrong - it is what every card looks like before anyone switches telemetry on.
+  const cases: (SessionCost | null)[] = [
+    null,
+    { costUsd: 1.24, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1 },
+    // Past COST_ATTENTION_USD, where the chip changes tone rather than growing a
+    // second copy of itself in the tile's alert marks.
+    { costUsd: 12.5, input: 2, output: 9, cacheRead: 1, cacheWrite: 1, updatedAt: 1 },
+  ];
+  for (const cost of cases) {
+    const fragment = bit(CostChip, { cost });
+    if (!fragment) {
+      assert.ok(!card({ cost }).includes("cost-chip"), "an unpriced session draws no chip");
+      continue;
+    }
+    assert.ok(card({ cost }).includes(fragment), `card should render the shared CostChip (${cost?.costUsd})`);
+  }
+});
+
 test("the board tile's agent dot and context meter are the shared ones", () => {
   const m = meta({ contextPct: 73 });
   const session = mkSession({ meta: m });
@@ -138,6 +160,24 @@ test("the board tile's agent dot and context meter are the shared ones", () => {
   assert.ok(tile.includes(bit(RuntimeMetaRow, { meta: m })), "tile should render the shared meter");
 });
 
+test("the board tile's cost badge is the shared CostChip", () => {
+  const cost: SessionCost = {
+    costUsd: 3.5, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
+  };
+  const session = mkSession({ cost });
+  const tile = renderToStaticMarkup(
+    createElement(SessionTile, {
+      session,
+      gateNeedsYou: false,
+      onOpen: () => {},
+      draggingRepo: null,
+      onDropped: () => {},
+      onDropError: () => {},
+    }),
+  );
+  assert.ok(tile.includes(bit(CostChip, { cost })), "tile should render the shared CostChip");
+});
+
 test("card and console detail agree on every shared leaf", () => {
   // The end the whole refactor is for: the two layouts a human compares side by side must
   // be drawing the same pieces, so a fix to one is a fix to both.
@@ -148,6 +188,9 @@ test("card and console detail agree on every shared leaf", () => {
     prChecks: "failing",
     pendingReviews: 2,
     meta: meta({ contextPct: 73 }),
+    cost: {
+      costUsd: 1.24, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
+    },
   };
   const session = mkSession(over);
   const detail = renderToStaticMarkup(
@@ -187,6 +230,7 @@ test("card and console detail agree on every shared leaf", () => {
     ["PrChip", bit(PrChip, { session })],
     ["StateBadge", bit(StateBadge, { session, onOpenReviews: () => {} })],
     ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta! })],
+    ["CostChip", bit(CostChip, { cost: session.cost })],
   ] as const) {
     assert.ok(html.includes(fragment), `card should contain the shared ${name}`);
     assert.ok(detail.includes(fragment), `console detail should contain the shared ${name}`);

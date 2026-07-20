@@ -15,6 +15,7 @@ import { TranscriptPanel, type TranscriptHandle } from "../TranscriptPanel.tsx";
 import {
   AGENT_LABEL,
   AgentDot,
+  CostChip,
   GoalLine,
   PrChip,
   RuntimeMetaRow,
@@ -150,6 +151,7 @@ export function ConsoleDetail({
         <StateBadge session={session} onOpenReviews={() => view.onOpenReviews(session.id)} />
         <span className="detail-head-spacer" />
         {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        <CostChip cost={session.cost} />
       </header>
 
       <dl className="detail-sub">

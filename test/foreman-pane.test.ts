@@ -182,7 +182,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null, transcriptPath: null, instrumented: true, hooksSeen: true, activity: HOOK_LINE,
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [], nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null,
-    prChecks: null, meta: null, note: null, goal: null, queue: null, orphanedQueue: null,
+    prChecks: null, meta: null, note: null, cost: null, goal: null, queue: null, orphanedQueue: null,
     paneDialog: null,
     ...over,
   };

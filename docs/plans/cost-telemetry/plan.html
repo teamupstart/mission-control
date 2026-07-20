@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cost &amp; token telemetry - Mission Control</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfc; --panel: #fff; --panel-2: #f4f5f7;
+    --border: #e2e5ea; --border-soft: #eceff3;
+    --fg: #14181e; --muted: #5d6775; --dim: #8b94a3;
+    --accent: #a371f7; --danger: #d1242f; --ok: #1a7f37; --warn: #bf8700;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a0c0f; --panel: #14181e; --panel-2: #171c23;
+      --border: #232a33; --border-soft: #1b2129;
+      --fg: #e7ebf1; --muted: #939eae; --dim: #5d6775;
+      --accent: #a371f7; --danger: #f85149; --ok: #35c08a; --warn: #f6a733;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 24px 96px;
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; }
+  header.doc { border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 8px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -.02em; }
+  h2 {
+    font-size: 20px; margin: 40px 0 12px; letter-spacing: -.01em;
+    padding-top: 20px; border-top: 1px solid var(--border-soft);
+  }
+  h3 { font-size: 16px; margin: 26px 0 8px; color: var(--fg); }
+  p, li { color: var(--fg); }
+  .meta { font: 13px/1.7 var(--mono); color: var(--muted); }
+  .meta b { color: var(--fg); font-weight: 600; }
+  a { color: var(--accent); }
+  code {
+    font: 13px var(--mono); background: var(--panel-2);
+    border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px;
+  }
+  pre {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 14px 16px;
+    overflow-x: auto; font: 13px/1.6 var(--mono);
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+  blockquote {
+    margin: 16px 0; padding: 2px 0 2px 16px;
+    border-left: 3px solid var(--border);
+    color: var(--muted); font-style: italic;
+  }
+  blockquote code { font-style: normal; }
+  .scroll { overflow-x: auto; margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-soft); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; font-family: var(--mono); }
+  tr.total td { border-top: 2px solid var(--border); border-bottom: 0; font-weight: 700; }
+  .callout {
+    border: 1px solid var(--border); border-left: 3px solid var(--warn);
+    background: var(--panel); border-radius: var(--radius);
+    padding: 14px 18px; margin: 20px 0;
+  }
+  .callout.bad { border-left-color: var(--danger); }
+  .callout.good { border-left-color: var(--ok); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  .lede { font-size: 17px; color: var(--muted); margin: 0 0 4px; }
+  figure { margin: 24px 0; }
+  figure svg { display: block; width: 100%; height: auto; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; text-align: center; }
+  .status {
+    display: inline-block; font: 11px var(--mono); text-transform: uppercase;
+    letter-spacing: .06em; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid color-mix(in oklab, var(--warn) 45%, var(--border));
+    background: color-mix(in oklab, var(--warn) 12%, transparent);
+    color: var(--warn); margin-bottom: 14px;
+  }
+  ol li, ul li { margin: 5px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <div class="status">implemented</div>
+  <h1>Cost &amp; token telemetry</h1>
+  <p class="lede">Consume Claude Code's own cost telemetry over OpenTelemetry, add the subscription rate-limit view from the statusline payload, store both durably, and surface them in all four session views plus a fleet strip.</p>
+  <p class="meta">
+    Owner <b>ai-harness (Mission Control)</b><br>
+    Source of truth <b>docs/plans/cost-telemetry/plan.md</b><br>
+    Supersedes the cost bullet in <b>an earlier feature-ideas note that was never checked in</b>
+  </p>
+</header>
+
+<div class="callout good">
+<p><strong>Built as written</strong>, with the three questions this plan left open resolved in the code:</p>
+<ul>
+  <li><strong>Two install prompts, not one.</strong> <code>npm run install-telemetry</code> (the <code>env</code> block) is separate from <code>npm run install-statusline</code> (the wrapper) - two different asks of the user's config, and someone may well want the spend figures without us near their status line. In the app the Cost settings toggle owns the env block; <code>removeIntegrations</code> still tears it down unconditionally.</li>
+  <li><strong>Export interval: 15s</strong>, settable 5s-60s in Settings &rarr; Cost.</li>
+  <li><strong>Rail treatment: glyph-when-notable.</strong> <code>RailRow</code> pushes a <code>$</code> mark once <code>costIsNotable</code> (<code>@shared/cost.ts</code>) says so; the other three surfaces carry the figure via <code>CostChip</code>.</li>
+</ul>
+<p>And two things this plan did not anticipate, both found while building - read the schema and open-questions sections below through them:</p>
+<ul>
+  <li><strong><code>window_end_ns</code> also covers the cumulative case.</strong> Claude Code exports delta today, but a cumulative series is keyed on its fixed <code>startTimeUnixNano</code> so each export replaces one row rather than accumulating - <code>SUM</code> at read time stays correct either way.</li>
+  <li><strong><code>model_id</code> / <code>query_source</code> are <code>NOT NULL DEFAULT ''</code></strong>, not the nullable columns sketched below. SQLite treats NULLs as distinct inside a <code>UNIQUE</code> index, so <code>ON CONFLICT</code> would never have fired for a datapoint carrying no <code>model</code>, and every retry would have inserted a new row.</li>
+</ul>
+</div>
+
+<div class="callout">
+<p><strong>Revision note.</strong> Two earlier drafts of this plan parsed transcript JSONL and priced the tokens ourselves. Research and measurement showed that to be the weakest of five available sources, and the arithmetic far more error-prone than expected. The findings are kept below rather than edited out - each is a trap the implementation still has to avoid, and the cheapest way to be wrong here is to rediscover them.</p>
+</div>
+
+<p>You run a fleet and nothing tracks what it costs.</p>
+
+<h2>Premises that turned out to be wrong</h2>
+
+<p><strong>1. "Token counts ride the same hook payloads that already drive status."</strong> (The earlier feature-ideas note, not this plan.) They do not. Verified empirically, not from docs: <code>Stop</code>, <code>SessionEnd</code>, and <code>PostToolUse</code> hooks were registered to dump raw stdin, and no field matching <code>cost|token|usage</code> appears in any of them. <code>hooks/harness-hook.mjs:67-84</code> builds an allowlist body with no <code>usage</code> field.</p>
+
+<p><strong>2. "We do not know a subscription's limits programmatically and will not guess."</strong> (This plan, draft 1.) Wrong - the statusline payload carries them.</p>
+
+<p><strong>3. "Compute cost from tokens x a rate table."</strong> (This plan, drafts 1 and 2.) Workable but unnecessary and risky. Claude Code already computes the dollars.</p>
+
+<h2>Architecture</h2>
+
+<p>Two sources, each used for the thing only it can do.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Source</th><th>Provides</th><th>Why this one</th></tr></thead>
+  <tbody>
+    <tr><td><strong>OpenTelemetry</strong></td><td><code>claude_code.cost.usage</code> (USD), <code>claude_code.token.usage</code> by <code>type</code>, per <code>session.id</code>, <code>model</code>, <code>query_source</code></td><td>Claude Code's own cost arithmetic. A continuously-emitted counter - no snapshot or reconstruction problem. Doesn't touch the statusline slot.</td></tr>
+    <tr><td><strong>Statusline payload</strong></td><td><code>rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}</code></td><td>The <strong>only</strong> local source of real subscription limits.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>Transcript parsing is <strong>not</strong> in the design. It is retained only as an optional one-time backfill for history predating the feature, clearly labelled approximate.</p>
+
+<h3>Why OTel rather than transcripts</h3>
+
+<p>Verified on this machine (<code>CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_METRICS_EXPORTER=console</code>):</p>
+
+<pre><code>descriptor: { name: "claude_code.cost.usage", type: "COUNTER", unit: "USD" }
+dataPoints: [{ attributes: { "session.id": "c180e57e-...", model: "claude-opus-4-8[1m]",
+                             query_source: "main", effort: "xhigh" },
+               value: 0.0987345 }]</code></pre>
+
+<p>Four metrics emit: <code>claude_code.cost.usage</code>, <code>claude_code.token.usage</code> (with a <code>type</code> of <code>input</code> / <code>output</code> / <code>cacheRead</code> / <code>cacheCreation</code> - note camelCase), <code>claude_code.session.count</code>, <code>claude_code.active_time.total</code>. <code>query_source</code> is <code>main | subagent | auxiliary</code>, which separates subagent spend natively.</p>
+
+<p>Crucially it <strong>needs no pricing table</strong>: no rates to maintain, no effective-date logic for Sonnet 5's introductory pricing expiring 2026-08-31, no fast-mode variants, no <code>[1m]</code> context-tier ambiguity, no exposure to LiteLLM's known-bad Claude 3 values.</p>
+
+<div class="callout bad">
+<p><strong>What OTel cannot do:</strong> there is no quota or rate-limit metric. Confirmed by grepping a live capture. That is the entire reason the statusline is still in the design.</p>
+</div>
+
+<h2>Accuracy: why we consume rather than reconstruct</h2>
+
+<p>Measured against Claude Code's own per-model <code>costUSD</code>, which it records in <code>~/.claude.json</code> under <code>projects.&lt;path&gt;.lastModelUsage[&lt;model&gt;].costUSD</code> alongside <code>lastSessionId</code>. Nineteen sessions had both an oracle value and a transcript.</p>
+
+<p>Where both sources are complete, a correct reconstruction agrees closely - <strong>median absolute error 0.99%</strong>, ten of nineteen within 2%, several at 0.0-0.3%. The arithmetic is tractable. What is not tractable is everything around it:</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Reconstruction method</th><th class="num">Total, 19 sessions</th><th class="num">vs oracle</th></tr></thead>
+  <tbody>
+    <tr><td>Correct: dedup by <code>message.id</code>, exact cache tiers</td><td class="num">$46.30</td><td class="num">+32%</td></tr>
+    <tr><td>No dedup</td><td class="num">$114.40</td><td class="num">+227%</td></tr>
+    <tr><td>Flat cache rate</td><td class="num">$204.98</td><td class="num">+486%</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>The +32% residual is <strong>not</strong> an arithmetic error. <code>lastCost</code> is a per-project field that is overwritten, so it is frequently a mid-session snapshot - one session shows 245 usage records against a $1.70 oracle. Which is the point: three local artifacts disagree about what a session cost, and two of them are snapshots. OTel's counter is the only one that is neither reconstructed nor overwritten.</p>
+
+<figure>
+<svg viewBox="0 0 760 210" role="img" aria-label="Reconstruction error bars: correct method +32% (dominated by oracle snapshot staleness), no-dedup +227%, flat cache rate +486%. The last two are pure arithmetic mistakes.">
+  <defs>
+    <style>
+      .bl { fill: var(--fg); font: 600 13px var(--sans); }
+      .bs { fill: var(--muted); font: 11px var(--mono); }
+      .bv { font: 700 14px var(--mono); }
+    </style>
+  </defs>
+  <text x="10" y="16" class="bs">Reconstruction total vs Claude Code's own costUSD (bar width = overshoot)</text>
+
+  <rect x="10" y="34" width="70" height="30" rx="5" fill="color-mix(in oklab, var(--ok) 16%, transparent)" stroke="var(--ok)"/>
+  <text x="90" y="47" class="bl">Correct (dedup + exact tiers)</text>
+  <text x="90" y="61" class="bs">+32% is stale oracle snapshots, not arithmetic</text>
+  <text x="750" y="53" class="bv" fill="var(--ok)" text-anchor="end">+32%</text>
+
+  <rect x="10" y="92" width="300" height="30" rx="5" fill="color-mix(in oklab, var(--warn) 16%, transparent)" stroke="var(--warn)"/>
+  <text x="320" y="105" class="bl">No dedup</text>
+  <text x="320" y="119" class="bs">counts each response's content blocks separately</text>
+  <text x="750" y="111" class="bv" fill="var(--warn)" text-anchor="end">+227%</text>
+
+  <rect x="10" y="150" width="640" height="30" rx="5" fill="color-mix(in oklab, var(--danger) 16%, transparent)" stroke="var(--danger)"/>
+  <text x="18" y="163" class="bl">Flat cache rate</text>
+  <text x="18" y="177" class="bs">prices cache reads at ten times their true rate</text>
+  <text x="750" y="169" class="bv" fill="var(--danger)" text-anchor="end">+486%</text>
+</svg>
+<figcaption>Consuming Claude's own number sidesteps the bottom two bars entirely.</figcaption>
+</figure>
+
+<h3>The traps a transcript implementation must survive</h3>
+
+<p>Kept because the optional backfill still faces them.</p>
+
+<p><strong>Dedup is mandatory, and its direction matters.</strong> One API response is written as multiple JSONL lines, one per content block, each carrying an identical complete <code>usage</code> object:</p>
+
+<pre><code>message.id msg_011Cd8gui6EZ...
+  blocks:['thinking']   in:2 out:561 cache_write:27298
+  blocks:['tool_use']   in:2 out:561 cache_write:27298   &lt;- same usage
+  blocks:['tool_use']   in:2 out:561 cache_write:27298   &lt;- same usage</code></pre>
+
+<p>78,346 usage-bearing lines collapse to 34,451 responses; summing every line inflates 2.25x. But naive "keep first" is also wrong: 6.58% of groups carry <em>differing</em> usage - streaming partials where <code>output_tokens</code> grows (<code>[3, 1028, 1028]</code>) - and keeping the first undercounts output by 6.24% corpus-wide.</p>
+
+<blockquote>Rule: group by <code>message.id</code>, keep the record with maximum <code>output_tokens</code>.</blockquote>
+
+<p><code>message.id</code> is present on 100% of records; <code>requestId</code> is missing on 74 (all <code>model: "&lt;synthetic&gt;"</code>, not billable - filter them). Draft 1 specified <code>UNIQUE(request_id)</code> with <code>INSERT OR IGNORE</code>, which would have silently dropped 56% of rows.</p>
+
+<p><strong>Other double-count traps:</strong> <code>cache_creation_input_tokens</code> equals <code>ephemeral_5m + ephemeral_1h</code> - redundant, never sum both. <code>usage.iterations[]</code> repeats the same numbers per iteration. And 791 <code>message.id</code>s appear across two or more transcripts (resume and fork copy history forward), so <code>sessionId</code> is not identity and dedup must span files.</p>
+
+<p><strong>Tier multipliers</strong> (verified uniform across current models): cache read 0.1x base input, 5-minute cache write 1.25x, 1-hour cache write 2.0x, output billed separately. On this corpus 99.4% of input tokens are cache reads and 853 of 857 cache writes use the 1h tier, so collapsing the split misprices real work.</p>
+
+<h2>Ingestion</h2>
+
+<h3>OTel receiver</h3>
+
+<p>A new route on the daemon accepting OTLP metrics. Use <code>OTEL_EXPORTER_OTLP_PROTOCOL=http/json</code> so the daemon parses JSON and takes no protobuf dependency. Per <code>CLAUDE.md</code>, a new mutating route needs a zod schema in <code>protocol.ts</code> and must go through <code>parseBody</code>.</p>
+
+<p>Enablement is a <code>settings.json</code> <code>env</code> block, <strong>verified to work</strong>: a session started with <code>{"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1", ...}}</code> emitted <code>claude_code.cost.usage</code>. This matters because Mission Control's premise is passive discovery - it sees sessions it did not start - and an env block applies to all of them.</p>
+
+<p>Details that bite:</p>
+<ul>
+<li><strong>Temporality is <code>delta</code> by default.</strong> Datapoints are increments; the receiver accumulates. Never treat a value as a running total.</li>
+<li><strong>Default export interval is 60s</strong> (<code>OTEL_METRIC_EXPORT_INTERVAL</code>). Tune down for a livelier badge, at the cost of more requests.</li>
+<li><strong><code>OTEL_METRICS_INCLUDE_SESSION_ID</code> defaults true and must stay true</strong> - false silently destroys per-session attribution. Assert it at startup.</li>
+<li><strong>Datapoints carry PII</strong>: <code>user.email</code>, <code>user.account_uuid</code>, <code>user.account_id</code>, <code>organization.id</code>. Strip at ingest; store only <code>session.id</code>, <code>model</code>, <code>query_source</code>, and the value.</li>
+<li><strong><code>model</code> carries a context suffix</strong> here (<code>claude-opus-4-8[1m]</code>) the transcript omits. Normalize if the two are ever joined.</li>
+</ul>
+
+<h3>Statusline wrapper</h3>
+
+<p><code>hooks/harness-statusline.mjs</code> already exists and is a <strong>wrapper</strong>: it captures the payload, POSTs selected fields to <code>/statusline</code>, and delegates rendering to the user's real statusline so the terminal is byte-for-byte unchanged. <code>DEFAULT_INNER</code> is <code>npx -y ccstatusline@latest</code>.</p>
+
+<p><code>toBody()</code> (<code>:64</code>) currently lifts only <code>model</code>, <code>context_window</code>, <code>effort</code>, <code>thinking</code>. Add <code>payload.rate_limits</code>. Cost is deliberately <strong>not</strong> taken from here - OTel owns cost, and one source per fact avoids two numbers that disagree on screen.</p>
+
+<p>The wrapper is opt-in and currently not installed; this machine's <code>statusLine</code> is <code>npx -y ccstatusline@latest</code> directly. Installing it edits the user's <code>settings.json</code>, so prompt rather than doing it silently.</p>
+
+<h2>Storage</h2>
+
+<p>A <strong>new table</strong>, not a new <code>kind</code> in <code>session_events</code>. <code>db.ts:900-910</code> documents a load-bearing invariant: that table has exactly one writer, and <code>hooksEverSeen</code> asks "any row?", not "any row of a hook kind". A second writer would make every session it touched claim hooks it never emitted. The remedy the file names is a separate table, as <code>gate_replies</code> got.</p>
+
+<p><strong>Key on <code>note_key</code>, not <code>session_id</code>.</strong> <code>db.ts:74-80</code>: a session id is synthetic (tty+pid+start) and re-mints on restart. OTel's <code>session.id</code> is the agent session id, which is exactly what <code>note_key</code> prefers.</p>
+
+<pre><code>CREATE TABLE IF NOT EXISTS usage_ledger (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  note_key      TEXT NOT NULL,          -- agentSessionId (OTel session.id)
+  session_id    TEXT,                   -- provenance only, never joined on
+  agent         TEXT NOT NULL DEFAULT 'claude',
+  model_id      TEXT,                   -- raw, e.g. 'claude-opus-4-8[1m]'
+  query_source  TEXT,                   -- main | subagent | auxiliary
+  window_end_ns TEXT NOT NULL,          -- datapoint timeUnixNano; the dedup identity
+  ts            INTEGER NOT NULL,        -- window end in epoch ms, for range queries
+  cost_usd      REAL NOT NULL DEFAULT 0,
+  input         INTEGER NOT NULL DEFAULT 0,
+  output        INTEGER NOT NULL DEFAULT 0,
+  cache_read    INTEGER NOT NULL DEFAULT 0,
+  cache_write   INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(note_key, model_id, query_source, window_end_ns)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_key ON usage_ledger(note_key, ts);
+CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);</code></pre>
+
+<div class="callout bad">
+<p><strong>Idempotency is <code>REPLACE</code>, not <code>SUM</code>.</strong> OTel delta datapoints carry <code>aggregationTemporality: 1</code> with <code>startTimeUnixNano</code>/<code>timeUnixNano</code> window bounds (verified on the wire). Each export's window is unique, so the ledger keys on the window-end nanos and <strong>replaces</strong> columns on conflict; the cumulative total is <code>SUM</code> at read time. A retried POST replaces with identical values - it cannot double-count. An <em>additive</em> upsert would double-count on retry.</p>
+<p><strong><code>window_end_ns</code> is a string, not an integer.</strong> <code>timeUnixNano</code> is ~1.78e18, past <code>Number.MAX_SAFE_INTEGER</code> (9.007e15). Store and compare as text; derive <code>ts</code> with <code>Number(BigInt(window_end_ns) / 1_000_000n)</code>. Parsing it as a JS number silently collides adjacent windows.</p>
+</div>
+
+<p>No <code>migrate()</code> entry is needed; <code>db.ts:341-346</code> records that a brand-new table is created identically on fresh and upgraded DBs.</p>
+
+<p><strong>Retention: age-based, 180 days</strong>, on the <code>gate_replies</code> precedent (<code>db.ts:613-628</code>) - session-scoped pruning is wrong because the record becomes interesting precisely once the session is gone. Add a fourth <code>try</code> block in <code>registry.pruneQueues</code> (<code>registry.ts:341-364</code>).</p>
+
+<p>Rate-limit percentages are <strong>not</strong> stored - they are a live gauge with a server-supplied reset time, and persisting one would invite treating a stale percentage as current.</p>
+
+<h2>Surfaces</h2>
+
+<p>A session is drawn by four components and three mark vocabularies disagree, so the badge needs a spelling in each.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Surface</th><th>File</th><th>Placement</th></tr></thead>
+  <tbody>
+    <tr><td>Cards</td><td><code>components/SessionCard.tsx:252</code></td><td>beside <code>RuntimeMetaRow</code></td></tr>
+    <tr><td>Console / Board detail</td><td><code>components/layouts/ConsoleDetail.tsx:152</code></td><td>beside <code>RuntimeMetaRow</code></td></tr>
+    <tr><td>Board tile</td><td><code>components/layouts/SessionTile.tsx:218</code></td><td>beside <code>RuntimeMetaRow</code></td></tr>
+    <tr><td>Console rail</td><td><code>components/layouts/RailRow.tsx:36-40</code> or <code>:59</code></td><td>see open question</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><code>CostChip</code> lives in <code>components/session-bits.tsx</code>, modelled on <code>PrChip</code> (<code>:72</code>): returns <code>null</code> when there is nothing to say, tone in the class suffix, detail in a tooltip. It must render a <code>&lt;span&gt;</code>, not a <code>&lt;div&gt;</code> - <code>RuntimeMetaRow</code> (<code>:304</code>) is a flex-styled span deliberately so it stays valid phrasing content inside the tile's all-span body.</p>
+
+<p><code>RuntimeMetaRow</code> is the right neighbour because cost is the fourth runtime fact of the same kind as model, thinking level, and context. It is explicitly <em>not</em> in <code>SessionTile</code>'s <code>.tile-marks</code>, which means "things that want your attention" - a routine cost is not an alert. Over-budget is, and escalates there.</p>
+
+<div class="callout">
+<p><strong>Every figure is a local estimate.</strong> Anthropic's docs are explicit that the client-side number may differ from actual billing, and for Pro/Max the dollars are notional entirely. Label it as an estimate in the tooltip rather than implying it is a bill.</p>
+</div>
+
+<h3>Fleet strip</h3>
+
+<p>Inside <code>.summary</code> in the topbar (<code>App.tsx:539-548</code>), reusing <code>Stat</code> (<code>:844</code>). Placement matters: <code>--topbar-h</code> is measured live off <code>topbarRef</code> with a <code>ResizeObserver</code> (<code>App.tsx:305-320</code>), so a strip <strong>inside</strong> the header is measured automatically while a sibling after <code>&lt;/header&gt;</code> is not - focus mode would then overflow by exactly the strip's height. <code>Stat</code> takes <code>n: number</code> and renders it bare, so it needs a formatter for currency and percent.</p>
+
+<p>Two rate-limit bars (five-hour, seven-day) come straight from <code>rate_limits</code> and reuse the <code>.rt-meter</code> / <code>.rt-meter-fill</code> idiom (<code>session-bits.tsx:334</code>). <strong>Degrade honestly:</strong> <code>rate_limits</code> appears only for Pro/Max subscribers and only after the first API response, so the bars must be absent rather than rendered empty at 0%.</p>
+
+<h3>Settings</h3>
+
+<p>A <code>cost</code> category in <code>SETTINGS_CATEGORIES</code> (<code>SettingsModal.tsx:20</code>) plus its <code>case</code> in <code>renderCategory</code> (<code>:126</code>) - the switch is exhaustive with no <code>default</code>, so the typecheck fails until both land. Holds the telemetry enable/disable, the OTel export interval, and the dollars-vs-plan-percent default view.</p>
+
+<p>State is <strong>owned by App and passed in</strong>, per the <code>foreman</code> precedent (<code>SettingsModal.tsx:59-64</code>): the topbar strip and the panel read the same state, so a local copy would leave the strip stale after an edit and double-poll.</p>
+
+<h3>CSS</h3>
+
+<p>A <code>--cost</code> token in <code>:root</code>, starting as an alias of <code>--purple</code> (the designated off-palette "neither state nor warning" colour), escalating to <code>--attention</code> and <code>--danger</code> at thresholds. Rules go in the runtime-meta-row section (<code>styles.css:560</code>), not at the end. Cost is <strong>not</strong> a session tone and must not go in <code>TONE_ORDER</code>.</p>
+
+<h2>Tests</h2>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>File</th><th>What is at stake</th></tr></thead>
+  <tbody>
+    <tr><td><code>otel-ingest.test.ts</code></td><td>delta accumulation, bucket idempotency (a replayed POST must not double-count), PII stripping, <code>session.id</code>-absent handling.</td></tr>
+    <tr><td><code>statusline-ratelimits.test.ts</code></td><td><code>toBody</code> lifts <code>rate_limits</code>, tolerates it absent (API-key users), tolerates one window present without the other.</td></tr>
+    <tr><td><code>session-contracts.test.ts</code></td><td>exists; the new <code>Session</code> field fails typecheck without a comparator.</td></tr>
+    <tr><td><code>session-leaf-parity.test.ts</code></td><td>add <code>CostChip</code> to the import, a per-surface test, and the loop at <code>:183-188</code>.</td></tr>
+    <tr><td><code>settings-sidebar-render.test.ts</code></td><td>exists; asserts nav count equals array length.</td></tr>
+    <tr><td><code>usage-backfill.test.ts</code></td><td><em>only if the backfill ships</em>: the dedup traps - multi-block groups collapse to one, <code>[3, 1028, 1028]</code> resolves to 1028.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout good">
+<p><strong>Cross-check as a test, not a mechanism.</strong> <code>~/.claude.json</code>'s <code>lastModelUsage[*].costUSD</code> and <code>ccusage --json</code> are both Claude-derived oracles. A slow test asserting the ledger lands within tolerance of one on a fixture corpus is cheap insurance on the part of the system that carries the risk. Neither is a runtime dependency, and neither is ground truth - <code>lastCost</code> is an overwritten snapshot.</p>
+</div>
+
+<div class="callout bad">
+<p>Known gap: <code>session-leaf-parity.test.ts</code> does not cover <code>RailRow</code> or <code>GoalLine</code> at all. Nothing will catch a forgotten rail mark. That is the riskiest item in the change.</p>
+</div>
+
+<h2>Sequencing</h2>
+
+<ol>
+<li>OTLP receiver route + zod schema + <code>usage_ledger</code> + <code>otel-ingest.test.ts</code>.</li>
+<li>Enablement: write the <code>env</code> block into settings on install, prompted; assert <code>OTEL_METRICS_INCLUDE_SESSION_ID</code> at startup.</li>
+<li><code>Session</code> field + comparator + read route. The compiler walks you through this one.</li>
+<li><code>CostChip</code> + the four surfaces + parity test.</li>
+<li>Statusline wrapper: add <code>rate_limits</code>; install prompt.</li>
+<li>Fleet strip: spend, burn rate, and the two rate-limit bars.</li>
+<li>Settings panel.</li>
+<li>Optional: transcript backfill for pre-feature history, behind an <code>app_config</code> flag and labelled approximate.</li>
+<li>README: a capability section, and Configuration lines for the telemetry env vars.</li>
+</ol>
+
+<p>Steps 1-4 deliver a live per-session cost with no pricing table and no statusline change. Step 5 adds the subscription view.</p>
+
+<h2>Open questions</h2>
+
+<p>Kept as they were asked. The first three were answered while building - the answers are in the callout at the top of this page. The last two stand: Codex is out of scope, cost-per-PR is deferred.</p>
+
+<p><strong>Two config edits, not one.</strong> OTel needs an <code>env</code> block; rate limits need the statusline wrapper. Both touch the user's <code>settings.json</code>. Worth deciding whether install is one prompt or two, and whether rate limits are opt-in separately given they are the more invasive.</p>
+
+<p><strong>Export interval.</strong> 60s default makes the badge feel stale next to a live context meter. Lowering it increases request volume from every session on the machine. 10-15s is probably right; worth measuring.</p>
+
+<p><strong>Rail treatment.</strong> <code>RailRow.tsx:52-54</code> sets an explicit budget: "Two lines, never four [...] a rail you can only fit six sessions in has stopped being a rail." A full <code>$1.24</code> in <code>.rail-meta</code> is honest but costs horizontal room. A glyph in the <code>marks</code> array only when over budget fits the existing vocabulary but makes the rail the one place cost is invisible until it is a problem. Leaning glyph-when-notable.</p>
+
+<p><strong>Codex.</strong> Out of scope; the schema carries an <code>agent</code> column for it. Codex here stores state in <code>~/.codex/state_5.sqlite</code> with a single <code>tokens_used</code> scalar - no tier split, no cost - so it cannot be priced to the same confidence. Codex cards read "not tracked".</p>
+
+<p><strong>Cost per PR</strong> needs a join from ledger rows to a PR, which <code>Session.prUrl</code> gives only while the session lives. Deferred; <code>note_key</code> on every row keeps the join possible later.</p>
+
+<h2>Implementation</h2>
+
+<p>Build order with exact file anchors. Line numbers drift; the function/const names are the durable anchors. Full code sketches are in <code>plan.md</code> - this is the map.</p>
+
+<h3>Data model, in one place</h3>
+
+<ul>
+<li><strong><code>Session.cost: SessionCost | null</code></strong> - a per-session summary resolved from the ledger by <code>note_key</code>, exactly like <code>Session.goal</code>. Drives the badge.</li>
+<li><strong><code>ServerEvent</code> gains <code>{ type: "cost_fleet", fleet: FleetCost }</code></strong> - a new top-level collection for the topbar strip. Rate limits are account-global, so they ride here, not on each session.</li>
+</ul>
+
+<p>No <code>Session.rateLimits</code> field, and no pricing table in the runtime.</p>
+
+<h3>The OTLP body the receiver parses (verified on the wire)</h3>
+
+<pre><code>{ "resourceMetrics": [{
+  "resource": { "attributes": [ /* host/os/service only - no PII */ ] },
+  "scopeMetrics": [{ "metrics": [
+    { "name": "claude_code.cost.usage",
+      "sum": { "aggregationTemporality": 1, "isMonotonic": true,
+        "dataPoints": [{
+          "asDouble": 0.0965845,
+          "timeUnixNano": "1784489513488000000",     // dedup identity (string!)
+          "attributes": [
+            { "key": "session.id",   "value": { "stringValue": "e86934c3-..." } },
+            { "key": "model",        "value": { "stringValue": "claude-opus-4-8[1m]" } },
+            { "key": "query_source", "value": { "stringValue": "main" } },
+            { "key": "user.email",   "value": { "stringValue": "..." } }  // PII - drop
+          ] }] } },
+    { "name": "claude_code.token.usage",
+      "sum": { "dataPoints": [ /* one per `type`: input|output|cacheRead|cacheCreation */ ] } }
+  ]}]
+}]}</code></pre>
+
+<ul>
+<li>Value is <code>asDouble</code> even for token counts - read <code>asDouble ?? asInt</code>.</li>
+<li><code>type</code> on <code>token.usage</code> maps to columns <code>input | output | cache_read | cache_write</code>.</li>
+<li><code>model</code> carries a <code>[1m]</code> suffix the transcript omits; <code>modelLabel()</code> strips it for display.</li>
+<li>PII is on the <em>datapoint</em> attributes, never the resource. Read only <code>session.id</code>, <code>model</code>, <code>query_source</code>, <code>type</code>.</li>
+<li>Ignore <code>active_time.total</code> and <code>session.count</code>.</li>
+</ul>
+
+<h3>File-by-file</h3>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>File</th><th>Change</th><th>Contract tripped</th></tr></thead>
+  <tbody>
+    <tr><td><code>shared/types.ts</code></td><td><code>SessionCost</code>, <code>RateLimits</code>, <code>FleetCost</code>; <code>Session.cost</code>; <code>cost_fleet</code> in <code>ServerEvent</code></td><td>comparator + SSE case</td></tr>
+    <tr><td><code>server/db.ts</code></td><td><code>usage_ledger</code> CREATE; <code>upsertUsageCell</code> (per-column replace, whitelist), <code>sessionCostFor</code>, <code>fleetSpendSince</code>, <code>pruneUsageLedger</code></td><td>new table = no <code>migrate()</code></td></tr>
+    <tr><td><code>server/registry.ts</code></td><td><code>applyOtelMetrics</code>; seed <code>cost:null</code> + resolve <code>base.cost</code>; <code>syncSessionsForCost</code> (goal template); <code>recomputeFleetCost</code>; <code>cost: byJson</code> comparator; 4th prune <code>try</code></td><td><code>SESSION_FIELD_COMPARATORS</code></td></tr>
+    <tr><td><code>shared/protocol.ts</code></td><td><code>OtlpMetricsSchema</code> (loose, passthrough); <code>rateLimits</code> on <code>StatusLineIngestSchema</code></td><td>mutating route = zod + <code>parseBody</code></td></tr>
+    <tr><td><code>server/routes.ts</code></td><td><code>POST /v1/metrics</code>, token-guarded, returns <code>{}</code> not 204</td><td>-</td></tr>
+    <tr><td><code>hooks/harness-statusline.mjs</code></td><td><code>toBody</code> forwards <code>rate_limits</code> (not cost)</td><td>-</td></tr>
+    <tr><td><code>web/useEventStream.ts</code></td><td><code>case "cost_fleet"</code>; <code>MissionState.fleetCost</code>; <code>snapshot</code> case</td><td><code>unhandled: never</code> guard</td></tr>
+    <tr><td><code>hooks/install.mjs</code> + <code>main/integrations.ts</code></td><td>OTel <code>env</code> block into <code>settings.json</code>; keep statusline wrapper opt-in</td><td>append-only env keys</td></tr>
+    <tr><td><code>web/components/session-bits.tsx</code></td><td><code>CostChip</code> (PrChip model, <code>&lt;span&gt;</code>)</td><td>leaf parity</td></tr>
+    <tr><td>4 surfaces + <code>App.tsx</code></td><td>render <code>CostChip</code>; fleet strip inside <code>&lt;header&gt;</code></td><td><code>--topbar-h</code> measure</td></tr>
+    <tr><td><code>SettingsModal.tsx</code> + <code>CostSettingsPanel.tsx</code></td><td><code>cost</code> category + <code>case</code>; state owned by App</td><td>exhaustive switch; sidebar test</td></tr>
+    <tr><td><code>styles.css</code></td><td><code>--cost</code> token; <code>.cost-chip</code> in runtime-meta section</td><td>not in <code>TONE_ORDER</code></td></tr>
+    <tr><td>tests + README</td><td>otel-ingest, ledger, ratelimits, leaf-parity, sidebar; capability section</td><td>"Done means" #1</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>Enablement env block (verified to emit)</h3>
+
+<pre><code>"env": {
+  "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+  "OTEL_METRICS_EXPORTER": "otlp",
+  "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:7317",
+  "OTEL_EXPORTER_OTLP_HEADERS": "x-harness-token=&lt;token&gt;",
+  "OTEL_METRIC_EXPORT_INTERVAL": "15000"
+  // OTEL_METRICS_INCLUDE_SESSION_ID defaults true - never set it false
+}</code></pre>
+
+<p>Merge, don't overwrite; the exporter carries the token via <code>OTEL_EXPORTER_OTLP_HEADERS</code> so the route can be token-guarded like <code>/statusline</code>. A startup assertion should warn loudly if <code>OTEL_METRICS_INCLUDE_SESSION_ID</code> reads false.</p>
+
+<h2>Flow</h2>
+
+<figure>
+<svg viewBox="0 0 760 250" role="img" aria-label="Claude Code exports OTLP cost and token metrics to a new daemon route, which strips PII and accumulates deltas into usage_ledger. Separately Claude Code's statusline payload flows through the harness-statusline wrapper, which delegates rendering to ccstatusline unchanged and POSTs rate_limits to the daemon. The ledger and the daemon both feed SSE to the UI. The hook path is untouched and no pricing table is involved.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--dim)"/>
+    </marker>
+    <style>
+      .bx { fill: var(--panel); stroke: var(--border); stroke-width: 1.5; }
+      .bx-new { fill: color-mix(in oklab, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 1.5; }
+      .db-new { fill: color-mix(in oklab, var(--accent) 12%, transparent); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+      .t  { fill: var(--fg); font: 600 12px var(--sans); text-anchor: middle; }
+      .ts { fill: var(--muted); font: 400 10px var(--sans); text-anchor: middle; }
+      .e  { stroke: var(--dim); stroke-width: 1.4; fill: none; marker-end: url(#ah); }
+      .el { fill: var(--muted); font: 10px var(--mono); text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect class="bx" x="4" y="96" width="120" height="52" rx="7"/>
+  <text class="t" x="64" y="118">Claude Code</text>
+  <text class="ts" x="64" y="134">(every pane)</text>
+
+  <!-- OTel path -->
+  <rect class="bx-new" x="300" y="34" width="140" height="44" rx="7"/>
+  <text class="t" x="370" y="52">daemon</text>
+  <text class="ts" x="370" y="67">/otlp route</text>
+  <line class="e" x1="126" y1="108" x2="296" y2="60"/>
+  <text class="el" x="205" y="74">OTLP http/json</text>
+  <text class="el" x="205" y="86">cost + token</text>
+
+  <rect class="db-new" x="486" y="34" width="140" height="44" rx="7"/>
+  <text class="t" x="556" y="52">usage_ledger</text>
+  <text class="ts" x="556" y="67">strip PII, sum delta</text>
+  <line class="e" x1="442" y1="56" x2="482" y2="56"/>
+
+  <!-- statusline path -->
+  <rect class="bx-new" x="180" y="168" width="150" height="44" rx="7"/>
+  <text class="t" x="255" y="186">harness-statusline</text>
+  <text class="ts" x="255" y="201">wrapper</text>
+  <line class="e" x1="110" y1="140" x2="205" y2="164"/>
+  <text class="el" x="150" y="150">statusline payload</text>
+
+  <rect class="bx" x="180" y="222" width="150" height="26" rx="6"/>
+  <text class="t" x="255" y="239">ccstatusline -&gt; terminal</text>
+  <line class="e" x1="255" y1="212" x2="255" y2="220"/>
+  <text class="el" x="315" y="221">unchanged</text>
+
+  <rect class="bx" x="392" y="168" width="120" height="44" rx="7"/>
+  <text class="t" x="452" y="186">daemon</text>
+  <text class="ts" x="452" y="201">/statusline</text>
+  <line class="e" x1="330" y1="190" x2="388" y2="190"/>
+  <text class="el" x="360" y="181">rate_limits</text>
+
+  <!-- SSE + UI -->
+  <rect class="bx" x="560" y="150" width="90" height="40" rx="7"/>
+  <text class="t" x="605" y="174">SSE</text>
+  <line class="e" x1="556" y1="78" x2="600" y2="148"/>
+  <line class="e" x1="512" y1="188" x2="556" y2="176"/>
+
+  <rect class="bx" x="560" y="204" width="196" height="40" rx="7"/>
+  <text class="t" x="658" y="221">cards / rail / tile / detail</text>
+  <text class="ts" x="658" y="236">+ fleet strip</text>
+  <line class="e" x1="605" y1="190" x2="640" y2="202"/>
+
+  <text x="10" y="20" class="el" style="text-anchor:start">The hook path is untouched. Cost never passes through a pricing table we maintain.</text>
+</svg>
+<figcaption>OTel owns cost; the statusline wrapper owns rate limits; ccstatusline still renders the terminal unchanged.</figcaption>
+</figure>
+
+</div>
+</body>
+</html>

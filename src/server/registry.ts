@@ -4,8 +4,11 @@ import type {
   MetaSource,
   NmFixSummary,
   NmRunSummary,
+  FleetCost,
   OrphanedQueueHint,
   PermissionMode,
+  RateLimits,
+  RateLimitWindow,
   PrChecks,
   PrState,
   ReviewItem,
@@ -26,6 +29,7 @@ import type {
 } from "@shared/types.ts";
 import type {
   HookIngest,
+  OtlpMetrics,
   RecordEpisode,
   ResolveEpisode,
   SetGoal,
@@ -73,13 +77,18 @@ import {
   recordEpisode as dbRecordEpisode,
   resolveEpisode as dbResolveEpisode,
   episodesFor,
+  fleetSpendSince,
+  pruneUsageLedger,
   reorderQueueItems,
+  sessionCostFor,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
   upsertSessionNote,
   upsertTask as dbUpsertTask,
+  upsertUsageCell,
 } from "./db.ts";
+import type { UsageCol } from "./db.ts";
 import { unref } from "./util/timers.ts";
 
 /** An open-or-merged PR the poller matched to a session's current branch. */
@@ -129,8 +138,29 @@ const GATE_REPLY_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
  * carry a whole pane capture - so generosity costs more here than it does there.
  */
 const EPISODE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * How long a usage-ledger row is kept.
+ *
+ * The most generous of the four, because it is the only one whose value is CUMULATIVE:
+ * every other record answers a question about one session, while these rows are summed
+ * to answer "what did the fleet spend last quarter". Deleting one does not make a record
+ * less legible, it makes a total wrong. Two quarters is enough to compare one against the
+ * last; the rows are a handful of numbers each, on a table that grows with export windows
+ * rather than with events, so generosity is nearly free here.
+ */
+const USAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 /** How often the retention sweep runs. It rides the discovery sweep, which is ~1.5s. */
 const QUEUE_PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+/**
+ * Floor on how often the fleet spend figures are recomputed off the back of a sweep.
+ *
+ * The sweep is ~1.5s and this is two SUM queries on the synchronous handle that also
+ * serves hook ingest and SSE, so it is not free. Nothing here is urgent either: an
+ * ingest recomputes immediately (that is when the number actually changed), and this
+ * exists only so a QUIET fleet still rolls "today" over at midnight and lets the burn
+ * rate decay instead of freezing at the last export's value.
+ */
+const FLEET_COST_IDLE_INTERVAL_MS = 30 * 1000;
 /** Hook overlays older than this are ignored/pruned (a session went quiet). */
 const OVERLAY_TTL_MS = 30 * 60 * 1000;
 /**
@@ -234,6 +264,19 @@ export class Registry extends EventEmitter {
   /** Whether a discovery sweep has ever completed - see `sessionsObserved`. */
   private sweptSessions = false;
   private lastQueuePrune = 0;
+  /**
+   * The last rate-limit reading any session's statusLine reported.
+   *
+   * ONE value for the whole registry, not one per session, because that is what the fact
+   * is: a five-hour window is a property of the ACCOUNT, and every session on the machine
+   * reports the same one. Held in memory and never persisted - it is a live gauge with a
+   * server-supplied reset time, and a stored percentage would be read as current long
+   * after it stopped being true.
+   */
+  private latestRateLimits: RateLimits | null = null;
+  /** Last fleet figures emitted, so an unchanged recompute doesn't wake every browser. */
+  private lastFleetCost: FleetCost | null = null;
+  private lastFleetCostAt = 0;
 
   constructor() {
     super();
@@ -248,11 +291,20 @@ export class Registry extends EventEmitter {
     for (const t of loadResourceHoldingTerminalTasks()) this.tasks.set(t.id, t);
   }
 
-  snapshot(): { sessions: Session[]; reviews: ReviewItem[]; tasks: Task[] } {
+  snapshot(): {
+    sessions: Session[];
+    reviews: ReviewItem[];
+    tasks: Task[];
+    fleetCost: FleetCost | null;
+  } {
     return {
       sessions: [...this.sessions.values()],
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
+      // Computed on demand rather than served from `lastFleetCost`, which is null until
+      // the first ingest: a dashboard opened before any export would otherwise show a
+      // blank strip over a ledger that already holds a week of spend.
+      fleetCost: this.fleetCostNow(),
     };
   }
 
@@ -328,6 +380,10 @@ export class Registry extends EventEmitter {
     // only guard on that write, so it must never be computed from a partial map.
     this.syncAllOrphanHints();
     this.pruneQueues(now);
+    // Throttled hard: an ingest already recomputes at the moment spend changes, so this
+    // is only here to keep a QUIET fleet honest - "today" has to roll over at midnight,
+    // and the burn rate has to fall back to zero when the exports stop.
+    if (now - this.lastFleetCostAt >= FLEET_COST_IDLE_INTERVAL_MS) this.recomputeFleetCost(now);
   }
 
   /**
@@ -360,6 +416,14 @@ export class Registry extends EventEmitter {
       pruneEpisodes(now - EPISODE_RETENTION_MS);
     } catch (err) {
       console.error("[registry] foreman episode prune failed:", err);
+    }
+    // Fourth, and independently caught like the three above: these are the rows a spend
+    // total is summed from, so a throw here must not be able to take the sweep - or the
+    // other three prunes - down with it.
+    try {
+      pruneUsageLedger(now - USAGE_RETENTION_MS);
+    } catch (err) {
+      console.error("[registry] usage ledger prune failed:", err);
     }
   }
 
@@ -440,6 +504,7 @@ export class Registry extends EventEmitter {
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
+      cost: null,
       note: null,
       goal: null,
       queue: null,
@@ -484,6 +549,17 @@ export class Registry extends EventEmitter {
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
     base.goal = this.goalSummaryFor(base);
+    // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
+    // of the time. First sight is the case that matters: the ledger outlives the daemon,
+    // so a session rebuilt after a restart has spend recorded by a previous process and
+    // must not read as unpriced until some later hook happens to fire. After that nothing
+    // reaches the figure except the ingest, which re-denormalizes through
+    // `syncSessionsForCost` itself - and this is an aggregate over every ledger row for
+    // the key, on the ~1.5s sweep, on the synchronous handle that also serves hook ingest
+    // and SSE. That is the cost `FLEET_COST_IDLE_INTERVAL_MS` throttles its own two SUMs
+    // to 30s to avoid.
+    base.cost =
+      prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
@@ -554,6 +630,7 @@ export class Registry extends EventEmitter {
       // is looking, since a /clear is something they just did.
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
+      next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       this.rememberAgentSession(next, target.agentSessionId);
@@ -985,15 +1062,198 @@ export class Registry extends EventEmitter {
    * only emits when a *displayed* value changed.
    */
   applyStatusLine(ingest: StatusLineIngest): void {
+    // Rate limits FIRST, and outside the session lookup on purpose: they are an
+    // account-global fact, so a reading from a session we haven't discovered yet (or
+    // can't bind) is still the truth about the subscription. Gating them on the bind
+    // would blank the topbar meters for exactly the sessions the binder is worst at.
+    this.recordRateLimits(ingest);
     const s = this.findSessionByEnv(ingest.env, ingest.sessionId, ingest.cwd);
     if (!s) return;
     const meta = metaFromStatusLine(ingest, Date.now());
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
-    const changed = !metaDisplayEqual(s.meta, meta) || s.agentSessionId !== agentSessionId;
     const next: Session = { ...s, meta, agentSessionId };
+    // A statusLine can be the first thing to bind an agent session id (it carries one and
+    // fires on every render, where a hook fires on events). That rotates the note key, so
+    // re-resolve the cost the same way `applyHook` re-resolves note/goal/queue - otherwise
+    // a session picks up its already-ledgered spend only on the next unrelated change.
+    //
+    // On a ROTATION only, though, and that is the whole of the condition below. This runs
+    // on every terminal render, and `sessionCostFor` aggregates every ledger row for the
+    // key on the same synchronous handle that serves hook ingest and SSE - the very cost
+    // `FLEET_COST_IDLE_INTERVAL_MS` throttles the idle recompute to 30s to avoid. Nothing
+    // else here can move the figure: the ledger's own writer re-denormalizes through
+    // `syncSessionsForCost` the moment it changes.
+    const key = noteKeyFor(next);
+    if (key !== noteKeyFor(s)) next.cost = sessionCostFor(key);
     this.rememberAgentSession(next, s.agentSessionId);
     this.sessions.set(s.id, next);
-    if (changed) this.emitSession(next);
+    if (!sessionEqual(s, next)) this.emitSession(next);
+  }
+
+  // ---- cost telemetry (OpenTelemetry ingest + fleet roll-up) ----
+
+  /**
+   * Record the subscription's rate-limit windows off a statusLine payload.
+   *
+   * An ABSENT `rateLimits` is not a clearing signal, and that asymmetry is the whole of
+   * this method. The key is missing for an API-key user, and also for a Pro/Max session
+   * that simply hasn't had its first API response yet - so on a machine running both, or
+   * during the first seconds of any session, every other render would wipe a perfectly
+   * good reading and the meters would strobe. Only a payload that actually carries
+   * windows updates them; nothing takes them away but their own reset time passing
+   * (applied where the value is read, in `fleetCostNow`).
+   *
+   * A payload that RESTATES the windows we already hold is not a change and is dropped
+   * here, before `updatedAt` is restamped. That matters more than it looks: the
+   * forwarder posts on every terminal render, `updatedAt` is a reading timestamp rather
+   * than anything a human sees, and leaving it to move would make the fleet emit's
+   * suppression always miss - putting a `cost_fleet` frame on every open dashboard
+   * several times a second, per session, carrying numbers that never moved.
+   */
+  private recordRateLimits(ingest: StatusLineIngest): void {
+    const rl = ingest.rateLimits;
+    if (!rl) return;
+    if (!rl.fiveHour && !rl.sevenDay) return;
+    // One window present without the other is ordinary, not an error: keep whichever
+    // this payload carried and hold the last known value of the one it didn't.
+    const prev = this.latestRateLimits;
+    const fiveHour = rl.fiveHour ?? prev?.fiveHour ?? null;
+    const sevenDay = rl.sevenDay ?? prev?.sevenDay ?? null;
+    if (prev && rateWindowEqual(prev.fiveHour, fiveHour) && rateWindowEqual(prev.sevenDay, sevenDay)) {
+      return;
+    }
+    this.latestRateLimits = { fiveHour, sevenDay, updatedAt: Date.now() };
+    this.recomputeFleetCost();
+  }
+
+  /**
+   * Ingest one OTLP/HTTP JSON metrics export from Claude Code.
+   *
+   * Reads exactly four attributes off each datapoint - `session.id`, `model`,
+   * `query_source`, `type` - and discards the rest AT PARSE TIME. That is not tidiness:
+   * the datapoints carry `user.email`, `user.account_uuid`, `user.account_id` and
+   * `organization.id`, and the ledger is a durable file in the user's home directory.
+   * PII that is never read cannot be written by a later change to a row mapper.
+   *
+   * A datapoint with no `session.id` is DROPPED rather than bucketed under a placeholder.
+   * It is unattributable by construction (that attribute is what ties spend to a card),
+   * and a synthetic bucket would quietly become the fleet's largest "session" the moment
+   * `OTEL_METRICS_INCLUDE_SESSION_ID` were ever set false - which is precisely the
+   * misconfiguration the daemon warns about at boot.
+   */
+  applyOtelMetrics(body: OtlpMetrics): void {
+    const touched = new Set<string>();
+    for (const rm of body.resourceMetrics ?? []) {
+      for (const sm of rm.scopeMetrics ?? []) {
+        for (const m of sm.metrics ?? []) {
+          const isCost = m.name === "claude_code.cost.usage";
+          const isTokens = m.name === "claude_code.token.usage";
+          // `claude_code.session.count` and `claude_code.active_time.total` also arrive
+          // on this stream and are deliberately ignored - neither is spend.
+          if (!isCost && !isTokens) continue;
+          const sum = m.sum;
+          if (!sum) continue;
+          // 2 = cumulative: the value is a running total for a series with one fixed
+          // start, so the START is the row identity and each export REPLACES it. 1 =
+          // delta (Claude Code's default, verified on the wire): each export is its own
+          // window and the rows accumulate. Either way `SUM` at read time is correct.
+          const cumulative = sum.aggregationTemporality === 2;
+          for (const dp of sum.dataPoints ?? []) {
+            const attrs = attrMap(dp.attributes);
+            const noteKey = attrs["session.id"];
+            if (!noteKey) continue;
+            const col: UsageCol | undefined = isCost
+              ? "costUsd"
+              : TOKEN_TYPE_COL[attrs["type"] ?? ""];
+            if (!col) continue;
+            const endNs = nanoString(dp.timeUnixNano);
+            const startNs = nanoString(dp.startTimeUnixNano);
+            const windowEndNs = cumulative ? (startNs ?? endNs) : (endNs ?? startNs);
+            if (!windowEndNs) continue;
+            const ts = epochMsFromNanos(endNs ?? windowEndNs);
+            if (ts == null) continue;
+            const value = Number(dp.asDouble ?? dp.asInt ?? 0);
+            if (!Number.isFinite(value)) continue;
+            upsertUsageCell(
+              {
+                noteKey,
+                sessionId: this.sessionIdForNoteKey(noteKey),
+                agent: "claude",
+                // Empty string, never null: the UNIQUE index the upsert conflicts on
+                // treats NULLs as distinct, so a null here would insert a fresh row on
+                // every retry instead of replacing one. See the table definition.
+                modelId: attrs["model"] ?? "",
+                querySource: attrs["query_source"] ?? "",
+                windowEndNs,
+                ts,
+              },
+              col,
+              value,
+            );
+            touched.add(noteKey);
+          }
+        }
+      }
+    }
+    if (touched.size === 0) return;
+    for (const key of touched) this.syncSessionsForCost(key);
+    this.recomputeFleetCost();
+  }
+
+  /** Which live session currently holds this note key, for the ledger's provenance column. */
+  private sessionIdForNoteKey(noteKey: string): string | null {
+    for (const s of this.sessions.values()) if (noteKeyFor(s) === noteKey) return s.id;
+    return null;
+  }
+
+  /**
+   * Re-denormalize `cost` onto every session holding `key`. The `syncSessionsForGoal`
+   * shape exactly, for the same reason: the ledger is keyed on the note key, and more
+   * than one map entry can hold it across a restart.
+   */
+  private syncSessionsForCost(key: string): void {
+    const cost = sessionCostFor(key);
+    for (const [id, s] of this.sessions) {
+      if (noteKeyFor(s) !== key) continue;
+      if (JSON.stringify(s.cost) === JSON.stringify(cost)) continue;
+      const next: Session = { ...s, cost };
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
+  /** The fleet figures as of now, read straight from the ledger. */
+  private fleetCostNow(now = Date.now()): FleetCost {
+    return {
+      spendToday: fleetSpendSince(startOfLocalDay(now)),
+      burnPerHour: fleetSpendSince(now - 3_600_000),
+      // Expired at READ, not on a timer: nothing then depends on a tick having fired,
+      // and a snapshot served between recomputes is as honest as an emitted one.
+      rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
+      updatedAt: now,
+    };
+  }
+
+  /**
+   * Recompute the fleet strip and emit only when a figure a human can see moved.
+   *
+   * BOTH `updatedAt`s are excluded on purpose, the strip's and the nested reading's -
+   * they are timestamps, not figures, and each changes by construction. Including
+   * either makes the suppression do nothing and puts an SSE frame on every browser for
+   * a strip that hasn't moved: the strip's own on every sweep, forever, and the
+   * reading's on every terminal render of every session, which is far worse.
+   */
+  private recomputeFleetCost(now = Date.now()): void {
+    const fleet = this.fleetCostNow(now);
+    this.lastFleetCostAt = now;
+    const same =
+      this.lastFleetCost != null &&
+      this.lastFleetCost.spendToday === fleet.spendToday &&
+      this.lastFleetCost.burnPerHour === fleet.burnPerHour &&
+      rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits);
+    this.lastFleetCost = fleet;
+    if (same) return;
+    this.emitEvent({ type: "cost_fleet", fleet });
   }
 
   /**
@@ -2096,6 +2356,108 @@ export function noteKeyFor(s: Session): string {
 }
 
 /**
+ * OTLP attribute list -> lookup, keeping ONLY the four keys the ledger stores.
+ *
+ * The allowlist is the PII boundary, and it is here rather than at the write so nothing
+ * downstream can reach a value it was never meant to see. Datapoints carry `user.email`,
+ * `user.account_uuid`, `user.account_id` and `organization.id`; none of them survives
+ * this function, and a future column added to the ledger cannot accidentally pick one up.
+ */
+export function attrMap(
+  attributes: Array<{ key: string; value: { stringValue?: string } }> | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const a of attributes ?? []) {
+    if (!OTEL_KEPT_ATTRS.has(a.key)) continue;
+    const v = a.value?.stringValue;
+    if (typeof v === "string" && v) out[a.key] = v;
+  }
+  return out;
+}
+
+/** The only datapoint attributes that ever leave `attrMap`. Everything else is PII or noise. */
+const OTEL_KEPT_ATTRS = new Set(["session.id", "model", "query_source", "type"]);
+
+/**
+ * `claude_code.token.usage`'s `type` attribute -> the ledger column it belongs in.
+ *
+ * The names are camelCase on the wire (`cacheRead`, not `cache_read`) while the columns
+ * are snake_case, which is exactly the sort of near-miss that silently drops half the
+ * tokens - hence a table rather than a transformation. An unknown type has no entry and
+ * is skipped: a tier we cannot name is a tier we cannot bill to a column.
+ */
+const TOKEN_TYPE_COL: Record<string, UsageCol | undefined> = {
+  input: "input",
+  output: "output",
+  cacheRead: "cacheRead",
+  cacheCreation: "cacheWrite",
+};
+
+/**
+ * A `timeUnixNano` field as a decimal STRING, or null when it isn't one.
+ *
+ * OTLP/JSON encodes 64-bit ints as strings and these are ~1.78e18 - well past
+ * `Number.MAX_SAFE_INTEGER` (9.007e15). A number that reached here has already lost
+ * precision, so it is stringified through `BigInt` where possible and rejected outright
+ * when it can't be: a truncated nano value collides adjacent export windows, which is
+ * silent data loss dressed as idempotency.
+ */
+export function nanoString(v: string | number | undefined): string | null {
+  if (typeof v === "string") return /^\d+$/.test(v) ? v : null;
+  if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return String(v);
+  return null;
+}
+
+/** Nanos (as text) -> epoch ms, via BigInt so the division never rounds through a double. */
+export function epochMsFromNanos(ns: string | null): number | null {
+  if (!ns) return null;
+  try {
+    return Number(BigInt(ns) / 1_000_000n);
+  } catch {
+    return null;
+  }
+}
+
+/** Local midnight for `now`, the boundary "spend today" is measured from. */
+export function startOfLocalDay(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Two readings compared on what a human can see, so `updatedAt` never forces an emit. */
+export function rateLimitsDisplayEqual(a: RateLimits | null, b: RateLimits | null): boolean {
+  if (!a || !b) return a === b;
+  return rateWindowEqual(a.fiveHour, b.fiveHour) && rateWindowEqual(a.sevenDay, b.sevenDay);
+}
+
+/** Two rate-limit windows compared on what a human can see, ignoring when we read them. */
+export function rateWindowEqual(a: RateLimitWindow | null, b: RateLimitWindow | null): boolean {
+  if (!a || !b) return a === b;
+  return a.usedPercentage === b.usedPercentage && a.resetsAt === b.resetsAt;
+}
+
+/**
+ * The reading with any window whose reset time has already passed dropped.
+ *
+ * `resetsAt` is epoch SECONDS. Once it passes, the window has rolled over and the
+ * percentage we hold describes a quota that no longer exists - so it goes, rather than
+ * sitting in the topbar as "85% used" next to a countdown that has collapsed to "now".
+ * Absent renders as no meter at all, which is the same way this feature already treats
+ * an API-key user: not told and no longer true are both better said than guessed at.
+ */
+export function unexpiredRateLimits(rl: RateLimits | null, now: number): RateLimits | null {
+  if (!rl) return null;
+  const live = (w: RateLimitWindow | null): RateLimitWindow | null =>
+    w && w.resetsAt * 1000 > now ? w : null;
+  const fiveHour = live(rl.fiveHour);
+  const sevenDay = live(rl.sevenDay);
+  if (!fiveHour && !sevenDay) return null;
+  if (fiveHour === rl.fiveHour && sevenDay === rl.sevenDay) return rl;
+  return { ...rl, fiveHour, sevenDay };
+}
+
+/**
  * True when a `Notification` is Claude's idle nudge rather than a real ask.
  *
  * Claude Code fires the same hook for two unrelated things: it needs something from
@@ -2259,6 +2621,14 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // Only the *visible* fields of SessionMeta, so re-reading an identical model /
   // context% doesn't re-render the meter. See `metaDisplayEqual`.
   meta: metaDisplayEqual,
+  // A nested object the chip renders as a unit, so structural. Not `alwaysEqual` despite
+  // being written only by the ingest: a session that binds its agent session id LATE
+  // rotates its note key, and `mergeDiscovered` / `applyHook` / `applyStatusLine` each
+  // re-resolve the figure on that rotation - picking up a whole backlog of spend with no
+  // other field moving. Left out, the badge would appear only on the next unrelated
+  // change. (`syncSessionsForCost` emits directly for the key it touched, so the ingest
+  // itself does not depend on this.)
+  cost: byJson,
   note: byJson,
   goal: byJson,
   // The other denormalized fields `mergeDiscovered` resolves next to `note`.

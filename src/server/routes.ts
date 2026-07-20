@@ -8,6 +8,7 @@ import {
   AwayConfigPatchSchema,
   BacklogPlanSchema,
   CompleteTaskSchema,
+  CostConfigPatchSchema,
   CreateReviewSchema,
   DispatchSchema,
   ResolveRepoSchema,
@@ -20,6 +21,7 @@ import {
   InjectPromptSchema,
   MarkItemSentSchema,
   NomistakesRespondSchema,
+  OtlpMetricsSchema,
   ReattachQueueSchema,
   RenameSchema,
   ReorderQueueSchema,
@@ -71,6 +73,7 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -388,6 +391,21 @@ export function buildApp(
     if (!parsed.ok) return parsed.res;
     registry.applyStatusLine(parsed.data);
     return c.body(null, 204);
+  });
+
+  // --- OTLP metrics ingest (token-guarded): Claude Code's OWN cost arithmetic, which
+  // is why this app has no pricing table anywhere. The exporter posts here when the
+  // `env` block in ~/.claude/settings.json points `OTEL_EXPORTER_OTLP_ENDPOINT` at the
+  // daemon; the path is OTLP's, not ours - the SDK appends `/v1/metrics` to the base. ---
+  app.post("/v1/metrics", async (c) => {
+    if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
+    const parsed = await parseBody(c, OtlpMetricsSchema);
+    if (!parsed.ok) return parsed.res;
+    registry.applyOtelMetrics(parsed.data);
+    // A JSON body, NOT a 204: the OTel SDK reads a non-JSON 2xx as a partial failure and
+    // retries the export, which would double the request volume from every session on
+    // the machine while looking, from here, like everything was fine.
+    return c.json({});
   });
 
   // --- MCP review channel (token-guarded) ---
@@ -1112,6 +1130,25 @@ export function buildApp(
     const parsed = await parseBody(c, HarnessesConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
     return c.json(setHarnessesConfig(parsed.data));
+  });
+
+  // --- Cost telemetry config (localhost only) ---
+  //
+  // The GET reports what is actually in `~/.claude/settings.json` alongside the stored
+  // intent, because those genuinely diverge (a hand-edited file, an install from another
+  // checkout) and a panel showing only the intent would be confidently wrong.
+  app.get("/api/cost/config", (c) => c.json(costTelemetryStatus()));
+  app.put("/api/cost/config", async (c) => {
+    const parsed = await parseBody(c, CostConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    // 409 rather than 500: every way this fails is the user's settings file being
+    // unwritable or unparseable - a state they can see and fix, not a daemon fault.
+    try {
+      setCostConfig(parsed.data);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
+    }
+    return c.json(costTelemetryStatus());
   });
 
   // --- dispatch: launch/queue agents (localhost only) ---

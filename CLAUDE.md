@@ -59,7 +59,9 @@ A session is drawn by **four** components, only one of which is `SessionCard`:
   Test: `session-leaf-parity.test.ts`.
 - **Three mark vocabularies still disagree**: `RailRow` glyphs, `SessionTile` `.tile-flag`
   chips, `SessionCard` chips (+ `queueChipView` in `lib/queue.ts`). A new session-level signal
-  must be added to all three. Known gap, next thing worth unifying.
+  must be added to all three. Known gap, next thing worth unifying. `CostChip` is the worked
+  example: the figure in three surfaces, a `$` glyph in the rail's `marks`, and one shared
+  `costIsNotable` (`@shared/cost.ts`) deciding where the line sits - not three thresholds.
 - Console detail CSS reaches into shared components with descendant selectors
   (`.detail-conv > .transcript`, `.detail-foot .actions`). Changing `TranscriptPanel` or
   `ActionBar` DOM can break console/board with no compile-time signal.
@@ -131,6 +133,13 @@ hand-parse a body.
 **New column on an existing table** → editing the `CREATE TABLE IF NOT EXISTS` block is not
 enough. Add an `addColumn` call in `migrate()` (`src/server/db.ts`). New tables need nothing.
 
+**No backticks inside `openDb()`'s SQL block.** It is one template literal, so a backtick in
+a `--` comment ends it and the file stops parsing. Name identifiers bare.
+
+**A `UNIQUE` index you `ON CONFLICT` against must have no nullable columns.** SQLite treats
+NULLs as distinct, so the upsert silently becomes an insert and the row multiplies on every
+retry. `usage_ledger.model_id` / `query_source` are `NOT NULL DEFAULT ''` for this reason.
+
 **New build entry point** → the `package.json` script, the `build` chain, the
 `--alias:@shared` flag, the `files:` allowlist in `electron-builder.yml`, and the hard-coded
 `dist/` paths in `src/main/index.ts` and `src/main/integrations.ts`. The `@shared` alias is
@@ -158,9 +167,15 @@ reached through a symlink.
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.
 - **Shared predicates**: `foremanAllowlisted` (`@shared/foreman.ts`), `composeWrapup`
-  (`@shared/queue.ts`), and the backlog autopilot's `readyBacklog` / `blockersIn` /
-  `nextUpTaskId` (`@shared/backlog.ts`) are shared with the server so both decide identically.
-  Do not copy them into a component.
+  (`@shared/queue.ts`), `costTone` / `costIsNotable` (`@shared/cost.ts`), and the backlog
+  autopilot's `readyBacklog` / `blockersIn` / `nextUpTaskId` (`@shared/backlog.ts`) are shared
+  so every surface, and the server, decides identically. Do not copy them into a component.
+- **`~/.claude/settings.json` writers**: `hooks/install.mjs`, `src/main/integrations.ts`, and
+  the daemon (via `src/server/cost.ts`). The telemetry `env` block has ONE definition in
+  `@shared/claude-settings.ts` - three copies of six keys is how half a block gets left
+  behind that nothing owns. Keep `src/shared/claude-settings.ts` free of daemon imports:
+  the Electron main bundle imports it, and must not pull `node:sqlite` in transitively.
+  Test: `telemetry-env.test.ts`.
 
 ## Styles
 

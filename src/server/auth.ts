@@ -1,7 +1,4 @@
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { STATE_DIR, TOKEN_PATH } from "./config.ts";
+import { ensureToken as mintToken } from "../shared/harness-runtime.mjs";
 
 let cached: string | null = null;
 
@@ -9,17 +6,14 @@ let cached: string | null = null;
  * Per-machine shared secret. Hook scripts and the MCP bridge include it so
  * arbitrary local processes can't spoof session state into the daemon. Created
  * on first run with 0600 perms; the daemon and hooks both read the same file.
+ *
+ * The mint itself lives in `harness-runtime.mjs` because the CLI installer needs it
+ * too - it bakes the token into the OTel env block before the daemon has necessarily
+ * ever run - and two implementations of "make one if there isn't one" is how the two
+ * end up holding different secrets. This adds only the process-lifetime cache.
  */
 export function ensureToken(): string {
-  if (cached) return cached;
-  if (existsSync(TOKEN_PATH)) {
-    cached = readFileSync(TOKEN_PATH, "utf8").trim();
-    if (cached) return cached;
-  }
-  mkdirSync(dirname(TOKEN_PATH), { recursive: true });
-  void STATE_DIR;
-  cached = randomBytes(24).toString("hex");
-  writeFileSync(TOKEN_PATH, cached + "\n", { mode: 0o600 });
+  cached ??= mintToken();
   return cached;
 }
 

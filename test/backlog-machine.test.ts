@@ -87,6 +87,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prChecks: null,
     meta: null,
     note: null,
+    cost: null,
     goal: null,
     queue: null,
     orphanedQueue: null,

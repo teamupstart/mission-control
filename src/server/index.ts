@@ -25,6 +25,7 @@ import { startGoalRefiner } from "./goal/refiner.ts";
 import { startAwayWatcher } from "./away/watcher.ts";
 import { startHeadlessPruner } from "./goal/prune.ts";
 import { buildApp } from "./routes.ts";
+import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { sweepUploads } from "./uploads.ts";
@@ -45,6 +46,11 @@ try {
 } catch (err) {
   console.error("[skills] could not reconcile ~/.claude/skills:", err);
 }
+// Say it out loud at boot rather than letting someone find an empty ledger later: with
+// OTEL_METRICS_INCLUDE_SESSION_ID false, Claude Code exports cost metrics that carry no
+// session id at all, and the ingest can only drop them. The feature would look installed
+// and record nothing.
+warnIfSessionAttributionDisabled();
 const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);

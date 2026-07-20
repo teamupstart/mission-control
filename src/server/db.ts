@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { DB_PATH } from "./config.ts";
+import { DB_PATH, envVar } from "./config.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -44,8 +44,40 @@ import { normalizeLabels } from "@shared/task.ts";
  */
 let db: DatabaseSync;
 
+/**
+ * Refuse to open the operator's real state dir from inside the test runner.
+ *
+ * Twice now a test has destroyed live state: the state-dir rename once moved
+ * `~/.fleet-control` out from under a running daemon (see migrate-state.ts), and a
+ * branch's config test ran `DELETE FROM app_config` against the real db on every
+ * `npm test`, wiping every setting the operator had saved - repeatedly, since agents
+ * run the suite before every PR. Both had the same shape: a test file that imports
+ * server modules without redirecting the state dir first, failing silently into
+ * someone's home directory.
+ *
+ * The check is here rather than in `stateDir()` because resolution has to stay
+ * side-effect free and is evaluated at module load by files that never touch the db
+ * (health.test.ts imports routes.ts and is rightly hermetic without any env). Opening
+ * the db is the moment real damage becomes possible, so it is the moment to refuse.
+ *
+ * Comparing DB_PATH against the CURRENT override catches both mistakes: no override
+ * at all, and an override set after `config.ts` had already resolved the real home -
+ * the same wipe with an alibi.
+ */
+function assertTestStateIsolation(): void {
+  if (!process.env.NODE_TEST_CONTEXT) return;
+  const override = envVar("HOME");
+  if (override && DB_PATH.startsWith(override)) return;
+  throw new Error(
+    `refusing to open ${DB_PATH} under the test runner: this is the machine's real ` +
+      "state dir. Set MISSION_HOME (or HARNESS_HOME) to a fresh temp dir BEFORE " +
+      "importing anything that resolves it - see ui-config-store.test.ts for the pattern.",
+  );
+}
+
 export function openDb(): DatabaseSync {
   if (db) return db;
+  assertTestStateIsolation();
   mkdirSync(dirname(DB_PATH), { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec("PRAGMA journal_mode = WAL;");

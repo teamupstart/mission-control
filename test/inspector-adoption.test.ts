@@ -1,10 +1,28 @@
-import { test, beforeEach } from "node:test";
+import { test, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { openDb, getInspectorPr, loadOpenInspectorPrs, updateInspectorPr } from "../src/server/db.ts";
-import { adoptPr, pushEndsTheWait } from "../src/server/inspector/worker.ts";
-import { parsePrUrl } from "../src/server/inspector/github.ts";
-import { getInspectorConfig, setInspectorConfig } from "../src/server/inspector/config.ts";
-import { opensPullRequest } from "../src/shared/pr-command.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Isolate the state dir BEFORE any value import that can resolve it - static imports are
+// hoisted above this line, so every server module below must load dynamically. Without
+// this, the beforeEach below ran `DELETE FROM app_config` against the operator's real
+// `~/.mission-control/harness.db` on every `npm test`, wiping every saved setting on the
+// machine (foreman, ui, harnesses, cost, skills) each time this suite ran.
+const home = mkdtempSync(join(tmpdir(), "mission-inspector-adoption-"));
+process.env.HARNESS_HOME = join(home, "state");
+
+const { openDb, getInspectorPr, loadOpenInspectorPrs, updateInspectorPr } = await import(
+  "../src/server/db.ts"
+);
+const { adoptPr, pushEndsTheWait } = await import("../src/server/inspector/worker.ts");
+const { parsePrUrl } = await import("../src/server/inspector/github.ts");
+const { getInspectorConfig, setInspectorConfig } = await import(
+  "../src/server/inspector/config.ts"
+);
+const { opensPullRequest } = await import("../src/shared/pr-command.mjs");
+
+after(() => rmSync(home, { recursive: true, force: true }));
 
 // A row in `inspector_prs` IS the permission to write on someone's pull request. Nothing
 // else grants it: the tick only ever iterates this table, so whatever gets in here is

@@ -1110,21 +1110,26 @@ export function buildApp(
     return c.json(task);
   });
 
-  // Edit a task still waiting in the backlog. A repo change is resolved the same way
-  // `POST /api/tasks` resolves one, so a task cannot be edited into pointing at a path
-  // that is not a git root - the dispatcher would only discover that much later, with a
-  // worktree half cut. Refusals mirror `assign`: 404 for a task that is gone, 409 for one
-  // that has already left the backlog and can no longer be rewritten.
+  // Edit a task. A repo change is resolved the same way `POST /api/tasks` resolves one,
+  // so a task cannot be edited into pointing at a path that is not a git root - the
+  // dispatcher would only discover that much later, with a worktree half cut. Refusals
+  // mirror `assign`: 404 for a task that is gone, 409 for one that has left the backlog
+  // and can no longer be REWRITTEN - though a priority/labels-only patch is annotation
+  // and stays allowed in any status (see `TaskManager.update`).
   app.post("/api/tasks/:id/update", async (c) => {
     const parsed = await parseBody(c, UpdateTaskSchema);
     if (!parsed.ok) return parsed.res;
-    let { repoRoot } = parsed.data;
-    if (repoRoot !== undefined) {
-      const resolved = await resolveRepoRoot(repoRoot);
-      if (!resolved) return c.json({ error: `not a git repository: ${repoRoot}` }, 400);
-      repoRoot = resolved;
+    const patch = parsed.data;
+    if (patch.repoRoot !== undefined) {
+      const resolved = await resolveRepoRoot(patch.repoRoot);
+      if (!resolved) return c.json({ error: `not a git repository: ${patch.repoRoot}` }, 400);
+      // Assigned in place rather than spread as `{...patch, repoRoot}`: that spread names
+      // the key even when it is undefined, and `isAnnotationOnlyUpdate` counts KEYS - so a
+      // priority-only patch would look like it touched the repo and get refused on any
+      // task that had already been dispatched.
+      patch.repoRoot = resolved;
     }
-    const r = await tasks.update(c.req.param("id"), { ...parsed.data, repoRoot });
+    const r = await tasks.update(c.req.param("id"), patch);
     return c.json(r, r.ok ? 200 : r.error === "no such task" ? 404 : 409);
   });
 

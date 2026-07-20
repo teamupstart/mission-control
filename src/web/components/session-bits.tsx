@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { PrState, Session, SessionMeta } from "@shared/types.ts";
+import type { PrState, Session, SessionMeta, TaskPriority } from "@shared/types.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
+import { PRIORITY_LABELS } from "@shared/task.ts";
 import { compactTokens, contextTone, stateDisplay } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
@@ -8,7 +9,9 @@ import { Tooltip } from "./Tooltip.tsx";
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
  * goal line, the PR chip, the state badge, the title (with its rename editor), the
- * runtime pills.
+ * runtime pills - plus the task chips (priority, labels), which live here for the same
+ * reason even though they hang off a Task rather than a Session: the board's backlog
+ * column and the roundup panel both draw them, and two copies is how they drift.
  *
  * Every surface is a consumer here, the card included: the card, the console's detail
  * pane and the board's tile each arrange these SAME bits rather than importing one
@@ -372,5 +375,49 @@ export function ChecksFailedIcon(): React.JSX.Element {
         d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"
       />
     </svg>
+  );
+}
+
+/**
+ * A task's priority, as a chip. Renders NOTHING when the priority is unset, which is
+ * the default for every task and must stay visually silent: a backlog nobody has
+ * triaged should look exactly as it did before priorities existed, not like a wall of
+ * "none" chips.
+ */
+export function PriorityChip({ priority }: { priority: TaskPriority | null }): React.JSX.Element | null {
+  if (!priority) return null;
+  return (
+    <span className={`task-priority prio-${priority}`} title={`Priority: ${PRIORITY_LABELS[priority]}`}>
+      {PRIORITY_LABELS[priority]}
+    </span>
+  );
+}
+
+/**
+ * A task's labels, as chips. Also silent when empty, for the same reason as above.
+ *
+ * `max` exists because the same list is drawn in a roomy roundup row and in a narrow
+ * board card; the overflow is reported as a count rather than dropped, so a card never
+ * implies a task carries fewer tags than it does.
+ */
+export function LabelChips({
+  labels,
+  max = labels.length,
+}: {
+  labels: string[];
+  max?: number;
+}): React.JSX.Element | null {
+  if (labels.length === 0) return null;
+  const shown = labels.slice(0, max);
+  const hidden = labels.length - shown.length;
+  return (
+    <span className="task-labels" title={labels.join(", ")}>
+      {shown.map((l) => (
+        <span className="task-label" key={l}>
+          {l}
+        </span>
+      ))}
+      {hidden > 0 && <span className="task-label task-label-more">+{hidden}</span>}
+    </span>
   );
 }

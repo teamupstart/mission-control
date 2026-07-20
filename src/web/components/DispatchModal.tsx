@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Task, TaskKind, AgentType } from "@shared/types.ts";
+import type { Task, TaskKind, AgentType, TaskPriority } from "@shared/types.ts";
 import { withAttachments } from "@shared/attachments.ts";
+import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES, normalizeLabels } from "@shared/task.ts";
 import { api, fetchRepos } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import {
@@ -11,6 +12,7 @@ import {
   type PendingAttachment,
 } from "./ImageDrop.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
+import { LabelChips } from "./session-bits.tsx";
 
 /**
  * The form fields a dispatch carries. Held by `DispatchLayer` (not the modal) so
@@ -25,6 +27,14 @@ type DispatchDraft = {
   title: string;
   kind: TaskKind;
   agent: AgentType;
+  /** Unset by default - "" is the empty option, which posts as null. */
+  priority: TaskPriority | "";
+  /**
+   * Labels as the RAW comma-separated text, not the parsed array. Keeping the string
+   * is what lets a half-typed "bug, perf" survive a close/reopen with the trailing
+   * comma intact; parsing on every keystroke would eat the separator as you type it.
+   */
+  labels: string;
   /** Images dropped on the task box; sent as paths appended to the intent. */
   attachments: PendingAttachment[];
 };
@@ -35,8 +45,23 @@ const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   title: "",
   kind: "ship",
   agent: "claude",
+  priority: "",
+  labels: "",
   attachments: [],
 };
+
+/**
+ * Split the labels field's raw text into the array the API takes.
+ *
+ * Splits on commas AND newlines so a list pasted from anywhere works, then hands the
+ * pieces to the SHARED cleaner rather than trimming here - the server runs the same
+ * function inside `DispatchSchema`, so what the chips preview is exactly what gets
+ * stored. Doing it twice is the point: this one is for the preview, that one is the
+ * guarantee.
+ */
+function parseLabelInput(raw: string): string[] {
+  return normalizeLabels(raw.split(/[,\n]/));
+}
 
 /** True when a draft holds nothing worth keeping - so "Clear" has nothing to do. */
 function isEmptyDispatchDraft(d: DispatchDraft): boolean {
@@ -44,9 +69,11 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     !d.repoRoot.trim() &&
     !d.intent.trim() &&
     !d.title.trim() &&
+    !d.labels.trim() &&
     d.attachments.length === 0 &&
     d.kind === EMPTY_DISPATCH_DRAFT.kind &&
-    d.agent === EMPTY_DISPATCH_DRAFT.agent
+    d.agent === EMPTY_DISPATCH_DRAFT.agent &&
+    d.priority === EMPTY_DISPATCH_DRAFT.priority
   );
 }
 
@@ -65,6 +92,10 @@ function draftFromTask(t: Task): DispatchDraft {
     title: t.title,
     kind: t.kind,
     agent: t.agent,
+    // "" is the form's empty option, which is how an unset priority round-trips: a task
+    // reopened and saved unchanged must not acquire one.
+    priority: t.priority ?? "",
+    labels: t.labels.join(", "),
     attachments: [],
   };
 }
@@ -92,6 +123,8 @@ function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.title === b.title &&
     a.kind === b.kind &&
     a.agent === b.agent &&
+    a.priority === b.priority &&
+    a.labels === b.labels &&
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
   );
@@ -275,6 +308,9 @@ function DispatchModal({
   const [error, setError] = useState<string | null>(null);
   const intentRef = useRef<HTMLTextAreaElement>(null);
   const drop = useImageDrop({ attachments: draft.attachments, onChange: onAttachmentsChange });
+  // Parsed once per render: the preview below and the submit body must never disagree
+  // about what the typed text means.
+  const labels = parseLabelInput(draft.labels);
 
   // Merge one field's change into the lifted draft.
   function update(patch: Partial<DispatchDraft>): void {
@@ -331,6 +367,9 @@ function DispatchModal({
       intent: withAttachments(submitted.intent.trim(), readyAttachments(submitted.attachments)),
       kind: submitted.kind,
       agent: submitted.agent,
+      // "" is the empty option: no priority, which is a different answer from "low".
+      priority: submitted.priority || null,
+      labels: parseLabelInput(submitted.labels),
     };
     // An emptied title means different things to the two endpoints, and both are the
     // right meaning: on create, "no title given, go and summarize one"; on update,
@@ -408,6 +447,52 @@ function DispatchModal({
               <option value="claude">Claude Code</option>
               <option value="codex">Codex</option>
             </select>
+          </label>
+        </div>
+
+        <div className="field-row">
+          <label className="field">
+            <span className="field-label">
+              Priority <span className="field-hint">optional</span>
+            </span>
+            <select
+              className="field-input"
+              value={draft.priority}
+              onChange={(e) => update({ priority: e.target.value as TaskPriority | "" })}
+            >
+              {/* The empty option is first and is the default: a task carries a priority
+                  only because someone chose one, never because the form defaulted it. */}
+              <option value="">none</option>
+              {TASK_PRIORITIES.map((p) => (
+                <option key={p} value={p}>
+                  {PRIORITY_LABELS[p]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">
+              Labels <span className="field-hint">optional - comma separated</span>
+            </span>
+            <input
+              className="field-input"
+              placeholder="e.g. bug, infra"
+              value={draft.labels}
+              onChange={(e) => update({ labels: e.target.value })}
+            />
+            {/* Previews what will actually be stored - deduped, trimmed and capped by
+                the same function the server applies - so a trailing comma or a repeat
+                is visibly a no-op rather than a surprise on the card. Rendered INSIDE
+                this field rather than under the row, or it would sit beneath the
+                priority select and read as that control's output. */}
+            {labels.length > 0 && (
+              <span className="dispatch-label-preview">
+                <LabelChips labels={labels} />
+                {labels.length >= MAX_LABELS && (
+                  <span className="field-hint">{MAX_LABELS} maximum</span>
+                )}
+              </span>
+            )}
           </label>
         </div>
 

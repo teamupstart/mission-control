@@ -1,5 +1,16 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
+import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+
+/**
+ * `normalizeLabels`, but absent stays absent.
+ *
+ * On the create schema an omitted list defaulting to `[]` is right - a new task has no
+ * labels. On a PATCH it is not: `[]` means "clear them" and undefined means "leave
+ * them", and collapsing the two would make every priority-only patch wipe the labels.
+ */
+const normalizeLabelsOrUndefined = (v: string[] | undefined): string[] | undefined =>
+  v === undefined ? undefined : normalizeLabels(v);
 
 /** Terminal env the hook / MCP client captures, used to bind an event to a session. */
 const EnvSchema = z
@@ -237,6 +248,23 @@ export const StatusSchema = z.object({
 export type StatusReport = z.infer<typeof StatusSchema>;
 
 /**
+ * The two optional triage fields every task-writing schema shares, spread into both
+ * `DispatchSchema` and `UpdateTaskSchema` so a task created by the dispatch form, a
+ * task source, or a retriage PATCH is validated by exactly one definition.
+ *
+ * `labels` normalizes in the SCHEMA rather than at a call site: `parseBody` is the
+ * only door into a mutating route, so putting the transform here means no writer can
+ * reach the DB with duplicated, untrimmed or unbounded tags - including the task
+ * sources that will write these without a human in the loop. The pre-transform
+ * `.max()` bounds the array before it is walked, so a huge POST is rejected rather
+ * than silently truncated.
+ */
+const TASK_TRIAGE_FIELDS = {
+  priority: z.enum(TASK_PRIORITIES).nullable().optional().default(null),
+  labels: z.array(z.string()).max(MAX_LABELS).optional().default([]).transform(normalizeLabels),
+};
+
+/**
  * Dispatch (or shelve) a new agent: launch an agent in an isolated worktree of
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
  * the backlog (no worktree/session yet); dispatch it later.
@@ -248,6 +276,7 @@ export const DispatchSchema = z.object({
   kind: z.enum(["ship", "scout"]).default("ship"),
   agent: z.enum(["claude", "codex"]).default("claude"),
   backlog: z.boolean().optional().default(false),
+  ...TASK_TRIAGE_FIELDS,
 });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
@@ -287,13 +316,24 @@ export const CompleteTaskSchema = z.object({
 export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
 
 /**
- * Edit a task that is still sitting in the backlog - what the dispatch modal sends
- * when it is reopened on a backlog card.
+ * Edit a task - what the dispatch modal sends when it is reopened on a backlog card,
+ * and what the backlog column's priority picker sends.
  *
  * Every field is optional and the server merges over the stored row, so a caller can
  * correct just the intent without restating the repo. `title` is the one field where
  * empty is meaningful rather than absent: clearing it asks for a title to be derived
  * again from the intent as it now reads, the same bargain the create form offers.
+ *
+ * The two halves are NOT equivalent, and `TaskManager.update` treats them differently.
+ * The first five are PROVISIONING fields - repo, intent and title are cut into a branch
+ * name and a tmux session at dispatch and cannot be rewritten afterwards - so a patch
+ * touching any of them is refused once the task has left the backlog. `priority` and
+ * `labels` are pure annotation that nothing is provisioned from, so they can be changed
+ * at any point in a task's life, including while its agent is running.
+ *
+ * `priority` is `.optional()` WITHOUT the create schema's `.default(null)`: here an
+ * absent key has to keep meaning "leave it alone", and a default would turn every patch
+ * that didn't mention priority into one that silently cleared it.
  */
 export const UpdateTaskSchema = z
   .object({
@@ -302,9 +342,16 @@ export const UpdateTaskSchema = z
     title: z.string().optional(),
     kind: z.enum(["ship", "scout"]).optional(),
     agent: z.enum(["claude", "codex"]).optional(),
+    priority: z.enum(TASK_PRIORITIES).nullable().optional(),
+    labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" });
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+
+/** True when this patch only re-describes a task, so no status guard applies. */
+export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
+  return Object.keys(patch).every((k) => k === "priority" || k === "labels");
+}
 
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({

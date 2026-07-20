@@ -422,6 +422,41 @@ Every dispatched task is a durable record (repo, intent, kind, worktree, branch,
 persisted in SQLite, so the backlog and a running agent's intent survive a daemon restart.
 Set `MISSION_CLAUDE_BIN` / `MISSION_CODEX_BIN` if the agent CLI isn't on the daemon's PATH.
 
+### Priority and labels
+
+A task can carry a **priority** and any number of **labels**. Both are optional, both
+default to nothing, and neither is ever inferred - a task is marked because you marked it.
+
+| Priority | Sorts | Reads as |
+|---|---|---|
+| **Blocker** | 1st | the only one in the danger colour, outlined so it is findable across a full board |
+| **High** | 2nd | |
+| **Medium** | 3rd | |
+| *(unset)* | 4th | the default - no chip is drawn at all |
+| **Low** | last | a deliberate demotion, *below* work nobody has looked at |
+
+That ordering is the one surprising part, and it's deliberate: **unset sorts above Low,
+not at the bottom**. `Low` means "I looked at this and it can wait", so it belongs under
+work nobody has triaged yet - and a backlog you have never triaged keeps exactly the
+oldest-first order it always had.
+
+**Labels** are plain strings, not key/value pairs - `infra`, `flaky`, `Type: Bug`. They're
+trimmed, de-duplicated case-insensitively (the first spelling wins, so a tag swept from
+another system keeps its case), capped at 32 characters each and 12 per task. The dispatch
+form takes them comma-separated and previews the chips you'll actually get, so a trailing
+comma or a repeat is visibly a no-op.
+
+The **backlog column** on the board sorts by priority and lets you retriage in place - the
+chip on each card is a picker, and changing it re-sorts the column under your cursor. The
+**Sitrep** shows both marks on every backlog row, and `Copy as markdown` carries them
+(`- [blocker] "Fix the thing" (ship) {infra, flaky} - /repo`).
+
+Priority and labels are annotation - nothing is provisioned from them - so they can be
+changed at any point in a task's life, including while its agent is running
+(`PATCH /api/tasks/:id`). They are deliberately *not* shown on session cards yet: the
+card, rail and tile each have their own mark vocabulary and adding a fourth signal to all
+three is its own change.
+
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live

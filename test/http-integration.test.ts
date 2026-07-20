@@ -349,6 +349,8 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
     intent: "done, awaiting reclaim",
     kind: "ship",
     agent: "claude",
+    priority: null,
+    labels: [],
     repoRoot: "/repo",
     worktreePath: "/wt/stale-xyzzy",
     branch: null,

@@ -64,7 +64,7 @@ function seedLegacyDb(): void {
 
 seedLegacyDb();
 
-const { openDb, getTask, loadActiveTasks } = await import("../src/server/db.ts");
+const { openDb, getTask, loadActiveTasks, upsertTask } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -82,4 +82,31 @@ test("a migrated task is still loaded as active, so a real backlog survives the 
 
 test("the migration leaves non-queued rows alone", () => {
   assert.equal(getTask("legacy-2")?.status, "done");
+});
+
+/*
+ * The seeded table above has no `priority` / `labels` columns - it is the pre-triage
+ * schema, byte for byte. That makes it the exact fixture the ALTERs exist for, so the
+ * two tests below ride it rather than seeding a second database.
+ *
+ * `CREATE TABLE IF NOT EXISTS` will not add a column to a table that already exists, so
+ * without the `addColumn` calls in migrate() every task write on an upgraded install
+ * would fail against a table missing the columns the INSERT names - not a silent
+ * degradation but a hard break, on the first dispatch after upgrading.
+ */
+
+test("openDb adds the triage columns to a pre-triage tasks table", () => {
+  // Reading a legacy row back proves the columns exist AND that a row written before
+  // triage reads as untriaged rather than as anything the sort would move.
+  const legacy = getTask("legacy-1");
+  assert.equal(legacy?.priority, null);
+  assert.deepEqual(legacy?.labels, []);
+});
+
+test("a task written after the upgrade round-trips its triage fields", () => {
+  const t = getTask("legacy-1")!;
+  upsertTask({ ...t, priority: "high", labels: ["infra", "flaky"] });
+  const back = getTask("legacy-1");
+  assert.equal(back?.priority, "high");
+  assert.deepEqual(back?.labels, ["infra", "flaky"]);
 });

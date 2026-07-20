@@ -94,8 +94,15 @@ export function renderReportMarkdown(r: MissionReport): string {
   lines.push("", `Idle (${r.idle.length})`);
   for (const i of r.idle) lines.push(`- ${named(i)}${kind(i.kind)}${branch(i.branch)}`);
 
+  // Priority leads the line because the list is already sorted by it - the digest reads
+  // top-down as a triage order, and a reader who pastes it elsewhere keeps that order.
+  // Both marks are omitted entirely when unset, so an untriaged backlog reads as before.
   lines.push("", `Backlog (${r.backlog.length})`);
-  for (const t of r.backlog) lines.push(`- "${t.title}" (${t.kind}) - ${t.repoRoot}`);
+  for (const t of r.backlog) {
+    const prio = t.priority ? `[${t.priority}] ` : "";
+    const labels = t.labels.length > 0 ? ` {${t.labels.join(", ")}}` : "";
+    lines.push(`- ${prio}"${t.title}" (${t.kind})${labels} - ${t.repoRoot}`);
+  }
 
   lines.push("", `Recent outcomes (${r.recent.length}${r.recentTruncated ? "+" : ""})`);
   for (const t of r.recent) {

@@ -10,7 +10,7 @@ import {
 import { api } from "../lib/api.ts";
 import { shortenCwd } from "../lib/format.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
-import { AgentDot } from "./session-bits.tsx";
+import { AgentDot, LabelChips, PriorityChip } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
 /**
@@ -216,18 +216,30 @@ export function ReportPanel({
         <Section title="Backlog" tone="neutral" count={backlog.length} empty="Backlog is empty.">
           {backlog.map((t) => (
             <div className="report-row" key={t.id}>
-              <div className="report-row-main">
-                {/* The same door the board's backlog card is: a shelved task is read and
-                    corrected in the form that wrote it, from wherever it's listed. */}
-                <button
-                  className="report-name report-name-btn"
-                  onClick={() => onEditTask(t.id)}
-                  title="Open this task for editing"
-                >
-                  {t.title}
-                </button>
-                <span className="task-kind">{t.kind}</span>
-                <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
+              {/* Two lines, not one. This panel is narrow and a backlog row carries a
+                  title, a priority, a kind, up to three labels and a repo path - on a
+                  single flex line those fought each other and every one of them lost:
+                  the title clipped to "Bloc…" and the labels to "i…". Splitting puts
+                  what identifies the task on the first line and what describes it on
+                  the second, and nothing has to be read as an ellipsis. */}
+              <div className="report-row-main report-row-stack">
+                <span className="report-line">
+                  {/* The same door the board's backlog card is: a shelved task is read and
+                      corrected in the form that wrote it, from wherever it's listed. */}
+                  <button
+                    className="report-name report-name-btn"
+                    onClick={() => onEditTask(t.id)}
+                    title="Open this task for editing"
+                  >
+                    {t.title}
+                  </button>
+                  <PriorityChip priority={t.priority} />
+                  <span className="task-kind">{t.kind}</span>
+                </span>
+                <span className="report-line report-line-sub">
+                  <LabelChips labels={t.labels} max={3} />
+                  <span className="report-sub mono">{shortenCwd(t.repoRoot)}</span>
+                </span>
               </div>
               <div className="report-row-actions">
                 <button className="btn btn-send" onClick={() => void api.dispatchBacklog(t.id)}>

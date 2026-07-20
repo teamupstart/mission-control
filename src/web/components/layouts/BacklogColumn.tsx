@@ -1,7 +1,9 @@
 import { useState } from "react";
-import type { Session, Task } from "@shared/types.ts";
+import type { Session, Task, TaskPriority } from "@shared/types.ts";
+import { PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
 import { api } from "../../lib/api.ts";
 import { relativeTime, stateDisplay } from "../../lib/format.ts";
+import { LabelChips } from "../session-bits.tsx";
 
 /**
  * The backlog as a board column you dispatch OUT of by dragging.
@@ -111,6 +113,52 @@ function BacklogCard({
       <button className="bl-title" onClick={onEdit} title="Open this task for editing">
         {task.title}
       </button>
+      <span className="bl-marks">
+        {/* The priority control IS the chip here, rather than a read-only chip with an
+            editor under it - two of those meant the card said "BLOCKER" and "Blocker"
+            inches apart, the same fact twice. The backlog is the surface where triage
+            actually happens, so its one priority affordance is the editable one, and it
+            wears the same colour the read-only `PriorityChip` uses elsewhere.
+
+            Changing it re-sorts the column on the next snapshot (the list arrives
+            through `backlogTasks`), so the card moves under your cursor - which is the
+            feedback that makes it obvious the field does something.
+
+            Both handlers stop propagation and they stop two DIFFERENT things. The card
+            is `draggable`, so without `onMouseDown` the browser starts a drag instead of
+            opening the select. The card is also click-to-edit, so without `onClick`
+            picking a priority would open the dispatch modal over the board on the way
+            past - the control would work, and look like it had done something else. */}
+        <span
+          className={`bl-prio${task.priority ? ` prio-${task.priority}` : " is-unset"}`}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <select
+            aria-label={`Priority for ${task.title}`}
+            value={task.priority ?? ""}
+            disabled={busy}
+            onChange={(e) => {
+              const next = e.target.value;
+              void api.updateTask(task.id, {
+                // "" clears the field back to unset; null is what the API takes for that.
+                priority: next === "" ? null : (next as TaskPriority),
+              });
+            }}
+          >
+            <option value="">priority</option>
+            {TASK_PRIORITIES.map((p) => (
+              <option key={p} value={p}>
+                {PRIORITY_LABELS[p]}
+              </option>
+            ))}
+          </select>
+        </span>
+        {/* Capped here and nowhere else: this card is the narrowest surface a task is
+            drawn on, and the chip component reports the remainder as "+N" rather than
+            dropping it, so a heavily-tagged task never looks lightly tagged. */}
+        <LabelChips labels={task.labels} max={3} />
+      </span>
       <span className="bl-foot">
         <span className={`bl-kind bl-kind-${task.kind}`}>{task.kind}</span>
         <span className="bl-agent">{task.agent}</span>

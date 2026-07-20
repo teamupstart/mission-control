@@ -4,6 +4,7 @@
 // card's `stateDisplay` in src/web/lib/format.ts (same attention precedence).
 
 import type { PaneDialog, Session, Task } from "./types.ts";
+import { byPriorityThenAge } from "./task.ts";
 
 export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 
@@ -12,9 +13,13 @@ export type ReportBucket = "needs-you" | "working" | "idle" | "exited";
 /** How many finished tasks the report surfaces. */
 export const RECENT_TASKS_CAP = 20;
 
-/** Backlog: tasks not yet dispatched, oldest first. */
+/**
+ * Backlog: tasks not yet dispatched, most urgent first and oldest first within a
+ * priority. An untriaged backlog is still oldest-first, because unset priority sorts
+ * as one rank - see `byPriorityThenAge`.
+ */
 export function backlogTasks(tasks: Task[]): Task[] {
-  return tasks.filter((t) => t.status === "backlog").sort((a, b) => a.createdAt - b.createdAt);
+  return tasks.filter((t) => t.status === "backlog").sort(byPriorityThenAge);
 }
 
 /** Finished tasks (done/failed/cancelled), newest first. Caller slices to RECENT_TASKS_CAP. */

@@ -7,6 +7,7 @@ import type {
   SessionDiff,
   SessionQueue,
   SkillsView,
+  TaskPriority,
 } from "@shared/types.ts";
 import type {
   AwayConfig,
@@ -215,6 +216,10 @@ export interface DispatchInput {
   title?: string;
   kind: "ship" | "scout";
   agent: "claude" | "codex";
+  /** Optional urgency; omitted or null means unset, which is not the same as "low". */
+  priority?: TaskPriority | null;
+  /** Optional free-form tags; the server normalizes them. */
+  labels?: string[];
   backlog?: boolean;
 }
 
@@ -275,9 +280,11 @@ export const api = {
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
   /**
-   * Rewrite a task that is still in the backlog - the dispatch modal reopened on a
-   * card. Refused (409) once it has been dispatched, when its branch and tmux session
-   * are already cut from the title.
+   * Edit a task - the dispatch modal reopened on a card, or the backlog column's
+   * priority picker. Rewriting repo/intent/title/kind/agent is refused (409) once the
+   * task has been dispatched, when its branch and tmux session are already cut from the
+   * title; a priority/labels-only patch is annotation and is accepted in any status.
+   * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
   updateTask: (id: string, patch: UpdateTask) =>
     post(`/api/tasks/${encodeURIComponent(id)}/update`, patch),

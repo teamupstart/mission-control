@@ -810,6 +810,13 @@ export type TaskStatus =
 /** How a task's isolated worktree was provisioned - decides how it's torn down. */
 export type WorktreeProvider = "treehouse" | "git";
 
+/**
+ * How urgent a task is, when somebody said. Never inferred: a task with no priority
+ * carries `null`, which is a distinct answer from `low` and sorts differently (see
+ * `priorityRank` in `@shared/task.ts`).
+ */
+export type TaskPriority = "low" | "med" | "high" | "blocker";
+
 export interface Task {
   id: string;
   /** Short label - source of the tmux session slug and the card title. */
@@ -818,6 +825,14 @@ export interface Task {
   intent: string;
   kind: TaskKind;
   agent: AgentType;
+  /** Urgency, or null when nobody set one. Optional everywhere; never inferred. */
+  priority: TaskPriority | null;
+  /**
+   * Free-form tags - single strings, not key/value pairs. Empty by default. Normalized
+   * on the way in by `normalizeLabels` (@shared/task.ts), so what's stored is already
+   * trimmed, deduped and capped.
+   */
+  labels: string[];
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */

@@ -26,6 +26,24 @@ export function reviewDecisions(review: ReviewItem): PlanDecision[] | null {
 }
 
 /**
+ * Should the review's body be drawn under its header?
+ *
+ * Only `input` is ever in doubt. `request_input` sends the question as the title AND as the
+ * body, so for every review the tool produces today the two are identical, and drawing both
+ * printed the same sentence twice - once as the `<h3>`, again as a paragraph beneath it.
+ *
+ * The test is `body !== title` rather than the kind, deliberately. Suppressing `input` bodies
+ * outright would hard-code that equality into the UI with nothing enforcing it, and would
+ * flatten a long or multi-line free-text question into a bold heading with its newlines
+ * collapsed. Whenever a body carries something the header does not already say, it is shown.
+ *
+ * `plan` and `diff` bodies ARE the content, and always render.
+ */
+export function showsBody(review: ReviewItem): boolean {
+  return review.kind !== "input" || review.body !== review.title;
+}
+
+/**
  * The opening line of the response the agent receives when the form is submitted.
  *
  * Not cosmetic: the string is handed back as the tool result verbatim and lands in the

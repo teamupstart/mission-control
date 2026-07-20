@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 import type { AgentType } from "@shared/types.ts";
 import { STATE_DIR, mcpServerPath } from "./config.ts";
@@ -137,14 +138,70 @@ async function resolveMcpRuntime(): Promise<McpRuntime> {
   });
 }
 
-/** Write `file` only when its content would change - keeps a dispatch off the disk in the common case. */
+/**
+ * Does this `claude` accept `--append-system-prompt-file`?
+ *
+ * Asked rather than assumed because the flag is HIDDEN: `claude --help` lists
+ * `--append-system-prompt` and `--system-prompt` but not the file variants, which surface
+ * only inside the `--bare` blurb. Claude Code hard-errors on an unknown option, so on a CLI
+ * without it the child exits the instant it is spawned, tmux tears the session down, and the
+ * dispatch fails `READY_TIMEOUT_MS` later as "agent session never appeared" - a message
+ * pointing nowhere near the real cause, on EVERY dispatch.
+ *
+ * `--help` is the probe rather than a trial run: it is the one invocation that cannot start a
+ * session, touch the worktree, or block on auth, and Commander lists every registered option
+ * including the hidden ones. Bounded and non-interactive, with stdin closed.
+ *
+ * Inconclusive counts as unsupported. A timeout, a crash, a missing binary - none of them is
+ * evidence the flag exists, and the safe direction is unambiguous: no ask channel leaves the
+ * built-in menu in place, which is merely the status quo.
+ */
+async function supportsAppendSystemPromptFile(bin: string): Promise<boolean> {
+  const r = await run(bin, ["--help"], { timeoutMs: 15000 });
+  if (r.code !== 0 || r.outcomeUnknown) return false;
+  return r.stdout.includes("--append-system-prompt-file");
+}
+
+/** Resolved once per daemon lifetime, keyed by binary - the CLI cannot change under us mid-run. */
+const cachedFlagSupport = new Map<string, boolean>();
+
+async function flagSupported(bin: string): Promise<boolean> {
+  const hit = cachedFlagSupport.get(bin);
+  if (hit !== undefined) return hit;
+  const ok = await supportsAppendSystemPromptFile(bin);
+  cachedFlagSupport.set(bin, ok);
+  return ok;
+}
+
+/**
+ * Write `file` only when its content would change, and ATOMICALLY when it does.
+ *
+ * The skip is an optimisation; the atomicity is not. These two paths are what the spawn argv
+ * points at, so a plain `writeFileSync` over them can be read half-written by a `claude` that
+ * a concurrent dispatch started moments earlier. A truncated `mcp.json` means no
+ * `request_input` while `--disallowed-tools` still applies - arm B exactly, the one state
+ * this module exists to prevent. Temp file in the SAME directory (so the rename cannot cross
+ * a filesystem) then `renameSync`, which is atomic: a reader sees the old file or the new one.
+ */
 function writeIfChanged(path: string, content: string): void {
   try {
     if (readFileSync(path, "utf8") === content) return;
   } catch {
     // Missing or unreadable: fall through and write it.
   }
-  writeFileSync(path, content);
+  // Unique per writer, so two dispatches racing cannot share a temp file and interleave.
+  const tmp = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    writeFileSync(tmp, content);
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // Best effort - the throw below is what the caller acts on.
+    }
+    throw err;
+  }
 }
 
 /**
@@ -162,53 +219,82 @@ function writeIfChanged(path: string, content: string): void {
  *   --disallowed-tools            removes the built-in
  *   --append-system-prompt-file   tells the agent where to go instead
  *
- * Returns EMPTY when the MCP bundle is missing, and that direction is deliberate. A session
- * with `AskUserQuestion` intact is merely the status quo - pane-dialog reads its menu and
- * Foreman answers it. A session with the built-in removed and no replacement is arm B: an
- * agent that asks into the void. So the failure mode is "no ask channel", never "no way to
- * ask". Anything that can go wrong here must disarm the whole thing, not half of it.
+ * Returns EMPTY whenever anything at all goes wrong, and that direction is the whole point.
+ * A session with `AskUserQuestion` intact is merely the status quo - pane-dialog reads its
+ * menu and Foreman answers it. A session with the built-in removed and no replacement is arm
+ * B: an agent that asks into the void. So the failure mode is "no ask channel", never "no way
+ * to ask", and EVERY failure has to disarm the whole thing rather than half of it.
+ *
+ * Which is why the body below cannot throw. It is called from inside `Dispatcher.dispatch`'s
+ * try block, so an unhandled EACCES / ENOSPC / read-only state dir would not just skip the
+ * channel - it would abort a dispatch that had nothing else wrong with it, and a session that
+ * would have launched fine never launches. Setting up the ask channel is best-effort by
+ * construction; failing to set it up is never a reason to fail the task.
+ *
+ * `agentBin` is the resolved CLI this dispatch will actually spawn, so the capability probe
+ * asks the same binary rather than whatever `claude` happens to be first on some other PATH.
  *
  * Claude-only: these are Claude's flags, and codex has no equivalent.
  */
-export async function askChannelArgs(agent: AgentType): Promise<string[]> {
+export async function askChannelArgs(agent: AgentType, agentBin: string): Promise<string[]> {
   if (agent !== "claude") return [];
 
-  const server = mcpServerPath();
-  if (!existsSync(server)) {
+  try {
+    const server = mcpServerPath();
+    if (!existsSync(server)) {
+      console.warn(
+        `[mission-control] MCP server bundle not found at ${server} - dispatched sessions will ` +
+          `keep Claude's built-in ${DISALLOWED_TOOL} menu (run: npm run build). ` +
+          `Disallowing it without a replacement would leave the agent no way to ask at all.`,
+      );
+      return [];
+    }
+
+    if (!(await flagSupported(agentBin))) {
+      console.warn(
+        `[mission-control] ${agentBin} does not accept --append-system-prompt-file, so there is ` +
+          `no way to tell a dispatched agent to use ${ASK_TOOL} instead of ${DISALLOWED_TOOL} - ` +
+          `keeping the built-in menu. Update Claude Code (the flag exists in 2.1.x) to enable ` +
+          `the ask channel. Disallowing the built-in without the redirect would leave the agent ` +
+          `asking into a terminal nobody reads.`,
+      );
+      return [];
+    }
+
+    const runtime = await resolveMcpRuntime();
+    mkdirSync(CHANNEL_DIR, { recursive: true });
+    writeIfChanged(
+      MCP_CONFIG_PATH,
+      JSON.stringify(
+        {
+          mcpServers: {
+            [SERVER_NAME]: { command: runtime.command, args: [server], env: runtime.env },
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeIfChanged(REDIRECT_PATH, REDIRECT_PROMPT);
+
+    return [
+      "--mcp-config",
+      MCP_CONFIG_PATH,
+      "--allowed-tools",
+      ASK_TOOL,
+      "--disallowed-tools",
+      DISALLOWED_TOOL,
+      "--append-system-prompt-file",
+      REDIRECT_PATH,
+    ];
+  } catch (err) {
     console.warn(
-      `[mission-control] MCP server bundle not found at ${server} - dispatched sessions will ` +
-        `keep Claude's built-in ${DISALLOWED_TOOL} menu (run: npm run build). ` +
-        `Disallowing it without a replacement would leave the agent no way to ask at all.`,
+      `[mission-control] could not set up the ask channel (${err instanceof Error ? err.message : String(err)}) - ` +
+        `dispatched sessions keep Claude's built-in ${DISALLOWED_TOOL} menu. The dispatch itself ` +
+        `proceeds: failing to set this up is never a reason to fail a task.`,
     );
     return [];
   }
-
-  const runtime = await resolveMcpRuntime();
-  mkdirSync(CHANNEL_DIR, { recursive: true });
-  writeIfChanged(
-    MCP_CONFIG_PATH,
-    JSON.stringify(
-      {
-        mcpServers: {
-          [SERVER_NAME]: { command: runtime.command, args: [server], env: runtime.env },
-        },
-      },
-      null,
-      2,
-    ),
-  );
-  writeIfChanged(REDIRECT_PATH, REDIRECT_PROMPT);
-
-  return [
-    "--mcp-config",
-    MCP_CONFIG_PATH,
-    "--allowed-tools",
-    ASK_TOOL,
-    "--disallowed-tools",
-    DISALLOWED_TOOL,
-    "--append-system-prompt-file",
-    REDIRECT_PATH,
-  ];
 }
 
 /** The paths the argv points at - for tests and for anyone debugging a dispatched session. */

@@ -153,3 +153,41 @@ This matters here because the argv now carries filesystem paths, whose charset w
 - `review-input-decisions.test.ts` - `request_input` with options produces an `input` review
   carrying one decision; the schema accepts it; `ReviewModal` renders the form rather than the
   textarea.
+
+## Review round 1
+
+Six findings, all fixed. Four were the operator's call and they chose to fix all of them.
+
+**Foreman was answering blind.** `classifyPending` passed only `inputReview.body`, so the
+options the agent offered never reached the reviewer. Before this change the choices were rows
+on the pane and the prompt told the reviewer to copy one exactly; after it, they were nowhere
+- the transcript cannot cover for it, since a blocked tool call is not written there until it
+returns. Foreman was free to answer outside the offered set on exactly the asks this feature
+routes to it. `withOfferedOptions` now renders the labels and details into the question, and
+says to name one of them or escalate, because this surface is answered with prose rather than
+by selecting a row.
+
+**A filesystem error failed the whole dispatch.** Only the missing-bundle path returned `[]`;
+`mkdirSync`/`writeFileSync` threw into `Dispatcher.dispatch`'s try block and marked the task
+`failed`. That inverted the module's own contract. `askChannelArgs` now cannot throw at all.
+
+**The channel rested on an undocumented flag.** `--append-system-prompt-file` is absent from
+`claude --help`, and Claude Code hard-errors on unknown options, so on a CLI without it every
+dispatch died at spawn and surfaced as "agent session never appeared". There is now a
+one-time, per-binary `--help` probe; anything inconclusive counts as unsupported.
+
+**The tool description over-claimed.** It asserted "your terminal is not being read" to every
+session on the machine, including human-started ones that keep `AskUserQuestion` and are being
+watched. That claim is dispatch-scoped and now lives only in `REDIRECT_PROMPT`.
+
+**The modal hid too much.** Suppressing an `input` body outright hard-coded `title === body`
+into the UI and flattened long free-text questions into a heading. The test is now
+`body !== title` (`showsBody`), so a body with content of its own still renders as a paragraph.
+
+**The channel files were written non-atomically.** A torn `mcp.json` means no `request_input`
+while `--disallowed-tools` still applies - arm B. Writes now go to a temp file and `rename`.
+
+One note on the run itself: the first fix round died on an account session limit, not on
+anything in the code, and the daemon reset the shared checkout to `main` mid-run (its own
+"reset checkouts before assigning" behaviour). The commit survived; the work continued in a
+dedicated worktree.

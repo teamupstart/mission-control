@@ -4,7 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { PlanDecision, ReviewItem } from "../src/shared/types.ts";
 import { CreateReviewSchema } from "../src/shared/protocol.ts";
-import { reviewDecisions, decisionLead } from "../src/web/lib/reviews.ts";
+import { reviewDecisions, decisionLead, showsBody } from "../src/web/lib/reviews.ts";
 import { DecisionForm } from "../src/web/components/PlanDecisions.tsx";
 
 // What is at stake: the question has to arrive as ARGUMENTS, not as a picture of a menu.
@@ -133,4 +133,16 @@ test("multiSelect asks for checkboxes", () => {
     }),
   );
   assert.match(html, /type="checkbox"/);
+});
+
+test("an input body is shown only when it says something the header does not", () => {
+  // `request_input` sends the question as title AND body, so rendering both printed the same
+  // sentence twice. Suppressing it unconditionally would instead hard-code that equality into
+  // the modal and flatten a long, multi-line free-text question into a bold heading.
+  const same = review({ title: "Pick one", body: "Pick one" });
+  const differs = review({ title: "Pick one", body: "Line one\nLine two, at length." });
+  assert.equal(showsBody(same), false, "equal title and body must not print twice");
+  assert.equal(showsBody(differs), true, "a body with its own content is still readable prose");
+  // Kinds that carry real content are untouched by the rule.
+  assert.equal(showsBody(review({ kind: "plan", title: "T", body: "# plan" })), true);
 });

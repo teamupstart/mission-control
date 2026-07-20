@@ -78,11 +78,14 @@ export class Dispatcher {
       // a clarifying question arrives as structured arguments in the dashboard rather than
       // as a menu we read off the child's screen. Scoped to dispatch for the same reason
       // `applyAutoMode` is - we only reconfigure agents WE launched, never one the operator
-      // started and we merely discovered. It returns nothing rather than half its flags if
-      // the MCP bundle is missing; see `askChannelArgs`.
+      // started and we merely discovered. It returns nothing rather than half its flags on
+      // ANY failure - a missing bundle, a CLI without the redirect flag, an unwritable state
+      // dir - and never throws, so it cannot sink a dispatch that is otherwise fine; see
+      // `askChannelArgs`. `agentBin` is passed so its capability probe asks the binary this
+      // dispatch will actually spawn.
       const agentArgs = [
         ...(model ? ["--model", model] : []),
-        ...(await askChannelArgs(task.agent)),
+        ...(await askChannelArgs(task.agent, agentBin)),
       ];
 
       const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);

@@ -1995,6 +1995,15 @@ body {
   overflow: hidden;
   background: var(--bg-2);
 }
+/* An input review's body, shown only when it differs from the title it is filed under -
+   a long or multi-line free-text question that the header would flatten. */
+.question {
+  margin: 0;
+  padding: 14px 16px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
 .review-actions {
   display: flex;
   align-items: center;

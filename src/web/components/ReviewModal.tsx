@@ -4,7 +4,7 @@ import { api } from "../lib/api.ts";
 import { DiffView } from "./DiffView.tsx";
 import { PlanView } from "./PlanView.tsx";
 import { DecisionForm } from "./PlanDecisions.tsx";
-import { reviewDecisions, decisionLead } from "../lib/reviews.ts";
+import { reviewDecisions, decisionLead, showsBody } from "../lib/reviews.ts";
 import { AgentDot } from "./session-bits.tsx";
 import { Overlay, OVERLAY_IDS } from "./Overlay.tsx";
 
@@ -80,20 +80,27 @@ function ReviewCard({ review }: { review: ReviewItem }): React.JSX.Element {
       </div>
 
       {/*
-        `input` has no content block at all, so this is skipped rather than rendered empty -
-        `.review-content` is a bordered, margined box, and an empty one is a visible artifact.
-        `request_input` sends the question as the title AND as the body, so a paragraph of
-        `body` beneath an `<h3>` of `title` printed the same sentence twice - true since the
-        tool shipped, and newly obvious once a third copy could appear as the form's legend.
-        The header is its one home, which is what every other kind already does; the form's
-        `hideQuestions` keeps it from repeating, and the answer control follows directly.
+        An `input` shows its body only when it SAYS something the header does not.
+
+        `request_input` sends the question as the title and as the body, so the two are equal
+        in every review the tool produces today, and printing both put the same sentence on
+        screen twice - once as the `<h3>`, again as a paragraph directly beneath, with a third
+        copy possible as the form's legend. Suppressing it there is the fix.
+
+        But suppressing it unconditionally would hard-code that equality into the modal with
+        nothing enforcing it, and would flatten a long or multi-line free-text question into a
+        bold heading with its newlines collapsed. So the test is `body !== title` rather than
+        the kind: whenever a body carries something of its own, it is rendered as the readable
+        paragraph it used to be. The whole block is skipped when there is nothing to put in it,
+        because `.review-content` is a bordered, margined box and an empty one is an artifact.
       */}
-      {review.kind !== "input" && (
+      {showsBody(review) && (
         <div className="review-content">
           {review.kind === "diff" && <DiffView diff={review.body} />}
           {(review.kind === "plan" || review.kind === "plan-decisions") && (
             <PlanView markdown={review.body} />
           )}
+          {review.kind === "input" && <p className="question">{review.body}</p>}
         </div>
       )}
 

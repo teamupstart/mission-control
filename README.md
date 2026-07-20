@@ -493,12 +493,20 @@ menu drawn on a terminal nobody is watching.
 Four flags go on together or not at all (`src/server/ask-channel.ts`): `--mcp-config`
 supplies the tool, `--allowed-tools` pre-approves it so calling it doesn't itself raise a
 permission prompt, `--disallowed-tools` removes the built-in, and
-`--append-system-prompt-file` tells the agent where to go instead. If the MCP bundle is
-missing (`npm run build` never ran), **none** of them are passed and the session keeps the
-built-in menu: an agent with nowhere to ask is worse than one with a menu we can read.
+`--append-system-prompt-file` tells the agent where to go instead.
+
+If **anything** prevents the full set - the MCP bundle is missing (`npm run build` never
+ran), the `claude` on PATH is too old to accept `--append-system-prompt-file`, or the state
+directory cannot be written - then **none** of them are passed and the session keeps the
+built-in menu. An agent with nowhere to ask is worse than one with a menu we can read, so
+every failure disarms the whole channel rather than half of it, and none of them fails the
+dispatch: setting this up is best-effort, and the daemon logs which condition it hit.
 
 The redirect is not optional. Measured on live sessions, `--disallowed-tools` on its own
-does not send the agent anywhere - it asks its question in prose and ends the turn.
+does not send the agent anywhere - it asks its question in prose and ends the turn. That is
+why an unsupported `--append-system-prompt-file` disables the channel outright: the flag is
+undocumented in `claude --help`, so the daemon probes for it once per binary rather than
+assuming it.
 
 Sessions **you** start are untouched: they keep the built-in menu, which the dashboard
 still reads off the pane and answers. Codex is untouched too - these are Claude's flags.

@@ -161,6 +161,15 @@ server.registerTool(
 // is optional so the same tool still serves a genuinely open-ended ask - one tool for the
 // redirect prompt to name, with the agent choosing the SHAPE from the question rather than
 // choosing between two tools.
+//
+// The description says what the tool DOES and stops there. It deliberately does NOT claim
+// that nobody is reading your terminal, or that this is the only way to reach your human:
+// this one MCP server is shared by every session on the machine, including the ones a human
+// started themselves, which keep `AskUserQuestion` on purpose and whose terminal usually IS
+// being watched. Asserting it here would be false for that half of the fleet, and would push
+// exactly those sessions off the built-in menu this change deliberately preserved for them.
+// That instruction is dispatch-scoped and lives in `REDIRECT_PROMPT` (`ask-channel.ts`),
+// which only ever reaches the sessions it is true for.
 server.registerTool(
   "request_input",
   {
@@ -169,9 +178,7 @@ server.registerTool(
       "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
       "they answer. Returns their answer. Pass `options` whenever the answer is a choice " +
       "between discrete alternatives - they become real controls the human clicks, which is " +
-      "faster and less ambiguous than free text. Omit `options` only for open-ended asks. " +
-      "Your terminal is not being read, so this is the ONLY way to reach your human: never " +
-      "ask a question as prose and end your turn.",
+      "faster and less ambiguous than free text. Omit `options` only for open-ended asks.",
     inputSchema: {
       question: z.string().describe("The question to ask"),
       options: z

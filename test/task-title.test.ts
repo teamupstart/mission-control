@@ -151,7 +151,11 @@ test("the shipped per-attempt budget is above real model latency", () => {
       "tsx",
       "--input-type=module",
       "-e",
-      'const m = await import("./src/server/task-title.ts"); console.log(m.TITLE_TIMEOUT_MS);',
+      // `String(...)`, not the number itself: `console.log` of a number goes through
+      // `util.inspect`, which paints it yellow whenever colour is forced - and an agent
+      // harness commonly exports `FORCE_COLOR`. The ANSI codes then parse back as NaN and
+      // this fails claiming the shipped budget regressed. Strings are never colourised.
+      'const m = await import("./src/server/task-title.ts"); console.log(String(m.TITLE_TIMEOUT_MS));',
     ],
     { cwd: fileURLToPath(new URL("..", import.meta.url)), env, encoding: "utf8" },
   );

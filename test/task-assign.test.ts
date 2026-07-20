@@ -153,10 +153,19 @@ test("an agent with no repo at all is refused", async () => {
  * test that means to reach the pane has to hand `assign` a directory git can answer
  * questions about, or it passes for the wrong reason.
  */
-function setupInRepo(prefix: string) {
+function setupInRepo(prefix: string, over: Partial<DiscoveredSession> = {}) {
   const { root, clone } = mkOriginAndClone(prefix);
   roots.push(root);
-  return { clone, ...setup({ cwd: clone, gitRoot: clone, repoRoot: clone }) };
+  return { clone, ...setup({ cwd: clone, gitRoot: clone, repoRoot: clone, ...over }) };
+}
+
+/** The same, hosted on a tmux session - the handle a rename actually moves. */
+function setupOnTmux(prefix: string, session: string) {
+  return setupInRepo(prefix, {
+    name: session,
+    nameSource: "tmux",
+    tmux: { session, window: "agent", windowIndex: 0, paneId: "%1" },
+  });
 }
 
 /**
@@ -404,6 +413,118 @@ test("a clean, queue-less agent takes the drop with no confirmation at all", asy
   assert.equal(res.ok, true, res.error);
   assert.equal(res.resetConfirm, undefined);
   assert.equal(r.getTask("t1")?.status, "running");
+});
+
+/**
+ * The handover renames the terminal, so a reused agent is titled by its work the way a
+ * freshly dispatched one is.
+ *
+ * The bug this pins: a backlog item scheduled onto an idle agent left the card reading
+ * whatever the agent was called before - the pooled worktree it was handed out as, or the
+ * task it finished ten minutes ago - while it ran something else entirely. Everything else
+ * about an assign already says "fresh start" (branch back to origin's default, queue
+ * dropped, context cleared); the name was the one thing left behind.
+ */
+test("a handover names the agent's terminal after the task it just took", async () => {
+  const { r, tasks, sessionId, clone } = setupOnTmux("mission-assign-rename-", "pool-worktree-3");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Fix flaky worktree cleanup" }));
+
+  const renamed: Array<{ from: string; to: string }> = [];
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true }),
+    rename: async (s, name) => {
+      renamed.push({ from: s.tmux!.session, to: name });
+      return { ok: true };
+    },
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(renamed, [{ from: "pool-worktree-3", to: "Fix flaky worktree cleanup" }]);
+  // Applied to the live card too, not just to tmux - the whole point is the board.
+  const s = r.getSession(sessionId)!;
+  assert.equal(s.name, "Fix flaky worktree cleanup");
+  assert.equal(s.tmux?.session, "Fix flaky worktree cleanup");
+});
+
+test("a rename that fails does not un-run a task the agent is already working on", async () => {
+  // The prompt has been typed by the time the rename is attempted. Failing the assign
+  // here would send a task an agent is actively working on back to the backlog, to be
+  // handed to a second agent - a far worse outcome than a stale name.
+  const { r, tasks, sessionId, clone } = setupOnTmux("mission-assign-rename-fail-", "old-name");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Add dark mode" }));
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true }),
+    rename: async () => {
+      throw new Error("tmux went away");
+    },
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.equal(r.getTask("t1")?.status, "running");
+  assert.equal(r.getSession(sessionId)?.name, "old-name", "the old name simply stands");
+});
+
+test("a name another task's teardown still aims at is not taken", async () => {
+  // `Task.tmuxSession` aims `tmux kill-session`. Renaming onto a name a task still
+  // records - tmux frees a dead session's name for immediate reuse, so this is reachable
+  // without any collision among live sessions - would point that task's teardown at this
+  // live agent. Answered the way `spawnUniquely` answers it: retry under a unique name.
+  const { r, tasks, sessionId, clone } = setupOnTmux("mission-assign-rename-taken-", "old-name");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Ship the thing" }));
+  r.upsertTask(
+    mkTask({
+      id: "t2",
+      status: "done",
+      tmuxSession: "Ship the thing",
+      worktreePath: "/some/other/worktree",
+    }),
+  );
+
+  const tried: string[] = [];
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true }),
+    rename: async (_s, name) => {
+      tried.push(name);
+      return { ok: true };
+    },
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(tried, ["Ship the thing-t1"], "the contested name was never attempted");
+  assert.equal(r.getSession(sessionId)?.name, "Ship the thing-t1");
+});
+
+test("an agent with no terminal handle is left alone rather than failed", async () => {
+  // Its card is named after its process, and there is nothing to rename. The task still
+  // lands - a session we cannot title is not a session we refuse work to.
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-rename-none-");
+  gitIn(clone, "checkout", "-q", "--detach");
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Name me" }));
+
+  let called = false;
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true }),
+    rename: async () => {
+      called = true;
+      return { ok: true };
+    },
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.equal(called, false);
+  assert.equal(r.getSession(sessionId)?.name, "agent");
 });
 
 test("a refusal says whether the TASK or the SESSION was the problem", async () => {

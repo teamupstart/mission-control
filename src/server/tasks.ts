@@ -12,13 +12,22 @@ import type {
 import type { UpdateTask } from "@shared/protocol.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
-import { Dispatcher, deriveTitle, teardownWorktree, tmuxSessionAlive } from "./dispatcher.ts";
+import {
+  Dispatcher,
+  deriveTitle,
+  sessionLabel,
+  teardownWorktree,
+  tmuxSessionAlive,
+} from "./dispatcher.ts";
 import {
   branchReleasedByReset,
   injectPrompt,
   kill,
   paneAcceptsPrompt,
+  rename,
   resetWouldDestroyWork,
+  validateSessionName,
+  validateSessionNameAgainstTasks,
   type ActionResult,
 } from "./actions.ts";
 import { resetSession } from "./reset.ts";
@@ -59,6 +68,8 @@ export interface AssignOptions {
   paneReady?: (session: Session) => Promise<ActionResult>;
   /** Hand the agent's checkout back in the shape a fresh one starts in. */
   reset?: (session: Session) => Promise<ResetResult>;
+  /** Rename the agent's terminal after the task it just took. Cosmetic, never fatal. */
+  rename?: (session: Session, name: string) => Promise<ActionResult>;
 }
 
 /**
@@ -339,6 +350,7 @@ export class TaskManager {
     const inject = opts.inject ?? injectPrompt;
     const paneReady = opts.paneReady ?? paneAcceptsPrompt;
     const reset = opts.reset ?? ((s: Session) => resetSession(this.registry, s, true));
+    const doRename = opts.rename ?? rename;
 
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task", scope: "task" };
@@ -471,7 +483,65 @@ export class TaskManager {
       dispatchedAt: now,
       updatedAt: now,
     });
+    // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
+    // Last, and after the claim: it is the one step here that changes nothing about
+    // whether the task is running, so it must not sit in front of anything that does.
+    await this.renameForTask(
+      // Re-read for the same reason the task is: the reset detached the checkout and the
+      // injection took a round trip, and `rename` targets the tmux session BY NAME.
+      this.registry.getSession(sessionId) ?? s,
+      this.registry.getTask(id) ?? cur,
+      doRename,
+    );
     return { ok: true };
+  }
+
+  /**
+   * Name the agent's terminal after the task it just took, the way a fresh dispatch does.
+   *
+   * A dispatch cuts its tmux session from `sessionLabel(task.title)`, so a launched agent's
+   * card is titled by its work from the first frame. An assign reuses a terminal that was
+   * named for something else - the pooled worktree it was handed out as, or the task it
+   * finished ten minutes ago - and everything else about the handover (branch back to
+   * origin's default, work queue dropped, context cleared) already says this is a fresh
+   * start. Leaving the name behind is how a board ends up with a card reading one task
+   * while running another, which is worse than either name alone: the operator cannot tell
+   * from the card which of the two is the lie.
+   *
+   * Best-effort, and deliberately AFTER the task is claimed. The task is typed and running
+   * by the time this is reached; failing the assign over a cosmetic rename would send a
+   * task that an agent is already working on back to the backlog, to be handed to a second
+   * agent. So every refusal below is a silent no-op that leaves the old name standing.
+   *
+   * The fallback name exists for one reason: tmux session names are unique, so a rename
+   * onto a name a live session already holds fails, and `validateSessionNameAgainstTasks`
+   * refuses a name a task's teardown still aims at (taking it would point that task's
+   * `tmux kill-session` at this agent). Both are answered the same way `spawnUniquely`
+   * answers them - retry once under a name the task id makes unique.
+   */
+  private async renameForTask(
+    s: Session,
+    t: Task,
+    doRename: NonNullable<AssignOptions["rename"]>,
+  ): Promise<void> {
+    const label = sessionLabel(t.title);
+    if (s.name === label) return;
+    for (const candidate of [label, `${label}-${t.id.slice(0, 6)}`]) {
+      // `sessionLabel` already strips what a tmux name cannot hold, so this normally only
+      // refuses a session with no tmux and no wezterm handle - one where there is nothing
+      // to rename, whose card is named after its process.
+      const valid = validateSessionName(s, candidate);
+      if (!valid.ok) continue;
+      if (!validateSessionNameAgainstTasks(s, valid.name, this.list()).ok) continue;
+      const r = await doRename(s, valid.name).catch((err) => ({
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+      if (r.ok) {
+        this.registry.renameSession(s.id, valid.name);
+        return;
+      }
+    }
   }
 
   /**

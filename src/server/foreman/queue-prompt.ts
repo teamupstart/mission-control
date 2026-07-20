@@ -1,6 +1,7 @@
 import type { TranscriptMessage, TrackedGap } from "@shared/types.ts";
 import type { StandardsDoc } from "../standards.ts";
 import { PREFS_END, prefsSection } from "./prefs.ts";
+import { fromChild } from "./prompt.ts";
 
 // The verify prompt: "did the agent actually finish THIS item, to this repo's
 // bar?". Evidence-only by decision - it judges the diff + transcript and never
@@ -128,12 +129,16 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     // nothing and repo content is instructing the verifier outright.
     ...prefsSection(input.prefs),
     "## The session",
-    `name: ${input.session.name}`,
+    `name: ${fromChild(input.session.name)}`,
     `cwd: ${input.session.cwd ?? "(unknown)"}`,
     `branch: ${input.session.gitBranch ?? "(none)"}`,
     "",
     "## What the human asked for (THE thing to judge)",
-    input.intent.trim(),
+    // Above the fence, so it is read as direction. Human-authored from the dashboard on the
+    // ordinary path, but model-authored on backlog-autopilot - and the session name comes from
+    // a tmux window title the child can set. Same rule as the reviewer: if the child can write
+    // it, it comes through here.
+    fromChild(input.intent.trim()),
     "",
   ];
 
@@ -149,8 +154,10 @@ export function buildVerifyPrompt(input: VerifyInput): string {
     lines.push("## Previously reported gaps (reuse these ids for the same problems)");
     for (const g of input.priorGaps) {
       lines.push(
-        `- id: ${g.id} (asked ${g.strikes}x already) [${g.severity}/${g.kind}] ${g.path}`,
-        `  ${g.detail}`,
+        // Verifier output derived from the untrusted diff and transcript, rendered above the
+        // fence where it reads as direction rather than as evidence.
+        `- id: ${g.id} (asked ${g.strikes}x already) [${g.severity}/${g.kind}] ${fromChild(g.path)}`,
+        `  ${fromChild(g.detail)}`,
       );
     }
     lines.push("");

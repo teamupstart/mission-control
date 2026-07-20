@@ -4,7 +4,7 @@ import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PREFS_NAME, readForemanPrefs } from "../src/server/standards.ts";
-import { prefsSection, stripPrefsMarkers } from "../src/server/foreman/prefs.ts";
+import { PREFS_END, PREFS_HEADING, prefsSection, stripPrefsMarkers } from "../src/server/foreman/prefs.ts";
 import { buildReviewPrompt } from "../src/server/foreman/prompt.ts";
 import { buildVerifyPrompt } from "../src/server/foreman/queue-prompt.ts";
 import { buildTriagePrompt } from "../src/server/foreman/triage-prompt.ts";
@@ -319,7 +319,18 @@ test("prose ABOUT the operator's instructions survives; only the frame is redact
   ]) {
     assert.equal(stripPrefsMarkers(line), line, `must survive untouched: ${line}`);
   }
-  // And a bare rule on one side is still enough to read as a frame.
+  // Ordinary markdown is prose too, and this is where the first narrowing overshot: a bullet
+  // is ONE hyphen, so requiring merely "a rule character" ate the sentence after it. Emphasis
+  // underscores and a hyphen joining two clauses are the same shape.
+  for (const line of [
+    "- The operator's standing instructions are read once per evaluation.",
+    "We render _the operator's standing instructions_ above the fence.",
+    "prefs.ts - the operator's standing instructions renderer",
+  ]) {
+    assert.equal(stripPrefsMarkers(line), line, `ordinary markdown must survive: ${line}`);
+  }
+  // A real rule - three or more - still reads as a frame. Nothing that draws one is a
+  // single character wide.
   assert.match(stripPrefsMarkers("The operator's standing instructions -----"), /redacted/);
 });
 
@@ -411,9 +422,27 @@ test("the reviewer gets the operator's instructions above the session data", () 
   assert.ok(p.indexOf(PREFS) < p.indexOf("\n## The session\n"));
 });
 
-test("the reviewer's prompt is byte-identical without a FOREMAN.md", () => {
-  // What lets this ship without changing how a single existing repo is reviewed.
-  assert.equal(buildReviewPrompt(reviewInput({ prefs: null })), buildReviewPrompt(reviewInput()));
+test("a repo with no FOREMAN.md gets no section, no marker, and no framing", () => {
+  // This assertion used to compare `reviewInput({ prefs: null })` against `reviewInput()` -
+  // and `reviewInput`'s own default is `prefs: null`, so it compared a value with itself and
+  // could never fail. The invariant it claimed to pin was untested, and the README cited it.
+  //
+  // What is actually true, and now checked: with no file, none of the section renders. The
+  // policies do carry an unconditional sentence about where such a section would appear if
+  // there were one - that is deliberate, since the anchor has to hold whether or not this
+  // particular repo opted in - so the honest claim is about the SECTION, not the whole prompt.
+  const without = buildReviewPrompt(reviewInput({ prefs: null }));
+  assert.ok(!without.includes(PREFS_HEADING), "no heading");
+  assert.ok(!without.includes(PREFS_END), "no closing marker");
+  assert.ok(!without.includes("can only ever RAISE your bar"), "no ratchet framing");
+
+  // And adding a file changes ONLY that: lift the rendered section back out and the prompt is
+  // the one a repo without the file gets, to the byte. `prefsSection` is what gets spliced in,
+  // so removing exactly its own output is the honest way to state "nothing else moved".
+  const withFile = buildReviewPrompt(reviewInput({ prefs: doc(PREFS) }));
+  const section = `${prefsSection(doc(PREFS)).join("\n")}\n`;
+  assert.ok(withFile.includes(section), "the section is spliced in verbatim");
+  assert.equal(withFile.replace(section, ""), without, "and nothing outside it changed");
 });
 
 test("the verifier gets the operator's instructions ABOVE the evidence fence", () => {

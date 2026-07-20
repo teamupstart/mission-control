@@ -784,12 +784,11 @@ Two things make it different from the `AGENTS.md` / `CLAUDE.md` that Foreman *al
   sits in front of all three and removes none of them.
 
 A repo without the file is left alone: with no `FOREMAN.md` the section renders as nothing at
-all, so Foreman reviews it exactly as it did before the feature existed - byte-identical, and
-there's a test pinning that. (Two prompts did gain a sentence unconditionally: the verifier's
-policy, saying the operator's instructions outrank its advisory-only convention rule, and the
-cheap tier's rules, saying they can only ever move an ask *away* from auto-approval. Both are
-conditioned on instructions being present, so with no `FOREMAN.md` neither has anything to
-apply to.)
+all - no heading, no closing marker, no framing - and a test pins that adding the file changes
+*only* that block, leaving the rest of the prompt byte-for-byte identical. (All three policies
+do carry a standing sentence about where such a section would appear and what it may do, since
+that anchor has to hold whether or not a given repo opted in. With no `FOREMAN.md` it has
+nothing to apply to.)
 
 `FOREMAN.md` is capped at 16KB (a truncated file says so in the prompt), and it is resolved
 against the git toplevel, so a session sitting in a monorepo subdirectory still finds the one

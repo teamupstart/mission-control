@@ -146,7 +146,14 @@ function markerPattern(phrase: string): RegExp {
   // dresses the line but never the newlines around it - swallowing those would splice the
   // preceding and following lines together and quietly reflow the child's transcript.
   const space = "[^\\S\\n]*";
-  const dressing = `(?:${RULE_CHAR}|#)+`;
+  // What actually reads as a frame: a markdown heading marker, or a genuine horizontal RULE.
+  // The run length is the whole correction - `(?:RULE_CHAR|#)+` accepted a single character,
+  // so an ordinary markdown bullet ("- The operator's standing instructions are read once per
+  // evaluation."), a pair of emphasis underscores, or a hyphen joining two clauses all
+  // qualified, and the redaction ate the sentence around the phrase. Bullets are everywhere;
+  // that traded a rare false positive for a constant one. Nothing that draws a real frame is
+  // ever one character wide.
+  const dressing = `(?:#{1,6}|${RULE_CHAR}{3,})`;
   // Dressed on the left, on the right, or both - one side is enough to read as a frame.
   const left = `${space}${dressing}${space}`;
   const right = `${space}(?:${dressing}${space})?`;

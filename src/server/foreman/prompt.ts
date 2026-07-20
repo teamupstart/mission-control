@@ -370,7 +370,7 @@ export function formatTranscript(messages: TranscriptMessage[]): string {
       // The tool INPUT is the child's own serialized arguments, so it is as writable as its
       // prose and lands in the same unfenced prompt - `Bash({"command":"echo '## …'"})` puts
       // whatever it likes there. Guarded like everything else the child authors.
-      const calls = m.tools.map((t) => (t.input ? `${t.name}(${fromChild(t.input)})` : t.name));
+      const calls = m.tools.map((t) => (t.input ? `${t.name}(${t.input})` : t.name));
       const tools = calls.length ? ` (tools: ${calls.join(", ")})` : "";
       const capped = m.text.length > MSG_CAP ? `${m.text.slice(0, MSG_CAP)}…` : m.text;
       return `[${m.role}]${fromChild(tools)} ${fromChild(capped)}`.trim();

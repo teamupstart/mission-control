@@ -45,8 +45,3 @@ export function toResult(r: RunResult, fallback: string): TerminalResult {
   if (r.code === 0) return { ok: true, outcomeUnknown: false };
   return { ok: false, error: r.stderr.trim() || fallback, outcomeUnknown: r.outcomeUnknown };
 }
-
-/** The result of a command that never ran, e.g. one whose prerequisite step failed. */
-export function refuse(error: string): TerminalResult {
-  return { ok: false, error, outcomeUnknown: false };
-}

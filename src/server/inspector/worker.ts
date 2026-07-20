@@ -64,7 +64,6 @@ const POLL_MS = Number(envVar("INSPECTOR_POLL_MS") ?? 90_000);
 const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 180_000);
 /** A follow-up reply is a much smaller job than a review. */
 const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 90_000);
-const MODEL = envVar("INSPECTOR_MODEL");
 /** Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway. */
 const MAX_DIFF_BYTES = Number(envVar("INSPECTOR_MAX_DIFF_BYTES") ?? 400_000);
 /**
@@ -79,6 +78,19 @@ const MAX_REPLIES_PER_THREAD = 6;
  * is a bug somewhere, and this is what stops that bug being expensive and public.
  */
 const MAX_ROUNDS = 100;
+
+/**
+ * The model both the review and the follow-up replies run on. Config first, then
+ * `INSPECTOR_MODEL`, then whatever the CLI defaults to.
+ *
+ * Resolved on every call rather than captured once at import: the config is editable at
+ * runtime through `PUT /api/inspector/config`, and a value read at module load would
+ * need a daemon restart to take effect. Same read-at-use-time rule as `dispatcher.ts`
+ * asking `getHarnessesConfig()` at dispatch time rather than at construction.
+ */
+function reviewModel(cfg: InspectorConfig): string | undefined {
+  return cfg.model ?? envVar("INSPECTOR_MODEL");
+}
 
 /**
  * Backoff for a PR that keeps failing.
@@ -468,6 +480,7 @@ async function processPr(
     const diff = await fetchDiff(dir, pr.owner, pr.repo, pr.number, MAX_DIFF_BYTES);
     for (const w of waiting) {
       const replied = await answerFollowUp(
+        cfg,
         pr,
         dir,
         w,
@@ -507,6 +520,7 @@ async function processPr(
 }
 
 async function answerFollowUp(
+  cfg: InspectorConfig,
   pr: InspectorPr,
   dir: string,
   w: ReturnType<typeof threadsAwaitingUs>[number],
@@ -540,7 +554,7 @@ async function answerFollowUp(
   let text: string;
   try {
     text = await runClaudeText(prompt, {
-      model: MODEL,
+      model: reviewModel(cfg),
       timeoutMs: REPLY_TIMEOUT_MS,
       tools: REVIEW_TOOLS,
       cwd: dir,
@@ -644,7 +658,7 @@ async function reviewRound(
     (raw) => parseModelJson(raw, InspectorVerdictSchema),
     "The inspector",
     {
-      model: MODEL,
+      model: reviewModel(cfg),
       timeoutMs: TIMEOUT_MS,
       tools: REVIEW_TOOLS,
       cwd: dir,

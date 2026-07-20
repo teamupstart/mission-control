@@ -809,8 +809,14 @@ export const InspectorConfigSchema = z.object({
    * one gate that decides whether anything writes to a public PR into a no-op.
    */
   repoAllowlist: z.array(z.string().min(1)).default([]),
-  /** Overrides the review model. Undefined inherits the CLI default. */
-  model: z.string().optional(),
+  /**
+   * Overrides the review model, for both the review pass and the follow-up replies.
+   * Undefined falls back to `INSPECTOR_MODEL`, and then to the CLI's own default.
+   *
+   * `ModelIdSchema` rather than a bare string because this value becomes a `--model`
+   * argument: an id starting with `-` would be read as a flag rather than rejected.
+   */
+  model: ModelIdSchema.optional(),
   /**
    * Ceiling on inline comments per round. A reviewer that leaves thirty notes on one
    * push is one nobody reads, and the cap is what turns "be thorough" into "lead with

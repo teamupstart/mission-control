@@ -664,9 +664,10 @@ into a prompt, and this prompt's output is a public PR comment.</p>
 change - and it is exactly the "code to interfaces, don't copy the tricky bit" rule this feature
 exists to enforce.</p>
 
-<p>Missing <code>INSPECTOR.md</code> -&gt; a built-in default brief
-(<code>src/server/inspector/default-doc.ts</code>), and the settings panel says which one is in
-force.</p>
+<p>Missing <code>INSPECTOR.md</code> -&gt; a built-in default brief. <em>(Shipped as
+<code>DEFAULT_BRIEF</code> in <code>src/server/inspector/brief.ts</code>, beside the reader that falls
+back to it; there is no <code>default-doc.ts</code>. Which brief is in force is told to the model
+through <code>Brief.source</code>, and is not surfaced in the settings panel.)</em></p>
 
 <p>This repo gets a real <code>INSPECTOR.md</code> at its root: role, what to be picky about (code to
 interfaces, SOLID, error handling, naming, tests, concurrency, security), and - as important -
@@ -681,13 +682,20 @@ is worse than none.</p>
 
 <pre><code>inspector_prs      (key PK "owner/repo#n", url, owner, repo, number, repo_root, cwd,
                     session_id, source, state, head_sha, round, last_reviewed_at,
-                    last_error, adopted_at, updated_at)
+                    last_error, fail_count, last_fail_kind, next_attempt_at,
+                    last_attempt_sha, adopted_at, updated_at)
 
 inspector_comments (id PK uuid, pr_key, fingerprint, path, line, title, severity,
-                    comment_id, thread_id, round, status, replies, answered_comment_id,
+                    round, status, replies, answered_comment_id,
                     created_at, updated_at)
-                   UNIQUE(pr_key, fingerprint)   -- dedup, enforced by the DB
-                   INDEX(pr_key)</code></pre>
+                   UNIQUE(pr_key, fingerprint)   -- dedup, enforced by the DB</code></pre>
+
+<p><em>Four of the <code>inspector_prs</code> columns above - <code>fail_count</code>,
+<code>last_fail_kind</code>, <code>next_attempt_at</code>, <code>last_attempt_sha</code> - are the
+failure backoff, which the plan did not foresee; see §12. <code>inspector_comments</code> shipped
+WITHOUT the planned <code>comment_id</code> / <code>thread_id</code>, also §12. The standalone
+<code>INDEX(pr_key)</code> was dropped: it is the leftmost prefix of the unique index and so can serve
+no query that one cannot.</em></p>
 
 <p>A <code>dry-run</code> round writes <code>status='drafted'</code> rows and posts nothing. Switching
 to <code>live</code> must then treat <code>drafted</code> as <em>not yet posted</em> and post it,
@@ -753,7 +761,9 @@ pair follows <code>harnesses.ts</code> exactly; the config lives in <code>app_co
 
 <p><code>INSPECTOR_POLL_MS</code>, <code>INSPECTOR_MODEL</code>, <code>INSPECTOR_TIMEOUT_MS</code>,
 <code>INSPECTOR_MAX_DIFF_BYTES</code> through <code>envVar()</code>, so they join the existing
-<code>MISSION_</code>/<code>FLEET_</code>/<code>HARNESS_</code> fallback chain.</p>
+<code>MISSION_</code>/<code>FLEET_</code>/<code>HARNESS_</code> fallback chain. <em>(A fifth shipped:
+<code>INSPECTOR_REPLY_TIMEOUT_MS</code>, because a follow-up reply is a much smaller job than a
+whole-diff review and does not want the review's 180s window.)</em></p>
 
 <h2>8 · Tests</h2>
 
@@ -820,6 +830,47 @@ with what is at stake.</p>
   <li><strong>Resolving threads it did not open</strong>, ever - including its own author's. The ask
     is explicitly that it surfaces issues, not that it drives them to zero.</li>
 </ul>
+
+<h2>12 · What review changed, after the plan</h2>
+
+<p>Everything above is the design as written <em>before</em> the code. Five review rounds followed, and
+this section records where the shipped code diverges from the plan, because that delta is the part a
+future reader cannot reconstruct from either document alone. Sections 1-11 are left in their original
+tense on purpose: this is not a plan that foresaw all of it.</p>
+
+<p><strong>Ownership became author-plus-marker, not the marker alone.</strong> §4 treats the hidden
+marker as the proof that a comment is ours. It is not - anyone who can comment on a public PR can type
+the marker, and the plan's own quote-reply case is the mild version of that. <code>isOurs</code> now
+requires the comment's author to equal the authenticated <code>gh</code> login <em>and</em> the marker
+to parse at offset 0. The author check is what makes forging one of our comments require the
+operator's account rather than a keyboard. It also forces a fail-closed rule the plan had no place
+for: when the login cannot be confirmed the whole PR sits the tick out, because without it we cannot
+conclude our threads exist <em>or</em> that they don't, and the second error silently marks live
+threads resolved.</p>
+
+<p><strong><code>comment_id</code> / <code>thread_id</code> left the ledger.</strong> §7 stores
+GitHub's ids on each row. They were dropped, along with the <code>fetchReviewComments</code> call that
+fed them. GitHub is the record and the DB is the index (§4); caching ids in the index means two places
+that can disagree about a thread, and the reconciliation reads the live threads anyway.</p>
+
+<p><strong>A failure backoff ladder was added, which §5 has nothing about.</strong> Consecutive
+failures climb <code>POLL_MS * 2^(n-1)</code> to a six-hour ceiling. A diff too large to buffer skips
+the ladder and parks flat at the ceiling, since the same request returns the same bytes forever. A
+push is new evidence and normally cancels the wait, but that escape is capped <strong>by failure
+class</strong>, not by a single counter: a <code>push-fixable</code> failure always retries on a push,
+because a push is exactly what could fix it, while a <code>persistent</code> one stops honouring
+pushes after three so a permanently broken PR cannot be made to cost two model runs every poll by
+anyone pushing to it.</p>
+
+<div class="callout warn">
+<p><strong>The posting path is a state machine reconciled against GitHub, not post-then-record.</strong>
+About five distinct routes into "the same comment posted publicly twice" were found and closed - a
+crash between the API call and the row write, a <code>drafted</code> row re-posted on the switch to
+live, a partially-failed batch retried whole, among them. <code>inspector_comments.status</code>
+gained a <code>posting</code> state, entered before the call and reconciled on the next round against
+the threads actually live on the PR. Duplicate public comments are the failure this feature could not
+have, so the ordering is: claim it, post it, confirm it against GitHub.</p>
+</div>
 
 <footer>
   Source of truth: <code>docs/plans/inspector-agent/plan.md</code>. This page is a rendering of it.

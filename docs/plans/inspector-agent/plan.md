@@ -313,8 +313,10 @@ That reader is currently private to `standards.ts`. Extract `readRepoDoc` /
 call it. Pure extraction, no behaviour change - and it is exactly the "code to interfaces,
 don't copy the tricky bit" rule this feature exists to enforce.
 
-Missing `INSPECTOR.md` -> a built-in default brief (`src/server/inspector/default-doc.ts`), and
-the settings panel says which one is in force.
+Missing `INSPECTOR.md` -> a built-in default brief. *(Shipped as `DEFAULT_BRIEF` in
+`src/server/inspector/brief.ts`, beside the reader that falls back to it; there is no
+`default-doc.ts`. Which brief is in force is told to the model through `Brief.source`, and is
+not surfaced in the settings panel.)*
 
 This repo gets a real `INSPECTOR.md` at its root: role, what to be picky about (code to
 interfaces, SOLID, error handling, naming, tests, concurrency, security), and - as important -
@@ -332,14 +334,20 @@ worse than none.
 ```sql
 inspector_prs      (key PK "owner/repo#n", url, owner, repo, number, repo_root, cwd,
                     session_id, source, state, head_sha, round, last_reviewed_at,
-                    last_error, adopted_at, updated_at)
+                    last_error, fail_count, last_fail_kind, next_attempt_at,
+                    last_attempt_sha, adopted_at, updated_at)
 
 inspector_comments (id PK uuid, pr_key, fingerprint, path, line, title, severity,
-                    comment_id, thread_id, round, status, replies, answered_comment_id,
+                    round, status, replies, answered_comment_id,
                     created_at, updated_at)
                    UNIQUE(pr_key, fingerprint)   -- dedup, enforced by the DB
-                   INDEX(pr_key)
 ```
+
+*Four of the `inspector_prs` columns above - `fail_count`, `last_fail_kind`,
+`next_attempt_at`, `last_attempt_sha` - are the failure backoff, which the plan did not
+foresee; see §12. `inspector_comments` shipped WITHOUT the planned `comment_id` / `thread_id`,
+also §12. The standalone `INDEX(pr_key)` was dropped: it is the leftmost prefix of the unique
+index and so can serve no query that one cannot.*
 
 A `dry-run` round writes `status='drafted'` rows and posts nothing. Switching to `live` must
 then treat `drafted` as *not yet posted* and post it, updating the row in place - otherwise
@@ -389,6 +397,8 @@ on read so a new key needs no migration.
 
 `INSPECTOR_POLL_MS`, `INSPECTOR_MODEL`, `INSPECTOR_TIMEOUT_MS`, `INSPECTOR_MAX_DIFF_BYTES`
 through `envVar()`, so they join the existing `MISSION_`/`FLEET_`/`HARNESS_` fallback chain.
+*(A fifth shipped: `INSPECTOR_REPLY_TIMEOUT_MS`, because a follow-up reply is a much smaller
+job than a whole-diff review and does not want the review's 180s window.)*
 
 ---
 
@@ -450,3 +460,44 @@ through `envVar()`, so they join the existing `MISSION_`/`FLEET_`/`HARNESS_` fal
 - **Approving / requesting changes.** It comments. Blocking a merge is a different consent.
 - **Resolving threads it did not open**, ever - including its own author's. The ask is
   explicitly that it surfaces issues, not that it drives them to zero.
+
+---
+
+## 12. What review changed, after the plan
+
+Everything above is the design as written *before* the code. Five review rounds followed, and
+this section records where the shipped code diverges from the plan, because that delta is the
+part a future reader cannot reconstruct from either document alone. Sections 1-11 are left in
+their original tense on purpose: this is not a plan that foresaw all of it.
+
+**Ownership became author-plus-marker, not the marker alone.** §4 treats the hidden marker as
+the proof that a comment is ours. It is not - anyone who can comment on a public PR can type
+the marker, and the plan's own quote-reply case is the mild version of that. `isOurs` now
+requires the comment's author to equal the authenticated `gh` login *and* the marker to parse
+at offset 0. The author check is what makes forging one of our comments require the operator's
+account rather than a keyboard. It also forces a fail-closed rule the plan had no place for:
+when the login cannot be confirmed the whole PR sits the tick out, because without it we
+cannot conclude our threads exist *or* that they don't, and the second error silently marks
+live threads resolved.
+
+**`comment_id` / `thread_id` left the ledger.** §7 stores GitHub's ids on each row. They were
+dropped, along with the `fetchReviewComments` call that fed them. GitHub is the record and the
+DB is the index (§4); caching ids in the index means two places that can disagree about a
+thread, and the reconciliation reads the live threads anyway.
+
+**A failure backoff ladder was added, which §5 has nothing about.** Consecutive failures climb
+`POLL_MS * 2^(n-1)` to a six-hour ceiling. A diff too large to buffer skips the ladder and
+parks flat at the ceiling, since the same request returns the same bytes forever. A push is
+new evidence and normally cancels the wait, but that escape is capped **by failure class**,
+not by a single counter: a `push-fixable` failure always retries on a push, because a push is
+exactly what could fix it, while a `persistent` one stops honouring pushes after three so a
+permanently broken PR cannot be made to cost two model runs every poll by anyone pushing to
+it.
+
+**The posting path is a state machine reconciled against GitHub, not post-then-record.** About
+five distinct routes into "the same comment posted publicly twice" were found and closed - a
+crash between the API call and the row write, a `drafted` row re-posted on the switch to live,
+a partially-failed batch retried whole, among them. `inspector_comments.status` gained a
+`posting` state, entered before the call and reconciled on the next round against the threads
+actually live on the PR. Duplicate public comments are the failure this feature could not
+have, so the ordering is: claim it, post it, confirm it against GitHub.

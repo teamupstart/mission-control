@@ -12,7 +12,7 @@ export const BRIEF_FILENAME = "INSPECTOR.md";
 
 export interface Brief {
   text: string;
-  /** Where it came from, so the settings panel can say which is in force. */
+  /** Where it came from, so the prompt can tell the model the repo shipped no brief. */
   source: "repo" | "default";
   truncated: boolean;
 }

@@ -1278,11 +1278,28 @@ resolution - it surfaces issues and resolves what later pushes fix.
 
 Put one at the repo root. It tells the Inspector what the project cares about and, as
 importantly, what not to comment on - an automated reviewer that pattern-matches style
-nits is worse than none. This repo's own is [`INSPECTOR.md`](INSPECTOR.md). Repos without
-one get a built-in default brief, and the settings panel says which is in force.
+nits is worse than none. This repo's own is [`INSPECTOR.md`](INSPECTOR.md). A repo without
+one is reviewed against a built-in default brief instead - general engineering judgement,
+with the same insistence on a low noise floor - so the Inspector still works on a repo
+nobody has configured. It's read fresh each round, so editing it changes the next review.
 
 The repo's `CLAUDE.md` / `AGENTS.md` are loaded alongside it, so the Inspector judges a PR
 against the contract the repo actually asserts.
+
+### On the card
+
+A session whose pull request has been adopted grows a `⌕` chip beside its PR chip, and the
+mark next to the glyph is where the review stands: no mark at all means adopted but not
+looked at yet, `✓` means reviewed with nothing outstanding, a number is the count of open
+findings, and `!` means the last round didn't complete. It's a mark rather than a word
+because a word costs the card title the width it needs; the sentence is in the tooltip. In
+`dry-run` the chip is set apart - a dashed border, a dotted underline in the rail - and the
+tooltip says nothing was posted.
+
+Cards, board tiles and the console detail all carry it, and there it opens the pull
+request. The console rail carries the same mark without the link, and only when there is
+something to say - open findings or a failed round - because a rail line is scanned rather
+than read.
 
 ### Dry run
 
@@ -1461,8 +1478,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
-| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler) |
-| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler) pass it instead |
+| `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
+| `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
 | `MISSION_INSPECTOR_MODEL` | CLI default | Inspector: the review model. Unset inherits the `claude` CLI's own default (the most capable, and the priciest) |
 | `MISSION_INSPECTOR_TIMEOUT_MS` | `180000` | Inspector: hard cap on one review. Larger than the Foreman reviewer's 120s because this one has tool round-trips inside it |

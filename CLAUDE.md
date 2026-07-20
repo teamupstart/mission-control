@@ -182,10 +182,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.
-- **Shared predicates**: `foremanAllowlisted` (`@shared/foreman.ts`), `composeWrapup`
+- **Shared predicates**: `repoAllowlisted` (`@shared/allowlist.ts`, re-exported as
+  `foremanAllowlisted` from `@shared/foreman.ts` for Foreman's own callers), `composeWrapup`
   (`@shared/queue.ts`), `costTone` / `costIsNotable` (`@shared/cost.ts`), and the backlog
   autopilot's `readyBacklog` / `blockersIn` / `nextUpTaskId` (`@shared/backlog.ts`) are shared
-  so every surface, and the server, decides identically. Do not copy them into a component.
+  so every surface, and the server, decides identically. Do not copy them into a component. A
+  third consent gate extends `allowlist.ts`; it does not start a matcher.
 - **`~/.claude/settings.json` writers**: `hooks/install.mjs`, `src/main/integrations.ts`, and
   the daemon (via `src/server/cost.ts`). The telemetry `env` block has ONE definition in
   `@shared/claude-settings.ts` - three copies of six keys is how half a block gets left

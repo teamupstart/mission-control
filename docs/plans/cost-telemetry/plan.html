@@ -101,6 +101,20 @@
   </p>
 </header>
 
+<div class="callout good">
+<p><strong>Built as written</strong>, with the three questions this plan left open resolved in the code:</p>
+<ul>
+  <li><strong>Two install prompts, not one.</strong> <code>npm run install-telemetry</code> (the <code>env</code> block) is separate from <code>npm run install-statusline</code> (the wrapper) - two different asks of the user's config, and someone may well want the spend figures without us near their status line. In the app the Cost settings toggle owns the env block; <code>removeIntegrations</code> still tears it down unconditionally.</li>
+  <li><strong>Export interval: 15s</strong>, settable 5s-60s in Settings &rarr; Cost.</li>
+  <li><strong>Rail treatment: glyph-when-notable.</strong> <code>RailRow</code> pushes a <code>$</code> mark once <code>costIsNotable</code> (<code>@shared/cost.ts</code>) says so; the other three surfaces carry the figure via <code>CostChip</code>.</li>
+</ul>
+<p>And two things this plan did not anticipate, both found while building - read the schema and open-questions sections below through them:</p>
+<ul>
+  <li><strong><code>window_end_ns</code> also covers the cumulative case.</strong> Claude Code exports delta today, but a cumulative series is keyed on its fixed <code>startTimeUnixNano</code> so each export replaces one row rather than accumulating - <code>SUM</code> at read time stays correct either way.</li>
+  <li><strong><code>model_id</code> / <code>query_source</code> are <code>NOT NULL DEFAULT ''</code></strong>, not the nullable columns sketched below. SQLite treats NULLs as distinct inside a <code>UNIQUE</code> index, so <code>ON CONFLICT</code> would never have fired for a datapoint carrying no <code>model</code>, and every retry would have inserted a new row.</li>
+</ul>
+</div>
+
 <div class="callout">
 <p><strong>Revision note.</strong> Two earlier drafts of this plan parsed transcript JSONL and priced the tokens ourselves. Research and measurement showed that to be the weakest of five available sources, and the arithmetic far more error-prone than expected. The findings are kept below rather than edited out - each is a trap the implementation still has to avoid, and the cheapest way to be wrong here is to rediscover them.</p>
 </div>
@@ -359,6 +373,8 @@ CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);</code></pre>
 <p>Steps 1-4 deliver a live per-session cost with no pricing table and no statusline change. Step 5 adds the subscription view.</p>
 
 <h2>Open questions</h2>
+
+<p>Kept as they were asked. The first three were answered while building - the answers are in the callout at the top of this page. The last two stand: Codex is out of scope, cost-per-PR is deferred.</p>
 
 <p><strong>Two config edits, not one.</strong> OTel needs an <code>env</code> block; rate limits need the statusline wrapper. Both touch the user's <code>settings.json</code>. Worth deciding whether install is one prompt or two, and whether rate limits are opt-in separately given they are the more invasive.</p>
 

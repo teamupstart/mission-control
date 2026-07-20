@@ -362,6 +362,9 @@ Step 5 adds the subscription view.
 
 ## Open questions
 
+Kept as they were asked. The first three were answered while building - the answers are at
+the top of this file. The last two stand: Codex is out of scope, cost-per-PR is deferred.
+
 **Two config edits, not one.** OTel needs an `env` block; rate limits need the statusline
 wrapper. Both touch the user's `settings.json`. Worth deciding whether install is one
 prompt or two, and whether rate limits are opt-in separately given they are the more

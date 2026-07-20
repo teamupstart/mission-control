@@ -236,6 +236,27 @@ binds it to the right card via the terminal pane env (`TMUX_PANE` /
 
 </details>
 
+### Status line (optional)
+
+Claude Code runs your `statusLine` command on every render and pipes it a payload the
+hooks never carry: the live model, thinking level, context window, and your
+subscription's rate-limit windows. Wrapping that command lets the daemon read it too:
+
+```sh
+npm run install-statusline             # installs the hooks above, and wraps the status line
+npm run install-hooks -- --uninstall   # unwraps it again (restoring your own command)
+```
+
+The wrapper delegates to whatever status line you already had - recorded in
+`~/.mission-control/statusline-inner`, or `ccstatusline` if you had none - and prints only
+that command's output, so your terminal looks exactly as it did. It is never installed for
+you: a plain `npm run install-hooks`, and the packaged app's integrations, leave
+`statusLine` untouched.
+
+It makes the model / thinking / context figures on the cards exact (without it they come
+from a passive transcript read), and it is the only source of the
+[cost telemetry](#cost-telemetry) plan meters.
+
 ### Session status colors
 
 Each card's status badge and its left edge stripe encode the session's state:
@@ -354,7 +375,9 @@ You run a fleet; this tells you what it costs. Off by default - switch it on in
 
 ```sh
 npm run install-telemetry     # adds an env block to ~/.claude/settings.json
-npm run install-hooks -- --uninstall   # removes it again
+npm run install-hooks -- --uninstall   # removes that block - and the hooks, and the
+                                       # status line wrapper. To switch off only the
+                                       # cost telemetry, use Settings → Cost.
 ```
 
 Once on, every card carries a **spend badge** beside its model / thinking / context row,
@@ -367,7 +390,7 @@ Two sources, each used for the one thing only it can do:
 | **OpenTelemetry** | `claude_code.cost.usage` (USD) and `claude_code.token.usage` by tier, per session, model, and `query_source` (so subagent spend is separated natively) |
 | **statusLine payload** | your subscription's `five_hour` / `seven_day` rate-limit windows - the only local source of real limits, since OTel has no quota metric |
 
-The plan meters need the [opt-in statusLine wrapper](#precise-status-claude-hooks)
+The plan meters need the [opt-in statusLine wrapper](#status-line-optional)
 (`npm run install-statusline`); the spend figures don't. They are two separate opt-ins
 because they are two different asks of your config - one adds an `env` block, the other
 rewrites the command that draws your terminal line. Only `--telemetry` adds the block and

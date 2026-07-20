@@ -549,7 +549,17 @@ export class Registry extends EventEmitter {
     // agentSessionId, so their key (which prefers agentSessionId) is stable.
     base.note = this.noteSummaryFor(base);
     base.goal = this.goalSummaryFor(base);
-    base.cost = sessionCostFor(noteKeyFor(base));
+    // Read the ledger on FIRST SIGHT and on a key rotation, and carry the figure the rest
+    // of the time. First sight is the case that matters: the ledger outlives the daemon,
+    // so a session rebuilt after a restart has spend recorded by a previous process and
+    // must not read as unpriced until some later hook happens to fire. After that nothing
+    // reaches the figure except the ingest, which re-denormalizes through
+    // `syncSessionsForCost` itself - and this is an aggregate over every ledger row for
+    // the key, on the ~1.5s sweep, on the synchronous handle that also serves hook ingest
+    // and SSE. That is the cost `FLEET_COST_IDLE_INTERVAL_MS` throttles its own two SUMs
+    // to 30s to avoid.
+    base.cost =
+      prev && noteKeyFor(prev) === noteKeyFor(base) ? prev.cost : sessionCostFor(noteKeyFor(base));
     base.queue = this.queueSummaryFor(base);
     // The orphan hint is NOT resolved here, unlike the note and queue above: it is a
     // statement about every session ("no live session holds that key"), and this
@@ -2612,11 +2622,12 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // context% doesn't re-render the meter. See `metaDisplayEqual`.
   meta: metaDisplayEqual,
   // A nested object the chip renders as a unit, so structural. Not `alwaysEqual` despite
-  // being written only by the ingest: `syncSessionsForCost` emits directly for the key it
-  // touched, but `mergeDiscovered` also re-resolves this every sweep, and a session that
-  // binds its agent session id LATE picks up a whole backlog of spend through that path
-  // with no other field moving. Left out, the badge would appear only on the next
-  // unrelated change.
+  // being written only by the ingest: a session that binds its agent session id LATE
+  // rotates its note key, and `mergeDiscovered` / `applyHook` / `applyStatusLine` each
+  // re-resolve the figure on that rotation - picking up a whole backlog of spend with no
+  // other field moving. Left out, the badge would appear only on the next unrelated
+  // change. (`syncSessionsForCost` emits directly for the key it touched, so the ingest
+  // itself does not depend on this.)
   cost: byJson,
   note: byJson,
   goal: byJson,

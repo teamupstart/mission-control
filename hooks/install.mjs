@@ -37,7 +37,7 @@ import { claudeSkillsDir, uninstallSkillLinks } from "../src/server/skills/recon
 // One definition of the OTel env block, shared with the packaged app's installer and the
 // dashboard's Cost panel - three writers of the same six keys is exactly how half a block
 // gets left behind that nothing owns. See src/shared/claude-settings.ts.
-import { writeOtelEnv } from "../src/shared/claude-settings.ts";
+import { otelEnvInstalled, writeOtelEnv } from "../src/shared/claude-settings.ts";
 import { BASE_URL, ensureToken } from "../src/shared/harness-runtime.mjs";
 
 const MARKER = "harness-hook.mjs";
@@ -330,12 +330,16 @@ if (uninstall) {
   if (statuslineAction === "wrapped" || statuslineAction === "updated") {
     console.log(`  status line wrapped to report model / thinking level / context %`);
     console.log(`    (delegates to your existing status line; recorded at ${statuslineInnerPath})`);
-  } else if (!doStatusline) {
+  } else if (!doStatusline && !slIsOurs) {
     console.log(`\nOptional: also surface model / thinking level / context % on the cards:`);
     console.log(`  npm run install-statusline   (wraps your status line; reversible via --uninstall)`);
   }
   reportTelemetry();
-  if (!doTelemetry && telemetryAction === "unchanged") {
+  // Both hints above and below ask "is it actually off?", not "did this run change it?".
+  // Neither opt-in is touched by a plain install any more, so the action stays "unchanged"
+  // whether or not the thing is already on - and offering someone who switched telemetry
+  // on in Settings -> Cost a command to switch it on is worse than saying nothing.
+  if (!doTelemetry && !otelEnvInstalled()) {
     console.log(`\nOptional: track what the fleet costs (Claude Code's own figures, over OpenTelemetry):`);
     console.log(`  npm run install-telemetry    (adds an env block; reversible via --uninstall)`);
   }

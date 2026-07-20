@@ -27,15 +27,16 @@ const RUN = ["--import", "tsx", INSTALLER];
 const skillsDirFor = (settingsPath: string): string => join(settingsPath, "..", "claude-skills");
 
 /** Run the installer with an isolated state dir (for the status line sidecar). */
-function runInstallerHome(settingsPath: string, homeDir: string, args: string[] = []): void {
-  execFileSync(process.execPath, [...RUN, ...args], {
+function runInstallerHome(settingsPath: string, homeDir: string, args: string[] = []): string {
+  return execFileSync(process.execPath, [...RUN, ...args], {
     env: {
       ...process.env,
       CLAUDE_SETTINGS_PATH: settingsPath,
       CLAUDE_SKILLS_DIR: skillsDirFor(settingsPath),
       MISSION_HOME: homeDir,
     },
-    stdio: "ignore",
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
   });
 }
 
@@ -235,6 +236,32 @@ test("a later install without --telemetry leaves an existing block completely un
     assert.deepEqual(otelEnv(path), block, "the block survives verbatim");
     const after = parse(readFileSync(path, "utf8")) as any;
     assert.ok(after.statusLine.command.includes(STATUSLINE_MARKER), "and the runs it rode in on still did their job");
+  });
+});
+
+test("the opt-in hints are offered only for the opt-ins that are actually off", () => {
+  // A plain install no longer touches either opt-in, so "did this run change it?" is now
+  // always no and says nothing about whether the thing is on. Hinting off that tells
+  // someone who switched telemetry on in Settings -> Cost to go and switch on what they
+  // already have, which reads as the feature not having worked.
+  withTempSettingsHome(SETTINGS_WITH_STATUSLINE, (path, home) => {
+    const fresh = runInstallerHome(path, home, []);
+    assert.match(fresh, /npm run install-telemetry/, "offered while telemetry is off");
+    assert.match(fresh, /npm run install-statusline/, "offered while the wrapper is off");
+
+    runInstallerHome(path, home, ["--telemetry"]);
+    runInstallerHome(path, home, ["--statusline"]);
+    // Drop the hooks so the next plain install has real work to do and reaches the report
+    // rather than the "already up to date" exit - which is what happens for real when an
+    // install runs out of a different checkout and the hook script path has moved.
+    const settings = parse(readFileSync(path, "utf8")) as any;
+    delete settings.hooks;
+    writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
+
+    const after = runInstallerHome(path, home, []);
+    assert.match(after, /Wired Mission Control hooks/, "this run really did reinstall the hooks");
+    assert.doesNotMatch(after, /npm run install-telemetry/, "not offered once the env block is there");
+    assert.doesNotMatch(after, /npm run install-statusline/, "not offered once the wrapper is there");
   });
 });
 

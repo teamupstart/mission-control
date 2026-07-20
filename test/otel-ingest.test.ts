@@ -296,3 +296,56 @@ test("metrics we do not price are ignored", () => {
   registry.applyOtelMetrics(body);
   assert.equal(ledgerRows("sess-ignored").length, 0);
 });
+
+test("a session discovered after a restart still carries spend a previous process recorded", () => {
+  // The ledger outlives the daemon, and the sweep no longer re-reads it for every session
+  // on every tick - so first sight is the one chance a rebuilt card has to be priced. Get
+  // this wrong and it reads as unpriced until some later hook happens to fire, which looks
+  // exactly like a fleet nobody enabled telemetry on.
+  const before = new Registry();
+  before.applyOtelMetrics(exportBody({ sessionId: "sess-restart", costUsd: 2.5 }));
+
+  const restarted = new Registry();
+  restarted.applyDiscovery([
+    {
+      syntheticId: "sess-restart",
+      agent: "claude",
+      name: "work",
+      nameSource: "process",
+      cwd: "/repo",
+      gitBranch: "feature",
+      nomistakesGated: false,
+      pid: 1,
+      tty: "ttys1",
+      wezterm: null,
+      tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+      startedAt: 0,
+    } as never,
+  ]);
+  assert.equal(restarted.getSession("sess-restart")?.cost?.costUsd, 2.5);
+});
+
+test("an ingest reaches a card that was already on screen", () => {
+  // The other half of the same contract: once a session is known, `syncSessionsForCost` is
+  // what moves the figure, since the sweep now carries the last one forward untouched.
+  const registry = new Registry();
+  registry.applyDiscovery([
+    {
+      syntheticId: "sess-live",
+      agent: "claude",
+      name: "work",
+      nameSource: "process",
+      cwd: "/repo",
+      gitBranch: "feature",
+      nomistakesGated: false,
+      pid: 2,
+      tty: "ttys2",
+      wezterm: null,
+      tmux: { session: "s", window: "w", windowIndex: 1, paneId: "%2" },
+      startedAt: 0,
+    } as never,
+  ]);
+  assert.equal(registry.getSession("sess-live")?.cost, null, "not told is not the same as cost nothing");
+  registry.applyOtelMetrics(exportBody({ sessionId: "sess-live", costUsd: 0.75 }));
+  assert.equal(registry.getSession("sess-live")?.cost?.costUsd, 0.75);
+});

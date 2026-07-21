@@ -1,5 +1,7 @@
 import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ModelSource, ResolvedModel } from "./model-choice.ts";
+import { providerModelDefault } from "./model.ts";
+import type { LlmRunnerId } from "./llm.ts";
 
 // Which model each of Foreman's four `claude -p` calls runs as.
 //
@@ -93,17 +95,27 @@ export function resolveForemanModel(
   role: ForemanModelRole,
   cfg: ForemanModelConfig | null | undefined,
   env: Record<string, string | undefined> = {},
+  runner: LlmRunnerId = "claude",
 ): ResolvedForemanModel {
   const spec = FOREMAN_MODEL_SPECS[role];
-  return { role, ...resolveModelChoice(spec, cfg?.[spec.configKey], env[spec.envVar]) };
+  const tier = role === "review" || role === "verify" ? "deep" : role === "backlog" ? "balanced" : "cheap";
+  return {
+    role,
+    ...resolveModelChoice(
+      { ...spec, fallback: providerModelDefault(runner, tier) },
+      cfg?.[spec.configKey],
+      env[spec.envVar],
+    ),
+  };
 }
 
 /** Every role at once - what the daemon reports and the panel renders. */
 export function resolveForemanModels(
   cfg: ForemanModelConfig | null | undefined,
   env: Record<string, string | undefined> = {},
+  runner: LlmRunnerId = "claude",
 ): Record<ForemanModelRole, ResolvedForemanModel> {
   return Object.fromEntries(
-    FOREMAN_MODEL_ROLES.map((role) => [role, resolveForemanModel(role, cfg, env)]),
+    FOREMAN_MODEL_ROLES.map((role) => [role, resolveForemanModel(role, cfg, env, runner)]),
   ) as Record<ForemanModelRole, ResolvedForemanModel>;
 }

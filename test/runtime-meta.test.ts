@@ -130,3 +130,13 @@ test("meta only emits when a displayed value actually changes", () => {
   r.applyStatusLine(statusIngest()); // identical -> no emit
   assert.equal(upserts, 1);
 });
+
+test("passive Codex quota is source-scoped in the fleet snapshot", () => {
+  const r = seeded();
+  r.applyPassiveRateLimits({
+    source: "codex", updatedAt: Date.now(),
+    windows: [{ id: "primary", label: "1-week", durationMinutes: 10080, usedPercentage: 9, resetsAt: Date.now() / 1000 + 86400 }],
+  });
+  assert.deepEqual(r.snapshot().fleetCost?.rateLimitSources?.map((s) => s.source), ["codex"]);
+  assert.equal(r.snapshot().fleetCost?.rateLimitSources?.[0]?.windows[0]?.usedPercentage, 9);
+});

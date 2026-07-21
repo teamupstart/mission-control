@@ -142,7 +142,7 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     },
     // Resolved here, from the daemon's own env, because the browser has no `process`
     // and so cannot see the env layer at all - see `ForemanStatus.models`.
-    models: resolveForemanModels(cfg, process.env),
+    models: resolveForemanModels(cfg, process.env, cfg.runner ?? "claude"),
   };
 }
 

@@ -40,6 +40,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
   // An env var outranks anything typed here, so the picker must not pretend otherwise -
   // a control that silently loses to the environment is worse than a disabled one.
   const runnerPinned = status?.runner.source === "env";
+  const modelRunner = active ?? "claude";
 
   return (
     <section className="settings-section">
@@ -88,7 +89,12 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
                 name="llm-runner"
                 checked={active === r.id}
                 disabled={!config || runnerPinned}
-                onChange={() => void update({ runner: r.id })}
+                onChange={() =>
+                  void update({
+                    runner: r.id,
+                    models: Object.fromEntries(LLM_JOB_IDS.map((job) => [job, ""])),
+                  })
+                }
               />
               <span>{r.label}</span>
             </label>
@@ -100,7 +106,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
           // provider, and a control that appears only once there is a choice leaves nobody
           // able to see what the app is running as today.
           <p className="settings-hint">
-            Only one provider ships today. Every offline call below goes through it.
+            Only one provider is available. Every offline call below goes through it.
           </p>
         )}
       </fieldset>
@@ -112,7 +118,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
           can't be reached, you get a rougher title or a terser digest, never an error. Leave a
           field empty to accept the value shown in it.
         </p>
-        <ModelSuggestions />
+        <ModelSuggestions runner={modelRunner} />
         {LLM_JOB_IDS.map((job) => (
           <ModelField
             key={job}
@@ -120,6 +126,7 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
             spec={LLM_JOB_SPECS[job]}
             value={config?.models[job] ?? ""}
             resolved={status?.models[job]}
+            runner={modelRunner}
             disabled={!config}
             onCommit={(next) =>
               // Empty is STORED as empty, the same rule Foreman's and the Inspector's fields

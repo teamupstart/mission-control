@@ -537,7 +537,7 @@ export function triagePosture(triage: unknown): TriagePosture {
 
 /** The triage model from config, then env, then the Haiku default. */
 export function triageModel(cfg: ForemanConfig): string {
-  return resolveForemanModel("triage", cfg, process.env).id;
+  return resolveForemanModel("triage", cfg, process.env, cfg.runner ?? "claude").id;
 }
 
 /**

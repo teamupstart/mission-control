@@ -72,6 +72,9 @@ export interface TranscriptPassiveRead {
    * that answered "nothing yet" forever.
    */
   activity: SessionActivityRead | null;
+  /** Cumulative, harness-native token counters; deliberately not written to the daily ledger. */
+  usage?: import("@shared/types.ts").SessionCost | null;
+  rateLimits?: import("@shared/types.ts").RateLimitSource | null;
 }
 
 export interface TranscriptWindow {

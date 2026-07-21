@@ -599,6 +599,8 @@ export type SetGoal = z.infer<typeof SetGoalSchema>;
  * following the FOREMAN_REVIEW_TIMEOUT_MS precedent.
  */
 export const ForemanConfigSchema = z.object({
+  /** Provider used for every Foreman model call. */
+  runner: z.enum(LLM_RUNNER_IDS).optional(),
   enabled: z.boolean().default(false),
   mode: z.enum(["dry-run", "live", "semi-auto"]).default("dry-run"),
   /**
@@ -884,6 +886,8 @@ export type SkillsConfigPatch = z.infer<typeof SkillsConfigPatchSchema>;
  * three deliberate acts, and the first two are reversible without anyone else seeing.
  */
 export const InspectorConfigSchema = z.object({
+  /** Provider used for reviews and follow-up replies. */
+  runner: z.enum(LLM_RUNNER_IDS).optional(),
   enabled: z.boolean().default(false),
   /**
    * `dry-run` still adopts PRs, reviews them, and records what it WOULD say - which is

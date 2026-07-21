@@ -1,6 +1,7 @@
 import { DEFAULT_LLM_RUNNER_ID, LLM_RUNNER_IDS } from "@shared/llm.ts";
 import type { LlmRunner, LlmRunnerId } from "@shared/llm.ts";
 import { claudeRunner } from "./claude.ts";
+import { codexRunner } from "./codex.ts";
 
 // The registry of offline model providers. Extend this; do not start a parallel list.
 //
@@ -16,6 +17,7 @@ import { claudeRunner } from "./claude.ts";
 
 export const LLM_RUNNERS: Record<LlmRunnerId, LlmRunner> = {
   claude: claudeRunner,
+  codex: codexRunner,
 };
 
 /**

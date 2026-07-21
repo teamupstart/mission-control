@@ -1,5 +1,7 @@
 import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
+import { providerModelDefault } from "./model.ts";
+import type { LlmRunnerId } from "./llm.ts";
 
 // The daemon's own background model calls - which model each of them runs as.
 //
@@ -103,8 +105,16 @@ export function resolveLlmJobModel(
   job: LlmJobId,
   models: LlmJobModelConfig | null | undefined,
   envValue: string | null | undefined,
+  runner: LlmRunnerId = "claude",
 ): ResolvedLlmJobModel {
-  return { job, ...resolveModelChoice(LLM_JOB_SPECS[job], models?.[job], envValue) };
+  return {
+    job,
+    ...resolveModelChoice(
+      { ...LLM_JOB_SPECS[job], fallback: providerModelDefault(runner, "cheap") },
+      models?.[job],
+      envValue,
+    ),
+  };
 }
 
 /**
@@ -117,8 +127,9 @@ export function resolveLlmJobModel(
 export function resolveLlmJobModels(
   models: LlmJobModelConfig | null | undefined,
   envValues: Partial<Record<LlmJobId, string | undefined>>,
+  runner: LlmRunnerId = "claude",
 ): Record<LlmJobId, ResolvedLlmJobModel> {
   return Object.fromEntries(
-    LLM_JOB_IDS.map((job) => [job, resolveLlmJobModel(job, models, envValues[job])]),
+    LLM_JOB_IDS.map((job) => [job, resolveLlmJobModel(job, models, envValues[job], runner)]),
   ) as Record<LlmJobId, ResolvedLlmJobModel>;
 }

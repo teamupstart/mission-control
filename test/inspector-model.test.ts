@@ -69,6 +69,15 @@ test("a cleared box falls back rather than spawning with no model id", () => {
   }
 });
 
+test("Codex is a valid Inspector provider with a Codex default model", () => {
+  const cfg = InspectorConfigSchema.parse({ runner: "codex", model: "" });
+  assert.equal(cfg.runner, "codex");
+  assert.deepEqual(resolveInspectorModel(cfg, undefined, "codex"), {
+    id: "gpt-5.6-sol",
+    source: "default",
+  });
+});
+
 test("the env var the panel PRINTS is one the daemon would actually read", () => {
   // The panel shows a name to export; the daemon looks the value up through `envVar()`,
   // which sweeps the `MISSION_` / `FLEET_` / `HARNESS_` prefixes over a suffix. Two

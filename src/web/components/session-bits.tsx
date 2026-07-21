@@ -581,9 +581,19 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
  * would assert the one of those two that is false.
  */
 export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Element | null {
-  if (!cost || cost.costUsd <= 0) return null;
-  const tone = costTone(cost.costUsd);
+  if (!cost) return null;
   const tokensIn = cost.input + cost.cacheRead + cost.cacheWrite;
+  if (cost.costUsd === null) {
+    const total = tokensIn + cost.output;
+    if (total <= 0) return null;
+    return (
+      <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Pricing unavailable.`}>
+        <span className="rt-pill cost-chip">{compactTokens(total)} tok</span>
+      </Tooltip>
+    );
+  }
+  if (cost.costUsd <= 0) return null;
+  const tone = costTone(cost.costUsd);
   return (
     <Tooltip
       label={

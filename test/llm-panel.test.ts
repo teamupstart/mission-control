@@ -38,7 +38,10 @@ function status(over: Partial<LlmStatus> = {}): LlmStatus {
         { job, id: LLM_JOB_SPECS[job].fallback, source: "default" as const },
       ]),
     ) as LlmStatus["models"],
-    runners: [{ id: "claude", label: "Claude Code" }],
+    runners: [
+      { id: "claude", label: "Claude Code" },
+      { id: "codex", label: "Codex" },
+    ],
     ...over,
   };
 }
@@ -85,7 +88,7 @@ test("an empty box advertises the model the daemon RESOLVED, not the shipped fal
       },
     }),
   });
-  assert.match(html, /placeholder="claude-opus-4-8"/);
+  assert.match(html, />Default - claude-opus-4-8<\/option>/);
   assert.ok(
     html.includes(LLM_JOB_SPECS.goal.envVar),
     "an env-sourced value must name the variable doing the overriding",
@@ -114,9 +117,10 @@ test("the provider picker offers what the DAEMON says it has, with the live one 
   const radios = (html.match(/<input[^>]*type="radio"[^>]*>/g) ?? []).filter((i) =>
     i.includes('name="llm-runner"'),
   );
-  assert.equal(radios.length, 1, "one row per provider the build has");
+  assert.equal(radios.length, 2, "one row per provider the build has");
   assert.ok(radios[0]!.includes("checked"), "the resolved provider is the checked one");
   assert.ok(html.includes("Claude Code"));
+  assert.ok(html.includes("Codex"));
 });
 
 test("a provider pinned by the environment is shown pinned, not silently overridden", () => {
@@ -139,9 +143,9 @@ test("with no answer from the daemon, the panel says so rather than showing defa
   const html = render({ config: null, status: null });
   assert.match(html, /what these calls actually run as is unknown/);
   // ...and nothing is editable, because a disabled input is not a claim about what is running.
-  const inputs = html.match(/<input[^>]*>/g) ?? [];
-  assert.ok(inputs.length > 0);
-  assert.ok(inputs.every((i) => i.includes("disabled")));
+  const controls = html.match(/<(?:input|select)[^>]*>/g) ?? [];
+  assert.ok(controls.length > 0);
+  assert.ok(controls.every((control) => control.includes("disabled")));
 });
 
 test("the panel says where the models it does NOT edit live", () => {

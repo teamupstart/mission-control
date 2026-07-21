@@ -55,6 +55,14 @@ test("an emptied box falls through the ladder instead of spawning with no model 
   assert.equal(viaEnv.source, "default");
 });
 
+test("Codex resolves provider-compatible defaults for every Foreman role", () => {
+  const all = resolveForemanModels({}, {}, "codex");
+  assert.equal(all.review.id, "gpt-5.6-sol");
+  assert.equal(all.verify.id, "gpt-5.6-sol");
+  assert.equal(all.triage.id, "gpt-5.6-luna");
+  assert.equal(all.backlog.id, "gpt-5.6-terra");
+});
+
 test("a typed id is trimmed, so a stray space can't become a different model", () => {
   const r = resolveForemanModel("backlog", { backlogModel: "  claude-sonnet-5  " }, {});
   assert.deepEqual(r, { role: "backlog", id: "claude-sonnet-5", source: "config" });

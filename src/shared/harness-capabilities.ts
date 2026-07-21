@@ -80,7 +80,7 @@ export interface SkillsSpec {
    * really did unload) while the label still read "(no changes)". The unload is real; the
    * message is not trustworthy. Treat delivery as fire-and-forget.
    */
-  reloadCommand: string;
+  reloadCommand: string | null;
   /**
    * Env var naming the skills directory outright, overriding both paths below. A test (or
    * an operator) that wants a specific directory names it and gets it.
@@ -146,7 +146,9 @@ export interface McpSpec {
   /** The CLI that owns the registration, resolved on PATH. */
   cli: string;
   /** Where the registration is written (`claude mcp add -s <scope>`). */
-  scope: string;
+  scope: string | null;
+  /** Flag used for each environment assignment by this CLI. */
+  envFlag: "-e" | "--env";
   /** The name we register under - also the name an uninstall removes. */
   serverName: string;
 }
@@ -168,7 +170,7 @@ export interface HarnessCapabilities {
  * declares skills; when a second does, that function becomes a loop over
  * `skillsAgents()` and its callers take a list.
  */
-export const CLAUDE_SKILLS: SkillsSpec = {
+export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
   dirEnvVar: "CLAUDE_SKILLS_DIR",
   homeDir: [".claude", "skills"],
@@ -191,7 +193,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         "This session has no hooks reporting, so Foreman can't tell when it picks work up or finishes it. Install the Claude integrations to queue work here.",
     },
     clearContext: { command: "/clear" },
-    mcp: { cli: "claude", scope: "user", serverName: "mission-control" },
+    mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control" },
   },
   codex: {
     id: "codex",
@@ -199,16 +201,21 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // walk. `annotatePaneState` therefore has nothing to capture for it either.
     permissionModes: null,
     // No `/reload-skills` and no skills directory of its own.
-    skills: null,
+    skills: {
+      reloadCommand: null,
+      dirEnvVar: "CODEX_SKILLS_DIR",
+      homeDir: [".agents", "skills"],
+      isolatedDirName: "codex-skills",
+    },
     // No hooks and no readable turns - see `GOAL_UNSUPPORTED`, which is the same fact
     // stated for the card.
     workQueue: null,
     // Its slash vocabulary is its own; `/clear` here would be typed as a prompt.
-    clearContext: null,
+    clearContext: { command: "/clear" },
     // Codex ships an MCP client, but registering with it is a different CLI and a
     // different config file, and nothing has been verified against one. Declared absent
     // rather than guessed at: the installer says what it did not do.
-    mcp: null,
+    mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
   },
 };
 
@@ -219,6 +226,8 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
  * (`harnessFor`) reads the same slots off that object; the two are the same values,
  * because `HARNESSES` is built by spreading this record.
  */
+export function capabilitiesFor(agent: "claude"): HarnessCapabilities & { skills: typeof CLAUDE_SKILLS };
+export function capabilitiesFor(agent: AgentType): HarnessCapabilities;
 export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
   return HARNESS_CAPABILITIES[agent];
 }
@@ -238,8 +247,10 @@ export function workQueueUnsupportedWhy(agent: AgentType): string | null {
 }
 
 /** The agents whose harness can load skills - who a skills surface is actually about. */
-export function skillsAgents(): AgentType[] {
-  return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].skills !== null);
+export function skillsAgents(): "claude"[] {
+  // This list is specifically the pane-reload broadcast. Codex has skills but relies on
+  // automatic filesystem watching, so it deliberately has no live reload target.
+  return AGENT_TYPES.filter((a): a is "claude" => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
 }
 
 /**

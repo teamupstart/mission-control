@@ -66,7 +66,7 @@ export function llmRunnerChoice(cfg: LlmConfig = getLlmConfig()): ResolvedLlmRun
 
 /** What one background job will spawn with, and why. Per call, for the reason above. */
 export function llmJobModel(job: LlmJobId, cfg: LlmConfig = getLlmConfig()): ResolvedLlmJobModel {
-  return resolveLlmJobModel(job, cfg.models, envVar(LLM_JOB_SPECS[job].envKey));
+  return resolveLlmJobModel(job, cfg.models, envVar(LLM_JOB_SPECS[job].envKey), llmRunnerChoice(cfg).id);
 }
 
 /** Every job at once, plus the runner and the providers this build has - the panel's read. */
@@ -76,7 +76,7 @@ export function llmStatus(cfg: LlmConfig = getLlmConfig()): LlmStatus {
   ) as Partial<Record<LlmJobId, string | undefined>>;
   return {
     runner: llmRunnerChoice(cfg),
-    models: resolveLlmJobModels(cfg.models, envValues),
+    models: resolveLlmJobModels(cfg.models, envValues, llmRunnerChoice(cfg).id),
     // Ids AND labels, because a label lives on the implementation and the browser cannot
     // import one - see `LlmStatus.runners`.
     runners: allLlmRunners().map((r) => ({ id: r.id, label: r.label })),

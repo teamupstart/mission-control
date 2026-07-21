@@ -60,6 +60,16 @@ test("a model override is stored and resolves as `config`", () => {
   assert.equal(llmJobModel("task-title").source, "default");
 });
 
+test("Codex background-job defaults are persisted and provider-compatible", () => {
+  setLlmConfig({ runner: "codex", models: { goal: "" } });
+  assert.equal(getLlmConfig().runner, "codex");
+  assert.deepEqual(llmJobModel("goal"), {
+    job: "goal",
+    id: "gpt-5.6-luna",
+    source: "default",
+  });
+});
+
 test("the model map merges per key, so two panels editing different jobs commute", () => {
   setLlmConfig({ models: { goal: "a" } });
   setLlmConfig({ models: { "task-title": "b" } });

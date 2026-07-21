@@ -30,7 +30,7 @@ import type { ModelSource } from "./model-choice.ts";
  * `SESSION_FIELD_COMPARATORS` plays on a new `Session` field. Adding an id here and
  * nothing else must not compile.
  */
-export const LLM_RUNNER_IDS = ["claude"] as const;
+export const LLM_RUNNER_IDS = ["claude", "codex"] as const;
 
 export type LlmRunnerId = (typeof LLM_RUNNER_IDS)[number];
 

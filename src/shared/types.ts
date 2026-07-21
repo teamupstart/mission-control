@@ -120,12 +120,14 @@ export interface SessionMeta {
  */
 export interface SessionCost {
   /** SUM(cost_usd) over every ledger window for this session's note key. */
-  costUsd: number;
+  costUsd: number | null;
   /** Token totals by tier. `cacheRead`/`cacheWrite` are billed at different rates. */
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Reasoning tokens included in output, when the harness reports the split. */
+  reasoningOutput?: number;
   /** epoch ms of the newest window counted, so a card can say how fresh this is. */
   updatedAt: number;
 }
@@ -136,6 +138,15 @@ export interface RateLimitWindow {
   usedPercentage: number;
   /** When the window rolls over, in epoch SECONDS - the unit Claude sends. */
   resetsAt: number;
+  id?: string;
+  label?: string;
+  durationMinutes?: number;
+}
+
+export interface RateLimitSource {
+  source: AgentType;
+  windows: RateLimitWindow[];
+  updatedAt: number;
 }
 
 /**
@@ -178,6 +189,8 @@ export interface FleetCost {
    */
   prsToday: number;
   rateLimits: RateLimits | null;
+  /** Quota windows grouped by provider, so account updates remain independent. */
+  rateLimitSources?: RateLimitSource[];
   updatedAt: number;
 }
 

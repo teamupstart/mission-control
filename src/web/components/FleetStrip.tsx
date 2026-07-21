@@ -2,6 +2,7 @@ import type { FleetCost, RateLimitWindow } from "@shared/types.ts";
 import { FIVE_HOUR_MS, SEVEN_DAY_MS, projectRunway } from "@shared/cost.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { compactTokens, contextTone, fmtRunway, fmtUsd, untilReset } from "../lib/format.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 /**
  * The topbar's fleet economics: what today cost, how fast it is going, and how long the
@@ -61,7 +62,7 @@ export function FleetStrip({
 export function fleetStripHasContent(fleet: FleetCost | null): boolean {
   if (!fleet) return false;
   const limits = fleet.rateLimits;
-  return fleet.spendToday > 0 || !!limits?.fiveHour || !!limits?.sevenDay;
+  return fleet.spendToday > 0 || !!limits?.fiveHour || !!limits?.sevenDay || !!fleet.rateLimitSources?.some((s) => s.windows.length);
 }
 
 /** The dollar-and-token half. Null when the ledger has nothing for today. */
@@ -106,15 +107,24 @@ function FleetStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
 /** The rate-limit half: one runway per window we have been told about. */
 function FleetWindows({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
   const limits = fleet.rateLimits;
-  if (!limits?.fiveHour && !limits?.sevenDay) return null;
+  const sources = fleet.rateLimitSources ?? [];
+  if (!limits?.fiveHour && !limits?.sevenDay && !sources.some((s) => s.windows.length)) return null;
   return (
     <div className="fs-windows">
-      {limits.fiveHour && (
-        <Runway window={limits.fiveHour} windowMs={FIVE_HOUR_MS} label="5-hr limit runway" />
+      {limits?.fiveHour && (
+        <Runway window={limits.fiveHour} windowMs={FIVE_HOUR_MS} label="Claude · 5-hr limit runway" />
       )}
-      {limits.sevenDay && (
-        <Runway window={limits.sevenDay} windowMs={SEVEN_DAY_MS} label="7-day limit runway" />
+      {limits?.sevenDay && (
+        <Runway window={limits.sevenDay} windowMs={SEVEN_DAY_MS} label="Claude · 7-day limit runway" />
       )}
+      {sources.flatMap((source) => source.windows.map((window) => (
+        <Runway
+          key={`${source.source}:${window.id ?? window.label}`}
+          window={window}
+          windowMs={(window.durationMinutes ?? 0) * 60_000}
+          label={`${AGENT_IDENTITY[source.source].label} · ${window.label ?? "unknown"} limit runway`}
+        />
+      )))}
     </div>
   );
 }

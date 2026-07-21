@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { MODEL_SUGGESTIONS } from "@shared/model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
+import { modelChoicesFor } from "@shared/model.ts";
 
 // The one input in this app for "which model does this call spawn with?".
 //
@@ -53,6 +53,7 @@ export function ModelField({
   spec,
   value,
   resolved,
+  runner,
   disabled,
   onCommit,
 }: {
@@ -61,66 +62,30 @@ export function ModelField({
   spec: ModelChoiceSpec;
   value: string;
   resolved: ResolvedModel | undefined;
+  runner: LlmRunnerId;
   disabled: boolean;
   onCommit: (next: string) => void;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState(value);
-  const focused = useRef(false);
-  // Whether this box has been TYPED IN since it was focused. Without it, blurring a box
-  // you only clicked into would write its stale draft back: the poll can't refresh a
-  // focused field, so a value changed elsewhere (another tab, the env, a direct PUT)
-  // would be silently reverted by a click-in-click-out that changed nothing. Commit is
-  // for edits, and "I put the cursor here" is not one.
-  const dirty = useRef(false);
-  useEffect(() => {
-    if (!focused.current) setDraft(value);
-  }, [value]);
-
-  const commit = (): void => {
-    const next = draft.trim();
-    setDraft(next);
-    if (dirty.current && next !== value) onCommit(next);
-    dirty.current = false;
-  };
-
   const note = modelSourceNote(resolved, spec.envVar);
   return (
     <div className="foreman-model-row">
       <label className="foreman-model-label" htmlFor={id}>
         {spec.label}
       </label>
-      <input
+      <select
         id={id}
         className="field-input mono foreman-model-input"
-        type="text"
-        spellCheck={false}
-        autoComplete="off"
-        // The resolved id, not the shipped fallback: an empty box under a set env var
-        // must not advertise a default that env var is overriding.
-        placeholder={resolved?.id ?? spec.fallback}
-        value={draft}
+        value={value}
         disabled={disabled}
-        onFocus={() => (focused.current = true)}
-        onChange={(e) => {
-          dirty.current = true;
-          setDraft(e.target.value);
-        }}
-        onBlur={() => {
-          focused.current = false;
-          commit();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          // Escape abandons the edit rather than committing it, matching every other
-          // compose box in the app.
-          if (e.key === "Escape") {
-            setDraft(value);
-            dirty.current = false;
-            focused.current = false;
-            e.currentTarget.blur();
-          }
-        }}
-      />
+        onChange={(e) => onCommit(e.target.value)}
+      >
+        <option value="">Default - {resolved?.id ?? spec.fallback}</option>
+        {modelChoicesFor(runner, value).map((model) => (
+          <option key={model.id} value={model.id}>
+            {model.label} - {model.hint}
+          </option>
+        ))}
+      </select>
       <p className="settings-hint foreman-model-blurb">{spec.blurb}</p>
       {note && <p className="foreman-model-source">{note}</p>}
     </div>
@@ -134,17 +99,10 @@ export function ModelField({
  * this theme can't touch (which is why `RepoCombobox` exists), and a combobox is a lot of
  * widget for three ids. Any id the CLI accepts works.
  */
-export function ModelSuggestions(): React.JSX.Element {
+export function ModelSuggestions({ runner = "claude" }: { runner?: LlmRunnerId }): React.JSX.Element {
   return (
     <p className="settings-hint foreman-models-hint">
-      Common ids:{" "}
-      {MODEL_SUGGESTIONS.map((id, i) => (
-        <span key={id}>
-          {i > 0 && ", "}
-          <code>{id}</code>
-        </span>
-      ))}
-      . Any model your <code>claude</code> CLI accepts will do.
+      Choose from the models supported by the selected {runner === "codex" ? "Codex" : "Claude Code"} provider.
     </p>
   );
 }

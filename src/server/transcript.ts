@@ -83,6 +83,8 @@ export function transcriptSize(path: string): number | null {
 /** What a JSONL harness has to supply to get the whole `TranscriptMessages` capability. */
 export interface JsonlMessagesSpec {
   parse: TranscriptLineParser;
+  /** Optional stateful parser for formats whose tool records extend an earlier turn. */
+  parseBatch?: (records: unknown[]) => TranscriptMessage[];
   /** See `TranscriptMessages.narration`. */
   narration(path: string): string | null;
 }
@@ -95,6 +97,17 @@ export interface JsonlMessagesSpec {
  */
 export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
   const { parse, narration } = spec;
+  const parseMany = (lines: string[], limit?: number): TranscriptMessage[] => {
+    if (!spec.parseBatch) return parseLines(lines, parse, limit);
+    const records: unknown[] = [];
+    for (const line of lines) {
+      try {
+        if (line.trim()) records.push(JSON.parse(line));
+      } catch { /* malformed JSONL records are expected while a writer is active */ }
+    }
+    const out = spec.parseBatch(records);
+    return limit && out.length > limit ? out.slice(-limit) : out;
+  };
 
   /**
    * The opening `headTurns` plus the most recent `tailTurns`. A small file is returned
@@ -109,7 +122,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     }
     // Small enough to read whole: no head/tail split, no truncation.
     if (size <= WINDOW_HEAD_BYTES + WINDOW_TAIL_BYTES) {
-      const all = parseLines(readTailLines(path, size), parse);
+      const all = parseMany(readTailLines(path, size));
       return { messages: all, truncated: false, headCount: 0 };
     }
     // Head begins at byte 0 (first line is whole) but ends mid-file (drop the partial
@@ -117,8 +130,8 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     // (keep the last line - parseLines drops it only if it isn't valid JSON).
     const headLines = completeLines(readRange(path, 0, WINDOW_HEAD_BYTES), false, true);
     const tailLines = completeLines(readRange(path, size - WINDOW_TAIL_BYTES, size), true, false);
-    const head = parseLines(headLines, parse).slice(0, headTurns);
-    const tail = parseLines(tailLines, parse).slice(-tailTurns);
+    const head = parseMany(headLines).slice(0, headTurns);
+    const tail = parseMany(tailLines).slice(-tailTurns);
     // De-dupe by record id in case the windows overlap on a mid-size file.
     const seen = new Set(head.map((m) => m.id));
     const merged = [...head, ...tail.filter((m) => !seen.has(m.id))];
@@ -158,7 +171,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     // headCount is 0 even when truncated: this window drops a PREFIX rather than a
     // middle, so the turns it returns are always contiguous and a reader slicing
     // forward from 0 can never run back into an elided boundary.
-    return { messages: parseLines(lines, parse), truncated, headCount: 0 };
+    return { messages: parseMany(lines), truncated, headCount: 0 };
   };
 
   /** Read the tail for a stream's initial view, and report where to resume from. */
@@ -176,7 +189,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     const lastNl = buf.lastIndexOf(NL);
     const end = lastNl >= 0 ? lastNl + 1 : from;
     const text = buf.subarray(from, end).toString("utf8");
-    const messages = parseLines(text ? text.split("\n") : [], parse, INIT_LIMIT);
+    const messages = parseMany(text ? text.split("\n") : [], INIT_LIMIT);
     return { messages, pos: start + end };
   };
 
@@ -188,7 +201,7 @@ export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
     const lastNl = buf.lastIndexOf(NL);
     if (lastNl < 0) return { messages: [], pos }; // no complete line yet
     const text = buf.subarray(0, lastNl + 1).toString("utf8");
-    return { messages: parseLines(text.split("\n"), parse), pos: pos + lastNl + 1 };
+    return { messages: parseMany(text.split("\n")), pos: pos + lastNl + 1 };
   };
 
   return { window, since, size: transcriptSize, initial, appended, narration };

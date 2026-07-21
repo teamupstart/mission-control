@@ -17,7 +17,7 @@ import type { AgentType } from "./types.ts";
  */
 export const GOAL_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,
-  codex: "Codex sessions aren't instrumented.",
+  codex: null,
 };
 
 /**

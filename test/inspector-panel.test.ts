@@ -122,6 +122,18 @@ test("the panel has a model field, and shows what would actually run", () => {
   assert.match(html, new RegExp(INSPECTOR_MODEL_SPEC.fallback));
 });
 
+test("Inspector can select Codex and offers only Codex catalog models", () => {
+  const html = render(state({
+    config: InspectorConfigSchema.parse({ enabled: true, runner: "codex", model: "" }),
+    model: { id: "gpt-5.6-sol", source: "default" },
+  }));
+  assert.match(html, /id="inspector-provider"/);
+  assert.match(html, /<option value="codex" selected="">Codex<\/option>/);
+  assert.match(html, /<select[^>]*id="inspector-model"/);
+  assert.match(html, /GPT-5\.6 Sol/);
+  assert.doesNotMatch(html, /Claude Sonnet/);
+});
+
 test("an env var outranking the box is named, not silently obeyed", () => {
   // The browser cannot see the daemon's environment, so this sentence exists only because
   // the daemon reports the resolution. A panel showing `config || default` would print a

@@ -103,7 +103,7 @@ export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsCon
   // 1. This harness has no skills to reload - no directory we symlink into, and no
   //    command that would make a running session notice if there were. Typing one anyway
   //    would put a stray line in someone's prompt and change nothing.
-  if (!harnessFor(s.agent).skills) return false;
+  if (!harnessFor(s.agent).skills?.reloadCommand) return false;
   if (s.state === "exited") return false;
 
   // 2. Nowhere to type, ever. `capturePaneText` answers null for a handleless session,
@@ -232,6 +232,13 @@ export async function reloadOne(
   // typed has to come from the harness of the session actually in hand.
   const skills = harnessFor(session.agent).skills;
   if (!skills) return false;
+
+  // Codex watches ~/.agents/skills itself. A generation acknowledgement is the only
+  // action required; typing a made-up reload command would become a user prompt.
+  if (!skills.reloadCommand) {
+    deps.ack(noteKeyFor(session), generation);
+    return true;
+  }
 
   const line = await deps.readModeLine(session);
   if (!line) return false;

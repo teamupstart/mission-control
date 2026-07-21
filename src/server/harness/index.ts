@@ -23,6 +23,7 @@ import { codexTui } from "./codex/tui.ts";
 import { codexDetect } from "./codex/detect.ts";
 import { codexBin } from "./codex/bin.ts";
 import { codexControl } from "./codex/control.ts";
+import { codexHooks } from "./codex/hooks.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -73,7 +74,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
   codex: {
     ...HARNESS_CAPABILITIES.codex,
     transcript: codexTranscript,
-    hooks: null,
+    hooks: codexHooks,
     detect: codexDetect,
     bin: codexBin,
     tui: codexTui,

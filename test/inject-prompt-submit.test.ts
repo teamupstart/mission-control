@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
 import { hasPendingCommand, hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
+import { HARNESSES } from "../src/server/harness/index.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 
-// Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, Enter, read back -
-// and the ORDER is the whole fix, so these tests assert the sequence rather than the
+// Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, read, Enter, read
+// back - and the ORDER is the whole fix, so these tests assert the sequence rather than the
 // outcome alone.
 //
 // The bug being pinned: Claude coalesces input for a window after a multi-line paste
@@ -20,6 +21,19 @@ import { stubRun } from "../src/server/util/exec.ts";
 // Measured against Claude Code 2.1.215: swallowed at 0/50/100/200ms, submitted at
 // 300/400/500ms. Single-line pastes are never collapsed and were never affected, which is
 // why this read as intermittent rather than total.
+
+/**
+ * Claude's placeholder taken FROM its harness, not restated here. These cases are about
+ * what the reader does with a placeholder; which regex Claude renders is the harness's
+ * claim, and a copy of it here is a copy that can go on passing after the real one moves.
+ */
+const CLAUDE_PLACEHOLDER = (() => {
+  const control = HARNESSES.claude.control;
+  assert.equal(control.kind, "keystroke");
+  const re = control.kind === "keystroke" ? control.pastePlaceholder : null;
+  assert.ok(re, "Claude must declare a paste placeholder");
+  return re;
+})();
 
 const PLACEHOLDER = "❯ [Pasted text #1 +3 lines]";
 const EMPTY_COMPOSER = "❯\n⏵⏵ auto mode on (shift+tab to cycle)";
@@ -114,6 +128,41 @@ test("the delivery is verified against the pane, not assumed from tmux's exit co
   assert.ok(events.some((e) => e.kind === "capture"), "it must read the pane back");
 });
 
+test("the pane is read once BEFORE the Enter, while the paste is still definitively collapsed", async () => {
+  // The other half of the sequence, and the half that makes verification a fact instead of
+  // a race: after the Enter, the placeholder is gone whenever the TUI redraws before the
+  // capture returns, so the reads that survive that are the ones where the Enter did NOT
+  // land. Establishing "pending" here is the only reading that cannot be beaten by a
+  // redraw. One read, not a poll - it is an observation, not a wait.
+  const { deps, events } = harness();
+  await injectPrompt(tmuxSession(), "a\nb", deps);
+  const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
+  const sleepAt = kinds.indexOf("sleep");
+  const captureAt = kinds.indexOf("capture");
+  const enterAt = kinds.findIndex((k) => typeof k === "string" && /send-keys .* Enter$/.test(k));
+
+  assert.ok(captureAt > sleepAt, "the pre-Enter read must come after the settle");
+  assert.ok(captureAt < enterAt, "it must come BEFORE the Enter, or it proves nothing");
+  assert.equal(
+    kinds.slice(0, enterAt).filter((k) => k === "capture").length,
+    1,
+    "exactly one read, spent on a state that has already happened",
+  );
+});
+
+test("the ordinary success reports verified, and reports it the same way every run", async () => {
+  // A healthy multi-line delivery - collapsed before the Enter, gone after it - is the
+  // case the flag exists to distinguish from an unverifiable one, so it must not be the
+  // case that comes back `false`, and it must not differ between two identical runs.
+  for (let run = 0; run < 5; run++) {
+    const { deps, events } = harness();
+    const r = await injectPrompt(tmuxSession(), "a\nb", deps);
+    assert.equal(r.ok, true);
+    assert.equal(r.submitVerified, true, `run ${run} must not differ from the others`);
+    assert.equal(enters(events), 1, `run ${run} must not differ from the others`);
+  }
+});
+
 // ---- recovery: press Enter again, never paste again ----
 
 test("a paste still in the composer gets another Enter - and never a second paste", async () => {
@@ -151,18 +200,29 @@ test("a paste that outlasts every Enter fails loudly, and still reports the text
 test("an unreadable pane ends the retry rather than spending a blind keystroke", async () => {
   // No capture means no evidence, and every Enter past the first is gated on evidence:
   // firing one at a pane we cannot see is the keystroke that answers an unread dialog.
+  //
+  // It also has to give up QUICKLY. The wait holds the pane lock for its whole duration,
+  // and each capture carries a one-second timeout, so polling a dead pane to the end of
+  // the window refuses every other write to that pane for longer than dispatch will wait
+  // for its own accept.
   const events: Event[] = [];
   const deps: InjectDeps = {
     exec: async (bin, args) => {
       events.push({ kind: "exec", argv: [bin, ...args].join(" ") });
       return stubRun({ stdout: "", stderr: "", code: 0 });
     },
-    capture: async () => null,
+    capture: async () => {
+      events.push({ kind: "capture" });
+      return null;
+    },
     sleep: async () => {},
   };
   const r = await injectPrompt(tmuxSession(), "a\nb", deps);
   assert.equal(r.ok, true, "with nothing to see, the one Enter we sent stands");
+  assert.equal(r.submitVerified, false, "a pane nobody could read verified nothing");
   assert.equal(enters(events), 1, "it must not keep firing at a pane it cannot read");
+  const captures = events.filter((e) => e.kind === "capture").length;
+  assert.ok(captures <= 4, `an unreadable pane cost ${captures} captures under the lock`);
 });
 
 // ---- the failure modes that must survive the rewrite ----
@@ -201,24 +261,24 @@ test("a session with no pane is refused before any of this", async () => {
 // ---- reading the placeholder off a pane ----
 
 test("the collapsed-paste placeholder is what marks a prompt as unsubmitted", () => {
-  assert.equal(hasPendingPaste("❯ [Pasted text #1 +3 lines]\n⏵⏵ auto mode on"), true);
+  assert.equal(hasPendingPaste("❯ [Pasted text #1 +3 lines]\n⏵⏵ auto mode on", CLAUDE_PLACEHOLDER), true);
   // The index climbs as pastes accumulate within a turn, so it cannot be pinned to #1.
-  assert.equal(hasPendingPaste("❯ [Pasted text #4 +12 lines]\n⏵⏵ auto mode on"), true);
-  assert.equal(hasPendingPaste("❯ prose the human typed\n⏵⏵ auto mode on"), false);
-  assert.equal(hasPendingPaste(EMPTY_COMPOSER), false);
+  assert.equal(hasPendingPaste("❯ [Pasted text #4 +12 lines]\n⏵⏵ auto mode on", CLAUDE_PLACEHOLDER), true);
+  assert.equal(hasPendingPaste("❯ prose the human typed\n⏵⏵ auto mode on", CLAUDE_PLACEHOLDER), false);
+  assert.equal(hasPendingPaste(EMPTY_COMPOSER, CLAUDE_PLACEHOLDER), false);
 });
 
 test("a placeholder scrolled up into the transcript is not a pending paste", () => {
   // Only the composer counts. A submitted paste stays visible in the transcript above,
   // and reading that as pending would fire Enter at a session already working.
   const transcript = `❯ [Pasted text #1 +3 lines]\n${Array.from({ length: 20 }, (_, i) => `output line ${i}`).join("\n")}\n❯\n⏵⏵ auto mode on`;
-  assert.equal(hasPendingPaste(transcript), false);
+  assert.equal(hasPendingPaste(transcript, CLAUDE_PLACEHOLDER), false);
 });
 
 test("nothing on screen is not evidence of a pending paste", () => {
   // This gates a keystroke, so the unknown case must read as "no".
-  assert.equal(hasPendingPaste(null), false);
-  assert.equal(hasPendingPaste(""), false);
+  assert.equal(hasPendingPaste(null, CLAUDE_PLACEHOLDER), false);
+  assert.equal(hasPendingPaste("", CLAUDE_PLACEHOLDER), false);
 });
 
 test("a slash command still in the composer is what marks a /clear as unacted on", () => {
@@ -268,7 +328,7 @@ test("the placeholder is detected through a real capture-pane", { skip: tmuxAvai
     }
 
     assert.ok(text, "the pane should have been capturable");
-    assert.equal(hasPendingPaste(text), true, "a real rendered placeholder should read as pending");
+    assert.equal(hasPendingPaste(text, CLAUDE_PLACEHOLDER), true, "a real rendered placeholder should read as pending");
   } finally {
     try {
       execFileSync("tmux", ["kill-session", "-t", sessName], { stdio: "ignore" });

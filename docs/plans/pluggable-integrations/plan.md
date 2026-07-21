@@ -52,6 +52,13 @@ one `resolveAgentBin` serves both things that spawn an agent CLI. See "`transcri
 landed", "`hooks`, as landed", "Capability guards, as landed" and "`detect` and `bin`, as
 landed" below.
 
+**The paste settle and paste placeholder rows are closed too.** `Harness.control`
+(`ControlSpec`) owns both: the measured settle window and Claude's `[Pasted text #N]` regex
+live in `harness/claude/control.ts`, Codex declares `pastePlaceholder: null` instead of
+inheriting a regex it could never match, and `actions.ts` holds no per-agent constant -
+`hasPendingPaste` is handed the placeholder rather than owning one. See "`control`, as
+landed" below.
+
 Before Phase 0, only **four** `Record<AgentType, …>` maps would fail to compile on a new
 agent. Everything else silently does nothing, and that asymmetry is the core problem. Phase 0
 took it to **six** - `shared/agent.ts`, `shared/cost.ts`, `shared/goal.ts`, `shared/model.ts`,
@@ -338,11 +345,11 @@ the Terminal axis and partly inside `tui`, whose spec carried the paste placehol
 `PASTE_SETTLE_MS`. That is wrong in a way worth stating, because the whole point of this
 refactor is to outlive the current backends.
 
-`PASTE_SETTLE_MS = 400` is a measured property of an undocumented input-coalescing window
-in one Claude build (`actions.ts:307` records the measurements). Putting it in the harness
-contract makes "you talk to an agent by typing into its terminal" a permanent
-architectural assumption - and every live third-party tool that drives Claude Code
-programmatically has already stopped doing that, in favour of
+`PASTE_SETTLE_MS = 400` was a measured property of an undocumented input-coalescing window
+in one Claude build (the measurements now live in `harness/claude/control.ts`, beside the
+value they justify). Putting it in the harness contract makes "you talk to an agent by
+typing into its terminal" a permanent architectural assumption - and every live third-party
+tool that drives Claude Code programmatically has already stopped doing that, in favour of
 `claude -p --input-format stream-json --output-format stream-json`, which takes follow-up
 turns on a live process with no keystrokes involved. Codex exposes the same thing as a
 JSON-RPC `turn/steer`.
@@ -540,6 +547,29 @@ global list and is not excluded by Codex's own spec. Codex has no `daemon` subco
 nothing on a real machine changes. Tests: `detection.test.ts` and `harness-bin.test.ts`,
 table-driven off the registry, plus `process-background-filter.test.ts` unchanged.
 
+#### `control`, as landed
+
+`ControlSpec` sits on `Harness` exactly as sketched - required, never `null` - with the two
+specs in `harness/claude/control.ts` and `harness/codex/control.ts` and `controlFor(session)`
+as the one way the delivery path asks. Two deltas from the sketch:
+
+- **The keystroke variant also carries `collapses(text)`.** Saying what the placeholder
+  LOOKS like without saying when it APPEARS leaves the one reading that can establish a
+  pending paste taken on faith, and "a paste collapses only when it is multi-line" was one
+  more guess about a single TUI applied to every agent. The delivery path asks the two at
+  different moments, so they are separate fields that have to move together.
+- **`InjectResult.submitVerified` is required, not optional.** For the reason
+  `TerminalResult.outcomeUnknown` is: an optional flag defaults the decision to whoever
+  forgot it, and this is precisely the decision that was being defaulted - a verified Claude
+  submit and an unverified Codex one used to be byte-identical at the call site.
+
+`stream-json` is declared and deliberately unimplemented: `injectPrompt` and
+`paneAcceptsPrompt` refuse a non-keystroke harness by name rather than falling through to
+the pane paths and typing at nothing. Tests: `harness-control.test.ts` (every harness
+declares a delivery; a null placeholder is a capability absence and not "the composer is
+clear"; ok-without-evidence is reported as unverified), `inject-prompt-submit.test.ts`,
+which now takes Claude's placeholder from its harness rather than restating the regex.
+
 #### `tui`, as landed - and the assumption it overturned
 
 This item was scoped as "move 397 lines of Claude menu grammar behind an interface". That
@@ -674,7 +704,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | Phase | Items |
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; UI **(landed)** |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
@@ -723,9 +753,14 @@ separately. The item that owns each fix is named in brackets.
   harness supplies its own cursor glyph. `annotatePaneState` now asks
   `dialogSpecFor(s.agent)`, and a harness that genuinely draws nothing readable leaves
   `paneDialog` untouched rather than asserting "no menu" about a screen it never read.
-- **[Phase 1 - TUI]** `pane-paste.ts:37` + `actions.ts:344-379` - submit verification looks
-  for Claude's paste placeholder, so for Codex `hasPendingPaste` is always false and
-  `awaitPasteSubmitted` returns `ok` after one Enter with zero evidence.
+- **[Phase 1 - control, FIXED]** `pane-paste.ts:37` + `actions.ts:344-379` - submit
+  verification looked for Claude's paste placeholder, so for Codex `hasPendingPaste` was
+  always false and `awaitPasteSubmitted` returned `ok` after one Enter with zero evidence.
+  The placeholder now lives on `harness.control` as `ControlSpec.pastePlaceholder`, which
+  Codex declares `null`; `hasPendingPaste` takes it rather than owning one. The delivery path
+  reads that absence and spends exactly ONE Enter - the retries are safe only because a
+  visible placeholder proves the composer has focus - and reports the outcome as
+  `submitVerified: false` instead of returning `ok` having proved nothing.
 - **[Phase 1 - guards, FIXED]** `actions.ts:1418` - `resetToOrigin` sent `/clear`, a Claude
   slash command, to **every** agent type, ungated. It now reads `Harness.clearContext`, and
   a harness that declares none has its context left alone: `cleared: false`, zero

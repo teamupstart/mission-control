@@ -348,6 +348,71 @@ export interface BinSpec {
 }
 
 /**
+ * How a turn is DELIVERED to this harness. Required - every harness must answer it.
+ *
+ * This slot is what lets the interface outlive its current backends, and it is separate
+ * from the TUI grammar on purpose. Delivery used to live half in the terminal axis and
+ * half in constants beside the paste code, which quietly made "you talk to an agent by
+ * TYPING INTO ITS TERMINAL" a permanent architectural assumption - and made a settle
+ * window measured against one Claude build a property of the daemon rather than of the
+ * harness it was measured on.
+ *
+ * It is not one. `claude -p --input-format stream-json --output-format stream-json` takes
+ * follow-up turns on a live process with no keystrokes involved, and Codex exposes the
+ * same as a JSON-RPC `turn/steer`. Declaring the seam is NOT a commitment to build
+ * headless dispatch: a session a human owns stays `keystroke` regardless, because we do
+ * not own their pty. The point is that a second delivery becomes a new variant behind an
+ * existing slot rather than an interface change every migrated call site has to absorb.
+ *
+ * Required rather than nullable for the reason `Multiplexer.write` is: a harness we
+ * cannot talk to is not a harness we can dispatch to, so there is no meaningful `null`
+ * to degrade to. See `docs/plans/pluggable-integrations/plan.md`.
+ */
+export type ControlSpec =
+  | {
+      kind: "keystroke";
+      /**
+       * How long to let a bracketed paste settle before pressing Enter.
+       *
+       * A harness that coalesces input for a window after a paste absorbs an Enter that
+       * arrives inside it, leaving the prompt pasted and unsubmitted. Measured per
+       * harness, because the window is the harness's - undocumented, and free to move.
+       *
+       * A fast path, never the guarantee: `pastePlaceholder` is what actually settles it.
+       */
+      settleMs: number;
+      /**
+       * The placeholder this TUI collapses a paste into, or `null` when it renders none.
+       * Which pastes those are is `collapses` below.
+       *
+       * Null is a CAPABILITY absence, not an answer: it means submit verification has no
+       * on-screen evidence to read for this harness at all, which is a different claim
+       * from "the composer is currently empty". Callers must not read one as the other -
+       * a retry gated on evidence that can never appear is a keystroke spent blind, and
+       * reporting a submit as confirmed on that basis is the silent lie this declaration
+       * exists to end.
+       */
+      pastePlaceholder: RegExp | null;
+      /**
+       * Whether THIS text is one the composer will collapse into that placeholder.
+       *
+       * Inseparable from `pastePlaceholder`, and here for the same reason it is: a harness
+       * that says what its placeholder LOOKS like has also to say when it APPEARS, or the
+       * one reading that can establish a pending paste is taken on faith. The delivery
+       * path must be left making no claim of its own about any composer - a guess about
+       * one TUI applied to every agent is precisely the defect this capability closes, and
+       * "a paste only collapses when it is multi-line" was the last of them.
+       *
+       * Neither wrong answer can produce a verified-in-error: say `false` for something
+       * the composer does collapse and the reading is skipped, say `true` for something it
+       * does not and the reading finds nothing. Both cost only an honest `submitVerified:
+       * false`. Err toward `false` when you do not know.
+       */
+      collapses: (text: string) => boolean;
+    }
+  | { kind: "stream-json" };
+
+/**
  * Reading the agent's own permission-mode footer off a pane.
  *
  * Null on `TuiSpec` means the agent has no permission-mode notion at all - not that we
@@ -484,7 +549,7 @@ export interface TuiSpec {
  * record forces exactly its own questions and neither is a copy of the other.
  *
  * More capabilities land here as the pluggable-integrations migration proceeds
- * (`control`, `models` - see
+ * (`models` - see
  * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
  * one is a new field every harness must answer rather than an interface change every
  * migrated call site has to absorb.
@@ -502,4 +567,6 @@ export interface Harness extends HarnessCapabilities {
   bin: BinSpec;
   /** How this harness's screen READS, or null when we cannot read it at all. */
   tui: TuiSpec | null;
+  /** How a turn reaches this harness. Not nullable - see `ControlSpec`. */
+  control: ControlSpec;
 }

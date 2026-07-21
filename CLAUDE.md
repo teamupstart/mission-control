@@ -207,9 +207,9 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   answered without a `node:` import - permission modes, skills, work queue, context
   clearing, MCP - because the dashboard decides most of these in the browser and cannot
   import a spec that calls `statSync`. `HARNESSES` (`src/server/harness/index.ts`) spreads
-  that record in and adds what needs one (`transcript`, `hooks`, plus a spec per capability
-  under `src/server/harness/<agent>/`); `Harness extends HarnessCapabilities`, so a server
-  call site holding a harness still reads every slot off one object. The two
+  that record in and adds what needs one (`transcript`, `hooks`, `control`, plus a spec per
+  capability under `src/server/harness/<agent>/`); `Harness extends HarnessCapabilities`, so
+  a server call site holding a harness still reads every slot off one object. The two
   `Record<AgentType, …>`s are the enforcement - a new agent id that declares nothing does
   not compile - and they ask disjoint questions, so neither is a copy of the other. Do not
   put a pure capability in the server record or a filesystem-reading one in shared.
@@ -220,9 +220,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   Codex pushes nothing at us - and a null there is load-bearing in three places: the
   ingest is refused rather than read by Claude's event vocabulary, the pane-keyed hook
   overlay is agent-scoped so the card Codex started in a vacated pane does not inherit
-  Claude's last state, and `awaitReady` skips its 20s wait. **`detect` and `bin` are the
-  two that are NOT nullable**: a harness nothing can find on the process table has no card
-  at all, and one that names no binary cannot be dispatched. `discovery/processes.ts`
+  Claude's last state, and `awaitReady` skips its 20s wait. **`detect`, `bin` and `control`
+  are the three that are NOT nullable**: a harness nothing can find on the process table has
+  no card at all, one that names no binary cannot be dispatched, and one we cannot talk to
+  is not one we can dispatch to. Inside `control`, though, `pastePlaceholder: null` is
+  first-class again - it says this TUI renders no collapsed-paste placeholder, so submit
+  verification has no evidence to read, which is NOT the same claim as "the composer is
+  clear"; the delivery path spends one Enter and reports `submitVerified: false`.
+  `discovery/processes.ts`
   iterates `detect` and names no vendor - including the background roles, which are TOKENS
   matched at argv[1]/argv[2] and never substrings of a command line carrying an operator's
   paths and a 1.2KB prompt. `resolveAgentBin` (`harness/index.ts`) is the ONE bin resolver,
@@ -247,13 +252,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   way here: Codex sends no hooks, so `activePaneDialog` is the ONLY "needs you" evidence it
   can ever produce, and a Codex session parked on a command-approval prompt read as merely
   unconfirmed. Reach a capability through a registry (`capabilitiesFor`,
-  `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` /
-  `dialogSpecFor` / `modeLineSpecFor`), never by testing
-  `s.agent`; each phase of `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
+  `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` / `dialogSpecFor` /
+  `modeLineSpecFor`, `controlFor`), never by testing `s.agent`; each phase of
+  `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
   `harness-capabilities.test.ts`, `harness-transcript.test.ts`, `harness-hooks.test.ts`,
-  `harness-tui.test.ts`, `detection.test.ts`, `harness-bin.test.ts`,
-  `process-background-filter.test.ts`,
-  `session-contracts.test.ts`.
+  `harness-tui.test.ts`, `harness-control.test.ts`, `detection.test.ts`,
+  `harness-bin.test.ts`, `process-background-filter.test.ts`, `session-contracts.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the
   enforcement - a new id that is not implemented does not compile, and every capability is

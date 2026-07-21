@@ -1,5 +1,6 @@
 import { envVar } from "../config.ts";
-import { createLimiter, parseModelJson, runStructured } from "../claude-cli.ts";
+import { runJobStructured } from "../llm/jobs.ts";
+import { createLimiter, parseModelJson } from "../llm/structured.ts";
 import { unref } from "../util/timers.ts";
 import { EvaluationDebounce } from "../util/debounce.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
@@ -9,16 +10,17 @@ import { buildGoalPrompt, GoalSchema } from "./prompt.ts";
 import { readGoalWindow } from "./source.ts";
 
 // Tier 2: rewrite each session's raw prompt into the sentence its card shows, with one
-// headless `claude -p` on Haiku.
+// headless model call on the cheap tier.
 //
 // A poller rather than an event listener, on purpose. The trigger is entirely in the data -
 // Tier 1 stamps `source: "heuristic"` on every new prompt, and this stamps `"model"` when it
 // has summarised one - so a restart resumes correctly with no in-memory state to rebuild,
 // and rapid prompts collapse into one refresh instead of queueing a call each.
 //
-// Nothing here is configurable (Q3: no kill switch). The silent fallback is error handling,
-// not configuration: if `claude` is missing, logged out, or slow, the card quietly keeps its
-// Tier 1 goal and nothing breaks.
+// There is still no kill switch (Q3). The silent fallback is error handling, not
+// configuration: if the provider is missing, logged out, or slow, the card quietly keeps its
+// Tier 1 goal and nothing breaks. What IS configurable is which provider and which model -
+// the `goal` job in `@shared/llm-jobs.ts`, edited in Settings, resolved per call.
 
 /** How often to look for a goal needing refinement. Cheap: a map lookup per live session. */
 const GOAL_POLL_MS = Number(envVar("GOAL_POLL_MS") ?? 5000);
@@ -34,14 +36,11 @@ const GOAL_REFRESH_MS = Number(envVar("GOAL_REFRESH_MS") ?? 60_000);
  * goal that takes half a minute has already failed at being a glanceable status line.
  */
 const GOAL_TIMEOUT_MS = Number(envVar("GOAL_TIMEOUT_MS") ?? 30_000);
-/** Tier 2's model. Named explicitly: omitting `--model` inherits the CLI's default, which is
- *  both the priciest and the least predictable choice. */
-const GOAL_MODEL = envVar("GOAL_MODEL") ?? "claude-haiku-4-5";
 /**
- * Concurrent `claude -p` runs across every session.
+ * Concurrent model runs across every session.
  *
- * Per-caller by construction - `claude-cli.ts` owns no global count because the daemon and
- * the Foreman worker are separate processes and a module cannot cap across that boundary.
+ * Per-caller by construction - `llm/structured.ts` owns no global count because the daemon
+ * and the Foreman worker are separate processes and a module cannot cap across that boundary.
  * This is the daemon's own ceiling: a 20-card dashboard all answering prompts at once must not
  * fork 20 subprocesses.
  */
@@ -73,7 +72,7 @@ export function startGoalRefiner(registry: Registry): () => void {
   /**
    * The prompt whose refinement last failed, per session.
    *
-   * This is the whole of the no-retry-storm rule (Q3). Without it a failing `claude` leaves
+   * This is the whole of the no-retry-storm rule (Q3). Without it a failing provider leaves
    * `source: "heuristic"` set forever, so every tick would re-offer the same session and the
    * debounce would faithfully spawn a doomed subprocess every 60s for as long as the session
    * lives. Keyed on the PROMPT, so a new instruction always gets a fresh attempt - what is
@@ -146,7 +145,8 @@ async function refine(
 ): Promise<void> {
   try {
     await limit(async () => {
-      const r = await runStructured<typeof GoalSchema>(
+      const r = await runJobStructured<typeof GoalSchema>(
+        "goal",
         buildGoalPrompt({
           session: s,
           // The sentence being upgraded, so "unchanged" is available as an answer.
@@ -156,7 +156,7 @@ async function refine(
         }),
         (raw) => parseModelJson(raw, GoalSchema),
         "Goal",
-        { model: GOAL_MODEL, timeoutMs: GOAL_TIMEOUT_MS },
+        { timeoutMs: GOAL_TIMEOUT_MS },
       );
       if (r.kind === "failed") {
         // Silent by design: the card keeps its Tier 1 goal and the human sees a slightly

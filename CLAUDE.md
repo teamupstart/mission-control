@@ -153,6 +153,16 @@ spec's module directly rather than `harness/index.ts`.
 **MCP tool args are validated twice** - hand-written zod in `src/mcp/server.ts` duplicating
 `src/shared/protocol.ts`. Change both. Hand-kept; nothing catches drift.
 
+**A prompt that DESCRIBES a session's screen asks that session's harness.** Foreman's
+reviewer and router prompts are the one place the harness and runner axes legitimately
+meet: which model judges is settled before the prompt is built, but what is being judged is
+a session of some harness, and the menu grammar ("you MUST fill answer.option", "it
+discards typed characters") is a claim about that harness's TUI. `ReviewInput.session.agent`
+is required for this, and `promptHarness` (`foreman/prompt.ts`) is the projection - a small
+pure shape, so the no-menu branch is reachable from a test before a harness declaring
+`tui: null` exists. Both shipped harnesses draw dialogs, so that branch has no agent id to
+reach it. Test: `foreman-prompt-harness.test.ts`.
+
 **New mutating route** → add a zod schema in `protocol.ts` and go through `parseBody`. Never
 hand-parse a body.
 
@@ -185,7 +195,8 @@ reached through a symlink.
 
 **Append-only**, since old values persist on users' machines: skill directory prefixes in
 `src/shared/skills.ts`, the task source kind ids in `TASK_SOURCE_KINDS`
-(`src/shared/task-source.ts`), and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback
+(`src/shared/task-source.ts`), the background-job ids in `LLM_JOB_IDS`
+(`src/shared/llm-jobs.ts`), and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback
 chain in `src/shared/harness-runtime.mjs`.
 
 **Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
@@ -265,8 +276,18 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   either implemented or explicitly `null`. This is the *model provider* axis, orthogonal to
   which agent a card runs: keep it out of anything Harness-shaped, or you cannot review a
   Codex session with Claude. The contract is context isolation, not just the call shape -
-  read `LlmRunner`'s doc before adding one. Test: `llm-runner-contract.test.ts`. WHICH model
-  a given call uses is a different question, owned by `@shared/foreman-models.ts`.
+  read `LlmRunner`'s doc before adding one. WHICH runner a call uses is one ladder,
+  `resolveLlmRunner` (`@shared/llm.ts`), config then env then `DEFAULT_LLM_RUNNER_ID` - and
+  unlike the model ladder it VALIDATES, because a model id is free text the CLI resolves
+  while a runner id has to name something in `LLM_RUNNERS` or there is nothing to spawn. An
+  unresolvable one falls back and REPORTS what it dropped (`ResolvedLlmRunner.unknown`);
+  swallowed, a stored id from a newer build is indistinguishable from an unset one and the
+  panel renders the fallback as the operator's own choice. The config schema `.catch()`es for
+  the same reason - `getLlmConfig` is on the path of every titling, goal refresh and digest,
+  and a throw there takes all of them down over a preference. The Foreman worker reads its
+  runner off `/api/llm/status`, never the DB. Test: `llm-runner-contract.test.ts`,
+  `llm-jobs.test.ts`, `llm-config.test.ts`. WHICH model a given call uses is a different
+  question - see the model ladder below.
 - **Terminal backends**: the ids are `MULTIPLEXER_IDS` / `EMULATOR_IDS`
   (`@shared/terminal.ts`) and the adapters are `MULTIPLEXERS` / `EMULATORS`
   (`src/server/terminal/registry.ts`), typed `Record<MultiplexerId, …>` /
@@ -358,7 +379,10 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   third consent gate extends `allowlist.ts`; it does not start a matcher.
 - **Which model a headless call spawns with**: one ladder, `resolveModelChoice`
   (`@shared/model-choice.ts`) - config, then env, then a NAMED fallback - and the roles stay
-  with their subsystem (`FOREMAN_MODEL_SPECS`, `INSPECTOR_MODEL_SPEC`). A `claude -p` that
+  with their subsystem: `FOREMAN_MODEL_SPECS` (Foreman's four), `INSPECTOR_MODEL_SPEC` (the
+  Inspector's one), `LLM_JOB_SPECS` (`@shared/llm-jobs.ts` - the daemon's own background
+  jobs: the titler, the goal refiner, the away digest). Three sets of roles, one ladder, and
+  a fourth resolver is the thing not to write. A `claude -p` that
   passes no `--model` inherits whatever the local CLI defaults to, which is the priciest tier
   and unanswerable from inside the app; every spec's `fallback` is what rules that out, so a
   new one is filled in rather than left blank. The panel PRINTS the resolution, source and
@@ -366,7 +390,13 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   instead of the browser re-deriving `config || default` over an env layer it cannot see.
   One input renders it, `ModelField.tsx`. Blank is "cleared", never `--model ""`, at every
   layer - including the config schema, which must ADMIT the empty string or the field cannot
-  be cleared at all. Test: `foreman-models.test.ts`, `inspector-model.test.ts`.
+  be cleared at all. `LLM_JOB_IDS` are **append-only**: they are persisted as the KEYS of the
+  `models` map in the `llm` blob, so renaming one orphans an operator's override rather than
+  migrating it. A daemon job calls `runJob` / `runJobStructured` (`src/server/llm/jobs.ts`),
+  which resolves runner and model per call so a Settings edit lands on the next call rather
+  than the next restart; it never names a model or a provider itself. Test:
+  `foreman-models.test.ts`, `inspector-model.test.ts`, `llm-jobs.test.ts`,
+  `llm-config.test.ts`.
 - **A session's terminal handles**: `Session.terminals` is a LIST of `TerminalHandle`
   (`@shared/terminal.ts`), one per backend, discriminated on the AXIS (`multiplexer` /
   `emulator`) and never on the vendor. It replaced `Session.tmux` / `Session.wezterm`,

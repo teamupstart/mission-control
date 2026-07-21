@@ -45,7 +45,8 @@ import type { BacklogConfig } from "./backlog-machine.ts";
 import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
-import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
+import { DEFAULT_LLM_RUNNER_ID, killLiveLlmRuns, llmRunner } from "../llm/index.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 
 /**
  * The menu on a pane, read with that agent's own grammar - or null when this harness draws
@@ -190,7 +191,9 @@ function installShutdown(client: ForemanClient): void {
       if (closing) process.exit(1); // a second Ctrl-C means "now"
       closing = true;
       log("shutting down…");
-      killLiveClaudeRuns();
+      // Every runner, not just `claude -p`: the cheap tier spawns through whichever one
+      // is configured, and these children are detached so they outlive this process.
+      killLiveLlmRuns();
       void client.releaseLease(WORKER_ID).finally(() => process.exit(0));
     });
   }
@@ -216,6 +219,11 @@ async function main(): Promise<void> {
       await sleep(IDLE_MS);
       continue;
     }
+
+    // Kept on the last known answer when the daemon can't say, rather than reset to the
+    // default: a blip must not silently move the cheap tier onto a provider the operator
+    // did not pick, and the next pass asks again anyway.
+    triageRunnerId = await client.llmRunner().catch(() => triageRunnerId);
 
     // A non-leader IDLES, it does not exit - so it takes over cleanly when the
     // leader's lease expires (a crash, a Ctrl-C), which is the whole point of an
@@ -1533,6 +1541,8 @@ async function fullReview(
     .catch(() => ({ messages: [], truncated: false }));
   const input: ReviewInput = {
     session: {
+      // Which harness this is, so the prompt describes ITS screen - see `ReviewInput.session.agent`.
+      agent: session.agent,
       name: session.name,
       cwd: session.cwd,
       gitBranch: session.gitBranch,
@@ -1606,11 +1616,29 @@ async function readInstructions(client: ForemanClient): Promise<string> {
   }
 }
 
-/** Adapt the daemon client to the cheap tier's read-only dependency surface. */
+/**
+ * The provider the cheap tier spawns through, refreshed once per outer loop pass.
+ *
+ * Held here rather than threaded through `processTarget` because it is not a property of
+ * any one session: every triage in a pass runs on the same provider, and passing it down
+ * five frames to reach `triageDeps` would put a preference in five signatures. Refreshed
+ * per pass so a change in Settings lands within a tick without a worker restart, and seeded
+ * with the default so the very first pass has an answer even if the daemon is slow.
+ */
+let triageRunnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID;
+
+/**
+ * Adapt the daemon client to the cheap tier's read-only dependency surface.
+ *
+ * `runModel` returns the model's TEXT with the provider envelope already off, which is what
+ * `LlmRunner.run` guarantees and what `parseModelJson` on the other side tolerates either
+ * way. It used to hand over `claude -p`'s raw `{result: …}` JSON.
+ */
 function triageDeps(client: ForemanClient): TriageDeps {
   return {
     transcript: (id, turns) => client.transcript(id, turns),
-    runModel: (prompt, model) => runClaudeText(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
+    runModel: (prompt, model) =>
+      llmRunner(triageRunnerId).run(prompt, { model, timeoutMs: TRIAGE_TIMEOUT_MS }),
   };
 }
 

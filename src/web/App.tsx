@@ -38,6 +38,23 @@ import type { ActionId } from "./lib/keybindings.ts";
 import { canRenameSession, fmtUsd, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 
+/**
+ * The chords that act through the selected session's action bar, and the method each
+ * one calls on it.
+ *
+ * A table rather than a chain of `else if`s because the board has to be able to NAME the
+ * action it is deferring, not just perform it: its overview draws no action bar, so the
+ * chord opens the drill-in first and the bar that mounts with it runs this. A sixth entry
+ * is a row here; nothing else changes.
+ */
+const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
+  ["send", "startSend"],
+  ["focus", "focusPane"],
+  ["queue", "toggleQueue"],
+  ["mode", "cycleMode"],
+  ["kill", "requestKill"],
+];
+
 export function App(): React.JSX.Element {
   const { sessions, reviews, tasks, fleetCost, connected, hasSnapshot } = useEventStream();
   const [alertSettings, updateAlerts] = useAlertSettings();
@@ -60,6 +77,16 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Board keyboard selection is deliberately separate from its open console detail:
+  // arrows move the cursor among tiles, then Enter promotes it into the drill-in.
+  // Pointer clicks set both in one gesture, as they always have.
+  //
+  // A flag, not a second id, because the drill-in is ALWAYS the selected session. Holding
+  // an id of its own let another layout's arrows move the selection out from under it, so
+  // coming back to the board reopened the session you left while the tile cursor sat on a
+  // different one - and it needed the arrow keys to remember to keep the two in step.
+  // `boardOpenId` below derives the invariant instead of restating it.
+  const [boardOpen, setBoardOpen] = useState(false);
   // Only whether the dispatch modal is open. The draft it edits belongs to
   // DispatchLayer, deliberately out of this component: App re-renders the whole
   // session grid, and the draft has to survive a close without dragging every
@@ -136,6 +163,12 @@ export function App(): React.JSX.Element {
   // mounts (see the `expand` chord and the effect that consumes it). A ref, not
   // state: it arms a one-shot side effect, and must not itself cause a render.
   const pendingReplyFocus = useRef<string | null>(null);
+  // The board's arrow cursor, armed to take DOM focus once the tile it names has
+  // rendered. Same one-shot ref as above, for the same reason.
+  const pendingTileFocus = useRef<string | null>(null);
+  // A selection chord the board's overview had no action bar to run yet: it opens the
+  // drill-in and this holds what to do against the bar that mounts with it.
+  const pendingBarAction = useRef<{ id: string; run: keyof ActionBarHandle } | null>(null);
   const gridRef = useRef<HTMLElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const topbarRef = useRef<HTMLElement>(null);
@@ -168,10 +201,17 @@ export function App(): React.JSX.Element {
    */
   const onKilled = useCallback(
     (id: string) => {
-      const drop = detailLayer(layout) === "expanded" ? setExpandedId : setSelectedId;
+      const layer = detailLayer(layout);
+      if (layer === "board") {
+        // The board's drill-in holds no id of its own - it is whatever is selected - so
+        // "was this kill ordered from inside it" is asked of the selection.
+        if (selectedId === id) setBoardOpen(false);
+        return;
+      }
+      const drop = layer === "expanded" ? setExpandedId : setSelectedId;
       drop((cur) => (cur === id ? null : cur));
     },
-    [layout],
+    [layout, selectedId],
   );
 
   const closeDispatch = useCallback(() => {
@@ -295,10 +335,13 @@ export function App(): React.JSX.Element {
   // than leaving each view to force the prop:
   //   grid    - focus mode: at most one card, toggled, usually none.
   //   console - the detail pane IS the expanded card, so it's whatever is selected.
-  //   board   - same: selecting drills into the console detail, so it's whatever is selected.
+  //   board   - the console detail is separate from the arrow-key cursor; Enter or a
+  //             click opens it, and what it opens is the cursor's session.
   // Keeping the state honest (rather than overriding `expanded` at the call site) is
   // what lets Escape, the expand chord and the card's own toggle all agree.
-  const expandedForView = layout === "grid" ? expandedId : selectedId;
+  const boardOpenId = boardOpen ? selectedId : null;
+  const expandedForView =
+    layout === "grid" ? expandedId : layout === "board" ? boardOpenId : selectedId;
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -328,8 +371,14 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     gateAlerts,
     selectedId,
-    onSelect: setSelectedId,
-    onDeselect: () => setSelectedId(null),
+    onSelect:
+      layout === "board"
+        ? (id) => {
+            setSelectedId(id);
+            setBoardOpen(true);
+          }
+        : setSelectedId,
+    onDeselect: layout === "board" ? () => setBoardOpen(false) : () => setSelectedId(null),
     expandedId: expandedForView,
     onToggleExpand: toggleExpand,
     onOpenReviews: setReviewSessionId,
@@ -381,7 +430,12 @@ export function App(): React.JSX.Element {
   // then swallow every grid shortcut for good. The overlay ids stay on `sessions`
   // because their modals are bound to a session, not to a mounted card.
   useEffect(() => {
-    if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
+    if (selectedId && !sessions.some((s) => s.id === selectedId)) {
+      setSelectedId(null);
+      // The board's drill-in goes with it. Left standing, the flag would silently
+      // re-open on whatever the cursor landed on next.
+      setBoardOpen(false);
+    }
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
     for (const bound of sessionBoundOverlays) {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
@@ -393,6 +447,25 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (!selectedId) return;
     cardEls.current.get(selectedId)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [selectedId]);
+
+  // Move DOM focus with the board's arrow cursor, onto the tile's own stretched open
+  // button - the keyboard half SessionTile already draws for exactly this.
+  //
+  // Without it the last thing CLICKED keeps focus indefinitely (arrow selection moves no
+  // focus of its own, and closing an overlay restores none), and Enter - which this app
+  // deliberately leaves to a focused control rather than stealing - would fire that stale
+  // button instead of opening the selected tile. Focusing the cursor makes the two the
+  // same thing: native activation is the open. Scrolling is the effect above's job, hence
+  // `preventScroll`.
+  useEffect(() => {
+    const id = pendingTileFocus.current;
+    pendingTileFocus.current = null;
+    if (!id || id !== selectedId) return;
+    cardEls.current
+      .get(id)
+      ?.querySelector<HTMLElement>("button.tile-open")
+      ?.focus({ preventScroll: true });
   }, [selectedId]);
 
   // Publish the live topbar height so a focus-expanded card can size itself to
@@ -430,6 +503,10 @@ export function App(): React.JSX.Element {
       const typing = Boolean(target?.closest("input, textarea, select, [contenteditable='true']"));
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
+
+      // Preserve the native activation of a focused link or button - including the
+      // selected tile's own open button, which the arrow keys put the cursor on.
+      if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
       // Sitrep toggles whether it's open or closed, so it stands down for every overlay
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
@@ -474,13 +551,16 @@ export function App(): React.JSX.Element {
           // Peel back one layer at a time: collapse an expanded card first, then
           // (on a second press) cancel any pending action and drop the selection.
           //
-          // Grid-only, because only the grid has a layer to peel: in the console and
-          // the board, "expanded" is just what the detail pane is, so collapsing would
-          // change nothing on screen while eating the Escape that should have closed
-          // the drawer. (`expandedId` can also be a leftover from a visit to the grid.)
+          // Grid focus and the board drill-in each sit above selection. Closing either
+          // leaves the keyboard cursor parked on the card it came from.
           if (layout === "grid" && expandedId) {
             e.preventDefault();
             setExpandedId(null);
+            return;
+          }
+          if (layout === "board" && boardOpen) {
+            e.preventDefault();
+            setBoardOpen(false);
             return;
           }
           if (!selectedId) return;
@@ -501,9 +581,24 @@ export function App(): React.JSX.Element {
             cols: columnCount(gridRef.current),
             columns: boardColumns,
           });
-          if (nextId) setSelectedId(nextId);
+          if (nextId) {
+            setSelectedId(nextId);
+            // Once drilled in, the board is a console rail: arrows switch the open detail
+            // too, which `boardOpenId` gets for free. In the overview they only move the
+            // tile cursor - and take DOM focus with them, so Enter opens what you see.
+            if (layout === "board" && !boardOpen) pendingTileFocus.current = nextId;
+          }
           return;
         }
+        case "Enter":
+          // A MODIFIED Enter is an ordinary bindable chord and must reach the matching
+          // below - the switch keys off `e.key`, so it lands here too and used to be
+          // eaten by the key it merely shares.
+          if (chord !== "Enter") break;
+          if (layout !== "board" || !selectedId || boardOpen) break;
+          e.preventDefault();
+          setBoardOpen(true);
+          return;
       }
 
       // Actions on the selected card.
@@ -548,24 +643,24 @@ export function App(): React.JSX.Element {
         setResetSessionId(sel.id);
         return;
       }
+      const bar = BAR_ACTIONS.find(([id]) => chord === bindings[id]);
+      if (!bar) return;
+      const run = bar[1];
       const h = handle();
-      if (!h) return;
-      if (chord === bindings.send) {
+      if (h) {
         e.preventDefault();
-        h.startSend();
-      } else if (chord === bindings.focus) {
-        e.preventDefault();
-        h.focusPane();
-      } else if (chord === bindings.queue) {
-        e.preventDefault();
-        h.toggleQueue();
-      } else if (chord === bindings.mode) {
-        e.preventDefault();
-        h.cycleMode();
-      } else if (chord === bindings.kill) {
-        e.preventDefault();
-        h.requestKill();
+        h[run]();
+        return;
       }
+      // No bar registered for the selection. On the board's overview that is structural
+      // rather than an absence: only the drill-in draws an action bar, so a tile the
+      // arrows merely landed on has none - which made `s`/`f`/`q`/⇧⇥/`k` silent no-ops
+      // there and broke "every shortcut works in every layout". Drill in and run against
+      // the bar that mounts with it, one render later.
+      if (layout !== "board" || !selectedId || boardOpen) return;
+      e.preventDefault();
+      pendingBarAction.current = { id: selectedId, run };
+      setBoardOpen(true);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -574,7 +669,18 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, renamingId, toggleExpand, bindings, layout]);
+  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout]);
+
+  // Run the chord the board's overview had to open a detail for. Deferred for the same
+  // reason as the reply focus below - the action bar it drives mounts on the render this
+  // effect trails - and reconciled against what actually opened, so a selection that moved
+  // in between doesn't get an action aimed at its neighbour.
+  useEffect(() => {
+    const pending = pendingBarAction.current;
+    pendingBarAction.current = null;
+    if (!pending || pending.id !== boardOpenId) return;
+    actionHandles.current.get(pending.id)?.[pending.run]();
+  }, [boardOpenId]);
 
   // Land the cursor in a keyboard-expanded card's send box. The panel that renders
   // it mounts on the render this effect trails, so a synchronous focus in the chord

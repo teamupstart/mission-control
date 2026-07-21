@@ -1692,7 +1692,7 @@ switches between them live, and the choice persists per machine:
 |--------|-------|----------|
 | **Cards** (default) | Every session a card in a responsive grid; one expands in place to fill the screen. | The general case, and the most detail per session without clicking. |
 | **Console** | A dense rail of every session with one always-open detail pane beside it. | Working *one* session while keeping an eye on the rest - the conversation is permanent, not a click away. |
-| **Board** | A column per state; clicking a card drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
+| **Board** | A column per state; clicking a card - or pressing <kbd>Enter</kbd> on the one the arrow keys are on - drills that column into the console's detail. | Reading the fleet's shape at a glance. "How many need me" is a column's height, not eight badges. |
 
 Nothing is lost by switching. Every layout draws from the *same* leaf pieces - the
 transcript, the work queue, the gate strip, the action bar, the goal and runtime pills -
@@ -1710,11 +1710,20 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
   Gate and Diff are things the session *has*, while Foreman is an observer talking *about*
   it. A card keeps the full note block instead, since it has no transcript to inline into.
 - **Cards** is the only layout with a focus mode, so <kbd>e</kbd> (expand) and the floating
-  command bar are unique to it. In the console and the board the selected session is
-  *already* the open detail, so there is nothing to expand, and its controls are on screen
-  permanently instead of on a bar that floats over them.
-- **Selecting is opening** in the console and the board: the arrow keys move the detail
-  with them, and <kbd>Esc</kbd> deselects (emptying the console's pane, or reversing the board's drill-in).
+  command bar are unique to it. In the console, and in the board once you're drilled in, the
+  open detail *is* the selected session, so there is nothing to expand, and its controls are
+  on screen permanently instead of on a bar that floats over them.
+- **Selecting is opening in the console**: the arrow keys move the detail with them, and
+  <kbd>Esc</kbd> deselects, emptying the pane.
+- **The board separates the two**, because its overview is worth reading without being
+  dragged through every transcript on the way. The arrow keys move a visible cursor from
+  tile to tile and open nothing; <kbd>Enter</kbd> drills the selected one into the console
+  detail, and <kbd>Esc</kbd> comes back out with the cursor still on the card you left. Once
+  you're in, the arrow keys move the open detail as the console's do - the drill-in is
+  always the selected session. Clicking a tile still does both in the one gesture.
+  Acting on the cursor works either way: <kbd>s</kbd>, <kbd>f</kbd>, <kbd>q</kbd>,
+  <kbd>⇧</kbd><kbd>Tab</kbd> and <kbd>k</kbd> pressed on the overview drill in and then do
+  what they say, so no shortcut is missing from the board.
 - **Killing a session closes its detail**, without waiting for the session to disappear -
   the board goes straight back to its columns, the console empties its pane, and Cards
   leaves focus mode with the card still selected. A killed session lingers for a few
@@ -1755,7 +1764,8 @@ without reaching for the mouse. Every shortcut works in every layout:
 | Key | Action | Scope |
 |-----|--------|-------|
 | <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> | Move the selection. Around the grid in **Cards**; up and down the rail in **Console**; along and across the columns in **Board** | Anywhere |
-| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
+| <kbd>Enter</kbd> | Open the selected session's detail (**Board** only - the other layouts open it with the selection). On a focused link or button it activates that instead, as it always does | Anywhere |
+| <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**) or leave the drill-in with the cursor still on it (**Board**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
 | <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
@@ -1769,16 +1779,16 @@ without reaching for the mouse. Every shortcut works in every layout:
 | <kbd>k</kbd> | Kill the selected session | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 
-Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
-**Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Mission Control →
-Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
+Every shortcut except the arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> is
+**customizable**. Open **Settings** - the ⚙ gear in the top bar, or (in the desktop app)
+**Mission Control → Settings…** / <kbd>⌘</kbd><kbd>,</kbd> - then click a shortcut and press the new key
 (optionally with <kbd>⌘</kbd> / <kbd>⌃</kbd> / <kbd>⌥</kbd> / <kbd>⇧</kbd>). On a letter,
 <kbd>⇧</kbd> counts as a modifier - <kbd>⇧</kbd><kbd>O</kbd> is a binding in its own right and
 plain <kbd>o</kbd> does *not* trigger it. On a key that already shifts into another character
 (<kbd>+</kbd>, <kbd>?</kbd>), just press that character. Bindings persist per machine,
 duplicate assignments are flagged inline, and you can reset any one shortcut (or all of
-them) to its default. The arrow keys and <kbd>Esc</kbd> drive navigation and can't be
-reassigned.
+them) to its default. The arrow keys, <kbd>Enter</kbd> and <kbd>Esc</kbd> drive navigation
+and can't be reassigned.
 
 ## Inspector (automated PR review)
 

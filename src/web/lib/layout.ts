@@ -43,15 +43,15 @@ export const LAYOUTS: { id: LayoutMode; label: string; description: string }[] =
  *
  * The grid's open detail is focus mode, so closing it is `expanded` and the selection
  * stays where it is - that is the keyboard's place among the cards, and losing it on
- * every close would make the arrow keys start from scratch. In the console and the board
- * the detail IS the selection (`expandedId` there is a leftover from a visit to the grid),
- * so the selection is the only thing whose going changes anything on screen.
+ * every close would make the arrow keys start from scratch. In the console the detail IS
+ * the selection. The board has its own open layer so arrow-key selection can move over
+ * tiles without drilling into each one; Enter promotes that selection into the open layer.
  *
  * A fourth layout answers here rather than growing another `layout === "grid"` ternary
  * inside App. Escape peels the same layers, one press at a time.
  */
-export function detailLayer(mode: LayoutMode): "expanded" | "selection" {
-  return mode === "grid" ? "expanded" : "selection";
+export function detailLayer(mode: LayoutMode): "expanded" | "selection" | "board" {
+  return mode === "grid" ? "expanded" : mode === "board" ? "board" : "selection";
 }
 
 /**

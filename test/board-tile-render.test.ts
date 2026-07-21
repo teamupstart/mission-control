@@ -49,6 +49,16 @@ function render(session: Session): string {
   return renderToStaticMarkup(createElement(BoardView, props([session])));
 }
 
+test("the keyboard-selected tile is marked without opening its console detail", () => {
+  const session = mkSession();
+  const selectedProps = { ...props([session]), selectedId: session.id };
+  const html = renderToStaticMarkup(createElement(BoardView, selectedProps));
+  assert.match(html, /class="tile [^"]*selected/);
+  assert.match(html, /aria-current="true"/);
+  assert.doesNotMatch(html, /class="board-col[^"]* is-rail/);
+  assert.match(html, /class="board-detail" aria-hidden="true"/);
+});
+
 test("the tile shows what the session is doing right now", () => {
   const html = render(mkSession());
   assert.match(html, /tile-activity/);

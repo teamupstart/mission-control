@@ -121,25 +121,12 @@ render otherwise) and is clipped while the track is closed.
   `.app-board .card.expanded` hosting rules all go - the full `SessionCard` is no
   longer hosted inside the board, so that whole block of CSS retires.
 
-### Selection & state - nothing new
+### Selection & keyboard (superseded)
 
-`props.selectedId` already drives board selection.
-`focusedTone = selected ? stateDisplay(selected).tone : null` derives the focused
-column. Clicking a tile calls the existing `onSelect`; Esc / back calls the
-existing `onDeselect`.
-
-**Edge - the selected session changes tone while focused** (e.g. *working →
-needs input*): `focusedTone` follows the session, so the focused column re-scopes
-to the session's new tone and the rail's contents shift with it. The detail pane
-is keyed by session id, so it stays put. This is coherent under "only that
-column" and a no-op under "full rail."
-
-### Keyboard
-
-No `layoutNav.ts` change was needed: the existing 2-D board arrow-key navigation
-maps cleanly onto the focused rail - Up/Down walk the rail, Left/Right jump to
-the adjacent column's console. Esc deselects back to the overview (already
-wired).
+The later board keyboard-navigation change separated the overview cursor from
+the open detail. The [README keyboard reference](../../../README.md#keyboard-shortcuts)
+owns the current interaction contract; this original plan's selection and
+keyboard notes are superseded.
 
 ## Files touched
 

@@ -79,7 +79,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
         return { ...pendingDrop, session, title: task?.title ?? null };
       })()
     : null;
-  const selected = props.sessions.find((s) => s.id === props.selectedId) ?? null;
+  const selected = props.sessions.find((s) => s.id === props.expandedId) ?? null;
   // The focused column follows the session, not the click: if the open session moves
   // tone (working -> needs input), its column re-scopes with it, and the rail's rows
   // change under a detail that - keyed by id in the aside - stays put.
@@ -179,8 +179,10 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
                     <SessionTile
                       key={s.id}
                       session={s}
+                      selected={s.id === props.selectedId}
                       gateNeedsYou={props.gateAlerts.has(s.id)}
                       onOpen={() => props.onSelect(s.id)}
+                      registerEl={props.registerEl}
                       draggingRepo={draggingRepo}
                       onDropped={() => setDraggingRepo(null)}
                       onDropError={setDropError}

@@ -918,6 +918,53 @@ export const InspectorConfigPatchSchema = InspectorConfigSchema.partial().refine
 );
 export type InspectorConfigPatch = z.infer<typeof InspectorConfigPatchSchema>;
 
+// ---- Shipping (landing the pull requests we opened, unattended) ----
+
+/**
+ * YOLO mode's consent model. Same shape and the same defaults-are-off posture as
+ * `InspectorConfigSchema`, because it is a bigger version of the same bet: the Inspector
+ * writes a comment nobody has to act on, this one writes to the DEFAULT BRANCH.
+ *
+ * It rides the Inspector's tick and only ever looks at PRs the Inspector adopted, so
+ * "only our pull requests" is inherited rather than restated - and with the Inspector off
+ * nothing is reviewed, so nothing qualifies and nothing merges.
+ */
+export const ShippingConfigSchema = z.object({
+  /** The master switch. Off means the gate is never even evaluated as passable. */
+  autoMerge: z.boolean().default(false),
+  /**
+   * How long a pull request must have been OPEN before it may merge itself.
+   *
+   * The one control that is about people rather than about the code: it is the window in
+   * which a colleague can look at what an agent has proposed and say no. Ten minutes by
+   * default - long enough to notice a PR land in a channel, short enough that a fleet
+   * running overnight is not blocked on anyone.
+   *
+   * Zero is allowed and means "merge as soon as it qualifies", which is the honest
+   * reading of YOLO; the ceiling is a day, past which this is not auto-merge any more.
+   */
+  soakMinutes: z.number().int().min(0).max(1440).default(10),
+  /** How to land it. Squash by default, matching what the fleet's own PRs expect. */
+  method: z.enum(["squash", "merge", "rebase"]).default("squash"),
+  /**
+   * Repos the operator has trusted to merge unattended. Empty = merge nowhere.
+   *
+   * A THIRD consent gate over the same `repoAllowlisted` predicate the Foreman and the
+   * Inspector use, and deliberately its own list rather than a reuse of the Inspector's:
+   * "you may comment here" and "you may push to main here" are different grants, and
+   * folding them would mean switching the Inspector on in a repo silently armed this.
+   */
+  repoAllowlist: z.array(z.string().min(1)).default([]),
+});
+export type ShippingConfig = z.infer<typeof ShippingConfigSchema>;
+
+/** Partial update of the Shipping config from the dashboard. */
+export const ShippingConfigPatchSchema = ShippingConfigSchema.partial().refine(
+  (o) => Object.keys(o).length > 0,
+  { message: "empty config update" },
+);
+export type ShippingConfigPatch = z.infer<typeof ShippingConfigPatchSchema>;
+
 /**
  * Defaults the harness applies to the sessions IT dispatches - never to the
  * sessions it merely discovered. A schema-validated blob over the `app_config` KV,

@@ -1458,6 +1458,23 @@ export interface InspectorPr {
    * three lines would sit out the full wait a huge one bought.
    */
   lastAttemptSha: string | null;
+  /**
+   * When YOLO mode merged this PR itself, epoch ms, or null.
+   *
+   * Distinct from the row simply going `closed`, which is also what a human merging it
+   * looks like. Only this field says the fleet landed it unattended, and that is the one
+   * fact somebody reading the ledger afterwards actually wants.
+   */
+  mergedAt: number | null;
+  /**
+   * Why it has not merged itself, as of the last sweep. A `MergeBlock` code
+   * (`@shared/shipping.ts`), or the message `gh` gave when it refused the merge outright.
+   *
+   * Stored rather than derived because the panel polls a route and the decision is made
+   * in the tick, 90 seconds apart - and because the failure mode of an auto-merger is
+   * merging nothing while saying nothing.
+   */
+  mergeBlock: string | null;
   adoptedAt: number;
   updatedAt: number;
 }

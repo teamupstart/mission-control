@@ -57,6 +57,10 @@ and get your decision back.
 - **Equips** every session with [skills](#skills-every-session-no-restarts): switch a Claude
   Code skill on in Settings and it applies to **every** Claude session on the machine -
   including ones this app never launched - without restarting any of them. Claude only.
+- **Lands the clean ones**, if you let it: [YOLO mode](#shipping-yolo-mode) merges a pull
+  request Mission Control opened once the Inspector has reviewed the current push with
+  nothing outstanding, CI is green, no thread is unresolved, and it has been open for a
+  soak window you set. Ships off, trusting no repositories.
 
 ## Quick start
 
@@ -1489,6 +1493,53 @@ them, then records them instead of publishing. **Settings → Inspector → Rece
 inspections** is where you read what it would have said. Run it there on a few of your own
 PRs before you let it speak.
 
+## Shipping (YOLO mode)
+
+**Settings → Shipping** is where you decide what lands without you. **YOLO mode** merges
+the pull requests Mission Control opened - the same adopted set the Inspector reviews, and
+only those.
+
+It ships **off**, trusting **no repositories**, with a **10 minute** soak.
+
+### What has to be true
+
+Every one of these, on the same read of the pull request:
+
+| Gate | Why |
+|---|---|
+| The Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
+| No open Inspector findings | posted or previewed in dry run - a finding is a finding |
+| No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
+| Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
+| **CI passing** on the head commit | a commit with **no** checks does not pass this: it has never been asked |
+| GitHub says it merges cleanly | `CONFLICTING` blocks, and so does mergeability it has not computed yet |
+| Open for the **soak** | the window in which somebody can look and say no |
+| The repo is on the **Shipping allowlist** | its own list, not the Inspector's |
+
+The soak is measured from when the pull request was opened, and defaults to 10 minutes.
+Zero means "merge as soon as everything else passes". A push resets the review gate rather
+than the soak - the new head has to be reviewed clean before anything merges.
+
+The merge itself is a compare-and-swap against the head that was evaluated, so a push
+landing in the seconds between the decision and the call makes GitHub refuse rather than
+merge code nothing has looked at. Squash by default; merge commit and rebase are the other
+two options.
+
+### It needs the Inspector
+
+YOLO mode rides the Inspector's poll and merges what the Inspector reviewed clean, so with
+the Inspector switched **off** nothing is ever reviewed, nothing qualifies, and nothing
+merges. The panel says so when it is armed and the Inspector is not. It is not a way to
+merge unreviewed pull requests.
+
+### Why it did not merge
+
+An auto-merger's failure mode is merging nothing and never saying why, so **Settings →
+Shipping → Where each pull request stands** carries the current reason per PR: soaking, CI
+still running, three open findings, not on the allowlist. When GitHub refuses the merge
+outright - a branch protection rule this app cannot see - its own message is shown there
+verbatim, because that is the only account you get of a rule nothing here can read.
+
 ## no-mistakes
 
 The design is inspired by [`kunchenguid/no-mistakes`](https://github.com/kunchenguid/no-mistakes)
@@ -1768,3 +1819,10 @@ session, task, or spend state. Cost datapoints arrive carrying `user.email`,
 attributes and discards the rest before anything is written, so none of it reaches the
 database. Session and task
 actions (send / rename / focus / kill, dispatch / cancel / complete) are localhost-only.
+
+Two subsystems act outside this machine, and both are off until you separately arm them
+and name the repositories they may act in: the [Inspector](#inspector-automated-pr-review),
+which comments on pull requests under your GitHub account, and
+[YOLO mode](#shipping-yolo-mode), which merges them. Their allowlists are deliberately
+separate - trusting an automated reviewer to comment in a repo is not the same act as
+letting it push to that repo's base branch.

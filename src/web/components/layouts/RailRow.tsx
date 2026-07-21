@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import type { Session } from "@shared/types.ts";
 import { costIsNotable } from "@shared/cost.ts";
 import { relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, inspectorChipView } from "../session-bits.tsx";
+import { AgentDot, InspectorRailMark } from "../session-bits.tsx";
 
 /**
  * One line in a rail: enough to choose by, and nothing more. The goal is the
@@ -70,20 +70,9 @@ export function RailRow({
           )}
           {/* The rail is glyph-and-count only - it has one line of room and a name to fit
               in it - so the Inspector shows as ⌕ plus its count, and nothing when there
-              is nothing outstanding. The DECISION is the shared one; only the rendering
-              is this terse. */}
-          {(() => {
-            const insp = inspectorChipView(session.inspector);
-            if (!insp || insp.tone === "insp-clean" || insp.tone === "insp-queued") return null;
-            return (
-              <span
-                className={`rail-insp ${insp.tone}${insp.dry ? " insp-dry" : ""}`}
-                title={insp.title}
-              >
-                ⌕{insp.mark}
-              </span>
-            );
-          })()}
+              is nothing outstanding. The DECISION and the tooltip are the shared ones;
+              only the rendering is this terse. */}
+          <InspectorRailMark session={session} />
           <span className="rail-seen">
             {session.lastActivity ? relativeTime(session.lastActivity) : uptime(session.startedAt)}
           </span>

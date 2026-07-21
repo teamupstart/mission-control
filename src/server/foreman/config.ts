@@ -51,9 +51,19 @@ export function getForemanConfig(): ForemanConfig {
   return ForemanConfigSchema.parse(getAppConfig<unknown>(CONFIG_KEY) ?? {});
 }
 
-/** Merge a patch over the current config, persist, and return the result. */
+/**
+ * Merge a patch over the current config, persist, and return the result.
+ *
+ * Backlog launch defaults are keyed by harness, so merge that one nested map rather
+ * than replacing it wholesale. The settings panel edits one agent at a time.
+ */
 export function setForemanConfig(patch: ForemanConfigPatch): ForemanConfig {
-  const next = ForemanConfigSchema.parse({ ...getForemanConfig(), ...patch });
+  const cur = getForemanConfig();
+  const next = ForemanConfigSchema.parse({
+    ...cur,
+    ...patch,
+    backlogDefaultModel: { ...cur.backlogDefaultModel, ...(patch.backlogDefaultModel ?? {}) },
+  });
   setAppConfig(CONFIG_KEY, next);
   return next;
 }

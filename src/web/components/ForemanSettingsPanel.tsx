@@ -7,6 +7,8 @@ import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models
 import type { ForemanConfigPatch } from "@shared/protocol.ts";
 import { LLM_RUNNER_IDS } from "@shared/llm.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
+import type { ModelChoiceSpec } from "@shared/model-choice.ts";
 
 // Foreman's set-once configuration, as a settings category. The topbar popover keeps the
 // in-the-moment knobs (enable, mode, work queues, on-drain); the durable posture lives
@@ -17,6 +19,23 @@ const TIER_LABEL: Record<"off" | "shadow" | "on", string> = {
   off: "Off - full review for every prompt",
   shadow: "Shadow - run the cheap tier alongside, measure it",
   on: "On - cheap tier answers the easy ones",
+};
+
+// Unlike Foreman's own model calls, a backlog launch runs the task's chosen harness.
+// Keep one field per harness: a Claude id cannot be a meaningful Codex default.
+const BACKLOG_TASK_MODEL_SPECS: Record<(typeof AGENT_TYPES)[number], ModelChoiceSpec> = {
+  claude: {
+    label: "Claude backlog tasks",
+    envVar: "",
+    fallback: "the Harnesses default",
+    blurb: "Used when Foreman launches an unpinned Claude task from the backlog.",
+  },
+  codex: {
+    label: "Codex backlog tasks",
+    envVar: "",
+    fallback: "the Harnesses default",
+    blurb: "Used when Foreman launches an unpinned Codex task from the backlog.",
+  },
 };
 
 /** Repos worth offering in the picker: known repos, minus the ones already trusted. */
@@ -156,6 +175,29 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
               // env/default ladder takes over again - not dropped from the patch, which
               // would leave the old value in place and look like the edit didn't stick.
               void update({ [FOREMAN_MODEL_SPECS[role].configKey]: next } as ForemanConfigPatch)
+            }
+          />
+        ))}
+      </div>
+
+      <div className="foreman-models">
+        <p className="settings-group-label">Backlog launch models</p>
+        <p className="settings-hint foreman-models-hint">
+          When Foreman starts a fresh backlog task, this selects its model unless the task
+          already names one. Handing work to an existing session leaves that session's model
+          unchanged.
+        </p>
+        {AGENT_TYPES.map((agent) => (
+          <ModelField
+            key={agent}
+            id={`foreman-backlog-task-model-${agent}`}
+            spec={BACKLOG_TASK_MODEL_SPECS[agent]}
+            value={config?.backlogDefaultModel?.[agent] ?? ""}
+            resolved={undefined}
+            runner={agent}
+            disabled={!config}
+            onCommit={(next) =>
+              void update({ backlogDefaultModel: { [agent]: next || null } })
             }
           />
         ))}

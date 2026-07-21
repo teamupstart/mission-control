@@ -89,7 +89,16 @@ export function useForeman(): ForemanState {
     async (patch: ForemanConfigPatch): Promise<void> => {
       const before = configRef.current;
       if (!before) return;
-      setConfig({ ...before, ...patch });
+      // `backlogDefaultModel` is a per-harness map. Preserve the other harness's
+      // selection while the server-side merge is in flight, matching setForemanConfig.
+      setConfig({
+        ...before,
+        ...patch,
+        backlogDefaultModel: {
+          ...before.backlogDefaultModel,
+          ...(patch.backlogDefaultModel ?? {}),
+        },
+      });
       const res = await api.setForemanConfig(patch);
       if (!res.ok) {
         setConfig(before);

@@ -10,6 +10,7 @@ import {
   CompleteTaskSchema,
   CostConfigPatchSchema,
   CreateReviewSchema,
+  DispatchBacklogTaskSchema,
   DispatchSchema,
   ResolveRepoSchema,
   EditWorkItemSchema,
@@ -1384,7 +1385,9 @@ export function buildApp(
   });
 
   app.post("/api/tasks/:id/dispatch", async (c) => {
-    const t = await tasks.dispatch(c.req.param("id"));
+    const parsed = await parseBody(c, DispatchBacklogTaskSchema);
+    if (!parsed.ok) return parsed.res;
+    const t = await tasks.dispatch(c.req.param("id"), parsed.data);
     if (!t) return c.json({ error: "no such task" }, 404);
     return c.json(t);
   });
@@ -1441,4 +1444,3 @@ export function hostIsLoopback(host: string | undefined): boolean {
   const h = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
 }
-

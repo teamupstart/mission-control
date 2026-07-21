@@ -23,6 +23,15 @@ test("Foreman persists Codex independently from the app-wide background provider
   assert.equal(cfg.reviewModel, "gpt-5.6-terra");
 });
 
+test("Foreman merges backlog launch defaults per harness", () => {
+  setForemanConfig({ backlogDefaultModel: { codex: "gpt-5.6-terra" } });
+  const cfg = setForemanConfig({ backlogDefaultModel: { claude: "claude-sonnet-5" } });
+  assert.deepEqual(cfg.backlogDefaultModel, {
+    claude: "claude-sonnet-5",
+    codex: "gpt-5.6-terra",
+  });
+});
+
 test("Inspector persists Codex and resolves its Codex default after restart-style reread", () => {
   setInspectorConfig({ runner: "codex", model: "" });
   const cfg = getInspectorConfig();

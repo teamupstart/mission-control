@@ -609,7 +609,10 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
   }
 
   recentlyActed.set(action.task.id, now);
-  const r = await client.dispatchTask(action.task.id);
+  const r = await client.dispatchTask(
+    action.task.id,
+    cfg.backlogDefaultModel[action.task.agent],
+  );
   if (!r.ok) {
     if (taskRefused(r.status)) recentlyActed.delete(action.task.id);
     noteBacklog(`could not launch "${oneLine(action.task.title)}" - ${r.error}`);

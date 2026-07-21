@@ -58,6 +58,11 @@ export interface Ok {
   error?: string;
 }
 
+/** A launch-time default that Foreman may supply for an otherwise-unpinned backlog task. */
+export interface DispatchOptions {
+  defaultModel?: string | null;
+}
+
 /** The seams and the one decision `TaskManager.assign` takes from its caller. */
 export interface AssignOptions {
   /**
@@ -255,12 +260,19 @@ export class TaskManager {
    * `task.title` and can never be renamed afterwards, so dispatching mid-titling would
    * name them after the heuristic title and leave the card disagreeing with both.
    */
-  async dispatch(id: string): Promise<Task | null> {
+  async dispatch(id: string, options: DispatchOptions = {}): Promise<Task | null> {
     await this.titling.get(id);
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
     if (!t) return null;
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
+      // A task-specific model is an explicit operator choice and must always win. Foreman
+      // supplies this only for a fresh backlog launch; persisting it before the async
+      // dispatcher starts makes the task card's model match the command line it will use.
+      if (t.status === "backlog" && t.model === null && options.defaultModel) {
+        const selected = { ...t, model: options.defaultModel, updatedAt: Date.now() };
+        this.registry.upsertTask(selected);
+      }
       void this.dispatcher.dispatch(id);
     }
     return this.registry.getTask(id) ?? t;

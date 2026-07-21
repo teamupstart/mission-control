@@ -450,6 +450,19 @@ export function isAnnotationOnlyUpdate(patch: UpdateTask): boolean {
   return Object.keys(patch).every((k) => k === "priority" || k === "labels");
 }
 
+/**
+ * Optional launch-time default supplied by Foreman's backlog autopilot.
+ *
+ * This is intentionally separate from `DispatchSchema`: a task's own `model` is
+ * durable operator input, while this value is only used to fill an unpinned backlog
+ * task at the instant Foreman launches it. The daemon persists the selected value
+ * before dispatch so the task record honestly describes the command it launched.
+ */
+export const DispatchBacklogTaskSchema = z.object({
+  defaultModel: ModelIdSchema.nullable().optional(),
+});
+export type DispatchBacklogTask = z.infer<typeof DispatchBacklogTaskSchema>;
+
 /** Hand a backlog task to an agent that is already running (the board's drag-to-dispatch). */
 export const AssignTaskSchema = z.object({
   sessionId: z.string().min(1),
@@ -728,6 +741,22 @@ export const ForemanConfigSchema = z.object({
    */
   backlogRespectOpenPrs: z.boolean().default(true),
   /**
+   * The model Foreman selects when it launches a backlog task that did not already
+   * name one. Keyed by agent because a Claude model id cannot be passed to Codex.
+   *
+   * `null` deliberately leaves the task unpinned, so its launch continues through
+   * the Harnesses default (or the harness CLI's own default). An explicit task model
+   * always wins; this is a default for the autopilot's fresh launches, not a rewrite
+   * of a human's choice. Assigning work to an already-running session has no model
+   * knob at all, so it is unaffected.
+   */
+  backlogDefaultModel: z
+    .object({
+      claude: ModelIdSchema.nullable().default(null),
+      codex: ModelIdSchema.nullable().default(null),
+    })
+    .default({ claude: null, codex: null }),
+  /**
    * The ceiling on how many agents may be running at once before the backlog autopilot
    * stops launching new ones.
    *
@@ -749,11 +778,22 @@ export const ForemanConfigSchema = z.object({
 });
 export type ForemanConfig = z.infer<typeof ForemanConfigSchema>;
 
-/** Partial update of the Foreman config from the dashboard. */
-export const ForemanConfigPatchSchema = ForemanConfigSchema.partial().refine(
-  (o) => Object.keys(o).length > 0,
-  { message: "empty config update" },
-);
+/**
+ * Partial update of the Foreman config from the dashboard.
+ *
+ * `backlogDefaultModel` is spelled out rather than inherited from `.partial()`:
+ * the server merges it per harness, so a Claude edit cannot erase a Codex choice.
+ */
+export const ForemanConfigPatchSchema = ForemanConfigSchema.partial()
+  .extend({
+    backlogDefaultModel: z
+      .object({
+        claude: ModelIdSchema.nullable().optional(),
+        codex: ModelIdSchema.nullable().optional(),
+      })
+      .optional(),
+  })
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type ForemanConfigPatch = z.infer<typeof ForemanConfigPatchSchema>;
 
 /**

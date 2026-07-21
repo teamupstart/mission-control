@@ -297,6 +297,12 @@ const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
   // one entry here forces a decision about every capability at once, and every phase of
   // the pluggable-integrations migration adds another to that list.
   ["src/server/harness/index.ts", "Harness"],
+  // The harness registry's PURE half, split out because the dashboard answers most of
+  // these in the browser and cannot import a spec that calls `statSync`. Both rows are
+  // required and neither subsumes the other: this one forces permission modes, skills,
+  // the work queue, context clearing and MCP; the one above forces the transcript. A new
+  // harness that fills in only one of them does not compile.
+  ["src/shared/harness-capabilities.ts", "HarnessCapabilities"],
 ];
 
 /**

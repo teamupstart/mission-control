@@ -57,7 +57,8 @@ import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
-import { sessionMessages } from "./harness/index.ts";
+import { harnessFor, sessionMessages } from "./harness/index.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import {
   claimForemanLease,
@@ -217,6 +218,20 @@ function retractByline(rowId: number): void {
   } catch (err) {
     console.error("[nomistakes] could not retract the gate reply:", err);
   }
+}
+
+/**
+ * Why this session's permission mode cannot be driven, or null when it can be.
+ *
+ * The refusal is a CAPABILITY answer, not an agent-id one: both mode routes walk the
+ * Shift+Tab cycle and read the result back off a footer line, and a harness that renders
+ * no such line has nothing for the walk to verify against - so it is refused here rather
+ * than left to time out having typed Shift+Tab into somebody's editor. Named from
+ * `AGENT_NAMES` so a fourth harness gets a true sentence instead of inheriting "Claude".
+ */
+function noPermissionModes(session: Session): string | null {
+  if (harnessFor(session.agent).permissionModes) return null;
+  return `${AGENT_NAMES[session.agent].label} has no permission modes`;
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */
@@ -628,12 +643,13 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Cycle the session's permission mode one Shift+Tab step - Claude only.
+  // Cycle the session's permission mode one Shift+Tab step - only for a harness that
+  // declares `permissionModes`.
   app.post("/api/sessions/:id/mode/cycle", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (session.agent !== "claude")
-      return c.json({ error: "permission modes are a Claude feature" }, 400);
+    const refusal = noPermissionModes(session);
+    if (refusal) return c.json({ error: refusal }, 400);
     const r = await cyclePermissionMode(session);
     // `r.mode` was read back off the pane, so recording it can't diverge from
     // what Claude actually did; it's null when the pane didn't show us a mode.
@@ -641,14 +657,14 @@ export function buildApp(
     return c.json(r, r.ok ? 200 : 500);
   });
 
-  // Drive the session to a specific permission mode - Claude only. Walks the
-  // Shift+Tab cycle, verifying against the pane at each step; see
-  // `setPermissionMode` for why the distance can't just be computed.
+  // Drive the session to a specific permission mode. Walks the Shift+Tab cycle,
+  // verifying against the pane at each step; see `setPermissionMode` for why the
+  // distance can't just be computed.
   app.post("/api/sessions/:id/mode", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
-    if (session.agent !== "claude")
-      return c.json({ error: "permission modes are a Claude feature" }, 400);
+    const refusal = noPermissionModes(session);
+    if (refusal) return c.json({ error: refusal }, 400);
     const parsed = await parseBody(c, SetPermissionModeSchema);
     if (!parsed.ok) return parsed.res;
     const r = await setPermissionMode(session, parsed.data.mode);

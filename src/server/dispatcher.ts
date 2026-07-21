@@ -7,6 +7,7 @@ import { askChannelArgs } from "./ask-channel.ts";
 import { injectPrompt, setPermissionMode } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
 import { getHarnessesConfig, resolveDispatchModel } from "./harnesses.ts";
+import { harnessFor } from "./harness/index.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
@@ -189,27 +190,31 @@ export class Dispatcher {
 
   /**
    * When the "auto mode on dispatch" harness setting is on, drive a freshly-ready
-   * Claude session to `auto` before its first prompt lands, so the whole task runs
-   * autonomously instead of pausing on permission prompts.
+   * session to its harness's autonomous mode before the first prompt lands, so the whole
+   * task runs without pausing on permission prompts.
    *
    * Scoped to the dispatch path on purpose: this only ever touches sessions the
    * harness launched, never one the operator started themselves and the harness
    * merely discovered - the contract the setting promises.
    *
+   * `permissionModes.onDispatch` rather than a literal `"auto"`, and null is the whole
+   * answer for a harness with no autonomous mode to arm: it is skipped, silently and
+   * correctly, instead of the setting quietly meaning something different per agent.
+   *
    * Best-effort by design. `setPermissionMode` walks the Shift+Tab cycle, which can
    * legitimately fall short - `auto` isn't enabled for every account, and a dialog
    * over the mode line makes it unreadable (though a fresh, pre-prompt Claude has
    * neither) - and none of that should sink a dispatch that otherwise launched
-   * cleanly: the agent simply stays in whatever mode it booted in. Codex has no
-   * permission mode, so it's skipped entirely (the setting admits codex later).
+   * cleanly: the agent simply stays in whatever mode it booted in.
    */
   private async applyAutoMode(session: Session, agent: AgentType): Promise<void> {
-    if (agent !== "claude") return;
+    const mode = harnessFor(agent).permissionModes?.onDispatch;
+    if (!mode) return;
     if (!getHarnessesConfig().autoModeOnDispatch) return;
-    const r = await setPermissionMode(session, "auto");
+    const r = await setPermissionMode(session, mode);
     if (!r.ok) {
       console.warn(
-        `[mission-control] could not put dispatched session ${session.id} into auto mode: ` +
+        `[mission-control] could not put dispatched session ${session.id} into ${mode} mode: ` +
           `${r.error ?? "unknown"} - it will run in its default mode`,
       );
     }

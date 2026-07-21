@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PermissionMode, Session } from "@shared/types.ts";
 import { api } from "../lib/api.ts";
-import { permissionModeDisplay, PICKABLE_MODES } from "../lib/format.ts";
+import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
 
 /**
  * The card's permission-mode chip, clickable to pick a different mode instead of
@@ -13,6 +13,9 @@ import { permissionModeDisplay, PICKABLE_MODES } from "../lib/format.ts";
  * `setPermissionMode`). That walk can legitimately fail: the mode may not be
  * enabled for the session, or a dialog may be open and eating the keystroke. So
  * the popover stays open on failure and shows why, rather than closing on a lie.
+ *
+ * Renders nothing for a harness that declares no `permissionModes`, so mounting it
+ * unconditionally is safe and the layouts do not each carry their own agent check.
  *
  * The popover is a body-level portal with fixed positioning, like Tooltip, because
  * `.card` sets `overflow: hidden` and would otherwise clip it.
@@ -33,6 +36,7 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
   const chipRef = useRef<HTMLButtonElement>(null);
   const popRef = useRef<HTMLDivElement>(null);
 
+  const modes = pickableModes(session.agent);
   const current = permissionModeDisplay(session.permissionMode);
   // Driving the mode means sending a keystroke, which needs a live pane to send into.
   const canPick = session.state !== "exited" && Boolean(session.tmux || session.wezterm);
@@ -74,10 +78,12 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
     };
   }, [open, place]);
 
-  // A session that reports no mode has no chip to hang this on - same as before
-  // the picker existed. With the mode read off the pane each poll, that now only
-  // happens when Claude is showing a dialog over its own mode line.
-  if (!current) return null;
+  // A harness with no permission modes has nothing to draw, and says so HERE rather than
+  // at each of the three layouts that mount this - which is what lets those call sites
+  // drop their own `agent === "claude"`. A session that reports no mode has no chip to
+  // hang this on either; with the mode read off the pane each poll, that now only happens
+  // when the agent is showing a dialog over its own mode line.
+  if (modes.length === 0 || !current) return null;
 
   if (!canPick) {
     return (
@@ -128,7 +134,7 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
             style={{ width: WIDTH, ...anchor }}
             onClick={(e) => e.stopPropagation()}
           >
-            {PICKABLE_MODES.map((m) => {
+            {pickableModes(session.agent).map((m) => {
               const d = permissionModeDisplay(m)!;
               const active = session.permissionMode === m;
               return (

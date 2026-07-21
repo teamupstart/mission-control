@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
@@ -141,10 +142,10 @@ export function ActionBar({
     void run("focus", () => api.focus(session.id));
   }
 
-  // Cycle the permission mode (Shift+Tab) - only meaningful for a Claude session
-  // with a pane to inject the keystroke into; a no-op otherwise.
+  // Cycle the permission mode (Shift+Tab) - only meaningful for a harness that has
+  // modes, and a pane to inject the keystroke into; a no-op otherwise.
   function cycleMode() {
-    if (!canSend || session.agent !== "claude") return;
+    if (!canSend || !capabilitiesFor(session.agent).permissionModes) return;
     void run("mode", () => api.cycleMode(session.id));
   }
 

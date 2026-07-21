@@ -1,4 +1,5 @@
 import type { PermissionMode } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { paneToken } from "@shared/pane.ts";
 import type { DiscoveredSession } from "./correlate.ts";
 import { forgetPanesExcept, paneReadLost, paneReadOk } from "./capture-tolerance.ts";
@@ -121,13 +122,19 @@ export async function readPaneModeLine(session: PaneHandles): Promise<PaneModeLi
  * not blank the chip), while the dialog is written unconditionally on a successful
  * capture - including as null, which is how a dismissed menu clears the card.
  *
- * Codex has no permission-mode concept and doesn't render these dialogs, so it's skipped.
+ * Skipped for a harness with no `permissionModes` capability: there is no footer mode line
+ * to find, so the capture would buy nothing. Note that the DIALOG half rides along on that
+ * same guard - `parsePaneDialog` is Claude's menu grammar, and it will move to its own
+ * `tui` capability when that slot lands (see the plan's "Fixes found along the way": a
+ * Codex session parked on a prompt currently reads as idle). Gating both on
+ * `permissionModes` is exactly today's behaviour, restated as a capability rather than as
+ * an agent id.
  */
 export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<void> {
   // The token IS the handle check: a session with no pane has no token, and one without
   // a token has nothing to capture and nothing to count misses against.
   const keyed = sessions.flatMap((s) => {
-    if (s.agent !== "claude") return [];
+    if (!capabilitiesFor(s.agent).permissionModes) return [];
     const key = paneToken(s);
     return key ? [{ s, key }] : [];
   });

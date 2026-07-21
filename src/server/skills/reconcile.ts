@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
+import { CLAUDE_SKILLS } from "@shared/harness-capabilities.ts";
+import type { SkillsSpec } from "@shared/harness-capabilities.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
@@ -21,12 +23,12 @@ import type { Catalog } from "./catalog.ts";
 // /private/tmp and ~/workspace included.
 
 /**
- * The skills directory THIS daemon owns.
+ * Where a harness's skills live, given its `skills` capability.
  *
- * `~/.claude/skills` for an ordinary install - the operator's global claude config, which
- * is the whole point of the feature. But a daemon running on an explicit home override
- * (`MISSION_HOME`, or the older prefixes `envVar` still reads) gets a directory inside
- * that home instead, because it does not own the machine's shared one.
+ * `~/.claude/skills` for an ordinary claude install - the operator's global claude
+ * config, which is the whole point of the feature. But a daemon running on an explicit
+ * home override (`MISSION_HOME`, or the older prefixes `envVar` still reads) gets a
+ * directory inside that home instead, because it does not own the machine's shared one.
  *
  * That scoping is not tidiness, it is the fix for real data loss. Which skills are on
  * lives in the DB, and the DB lives under the state dir - so an isolated daemon has its
@@ -42,14 +44,32 @@ import type { Catalog } from "./catalog.ts";
  * The same rule `migrateStateDir` already holds: an explicit override owns its own path.
  * The cost is that an isolated daemon's links land where no real `claude` will read them,
  * which is correct - a throwaway home has no business installing skills machine-wide.
- * `CLAUDE_SKILLS_DIR` still wins over both, so a test (or an operator) that genuinely
+ * The spec's `dirEnvVar` still wins over both, so a test (or an operator) that genuinely
  * wants a specific directory names it and gets it.
  */
-export function claudeSkillsDir(): string {
-  if (process.env.CLAUDE_SKILLS_DIR) return process.env.CLAUDE_SKILLS_DIR;
+export function skillsDirFor(spec: SkillsSpec): string {
+  const named = process.env[spec.dirEnvVar];
+  if (named) return named;
   const home = envVar("HOME");
-  if (home) return join(home, "claude-skills");
-  return join(homedir(), ".claude", "skills");
+  if (home) return join(home, spec.isolatedDirName);
+  return join(homedir(), ...spec.homeDir);
+}
+
+/**
+ * The skills directory THIS daemon owns.
+ *
+ * Skills are a harness capability and exactly one harness declares one, so this reads
+ * that spec instead of spelling `~/.claude/skills` again. It stays a SINGLE directory
+ * because everything below is single-directory: `reconcileSkillLinks` walks one `dir` and
+ * removes anything of ours it does not want in it. When a second harness declares
+ * `skills`, this becomes a loop over `skillsAgents()` and every caller takes a list -
+ * which is a real change, not a rename, so it is not pre-empted here.
+ *
+ * Named directly rather than reached through `capabilitiesFor("claude")` so the path
+ * needs no null check on a capability that is, by construction, present.
+ */
+export function claudeSkillsDir(): string {
+  return skillsDirFor(CLAUDE_SKILLS);
 }
 
 /** What one pass changed, and anything it refused to. */

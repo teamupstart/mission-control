@@ -41,6 +41,7 @@ import type {
 } from "@shared/protocol.ts";
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { paneToken, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import {
   effectiveContextWindow,
@@ -2165,19 +2166,19 @@ export class Registry extends EventEmitter {
    * Ensure a queue row exists for a session, refreshing its cwd/branch (the
    * re-attach hint must track where the session actually is). Returns the key.
    *
-   * Claude-only, and refused HERE because this is the boundary the write crosses -
-   * the panel hiding its add box is presentation, not enforcement, and the loopback
-   * API (which the worker is itself a client of) goes straight past it. Every tick
-   * filters to `agent === "claude"`, so a queue on a Codex session would never
-   * advance; and because that session is LIVE, its key is live, so neither the cwd
-   * re-attach hint nor the orphan sweep would ever offer the batch to anyone.
-   * That is the same one-way trip to nowhere `reattachQueue` refuses, arriving by a
-   * different door.
+   * Refused for a harness with no `workQueue` capability, and refused HERE because this
+   * is the boundary the write crosses - the panel hiding its add box is presentation,
+   * not enforcement, and the loopback API (which the worker is itself a client of) goes
+   * straight past it. Every tick filters on the same capability, so a queue on such a
+   * session would never advance; and because that session is LIVE, its key is live, so
+   * neither the cwd re-attach hint nor the orphan sweep would ever offer the batch to
+   * anyone. That is the same one-way trip to nowhere `reattachQueue` refuses, arriving
+   * by a different door.
    */
   ensureQueue(id: string, now = Date.now()): string | null {
     const s = this.sessions.get(id);
     if (!s) return null;
-    if (s.agent !== "claude") return null;
+    if (!capabilitiesFor(s.agent).workQueue) return null;
     const key = noteKeyFor(s);
     const prev = getQueueRow(key);
     upsertQueue({
@@ -2338,13 +2339,13 @@ export class Registry extends EventEmitter {
     if (!s || !row) return false;
     // Only onto a session that can actually RUN a queue. `orphanedQueueFor` matches
     // on cwd alone, so the hint is offered beside any live session at the orphan's
-    // directory - including a Codex one, which `tickTargets` filters out of every
-    // tick. Re-keying onto it is a one-way trip to nowhere: the queue never ticks
-    // again, and because the target now holds the key, the queue counts as live, so
-    // neither the cwd hint nor the cross-session orphan sweep will ever offer it
-    // again. Refusing here is what makes the button agree with the panel's own
-    // "Claude-only for now" copy instead of silently stranding the batch.
-    if (s.agent !== "claude") return false;
+    // directory - including one whose harness declares no `workQueue`, which
+    // `tickTargets` filters out of every tick. Re-keying onto it is a one-way trip to
+    // nowhere: the queue never ticks again, and because the target now holds the key,
+    // the queue counts as live, so neither the cwd hint nor the cross-session orphan
+    // sweep will ever offer it again. Refusing here is what makes the button agree with
+    // the panel's own refusal copy instead of silently stranding the batch.
+    if (!capabilitiesFor(s.agent).workQueue) return false;
     const toKey = noteKeyFor(s);
     // Already where the human wants it: nothing to write, so nothing to guard.
     if (toKey === fromKey) return true;

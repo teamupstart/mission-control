@@ -1,5 +1,6 @@
 import { activePaneDialog, runInFlight } from "@shared/session.ts";
-import type { NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
+import type { AgentType, NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 
 export function relativeTime(ms: number | null): string {
   if (!ms) return "";
@@ -245,25 +246,17 @@ export function permissionModeDisplay(mode: PermissionMode | null): PermissionMo
 }
 
 /**
- * The modes the picker offers, in Claude's own Shift+Tab cycle order - the list
- * reads in the same order as the keystroke it replaces.
+ * The modes the picker offers for an agent, in that harness's own Shift+Tab cycle order -
+ * the list reads in the same order as the keystroke it replaces.
  *
- * `dontAsk` is deliberately absent: it's settable only at startup and Shift+Tab
- * never reaches it, so offering it would promise a walk that can't arrive. It
- * still renders on the chip when a session was started in it.
- *
- * `bypassPermissions` and `auto` are listed but aren't available everywhere -
- * they enter the cycle only behind a launch flag / account support the daemon
- * can't see. Picking one the session lacks is harmless: the walk goes all the way
- * around, lands back where it started, and says so.
+ * Empty for a harness with no `permissionModes` capability, which is also what makes the
+ * picker draw nothing: one declaration (`@shared/harness-capabilities.ts`) answers both
+ * "may this session's mode be driven at all" and "with which options", instead of a list
+ * here and an `agent === "claude"` at every surface that renders it.
  */
-export const PICKABLE_MODES: readonly PermissionMode[] = [
-  "default",
-  "acceptEdits",
-  "plan",
-  "bypassPermissions",
-  "auto",
-];
+export function pickableModes(agent: AgentType): readonly PermissionMode[] {
+  return capabilitiesFor(agent).permissionModes?.pickable ?? [];
+}
 
 /**
  * True when a session can be renamed: renaming drives its tmux session / wezterm

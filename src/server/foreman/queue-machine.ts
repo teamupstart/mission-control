@@ -7,6 +7,7 @@ import type {
   WorkItemState,
 } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
   autoWrapupPayload,
@@ -202,13 +203,17 @@ export function tickTargets(
    */
   triggers: readonly WrapupTrigger[],
 ): Session[] {
+  // Both halves gate on the `workQueue` capability rather than on an agent id: a harness
+  // with none reports no hooks and has no readable turns, so the machine could neither
+  // tell when it picked an item up nor check that it finished one. Selecting it would be
+  // a branch that can never advance.
   const needsYou = sessions
-    .filter((s) => s.agent === "claude" && reportBucket(s, sessions) === "needs-you")
+    .filter((s) => capabilitiesFor(s.agent).workQueue && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
   const seen = new Set(needsYou.map((s) => s.id));
   const rest = sessions.filter(
     (s) =>
-      s.agent === "claude" &&
+      capabilitiesFor(s.agent).workQueue &&
       s.state !== "exited" &&
       !seen.has(s.id) &&
       (queueWantsATick(s, triggers) || promptedWantsATick(s, triggers)),

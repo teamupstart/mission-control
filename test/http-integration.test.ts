@@ -227,8 +227,10 @@ test("a real hook POST captures the human's ask onto the session's goal", async 
   assert.equal(registry.getGoal("sess-1")?.prompt, prompt, "a task notification overwrote the ask");
 });
 
-test("cycling the permission mode is rejected for a non-Claude session", async () => {
-  // Permission modes are a Claude concept; the route refuses Codex before shelling out.
+test("cycling the permission mode is rejected for a harness that has none", async () => {
+  // The refusal is a capability answer, not an agent-id one: Codex declares
+  // `permissionModes: null`, so the route refuses before shelling out - and it names the
+  // harness it refused, so a fourth one does not inherit Claude's error message.
   registry.applyDiscovery([
     {
       syntheticId: "cx-1",
@@ -250,7 +252,7 @@ test("cycling the permission mode is rejected for a non-Claude session", async (
   const res = await app.request("/api/sessions/cx-1/mode/cycle", { method: "POST", headers: authed });
   assert.equal(res.status, 400);
   const body = (await res.json()) as { error: string };
-  assert.match(body.error, /Claude/i);
+  assert.match(body.error, /Codex has no permission modes/);
 });
 
 test("cycling the permission mode of an unknown session is a 404", async () => {

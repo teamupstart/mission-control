@@ -1,11 +1,18 @@
 // The skills feature's shared vocabulary: the marker that scopes what the
-// reconciler may touch, the rungs a skill's enforcement can sit on, and the one
-// command the daemon types to make a session pick up a change.
+// reconciler may touch, and the rungs a skill's enforcement can sit on.
 //
-// It lives on the shared surface because all three cross the server/web boundary:
-// the panel draws the rung, the catalog parses it, and the reconciler and the
-// reload loop must agree on the prefix or the reconciler would either miss its own
-// links or reach for someone else's.
+// It lives on the shared surface because both cross the server/web boundary: the panel
+// draws the rung, the catalog parses it, and the reconciler and the reload loop must
+// agree on the prefix or the reconciler would either miss its own links or reach for
+// someone else's.
+//
+// What is NOT here is anything that varies BY HARNESS - the reload command, the
+// directory. Those are `SkillsSpec` (`@shared/harness-capabilities.ts`), so that "this
+// agent has no skills" is one declaration every reader sees rather than an
+// `agent !== "claude"` in each of them.
+
+import { AGENT_NAMES } from "./agent.ts";
+import { skillsAgents } from "./harness-capabilities.ts";
 
 /**
  * Every prefix the reconciler has ever created a `~/.claude/skills` directory under,
@@ -57,30 +64,14 @@ export function skillIdFromDirName(name: string): string | null {
 }
 
 /**
- * The command that makes a live session re-read `~/.claude/skills` without being
- * restarted. Verified against claude 2.1.211: a directory symlinked in AFTER a
- * session reached its prompt is picked up by this and nothing else - there is no
- * watcher on the skills directory.
- *
- * Spelled once, here, for the same reason `WRAPUP_NO_MISTAKES` is: it is typed into
- * a live pane, so the bytes must have exactly one definition. It must also stay a
- * single line - a slash command that carries a newline is two submissions.
- *
- * Do NOT parse what comes back. On a REMOVAL the count correctly dropped (the skill
- * really did unload) while the label still read "(no changes)". The unload is real;
- * the message is not trustworthy. Treat delivery as fire-and-forget.
- */
-export const RELOAD_SKILLS_COMMAND = "/reload-skills";
-
-/**
  * How firmly a skill actually binds - and the reason the catalog carries it at all.
  *
  * Native skills are MODEL-INVOKED: enabling one loads its description into context
- * and nothing more. `/reload-skills` fixes *delivery*, not *activation*, and a
- * reloaded skill is loaded, not obeyed. The rung is what stops the panel's "Claude
+ * and nothing more. A reload command fixes *delivery*, not *activation*, and a
+ * reloaded skill is loaded, not obeyed. The rung is what stops the panel's "the agent
  * will use this when relevant" from masquerading as a guarantee.
  *
- *  - `opportunistic` - Claude may reach for it when it judges it relevant.
+ *  - `opportunistic` - the agent may reach for it when it judges it relevant.
  *  - `triggered`     - the description names concrete triggers, so it fires reliably
  *                      on those and not otherwise.
  *  - `intercepted`   - the skill installs something (a hook, a gate) that runs
@@ -101,10 +92,30 @@ export const ENFORCEMENT_LABEL: Record<SkillEnforcement, string> = {
   "always-on": "always on",
 };
 
-/** What the badge's tooltip says the rung actually promises. */
-export const ENFORCEMENT_HINT: Record<SkillEnforcement, string> = {
-  opportunistic: "Claude reaches for this when it judges it relevant. Loaded, not guaranteed.",
+/**
+ * What the badge's tooltip says the rung actually promises, with `{agent}` standing in
+ * for whoever would actually be reaching for the skill.
+ *
+ * A placeholder rather than "Claude" because this panel describes ONE harness's feature
+ * and which harness that is, is a capability question - see `enforcementHint`. Hardcoding
+ * the vendor is how a second skill-loading harness ends up with a tooltip naming a
+ * product it is not.
+ */
+const ENFORCEMENT_HINT: Record<SkillEnforcement, string> = {
+  opportunistic: "{agent} reaches for this when it judges it relevant. Loaded, not guaranteed.",
   triggered: "Fires on the triggers named in its description, and not otherwise.",
   intercepted: "Runs whether or not the model chooses to.",
   "always-on": "In context on every turn - no invocation involved.",
 };
+
+/**
+ * The tooltip for a rung, naming the harnesses that can actually load a skill.
+ *
+ * Total: with no skill-loading harness at all the sentence still reads, because the
+ * panel that renders it is itself gated on there being one and the fallback must not be
+ * a blank where a subject should be.
+ */
+export function enforcementHint(rung: SkillEnforcement): string {
+  const who = skillsAgents().map((a) => AGENT_NAMES[a].label).join(" / ");
+  return ENFORCEMENT_HINT[rung].replace("{agent}", who || "The agent");
+}

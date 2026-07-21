@@ -34,6 +34,22 @@ import { writeOtelEnv } from "@shared/claude-settings.ts";
 // `node:sqlite` behind it) in for the sake of nine strings. `harness/claude/hooks.ts`
 // imports nothing but types and pure functions, and is kept that way for this reason.
 import { claudeHooks } from "../server/harness/claude/hooks.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { AgentType } from "@shared/types.ts";
+import type { McpSpec } from "@shared/harness-capabilities.ts";
+
+/**
+ * The harness this installer wires. Named once, as a variable, because everything below
+ * is still single-harness by design: the hook arrays live in `~/.claude/settings.json`,
+ * and `EVENTS` comes from this same harness's `hooks` spec. Making the MCP half read a
+ * capability is what stops the two from silently disagreeing when this becomes a loop.
+ *
+ * `@shared/harness-capabilities.ts` is pure by contract - the Electron main bundle
+ * imports it, and must not pull `node:sqlite` in transitively. Same rule as
+ * `@shared/claude-settings.ts` and `harness/claude/hooks.ts` above.
+ */
+const INTEGRATION_AGENT: AgentType = "claude";
 
 const MARKER = "harness-hook";
 const EVENTS = claudeHooks.events;
@@ -177,12 +193,18 @@ function editHooks(uninstall: boolean, hookCommand: (script: string, event: stri
   }
 }
 
-/** Register (or remove) the MCP review server via the `claude` CLI, best-effort. */
-function claudeMcp(add: boolean, runtime: Runtime, mcp: string): string {
-  const claude = "claude";
+/**
+ * Register (or remove) the MCP review server via the harness's own CLI, best-effort.
+ *
+ * `spec` rather than a literal `"claude"` for the reason the whole capability layer
+ * exists: this shells out to a binary and writes into that vendor's config, so a harness
+ * with no `mcp` client of its own must not reach here at all. The caller checks the
+ * capability; this function is only ever handed one that exists.
+ */
+function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): string {
   try {
     if (!add) {
-      execFileSync(claude, ["mcp", "remove", "-s", "user", "mission-control"], {
+      execFileSync(spec.cli, ["mcp", "remove", "-s", spec.scope, spec.serverName], {
         stdio: "ignore",
         timeout: 15000,
         env: { ...process.env, PATH: process.env.PATH },
@@ -191,16 +213,29 @@ function claudeMcp(add: boolean, runtime: Runtime, mcp: string): string {
     }
     const { env, argv } = runtime.mcpArgs(mcp);
     const envFlags = env.flatMap((e) => ["-e", e]);
-    execFileSync(claude, ["mcp", "add", "-s", "user", "mission-control", ...envFlags, "--", ...argv], {
-      stdio: "ignore",
-      timeout: 15000,
-    });
+    execFileSync(
+      spec.cli,
+      ["mcp", "add", "-s", spec.scope, spec.serverName, ...envFlags, "--", ...argv],
+      { stdio: "ignore", timeout: 15000 },
+    );
     return "MCP review server registered.";
   } catch {
     return add
-      ? "Hooks installed; the `claude` CLI wasn't found on PATH, so the MCP review server wasn't registered (run `claude mcp add` manually)."
-      : "Hooks removed; couldn't reach the `claude` CLI to remove the MCP server.";
+      ? `Hooks installed; the \`${spec.cli}\` CLI wasn't found on PATH, so the MCP review server wasn't registered (run \`${spec.cli} mcp add\` manually).`
+      : `Hooks removed; couldn't reach the \`${spec.cli}\` CLI to remove the MCP server.`;
   }
+}
+
+/**
+ * What to do about MCP for the harness this installer wires, as a sentence.
+ *
+ * `null` is a real answer and gets said out loud: an installer that silently skipped a
+ * harness with no MCP client would report a clean install that did half the work.
+ */
+function applyMcp(add: boolean, runtime: Runtime, mcp: string): string {
+  const spec = capabilitiesFor(INTEGRATION_AGENT).mcp;
+  if (!spec) return `${AGENT_NAMES[INTEGRATION_AGENT].label} has no MCP client to register with.`;
+  return registerMcp(spec, add, runtime, mcp);
 }
 
 /** Wire hooks + MCP for Claude Code. */
@@ -212,7 +247,7 @@ export function installIntegrations(): IntegrationResult {
     }
     const runtime = resolveRuntime();
     editHooks(false, runtime.hookCommand, hook);
-    const mcpMsg = claudeMcp(true, runtime, mcp);
+    const mcpMsg = applyMcp(true, runtime, mcp);
     return {
       ok: true,
       message: `Claude integrations installed via ${runtime.label}. ${mcpMsg}\n\nStart a NEW Claude Code session for hooks to take effect.`,
@@ -235,7 +270,7 @@ export function removeIntegrations(): IntegrationResult {
     // is unconditional, because an env block left pointing at a daemon that is no longer
     // installed makes every session on the machine retry an export forever.
     const telemetry = writeOtelEnv(null);
-    const mcpMsg = claudeMcp(false, runtime, mcp);
+    const mcpMsg = applyMcp(false, runtime, mcp);
     const telemetryMsg = telemetry === "removed" ? " Cost telemetry env block removed." : "";
     return { ok: true, message: `Claude integrations removed. ${mcpMsg}${telemetryMsg}` };
   } catch (err) {

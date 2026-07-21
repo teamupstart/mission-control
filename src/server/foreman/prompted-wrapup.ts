@@ -2,6 +2,8 @@ import type { Session, SessionQueue } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { VERIFY_FAILURE_CAP, hasPane, settledIdle } from "./queue-machine.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
@@ -101,9 +103,12 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
     return { kind: "skip", why: "the prompted trigger is off" };
   }
 
-  // 2. Only Claude sessions, and only live ones. Codex sessions have no hooks, no
-  //    goal capture and no queue; an exited session has nothing left to type into.
-  if (session.agent !== "claude") return { kind: "skip", why: "not a Claude session" };
+  // 2. Only a harness Foreman can actually drive, and only a live session. No
+  //    `workQueue` capability means no hooks, no goal capture and no queue - there is
+  //    nothing here to judge finished; an exited session has nothing left to type into.
+  if (!capabilitiesFor(session.agent).workQueue) {
+    return { kind: "skip", why: `${AGENT_NAMES[session.agent].label} sessions can't hold a queue` };
+  }
   if (session.state === "exited") return { kind: "skip", why: "the session exited" };
 
   // 3. THE OVERLAP RULE: a checkout with a work queue belongs to the drain trigger,

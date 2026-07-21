@@ -58,9 +58,10 @@ and get your decision back.
   Code skill on in Settings and it applies to **every** Claude session on the machine -
   including ones this app never launched - without restarting any of them. Claude only.
 - **Lands the clean ones**, if you let it: [YOLO mode](#shipping-yolo-mode) merges a pull
-  request Mission Control opened once the Inspector has reviewed the current push with
-  nothing outstanding, CI is green, no thread is unresolved, and it has been open for a
-  soak window you set. Ships off, trusting no repositories.
+  request Mission Control opened once the Inspector has reviewed and **published** on the
+  current push with nothing outstanding, CI is green, no thread is unresolved, and it has
+  been open for a soak window you set. Needs the Inspector on **and** live; dry run merges
+  nothing. Ships off, trusting no repositories.
 
 ## Quick start
 
@@ -1536,6 +1537,7 @@ Every one of these, on the same read of the pull request:
 | Gate | Why |
 |---|---|
 | The Inspector reviewed **this** push | a review of the previous head is not a review of what would land |
+| The Inspector **published** that review | on, **live**, and the repo on *its* allowlist - see below |
 | No open Inspector findings | posted or previewed in dry run - a finding is a finding |
 | No unresolved review threads | stricter than the above on purpose: not merging over a colleague's unanswered question, whoever asked it |
 | Nobody requested changes, no required review outstanding | a human veto outranks a clean automated review |
@@ -1553,12 +1555,32 @@ landing in the seconds between the decision and the call makes GitHub refuse rat
 merge code nothing has looked at. Squash by default; merge commit and rebase are the other
 two options.
 
-### It needs the Inspector
+### It needs the Inspector, fully on
 
 YOLO mode rides the Inspector's poll and merges what the Inspector reviewed clean, so with
 the Inspector switched **off** nothing is ever reviewed, nothing qualifies, and nothing
-merges. The panel says so when it is armed and the Inspector is not. It is not a way to
-merge unreviewed pull requests.
+merges. It is not a way to merge unreviewed pull requests.
+
+All **three** of the Inspector's switches count, not just the first, because a review it
+never published is not a review anything may act on:
+
+| Inspector state | YOLO mode |
+|---|---|
+| **off** | nothing is reviewed, so nothing merges |
+| on, but **dry run** | it reviews and publishes nothing - no merge |
+| on and live, repo **not on the Inspector's allowlist** | same: it reviews, publishes nothing - no merge |
+| on, live, repo on **both** allowlists | the gates above decide |
+
+The middle two are worth stating plainly because they are not obvious: dry run still
+*reviews*, and it advances the reviewed head exactly as a live round does. Only the
+publishing stops. So "the Inspector reviewed this push" is true in dry run, and it is not
+sufficient - **dry run means dry for the merge too**. The Shipping panel names whichever
+of the three is in the way while YOLO mode is armed, and each reason appears per pull
+request under *Where each pull request stands*.
+
+The two allowlists stay separate: letting the Inspector comment on a repo is a smaller
+grant than letting it merge there, so a repo has to be on both. Shipping's list does not
+stand in for the Inspector's.
 
 ### Why it did not merge
 

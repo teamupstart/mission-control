@@ -184,8 +184,9 @@ esbuild flags.
 reached through a symlink.
 
 **Append-only**, since old values persist on users' machines: skill directory prefixes in
-`src/shared/skills.ts`, and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback chain in
-`src/shared/harness-runtime.mjs`.
+`src/shared/skills.ts`, the task source kind ids in `TASK_SOURCE_KINDS`
+(`src/shared/task-source.ts`), and the `MISSION_` / `FLEET_` / `HARNESS_` env fallback
+chain in `src/shared/harness-runtime.mjs`.
 
 **Append-only, and it lives on GitHub, not on this machine**: the Inspector's comment
 marker `mission-inspector:v1` (`src/server/inspector/marker.ts`). Comments carrying it are
@@ -306,6 +307,25 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `legacyHandles` (`correlate.ts`) plus its mirror `handlesOf` (`terminal/handles.ts`) are
   the only places projecting onto those two fields;
   see `docs/plans/pluggable-integrations/plan.md` phase 2.
+- **Task sources (what pulls work INTO the backlog)**: the same purity split as the
+  harnesses. `TASK_SOURCE_KIND_INFO` (`@shared/task-source.ts`) holds what the settings
+  panel can answer in the browser - the name, the blurb, the config schema - and
+  `TASK_SOURCES` (`src/server/task-sources/index.ts`) spreads that in and adds
+  `preflight` / `sweep`, the two calls that leave the process. Both are
+  `Record<TaskSourceKind, …>`, so an id appended to `TASK_SOURCE_KINDS` does not compile
+  until something can sweep it. **Those ids are APPEND-ONLY** - they are persisted inside
+  the `taskSources` blob in `app_config`, and renaming one orphans every source configured
+  under the old spelling: it stops matching a registered kind and silently never sweeps
+  again, which is indistinguishable from an upstream with no new work. A source RETURNS
+  candidates and writes nothing; `task-sources/ingest.ts` is the only writer, and it is
+  what makes "the daemon is the only writer of the DB" true by construction rather than by
+  each implementer remembering it. **De-duplication is `task_source_seen`, never the
+  `source_id`/`external_id` columns on `tasks`**: a seen row outlives the task, so deleting
+  a swept task does not un-see it - dedupe against live tasks would make Delete a no-op
+  that re-files on the next sweep. A source never types into a pane, which is why it needs
+  none of the skills reload loop's `settledIdle` + pane-read + `withPaneLock` gate; if one
+  ever can, that argument has to be redone. Test: `task-source-contract.test.ts`,
+  `task-source-ingest.test.ts`, `github-issues-map.test.ts`, `task-sources-panel.test.ts`.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.

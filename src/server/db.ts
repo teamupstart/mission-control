@@ -148,6 +148,12 @@ export function openDb(): DatabaseSync {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       model         TEXT,
+      -- Where a task source swept this task from. The LINK BACK only: identity for
+      -- de-duplication lives in task_source_seen below, whose rows outlive the task.
+      -- NULL on every task a human typed, which is nearly all of them.
+      source_id     TEXT,
+      external_id   TEXT,
+      source_url    TEXT,
       repo_root     TEXT NOT NULL,
       worktree_path TEXT,
       branch        TEXT,
@@ -255,6 +261,32 @@ export function openDb(): DatabaseSync {
     CREATE TABLE IF NOT EXISTS app_config (
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+
+    -- What each task source has already filed, and will never file again.
+    --
+    -- Its OWN table rather than de-duplicating against the three columns on tasks, and
+    -- this is the load-bearing decision of the whole feature:
+    --
+    --   A TASK YOU DELETED MUST STAY DELETED. Dedupe against tasks means deleting a
+    --   swept task makes it un-seen, so the next sweep files it again - the source
+    --   becomes impossible to say no to, and the delete button becomes a snooze button
+    --   that does not even snooze.
+    --
+    -- So a row here OUTLIVES the task it produced, and holds no reference to one: there
+    -- is nothing to join on, which is what stops the next reader from re-introducing the
+    -- bug. Re-filing an item you deleted is a deliberate act - "Forget seen items" on the
+    -- source, which clears its rows.
+    --
+    -- Both key columns are NOT NULL, which the ON CONFLICT depends on: SQLite treats
+    -- NULLs as DISTINCT inside a unique index, so a nullable half would make the upsert
+    -- silently become an insert and the row would multiply on every sweep.
+    CREATE TABLE IF NOT EXISTS task_source_seen (
+      source_id   TEXT NOT NULL,   -- TaskSourceInstance.id
+      external_id TEXT NOT NULL,   -- stable id in the EXTERNAL system, e.g. owner/repo#123
+      url         TEXT,            -- deep link, kept for provenance; never matched on
+      seen_at     INTEGER NOT NULL,
+      PRIMARY KEY (source_id, external_id)
     );
 
     -- What the fleet has spent, one row per OpenTelemetry export window.
@@ -501,6 +533,20 @@ function migrate(d: DatabaseSync): void {
   // the harness default", which is the truthful answer for every task dispatched before
   // a model could be chosen at all.
   addColumn(d, "tasks", "model", "TEXT");
+
+  // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
+  // added to `tasks` long after it shipped. Same exposure as `model` above and the same
+  // consequence - the INSERT names all three, so without these EVERY task write on an
+  // upgraded db would fail, human-typed ones included. All nullable with no default,
+  // which reads truthfully: NULL means "nobody swept this", the right answer for every
+  // task filed before sources existed and for every one a human will ever type.
+  //
+  // Note what these are NOT: they are the link back, not identity. De-duplication is
+  // decided against `task_source_seen`, whose rows outlive the task (see its comment) -
+  // so nothing here is ever read to answer "have we filed this before?".
+  addColumn(d, "tasks", "source_id", "TEXT");
+  addColumn(d, "tasks", "external_id", "TEXT");
+  addColumn(d, "tasks", "source_url", "TEXT");
 
   // `fail_count` / `next_attempt_at`: the Inspector's retry backoff. Same window as
   // `foreman_episodes.resolved_by` above - `inspector_prs` has never shipped, so the
@@ -1177,6 +1223,9 @@ interface TaskRow {
   priority: string | null;
   labels: string | null;
   model: string | null;
+  source_id: string | null;
+  external_id: string | null;
+  source_url: string | null;
   repo_root: string;
   worktree_path: string | null;
   branch: string | null;
@@ -1220,6 +1269,12 @@ function rowToTask(r: TaskRow): Task {
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
     model: r.model,
+    // Both key columns or nothing: half a provenance would render as a link to an item
+    // nobody can name, and `source_id` alone cannot be matched back to anything.
+    source:
+      r.source_id && r.external_id
+        ? { sourceId: r.source_id, externalId: r.external_id, url: r.source_url }
+        : null,
     repoRoot: r.repo_root,
     worktreePath: r.worktree_path,
     branch: r.branch,
@@ -1241,13 +1296,16 @@ export function upsertTask(t: Task): void {
   openDb()
     .prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, model, repo_root, worktree_path, branch,
+         id, title, intent, kind, agent, priority, labels, model,
+         source_id, external_id, source_url, repo_root, worktree_path, branch,
          provider, tmux_session, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
          priority=excluded.priority, labels=excluded.labels, model=excluded.model,
+         source_id=excluded.source_id, external_id=excluded.external_id,
+         source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
          provider=excluded.provider, tmux_session=excluded.tmux_session, session_id=excluded.session_id,
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
@@ -1260,7 +1318,9 @@ export function upsertTask(t: Task): void {
       // task filed before labels existed and one filed today with none - there is no
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
-      t.model, t.repoRoot, t.worktreePath, t.branch, t.provider,
+      t.model,
+      t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
+      t.repoRoot, t.worktreePath, t.branch, t.provider,
       t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
@@ -1322,6 +1382,93 @@ export function loadResourceHoldingTerminalTasks(): Task[] {
     )
     .all() as unknown as TaskRow[];
   return rows.map(rowToTask);
+}
+
+// ---- task sources: what has already been filed ----
+//
+// Read the `task_source_seen` CREATE TABLE above before touching any of this. The one
+// rule: a seen row outlives the task it produced, so nothing here consults `tasks`.
+
+/**
+ * Every external id this source has already filed, as one set.
+ *
+ * Read whole rather than probed per candidate, for the reason `getSkillsAcks` is: it
+ * keeps the dedupe in `ingest.ts` a pure decision over data the caller already holds,
+ * with no I/O in the middle of the loop. One source's set is a handful of short strings
+ * per item it has ever filed.
+ */
+export function seenExternalIds(sourceId: string): Set<string> {
+  const rows = openDb()
+    .prepare(`SELECT external_id FROM task_source_seen WHERE source_id = ?`)
+    .all(sourceId) as unknown as Array<{ external_id: string }>;
+  return new Set(rows.map((r) => r.external_id));
+}
+
+/** How many items this source has filed and will not file again - the panel's figure. */
+export function countTaskSourceSeen(sourceId: string): number {
+  const row = openDb()
+    .prepare(`SELECT COUNT(*) AS n FROM task_source_seen WHERE source_id = ?`)
+    .get(sourceId) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/**
+ * Record that this source has filed this item.
+ *
+ * Upserts rather than inserts, so a re-file after "Forget seen items" cannot fail on a
+ * row a concurrent sweep had already put back.
+ */
+export function recordTaskSourceSeen(
+  sourceId: string,
+  externalId: string,
+  url: string | null,
+  now = Date.now(),
+): void {
+  openDb()
+    .prepare(
+      `INSERT INTO task_source_seen (source_id, external_id, url, seen_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(source_id, external_id) DO UPDATE SET url=excluded.url, seen_at=excluded.seen_at`,
+    )
+    .run(sourceId, externalId, url, now);
+}
+
+/**
+ * Forget everything one source has filed, so its items can be filed again. The
+ * deliberate act that answers "a task you deleted stays deleted" - the only way back.
+ *
+ * Also what retires a source's rows when it is removed from the config: without that,
+ * deleting and re-adding a source under the SAME id would file nothing at all, forever.
+ */
+export function forgetTaskSourceSeen(sourceId: string): number {
+  const before = countTaskSourceSeen(sourceId);
+  openDb().prepare(`DELETE FROM task_source_seen WHERE source_id = ?`).run(sourceId);
+  return before;
+}
+
+/**
+ * Run `fn` inside one SQLite transaction, rolling back if it throws.
+ *
+ * Written for ingest, where the seen row and the task row have to land together: a task
+ * with no seen row is re-filed on every sweep forever, and a seen row with no task is an
+ * item silently swallowed. Neither is fixed by retrying, so they are not allowed to
+ * happen separately.
+ */
+export function inTransaction<T>(fn: () => T): T {
+  const d = openDb();
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const out = fn();
+    d.exec("COMMIT");
+    return out;
+  } catch (err) {
+    // Guarded like `reorderQueueItems`': if the BEGIN itself never took there is no
+    // transaction to roll back, and an unguarded ROLLBACK throws over the original
+    // error - which is the one the caller needs to see.
+    try {
+      d.exec("ROLLBACK");
+    } catch {}
+    throw err;
+  }
 }
 
 // ---- Foreman session notes ----

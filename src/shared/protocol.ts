@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
+import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { AGENT_TYPES } from "./types.ts";
 
 /**
@@ -1033,6 +1034,22 @@ export const HarnessesConfigPatchSchema = z
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
 export type HarnessesConfigPatch = z.infer<typeof HarnessesConfigPatchSchema>;
+
+/**
+ * The whole set of configured task sources, as the panel sends it back.
+ *
+ * A whole-list PUT rather than a per-source PATCH, and the reason is the one that makes
+ * `repoAllowlist` a list too: adding, editing and removing a source are the same edit to
+ * the same panel, and a partial protocol would need a third verb for "remove" plus an
+ * id-not-found refusal that the list shape answers for free. The list is small, bounded
+ * by the schema, and edited by exactly one surface.
+ *
+ * Every element goes through `TaskSourceInstanceSchema`, which validates each kind's own
+ * config blob - so a source that could never sweep is refused here rather than failing
+ * quietly on a background tick nobody is watching.
+ */
+export const TaskSourcesConfigPatchSchema = TaskSourcesConfigSchema;
+export type TaskSourcesConfigPatch = z.infer<typeof TaskSourcesConfigPatchSchema>;
 
 // ---- dashboard UI preferences ----
 

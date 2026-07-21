@@ -53,6 +53,7 @@ const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
 const COST_ONLY = /Track what the fleet costs/; // the telemetry master toggle label
 const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
+const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -123,6 +124,31 @@ test("Harnesses is a category of its own: its panel shows, the others don't", ()
   assert.doesNotMatch(html, KEYBOARD_ONLY);
   assert.doesNotMatch(html, SKILLS_ONLY);
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⚙<\/span>Harnesses/);
+});
+
+// Task sources is the category that lets something CREATE work without a human typing it,
+// so reachability matters for the same reason the Inspector's does: a panel that silently
+// fails to render is one whose sources nobody can see, switch off, or read the errors of,
+// while the daemon goes on sweeping whatever was last stored.
+test("Task sources is a category of its own: its panel shows, the others don't", () => {
+  const html = render("task-sources");
+  assert.match(html, TASK_SOURCES_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, HARNESSES_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⇊<\/span>Task sources/);
+});
+
+// A static render runs no effects, so this is the pre-poll state - the state a first-run
+// user sees. It must not draw an empty list, which asserts that nothing is being swept.
+test("with no answer from the daemon, the Task sources panel says so rather than showing an empty list", () => {
+  const html = render("task-sources");
+  assert.match(html, /ts-unknown/);
+  assert.match(html, /is unknown/);
+  assert.doesNotMatch(
+    html,
+    /No sources yet - nothing is being swept/,
+    "an unanswered panel must not assert an empty list",
+  );
 });
 
 test("Cost is a category of its own: its panel shows, the others don't", () => {

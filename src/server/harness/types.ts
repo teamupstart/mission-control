@@ -25,7 +25,7 @@ import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
 //
 // Types only, no `node:` imports and no implementations - the specs live in
 // `harness/<agent>/`, and `transcript.ts` supplies the format-agnostic machinery they
-// build on. Naming (`label`, `speaker`) is deliberately NOT here: `AGENT_NAMES`
+// build on. Naming (`label`, `speaker`) is deliberately NOT here: `AGENT_IDENTITY`
 // (`@shared/agent.ts`) already owns it and the web bundle imports that.
 
 /** What a passive read yields about a session's live runtime, all optional. */

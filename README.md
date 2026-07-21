@@ -165,8 +165,17 @@ skills panel says on every row which agents a skill actually reaches; and a **re
 of a Codex checkout does the git half and leaves the context alone, because Codex does
 not speak `/clear` - it would have been typed in as a prompt.
 
+The dashboard is declaration-driven too, down to the paint. An agent states its own
+name, transcript byline and brand colour (`AGENT_IDENTITY`, `src/shared/agent.ts`), and
+the stylesheet mentions no agent at all - the colour arrives as one `--agent-accent`
+custom property, so a new harness colours its dot and its transcript byline with no CSS
+written. Everywhere a sentence has to say *which* agents a feature reaches - the dispatch
+form's agent picker, the skills rows, the auto-mode switch, the empty grid - that list is
+computed from the capability, never typed out.
+
 Adding a third agent means filling that declaration in. The types make it impossible to
-add one and quietly inherit Claude's answers.
+add one and quietly inherit Claude's answers, and nothing about it needs a component or a
+stylesheet edited to show up.
 
 ### Precise status (Claude hooks)
 
@@ -309,8 +318,8 @@ exception: **needs an answer** is read off the terminal itself, so a session sit
 menu goes amber whether or not it's instrumented. That exception is the point: an
 uninstrumented session waiting on a permission prompt is the most blocked thing on the
 board, and it used to report as grey running forever. The small colored dot
-next to each title is *not* a status - it's the agent's brand color (terracotta
-for Claude Code, green for Codex).
+next to each title is *not* a status - it's the brand color the agent declares for
+itself (terracotta for Claude Code, green for Codex).
 
 A Claude card also carries a **permission mode** chip once a hook reports one - `manual`,
 `accept edits`, or `plan` on the standard cycle, plus `bypass` / `auto` / `don't ask` for

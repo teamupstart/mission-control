@@ -59,7 +59,7 @@ import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import {
   claimForemanLease,
@@ -229,11 +229,11 @@ function retractByline(rowId: number): void {
  * Shift+Tab cycle and read the result back off a footer line, and a harness that renders
  * no such line has nothing for the walk to verify against - so it is refused here rather
  * than left to time out having typed Shift+Tab into somebody's editor. Named from
- * `AGENT_NAMES` so a fourth harness gets a true sentence instead of inheriting "Claude".
+ * `AGENT_IDENTITY` so a fourth harness gets a true sentence instead of inheriting "Claude".
  */
 function noPermissionModes(session: Session): string | null {
   if (harnessFor(session.agent).permissionModes) return null;
-  return `${AGENT_NAMES[session.agent].label} has no permission modes`;
+  return `${AGENT_IDENTITY[session.agent].label} has no permission modes`;
 }
 
 /** Service version, read once from package.json; "unknown" if unreadable. */

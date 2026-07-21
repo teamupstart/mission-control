@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { sessionEqual } from "../src/server/registry.ts";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import { AGENT_TYPES } from "../src/shared/types.ts";
-import { AGENT_NAMES } from "../src/shared/agent.ts";
+import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import { DispatchSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
 import type { NmFixSummary, OrphanedQueueHint, Session } from "../src/shared/types.ts";
 
@@ -153,12 +153,16 @@ test("an agent id that is not in the union is refused at the wire", () => {
   assert.throws(() => UpdateTaskSchema.parse({ agent: "pi" }));
 });
 
-test("every declared agent has a name to render", () => {
-  // `AGENT_NAMES` is compiler-enforced (the probe below), but only against a MISSING
-  // key. An empty string satisfies the type and renders as a blank byline.
+test("every declared agent has a name and a colour to render", () => {
+  // `AGENT_IDENTITY` is compiler-enforced (the probe below), but only against a MISSING
+  // key. An empty string satisfies the type and renders as a blank byline - or, for the
+  // accent, as a dot with `--agent-accent:` set to nothing, which falls back to the
+  // neutral grey and looks like a deliberate choice. What the accent has to BE is
+  // `agent-accent.test.ts`'s question.
   for (const agent of AGENT_TYPES) {
-    assert.ok(AGENT_NAMES[agent].label, `${agent} needs a product name`);
-    assert.ok(AGENT_NAMES[agent].speaker, `${agent} needs a transcript byline`);
+    assert.ok(AGENT_IDENTITY[agent].label, `${agent} needs a product name`);
+    assert.ok(AGENT_IDENTITY[agent].speaker, `${agent} needs a transcript byline`);
+    assert.ok(AGENT_IDENTITY[agent].accent, `${agent} needs a brand colour`);
   }
 });
 
@@ -286,7 +290,7 @@ test("an OPTIONAL Session field with no comparator also fails typecheck", () => 
  * new agent - the exact asymmetry the pluggable-integrations migration exists to close.
  */
 const AGENT_RECORDS: ReadonlyArray<readonly [file: string, type: string]> = [
-  ["src/shared/agent.ts", "AgentNames"],
+  ["src/shared/agent.ts", "AgentIdentity"],
   ["src/shared/cost.ts", "string | null"],
   ["src/shared/goal.ts", "string | null"],
   ["src/shared/model.ts", "readonly ModelChoice[]"],

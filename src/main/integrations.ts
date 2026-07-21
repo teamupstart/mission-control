@@ -34,7 +34,7 @@ import { writeOtelEnv } from "@shared/claude-settings.ts";
 // `node:sqlite` behind it) in for the sake of nine strings. `harness/claude/hooks.ts`
 // imports nothing but types and pure functions, and is kept that way for this reason.
 import { claudeHooks } from "../server/harness/claude/hooks.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { AgentType } from "@shared/types.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
@@ -234,7 +234,7 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
  */
 function applyMcp(add: boolean, runtime: Runtime, mcp: string): string {
   const spec = capabilitiesFor(INTEGRATION_AGENT).mcp;
-  if (!spec) return `${AGENT_NAMES[INTEGRATION_AGENT].label} has no MCP client to register with.`;
+  if (!spec) return `${AGENT_IDENTITY[INTEGRATION_AGENT].label} has no MCP client to register with.`;
   return registerMcp(spec, add, runtime, mcp);
 }
 

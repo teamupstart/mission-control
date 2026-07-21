@@ -45,11 +45,15 @@ top-level collection, also extend the `snapshot` case, `registry.snapshot()`, an
 `z.enum` in `protocol.ts`, `DispatchInput`, the dispatch modal's `<option>`s and the
 Harnesses rows all derive from it. `AgentType` is that array's element type, so every
 `Record<AgentType, …>` then fails to compile until the new harness has said what it is
-called (`AGENT_NAMES`, `@shared/agent.ts`), which models it offers, which of its
-capabilities exist at all - including how its process is recognised and which binary it
-launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it answers goals and cost.
-Fill each in rather than defaulting one. Test: `session-contracts.test.ts`, which pins
-that list.
+called AND what colour it wears (`AGENT_IDENTITY`, `@shared/agent.ts`), which models it
+offers, which of its capabilities exist at all - including how its process is recognised
+and which binary it launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it
+answers goals and cost. Fill each in rather than defaulting one. Nothing in `styles.css`
+and no component needs editing: the accent is a literal colour that reaches CSS as one
+inline `--agent-accent`, and every sentence naming which agents a feature reaches is
+computed (`agentList`, `skillsAgents`, `autoModeAgents`). Test:
+`session-contracts.test.ts`, which pins that list, and `agent-accent.test.ts`, which
+fails if an agent id turns up in the stylesheet again.
 
 ## Layout parity
 
@@ -285,6 +289,11 @@ are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`
 
 - **When you remove or rename a `className`, grep `styles.css` for it in the same change.** No
   linter, no stylelint, no unused-CSS check catches a class that lost its rule.
+- **No vendor is named in this file, and no token is named after one.** A harness's colour is
+  declared on the harness (`AGENT_IDENTITY`) and arrives as an inline `--agent-accent`; rules
+  read `var(--agent-accent, var(--neutral))`. Foreman is `--foreman`, its own token, because
+  it borrowed `--claude` for five rules and a retune of one silently restyled the other.
+  Test: `agent-accent.test.ts`, which fails on any agent id appearing here.
 - **In the desktop shell the topbar IS the title bar**, so it carries
   `-webkit-app-region: drag`. The property's initial value is `none`, which is not `no-drag` -
   only an explicit `no-drag` subtracts from the region, so painting a layer over the bar does

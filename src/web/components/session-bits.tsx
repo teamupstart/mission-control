@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type {
   AgentType,
   PrState,
-  RateLimitWindow,
   Session,
   SessionCost,
   SessionMeta,
@@ -12,7 +11,7 @@ import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
-import { compactTokens, contextTone, fmtUsd, stateDisplay, untilReset } from "../lib/format.ts";
+import { compactTokens, contextTone, fmtUsd, stateDisplay } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
 
@@ -495,41 +494,6 @@ export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Elem
       }
     >
       <span className={`rt-pill cost-chip cost-${tone}`}>{fmtUsd(cost.costUsd)}</span>
-    </Tooltip>
-  );
-}
-
-/**
- * One subscription rate-limit window as a labelled meter.
- *
- * Reuses the context meter's `.rt-meter` / `.rt-meter-fill` idiom deliberately: there is
- * no charting library in this app and no non-icon SVG, so a bar is two spans and a width,
- * and a second way of drawing the same shape would be a second thing to keep in step.
- *
- * The caller decides whether to render it at all - an absent window means "we have not
- * been told", which must show as nothing rather than as a bar sitting at 0%.
- */
-export function RateMeter({
-  window,
-  label,
-  title,
-}: {
-  window: RateLimitWindow;
-  label: string;
-  title: string;
-}): React.JSX.Element {
-  const pct = Math.min(100, Math.max(0, window.usedPercentage));
-  return (
-    <Tooltip label={`${title}: ${Math.round(window.usedPercentage)}% used, resets ${untilReset(window.resetsAt)}`}>
-      {/* `rt-ctx-<tone>` rather than a private rate-* tone set: the amber/red escalation is
-          already defined for the context meter, and a second copy would drift. */}
-      <span className={`rt-ctx rt-ctx-${contextTone(window.usedPercentage)} rate-meter`}>
-        <span className="rate-label">{label}</span>
-        <span className="rt-meter" aria-hidden>
-          <span className="rt-meter-fill" style={{ width: `${pct}%` }} />
-        </span>
-        <span className="rt-ctx-num">{Math.round(window.usedPercentage)}%</span>
-      </span>
     </Tooltip>
   );
 }

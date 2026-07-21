@@ -43,8 +43,9 @@ and get your decision back.
   moment a session needs input, a review lands, a no-mistakes gate parks, a session
   **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
-- **Tracks what the fleet costs**: an opt-in badge on every card, and a fleet total plus
-  your subscription's rate-limit meters in the topbar. It consumes **Claude Code's own
+- **Tracks what the fleet costs**: an opt-in badge on every card, and a topbar strip
+  carrying today's spend, the burn rate, tokens, cost per pull request shipped, and how
+  long your rate-limit windows last at the current pace. It consumes **Claude Code's own
   cost figures** over OpenTelemetry - Mission Control keeps no price list and does no
   arithmetic of its own. See [Cost telemetry](#cost-telemetry).
 - **Says what each session is for**: every card carries a one-sentence **Goal** - what
@@ -467,9 +468,26 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
 ```
 
 Once on, every card carries a **spend badge** beside its model / thinking / context row,
-and the topbar grows a foldable **Usage** row carrying the fleet's **spend today** plus
-**5h** and **7d** plan meters. Folding the row away keeps today's spend visible beside
-the toggle, and the choice persists per machine like the layout.
+and the topbar grows a foldable **Usage** row carrying the fleet strip:
+
+| Figure | What it is |
+|---|---|
+| **Spend today** | every session on the machine, since local midnight |
+| **Burn rate** | the last hour's spend - what the fleet is costing *now*, not a projection |
+| **Tokens today** | input, output and cache, every tier summed |
+| **Cost / PR** | today's spend over the pull requests your agents opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review), so it is a unit price for shipped work rather than for branch activity. Absent until the first one lands |
+| **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection |
+
+The runway is the only forward-looking number in the app, and it is an average
+extrapolated forward - which is why it is written `~41 min`, and why a window the current
+pace does not exhaust reads **clears** rather than a made-up time. It is projected from
+the window's own percentage and nothing else: the dollar burn and the quota are different
+meters, so deriving one from the other would be a confident number about the wrong thing.
+An average cannot see a burst; a fleet that idled all morning and then started six
+sessions reads as calm for a while.
+
+Folding the row away keeps today's spend visible beside the toggle, and the choice
+persists per machine like the layout.
 
 Two sources, each used for the one thing only it can do:
 

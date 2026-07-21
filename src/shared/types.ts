@@ -148,6 +148,21 @@ export interface FleetCost {
   spendToday: number;
   /** SUM(cost_usd) over the last hour - the burn rate, not a projection. */
   burnPerHour: number;
+  /**
+   * Every tier summed - input, output, cache read and cache write - since local midnight.
+   *
+   * One figure rather than the ledger's four columns: the strip answers "how much did the
+   * fleet chew through today", and a cache read is a token the account spent whatever it
+   * was billed at. The tier split stays in the ledger for anyone who needs it.
+   */
+  tokensToday: number;
+  /**
+   * Pull requests our agents opened since local midnight, from the Inspector's adoption
+   * ledger - and ONLY from there, because adoption is the one thing that proves we opened
+   * a PR rather than merely stood next to one (see `adoptPr`). Adoption is not gated on
+   * the Inspector being enabled, so this counts on every install.
+   */
+  prsToday: number;
   rateLimits: RateLimits | null;
   updatedAt: number;
 }

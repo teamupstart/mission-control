@@ -1,4 +1,4 @@
-import type { AgentType, SessionCost } from "./types.ts";
+import type { AgentType, RateLimitWindow, SessionCost } from "./types.ts";
 
 // One place that decides when a number stops being a fact and starts being a signal.
 //
@@ -59,3 +59,52 @@ export const COST_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,
   codex: "Codex reports no cost telemetry",
 };
+
+/** How long each rate-limit window runs, which is what makes a runway projectable. */
+export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+export const SEVEN_DAY_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How much of a rate-limit window is left, at the rate it has been spent so far. */
+export interface RunwayProjection {
+  /** Milliseconds of headroom. Zero means the window is already exhausted. */
+  ms: number;
+  /** True when the window rolls over before that lands - you will not hit the wall. */
+  clears: boolean;
+}
+
+/**
+ * When the current rate exhausts a rate-limit window.
+ *
+ * The projection uses the window's OWN average - `usedPercentage` over the time since the
+ * window opened - and nothing else. That is a deliberate choice over projecting from
+ * `burnPerHour`: the dollar burn and the quota are different meters (a Max plan's dollars
+ * are notional, and a cache-heavy hour is cheap in dollars and not in quota), so deriving
+ * one from the other would produce a confident number about the wrong quantity. This one
+ * needs no extra state, survives a daemon restart, and is checkable by hand against the
+ * two figures Claude sends.
+ *
+ * Its weakness is honest and worth stating: an average cannot see a burst. A fleet that
+ * idled four hours and then started six sessions reads as calm for a while. It is a
+ * projection, and the UI says "~" in front of it.
+ *
+ * Returns null when there is nothing to project from - no consumption yet, or a window
+ * whose start is not in the past (clock skew, or a reading from the future). Null means
+ * "we cannot say", and must render as nothing rather than as a full runway.
+ */
+export function projectRunway(
+  window: RateLimitWindow,
+  windowMs: number,
+  now: number,
+): RunwayProjection | null {
+  const resetsAtMs = window.resetsAt * 1000;
+  const msToReset = resetsAtMs - now;
+  if (msToReset <= 0) return null;
+  const used = window.usedPercentage;
+  if (!Number.isFinite(used) || used <= 0) return null;
+  if (used >= 100) return { ms: 0, clears: false };
+  const elapsed = windowMs - msToReset;
+  if (elapsed <= 0) return null;
+  // Percent per ms, then the percent still unspent divided by it.
+  const msToFull = ((100 - used) / used) * elapsed;
+  return { ms: Math.min(msToFull, msToReset), clears: msToFull >= msToReset };
+}

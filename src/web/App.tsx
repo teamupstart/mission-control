@@ -14,7 +14,8 @@ import { DiffViewer } from "./components/DiffViewer.tsx";
 import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
-import { AgentDot, RateMeter } from "./components/session-bits.tsx";
+import { AgentDot } from "./components/session-bits.tsx";
+import { FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
@@ -945,22 +946,23 @@ function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): Re
 }
 
 /**
- * The topbar's second row: fleet spend and the subscription's rate limits, foldable.
+ * The topbar's second row: the fleet strip, foldable.
  *
  * A row of its own rather than living among the session-count pills - mixed content there
  * used to wrap element-by-element (a pill here, a meter dangling on the next line there)
- * because both `.summary` and `.fleet-cost` wrap independently. `flex-basis: 100%` on
+ * because both `.summary` and the strip wrap independently. `flex-basis: 100%` on
  * `.topbar-usage` forces this onto its own line unconditionally, so it never interleaves
  * with the pills again regardless of width.
  *
  * Still rendered INSIDE `<header className="topbar">`: `--topbar-h` is measured live off
  * `topbarRef` with a ResizeObserver, so anything inside the header is accounted for
  * automatically while a sibling after `</header>` is not - focus mode would then overflow
- * by exactly this row's height.
+ * by exactly this row's height. The strip is the tallest thing the topbar can grow, which
+ * is the whole reason it folds.
  *
- * The fold mirrors `WorkQueue`'s `Header`: the whole row is the button, and today's spend
- * stays visible even collapsed (the work queue's precedent is its `count`) so folding away
- * the meters never hides the one figure worth a glance.
+ * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's spend
+ * stays visible even collapsed (the work queue's precedent is its `count`) so folding the
+ * strip away never hides the one figure worth a glance.
  */
 function UsageBar({
   fleet,
@@ -973,12 +975,9 @@ function UsageBar({
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }): React.JSX.Element | null {
-  if (!fleet) return null;
-  const hasSpend = fleet.spendToday > 0;
-  const hasMeters = !!(fleet.rateLimits?.fiveHour || fleet.rateLimits?.sevenDay);
-  if (!hasSpend && !hasMeters) return null;
+  if (!fleetStripHasContent(fleet) || !fleet) return null;
   return (
-    <div className="topbar-usage">
+    <div className={`topbar-usage${collapsed ? " collapsed" : ""}`}>
       <button
         type="button"
         className="topbar-usage-toggle"
@@ -990,71 +989,11 @@ function UsageBar({
           {collapsed ? "▸" : "▾"}
         </span>
         Usage
-        {collapsed && hasSpend && (
+        {collapsed && fleet.spendToday > 0 && (
           <span className="topbar-usage-compact">{fmtUsd(fleet.spendToday)}</span>
         )}
       </button>
-      {!collapsed && <FleetCostStrip fleet={fleet} view={view} />}
-    </div>
-  );
-}
-
-/**
- * Fleet spend and the subscription's rate limits, as a row of pills. Degrades honestly at
- * every level: no telemetry at all -> nothing renders, rather than a `$0.00` claiming a
- * fleet that cost nothing. No `rate_limits` (an API-key user, or a session before its first
- * API response) -> no meters, rather than two bars sitting at 0%.
- *
- * `view` picks which number LEADS, not which exists: on a Pro/Max plan the dollars are
- * notional and the percentage is the real constraint, so someone on a subscription can put
- * the plan meters first without losing the estimate underneath.
- */
-function FleetCostStrip({
-  fleet,
-  view,
-}: {
-  fleet: FleetCost | null;
-  view: "usd" | "plan";
-}): React.JSX.Element | null {
-  if (!fleet) return null;
-  const limits = fleet.rateLimits;
-  const spend = fleet.spendToday > 0 && (
-    <Tooltip
-      label={
-        `${fmtUsd(fleet.spendToday)} spent today, ${fmtUsd(fleet.burnPerHour)} in the last hour.\n` +
-        `Claude Code's own estimate; your bill may differ.`
-      }
-    >
-      <div className="stat stat-cost">
-        <span className="stat-n">{fmtUsd(fleet.spendToday)}</span>
-        <span className="stat-label">today</span>
-      </div>
-    </Tooltip>
-  );
-  const meters = limits && (
-    <>
-      {limits.fiveHour && (
-        <RateMeter window={limits.fiveHour} label="5h" title="Five-hour usage limit" />
-      )}
-      {limits.sevenDay && (
-        <RateMeter window={limits.sevenDay} label="7d" title="Seven-day usage limit" />
-      )}
-    </>
-  );
-  if (!spend && !meters) return null;
-  return (
-    <div className="fleet-cost">
-      {view === "plan" ? (
-        <>
-          {meters}
-          {spend}
-        </>
-      ) : (
-        <>
-          {spend}
-          {meters}
-        </>
-      )}
+      {!collapsed && <FleetStrip fleet={fleet} view={view} />}
     </div>
   );
 }

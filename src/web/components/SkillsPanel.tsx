@@ -1,5 +1,5 @@
 import { ENFORCEMENT_LABEL, enforcementHint } from "@shared/skills.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor, skillsAgents } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { SkillRow } from "@shared/types.ts";
@@ -21,10 +21,16 @@ import type { SkillsState } from "../useSkills.ts";
  * does" failure the panel is otherwise careful about.
  */
 const SKILLED = skillsAgents();
-const SKILLED_LABEL = SKILLED.map((a) => AGENT_NAMES[a].label).join(" / ");
+const SKILLED_LABEL = SKILLED.map((a) => AGENT_IDENTITY[a].label).join(" / ");
 const UNSKILLED_LABEL = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills)
-  .map((a) => AGENT_NAMES[a].label)
+  .map((a) => AGENT_IDENTITY[a].label)
   .join(" / ");
+/**
+ * Where the links actually go, read off the same `homeDir` the reconciler symlinks
+ * into. Spelled out rather than said in prose because the operator may want to look:
+ * a path typed here by hand is one that can quietly stop being where the files are.
+ */
+const SKILLED_DIRS = SKILLED.map((a) => `~/${capabilitiesFor(a).skills!.homeDir.join("/")}`);
 
 /**
  * What the enforcement rung actually promises, said out loud on every row.
@@ -100,10 +106,16 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       </div>
 
       <p className="settings-hint skills-blurb">
-        Skills switched on here are symlinked into <code>~/.claude/skills</code>, so they reach{" "}
-        <strong>every</strong> {SKILLED_LABEL} session on this machine - including ones this app
-        never launched. Running sessions pick them up at their next idle moment, without
-        restarting.
+        Skills switched on here are symlinked into{" "}
+        {SKILLED_DIRS.map((dir, i) => (
+          <span key={dir}>
+            {i > 0 && " and "}
+            <code>{dir}</code>
+          </span>
+        ))}
+        , so they reach <strong>every</strong> {SKILLED_LABEL} session on this machine - including
+        ones this app never launched. Running sessions pick them up at their next idle moment,
+        without restarting.
       </p>
 
       {error && <p className="settings-error">{error}</p>}

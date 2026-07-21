@@ -5,6 +5,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { HarnessesPanel } from "../src/web/components/HarnessesPanel.tsx";
 import type { HarnessesState } from "../src/web/useHarnesses.ts";
 import type { HarnessesConfig } from "../src/shared/protocol.ts";
+import { AGENT_TYPES } from "../src/shared/types.ts";
+import { AGENT_IDENTITY } from "../src/shared/agent.ts";
+import { autoModeAgents } from "../src/shared/harness-capabilities.ts";
+
+/** Who the switch reaches, from the same declaration the panel reads. */
+const AUTO = autoModeAgents();
+const EXCLUDED = AGENT_TYPES.filter((a) => !AUTO.includes(a));
 
 // The Harnesses settings panel, rendered. Static markup rather than a driven browser:
 // the dashboard's SSE stream hangs headless automation, and these are questions about
@@ -43,10 +50,25 @@ test("the panel scopes the toggle to dispatched sessions before you click anythi
   assert.match(html, /never touch/i);
 });
 
-test("the auto-mode row is claude-only", () => {
-  // Codex has no permission mode, so the dispatch path skips it. A toggle that silently
-  // no-ops on half the fleet is the failure the badge exists to prevent.
-  assert.match(render({ autoModeOnDispatch: false }), /claude only/i);
+test("the auto-mode row names exactly the harnesses it reaches", () => {
+  // A toggle that silently no-ops on half the fleet is the failure the badge exists to
+  // prevent - and the scope is read off `permissionModes.onDispatch`, not written out,
+  // so this asserts the PAIR: reached agents named, unreached agents never claimed.
+  const html = render({ autoModeOnDispatch: false });
+  assert.match(html, new RegExp(`${AUTO.join(" / ")} only`, "i"));
+  for (const a of AUTO) assert.match(html, new RegExp(`Every[^<]*${AGENT_IDENTITY[a].label}`));
+  for (const a of EXCLUDED) {
+    // Named only inside the badge's title, which says why it is left alone - never in
+    // the sentence describing what the switch does.
+    assert.doesNotMatch(html, new RegExp(`Every[^<]*${AGENT_IDENTITY[a].label}`));
+    assert.match(html, new RegExp(`${AGENT_IDENTITY[a].label} has no permission mode`));
+  }
+});
+
+test("the auto-mode row makes no promise about harnesses it doesn't reach", () => {
+  // It used to say "Codex support comes later" - a commitment this panel is in no
+  // position to make on a vendor's behalf, and one nothing would ever come back to.
+  assert.doesNotMatch(render({ autoModeOnDispatch: false }), /comes later|coming soon/i);
 });
 
 test("an enabled setting renders the switch checked", () => {

@@ -11,7 +11,7 @@
 // agent has no skills" is one declaration every reader sees rather than an
 // `agent !== "claude"` in each of them.
 
-import { AGENT_NAMES } from "./agent.ts";
+import { AGENT_IDENTITY } from "./agent.ts";
 import { skillsAgents } from "./harness-capabilities.ts";
 
 /**
@@ -116,6 +116,6 @@ const ENFORCEMENT_HINT: Record<SkillEnforcement, string> = {
  * a blank where a subject should be.
  */
 export function enforcementHint(rung: SkillEnforcement): string {
-  const who = skillsAgents().map((a) => AGENT_NAMES[a].label).join(" / ");
+  const who = skillsAgents().map((a) => AGENT_IDENTITY[a].label).join(" / ");
   return ENFORCEMENT_HINT[rung].replace("{agent}", who || "The agent");
 }

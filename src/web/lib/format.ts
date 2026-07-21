@@ -223,7 +223,7 @@ export function gateStepView(nm: NmRunSummary): GateStepView {
     : { label: nm.status || "queued", pos: null, total, tone: "working", done: false };
 }
 
-/** Card presentation for a Claude permission mode: chip label, tone, tooltip. */
+/** Card presentation for a permission mode: chip label, tone, tooltip. */
 export interface PermissionModeDisplay {
   label: string;
   /** Suffix for the chip's tone class (`.mode-<tone>`). */
@@ -232,10 +232,10 @@ export interface PermissionModeDisplay {
 }
 
 const MODE_DISPLAY: Record<PermissionMode, PermissionModeDisplay> = {
-  default: { label: "manual", tone: "default", title: "Manual - Claude asks before edits and commands" },
+  default: { label: "manual", tone: "default", title: "Manual - the agent asks before edits and commands" },
   acceptEdits: { label: "accept edits", tone: "accept", title: "Accept edits - file edits apply without asking" },
-  plan: { label: "plan", tone: "plan", title: "Plan mode - read-only; Claude plans before acting" },
-  auto: { label: "auto", tone: "accept", title: "Auto - Claude proceeds autonomously" },
+  plan: { label: "plan", tone: "plan", title: "Plan mode - read-only; the agent plans before acting" },
+  auto: { label: "auto", tone: "accept", title: "Auto - the agent proceeds autonomously" },
   dontAsk: { label: "don't ask", tone: "accept", title: "Don't ask - runs without prompting" },
   bypassPermissions: { label: "bypass", tone: "bypass", title: "Bypass permissions - all permission checks skipped" },
 };

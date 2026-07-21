@@ -3,6 +3,7 @@ import type { RunResult } from "../util/exec.ts";
 import { isOurs, parseMarker } from "./marker.ts";
 import type { OurThread } from "./verdict.ts";
 import type { PlannedComment } from "./verdict.ts";
+import type { ChecksState, MergeableState, ReviewDecision } from "@shared/shipping.ts";
 
 // Everything that talks to GitHub, through the `gh` CLI.
 //
@@ -135,6 +136,21 @@ export interface PrSnapshot {
   body: string;
   isDraft: boolean;
   threads: ThreadSnapshot[];
+  /**
+   * When the PR was opened, epoch ms, or null when GitHub's timestamp did not parse.
+   *
+   * Read for the auto-merge soak, which is the window a colleague has to object. Null is
+   * carried rather than defaulted to "now" or to zero: the first would make the soak
+   * unfinishable and the second would make it already over, and the gate has to be able
+   * to tell "not long enough yet" from "we don't know".
+   */
+  createdAt: number | null;
+  /** GitHub's own mergeability verdict. `UNKNOWN` while it is still computing one. */
+  mergeable: MergeableState;
+  /** The human review verdict, when the repo or a reviewer has produced one. */
+  reviewDecision: ReviewDecision;
+  /** CI on the head commit, rolled up. `none` is "nothing reported", not "passing". */
+  checks: ChecksState;
 }
 
 export interface ThreadSnapshot {
@@ -152,7 +168,8 @@ export interface ThreadSnapshot {
 const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     pullRequest(number:$number){
-      state headRefOid isDraft title body
+      state headRefOid isDraft title body createdAt mergeable reviewDecision
+      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
       reviewThreads(first:100){
         nodes{
           id isResolved path
@@ -166,10 +183,16 @@ const PR_QUERY = `query($owner:String!,$name:String!,$number:Int!){
 }`;
 
 /**
- * One read per PR per tick: state, head sha, and every review thread.
+ * One read per PR per tick: state, head sha, every review thread, and everything the
+ * auto-merge gate weighs (CI rollup, mergeability, review decision, when it was opened).
  *
  * The head sha is why there is no separate `gh pr view` anywhere in this subsystem -
  * and why the Inspector needs no new `Session` field to know when to re-review.
+ *
+ * YOLO mode adds fields to this ONE query rather than a second call of its own: the tick
+ * already pays for a round trip per PR, and a separate `gh pr checks` would let the
+ * merge decision be made from a CI answer read at a different instant than the head sha
+ * it is supposed to be about.
  */
 export async function fetchPr(
   cwd: string | null,
@@ -211,15 +234,58 @@ export async function fetchPr(
   }
 }
 
+/**
+ * GitHub's status rollup, in the four words the merge gate speaks.
+ *
+ * `EXPECTED` is a check GitHub knows is coming but has not started, so it groups with
+ * `PENDING`. A MISSING rollup - no workflow, or none triggered on this commit - is
+ * `none`, never `passing`: see `mergeVerdict`, where that distinction is the difference
+ * between "merge what CI approves" and "merge whatever nobody objected to".
+ */
+function toChecks(state: unknown): ChecksState {
+  switch (state) {
+    case "SUCCESS":
+      return "passing";
+    case "ERROR":
+    case "FAILURE":
+      return "failing";
+    case "PENDING":
+    case "EXPECTED":
+      return "pending";
+    default:
+      return "none";
+  }
+}
+
 function toSnapshot(pr: Record<string, unknown>): PrSnapshot {
   const threadNodes =
     ((pr.reviewThreads as { nodes?: unknown[] } | undefined)?.nodes as unknown[]) ?? [];
+  const headCommit = (
+    ((pr.commits as { nodes?: unknown[] } | undefined)?.nodes ?? []) as {
+      commit?: { statusCheckRollup?: { state?: unknown } | null };
+    }[]
+  )[0]?.commit;
+  const createdAt = Date.parse(String(pr.createdAt ?? ""));
   return {
     state: (pr.state as PrSnapshot["state"]) ?? "CLOSED",
     headSha: typeof pr.headRefOid === "string" ? pr.headRefOid : "",
     title: typeof pr.title === "string" ? pr.title : "",
     body: typeof pr.body === "string" ? pr.body : "",
     isDraft: pr.isDraft === true,
+    createdAt: Number.isNaN(createdAt) ? null : createdAt,
+    // An unrecognised value is UNKNOWN, which the gate refuses to merge on - the same
+    // answer as GitHub still computing it, and the right one for a value we cannot read.
+    mergeable:
+      pr.mergeable === "MERGEABLE" || pr.mergeable === "CONFLICTING"
+        ? (pr.mergeable as MergeableState)
+        : "UNKNOWN",
+    reviewDecision:
+      pr.reviewDecision === "APPROVED" ||
+      pr.reviewDecision === "CHANGES_REQUESTED" ||
+      pr.reviewDecision === "REVIEW_REQUIRED"
+        ? (pr.reviewDecision as ReviewDecision)
+        : null,
+    checks: toChecks(headCommit?.statusCheckRollup?.state),
     threads: threadNodes.filter(Boolean).map((raw) => {
       const t = raw as Record<string, unknown>;
       const commentNodes = ((t.comments as { nodes?: unknown[] } | undefined)?.nodes ?? []) as unknown[];
@@ -421,6 +487,41 @@ export async function resolveThread(
   } catch (err) {
     return { ok: false, error: `could not parse gh output: ${String(err)}` };
   }
+}
+
+/**
+ * Merge a pull request. The most consequential call in this file by a wide margin.
+ *
+ * REST rather than `gh pr merge`, for the `sha` parameter alone: it makes the merge a
+ * compare-and-swap against the head we evaluated. Without it there is a window - the
+ * seconds between the snapshot the gate decided on and this call - in which a push can
+ * land, and the merge would take code that no CI run has passed and no review has seen.
+ * GitHub answers 409 instead, and the next sweep re-decides against the new head.
+ *
+ * A refusal (405 "not mergeable", 409 stale sha, branch protection) is reported as an
+ * ordinary error and left to the caller to record: unlike a review post, there is no
+ * partial state to reconcile - the PR either merged or it did not, and the next sweep
+ * reads which from GitHub rather than from anything we stored.
+ */
+export async function mergePr(
+  cwd: string | null,
+  owner: string,
+  repo: string,
+  number: number,
+  sha: string,
+  method: "squash" | "merge" | "rebase",
+): Promise<GhResult<void>> {
+  const res = await run(
+    "gh",
+    ["api", "--method", "PUT", `repos/${owner}/${repo}/pulls/${number}/merge`, "--input", "-"],
+    {
+      cwd: cwd ?? undefined,
+      timeoutMs: GH_TIMEOUT_MS,
+      input: JSON.stringify({ sha, merge_method: method }),
+    },
+  );
+  if (res.code !== 0) return fail("gh api (merge)", res);
+  return { ok: true };
 }
 
 /** Render one finding as a comment body: marker first, at column 0. See `marker.ts`. */

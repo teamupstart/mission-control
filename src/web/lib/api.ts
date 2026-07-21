@@ -26,6 +26,8 @@ import type {
   InspectorConfig,
   InspectorConfigPatch,
   ResolveEpisode,
+  ShippingConfig,
+  ShippingConfigPatch,
   SetNote,
   SkillsConfigPatch,
   UiConfigPatch,
@@ -90,6 +92,8 @@ export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
 export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/config");
 export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspector/config");
 export const fetchInspectorPrs = () => fetchJson<InspectorInspection[]>("/api/inspector/prs");
+/** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
+export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**
@@ -367,6 +371,9 @@ export const api = {
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
   setInspectorConfig: (cfg: InspectorConfigPatch) => put(`/api/inspector/config`, cfg),
+
+  // --- Shipping (YOLO mode: merging the clean ones) ---
+  setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),

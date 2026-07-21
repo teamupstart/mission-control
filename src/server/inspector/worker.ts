@@ -33,6 +33,7 @@ import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
 import { formatMarker, isOurs, parseMarker } from "./marker.ts";
 import { scrubSecrets } from "./scrub.ts";
+import { maybeMerge } from "../shipping/merge.ts";
 import { InspectorVerdictSchema, planReview } from "./verdict.ts";
 import type { InspectorVerdict, OurThread } from "./verdict.ts";
 import {
@@ -51,6 +52,9 @@ import type { PrSnapshot, ThreadSnapshot } from "./github.ts";
 
 // The Inspector's tick: review the pull requests we opened, answer follow-ups in our own
 // threads, and close our own threads once a push has fixed what they were about.
+//
+// It is also where YOLO mode lands the ones that came out clean - see
+// `../shipping/merge.ts` for why that rides this loop rather than owning one.
 //
 // A poller in the DAEMON rather than a worker beside the Foreman, for two reasons that
 // are worth restating where someone might move it: the Foreman worker is never started
@@ -316,6 +320,8 @@ export function adoptPr(
     lastFailKind: null,
     nextAttemptAt: null,
     lastAttemptSha: null,
+    mergedAt: null,
+    mergeBlock: null,
     adoptedAt: now,
     updatedAt: now,
   });
@@ -502,7 +508,18 @@ async function processPr(
     }
   }
 
-  // 2. Nothing pushed since the last review: there is nothing new to say.
+  // 2. Ship it, if YOLO mode says every gate is green.
+  //
+  // Before the re-review and before the nothing-pushed return, because neither of those
+  // is where the answer changes: a PR that merges is one whose head was ALREADY reviewed
+  // clean, and what moves it over the line is CI going green or the soak elapsing - both
+  // of which happen while nothing here is pushing anything. Gated behind the head match
+  // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
+  // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
+  // the reply step above may already have moved it.
+  if (await maybeMerge(pr, dir, s, rows, now)) return true;
+
+  // 3. Nothing pushed since the last review: there is nothing new to say.
   //
   // Reaching here having failed nothing means the PR is healthy again, so a stale error
   // from an earlier tick is cleared. `tick.failed` rather than the pre-tick snapshot,

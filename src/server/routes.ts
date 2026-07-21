@@ -20,6 +20,7 @@ import {
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
+  ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
   MarkItemSentSchema,
@@ -74,6 +75,7 @@ import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { getInspectorConfig, setInspectorConfig } from "./inspector/config.ts";
+import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
 import { skillDrift } from "./skills/reconcile.ts";
@@ -1157,6 +1159,18 @@ export function buildApp(
   // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
   // Capped because it is a display; the registry's copy is deliberately not.
   app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections(50)));
+
+  // --- Shipping: YOLO mode, which merges the clean ones ---
+  //
+  // The ledger this panel reads is the Inspector's (`/api/inspector/prs` above), because
+  // it is the same ledger: a PR's merge block lives on the row that says we opened it.
+  // Only the config is separate, and it is separate because the grant is.
+  app.get("/api/shipping/config", (c) => c.json(getShippingConfig()));
+  app.put("/api/shipping/config", async (c) => {
+    const parsed = await parseBody(c, ShippingConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setShippingConfig(parsed.data));
+  });
 
   // --- Harnesses: dispatch-time defaults for launched sessions (localhost only) ---
   app.get("/api/harnesses/config", (c) => c.json(getHarnessesConfig()));

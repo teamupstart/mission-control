@@ -6,6 +6,8 @@ import { useInspector } from "../useInspector.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
+import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
+import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
@@ -30,6 +32,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "foreman", label: "Foreman", icon: "●" },
   { id: "cost", label: "Cost", icon: "$" },
   { id: "inspector", label: "Inspector", icon: "⌕" },
+  { id: "shipping", label: "Shipping", icon: "⚑" },
 ] as const;
 
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]["id"];
@@ -95,6 +98,9 @@ export function SettingsModal({
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // modal reads the Inspector config, so it polls only while the modal is open.
   const inspector = useInspector();
+  // Owned here for the same reason as `inspector`: nothing outside this modal reads the
+  // Shipping config, so it polls only while the modal is open.
+  const shipping = useShipping();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
   // Escape is Overlay's, and stays a plain BUBBLE-phase listener there with no "is a
@@ -157,6 +163,17 @@ export function SettingsModal({
         return <CostSettingsPanel state={cost} />;
       case "inspector":
         return <InspectorSettingsPanel state={inspector} />;
+      case "shipping":
+        // Handed the Inspector's `enabled` because YOLO mode merges what the Inspector
+        // reviewed clean: with it off, nothing qualifies and the panel has to say so
+        // rather than look armed. `null` before the first poll lands, which is not the
+        // same as "off" and must not be drawn as a warning.
+        return (
+          <ShippingSettingsPanel
+            state={shipping}
+            inspectorEnabled={inspector.config ? inspector.config.enabled : null}
+          />
+        );
     }
   }
 

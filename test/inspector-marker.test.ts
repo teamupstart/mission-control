@@ -165,7 +165,20 @@ function thread(id: string, comments: { body: string; author: string }[]): Threa
 }
 
 function snapshot(threads: ThreadSnapshot[]): PrSnapshot {
-  return { state: "OPEN", headSha: "sha", title: "t", body: "b", isDraft: false, threads };
+  // The merge-gate fields are filled with the values that decide nothing here: ownership
+  // is about markers and logins, and `ourThreads` never looks at CI or mergeability.
+  return {
+    state: "OPEN",
+    headSha: "sha",
+    title: "t",
+    body: "b",
+    isDraft: false,
+    createdAt: null,
+    mergeable: "UNKNOWN",
+    reviewDecision: null,
+    checks: "none",
+    threads,
+  };
 }
 
 test("a thread we opened is ours to resolve", () => {

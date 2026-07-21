@@ -200,13 +200,103 @@ Deliberately NOT in `@shared/llm.ts`, because a third spelling of this is the ac
   settings panel cannot display a default the worker does not spawn with. Pure and in
   `shared` for the same reason `cost.ts` is: the worker spawns with the answer and the
   panel renders it.
-- `task-title.ts:20`, `away/digest.ts:17`, `goal/refiner.ts:39` are bare
-  `envVar(…) ?? "claude-haiku-4-5"` - no config key, nothing surfacing them in the UI.
-- `inspector/worker.ts:92` is `cfg.model ?? envVar("INSPECTOR_MODEL")`, a third spelling.
+- ~~`task-title.ts:20`, `away/digest.ts:17`, `goal/refiner.ts:39` are bare
+  `envVar(…) ?? "claude-haiku-4-5"` - no config key, nothing surfacing them in the UI.~~
+  **Closed**: `LLM_JOB_SPECS` (`@shared/llm-jobs.ts`), rendered by Settings → Models.
+- ~~`inspector/worker.ts:92` is `cfg.model ?? envVar("INSPECTOR_MODEL")`, a third
+  spelling.~~ **Closed** by `INSPECTOR_MODEL_SPEC` before this item; it is now the same
+  ladder, filed with its own subsystem.
 
-The next item generalises `foreman-models.ts` to hold every role and moves those four onto
-it. It does not start a second list under `llm.ts`; a runner answers "how is a model
-called", a role answers "which model", and only the first one is the runner's.
+The next item puts those callers on the same ladder. It does not start a second list under
+`llm.ts`; a runner answers "how is a model called", a role answers "which model", and only
+the first one is the runner's.
+
+#### The model-role ladder and the call sites, as landed
+
+`@shared/llm-jobs.ts` holds `LLM_JOB_IDS` + `LLM_JOB_SPECS`, `src/server/llm/config.ts` the
+`llm` blob over `app_config`, `src/server/llm/jobs.ts` the one call a background job makes,
+and **Settings → Models** renders both axes. Four deltas from the sketch above, each forced
+by something real:
+
+- **`foreman-models.ts` was NOT generalised to hold every role.** The sketch said it should
+  be, and that is the one instruction here worth disobeying: the ladder is already shared
+  (`resolveModelChoice`), so what "generalise" would move is the ROLES - and a role is
+  edited by the panel that owns its blob. Foreman's four live in the `foreman` blob and are
+  written by the Foreman panel; the Inspector's one in `inspector`; these three had no
+  owner, which is why they had no config key. Putting all eight in one module would put two
+  writers on blobs whose whole concurrency story is a per-key merge with a single writer.
+  So it is a THIRD set of roles on one ladder, filed the way the other two are, and
+  `model-choice.ts` stays the only resolver. CLAUDE.md's "the roles stay with their
+  subsystem" is the rule that decided it.
+- **The runner ladder VALIDATES where the model ladder does not**, so it is
+  `resolveLlmRunner` and not a fourth call to `resolveModelChoice`. A model id is free text
+  the CLI resolves - a fixed list would strand an operator the day a model ships - while a
+  runner id has to name something in `LLM_RUNNERS` or there is nothing to spawn. It
+  therefore falls back on an unresolvable one, and REPORTS what it dropped: the config is
+  persisted, so a downgrade leaves a stored id this build cannot resolve, and a silent
+  replacement is indistinguishable from an unset field once the panel has drawn it. Same
+  reason `LlmConfigSchema` `.catch()`es rather than throwing - `getLlmConfig` is on the path
+  of every titling, goal refresh and digest, and a schema that rejected a preference would
+  take all three down. The PATCH schema is strict, because a typo from the panel should be a
+  400 the operator can read rather than a key that sits in the blob doing nothing.
+- **`runStructured`, `createLimiter` and `parseModelJson` left `claude-cli.ts`**, as this
+  item was always going to make them. They are a retry ladder, a concurrency gate and a JSON
+  extractor - none of them about a provider - and `llm/structured.ts` takes a bound `run`
+  function rather than a runner, which keeps it free of both `LlmRunner` and `runClaudeText`
+  and lets the not-yet-migrated callers pass `(p) => runClaudeText(p, opts)` unchanged.
+  `parseModelJson` still tolerates a `{result: …}` envelope, and that tolerance is dated:
+  `LlmRunner.run` strips its own, so a migrated caller's text arrives bare and the branch
+  does nothing. It goes with the last caller holding `runClaudeText`.
+- **Triage's runner reaches the Foreman worker over a route, not the DB.** The worker is a
+  separate process and never touches it, so `GET /api/llm/status` is where it reads the
+  resolved runner - and it is the DAEMON's resolution, not the worker re-deriving one from
+  its own environment, because a worker that answered differently from the panel that
+  printed it is exactly the bug `ForemanStatus.models` exists to rule out. Refreshed once per
+  outer pass and kept on the last known answer when the daemon cannot say: a blip must not
+  move the cheap tier onto a provider nobody picked.
+
+The Inspector and Foreman's review / verify / backlog are deliberately NOT migrated. The
+Inspector is the one caller holding TOOLS, and rendering its `cwd` + deny list as an
+`LlmToolGrant` is its own item - `llm-runner-contract.test.ts` already pins
+`claudeGrantSettings` byte-for-byte against its live constants so that migration can be
+provably a no-op rather than hopefully one.
+
+Verified as byte-identical for anyone who changes nothing: `llm-config.test.ts` asserts that
+an unconfigured daemon resolves the same three model ids the hardcoded constants produced,
+from the same env var names, with `default` as the reported source. `llm-jobs.test.ts` pins
+those ids as LITERALS rather than reading them back off the specs they came from. Tests:
+`llm-jobs.test.ts`, `llm-config.test.ts`, `llm-panel.test.ts`,
+`foreman-prompt-harness.test.ts`, `settings-sidebar-render.test.ts`.
+
+#### Where the two axes meet, and the only place they should
+
+Foreman's reviewer and router prompts describe the child's SCREEN - "you MUST fill
+answer.option", "the child's UI is not a text box, it discards typed characters" - and that
+is a claim about a harness's TUI sitting inside a call whose model is the runner's question.
+It was written against Claude's chrome and handed to every agent's session.
+
+`ReviewInput.session.agent` is now required, and `promptHarness(agent)` projects the two
+facts the prompts need: what to call the child (`AGENT_IDENTITY`) and whether it renders
+dialogs we can read and select rows in (`dialogSpecFor`). The failure it closes is
+asymmetric, which is why the capability is asked rather than assumed - told a menu exists
+where none is drawn, the model fills `answer.option` against nothing and `menuMismatch`
+cancels the answer, which is safe but silently dead; told nothing where one IS drawn, the
+model writes prose for a screen that discards typed characters, and that reply is delivered
+as keystrokes. Only the second direction acts.
+
+`promptHarness` returns a small pure shape rather than the prompt reading the registry
+inline, and that is the same argument `PaneDeps.pane` makes: BOTH shipped harnesses declare
+a dialog, so a policy that asked `dialogSpecFor` inline would have its no-menu branch first
+exercised by whichever harness declares `tui: null` - which is to say, in production.
+
+Splicing a 6KB prompt is the kind of change whose diff is unreadable, so it was checked
+rather than argued: `policyFor(promptHarness("claude"))` was diffed against the `POLICY`
+constant as it stood at `c73a521`, and **exactly one line differs** - the sentence that now
+names the harness. Every clause, the whole reply shape, the menu block and the phrasing line
+are byte-for-byte what a Claude session was already being judged against. The no-menu branch
+is not pinned that way and should not be: a 6KB literal in a test fights every legitimate
+policy edit, so `foreman-prompt-harness.test.ts` pins the invariant CLAUSES and the two
+branches' menu content instead.
 
 ### Terminal is two interfaces, because tmux and wezterm are not peers
 
@@ -584,9 +674,12 @@ Two smaller things the adapter settled:
   that is not a deferred decision - there is no CLI holding a socket to be pinned to.
 - **`subtitle()` (`session-bits.tsx`) was a hand-kept per-vendor list** that fell through to
   "process" for anything it did not recognise, so a Ghostty-named session would have been
-  labelled as having no terminal at all - about a session a terminal had just named. It is
-  derived from `nameSource` now, with tmux's pane id the one special case left, because it
-  carries EXTRA information rather than a different spelling of its own name.
+  labelled as having no terminal at all - about a session a terminal had just named. This
+  branch fixed it by deriving from `nameSource`; the handle-list item landed a better fix
+  first, reading the handle that DID the naming out of `session.terminals`, and this branch
+  carries none of its own change. Worth recording as a near miss rather than a win: two
+  items found the same defect independently, days apart, because it was a list of vendor
+  names in a file whose whole subject is that vendors are not a list.
 
 **What the handle list bought, and what is still not reachable.** This item was written
 expecting to end with "named but unreachable": `legacyHandles` could project onto
@@ -1060,8 +1153,8 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
 | 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` migration; de-tmux user-visible strings |
-| 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
-| 5 - Proof | A third adapter on each axis, written *only* against the interface: Ghostty **(landed)** - and it was not written only against the interface, because the interface was missing a field (see "Ghostty, as landed"); then cmux, iTerm2, pi |
+| 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
+| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**, one per axis with Ghostty **(landed)** - and neither was written *only* against the interface, which is the finding rather than the failure: cmux needed three tmux assumptions unpicked, Ghostty needed a correlation key the interface did not have. iTerm2 and `pi` still queued |
 
 ### Decisions taken
 
@@ -1111,6 +1204,116 @@ be added without touching shared code. Phase 5 is the test:
 
 If any of the four requires editing a file outside its own adapter, the interface is wrong.
 Ghostty did, and it was.
+
+#### cmux, as landed - and the three things it found
+
+`src/server/terminal/cmux.ts`, registered by appending one id to `MULTIPLEXER_IDS`. cmux
+0.64.20 is a native macOS terminal with named workspaces, splits and a Unix-socket control
+API, and it was the right first proof for exactly the reason it looked like the easy one:
+a NEAR NEIGHBOUR only fails where the interface mistook a tmux fact for a universal one.
+It found three, and the acceptance criterion held in the way that matters - **every edit
+outside the adapter was to the interface itself, and none was a special case for cmux**:
+
+- **`MuxPane.sessionName`, split from `MuxTarget.session`.** A tmux session's name IS its
+  target spec, so one field did both jobs and `correlate.ts` titled cards from the address.
+  cmux cannot do that: a workspace has a UUID stable for its lifetime and a title that
+  defaults to whatever the shell reports, so the title changes as someone cds and two
+  workspaces sitting at `~` share one. Naming cards by the id is unreadable; addressing by
+  the title makes `kill` a coin flip between two live sessions. `EmulatorPane` had this
+  split from the start (`tabId` addresses, `tabTitle` displays) - this is the multiplexer
+  side catching up, and tmux sets both from one string.
+- **`MuxSessions.attachArgv` is nullable.** It is handed to `EmulatorSpawn.tab(...)` at the
+  end of the focus walk, which encodes "a multiplexer session can exist with nothing
+  displaying it". True of tmux, screen and zellij; false of cmux, where a workspace is drawn
+  by the app from the moment it exists. Every candidate value was a lie - the nearest,
+  `cmux select-workspace`, opens a stray empty tab in a FOREIGN terminal beside a window
+  already on screen.
+- **`MuxPane.panePid` is nullable.** Nothing joins on it - the tty is the join - and it was
+  required because tmux hands it over in the same format string for free. cmux answers it
+  only from a resource-sampling call that walks every process in every surface, which is not
+  a thing to spend on the 1500ms tick for a field no reader consults.
+
+The nesting is why those last two nulls fall where they do. tmux sits *inside* an emulator
+and needs it to be seen; cmux IS the window, so the outward half of the walk has nowhere to
+go:
+
+```mermaid
+flowchart LR
+  subgraph T["tmux: three layers, focus walks out"]
+    direction LR
+    E["wezterm pane<br/>(emulator)"] --> M["tmux pane<br/>(multiplexer)"] --> A["agent process"]
+  end
+  subgraph C["cmux: two layers, nothing outside it"]
+    direction LR
+    X["cmux surface<br/>(multiplexer, draws itself)"] --> B["agent process"]
+  end
+  M -. "clients -> host tab -> attachArgv" .-> E
+  X -. "clients: null, attachArgv: null" .-> X
+```
+
+**What was NOT added, deliberately: a `raise` capability.** cmux can bring its own window
+forward, which no multiplexer this interface was built for could, so the focus walk
+(select -> host tab -> spawn an attach) ends in two nulls for it. The slot that fixes this
+belongs to the focus/spawn/kill item, which is the phase that rewrites the walk and the
+first phase to have a caller for it. Landing a null nobody has designed is what the harness
+work explicitly refused to do ("the remaining slots arrive with their phases"), and the same
+discipline applies here.
+
+**cmux is a multiplexer that is not persistent, and that is fine.** Its workspaces do not
+outlive the app - verified by killing it: the list comes back from a snapshot with fresh
+shells and every child process gone, which is what cmux's own
+`surface resume --kind tmux --shell "tmux attach -t work"` exists to paper over. It still
+belongs on this axis rather than the emulator one, because `MuxSessions` - create a named
+session for a task, rename it, kill it on teardown - is precisely what the dispatcher needs
+from it and precisely what an emulator has no answer for. Note it ranks BELOW tmux in
+`MULTIPLEXER_IDS`: tmux can run inside a cmux surface, so tmux is the inner answer.
+
+Two defects in cmux itself were found by pointing the adapter at it, and both are handled
+here rather than worked around at a call site:
+
+- **`cmux send` cannot express literal text.** It replaces the two-character sequences
+  `\n`, `\r` and `\t` wherever they appear, `\n` and `\r` with a CR - which in an agent
+  composer is Enter. There is no escape (`\\n` does not collapse; verified across single,
+  double and quadruple backslashes), so a reply containing `printf("\n")` submits itself
+  halfway through and one containing a Windows path silently loses characters. Same class as
+  tmux's getopt eating a dash-leading reply, one layer worse: tmux refused loudly, this
+  delivers corrupted text and exits 0. `write.text` goes through the socket method
+  `surface.send_text`, which applies no scanner.
+- **cmux mis-attributes ttys in a multi-surface workspace.** Reproduced from clean, against
+  `ps` as ground truth: a workspace running `sleep 12345` on `ttys031` is reported correctly
+  until one `new-split`, after which cmux reports `ttys032` for that process (the split's
+  own tty) and `nil` for the split. `debug-terminals` shows the same, so it is cmux's
+  tracking rather than its rendering. The tty is the ONLY join between a process and a pane,
+  so passing it on binds a card to a pane its agent is not in and types the next prompt into
+  someone's shell. The adapter reports a tty only from a workspace holding one terminal
+  surface, and `spawnDetached` therefore declines `sidePane` - which the contract already
+  allows, and which costs a convenience shell rather than the session's card.
+
+**It lands as a fully driveable backend, which it would not have a phase earlier.** The
+`Session` handle list arrived first, so `handleOf` reads `backend` off the candidate and a
+cmux pane becomes a real `MuxHandle` rather than correlating with nowhere to land - the
+"honest shape of a half-finished migration" that `legacyHandles` used to impose on any
+backend without a named field. A cmux session therefore names its card, resolves through
+`bindPane`, and takes writes and captures, with its capability nulls intact. The one thing
+it does NOT reach is focus, rename and kill, which still shell out to `tmux` by name: those
+three answer `tmuxOnly`, whose `noDriver(backend: never)` tripwire is what forced cmux to
+say so out loud instead of being handed to `tmux kill-session`. That arm goes when the
+focus/spawn/kill item does.
+
+One deployment fact worth stating because it is cmux's default rather than a bug: the socket
+ships as `socketControlMode: "cmuxOnly"`, admitting only processes cmux started, and the
+daemon is not one. An operator sets `allowAll` in `~/.config/cmux/cmux.json`. Until they do,
+`list()` answers `[]` and their cmux sessions are named `<agent> <pid>` - the same
+degradation as any unrecognised terminal, which is the right one.
+
+Verified the way the pane-I/O item was, not from the diff: the real adapter driven against a
+real cmux, with a child recording every byte it received. Spawn, enumerate (tty checked
+against `ps`), literal text carrying `\n` / `\t` / backslashes, all six keys byte for byte,
+a multi-line bracketed paste that did not submit, a capture, select, rename (title changed,
+address did not), every name rule cross-checked against what the live app accepts, and kill
+- workspace gone, process gone. Tests: `cmux-adapter.test.ts` against
+`test/fixtures/cmux-panes.ts`, which is a verbatim capture holding the mis-attributed tty in
+the act.
 
 ## Fixes found along the way
 

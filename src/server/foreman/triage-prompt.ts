@@ -1,4 +1,5 @@
-import { formatTranscript, paneSection } from "./prompt.ts";
+import { formatTranscript, paneSection, promptHarness } from "./prompt.ts";
+import type { PromptHarness } from "./prompt.ts";
 import { fromChild, instructionsSection } from "./prefs.ts";
 import type { ReviewInput } from "./prompt.ts";
 
@@ -8,8 +9,14 @@ import type { ReviewInput } from "./prompt.ts";
 // so this prompt only needs to steer the common cases; a wrong bucket is caught or, at
 // worst, routes up to the full reviewer.
 
-const ROUTER = `You are Foreman's FAST TRIAGE ROUTER for the "Mission Control" agent dashboard. Another AI
-coding agent (a "child" session) has paused and is waiting on its human operator. Your ONLY job is to
+export function routerFor({ child }: PromptHarness): string {
+  // Names the harness for the same reason `policyFor` does: this tier can DISPOSE, so it
+  // is describing the screen it is bucketing, and describing the wrong agent's screen is
+  // how a router grows confident about chrome it has never seen. It carries no menu
+  // grammar of its own - the router BUCKETS the ask and never selects a row - so `menus`
+  // is not consulted here, and a second reading of the same capability is avoided.
+  return `You are Foreman's FAST TRIAGE ROUTER for the "Mission Control" agent dashboard. A ${child}
+session (the "child") has paused and is waiting on its human operator. Your ONLY job is to
 BUCKET the pending ask so a cost gradient can spend the expensive reviewer only where real judgment is
 needed. Do NOT try to solve implementation problems here.
 
@@ -52,12 +59,13 @@ RULES:
 - "purpose" is REQUIRED in every reply.
 - "confidence" is REQUIRED in every reply: a number from 0 to 1. Omitting it is a malformed
   reply and discards your whole bucketing.`;
+}
 
 /** Assemble the Tier 1 router prompt for one session (a trimmed window). */
 export function buildTriagePrompt(input: ReviewInput): string {
   const { session, surface, question, transcript, truncated } = input;
   return [
-    ROUTER,
+    routerFor(promptHarness(session.agent)),
     "",
     // Shared verbatim with the full reviewer, which is the point: this tier disposes
     // `routine-access` on its own, so the operator's instructions have to bind here or

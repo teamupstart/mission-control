@@ -1,4 +1,5 @@
-import { HEADLESS_CWD, killLiveClaudeRuns, resultText, runClaudeText } from "../claude-cli.ts";
+import { HEADLESS_CWD, killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
+import { unwrapEnvelope } from "./structured.ts";
 import { headlessTranscriptDir } from "../goal/prune.ts";
 import { grantRefusal } from "@shared/llm.ts";
 import type { LlmRunOptions, LlmRunner, LlmToolGrant } from "@shared/llm.ts";
@@ -86,7 +87,7 @@ export const claudeRunner: LlmRunner = {
     // Unwrapped here, so no caller ever sees the `{ result: "…" }` envelope. It exists
     // because THIS runner passes `--output-format json`; a caller that parsed it would be
     // undoing its own runner's flag, and a different provider's envelope would break it.
-    return resultText(raw);
+    return unwrapEnvelope(raw);
   },
 
   /**

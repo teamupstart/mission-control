@@ -1,5 +1,6 @@
 import { backendPaneToken, innermostPane, type PaneHandles } from "@shared/pane.ts";
 import type { TerminalHandle } from "@shared/terminal.ts";
+import { cmuxMultiplexer } from "./cmux.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
 import { ghosttyEmulator } from "./ghostty.ts";
 import { tmuxMultiplexer } from "./tmux.ts";
@@ -70,7 +71,7 @@ import type {
  * is here to enforce.
  */
 export function multiplexers(exec: TerminalExec = defaultExec): Record<MultiplexerId, Multiplexer> {
-  return { tmux: tmuxMultiplexer(exec) };
+  return { tmux: tmuxMultiplexer(exec), cmux: cmuxMultiplexer(exec) };
 }
 
 export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, TerminalEmulator> {

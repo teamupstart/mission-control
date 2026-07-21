@@ -1,9 +1,10 @@
 import { z } from "zod";
 import { TITLE_MAX_CHARS, titleLine } from "@shared/title.ts";
 import { envVar } from "./config.ts";
-import { createLimiter, parseModelJson, runStructured } from "./claude-cli.ts";
+import { runJobStructured } from "./llm/jobs.ts";
+import { createLimiter, parseModelJson } from "./llm/structured.ts";
 
-// Names an untitled dispatch, with one headless `claude -p` on Haiku.
+// Names an untitled dispatch, with one headless model call on the cheap tier.
 //
 // The board's cards, the git branch and the tmux session name all come from a task's title,
 // and a dispatch left untitled used to take the intent's first line verbatim - so a card
@@ -12,18 +13,15 @@ import { createLimiter, parseModelJson, runStructured } from "./claude-cli.ts";
 //
 // The same shape as the goal refiner, and for the same reasons: the narrowest thing a model
 // does here, priced accordingly, with the deterministic tier left standing whenever the call
-// fails. A missing or logged-out `claude` must cost the operator a rougher title, never a
+// fails. A missing or logged-out provider must cost the operator a rougher title, never a
 // dispatch.
 
-/** Tier 2's model. Named explicitly: omitting `--model` inherits the CLI's default, which is
- *  both the priciest and the least predictable choice. */
-const TITLE_MODEL = envVar("TASK_TITLE_MODEL") ?? "claude-haiku-4-5";
 /**
  * PER-ATTEMPT budget, not a total.
  *
- * A TIMEOUT is NOT retried: `runClaudeText` rejects, and `runStructured` returns
+ * A TIMEOUT is NOT retried: the runner rejects, and `runStructured` returns
  * `failed` on the first exception rather than trying the second prompt. So the usual
- * bad case - a slow, missing or logged-out `claude` - costs exactly ONE budget, about
+ * bad case - a slow, missing or logged-out provider - costs exactly ONE budget, about
  * 15s, in front of the dispatch. Only a PARSE MISS (exit 0, output that won't validate)
  * reaches `runStructured`'s single retry, and only that rarer path costs roughly twice
  * this.
@@ -38,7 +36,7 @@ const TITLE_MODEL = envVar("TASK_TITLE_MODEL") ?? "claude-haiku-4-5";
  */
 export const TITLE_TIMEOUT_MS = Number(envVar("TASK_TITLE_TIMEOUT_MS") ?? 15_000);
 /**
- * Concurrent `claude -p` runs for titling. Dispatch is human-paced, so this is a ceiling
+ * Concurrent model runs for titling. Dispatch is human-paced, so this is a ceiling
  * rather than a queue - it exists so that pasting a backlog in one burst can't fork a
  * subprocess per task.
  */
@@ -115,11 +113,15 @@ const limit = createLimiter(TITLE_CONCURRENCY);
 export async function summariseTaskTitle(intent: string): Promise<string | null> {
   try {
     return await limit(async () => {
-      const r = await runStructured<typeof TitleSchema>(
+      // Runner and model come from the `task-title` job (`@shared/llm-jobs.ts`), resolved
+      // at the moment of the call so a model changed in Settings takes effect on the next
+      // untitled dispatch rather than the next daemon restart.
+      const r = await runJobStructured<typeof TitleSchema>(
+        "task-title",
         buildTitlePrompt(intent),
         (raw) => parseModelJson(raw, TitleSchema),
         "Title",
-        { model: TITLE_MODEL, timeoutMs: TITLE_TIMEOUT_MS },
+        { timeoutMs: TITLE_TIMEOUT_MS },
       );
       if (r.kind === "failed") {
         // Silent to the operator by design: the card keeps its first-line title and the

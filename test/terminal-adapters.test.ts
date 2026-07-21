@@ -188,7 +188,7 @@ test("the argv that attaches a terminal honours the resolved binary", () => {
   // This argv is handed to an emulator to spawn, so it is the one place a binary outside
   // PATH has to be spelled out rather than assumed - a bare "tmux" here would ignore the
   // spec the adapter already carries.
-  assert.deepEqual(tmuxMultiplexer().sessions!.attachArgv("api"), [
+  assert.deepEqual(tmuxMultiplexer().sessions!.attachArgv!("api"), [
     resolveBin(TMUX_BIN),
     "attach",
     "-t",

@@ -3,6 +3,8 @@
 // that crosses the SSE / HTTP boundary.
 
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
+import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
+import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
@@ -1577,6 +1579,25 @@ export interface InspectorInspection extends InspectorPr {
  */
 export interface InspectorStatus {
   model: ResolvedModel;
+}
+
+/**
+ * What the app's offline work will actually spawn as - the runner and every background
+ * job's model, each with the layer that chose it.
+ *
+ * Resolved by the DAEMON and sent whole, for the reason `ForemanStatus.models` and
+ * `InspectorStatus` are: both the runner and the model ids sit behind an env layer the
+ * browser cannot see, so a panel deriving `config || default` would confidently print a
+ * value a `MISSION_GOAL_MODEL` in the daemon's environment is overriding.
+ *
+ * `runners` travels with it because the picker cannot be built from `LLM_RUNNER_IDS`
+ * alone: a runner's human-facing label lives on the implementation, which is server-side.
+ */
+export interface LlmStatus {
+  runner: ResolvedLlmRunner;
+  models: Record<LlmJobId, ResolvedLlmJobModel>;
+  /** Every provider this build has, in declaration order. */
+  runners: Array<{ id: LlmRunnerId; label: string }>;
 }
 
 // ---- SSE events (daemon -> UI) ----

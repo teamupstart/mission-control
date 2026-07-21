@@ -259,6 +259,8 @@ test("a multiplexer inside a hosted window keeps the pane - the axes do not figh
         panes: [
           {
             session: "api",
+            // tmux's two are one string; the split exists for a backend where they differ.
+            sessionName: "api",
             windowIndex: 0,
             paneId: "%3",
             windowName: "w",

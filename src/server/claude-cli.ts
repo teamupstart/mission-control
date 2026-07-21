@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import type { ZodTypeAny, TypeOf } from "zod";
+import { unwrapEnvelope } from "./llm/structured.ts";
 import { resolveAgentBin } from "./harness/index.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
@@ -8,23 +8,21 @@ import { resolveAgentBin } from "./harness/index.ts";
 // here rather than under `foreman/`:
 //
 //   - the Foreman worker, for a full review / queue verify / Tier 1 triage route;
-//   - the daemon, for the per-session Goal one-liner.
+//   - the daemon, for the Inspector's review and its follow-up replies.
 //
-// They run in SEPARATE PROCESSES (the worker is `npm run foreman`), so this module
-// deliberately owns no global concurrency state: a shared module cannot enforce a
-// shared cap across process boundaries, and pretending otherwise would be a lie.
-// Each caller builds its own `createLimiter` instead - Foreman is near-sequential
-// already, and the daemon caps its goal runs so a busy set of sessions can't fork a subprocess
-// per card.
-//
-// THIS MODULE IS NOW BEHIND AN INTERFACE. `src/server/llm/claude.ts` is the `LlmRunner`
+// THIS MODULE IS BEHIND AN INTERFACE. `src/server/llm/claude.ts` is the `LlmRunner`
 // implementation and delegates here rather than copying: the arguments below - why
 // `--tools` defaults to empty, why the child is detached, which flags are load-bearing by
-// their ABSENCE - stay next to the code they constrain. New callers should take a runner
-// (`src/server/llm/index.ts`) instead of importing this file; the existing ones are moved
-// across by a later item of the pluggable-integrations plan, which is also when
-// `runStructured` and `createLimiter` - provider-neutral, they only need a `run` - stop
-// naming `claude` at all.
+// their ABSENCE - stay next to the code they constrain. New callers take a runner
+// (`src/server/llm/index.ts`) instead of importing this file.
+//
+// What used to sit here and does not any more: `runStructured`, `createLimiter` and
+// `parseModelJson` are provider-neutral - a retry ladder, a concurrency gate and a JSON
+// extractor - and moved to `llm/structured.ts` with the LLM-runner item of the
+// pluggable-integrations plan. The daemon's own background jobs (the titler, the goal
+// refiner, the away digest) no longer reach this file at all; they go through
+// `llm/jobs.ts`. Foreman's review / verify / backlog and the Inspector still do, and are
+// the remaining call sites that item leaves for a later one.
 
 /**
  * The claude binary; overridable so a test/E2E can point at a fake.
@@ -49,17 +47,6 @@ const CLAUDE_BIN = resolveAgentBin("claude");
 const DEFAULT_TIMEOUT_MS = Number(
   process.env.MISSION_CLAUDE_TIMEOUT_MS || process.env.FOREMAN_REVIEW_TIMEOUT_MS || 120_000,
 );
-
-/**
- * The result of one structured run: either a model-produced, schema-valid value
- * (success - INCLUDING a judgment you don't like, e.g. action:"skip") or a
- * transient failure (a spawn/timeout/exit error, or a parse miss after the retry).
- *
- * Callers must treat these differently, which is the whole reason the contract
- * separates them: a genuine judgment is durable, but a failure must never be
- * stamped as one, or a single infra blip would abandon the work for good.
- */
-export type StructuredResult<T> = { kind: "ok"; value: T } | { kind: "failed"; reason: string };
 
 /**
  * The cwd every headless run spawns in.
@@ -100,116 +87,14 @@ function hookExitOnce(): void {
 }
 
 /**
- * A per-caller concurrency gate: `limit(fn)` runs `fn` once a slot is free.
+ * Unwrap the `claude -p --output-format json` envelope to its `result` text.
  *
- * Scoped to the caller, never module-global, because the two callers want opposite
- * things - Foreman wants its serial review queue left alone, while the daemon wants
- * a hard ceiling on goal refreshes so a 20-card dashboard answering prompts at once
- * can't fork 20 subprocesses. The loop (not an `if`) is what makes it correct: a
- * released waiter re-checks the count instead of trusting that the slot it was woken
- * for is still free, so two waiters resumed in the same tick can't both take one slot.
+ * The implementation is `llm/structured.ts`'s, re-exported under the name this module's
+ * callers have always used. It sits over there because `parseModelJson` needs it and a
+ * provider-neutral parser must not import this file; the envelope itself is still Claude's,
+ * which is why the name that says so is here.
  */
-export function createLimiter(concurrency: number): <T>(fn: () => Promise<T>) => Promise<T> {
-  let active = 0;
-  const waiting: Array<() => void> = [];
-  return async function limit<T>(fn: () => Promise<T>): Promise<T> {
-    while (active >= concurrency) {
-      await new Promise<void>((resolve) => waiting.push(resolve));
-    }
-    active++;
-    try {
-      return await fn();
-    } finally {
-      active--;
-      waiting.shift()?.();
-    }
-  };
-}
-
-/**
- * Ask a fresh tool-less `claude -p` for a value matching `schema`, retrying once
- * on a parse miss with a stricter reminder (the model occasionally editorializes
- * in prose instead of emitting the raw object, or wraps it in a markdown fence
- * despite being told not to - both observed). Never throws.
- *
- * `extract` turns raw stdout into a candidate value; pass the caller's own ladder
- * so an existing extractor (with its envelope/fence handling) stays the single
- * source of that logic.
- */
-export async function runStructured<S extends ZodTypeAny>(
-  prompt: string,
-  extract: (raw: string) => TypeOf<S> | null,
-  label = "The model",
-  opts: ClaudeRunOptions = {},
-): Promise<StructuredResult<TypeOf<S>>> {
-  const attempts = [
-    prompt,
-    `${prompt}\n\nYour previous reply was not valid JSON. Reply with ONLY the JSON object.`,
-  ];
-  for (const p of attempts) {
-    let raw: string;
-    try {
-      raw = await runClaudeText(p, opts);
-    } catch (err) {
-      return { kind: "failed", reason: `${label} failed: ${String(err)}` };
-    }
-    const value = extract(raw);
-    if (value) return { kind: "ok", value };
-  }
-  return { kind: "failed", reason: `${label} could not parse a valid reply from the model.` };
-}
-
-/**
- * Pull a schema-valid object out of a `claude -p` run's raw stdout. Handles the JSON
- * envelope (`{ result: "<text>" }`), markdown-fenced JSON, or a bare object, trying each
- * candidate against the schema. Returns null when none validate.
- *
- * Lives here rather than with any one caller because the envelope is a property of the
- * `--output-format json` flag THIS module sets - a caller that parses it is undoing what
- * `runClaudeText` asked for. It had already been copied verbatim into two callers (the
- * reviewer and the queue verifier) before a third (the goal refiner) needed it.
- *
- * The fence branch is not defensive padding: a model returns ```json … ``` despite being
- * told not to, observed on a real probe.
- */
-export function parseModelJson<S extends ZodTypeAny>(raw: string, schema: S): TypeOf<S> | null {
-  for (const candidate of jsonCandidates(resultText(raw))) {
-    let obj: unknown;
-    try {
-      obj = JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-    const r = schema.safeParse(obj);
-    if (r.success) return r.data;
-  }
-  return null;
-}
-
-/** Unwrap the `claude -p --output-format json` envelope to its `result` text. */
-export function resultText(raw: string): string {
-  const trimmed = raw.trim();
-  try {
-    const env = JSON.parse(trimmed) as { result?: unknown };
-    if (env && typeof env === "object" && typeof env.result === "string") return env.result;
-  } catch {
-    // not an envelope - the raw output is the text
-  }
-  return trimmed;
-}
-
-/** Candidate JSON strings to try, most-specific first. */
-function jsonCandidates(text: string): string[] {
-  const out: string[] = [];
-  const fence = /```(?:json)?\s*([\s\S]*?)```/gi;
-  let m: RegExpExecArray | null;
-  while ((m = fence.exec(text))) out.push(m[1]!.trim());
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first >= 0 && last > first) out.push(text.slice(first, last + 1));
-  out.push(text.trim());
-  return out;
-}
+export { unwrapEnvelope as resultText };
 
 /**
  * Spawn `claude -p`, feed the prompt on stdin, resolve its stdout. `opts.model` maps

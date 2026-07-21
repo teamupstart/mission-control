@@ -12,7 +12,7 @@ import { HOST, PORT } from "./config.ts";
 import { openDb } from "./db.ts";
 import { ensureToken } from "./auth.ts";
 import { Registry } from "./registry.ts";
-import { killLiveClaudeRuns } from "./claude-cli.ts";
+import { killLiveLlmRuns } from "./llm/index.ts";
 import { ReviewManager } from "./reviews.ts";
 import { TaskManager } from "./tasks.ts";
 import { QueueManager } from "./queue.ts";
@@ -114,7 +114,12 @@ function shutdown(): void {
   // process that outlives us and would go on burning tokens for a card nobody is watching.
   // `claude-cli.ts` hooks `process.exit` for the same reason, but this path calls it
   // explicitly rather than relying on that ordering.
-  killLiveClaudeRuns();
+  //
+  // Through the REGISTRY rather than one provider's kill: the daemon's background jobs
+  // spawn through whichever runner is configured, so a shutdown that only knew how to kill
+  // `claude -p` would leave a second provider's children running - which is the shape of
+  // leak `killLiveRuns` is required (not optional) on the interface to prevent.
+  killLiveLlmRuns();
   stopPoolReaper();
   stopSkillsReloader();
   stopTaskSources();

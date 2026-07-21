@@ -20,6 +20,7 @@ import {
   HarnessesConfigPatchSchema,
   UiConfigPatchSchema,
   InspectorConfigPatchSchema,
+  LlmConfigPatchSchema,
   ShippingConfigPatchSchema,
   HookIngestSchema,
   InjectPromptSchema,
@@ -56,6 +57,7 @@ import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
 import type {
   InspectorStatus,
+  LlmStatus,
   NmRunSummary,
   Session,
   SkillsView,
@@ -87,6 +89,7 @@ import type { TaskSourcesView } from "@shared/task-source.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { getInspectorConfig, inspectorModel, setInspectorConfig } from "./inspector/config.ts";
+import { getLlmConfig, llmStatus, setLlmConfig } from "./llm/config.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -1198,6 +1201,25 @@ export function buildApp(
   app.get("/api/inspector/status", (c) =>
     c.json({ model: inspectorModel() } satisfies InspectorStatus),
   );
+
+  // --- LLM: which provider does the app's own offline work, and on which model ---
+  //
+  // The runner is app-wide; the models here are the DAEMON's own background jobs. Foreman's
+  // four roles and the Inspector's one keep their own routes and their own blobs, because
+  // each is edited by the panel that owns that subsystem - a second writer would turn a
+  // per-key merge into a lost update.
+  app.get("/api/llm/config", (c) => c.json(getLlmConfig()));
+  app.put("/api/llm/config", async (c) => {
+    const parsed = await parseBody(c, LlmConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    return c.json(setLlmConfig(parsed.data));
+  });
+  // Resolved HERE rather than in the panel, for the reason `ForemanStatus.models` documents:
+  // the env layer is invisible to the browser, so a panel showing `config || default` would
+  // confidently print a model a `MISSION_GOAL_MODEL` in the daemon's environment is
+  // overriding. The Foreman worker reads its runner off this route too - it is a separate
+  // process and never touches the DB.
+  app.get("/api/llm/status", (c) => c.json(llmStatus() satisfies LlmStatus));
 
   // --- Shipping: YOLO mode, which merges the clean ones ---
   //

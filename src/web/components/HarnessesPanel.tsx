@@ -6,18 +6,17 @@ import { permissionModeDisplay } from "../lib/format.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
-// launches - the auto-mode master toggle, then one default-model row per harness.
+// launches - the auto-mode master toggle, then model and effort defaults per harness.
 // The master-toggle shape is the skills/Foreman pattern - an `.alert-row` checkbox
 // styled as a switch - because that is what this is: a durable on/off that changes
 // what happens to every future dispatch.
 
 /**
- * One default-model row per harness, derived from the union rather than listed here.
+ * One model and effort row per harness, derived from the union rather than listed here.
  *
- * A hand-kept list is how a harness ends up dispatchable but unconfigurable: it would
- * launch with whatever `--model` default the code picks and the operator would have no
- * row to change it in, with nothing failing to compile to say so. Order is
- * `AGENT_TYPES`' order, which is the order this section has always shown.
+ * A hand-kept list is how a harness ends up dispatchable but missing settings rows,
+ * with nothing failing to compile to say so. Order is `AGENT_TYPES`' order, which is
+ * the order this section has always shown.
  */
 const MODEL_ROWS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((agent) => ({
   agent,

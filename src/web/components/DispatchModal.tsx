@@ -354,7 +354,7 @@ function DispatchModal({
   }, []);
 
   // Index the workspace's repos so the base can be searched/picked, and read the
-  // harness defaults so the model picker can show which model "Default" means.
+  // harness defaults so the model and effort pickers can show what "Default" means.
   // Re-fetched on every open so a freshly-cloned repo - or a default just changed in
   // Settings - shows up without a full app reload.
   useEffect(() => {
@@ -516,10 +516,9 @@ function DispatchModal({
             <select
               className="field-input"
               value={draft.agent}
-              // Switching harness drops the model with it: the ids don't cross over,
-              // so keeping one would leave a Claude model selected for Codex - which
-              // the dispatch would then actually try to launch. Back to the default,
-              // which is per-agent and always right for the harness now chosen.
+              // Switching harness drops model and effort overrides with it: neither
+              // selection is portable across harnesses. Back to the defaults, which are
+              // per-agent and always right for the harness now chosen.
               onChange={(e) =>
                 update({ agent: e.target.value as AgentType, model: "", effort: "" })
               }

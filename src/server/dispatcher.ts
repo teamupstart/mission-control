@@ -74,9 +74,9 @@ export class Dispatcher {
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
 
-      // Resolved here, not at task creation: a backlogged task launches on the default
-      // in force NOW. Both CLIs spell the flag `--model <id>`; null means pass nothing
-      // and let the harness's own configuration decide.
+      // Resolved here, not at task creation: a backlogged task launches on the defaults
+      // in force NOW. Both CLIs spell the model flag `--model <id>`; effort syntax comes
+      // from the harness registry. Null means let the harness's own configuration decide.
       const model = resolveDispatchModel(task.agent, task.model);
       const effort = resolveDispatchEffort(task.agent, task.effort);
       const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];

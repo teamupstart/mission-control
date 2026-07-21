@@ -432,8 +432,8 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
  * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model` and `effort` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and a tmux session at dispatch and
- * cannot be rewritten afterwards, and the model is baked into the launched command line -
- * so a patch touching any of them is refused once the task has left the backlog.
+ * cannot be rewritten afterwards, while model and effort are baked into the launched
+ * command line - so a patch touching any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
  *
@@ -443,7 +443,7 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  *
  * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
- * "follow the harness default again" about a row that already names a model.
+ * "follow the harness default again" about a row that already names an override.
  */
 export const UpdateTaskSchema = z
   .object({
@@ -1049,10 +1049,10 @@ export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
  * Partial update of the harnesses config from the dashboard.
  *
  * Spelled out rather than `HarnessesConfigSchema.partial()`, because `.partial()`
- * only reaches the top level: a `{defaultModel: {claude}}` patch would parse under
- * it, fill `codex` in from the inner `.default(null)`, and the shallow merge in
- * `setHarnessesConfig` would then wipe the codex default the caller never mentioned.
- * Here an omitted inner key stays omitted, and the server merges per-agent.
+ * only reaches the top level: a partial per-agent map would parse under it, fill the
+ * omitted agent from the inner `.default(null)`, and the merge in `setHarnessesConfig`
+ * would then wipe a default the caller never mentioned. Here an omitted inner key stays
+ * omitted, and the server merges per-agent.
  */
 export const HarnessesConfigPatchSchema = z
   .object({

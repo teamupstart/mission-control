@@ -24,9 +24,9 @@ export function getHarnessesConfig(): HarnessesConfig {
 /**
  * Merge a patch over the current config, persist, and return the result.
  *
- * `defaultModel` merges per-agent rather than being replaced wholesale, so a panel
- * that only changed the Claude default cannot clear the Codex one it never showed
- * the operator. Every other key is a scalar, for which the shallow spread is right.
+ * Per-agent maps merge rather than being replaced wholesale, so a panel that only
+ * changed the Claude default cannot clear the Codex one it never showed the operator.
+ * Scalar keys use the shallow spread.
  */
 export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig {
   const cur = getHarnessesConfig();

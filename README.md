@@ -867,9 +867,9 @@ is where a stale name is most confusing - nobody watched that handover happen.
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
 [Roundup](#roundup) panel. Every field is editable: repo, kind, agent, title, and the task
-text itself, plus more screenshots dropped onto it. **Model** included - and putting it
-back on **Default** un-pins it, so the task goes back to following whatever the harness
-default is when it finally launches. **Save** keeps it in the backlog;
+text itself, plus more screenshots dropped onto it. **Model** and **Effort** included - and
+putting either back on **Default** un-pins it, so the task goes back to following the
+corresponding harness default when it finally launches. **Save** keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.

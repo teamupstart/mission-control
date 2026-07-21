@@ -172,7 +172,8 @@ export class TaskManager {
       labels: input.labels ?? [],
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
-      // default it happened to see (see `resolveDispatchModel`).
+      // defaults it happened to see (see `resolveDispatchModel` and
+      // `resolveDispatchEffort`).
       model: input.model ?? null,
       effort: input.effort ?? null,
       source: input.source ?? null,

@@ -93,8 +93,8 @@ export function draftFromTask(t: Task): DispatchDraft {
     // reopened and saved unchanged must not acquire one.
     priority: t.priority ?? "",
     labels: t.labels.join(", "),
-    // A stored null is the deferral, and it reads back as the same empty option it was
-    // picked from - so reopening a shelved task shows "Default", not a model it never chose.
+    // Stored nulls are deferrals, and read back as the same empty options they were
+    // picked from - so reopening a shelved task shows "Default", not overrides it never chose.
     model: t.model ?? "",
     effort: t.effort ?? "",
     attachments: [],

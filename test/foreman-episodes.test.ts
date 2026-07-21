@@ -71,8 +71,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     startedAt: 0,
     ...over,
   };

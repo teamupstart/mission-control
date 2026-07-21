@@ -13,6 +13,7 @@ import { SEND_ATTEMPT_CAP } from "../src/server/foreman/queue-machine.ts";
 import type { QueueConfig } from "../src/server/foreman/queue-machine.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { Session, SessionQueue, WorkItem } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The I/O half, driven against a fake - mirroring foreman-verdict.test.ts's
 // ForemanActions fake. What matters here is what does and does NOT reach the pane.
@@ -42,8 +43,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
@@ -479,7 +479,7 @@ test("the guard refuses when the pane was recreated under the same session", asy
   const session = mkSession();
   const item = mkItem();
   const obs = observe(session, item);
-  const repaned = mkSession({ tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%99" } });
+  const repaned = mkSession({ terminals: [mkMuxHandle({ session: "work", paneId: "%99" })] });
   const r = await queueSendStillValid(mkFake({ session: repaned, items: [item] }), obs, CFG, NOW);
   assert.equal(r.ok, false);
   assert.match(r.ok === false ? r.why : "", /pane was recreated/);

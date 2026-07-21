@@ -17,6 +17,7 @@ import type {
   SessionQueueSummary,
   WorkItem,
 } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger. Same discipline as queue-machine.test.ts: the
 // decision is pure with `now` injected, so the whole policy is a table.
@@ -51,8 +52,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
@@ -215,7 +215,7 @@ test("a session that has not settled is still working", () => {
 });
 
 test("a session with no pane is skipped silently - there is nothing to escalate", () => {
-  assert.equal(decide({ session: mkSession({ tmux: null, wezterm: null }) }).kind, "skip");
+  assert.equal(decide({ session: mkSession({ terminals: [] }) }).kind, "skip");
 });
 
 test("an exited or non-Claude session is never a candidate", () => {

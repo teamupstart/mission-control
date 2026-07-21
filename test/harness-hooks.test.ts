@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session } from "@shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What is at stake: push instrumentation is the ONLY signal that says a session is
 // working, idle, or waiting on you, and it belongs to exactly one of the two agents we
@@ -62,8 +63,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys015",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: PANE },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: PANE })],
     startedAt: 0,
     ...over,
   } as DiscoveredSession;
@@ -243,7 +243,7 @@ test("the dispatcher skips the readiness wait for an agent that sends no hooks",
       syntheticId: "cl-d",
       agent: "claude",
       cwd: "/wt/claude",
-      tmux: { session: "s", window: "w", windowIndex: 1, paneId: "%8" },
+      terminals: [mkMuxHandle({ windowIndex: 1, paneId: "%8" })],
       tty: "ttys016",
       pid: 2,
     }),

@@ -10,8 +10,10 @@ import {
   parseTree,
   windowRefs,
 } from "../src/server/terminal/cmux.ts";
-import { MULTIPLEXERS } from "../src/server/terminal/registry.ts";
+import { bindPane, MULTIPLEXERS } from "../src/server/terminal/registry.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
+import { correlate } from "../src/server/discovery/correlate.ts";
+import { muxHandle, paneToken } from "../src/shared/pane.ts";
 import {
   CMUX_TREE,
   CMUX_WORKSPACES_WINDOW_1,
@@ -412,6 +414,46 @@ test("a failed select does not go on to focus a surface inside it", async () => 
   assert.equal(res.ok, false);
   assert.equal(res.error, "no such workspace");
   assert.equal(rec.calls.length, 1);
+});
+
+test("a cmux pane correlates into a handle and binds like any other", async () => {
+  // The end of the acceptance claim, and only true since the `Session` handle list landed:
+  // an enumerated cmux pane is carried all the way to a driveable `BoundPane` without one
+  // line of it naming a vendor. `handleOf` reads `backend` off the candidate, `innermostPane`
+  // ranks by axis, and `bindPane` resolves the adapter from the registry.
+  const pane = parseTree(CMUX_TREE, new Map()).find((p) => p.tty)!;
+  const [session] = correlate({
+    procs: [
+      {
+        pid: 900,
+        ppid: 50,
+        tty: pane.tty,
+        startRaw: "",
+        startMs: 1000,
+        command: "claude",
+        agent: "claude",
+        agentNative: true,
+      },
+    ],
+    terminals: [{ kind: "multiplexer", backend: "cmux", panes: [pane] }],
+  });
+  assert.equal(session?.nameSource, "cmux", "cmux named it, and `NameSource` admits the id");
+  assert.equal(session?.name, pane.sessionName, "by its TITLE, not by the UUID it addresses");
+
+  const handle = muxHandle(session!);
+  assert.equal(handle?.backend, "cmux");
+  assert.equal(handle?.session, pane.session, "and the handle keeps the address");
+
+  const rec = recorder();
+  const bound = bindPane(session!.terminals, rec.exec)!;
+  assert.equal(bound.kind, "multiplexer");
+  assert.equal(bound.token, paneToken(session!), "the write lock guards the pane writes land on");
+  // The capability nulls survive the round trip, which is the point of carrying them: a
+  // caller holding this cannot ask which vendor it got, only what it can do.
+  assert.equal(bound.mode, null, "no copy-mode probe, because cmux has no such state");
+  assert.ok(bound.write && bound.capture);
+  await bound.write.text("hello");
+  assert.equal(rpcParams(rec.calls).params.surface_id, pane.paneId);
 });
 
 test("a write that died rather than answering reports its outcome as unknown", async () => {

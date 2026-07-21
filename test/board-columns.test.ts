@@ -28,8 +28,7 @@ function session(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: null,
     permissionMode: null,
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     agentSessionId: null,
     transcriptPath: null,
     // Instrumented, so `stateDisplay` trusts the reported state instead of filing

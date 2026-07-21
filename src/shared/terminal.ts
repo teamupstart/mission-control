@@ -1,11 +1,13 @@
-// The terminal backend vocabulary: which multiplexers and emulators exist, as ids only.
+// The terminal backend vocabulary - which multiplexers and emulators exist - plus the
+// handles a session holds on them.
 //
-// In `shared`, and holding nothing but ids, for the same purity reason
-// `HARNESS_CAPABILITIES` is split from `HARNESSES`: `NameSource` is a `Session` field the
-// dashboard renders, so "which backend named this session" is a question the BROWSER asks -
-// and the browser cannot import an adapter whose `list` spawns a subprocess. The mechanism
-// stays server-side in `src/server/terminal/`, which imports these ids and is enforced
-// against them by `Record<MultiplexerId, Multiplexer>` / `Record<EmulatorId, TerminalEmulator>`.
+// In `shared`, and holding no mechanism, for the same purity reason `HARNESS_CAPABILITIES`
+// is split from `HARNESSES`: `nameSource` and the handle list are `Session` fields the
+// dashboard renders and reasons about, so "which backend named this session" and "is there
+// a pane to type into" are questions the BROWSER asks - and the browser cannot import an
+// adapter whose `list` spawns a subprocess. The mechanism stays server-side in
+// `src/server/terminal/`, which imports these ids and is enforced against them by
+// `Record<MultiplexerId, Multiplexer>` / `Record<EmulatorId, TerminalEmulator>`.
 //
 // So: an id is added HERE and nowhere else, and it then fails to typecheck in the two
 // registries until a complete adapter exists.
@@ -52,3 +54,60 @@ export type EmulatorId = (typeof EMULATOR_IDS)[number];
  * did not recognise.
  */
 export type TerminalBackendId = MultiplexerId | EmulatorId;
+
+/**
+ * What a multiplexer operation addresses. A pane, plus the session/window that reach it.
+ *
+ * Here rather than in `server/terminal/types.ts` because a `Session` now carries these: the
+ * handle types were server-side while `Session.tmux` / `Session.wezterm` were the wire
+ * format, and phase 3 of `docs/plans/pluggable-integrations/plan.md` promoted them when
+ * those two fields became one list. Still pure data - a target is where to write, never how.
+ */
+export interface MuxTarget {
+  session: string;
+  windowIndex: number;
+  /** Normalized to a string; tmux's own form is already one (`"%3"`). */
+  paneId: string;
+}
+
+/** What an emulator operation addresses. The tab is needed because raising is tab-level. */
+export interface EmulatorTarget {
+  paneId: string;
+  tabId: string;
+}
+
+/**
+ * A multiplexer pane a session sits on: which backend, how to address it there, and the
+ * few facts about it a card renders.
+ */
+export interface MuxHandle extends MuxTarget {
+  kind: "multiplexer";
+  backend: MultiplexerId;
+  /** The window's own name, as the backend reports it. */
+  windowName: string;
+}
+
+/** An emulator pane a session sits on, on the same terms as `MuxHandle`. */
+export interface EmulatorHandle extends EmulatorTarget {
+  kind: "emulator";
+  backend: EmulatorId;
+  windowId: string;
+  tabTitle: string;
+  isActive: boolean;
+}
+
+/**
+ * One terminal pane a session is reachable through.
+ *
+ * A DISCRIMINATED UNION on the axis, not on the vendor, and that is the whole point of the
+ * shape: `Session.tmux` / `Session.wezterm` were two named nullable siblings, so "how many
+ * backends are there" was a fact of the type - a third one had no field to land in, and
+ * every consumer had to be taught a vendor's name to ask a question that was never about a
+ * vendor ("can we type here?", "what should Kill tear down?").
+ *
+ * The axis survives that collapse because it is real: a multiplexer pane lives INSIDE an
+ * emulator pane, which is why writes prefer the innermost handle and focus walks outward
+ * (see `innermostPane` in `@shared/pane.ts`, and the composition rule in
+ * `server/terminal/registry.ts`). A session may hold one handle per axis and both at once.
+ */
+export type TerminalHandle = MuxHandle | EmulatorHandle;

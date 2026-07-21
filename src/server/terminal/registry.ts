@@ -1,3 +1,5 @@
+import { backendPaneToken, innermostPane, type PaneHandles } from "@shared/pane.ts";
+import type { TerminalHandle } from "@shared/terminal.ts";
 import { cmuxMultiplexer } from "./cmux.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
 import { tmuxMultiplexer } from "./tmux.ts";
@@ -35,9 +37,10 @@ import type {
  *     multiplexer pane; the emulator handle addresses the client showing it, so typing
  *     there types at whatever that client currently displays. `bindPane` is this rule, and
  *     it is the only place it is written: `sendText`, `injectPrompt` and `capturePaneText`
- *     each open-coded it identically before the pane-I/O migration, and `paneToken`
- *     (`@shared/pane.ts`) is the fourth - it stays separate because the lock key must be
- *     answerable without a subprocess seam, and `token` below is pinned against it.
+ *     each open-coded it identically before the pane-I/O migration. It defers to
+ *     `innermostPane` (`@shared/pane.ts`) rather than restating the rule, because the write
+ *     lock keys on that same answer without a subprocess seam - a fourth copy is how the
+ *     lock comes to guard a different pane than the write lands on.
  *
  *   - **Focus walks outward.** Selecting the pane inside the multiplexer
  *     (`Multiplexer.select`) decides what the session shows; it raises nothing. Bringing it
@@ -78,28 +81,6 @@ export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = multiplexers();
 
 export const EMULATORS: Record<EmulatorId, TerminalEmulator> = emulators();
 
-/** A multiplexer pane on a session: which backend, and how to address it there. */
-export interface MuxHandle extends MuxTarget {
-  backend: MultiplexerId;
-}
-
-/** An emulator pane on a session: which backend, and how to address it there. */
-export interface EmulatorHandle extends EmulatorTarget {
-  backend: EmulatorId;
-}
-
-/**
- * The terminal handles a session holds. Either may be null; both may be set.
- *
- * Structural rather than a slice of `Session`, so the resolvers below stay pure and are
- * reachable from a test with two object literals. Phase 3 of the migration replaces
- * `Session.tmux` / `Session.wezterm` with a list this is read from.
- */
-export interface TerminalHandles {
-  multiplexer: MuxHandle | null;
-  emulator: EmulatorHandle | null;
-}
-
 /** The three write verbs, already aimed at one pane. See `PaneWrite` for their contract. */
 export interface BoundWrite {
   text(text: string): Promise<TerminalResult>;
@@ -126,11 +107,9 @@ export interface BoundPane {
    * The pane's identity as a string, for lock keys, miss counters and log lines.
    *
    * The same spelling `paneToken` (`@shared/pane.ts`) emits, which is where phase 0
-   * collapsed the four copies that used to disagree. Built from `backend.id` rather than by
-   * calling that function, because the resolver is generic over the registries and a third
-   * multiplexer must not need a token function written for it; the agreement is that a
-   * backend id IS its token prefix, and `terminal-registry.test.ts` pins it against
-   * `paneToken` so the two cannot drift apart.
+   * collapsed the four copies that used to disagree - and now literally the same
+   * constructor, over the same resolved handle, so a third multiplexer needs no token
+   * function written for it. `terminal-registry.test.ts` still pins the two together.
    */
   token: string;
   /** Null when the backend cannot type into a pane at all (an emulator with no scripting). */
@@ -147,19 +126,23 @@ export interface BoundPane {
 /**
  * Resolve a session's handles to the one pane its writes and captures address.
  *
- * The innermost handle wins - see the composition rule above. Null means the session has no
- * pane we can drive, which is a legitimate state (an agent in a terminal we do not
- * integrate with) and the honest error for every caller that needed one.
+ * The innermost handle wins - see the composition rule above. Which handle that is is
+ * `innermostPane`'s answer, shared with the browser and with `paneToken`, so the pane a
+ * lock protects is the pane the write lands on by construction rather than by three
+ * functions agreeing. Null means the session has no pane we can drive, which is a
+ * legitimate state (an agent in a terminal we do not integrate with) and the honest error
+ * for every caller that needed one.
  *
  * `exec` is the subprocess seam the bound adapter runs its commands through; the default is
  * the real one. See `multiplexers` for why a policy caller supplies its own.
  */
 export function bindPane(
-  handles: TerminalHandles,
+  terminals: readonly TerminalHandle[],
   exec: TerminalExec = defaultExec,
 ): BoundPane | null {
-  const mux = handles.multiplexer;
-  if (mux) {
+  const handle = innermostPane({ terminals });
+  if (handle?.kind === "multiplexer") {
+    const mux = handle;
     const backend = multiplexers(exec)[mux.backend];
     const target: MuxTarget = mux;
     // Each capability is read out before being bound, so a null stays a null rather than
@@ -169,7 +152,7 @@ export function bindPane(
       kind: "multiplexer",
       backend: backend.id,
       label: backend.label,
-      token: `${backend.id}:${mux.paneId}`,
+      token: backendPaneToken(backend.id, mux.paneId),
       write: {
         text: (text) => write.text(target, text),
         keys: (keys) => write.keys(target, keys),
@@ -179,8 +162,8 @@ export function bindPane(
       mode: paneMode ? () => paneMode(target) : null,
     };
   }
-  const emu = handles.emulator;
-  if (emu) {
+  if (handle?.kind === "emulator") {
+    const emu = handle;
     const backend = emulators(exec)[emu.backend];
     const target: EmulatorTarget = emu;
     const { write, capture } = backend;
@@ -188,7 +171,7 @@ export function bindPane(
       kind: "emulator",
       backend: backend.id,
       label: backend.label,
-      token: `${backend.id}:${emu.paneId}`,
+      token: backendPaneToken(backend.id, emu.paneId),
       write: write
         ? {
             text: (text) => write.text(target, text),
@@ -203,6 +186,18 @@ export function bindPane(
     };
   }
   return null;
+}
+
+/**
+ * The one pane a session's reads and writes address, or null when it has none.
+ *
+ * The `Session`-shaped door onto `bindPane`, and all that is left of `terminal/handles.ts` -
+ * the file that projected `Session.tmux` / `Session.wezterm` onto handles and back. With
+ * the session carrying the list itself there is nothing left to project, which is what that
+ * file's own doc said its deletion would look like.
+ */
+export function bindSession(s: PaneHandles, exec: TerminalExec = defaultExec): BoundPane | null {
+  return bindPane(s.terminals, exec);
 }
 
 /**

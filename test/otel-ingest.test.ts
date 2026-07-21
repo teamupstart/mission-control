@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OtlpMetrics } from "../src/shared/protocol.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What is at stake: the ledger is the only record of what the fleet spent, and every way
 // it can be wrong is silent.
@@ -317,8 +318,7 @@ test("a session discovered after a restart still carries spend a previous proces
       nomistakesGated: false,
       pid: 1,
       tty: "ttys1",
-      wezterm: null,
-      tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+      terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
       startedAt: 0,
     } as never,
   ]);
@@ -340,8 +340,7 @@ test("an ingest reaches a card that was already on screen", () => {
       nomistakesGated: false,
       pid: 2,
       tty: "ttys2",
-      wezterm: null,
-      tmux: { session: "s", window: "w", windowIndex: 1, paneId: "%2" },
+      terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 1, paneId: "%2" })],
       startedAt: 0,
     } as never,
   ]);

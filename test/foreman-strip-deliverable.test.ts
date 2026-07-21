@@ -6,6 +6,7 @@ import type { Session, SessionNoteSummary } from "../src/shared/types.ts";
 import { ForemanStrip } from "../src/web/components/ForemanStrip.tsx";
 import { ForemanNote } from "../src/web/components/ForemanNote.tsx";
 import { deliveryTarget, undeliverable } from "../src/web/lib/foreman.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What is at stake: a button that lies about what it did.
 //
@@ -24,11 +25,11 @@ import { deliveryTarget, undeliverable } from "../src/web/lib/foreman.ts";
 // the predicate was never wrong, nothing asked it. A test below the component could not have
 // caught this.
 
-const PANE = { session: "m", window: "w", windowIndex: 1, paneId: "%13" };
+const PANE = mkMuxHandle({ session: "m", windowIndex: 1, paneId: "%13" });
 
-/** These components read id/cwd/repoRoot/tmux/wezterm off the session; the cast keeps that honest. */
+/** These components read id/cwd/repoRoot/terminals off the session; the cast keeps that honest. */
 function mkSession(over: Partial<Session> = {}): Session {
-  return { id: "s1", cwd: "/repo", repoRoot: "/repo", tmux: PANE, wezterm: null, ...over } as Session;
+  return { id: "s1", cwd: "/repo", repoRoot: "/repo", terminals: [PANE], ...over } as Session;
 }
 
 function mkNote(over: Partial<SessionNoteSummary> = {}): SessionNoteSummary {
@@ -138,7 +139,7 @@ test("an escalation raised with no reply channel does not offer to send itself",
   // recommendation into the session anyway - which, on a session that had gone back to work,
   // meant a paragraph of prose arriving in a running agent's composer.
   const html = strip({
-    session: mkSession({ tmux: null, wezterm: null }),
+    session: mkSession({ terminals: [] }),
     note: mkNote({ handledMarker: "state:working:1784594261899", lastAction: "escalated (no reply channel)" }),
   });
   assert.doesNotMatch(html, /Approve &amp; send/);
@@ -165,7 +166,7 @@ test("the grid card explains an undeliverable note too", () => {
   // showing a suggested answer with no account of it.
   const html = renderToStaticMarkup(
     createElement(ForemanNote, {
-      session: mkSession({ tmux: null, wezterm: null }),
+      session: mkSession({ terminals: [] }),
       note: mkNote({ handledMarker: "state:working:1", lastAction: "escalated (no reply channel)" }),
       mode: "live",
       enabled: true,

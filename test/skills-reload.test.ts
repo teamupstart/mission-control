@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { Session } from "../src/shared/types.ts";
 import type { SkillsConfig } from "../src/shared/protocol.ts";
 import { pendingReloads, reloadTargets } from "../src/server/skills/reload.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The reload selector: who gets `/reload-skills` typed into their pane, unprompted, by
 // a machine. It's pure with `now` injected for the reason decideQueueTick is - a
@@ -29,8 +30,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
@@ -193,7 +193,7 @@ test("pendingReloads excludes a session with no pane - it can never be reloaded"
   // `capturePaneText` answers null for a handleless session, so the gate refuses it every
   // tick until it exits. Counting it promises a pick-up that cannot happen, and the
   // counter never reaches zero.
-  const sessions = [mkSession({ id: "nopane", agentSessionId: "a-np", tmux: null, wezterm: null })];
+  const sessions = [mkSession({ id: "nopane", agentSessionId: "a-np", terminals: [] })];
   assert.equal(pendingReloads(sessions, acks(), mkCfg()), 0);
   assert.deepEqual(picked(sessions), []);
 });

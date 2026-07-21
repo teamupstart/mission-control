@@ -73,8 +73,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     startedAt: 0,
     ...over,
   };

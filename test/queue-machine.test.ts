@@ -31,6 +31,7 @@ import type {
   WorkItem,
   WorkItemState,
 } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The queue's decision core. It's pure with `now` always injected, so the whole
 // state machine is a table - which is the point: two earlier designs of the
@@ -61,8 +62,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
@@ -610,7 +610,7 @@ test("5. nowhere to type: ask", () => {
   const a = tick({
     items: DRAINED(),
     cfg: { wrapup: "no-mistakes" },
-    session: { tmux: null, wezterm: null },
+    session: { terminals: [] },
   });
   assert.equal(a.kind, "ask-wrapup");
 });
@@ -630,7 +630,7 @@ test("6. an unsettled session is never interrupted", () => {
 });
 
 test("7. no pane -> escalate: an item that can never be delivered must not sit forever", () => {
-  const a = tick({ session: { tmux: null, wezterm: null }, items: [mkItem()] });
+  const a = tick({ session: { terminals: [] }, items: [mkItem()] });
   assert.equal(a.kind, "escalate");
   assert.match(a.kind === "escalate" ? a.reason : "", /no pane/);
 });

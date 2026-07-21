@@ -49,6 +49,7 @@ import type { GateReplyRow } from "../src/server/db.ts";
 import type { ForemanActions, ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
 import type { Registry } from "../src/server/registry.ts";
 import type { NmFinding, NmRunSummary, Session } from "@shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 openDb();
 
@@ -358,7 +359,7 @@ function gatedSession(over: Partial<Session> = {}): Session {
   return {
     id: "sess-1",
     state: "idle",
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle()],
     nomistakes: nmRun(),
     firstSeen: 1,
     lastActivity: 1,

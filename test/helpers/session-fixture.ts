@@ -1,4 +1,5 @@
 import type { NmRunSummary, Session, SessionMeta, Task } from "../../src/shared/types.ts";
+import type { EmulatorHandle, MuxHandle } from "../../src/shared/terminal.ts";
 
 /**
  * A representative session for the board's render tests, and the one place a required
@@ -47,6 +48,40 @@ export function nm(over: Partial<NmRunSummary> = {}): NmRunSummary {
   };
 }
 
+/**
+ * A multiplexer / emulator handle, with only the fields a test cares about spelled out.
+ *
+ * Here rather than in each test for the reason `mkSession` is: these are the shapes that
+ * grow when a handle learns a field, and a literal per test file is a literal per test file
+ * to update. `Session.terminals` is a LIST, so a test that wants both handles passes both
+ * and a test that wants none passes `[]` - which is what "this session has no pane" now
+ * looks like everywhere.
+ */
+export function mkMuxHandle(over: Partial<MuxHandle> = {}): MuxHandle {
+  return {
+    kind: "multiplexer",
+    backend: "tmux",
+    session: "s",
+    windowIndex: 0,
+    windowName: "w",
+    paneId: "%1",
+    ...over,
+  };
+}
+
+export function mkEmuHandle(over: Partial<EmulatorHandle> = {}): EmulatorHandle {
+  return {
+    kind: "emulator",
+    backend: "wezterm",
+    paneId: "12",
+    tabId: "4",
+    windowId: "1",
+    tabTitle: "old",
+    isActive: true,
+    ...over,
+  };
+}
+
 export function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1",
@@ -62,8 +97,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys1",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,

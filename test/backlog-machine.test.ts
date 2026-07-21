@@ -9,7 +9,7 @@ import {
 import type { BacklogConfig } from "../src/server/foreman/backlog-machine.ts";
 import type { BacklogPlan, Session, Task } from "../src/shared/types.ts";
 import { PLANNABLE_LIMIT, planStale } from "../src/shared/backlog.ts";
-import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { mkTask as baseTask, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The backlog autopilot's decision core. Pure with `now` injected, so the precedence is
 // a table - and it has to be, because two of its steps are the difference between a
@@ -66,8 +66,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 100 + n,
     tty: `ttys00${n}`,
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: `agent-${n}`, window: "w", windowIndex: 0, paneId: `%${n}` },
+    terminals: [mkMuxHandle({ session: `agent-${n}`, paneId: `%${n}` })],
     agentSessionId: `agent-session-${n}`,
     transcriptPath: null,
     instrumented: true,
@@ -452,7 +451,7 @@ test("an agent in an un-allowlisted checkout is not typed into", () => {
 });
 
 test("a pane-less agent has nowhere to be typed at", () => {
-  const s = mkSession({ tmux: null, wezterm: null });
+  const s = mkSession({ terminals: [] });
   assert.equal(agentIsFree(s, [s], [], CFG, NOW), false);
 });
 

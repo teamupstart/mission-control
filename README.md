@@ -954,7 +954,8 @@ dropped.
 
 **Settings → Harnesses → Default effort** sets the reasoning level each harness starts
 with when a dispatch does not name one. Claude Code and Codex have separate rows, and
-both offer `low`, `medium`, `high`, `xhigh`, and `max`.
+Claude Code offers `low`, `medium`, `high`, `xhigh`, and `max`; Codex offers `low`,
+`medium`, `high`, and `xhigh`.
 
 Both ship as **Harness default**, so Mission Control passes no effort override and the
 CLI keeps its own configured choice. Like the model default, this is resolved when the

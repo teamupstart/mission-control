@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DB_PATH, envVar } from "./config.ts";
-import { THINKING_LEVELS } from "@shared/types.ts";
+import { supportsEffort } from "@shared/harness-capabilities.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -1261,8 +1261,8 @@ function parseLabels(raw: string | null): string[] {
 }
 
 /** A stale/newer effort value cannot be trusted onto tmux's shell command line. */
-function parseEffort(raw: string | null): Task["effort"] {
-  return raw && (THINKING_LEVELS as readonly string[]).includes(raw)
+function parseEffort(agent: Task["agent"], raw: string | null): Task["effort"] {
+  return raw && supportsEffort(agent, raw as NonNullable<Task["effort"]>)
     ? (raw as Task["effort"])
     : null;
 }
@@ -1282,7 +1282,7 @@ function rowToTask(r: TaskRow): Task {
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
     model: r.model,
-    effort: parseEffort(r.effort),
+    effort: parseEffort(r.agent as Task["agent"], r.effort),
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
     source:

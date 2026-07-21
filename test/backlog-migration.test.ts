@@ -114,3 +114,8 @@ test("a task written after the upgrade round-trips its triage fields", () => {
   assert.deepEqual(back?.labels, ["infra", "flaky"]);
   assert.equal(back?.effort, "xhigh");
 });
+
+test("a persisted effort unsupported by its harness reads as default", () => {
+  openDb().prepare("UPDATE tasks SET agent = ?, effort = ? WHERE id = ?").run("codex", "max", "legacy-1");
+  assert.equal(getTask("legacy-1")?.effort, null);
+});

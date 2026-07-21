@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AGENT_TYPES, type FleetCost, type Session } from "@shared/types.ts";
+import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/types.ts";
 import { agentList } from "@shared/agent.ts";
-import { gateParked } from "@shared/session.ts";
+import { backlogTasks, gateParked } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
@@ -238,6 +238,17 @@ export function App(): React.JSX.Element {
     return sorted.filter((s) => matchesFilter(s, q));
   }, [sorted, filter]);
 
+  // The same filter over the board's Backlog column. A backlog item is a card the
+  // operator is looking at, so the one filter box has to narrow it too - it used to
+  // read straight off the unfiltered task list, which left "ghostty" showing all
+  // fourteen items while the session grid beside it narrowed to none.
+  const visibleBacklog = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    const items = backlogTasks(tasks);
+    if (!q) return items;
+    return items.filter((t) => matchesTaskFilter(t, q));
+  }, [tasks, filter]);
+
   const counts = useMemo(() => summarize(sessions), [sessions]);
   // Which sessions have a parked no-mistakes gate that actually needs you - a
   // run being driven by any same-worktree/branch session is left to that agent
@@ -305,9 +316,14 @@ export function App(): React.JSX.Element {
 
   // Everything a layout needs, and nothing it could decide for itself. App stays the
   // one owner of session state; a view only arranges what it's handed.
+  // Whether the CURRENT layout has anything to draw. Only the board renders tasks, so
+  // only the board survives an empty session list - see the render gate below.
+  const layoutHasContent = visible.length > 0 || (layout === "board" && visibleBacklog.length > 0);
+
   const viewProps: SessionViewProps = {
     sessions: visible,
     tasks,
+    backlog: visibleBacklog,
     backlogPlan: foreman.backlogPlan,
     gateAlerts,
     selectedId,
@@ -676,8 +692,14 @@ export function App(): React.JSX.Element {
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty
-            rail beside a "no session selected" pane, five empty board columns. */}
-        {visible.length > 0 && (
+            rail beside a "no session selected" pane, five empty board columns.
+
+            "Nothing" is per-layout, though. The board draws the Backlog column, which is
+            content the other two have no place for, so a filter matching only backlog
+            items leaves the board with something to arrange and grid/console with none.
+            Reading `visible` alone here is what hid a task named "P5: Ghostty terminal
+            emulator adapter" the moment you typed "ghostty". */}
+        {layoutHasContent && (
           <>
             {layout === "grid" && <GridView {...viewProps} gridRef={gridRef} />}
             {layout === "console" && <ConsoleView {...viewProps} />}
@@ -762,11 +784,15 @@ export function App(): React.JSX.Element {
           </div>
         )}
 
-        {sessions.length > 0 && visible.length === 0 && (
+        {/* Only when the layout drew nothing - on the board a filter that matched only
+            backlog items has already rendered them, and telling the operator nothing
+            matched while the match is on screen is the bug this replaced. */}
+        {sessions.length > 0 && !layoutHasContent && (
           <div className="empty">
-            <p className="empty-title">No sessions match "{filter}"</p>
+            <p className="empty-title">Nothing matches "{filter}"</p>
             <p className="empty-sub">
-              Nothing matches that title or status.{" "}
+              No {layout === "board" ? "session or backlog task" : "session"} matches that title or
+              status.{" "}
               <button className="link-btn" onClick={() => setFilter("")}>
                 Clear the filter
               </button>{" "}
@@ -933,6 +959,22 @@ function columnCount(grid: HTMLElement | null): number {
  */
 function matchesFilter(s: Session, q: string): boolean {
   const haystack = `${s.name} ${stateDisplay(s).label} ${s.agent}`.toLowerCase();
+  return haystack.includes(q);
+}
+
+/**
+ * True when a backlog task matches the nav-bar filter - the task-shaped counterpart of
+ * `matchesFilter`, matching the same three things a session does (title, status, agent)
+ * so one query reads the board across both.
+ *
+ * `status` is the literal here, not a display label, and that is not the inconsistency
+ * it looks like: a backlog task's status IS "backlog", the word already on the column
+ * header, whereas a session's raw state lies (see `matchesFilter`). Labels join the
+ * haystack because they exist to be searched - they are the operator's own tags, and a
+ * filter that could not see them would make them decorative.
+ */
+function matchesTaskFilter(t: Task, q: string): boolean {
+  const haystack = `${t.title} ${t.status} ${t.agent} ${t.labels.join(" ")}`.toLowerCase();
   return haystack.includes(q);
 }
 

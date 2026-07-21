@@ -18,6 +18,7 @@ function props(sessions: Session[]): SessionViewProps {
   return {
     sessions,
     tasks: [],
+    backlog: [],
     onEditTask: () => {},
     backlogPlan: null,
     gateAlerts: new Set<string>(),

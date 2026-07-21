@@ -259,6 +259,7 @@ test("card and console detail agree on every shared leaf", () => {
       view: {
         sessions: [session],
         tasks: [],
+        backlog: [],
         onEditTask: () => {},
         backlogPlan: null,
         gateAlerts: new Set<string>(),

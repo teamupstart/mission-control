@@ -13,8 +13,21 @@ import type { ActionBarHandle } from "../ActionBar.tsx";
 export interface SessionViewProps {
   /** The visible, sorted sessions - already filtered; layouts render exactly these. */
   sessions: Session[];
-  /** Every known task. The board reads the backlog out of it for its dispatch column. */
+  /**
+   * Every known task, unfiltered. Lookups only: resolving a drop's title, and the
+   * dependency/ordering reads (`nextUpTaskId`, `backlogIndex`) that are wrong unless
+   * they can see the WHOLE backlog - narrow this and item #7 renders as "next up".
+   * To draw the backlog, use `backlog`.
+   */
   tasks: Task[];
+  /**
+   * The backlog to draw: ordered, and already narrowed by the nav-bar filter - the
+   * same contract `sessions` has, for the same reason. Split from `tasks` because the
+   * two answer different questions: this one is "what does the operator see", `tasks`
+   * is "what exists". Filtering the one list that did both is what made the filter box
+   * silently skip the Backlog column.
+   */
+  backlog: Task[];
   /** Reopen the dispatch modal over a backlog task, to correct it or send it now. */
   onEditTask: (taskId: string) => void;
   /**

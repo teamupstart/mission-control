@@ -1,9 +1,12 @@
 import { GHOSTTY_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { PLAIN_NAMES } from "./names.ts";
 import type {
   EmulatorPane,
   EmulatorTarget,
   Key,
+  SpawnResult,
+  TabSpec,
   TerminalEmulator,
 } from "./types.ts";
 
@@ -289,13 +292,21 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     },
 
     spawn: {
-      async tab(argv, title) {
-        // `command` is a shell string, not an argv - the same divergence `DetachedSessionSpec`
+      async tab(spec: TabSpec): Promise<SpawnResult> {
+        // `command` is a shell string, not an argv - the same divergence `TabSpec.argv`
         // documents for tmux, and callers constrain these values upstream.
+        //
+        // `initial working directory` is set whenever a cwd is asked for, and NOT quietly
+        // skipped when it is absent from the dictionary, because `TabSpec.cwd` says an
+        // emulator that cannot honour one must fail rather than open the tab elsewhere: a
+        // dispatched agent in the wrong checkout commits to the wrong branch. Ghostty can
+        // honour it, so this is the easy case; the hard one is that the failure has to stay
+        // a failure, which is why there is no `?? ""` here.
         const script =
           `tell application id "${BUNDLE_ID}"\n` +
           `set cfg to new surface configuration\n` +
-          `set command of cfg to ${asQuote(argv.join(" "))}\n` +
+          `set command of cfg to ${asQuote(spec.argv.join(" "))}\n` +
+          (spec.cwd ? `set initial working directory of cfg to ${asQuote(spec.cwd)}\n` : "") +
           `set w to new window with configuration cfg\n` +
           `return id of (first terminal of (first tab of w)) & "${US}" & id of (first tab of w)\n` +
           `end tell`;
@@ -304,9 +315,11 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
           return { ...toResult(r, "ghostty could not open a window"), target: null };
         }
         const [paneId, tabId] = r.stdout.trim().split(US);
-        // `title` is accepted and dropped: `name` is read-only, so there is nothing to set
-        // it to. Reported through `retitle: null` rather than silently pretended.
-        void title;
+        // `spec.title` is dropped, and this is the one place that absence is felt rather
+        // than merely declared: every other backend stamps the new tab on the way out, and
+        // Ghostty's `name` is read-only on window, tab and terminal alike, so a tab it opens
+        // carries whatever the shell reports. `retitle: null` is the same fact, said where a
+        // caller can branch on it; there is no third state to invent here.
         // Exit 0 with an unreadable id is `SpawnResult`'s split doing its job - the human
         // got their window and nothing may be typed into it.
         if (!paneId) return { ok: true, outcomeUnknown: false, target: null };
@@ -317,5 +330,12 @@ export function ghosttyEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     // `name` is read-only on window, tab and terminal alike. A tab titled by us is not on
     // offer, so the rename path refuses by capability rather than appearing to succeed.
     retitle: null,
+
+    // Declared even though nothing here can set a title, which is exactly the case the slot
+    // was written for: `spawn` is handed one regardless, so a backend with no `retitle` can
+    // still be given a name it cannot express. `PLAIN_NAMES` is the honest answer - a
+    // Ghostty tab title is display text with no target grammar behind it, so the only rules
+    // are the neutral ones every name obeys. Saying so beats inheriting it by omission.
+    names: PLAIN_NAMES,
   };
 }

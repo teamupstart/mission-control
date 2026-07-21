@@ -14,11 +14,10 @@ import { join } from "node:path";
 // pane. An emulator with no scripting CLI, which is where this migration is going, lives
 // permanently in the middle case.
 //
-// Driven through a fake `wezterm` on WEZTERM_BIN rather than a stubbed exec, deliberately:
-// `spawn` delegates to `discovery/wezterm.ts`, which calls `run` directly and does not see
-// the adapter's exec seam (see `terminal/exec.ts`). A fake exec would assert nothing about
-// this path. A real child process exercises the actual argv, the actual exit code, and the
-// `WEZTERM_BIN.dropEnv` socket strip that only shows up in a spawned environment.
+// Driven through a fake `wezterm` on WEZTERM_BIN rather than a stubbed exec, deliberately.
+// A real child process exercises the actual argv, the actual exit code, and the
+// `WEZTERM_BIN.dropEnv` socket strip - and that last one only ever shows up in a spawned
+// environment, so a fake exec could not assert it at all.
 
 const home = mkdtempSync(join(tmpdir(), "mission-emu-spawn-"));
 const FAKE = join(home, "fake-wezterm");
@@ -74,7 +73,11 @@ async function spawnTab(mode: "ok" | "unreadable" | "refused") {
   // Set on the parent so the strip has something to strip - this is the stale-GUI case.
   process.env.WEZTERM_UNIX_SOCKET = "/tmp/gui-sock-dead";
   try {
-    const result = await weztermEmulator().spawn!.tab(["tmux", "attach", "-t", "api"], "api");
+    const result = await weztermEmulator().spawn!.tab({
+      argv: ["tmux", "attach", "-t", "api"],
+      title: "api",
+      cwd: null,
+    });
     const calls: Call[] = readFileSync(LOG, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
     return { result, calls };
   } finally {

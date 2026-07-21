@@ -325,11 +325,11 @@ test("cmux declares the capabilities it lacks rather than stubbing them", () => 
   // And the ones it does have, which is what makes the nulls above declarations rather than
   // an adapter that was never finished.
   assert.ok(cmux.capture && cmux.select && cmux.write.paste);
-  assert.ok(cmux.sessions!.validateName, "and it has a rule about names, rather than no rule");
+  assert.ok(cmux.sessions!.names, "and it has rules about names, rather than no rule");
 });
 
 test("cmux name rules are cmux's, not tmux's", () => {
-  const validate = MULTIPLEXERS.cmux.sessions!.validateName!;
+  const validate = MULTIPLEXERS.cmux.sessions!.names.validate;
 
   // Everything tmux must refuse is legal here, and that is the difference between the two
   // target grammars rather than laxness. `.` and `:` are separators in `session:window.pane`
@@ -382,7 +382,7 @@ test("rename and kill address the workspace, not its title", async () => {
   const rec = recorder();
   const sessions = cmuxMultiplexer(rec.exec).sessions!;
   await sessions.rename(TARGET.session, "renamed");
-  await sessions.kill(TARGET.session);
+  await sessions.kill!(TARGET.session);
 
   assert.deepEqual(rec.calls[0]!.args, [
     "rename-workspace",

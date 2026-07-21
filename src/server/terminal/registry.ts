@@ -82,6 +82,28 @@ export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = multiplexers();
 
 export const EMULATORS: Record<EmulatorId, TerminalEmulator> = emulators();
 
+/**
+ * Both registries as one injectable object - the seam the LIFECYCLE operations are driven
+ * through, the way pane I/O is driven through `PaneDeps.pane`.
+ *
+ * Whole registries rather than a bag of function fields (`renameTmuxSession`,
+ * `setWeztermTabTitle`, `killTmuxSession` - what `RenameDeps` and `KillDeps` used to be),
+ * because those named a vendor per call and so could only ever assert the two-backend
+ * branch. What has to be assertable now is the COMPOSITION and the capability nulls: a
+ * multiplexer that cannot report its clients, an emulator that cannot raise a tab, a
+ * multiplexer whose sessions are not a killable group. Every one of those is a hand-built
+ * adapter in a record here, and none of them needs a subprocess.
+ */
+export interface TerminalDeps {
+  multiplexers: Record<MultiplexerId, Multiplexer>;
+  emulators: Record<EmulatorId, TerminalEmulator>;
+}
+
+export const defaultTerminalDeps: TerminalDeps = {
+  multiplexers: MULTIPLEXERS,
+  emulators: EMULATORS,
+};
+
 /** The three write verbs, already aimed at one pane. See `PaneWrite` for their contract. */
 export interface BoundWrite {
   text(text: string): Promise<TerminalResult>;

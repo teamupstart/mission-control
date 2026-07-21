@@ -1,6 +1,7 @@
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { plainName, plainValidate } from "./names.ts";
 import type {
   BinSpec,
   DetachedSessionSpec,
@@ -562,9 +563,25 @@ export function cmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
        * to protect against a lookup this adapter never does. If anything ever resolves a cmux
        * workspace by title, this is the comment that says the rule has to come back.
        */
-      validateName: (name) => {
-        if (!name.trim()) return "a cmux workspace title can't be blank";
-        return null;
+      names: {
+        validate: (name) => {
+          // The shared half first - see `plainValidate`. Every backend's rules are its own
+          // grammar ON TOP OF what no display name can hold, never instead of it: a control
+          // character is meaningless in a cmux title bar too.
+          const plain = plainValidate(name);
+          if (plain) return plain;
+          if (!name.trim()) return "a cmux workspace title can't be blank";
+          return null;
+        },
+        /**
+         * Nothing to strip beyond the shared half, which is the same finding as `validate`
+         * read in the other direction: a cmux title is never parsed as a target, so there is
+         * no grammar to coerce text into. `plainName` still collapses control characters and
+         * caps the length - and its non-empty fallback is what makes the one rule above
+         * unreachable from a dispatch, which is the round trip `terminal-name-rules.test.ts`
+         * pins for every backend.
+         */
+        sanitize: plainName,
       },
     },
   };

@@ -6,10 +6,9 @@ import type { BinSpec } from "./types.ts";
  * Reaching a backend's CLI, once: which binary, in what environment, and whether it is
  * installed at all.
  *
- * `resolveBin` is `resolveWeztermBin`'s body with the vendor taken out. It is separate from
- * the adapters so `config.ts` can keep its own exported helper while there is exactly one
- * implementation of the rule, rather than a fifth copy landing in the same change that
- * exists to stop copies multiplying.
+ * `resolveBin` is `resolveWeztermBin`'s body with the vendor taken out - that wrapper is
+ * gone now, along with the last call sites outside this directory, so this is the one
+ * implementation of the rule rather than the fifth copy of it.
  *
  * Nothing here is cached: an operator installing wezterm, or exporting `WEZTERM_BIN`, should
  * not have to restart the daemon, and the cost is a handful of `existsSync` calls on paths
@@ -67,10 +66,9 @@ export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env):
 }
 
 /**
- * The specs live here, and not beside their adapters, for one reason: `config.ts` still
- * exports `resolveWeztermBin` for the call sites the migration has not reached, and this
- * module is the only home it can read the spec from without an import cycle
- * (`discovery/wezterm.ts` imports `config.ts`). One list of candidates, one resolver.
+ * The specs live here, beside the three functions that read them, so that "which binary",
+ * "in what environment" and "is it even installed" are one question asked of one object.
+ * One list of candidates, one resolver.
  */
 
 /**
@@ -91,19 +89,18 @@ export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env):
  *     Dropping it does not restore reachability, it just picks a DIFFERENT live server, and
  *     "every session on the machine" is not on offer either way: a tmux client talks to
  *     exactly one socket.
- *   - **Enumeration and actuation have to agree.** The inline `run("tmux", …)` calls left in
- *     `actions.ts` (focus, rename, kill) and `dispatcher.ts` (spawn, teardown, the
- *     name probes) inherit `TMUX`, and the pane-I/O item does not reach them - eleven of
- *     them, down from ~19. Scrubbing it here alone splits the two: cards would be built
- *     from one server's pane ids while `kill-session -t <name>` landed on another server's
- *     session of that name, and `focus` selected a pane in a server nobody is looking at.
- *     The pane WRITES have moved behind this spec and would be on the scrubbed socket while
- *     the teardown that kills their session was not, which is a worse split than the one
- *     that exists now, not a smaller one.
+ *   - ~~**Enumeration and actuation have to agree.**~~ **Closed by the lifecycle item.** The
+ *     inline `run("tmux", …)` calls in `actions.ts` (focus, rename, kill) and
+ *     `dispatcher.ts` (spawn, teardown, the name probes) inherited `TMUX` while the pane
+ *     writes did not, and scrubbing it then would have split the two - cards built from one
+ *     server's pane ids while `kill-session -t <name>` landed on another server's session of
+ *     that name. Every one of those calls goes through this spec now, so that objection is
+ *     gone and the first one is the whole of the reason.
  *
- * So an empty list is a DECLARATION, like a null capability: this backend has nothing to
- * scrub. If `TMUX` is ever dropped it belongs in the same commit that routes those writes
- * through this spec, not ahead of it.
+ * So an empty list is a DECLARATION, like a null capability: this backend has nothing worth
+ * scrubbing. It stayed empty through the commit that was expected to fill it, because what
+ * that commit removed was the second reason and not the first: dropping `TMUX` still trades
+ * one server's sessions for another's rather than revealing both.
  */
 export const TMUX_BIN: BinSpec = {
   env: null,

@@ -210,22 +210,57 @@ test("a failed list is [] rather than an error a card could not act on", async (
 test("spawn splits 'a window opened' from 'we can address it'", async () => {
   // `SpawnResult`'s whole reason to exist, and Ghostty is what it was written for.
   const ok = recorder([stubRun({ stdout: `UUID-NEW${US}tab-NEW`, stderr: "", code: 0 })]);
-  const made = await ghosttyEmulator(ok.exec).spawn!.tab(["/bin/zsh", "-l"], "ignored");
+  const made = await ghosttyEmulator(ok.exec).spawn!.tab({
+    argv: ["/bin/zsh", "-l"],
+    title: "ignored",
+    cwd: null,
+  });
   assert.equal(made.ok, true);
   assert.deepEqual(made.target, { paneId: "UUID-NEW", tabId: "tab-NEW" });
 
   // Exit 0 with nothing readable back: the human got their window and nothing may be typed
   // into it. `ok: true` with a null target is a complete answer, not a failure.
   const mute = recorder([stubRun({ stdout: "", stderr: "", code: 0 })]);
-  const quiet = await ghosttyEmulator(mute.exec).spawn!.tab(["/bin/zsh"], "t");
+  const quiet = await ghosttyEmulator(mute.exec).spawn!.tab({
+    argv: ["/bin/zsh"],
+    title: "t",
+    cwd: null,
+  });
   assert.equal(quiet.ok, true);
   assert.equal(quiet.target, null);
 
   // A spawn that failed opened nothing to address.
   const bad = recorder([stubRun({ stdout: "", stderr: "boom", code: 1 })]);
-  const failed = await ghosttyEmulator(bad.exec).spawn!.tab(["/bin/zsh"], "t");
+  const failed = await ghosttyEmulator(bad.exec).spawn!.tab({
+    argv: ["/bin/zsh"],
+    title: "t",
+    cwd: null,
+  });
   assert.equal(failed.ok, false);
   assert.equal(failed.target, null);
+});
+
+test("a spawn asked for a cwd roots the surface there, never somewhere else", async () => {
+  // `TabSpec.cwd` is the one field an emulator may not quietly drop: the focus fallback can
+  // land wherever the session already is, but a DISPATCH must root the agent in the worktree
+  // just cut for it, and an agent in the wrong checkout commits to the wrong branch.
+  // Ghostty can honour it - `surface configuration` carries `initial working directory` - so
+  // what this pins is that it is actually sent rather than silently omitted.
+  const { calls, exec } = recorder([stubRun({ stdout: `UUID-A${US}tab-A`, stderr: "", code: 0 })]);
+  await ghosttyEmulator(exec).spawn!.tab({
+    argv: ["/bin/zsh", "-l"],
+    title: "t",
+    cwd: "/w/alpha",
+  });
+  const script = onlyScript(calls);
+  assert.ok(script.includes('set initial working directory of cfg to "/w/alpha"'));
+  assert.ok(script.includes('set command of cfg to "/bin/zsh -l"'));
+
+  // And no cwd asked for means the key is absent entirely, not set to an empty string -
+  // which Ghostty would read as a directory and refuse.
+  const none = recorder([stubRun({ stdout: `UUID-B${US}tab-B`, stderr: "", code: 0 })]);
+  await ghosttyEmulator(none.exec).spawn!.tab({ argv: ["/bin/zsh"], title: "t", cwd: null });
+  assert.equal(onlyScript(none.calls).includes("initial working directory"), false);
 });
 
 test("a killed write is reported as outcome-unknown, never as a clean refusal", async () => {

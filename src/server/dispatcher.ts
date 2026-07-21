@@ -10,6 +10,7 @@ import { hooksFor } from "./harness/index.ts";
 import { getHarnessesConfig, resolveDispatchModel } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
+import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -132,11 +133,19 @@ export class Dispatcher {
       // merely slow, or only the prompt send failed), do NOT destroy its work:
       // keep the session + worktree and fail the task with guidance. Only when no
       // live agent remains do we tear the (empty) tree down for a clean retry.
-      const alive = cur.tmuxSession ? await tmuxSessionAlive(cur.tmuxSession) : false;
-      if (alive) {
+      //
+      // Three answers, not two. `null` is "no installed backend could tell us", and it must
+      // land on the KEEP side with the `true` case rather than on the reclaim side with
+      // `false`: erring towards keeping costs one Reclaim click, erring the other way runs
+      // `git worktree remove --force` over a checkout an agent is working in.
+      const alive = cur.tmuxSession ? await homeAlive(cur.tmuxSession) : false;
+      if (alive !== false) {
         this.patch(taskId, {
           status: "failed",
-          error: `${message} - the agent is still running; Focus or Cancel it`,
+          error:
+            alive === true
+              ? `${message} - the agent is still running; Focus or Cancel it`
+              : `${message} - and no terminal backend could say whether the agent survived, so its worktree was kept; Focus or Cancel it`,
         });
       } else {
         await teardownWorktree(cur).catch(() => {});
@@ -438,9 +447,15 @@ async function leaseFromPool(repoRoot: string): Promise<LeaseAttempt> {
 }
 
 /**
- * Tear down a task's live resources (best-effort): kill its detached tmux session
- * and return/remove its worktree + throwaway branch. Provider-aware so a treehouse
- * lease is handed back to the pool rather than leaked by a bare `git worktree remove`.
+ * Tear down a task's live resources (best-effort): close the terminal home it was
+ * dispatched into and return/remove its worktree + throwaway branch. Provider-aware so a
+ * treehouse lease is handed back to the pool rather than leaked by a bare
+ * `git worktree remove`.
+ *
+ * `tmuxSession` still spells one backend, and deliberately so for now - it is a persisted
+ * column, and generalizing it is phase 3's schema migration. What it holds is the NAME of
+ * the home, and which backend that name lives on is resolved through the registry
+ * (`killHome`) rather than assumed here.
  */
 export async function teardownWorktree(task: {
   repoRoot: string;
@@ -450,7 +465,19 @@ export async function teardownWorktree(task: {
   tmuxSession: string | null;
 }): Promise<void> {
   if (task.tmuxSession) {
-    await run("tmux", ["kill-session", "-t", task.tmuxSession], { timeoutMs: 10000 });
+    const killed = await killHome(task.tmuxSession);
+    // An adapter lookup that found nothing must not read as "there was nothing to kill".
+    // This is the one path where the difference is destructive: we are about to hand the
+    // worktree back to the pool, so an agent still running in it loses its checkout with no
+    // trace of why. `asked` is false only when no installed backend can kill a home at all -
+    // an emulator tab is not a group - and then the honest thing is to say so out loud and
+    // name what the operator has to do by hand.
+    if (!killed.asked) {
+      console.warn(
+        `[mission-control] no terminal backend can close the session '${task.tmuxSession}' - ` +
+          "if an agent is still running there, stop it yourself; its worktree is being reclaimed now",
+      );
+    }
   }
   if (!task.worktreePath) return;
 
@@ -471,52 +498,6 @@ export async function teardownWorktree(task: {
   }
 }
 
-/**
- * Launch `agentBin` in a new detached tmux session rooted at `cwd`, alongside a
- * plain shell pane in the same worktree. The agent lives in pane 0 (what discovery
- * binds to and injects the first prompt into); a second pane split beside it drops
- * you straight into a terminal at the worktree for ad-hoc git/build/inspection work.
- * The split is best-effort - a shell pane is a convenience, so if tmux can't add it
- * we keep the agent session rather than failing the whole dispatch.
- *
- * `agentArgs` (`--model <id>`, plus the ask channel's four flags) are appended to the
- * binary. This comment used to say tmux joins the trailing arguments with spaces and runs
- * the result through a shell rather than exec'ing the argv. Measured on tmux 3.6b, it does
- * not: `$HOME`, `a*b` and `two words` each arrive as one unmodified argv element, because
- * tmux >= 3.3 uses multiple arguments as the argv directly. Measured again at size for the
- * ask channel's inline `--append-system-prompt`: 1260 bytes carrying `$HOME`, globs, both
- * quote styles, backticks, `$(cmd)`, semicolons, pipes, ampersands and newlines arrived
- * byte-identical. That matters now that the argv carries filesystem paths and a whole
- * system-prompt appendix, whose charset we do not control the way we control a model id's.
- *
- * `ModelIdSchema` still constrains model ids to a safe charset, and stays that way: it is
- * free, and the old description did hold on the older tmux that joined-and-shelled a single
- * command string.
- */
-export async function spawnDetachedSession(
-  sessionName: string,
-  cwd: string,
-  agentBin: string,
-  agentArgs: readonly string[] = [],
-): Promise<void> {
-  const r = await run(
-    "tmux",
-    ["new-session", "-d", "-s", sessionName, "-c", cwd, agentBin, ...agentArgs],
-    { timeoutMs: 10000 },
-  );
-  if (r.code !== 0) throw new Error(`tmux new-session failed: ${r.stderr.trim() || "unknown"}`);
-
-  const agentPane = `${sessionName}:0.0`;
-  // Split a shell pane beside the agent (vertical divider), sized to a third so the
-  // agent TUI keeps most of the width. `split-window` with no command opens the
-  // default shell; `-c` roots it at the worktree.
-  await run("tmux", ["split-window", "-h", "-l", "33%", "-t", agentPane, "-c", cwd], {
-    timeoutMs: 10000,
-  });
-  // Leave the agent pane focused so attaching/Focus lands on it, not the shell.
-  await run("tmux", ["select-pane", "-t", agentPane], { timeoutMs: 10000 });
-}
-
 // ---- pure helpers (unit-tested) ----
 
 /** A filesystem/git-safe slug from a task title - the branch and worktree name. */
@@ -531,29 +512,21 @@ export function slugify(title: string): string {
 }
 
 /**
- * A tmux-safe, human-readable session name from a task title - what the card shows.
+ * A human-readable session name from a task title - what the card shows.
  *
- * Unlike `slugify` (which the git branch needs, so it's lowercase and hyphenated), this
- * keeps the title's spaces and capitals so the card reads like a heading rather than a
- * slug. It only strips what a tmux name genuinely can't hold: control characters and the
- * `.` and `:` that separate a tmux target (`session:window.pane`), plus any leading run
- * of the target-spec sigils `=` (exact-match), `$` (session ID) and `{` (special token).
- * A name that led with one of those would make `-t` targets - `has-session`,
- * `kill-session`, the `name:0.0` split/select - resolve to the wrong session or to none.
- * That last guard reaches slightly past `validateSessionName`, which bars only a leading
- * `$`. Focus / kill / teardown all pass this as a single argv, so interior spaces are safe.
+ * Unlike `slugify` (which the git branch needs, so it is lowercase and hyphenated), this
+ * keeps the title's spaces and capitals so the card reads like a heading rather than a slug.
+ * What it STRIPS is the backend's business: the rules that used to live here were tmux's
+ * target grammar written out a second time, half a file away from the rejection rules in
+ * `validateSessionName` that were supposed to agree with them. They are one `NameRules` now,
+ * declared by the adapter, and this asks the backend a dispatch would actually land on
+ * (`homeNameRules`) rather than assuming which one that is.
+ *
+ * Still exported and still named for the session, because the composition it is half of -
+ * `sessionLabel(deriveTitle(intent))` - is what an untitled dispatch is named by.
  */
 export function sessionLabel(title: string): string {
-  const out = title
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/[.:]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^[=${]+/, "")
-    .trim()
-    .slice(0, 60)
-    .trim();
-  return out || "task";
+  return homeNameRules().sanitize(title);
 }
 
 // Small words a title leaves lowercase unless they lead it - so an auto-title reads the
@@ -595,18 +568,15 @@ export function deriveTitle(intent: string): string {
   return titled.length > TITLE_MAX_CHARS ? titled.slice(0, TITLE_MAX_CHARS - 1) + "…" : titled;
 }
 
-async function uniqueTmuxSessionName(baseName: string, shortId: string): Promise<string> {
-  const r = await run("tmux", ["list-sessions", "-F", "#{session_name}"]);
-  const taken = new Set(
-    r.code === 0 ? r.stdout.split("\n").map((s) => s.trim()).filter(Boolean) : [],
-  );
-  return taken.has(baseName) ? `${baseName}-${shortId}` : baseName;
-}
-
 /**
- * Spawn the agent under a session name, closing the check-then-spawn race: if a
- * concurrent dispatch claimed the bare name between our listing and our spawn,
- * retry once under the always-unique `name-shortId`. Returns the name actually used.
+ * Spawn the agent under a session name, closing the check-then-spawn race: if a concurrent
+ * dispatch claimed the bare name between our listing and our spawn, retry once under the
+ * always-unique `name-shortId`. Returns the name actually used.
+ *
+ * A backend that cannot be enumerated (`heldHomeNames` answering null) goes straight to the
+ * unique name. "We could not ask" is not "the name is free" - taking the bare label on that
+ * basis is how two dispatches end up sharing a home, which for a multiplexer means the second
+ * agent's prompt is typed into the first agent's pane.
  */
 async function spawnUniquely(
   baseName: string,
@@ -615,20 +585,17 @@ async function spawnUniquely(
   agentBin: string,
   agentArgs: readonly string[] = [],
 ): Promise<string> {
-  const name = await uniqueTmuxSessionName(baseName, shortId);
-  try {
-    await spawnDetachedSession(name, cwd, agentBin, agentArgs);
-    return name;
-  } catch (err) {
-    const alt = `${baseName}-${shortId}`;
-    if (name === alt) throw err;
-    await spawnDetachedSession(alt, cwd, agentBin, agentArgs);
-    return alt;
-  }
-}
+  const argv = [agentBin, ...agentArgs];
+  const held = await heldHomeNames();
+  const unique = `${baseName}-${shortId}`;
+  const name = held === null || held.has(baseName) ? unique : baseName;
 
-export async function tmuxSessionAlive(name: string): Promise<boolean> {
-  return (await run("tmux", ["has-session", "-t", name])).code === 0;
+  const first = await launchHome({ name, cwd, argv, sidePane: true });
+  if (first.ok) return name;
+  if (name === unique) throw new Error(first.error);
+  const retry = await launchHome({ name: unique, cwd, argv, sidePane: true });
+  if (retry.ok) return unique;
+  throw new Error(retry.error);
 }
 
 async function currentBranch(dir: string): Promise<string | null> {

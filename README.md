@@ -1593,12 +1593,33 @@ request. The console rail carries the same mark without the link, and only when 
 something to say - open findings or a failed round - because a rail line is scanned rather
 than read.
 
+### The review model
+
+**Settings → Inspector → Model** names what the review and the follow-up replies spawn as.
+It ships as `claude-sonnet-5`, and the field's own line tells you where the value in force
+came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's environment, or the
+shipped default. Leave it empty to accept whichever of the other two applies.
+
+Naming a default at all is the point. An unset `--model` inherits whatever the local
+`claude` CLI happens to default to - on one machine that resolved to the 1M-context Opus
+tier at roughly $2 a round - and nothing in the app recorded it or could show it to you.
+
+A model is a **cost** choice here, not a latency one. The same 10KB PR measured 225s on
+Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
+`MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
+
 ### Dry run
 
 `dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
 them, then records them instead of publishing. **Settings → Inspector → Recent
 inspections** is where you read what it would have said. Run it there on a few of your own
 PRs before you let it speak.
+
+Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
+last round errored - hover the link for why), a finding count, or `clean`. A PR that has
+since closed reads `merged` or `closed` and is dimmed: it left the sweep for good, so it is
+history rather than a queue. A closed PR that *was* reviewed keeps its findings, because
+what the Inspector said about something that landed is the more useful fact.
 
 ## Shipping (YOLO mode)
 
@@ -1844,9 +1865,9 @@ that looks perfectly healthy would help nobody.
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
-| `MISSION_INSPECTOR_MODEL` | CLI default | Inspector: the model both the review and the follow-up replies run on. The stored config's `model` wins where it is set (`PUT /api/inspector/config`; the settings panel doesn't expose it), then this, then the `claude` CLI's own default (the most capable, and the priciest) |
-| `MISSION_INSPECTOR_TIMEOUT_MS` | `180000` | Inspector: hard cap on one review. Larger than the Foreman reviewer's 120s because this one has tool round-trips inside it |
-| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `90000` | Inspector: hard cap on one follow-up reply - a much smaller job than a review |
+| `MISSION_INSPECTOR_MODEL` | `claude-sonnet-5` | Inspector: the model both the review and the follow-up replies run on. **Settings → Inspector → Model** wins where it is set, then this, then the shipped default. Named rather than left to the `claude` CLI: an unset `--model` inherits whatever that CLI defaults to, which is the priciest tier available and is not recorded anywhere |
+| `MISSION_INSPECTOR_TIMEOUT_MS` | `600000` | Inspector: hard cap on one review. Far larger than the Foreman reviewer's 120s because this one has tool round-trips inside it: a 10KB five-file diff measured 225s on Opus and 272s on Sonnet, so a wire near either is a guaranteed failure rather than a safety net - the run is killed, the head never advances, and the PR climbs the retry backoff having produced nothing |
+| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it moves with the review's ceiling rather than sitting at a fraction of it |
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |

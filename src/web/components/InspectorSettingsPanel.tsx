@@ -4,6 +4,8 @@ import type { InspectorState } from "../useInspector.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
 import { candidateRepos } from "./ForemanSettingsPanel.tsx";
+import { ModelField, ModelSuggestions } from "./ModelField.tsx";
+import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
 
 // The Inspector's settings category.
 //
@@ -29,16 +31,29 @@ export function ago(then: number | null, now: number): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-/** What one ledger row says about itself, in one phrase. */
+/**
+ * What one ledger row says about itself, in one phrase.
+ *
+ * The RETIRED branch is the one to keep: a row whose PR has closed is out of the sweep
+ * for good (`loadOpenInspectorPrs` selects `state = 'open'`), and `processPr` clears
+ * `lastError` on the way out, so without this it lands on `round === 0` and reads
+ * "queued" - forever, for something that will never be looked at again. Two dozen merged
+ * PRs said "queued / not yet reviewed" on this panel, which is not a slow queue being
+ * reported honestly, it is a finished one being reported wrongly.
+ *
+ * A retired row that WAS reviewed keeps its findings instead: that is the record of what
+ * the Inspector said about a PR that has since landed, and it is the more useful fact.
+ */
 export function inspectionSummary(row: InspectorInspection): string {
   if (row.lastError) return "failed";
+  if (row.state === "closed" && row.round === 0) return row.mergedAt ? "merged" : "closed";
   if (row.round === 0) return "queued";
   if (row.openFindings === 0) return "clean";
   return `${row.openFindings} finding${row.openFindings === 1 ? "" : "s"}`;
 }
 
 export function InspectorSettingsPanel({ state }: { state: InspectorState }): React.JSX.Element {
-  const { config, inspections, update, error } = state;
+  const { config, inspections, model, update, error } = state;
   const [repos, setRepos] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
@@ -144,6 +159,31 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         </p>
       )}
 
+      {/* Reusing Foreman's `foreman-model*` classes rather than minting `inspector-`
+          copies of the same six rules: the markup is the shared `ModelField`, so a second
+          class vocabulary would be two selectors to keep in step for one widget. */}
+      <div className="foreman-models">
+        <p className="settings-group-label">Model</p>
+        <p className="settings-hint foreman-models-hint">
+          The Inspector spawns a <code>claude -p</code> per review, with read-only tools scoped
+          to the reviewed worktree. Leave the field empty to accept the value shown in it.
+        </p>
+        <ModelSuggestions />
+        <ModelField
+          id="inspector-model"
+          spec={INSPECTOR_MODEL_SPEC}
+          value={config?.model ?? ""}
+          resolved={model ?? undefined}
+          disabled={!config}
+          onCommit={(next) =>
+            // Empty is STORED as empty, same rule as Foreman's fields: it means "clear my
+            // override and go back to the ladder", and dropping it from the patch would
+            // leave the old id in place while the box looks cleared.
+            void update({ model: next })
+          }
+        />
+      </div>
+
       <div className="foreman-repos">
         <p className="settings-group-label">Reviewed repositories</p>
         <p className="settings-hint foreman-repos-hint">
@@ -209,7 +249,10 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
         ) : (
           <ul className="inspector-log-list">
             {inspections.map((row) => (
-              <li className="inspector-log-row" key={row.key}>
+              <li
+                className={`inspector-log-row${row.state === "closed" ? " is-retired" : ""}`}
+                key={row.key}
+              >
                 <a
                   className="inspector-log-pr"
                   href={row.url}

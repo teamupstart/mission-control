@@ -1,3 +1,6 @@
+import { resolveModelChoice } from "./model-choice.ts";
+import type { ModelChoiceSpec, ModelSource, ResolvedModel } from "./model-choice.ts";
+
 // Which model each of Foreman's four `claude -p` calls runs as.
 //
 // Shared, and pure, for the reason `@shared/cost.ts` and `@shared/backlog.ts` are: the
@@ -8,6 +11,9 @@
 //
 // `process.env` is read by the CALLER and passed in, never read here: this file is
 // imported by the web bundle, where there is no `process`.
+//
+// The three-layer LADDER itself is `@shared/model-choice.ts`, shared with the Inspector.
+// What stays here is the four roles and what each of them is for.
 
 /**
  * Foreman's four model calls. Four and not one because their cost profiles genuinely
@@ -21,19 +27,11 @@ export const FOREMAN_MODEL_ROLES = ["review", "verify", "triage", "backlog"] as 
 export type ForemanModelRole = (typeof FOREMAN_MODEL_ROLES)[number];
 
 /** Where a resolved model id came from. Rendered next to the value, so it must be honest. */
-export type ForemanModelSource = "config" | "env" | "default";
+export type ForemanModelSource = ModelSource;
 
-export interface ForemanModelSpec {
+export interface ForemanModelSpec extends ModelChoiceSpec {
   /** The `ForemanConfig` key holding the operator's override, if any. */
   configKey: "reviewModel" | "verifyModel" | "triageModel" | "backlogModel";
-  /** The env var consulted when the config key is empty. */
-  envVar: string;
-  /** What we spawn with when neither of the above says otherwise. */
-  fallback: string;
-  /** Field label in the settings panel. */
-  label: string;
-  /** One line under the field: what this call actually does. */
-  blurb: string;
 }
 
 /**
@@ -74,39 +72,22 @@ export const FOREMAN_MODEL_SPECS: Record<ForemanModelRole, ForemanModelSpec> = {
   },
 };
 
-/**
- * Model ids offered as autocomplete in the settings panel.
- *
- * A CONVENIENCE LIST, never a validation set: the fields stay free text, because the
- * `claude` CLI accepts ids and aliases this repo has no business knowing about, and a
- * dropdown would strand an operator the day a new model ships. Being slightly stale here
- * costs a suggestion; refusing an unlisted id would cost the feature.
- */
-export const FOREMAN_MODEL_SUGGESTIONS = [
-  "claude-opus-4-8",
-  "claude-sonnet-5",
-  "claude-haiku-4-5",
-] as const;
-
 /** Just the model-id keys, for anything iterating the config's model fields. */
 export type ForemanModelConfig = Partial<
   Record<ForemanModelSpec["configKey"], string | undefined>
 >;
 
-export interface ResolvedForemanModel {
+export interface ResolvedForemanModel extends ResolvedModel {
   role: ForemanModelRole;
-  /** The id handed to `--model`. Never empty. */
-  id: string;
-  source: ForemanModelSource;
 }
 
 /**
  * Resolve one role: config, then env, then the shipped fallback.
  *
- * `||` and not `??` throughout, because every layer here is optional FREE TEXT and an
- * empty string is a human who cleared the box - not a request to spawn the CLI with no
- * model id at all. This is the rule `backlogModel` already documented; it is enforced in
- * one place now so a fifth role cannot get it wrong.
+ * The ranking is `resolveModelChoice`'s, shared with the Inspector, so a fifth call in
+ * either subsystem cannot invent a fourth reading of an empty box. All this adds is the
+ * role tag and the env LOOKUP, which is Foreman's own: its vars are bare
+ * (`FOREMAN_REVIEW_MODEL`), where the Inspector's go through `envVar()`'s prefix chain.
  */
 export function resolveForemanModel(
   role: ForemanModelRole,
@@ -114,11 +95,7 @@ export function resolveForemanModel(
   env: Record<string, string | undefined> = {},
 ): ResolvedForemanModel {
   const spec = FOREMAN_MODEL_SPECS[role];
-  const fromConfig = cfg?.[spec.configKey]?.trim();
-  if (fromConfig) return { role, id: fromConfig, source: "config" };
-  const fromEnv = env[spec.envVar]?.trim();
-  if (fromEnv) return { role, id: fromEnv, source: "env" };
-  return { role, id: spec.fallback, source: "default" };
+  return { role, ...resolveModelChoice(spec, cfg?.[spec.configKey], env[spec.envVar]) };
 }
 
 /** Every role at once - what the daemon reports and the panel renders. */

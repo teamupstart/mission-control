@@ -53,7 +53,13 @@ import { capturePaneText } from "./discovery/pane-capture.ts";
 import { noteKeyFor } from "./registry.ts";
 import type { Registry } from "./registry.ts";
 import type { QueueManager } from "./queue.ts";
-import type { NmRunSummary, Session, SkillsView, WorkItem } from "@shared/types.ts";
+import type {
+  InspectorStatus,
+  NmRunSummary,
+  Session,
+  SkillsView,
+  WorkItem,
+} from "@shared/types.ts";
 import type { ReviewManager } from "./reviews.ts";
 import type { TaskManager } from "./tasks.ts";
 import { sseHandler } from "./sse.ts";
@@ -75,7 +81,7 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
-import { getInspectorConfig, setInspectorConfig } from "./inspector/config.ts";
+import { getInspectorConfig, inspectorModel, setInspectorConfig } from "./inspector/config.ts";
 import { getShippingConfig, setShippingConfig } from "./shipping/config.ts";
 import { readCatalog } from "./skills/catalog.ts";
 import { applySkillsConfig, getSkillsConfig } from "./skills/config.ts";
@@ -1175,6 +1181,13 @@ export function buildApp(
   // read what it WOULD have said, a preview mode is indistinguishable from a broken one.
   // Capped because it is a display; the registry's copy is deliberately not.
   app.get("/api/inspector/prs", (c) => c.json(loadInspectorInspections(50)));
+  // What the Inspector will actually spawn with, resolved HERE rather than in the panel
+  // for the reason `ForemanStatus.models` documents: the env layer is invisible to the
+  // browser, so a panel showing `config || default` would confidently print a model a
+  // `MISSION_INSPECTOR_MODEL` in the daemon's environment is overriding.
+  app.get("/api/inspector/status", (c) =>
+    c.json({ model: inspectorModel() } satisfies InspectorStatus),
+  );
 
   // --- Shipping: YOLO mode, which merges the clean ones ---
   //

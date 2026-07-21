@@ -315,6 +315,17 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   autopilot's `readyBacklog` / `blockersIn` / `nextUpTaskId` (`@shared/backlog.ts`) are shared
   so every surface, and the server, decides identically. Do not copy them into a component. A
   third consent gate extends `allowlist.ts`; it does not start a matcher.
+- **Which model a headless call spawns with**: one ladder, `resolveModelChoice`
+  (`@shared/model-choice.ts`) - config, then env, then a NAMED fallback - and the roles stay
+  with their subsystem (`FOREMAN_MODEL_SPECS`, `INSPECTOR_MODEL_SPEC`). A `claude -p` that
+  passes no `--model` inherits whatever the local CLI defaults to, which is the priciest tier
+  and unanswerable from inside the app; every spec's `fallback` is what rules that out, so a
+  new one is filled in rather than left blank. The panel PRINTS the resolution, source and
+  all, which is why the daemon reports it (`/api/foreman/status`, `/api/inspector/status`)
+  instead of the browser re-deriving `config || default` over an env layer it cannot see.
+  One input renders it, `ModelField.tsx`. Blank is "cleared", never `--model ""`, at every
+  layer - including the config schema, which must ADMIT the empty string or the field cannot
+  be cleared at all. Test: `foreman-models.test.ts`, `inspector-model.test.ts`.
 - **Pane token**: `paneToken` (`@shared/pane.ts`) spells the key every pane-scoped map uses -
   the write lock, the hook overlay, the capture-miss counter, the Foreman's send guard. There
   were four copies in two spellings (`wezterm:` and `wez:`); each subsystem only compared the

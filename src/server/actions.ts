@@ -279,9 +279,10 @@ async function sendTextLocked(
 export interface InjectResult extends ActionResult {
   pasted: boolean;
   /**
-   * True ONLY when the collapsed-paste placeholder was seen PENDING and then seen GONE.
-   * Verification is that transition, never a single reading, because only the transition
-   * rules out an Enter the TUI swallowed.
+   * True ONLY when the collapsed-paste placeholder was seen PENDING before the Enter and
+   * seen GONE after it. Verification is that transition, never a single reading, because
+   * only the transition rules out an Enter the TUI swallowed - and the pending half has
+   * to be read BEFORE the keystroke or the answer is a race with the TUI's redraw.
    *
    * Everything else is false, and false is "no news" rather than "it failed". Three
    * ordinary deliveries land there: a harness whose `control.pastePlaceholder` is null
@@ -333,6 +334,16 @@ const SUBMIT_POLLS = Math.ceil(SUBMIT_TIMEOUT_MS / SUBMIT_POLL_MS);
  * not a budget - each one is gated on seeing the paste still pending.
  */
 const MAX_SUBMIT_ENTERS = 3;
+/**
+ * How many consecutive unreadable captures end the wait.
+ *
+ * The whole wait runs inside the pane lock, so its worst case is how long every other
+ * write to that pane is refused with PANE_BUSY - and dispatch gives up waiting for its
+ * own accept after 20s. Reading a pane we cannot see for the full `SUBMIT_POLLS`, each
+ * capture carrying its own one-second timeout, spends that entire budget learning
+ * nothing. Two in a row separates a blink from a pane that is gone.
+ */
+const MAX_UNREADABLE_CAPTURES = 2;
 
 /**
  * The seam every write in `injectPrompt` goes through, so its SEQUENCE can be
@@ -344,6 +355,32 @@ export interface InjectDeps extends PaneDeps {
 }
 
 const defaultInjectDeps: InjectDeps = { ...defaultPaneDeps, sleep };
+
+/**
+ * Read, once, whether the paste is sitting COLLAPSED in the composer - between the settle
+ * and the first Enter, while it is definitively unsubmitted.
+ *
+ * This is the only reading allowed to establish "pending", and taking it here is what
+ * makes the verification claim a fact rather than a race. Read only AFTER an Enter, the
+ * placeholder is gone whenever the TUI redraws before the capture subprocess returns - so
+ * a healthy delivery reported unverified while a SWALLOWED Enter, the one case where the
+ * placeholder lingers, was the case most likely to report verified. The flag was close to
+ * inverted and flipped between runs of the same delivery.
+ *
+ * One capture, and only where it can answer: a harness rendering no placeholder has
+ * nothing to look for, and a single-line paste is never collapsed. Null (a capture that
+ * failed) establishes nothing and is not retried - the delivery proceeds and reports
+ * unverified, which is the honest answer and not a failure.
+ */
+async function pasteIsCollapsed(
+  session: Session,
+  text: string,
+  placeholder: RegExp | null,
+  deps: InjectDeps,
+): Promise<boolean> {
+  if (!placeholder || !text.includes("\n")) return false;
+  return hasPendingPaste(await deps.capture(session), placeholder);
+}
 
 /**
  * Press Enter until the pasted text is no longer sitting in the composer.
@@ -359,22 +396,24 @@ const defaultInjectDeps: InjectDeps = { ...defaultPaneDeps, sleep };
  * placeholder EXPANDS it and appends a second copy, so the agent reads a doubled,
  * still-unsubmitted prompt. Enter is idempotent where paste is not.
  *
- * Reports true when the paste is gone from the composer, false when it outlasted
- * every attempt. A capture we can't read is not evidence of a stuck paste, so it
- * ends the loop rather than spending an unaimed keystroke on it.
- *
- * `submitVerified` answers a stricter question than `ok`, and the two part company on
+ * `submitVerified` answers a stricter question than `ok` and the two part company on
  * purpose. `ok` says the Enter went out and nothing on screen contradicts it; verified
- * says we WATCHED the paste leave the composer. Only a placeholder observed pending and
- * then observed gone can say that, so a single-line paste - which never collapses, so
- * never renders one - comes back ok and unverified, as does a delivery we could not read
- * the pane for at all. Claiming otherwise would be the flag reporting confirmed in
- * exactly the cases it exists to expose.
+ * says the paste was watched LEAVING the composer. `pasteWasPending` supplies the first
+ * half of that transition and nothing here may supply it - see `pasteIsCollapsed` for
+ * why the reading has to predate the Enter. Reads taken below can only ever supply the
+ * second half.
+ *
+ * A capture that comes back null is evidence in neither direction: not a clear composer,
+ * so it cannot end the wait as a success; not a pending paste, so it cannot aim the next
+ * Enter. It is skipped - but only `MAX_UNREADABLE_CAPTURES` of them in a row, because
+ * this wait holds the pane lock the whole time. Giving up that way is neither a verified
+ * submit nor a failure: the Enter that went out stands, unverified.
  */
 async function awaitPasteSubmitted(
   session: Session,
   pressEnter: () => Promise<ActionResult>,
   placeholder: RegExp | null,
+  pasteWasPending: boolean,
   deps: InjectDeps,
 ): Promise<ActionResult & { submitVerified: boolean }> {
   // No placeholder means this harness renders nothing that could ever show a pending
@@ -392,31 +431,28 @@ async function awaitPasteSubmitted(
     return { ...entered, submitVerified: false };
   }
 
-  // Ever seen pending, across attempts. This is the whole of the verification evidence:
-  // the one exit below that reports true is the reading where a paste we had watched
-  // sitting in the composer is no longer there.
-  let sawPending = false;
+  let unreadable = 0;
   for (let attempt = 1; attempt <= MAX_SUBMIT_ENTERS; attempt++) {
     const entered = await pressEnter();
     if (!entered.ok) return { ...entered, submitVerified: false };
 
     // Re-armed per Enter, because the next one is only safe while THIS wait is still
     // looking at a pending paste. Evidence from a wait ago is stale by a second and more.
+    // A wait that mixes an unreadable capture with a later pending one still arms it, and
+    // deliberately so: the placeholder was seen in this same wait, which is the whole of
+    // what makes the keystroke aimed.
     let pendingThisWait = false;
     for (let poll = 0; poll < SUBMIT_POLLS; poll++) {
       if (poll > 0) await deps.sleep(SUBMIT_POLL_MS);
       const pane = await deps.capture(session);
-      // A capture we could not read neither ends the wait nor counts towards it - it is
-      // not a clear composer, and treating it as one is how an unverified submit came
-      // back confirmed. Keep polling; the next read may say something.
-      if (pane === null) continue;
-      if (!hasPendingPaste(pane, placeholder)) return { ok: true, submitVerified: sawPending };
-      sawPending = true;
+      if (pane === null) {
+        if (++unreadable >= MAX_UNREADABLE_CAPTURES) return { ok: true, submitVerified: false };
+        continue;
+      }
+      unreadable = 0;
+      if (!hasPendingPaste(pane, placeholder)) return { ok: true, submitVerified: pasteWasPending };
       pendingThisWait = true;
     }
-    // Nothing readable said the paste is still there, so there is nothing to aim the next
-    // Enter at - and an unaimed one is the keystroke that answers a foreground dialog on
-    // the operator's behalf. The Enter we did send stands, unverified.
     if (!pendingThisWait) return { ok: true, submitVerified: false };
   }
   return { ok: false, error: PASTE_NOT_SUBMITTED, submitVerified: false };
@@ -535,6 +571,7 @@ async function injectPromptLocked(
     if (!paste.ok) return undelivered(paste);
     // Past this point the text IS in the pane, submitted or not.
     await deps.sleep(settleMs);
+    const wasPending = await pasteIsCollapsed(session, text, pastePlaceholder, deps);
     // Re-probed per Enter rather than trusting the pre-paste check: the settle window
     // and the submit polls are ~1.6s of wall clock during which a human can start
     // scrolling, and this Enter is a tmux keystroke like any other. Routing it through
@@ -549,6 +586,7 @@ async function injectPromptLocked(
         return eaten ?? (await cmd("tmux", ["send-keys", "-t", target, "Enter"], "tmux Enter failed"));
       },
       pastePlaceholder,
+      wasPending,
       deps,
     );
     // `pasted: true` regardless of how the submit failed, and that is the contract
@@ -564,11 +602,13 @@ async function injectPromptLocked(
     const pasted = await cmd(bin, ["cli", "send-text", "--pane-id", id, text], "wezterm send-text failed");
     if (!pasted.ok) return undelivered(pasted);
     await deps.sleep(settleMs);
+    const wasPending = await pasteIsCollapsed(session, text, pastePlaceholder, deps);
     const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
     const submitted = await awaitPasteSubmitted(
       session,
       () => cmd(bin, enterArgs, "wezterm Enter failed"),
       pastePlaceholder,
+      wasPending,
       deps,
     );
     return { ...submitted, pasted: true };

@@ -47,11 +47,16 @@ const CLEAR = "❯\n⏵⏵ auto mode on";
 
 /**
  * Every command succeeds; each pane read yields the next `reads` entry, the last repeating.
+ * `reads[0]` is the pre-Enter reading, the only one that can establish a pending paste.
  *
  * A SEQUENCE rather than one screen because the claim under test is a transition - a paste
  * seen pending and then seen gone - and a single fixed screen cannot express one.
  */
-function harness(reads: (string | null)[] | string | null): { deps: InjectDeps; calls: string[][] } {
+function harness(reads: (string | null)[] | string | null): {
+  deps: InjectDeps;
+  calls: string[][];
+  captures: () => number;
+} {
   const queue = Array.isArray(reads) ? reads : [reads];
   const calls: string[][] = [];
   let read = 0;
@@ -63,7 +68,7 @@ function harness(reads: (string | null)[] | string | null): { deps: InjectDeps; 
     capture: async () => queue[Math.min(read++, queue.length - 1)] ?? null,
     sleep: async () => {},
   };
-  return { deps, calls };
+  return { deps, calls, captures: () => read };
 }
 
 const enters = (calls: string[][]): number =>
@@ -127,8 +132,8 @@ test("no placeholder means no evidence, whatever is on screen", () => {
 // ---- delivery degrades deliberately ----
 
 test("a submit is verified by watching the paste leave the composer, not by one reading", async () => {
-  // The only shape that earns `true`: the placeholder is there on the first read back and
-  // gone on the next, so the Enter demonstrably landed rather than being swallowed. One
+  // The only shape that earns `true`: the placeholder is on screen BEFORE the Enter and
+  // gone after it, so the keystroke demonstrably landed rather than being swallowed. One
   // Enter still suffices - the verification claim changed, the keystroke budget did not.
   const { deps, calls } = harness([PENDING, CLEAR]);
   const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
@@ -138,27 +143,67 @@ test("a submit is verified by watching the paste leave the composer, not by one 
   assert.equal(enters(calls), 1);
 });
 
-test("a single-line prompt is ok and unverified - it never renders a placeholder to watch", async () => {
+test("the ORDINARY success reports verified, every time, not when it wins a redraw race", async () => {
+  // The pending half is read before the Enter, where the paste is definitively collapsed,
+  // so a healthy delivery cannot report unverified merely because the TUI redrew first.
+  // Read only afterwards, this same delivery flipped run to run - and the one shape that
+  // reliably still showed a placeholder was a SWALLOWED Enter, so the flag ran backwards.
+  for (let run = 0; run < 5; run++) {
+    const { deps, calls } = harness([PENDING, CLEAR]);
+    const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
+    assert.equal(r.submitVerified, true, `run ${run} must not differ from the others`);
+    assert.equal(enters(calls), 1, `run ${run} must not differ from the others`);
+  }
+});
+
+test("only the pre-Enter reading may establish a pending paste", async () => {
+  // A placeholder that first appears AFTER the Enter is the paste sitting there
+  // unsubmitted, not evidence that one left. Counting it would make the swallowed case
+  // the verified case, which is exactly the inversion this window closes.
+  const { deps } = harness([CLEAR, PENDING, CLEAR]);
+  const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.submitVerified, false, "the composer was clear when we looked - nothing to watch leave");
+});
+
+test("a single-line prompt is ok and unverified, and pays for no reading it cannot use", async () => {
   // The COMMON case, and the one the flag used to lie about: a single-line paste is never
-  // collapsed, so the composer reads clear from the first poll and nothing was ever
-  // observed pending. `false` here is "no news", not "it failed".
-  const { deps, calls } = harness(CLEAR);
+  // collapsed, so there is no placeholder to look for at any point. `false` here is "no
+  // news", not "it failed" - and looking anyway would be a capture spent on a known answer.
+  const { deps, calls, captures } = harness(CLEAR);
   const r = await injectPrompt(session({ agent: "claude" }), "one line", deps);
   assert.equal(r.ok, true);
   assert.equal(r.pasted, true);
   assert.equal(r.submitVerified, false, "an empty composer we never saw fill proves nothing");
   assert.equal(enters(calls), 1, "an unverifiable delivery must not cost extra keystrokes");
+  assert.equal(captures(), 1, "the pre-Enter read is for collapsible pastes only");
 });
 
-test("a pane we cannot read is not a clear composer", async () => {
+test("a pre-Enter reading we could not take establishes nothing, and is not retried", async () => {
+  // A failed capture is not "the composer is clear" and not "the paste is pending". The
+  // delivery goes ahead on its own terms and reports unverified; re-reading to chase an
+  // answer would spend the pane lock on a pane that just told us it cannot be read.
+  const { deps, calls } = harness([null, CLEAR]);
+  const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
+  assert.equal(r.ok, true, "the delivery proceeds normally");
+  assert.equal(r.submitVerified, false, "nothing was established, so nothing is claimed");
+  assert.equal(enters(calls), 1);
+});
+
+test("a pane we cannot read is not a clear composer, and is given up on quickly", async () => {
   // A failed capture is evidence of nothing in either direction. Reading it as "the paste
   // is gone" is how a delivery nobody could see came back confirmed - and it must not buy
   // an extra Enter either, because that one would be aimed at a screen we cannot see.
-  const { deps, calls } = harness(null);
+  //
+  // The bound is what keeps this cheap: the whole wait holds the pane lock, so polling a
+  // dead pane for the full timeout refuses every other write to it for that long, with
+  // dispatch's own 20s accept deadline sitting behind that.
+  const { deps, calls, captures } = harness(null);
   const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
   assert.equal(r.ok, true, "the Enter we sent stands");
   assert.equal(r.submitVerified, false, "nothing on screen, therefore nothing verified");
   assert.equal(enters(calls), 1, "it must not keep firing at a pane it cannot read");
+  assert.ok(captures() <= 4, `an unreadable pane cost ${captures()} captures under the lock`);
 });
 
 test("a harness with no placeholder spends ONE Enter and says the outcome is unverified", async () => {

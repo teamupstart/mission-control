@@ -105,6 +105,9 @@ test: ## Run the unit tests
 check: ## Typecheck + tests
 	npm run typecheck && npm test
 
+smoke: ## Boot the built bundles to prove they run (needs `make build` first)
+	npm run smoke
+
 hooks: ## Install the Claude status hooks
 	npm run install-hooks
 

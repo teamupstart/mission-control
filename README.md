@@ -2032,6 +2032,7 @@ npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
+npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)

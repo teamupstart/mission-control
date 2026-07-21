@@ -26,8 +26,8 @@ silently rather than failing to compile**.
 | Rollout (codex) | `codex-rollout.ts` - metadata only, no message parsing |
 | Dispatch point | `runtime-meta.ts:43-58` - an explicit `if claude … else if codex`. This is where the interface belongs. |
 | ~~Hook -> state~~ | **Closed.** `Harness.hooks` - see "`hooks`, as landed" below |
-| TUI mode line | `discovery/pane-mode.ts:33-96` - Claude footer glyphs and mode strings |
-| TUI dialogs | `discovery/pane-dialog.ts` - 397 lines of Claude menu grammar |
+| TUI mode line | **Closed.** `harness.tui.modeLine`; `pane-mode.ts` keeps the scan |
+| TUI dialogs | **Closed.** `harness.tui.dialog`; the grammar was never Claude-specific - see below |
 | Paste settle | `actions.ts:311` `PASTE_SETTLE_MS = 400`, measured against Claude Code 2.1.215 |
 | Paste placeholder | `discovery/pane-paste.ts:37` - Claude's `[Pasted text #N]` |
 | Skills | ~~`skills/reconcile.ts:48-53`, `shared/skills.ts:73` `/reload-skills`~~ - **closed**, `Harness.skills` |
@@ -540,6 +540,56 @@ global list and is not excluded by Codex's own spec. Codex has no `daemon` subco
 nothing on a real machine changes. Tests: `detection.test.ts` and `harness-bin.test.ts`,
 table-driven off the registry, plus `process-background-filter.test.ts` unchanged.
 
+#### `tui`, as landed - and the assumption it overturned
+
+This item was scoped as "move 397 lines of Claude menu grammar behind an interface". That
+scoping was wrong, and the way it was wrong is the most useful thing this phase produced.
+
+`annotatePaneState` opened with `if (s.agent !== "claude")`, and the comment directly above
+it said Codex "doesn't render these dialogs". **Nobody had ever checked**, because the guard
+guaranteed the parser was never pointed at a Codex pane. Driven live against codex-cli
+0.144.1 in a tmux pane, all three dialogs it renders - command approval, directory trust,
+update prompt - returned `null` from the existing parser and parsed *perfectly* once one
+token changed. Not the numbering, not the prompt scan, not the wrap rejoining, not the
+label compare: **the cursor glyph**, U+203A where Claude draws U+276F.
+
+So the grammar is not Claude's. It is the same machinery/vendor split `transcript.ts`
+already makes - a numbered block with one cursor on it, a question wrapped across a
+viewport, a label compared across a hard wrap are facts about TERMINALS - and moving it
+into `harness/claude/` would have buried a capability Codex could always have had inside the
+one agent's directory. `discovery/pane-dialog.ts` therefore keeps the grammar and takes a
+`DialogSpec`; the harness supplies the glyph and its own form vocabulary.
+
+What that cost, for as long as it went unmeasured: Codex sends **no hooks**, so
+`activePaneDialog` is the only "needs you" evidence a Codex card can ever produce. A Codex
+session parked on a command-approval prompt - the most definitively blocked thing on a board
+- was never once surfaced as needing anyone.
+
+Three deltas from the sketch above:
+
+- **`repaintTimeoutMs` sits on `TuiSpec`, not on the mode-line capability.** Both walks need
+  it: the mode cycle waits for the footer to redraw, the dialog walks wait for the cursor to
+  move. It is one fact about how fast an agent paints, and it was already being spent on
+  dialogs while living in a constant named for Shift+Tab.
+- **`DialogFormSpec` is its own nullable sub-capability**, the same shape as
+  `TranscriptSpec.messages`. "This agent draws menus" and "this agent draws forms you fill
+  in and submit" are separate claims, and every word of the form vocabulary
+  (`submit answers`, `type something`, `have not answered all questions`) is one agent's
+  own. Codex declares `form: null`, so a bracketed row keeps its brackets in the label -
+  the same path a Claude permission prompt quoting a `[ ]` already took.
+- **`modeLine: null` for Codex is a real refusal, not a gap.** `setPermissionMode` now
+  answers "this agent has no permission modes" by declaration rather than walking a cycle
+  that does not exist, and no mode chip is invented for a card that has no modes.
+
+The ask channel (`docs/plans/ask-channel/plan.md`) landed first, which was the right order
+and did not shrink this item the way it was expected to: it disallows `AskUserQuestion` only
+on sessions the harness DISPATCHES, so human-started sessions still render those forms and
+**every** permission prompt on every session still renders a menu. No grammar was deleted,
+and none should be.
+
+Tests: `harness-tui.test.ts`, with `test/fixtures/codex-panes.ts` holding the verbatim
+captures. Note the fixture rule from `claude-panes.ts` applies: recapture, never hand-write.
+
 #### UI, as landed
 
 The last Phase 1 item, and the one that closes the acceptance clause "whose unsupported
@@ -624,7 +674,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | Phase | Items |
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; UI **(landed)**; then TUI |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
@@ -664,10 +714,15 @@ If any of the four requires editing a file outside its own adapter, the interfac
 Real defects, each folded into the migration item that rewrites its file rather than queued
 separately. The item that owns each fix is named in brackets.
 
-- **[Phase 1 - TUI]** `pane-mode.ts:126-133` - `annotatePaneState` filters to Claude, so
-  `paneDialog` is never set for Codex. Since `activePaneDialog` is the only hookless
-  "needs-you" evidence (`shared/session.ts:172`), **a Codex session parked on a prompt reads
-  as idle**. The most user-visible of the six.
+- **[Phase 1 - TUI, FIXED]** `pane-mode.ts:126-133` - `annotatePaneState` filtered to
+  Claude, so `paneDialog` was never set for Codex. Since `activePaneDialog` is the only
+  hookless "needs-you" evidence (`shared/session.ts:172`), **a Codex session parked on a
+  prompt was never surfaced as needing anyone**. The most user-visible of the six, and worse
+  than the entry above assumed: the fix is not "degrade honestly because we cannot see", it
+  is that we *could* see all along. Codex's dialogs parse with the existing grammar once the
+  harness supplies its own cursor glyph. `annotatePaneState` now asks
+  `dialogSpecFor(s.agent)`, and a harness that genuinely draws nothing readable leaves
+  `paneDialog` untouched rather than asserting "no menu" about a screen it never read.
 - **[Phase 1 - TUI]** `pane-paste.ts:37` + `actions.ts:344-379` - submit verification looks
   for Claude's paste placeholder, so for Codex `hasPendingPaste` is always false and
   `awaitPasteSubmitted` returns `ok` after one Enter with zero evidence.

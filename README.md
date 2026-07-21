@@ -342,6 +342,14 @@ Claude's own submit path. If Claude has further questions, the next one takes th
 place and you answer it the same way; if its review tab reports a question still unanswered,
 the form is left up rather than sent half-filled.
 
+This works for **Codex sessions too**, and that matters more there than anywhere else:
+Codex sends no hooks at all, so a menu read off its pane is the *only* evidence Mission
+Control can have that a Codex session has stopped and is waiting for someone. Its
+command-approval prompt, its directory-trust check and its update prompt all render as
+buttons exactly like Claude's. Each agent declares how its own screen reads
+(`harness.tui`), which is what lets one grammar serve both - they differ, it turns out, by
+a single cursor glyph.
+
 The menu is read straight off the pane on the same ~1.5s sweep that reads the permission
 mode, so it needs **no hooks** and costs no extra work - and it clears the moment the menu
 does. On a menu the card also marks the row the terminal's own cursor is on, so this view

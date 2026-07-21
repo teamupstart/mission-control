@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ForemanConfig } from "@shared/protocol.ts";
-import type { ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
+import type { AgentType, ReviewItem, Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { ForemanClient } from "./client.ts";
 import { reviewModel, reviewSession } from "./review.ts";
@@ -8,6 +8,8 @@ import { EvaluationDebounce } from "../util/debounce.ts";
 import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import { parsePaneDialog } from "../discovery/pane-dialog.ts";
+import type { PaneDialog } from "../discovery/pane-dialog.ts";
+import { dialogSpecFor } from "../harness/index.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import {
   applyVerdict,
@@ -43,6 +45,20 @@ import { backlogModel, planBacklog } from "./backlog-plan.ts";
 import { verifyItem, verifyModel } from "./queue-verify.ts";
 import type { StandardsBundle } from "../standards.ts";
 import { killLiveClaudeRuns, runClaudeText } from "../claude-cli.ts";
+
+/**
+ * The menu on a pane, read with that agent's own grammar - or null when this harness draws
+ * none we can read.
+ *
+ * Null and "no menu on screen" collapse deliberately: the reviewer's fallback for both is
+ * to answer in prose rather than by selecting a row, which is the correct behaviour for a
+ * screen we cannot navigate. What must not happen is a Codex pane being read with Claude's
+ * cursor glyph, or skipped for being Codex when its rows are perfectly legible.
+ */
+function dialogMenu(agent: AgentType, pane: string | null): PaneDialog | null {
+  const spec = dialogSpecFor(agent);
+  return spec ? parsePaneDialog(pane, spec) : null;
+}
 
 // The Foreman worker: a standalone loop (run via `npm run foreman`) that drains
 // the sessions' needs-you queue AND feeds each session's work queue, one session at
@@ -1278,8 +1294,11 @@ async function processSession(
     // would be answering the same question from the same object, and the one that
     // drifted would file replies against the wrong gate.
     gate: pending.gate ?? null,
-    // What "answering" means on this surface: a menu is selected, not typed at.
-    menu: parsePaneDialog(pane),
+    // What "answering" means on this surface: a menu is selected, not typed at. Parsed
+    // with this session's OWN grammar - the reviewer is shown whatever rows its agent drew,
+    // and a harness we cannot read reports no menu rather than another agent's reading of
+    // its screen.
+    menu: dialogMenu(session.agent, pane),
   };
 
   // Resolve the verdict through the tier ladder (off / shadow / on). A null here means

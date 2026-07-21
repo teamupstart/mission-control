@@ -85,6 +85,8 @@ import {
   resolveEpisode as dbResolveEpisode,
   episodesFor,
   fleetSpendSince,
+  fleetTokensSince,
+  prsOpenedSince,
   pruneUsageLedger,
   reorderQueueItems,
   sessionCostFor,
@@ -1334,9 +1336,16 @@ export class Registry extends EventEmitter {
 
   /** The fleet figures as of now, read straight from the ledger. */
   private fleetCostNow(now = Date.now()): FleetCost {
+    const dayStart = startOfLocalDay(now);
     return {
-      spendToday: fleetSpendSince(startOfLocalDay(now)),
+      spendToday: fleetSpendSince(dayStart),
       burnPerHour: fleetSpendSince(now - 3_600_000),
+      tokensToday: fleetTokensSince(dayStart),
+      // The one figure here that is not the ledger's. Cheap - a COUNT over an adoption
+      // table that gains single-digit rows a day - and it shares the local-midnight
+      // boundary with the spend, which is what makes dividing one by the other mean
+      // anything.
+      prsToday: prsOpenedSince(dayStart),
       // Expired at READ, not on a timer: nothing then depends on a tick having fired,
       // and a snapshot served between recomputes is as honest as an emitted one.
       rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
@@ -1360,6 +1369,8 @@ export class Registry extends EventEmitter {
       this.lastFleetCost != null &&
       this.lastFleetCost.spendToday === fleet.spendToday &&
       this.lastFleetCost.burnPerHour === fleet.burnPerHour &&
+      this.lastFleetCost.tokensToday === fleet.tokensToday &&
+      this.lastFleetCost.prsToday === fleet.prsToday &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits);
     this.lastFleetCost = fleet;
     if (same) return;
@@ -2031,6 +2042,11 @@ export class Registry extends EventEmitter {
       this.sessions.set(id, updated);
       this.emitSession(updated);
     }
+    // The adoption that triggered this is also the denominator of the strip's cost-per-PR,
+    // and the recompute suppresses itself when nothing moved - so this is free on the
+    // ticks that only re-read comment counts, and saves the figure sitting a whole idle
+    // interval behind the PR chip that appeared beside it.
+    this.recomputeFleetCost();
   }
 
   /**

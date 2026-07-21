@@ -1,0 +1,165 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { FleetStrip, fleetStripHasContent } from "../src/web/components/FleetStrip.tsx";
+import { FIVE_HOUR_MS, SEVEN_DAY_MS, projectRunway } from "../src/shared/cost.ts";
+import { fmtRunway } from "../src/web/lib/format.ts";
+import type { FleetCost, RateLimitWindow } from "../src/shared/types.ts";
+
+/**
+ * The fleet strip is the one surface in the app that makes a CLAIM ABOUT THE FUTURE, and
+ * every figure on it is either a fact we were handed or a division of two of them. Both
+ * halves are easy to get quietly wrong:
+ *
+ * - The runway is a projection. A wrong one is worse than none: someone reads "2h left",
+ *   plans a long task around it, and the window closes in twenty minutes. So the math is
+ *   pinned here against hand-computed windows, and every case where there is nothing to
+ *   project from has to come back null rather than optimistic.
+ * - Cost-per-PR is a division whose denominator is legitimately zero most mornings, and
+ *   `$Infinity` in the topbar is the kind of thing that ships.
+ *
+ * And the degradation rules are the feature, not politeness: a strip that renders `$0.00`
+ * for a fleet that has no telemetry at all is claiming the fleet was free.
+ *
+ * `createElement` rather than JSX because the runner's glob only matches .test.ts.
+ */
+
+const HOUR = 60 * 60 * 1000;
+const NOW = 1_700_000_000_000;
+
+/** A window that resets `msFromNow` from NOW, with `used` percent already spent. */
+function win(used: number, msFromNow: number): RateLimitWindow {
+  return { usedPercentage: used, resetsAt: (NOW + msFromNow) / 1000 };
+}
+
+function fleet(over: Partial<FleetCost> = {}): FleetCost {
+  return {
+    spendToday: 14.82,
+    burnPerHour: 6.1,
+    tokensToday: 21_400_000,
+    prsToday: 6,
+    rateLimits: null,
+    updatedAt: NOW,
+    ...over,
+  };
+}
+
+function render(f: FleetCost, view: "usd" | "plan" = "usd"): string {
+  return renderToStaticMarkup(createElement(FleetStrip, { fleet: f, view }));
+}
+
+// ---- the projection ----
+
+test("a window spent at exactly its own pace lasts precisely until it resets", () => {
+  // Half the window gone, half of it spent: the rate lands on the reset, not before it.
+  const r = projectRunway(win(50, 2.5 * HOUR), FIVE_HOUR_MS, NOW);
+  assert.ok(r);
+  assert.equal(r.clears, true);
+  assert.equal(Math.round(r.ms / 60_000), 150);
+});
+
+test("a window spent faster than it refills reports the wall, not the reset", () => {
+  // 80% gone with 2.5h still on the clock: 20% left at 32%/h is another ~37 minutes.
+  const r = projectRunway(win(80, 2.5 * HOUR), FIVE_HOUR_MS, NOW);
+  assert.ok(r);
+  assert.equal(r.clears, false);
+  assert.equal(Math.round(r.ms / 60_000), 38);
+  // The projection can never exceed the window it is projecting inside.
+  assert.ok(r.ms < 2.5 * HOUR);
+});
+
+test("a window nobody has touched projects nothing rather than an infinite runway", () => {
+  assert.equal(projectRunway(win(0, 4 * HOUR), FIVE_HOUR_MS, NOW), null);
+});
+
+test("an already-exhausted window reads as spent, not as a fresh projection", () => {
+  const r = projectRunway(win(100, 1 * HOUR), FIVE_HOUR_MS, NOW);
+  assert.deepEqual(r, { ms: 0, clears: false });
+  assert.equal(fmtRunway(0), "spent");
+});
+
+test("a reading whose window has already rolled over is not projected from", () => {
+  // A stale gauge: `resetsAt` in the past means the percentage describes a window that
+  // no longer exists, and extrapolating it would age-forward a dead number.
+  assert.equal(projectRunway(win(70, -HOUR), FIVE_HOUR_MS, NOW), null);
+  // Same for a reading from before the window could have opened (clock skew).
+  assert.equal(projectRunway(win(70, FIVE_HOUR_MS + HOUR), FIVE_HOUR_MS, NOW), null);
+});
+
+test("the seven-day window is projected against seven days, not five hours", () => {
+  const w = win(50, 3.5 * 24 * HOUR);
+  assert.equal(projectRunway(w, SEVEN_DAY_MS, NOW)?.clears, true);
+  // Handed the wrong window length the same reading reads as already blown - which is
+  // why the length is a parameter and not a constant inside the projection.
+  assert.equal(projectRunway(w, FIVE_HOUR_MS, NOW), null);
+});
+
+test("runways are formatted as approximations, and a sub-minute one still reads as time", () => {
+  assert.equal(fmtRunway(41 * 60_000), "~41 min");
+  assert.equal(fmtRunway(130 * 60_000), "~2h 10m");
+  assert.equal(fmtRunway(120 * 60_000), "~2h");
+  assert.equal(fmtRunway(20_000), "<1 min");
+});
+
+// ---- what the strip will and will not claim ----
+
+test("no telemetry at all draws no strip - not a fleet that cost nothing", () => {
+  const empty = fleet({ spendToday: 0, burnPerHour: 0, tokensToday: 0, prsToday: 0 });
+  assert.equal(fleetStripHasContent(empty), false);
+  assert.equal(fleetStripHasContent(null), false);
+  assert.equal(render(empty), "");
+});
+
+test("rate limits alone are enough to draw the strip, with no dollar figures on it", () => {
+  const f = fleet({ spendToday: 0, prsToday: 0, rateLimits: { fiveHour: win(40, 3 * HOUR), sevenDay: null, updatedAt: NOW } });
+  const html = render(f);
+  assert.equal(fleetStripHasContent(f), true);
+  assert.ok(html.includes("5-hr limit runway"));
+  assert.ok(!html.includes("spend today"));
+});
+
+test("no PRs opened today means no cost-per-PR, rather than a division by zero", () => {
+  const html = render(fleet({ prsToday: 0 }));
+  assert.ok(!html.includes("cost / PR"));
+  assert.ok(!html.includes("Infinity"));
+  assert.ok(html.includes("spend today"));
+});
+
+test("cost per PR divides today's spend by today's proven PRs", () => {
+  // $14.82 over 6 pull requests.
+  assert.ok(render(fleet({ spendToday: 14.82, prsToday: 6 })).includes("$2.47"));
+});
+
+test("every figure the strip promises is on it", () => {
+  const html = render(fleet({ rateLimits: { fiveHour: win(74, 40 * 60_000), sevenDay: null, updatedAt: NOW } }));
+  for (const label of ["spend today", "burn rate", "tokens today", "cost / PR"]) {
+    assert.ok(html.includes(label), `missing ${label}`);
+  }
+  assert.ok(html.includes("$14.82"));
+  assert.ok(html.includes("/hr"));
+  assert.ok(html.includes("21.4M"));
+});
+
+test("a window with no reading renders nothing rather than a bar at zero", () => {
+  const html = render(fleet({ rateLimits: { fiveHour: null, sevenDay: null, updatedAt: NOW } }));
+  assert.ok(!html.includes("runway"));
+});
+
+test("the plan view leads with the windows; the usd view leads with the dollars", () => {
+  const f = fleet({ rateLimits: { fiveHour: win(60, 2 * HOUR), sevenDay: null, updatedAt: NOW } });
+  const usd = render(f, "usd");
+  const plan = render(f, "plan");
+  assert.ok(usd.indexOf("fs-stats") < usd.indexOf("fs-windows"));
+  assert.ok(plan.indexOf("fs-windows") < plan.indexOf("fs-stats"));
+});
+
+test("the runway bar's gradient is scaled to the track, not to the fill", () => {
+  // --pct carries the fill's own width so the stylesheet can stretch the gradient back
+  // out; without it the colour under the bar's tip would mean a different thing at every
+  // width. Floored at 1 because the stylesheet divides by it.
+  const f = fleet({ rateLimits: { fiveHour: win(74, 2 * HOUR), sevenDay: null, updatedAt: NOW } });
+  assert.ok(render(f).includes("--pct:74"));
+  const zero = fleet({ rateLimits: { fiveHour: win(0, 2 * HOUR), sevenDay: null, updatedAt: NOW } });
+  assert.ok(render(zero).includes("--pct:1"));
+});

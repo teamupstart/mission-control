@@ -1575,6 +1575,39 @@ export function fleetSpendSince(tsMs: number): number {
   return r?.c ?? 0;
 }
 
+/**
+ * Fleet-wide tokens since `tsMs`, every tier summed.
+ *
+ * A separate query from `fleetSpendSince` rather than one row carrying both, because the
+ * two are asked at different times: spend is also read per session, and the strip is the
+ * only caller that wants tokens. Two indexed scans of the same rows cost less than the
+ * coupling.
+ */
+export function fleetTokensSince(tsMs: number): number {
+  const r = openDb()
+    .prepare(
+      `SELECT SUM(input + output + cache_read + cache_write) t FROM usage_ledger WHERE ts >= ?`,
+    )
+    .get(tsMs) as { t: number | null } | undefined;
+  return r?.t ?? 0;
+}
+
+/**
+ * How many pull requests we PROVED we opened since `tsMs`.
+ *
+ * `adopted_at` is the right column and the only one: a row exists here because a hook
+ * caught the `gh pr create` or a no-mistakes run reported its own `pr:` line, which is
+ * exactly the provenance rule the Inspector posts under. Counting `inspector_prs` rows by
+ * any other date - or counting `prUrl` off live sessions - would fold in pull requests we
+ * merely stood next to.
+ */
+export function prsOpenedSince(tsMs: number): number {
+  const r = openDb()
+    .prepare(`SELECT COUNT(*) n FROM inspector_prs WHERE adopted_at >= ?`)
+    .get(tsMs) as { n: number } | undefined;
+  return r?.n ?? 0;
+}
+
 /** True when the ledger holds anything at all - "has telemetry ever arrived?". */
 export function usageLedgerHasRows(): boolean {
   const r = openDb().prepare(`SELECT 1 AS x FROM usage_ledger LIMIT 1`).get() as

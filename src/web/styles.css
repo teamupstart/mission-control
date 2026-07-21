@@ -141,7 +141,14 @@ body {
 .is-desktop .topbar a,
 .is-desktop .topbar select,
 .is-desktop .topbar [role="button"],
-.is-desktop .topbar .filter-box {
+.is-desktop .topbar .filter-box,
+/* The fleet strip's figures are divs, not buttons, so they need naming here for a reason
+   that is not clicks: a drag region swallows the mouse entirely, so a hover inside one
+   never reaches the renderer and the tooltip - which is where "your bill may differ" and
+   the reset time live - simply never appears. Only the figures opt out; the panel's own
+   padding stays draggable, so the row is still somewhere you can pick the window up. */
+.is-desktop .topbar .fs-stat,
+.is-desktop .topbar .fs-runway {
   -webkit-app-region: no-drag;
 }
 
@@ -273,22 +280,23 @@ body {
   color: var(--working);
 }
 
-/* The topbar's foldable second row: today's spend and the plan meters. `flex-basis: 100%`
-   on a flex-wrap parent forces it onto its own line unconditionally, so it can never
-   interleave with the session-count pills the way it used to. Still INSIDE the topbar,
-   because --topbar-h is measured off the header with a ResizeObserver - a sibling placed
-   after </header> would overflow focus mode by exactly this row's height. */
+/* The topbar's foldable second row: the fleet strip. `flex-basis: 100%` on a flex-wrap
+   parent forces it onto its own line unconditionally, so it can never interleave with the
+   session-count pills the way it used to. Still INSIDE the topbar, because --topbar-h is
+   measured off the header with a ResizeObserver - a sibling placed after </header> would
+   overflow focus mode by exactly this row's height. */
 .topbar-usage {
   flex-basis: 100%;
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: stretch;
+  gap: 12px;
   padding-top: 12px;
   margin-top: 2px;
   border-top: 1px solid var(--border-soft);
 }
 .topbar-usage-toggle {
   display: flex;
+  align-self: center;
   align-items: center;
   gap: 7px;
   padding: 0;
@@ -312,34 +320,114 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.fleet-cost {
+/* The fleet strip: a panel, not a row of pills. The figures on it are the only ones in
+   the app that describe the WHOLE fleet rather than one card, so they are drawn at a size
+   nothing else in the topbar competes with, and the panel's tinted border is what says
+   "this is a different scope" without a heading costing a line. */
+.fleet-strip {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px 22px;
+  flex-wrap: wrap;
+  padding: 10px 15px;
+  border: 1px solid color-mix(in oklab, var(--cost) 26%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--cost) 6%, var(--panel));
+}
+/* Whichever half lands last goes to the far edge, so `usd` and `plan` are the same
+   two-block shape mirrored rather than two different layouts. `:not(:only-child)` is
+   load-bearing: either half can be absent on its own (no telemetry, or no rate limits),
+   and a lone surviving group pushed to the right edge would read as a layout fault. */
+.fleet-strip > :last-child:not(:only-child) {
+  margin-left: auto;
+}
+.fs-stats {
+  display: flex;
+  align-items: center;
+  gap: 22px;
   flex-wrap: wrap;
 }
-.stat-cost {
-  border-color: color-mix(in oklab, var(--cost) 40%, var(--border));
+/* Wider than the stats' gap: two runway bars at 22px read as one ruler with a nick in it,
+   and the whole point of them is that they are two independent windows. */
+.fs-windows {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  flex-wrap: wrap;
 }
-.stat-cost .stat-n {
+.fs-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: default;
+}
+.fs-n {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.3px;
+  font-variant-numeric: tabular-nums;
+}
+.fs-n-cost {
   color: var(--cost);
 }
-/* The plan meters, sized up from the card's context meter: this one sits in the topbar
-   next to pill-shaped stats, not in a dense card body. */
-.rate-meter {
-  gap: 7px;
-  padding: 5px 11px;
-  border: 1px solid var(--border-soft);
-  border-radius: 999px;
-  background: var(--panel);
-}
-.rate-meter .rt-meter {
-  width: 52px;
-}
-.rate-label {
-  font-weight: 650;
+.fs-unit {
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
   color: var(--dim);
-  letter-spacing: 0.02em;
+}
+.fs-l {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.55px;
+  color: var(--dim);
+}
+
+/* A rate-limit window: consumption as a bar, the projected runway as the figure. */
+.fs-runway {
+  min-width: 172px;
+  cursor: default;
+}
+.runway-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.runway-head b {
+  color: var(--idle);
+  font-variant-numeric: tabular-nums;
+}
+.fs-runway[data-tone="warn"] .runway-head b {
+  color: var(--attention);
+}
+.fs-runway[data-tone="high"] .runway-head b {
+  color: var(--danger);
+}
+.runway-meter {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+/* The gradient is painted at TRACK scale, not fill scale: --pct (the fill's own width, as
+   a number) stretches the background back out to the full track, so green/amber/red sit at
+   fixed positions and the colour under the bar's tip means the same thing at every width.
+   A gradient sized to the fill instead would compress, and a bar at 20% would show all
+   three colours - i.e. read as red while it was fine. */
+.runway-fill {
+  display: block;
+  height: 100%;
+  background-image: linear-gradient(90deg, var(--idle), var(--attention) 72%, var(--danger));
+  background-size: calc(10000% / var(--pct)) 100%;
+  transition: width 0.3s ease;
 }
 
 .link {

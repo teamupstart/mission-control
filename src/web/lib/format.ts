@@ -55,10 +55,18 @@ export function contextTone(pct: number | null | undefined): ContextTone {
   return "ok";
 }
 
-/** Compact token count for the context tooltip: 1499 -> "1k", 128000 -> "128k". */
+/**
+ * Compact token count: 1499 -> "1k", 128000 -> "128k", 21_400_000 -> "21.4M".
+ *
+ * The decimal survives to 100M rather than to 10M because the fleet's daily total lives
+ * up there and moves all day: dropped at 10M it would tick 21M -> 22M in steps of a
+ * million, which reads as a figure that has stopped responding. Above 100M the decimal is
+ * past the precision anyone acts on.
+ */
 export function compactTokens(n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "?";
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000_000)
+    return (n / 1_000_000).toFixed(n >= 100_000_000 ? 0 : 1).replace(/\.0$/, "") + "M";
   if (n >= 1000) return Math.round(n / 1000) + "k";
   return String(n);
 }
@@ -94,6 +102,25 @@ export function untilReset(resetsAtSeconds: number): string {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return m ? `in ${h}h ${m}m` : `in ${h}h`;
+}
+
+/**
+ * A projected runway as "~41 min" / "~2h 10m".
+ *
+ * The tilde is part of the string rather than markup around it because the approximation
+ * is a property of the figure, not of where it is drawn: this is an average extrapolated
+ * forward (see `projectRunway`), and every surface that prints it owes the reader that.
+ * Under a minute reads as "<1 min" - a runway that short is "stop now", and rounding it
+ * to "0 min" would look like a bug rather than an alarm.
+ */
+export function fmtRunway(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "spent";
+  const mins = Math.round(ms / 60_000);
+  if (mins < 1) return "<1 min";
+  if (mins < 60) return `~${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m ? `~${h}h ${m}m` : `~${h}h`;
 }
 
 export function shortenCwd(cwd: string | null): string {

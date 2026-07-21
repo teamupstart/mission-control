@@ -1,6 +1,6 @@
 import type { Session } from "@shared/types.ts";
 import type { SkillsConfig } from "@shared/protocol.ts";
-import { RELOAD_SKILLS_COMMAND } from "@shared/skills.ts";
+import { harnessFor } from "../harness/index.ts";
 import { hasPane, settledIdle } from "../foreman/queue-machine.ts";
 import { injectPrompt } from "../actions.ts";
 import type { InjectResult } from "../actions.ts";
@@ -100,9 +100,10 @@ export function reloadTargets(
  * function exclude codex in the first place.
  */
 export function reloadOwed(s: Session, acks: Map<string, number>, cfg: SkillsConfig): boolean {
-  // 1. Codex has no `/reload-skills` and no ~/.claude/skills. Typing it there would
-  //    put a stray line in someone's prompt and change nothing.
-  if (s.agent !== "claude") return false;
+  // 1. This harness has no skills to reload - no directory we symlink into, and no
+  //    command that would make a running session notice if there were. Typing one anyway
+  //    would put a stray line in someone's prompt and change nothing.
+  if (!harnessFor(s.agent).skills) return false;
   if (s.state === "exited") return false;
 
   // 2. Nowhere to type, ever. `capturePaneText` answers null for a handleless session,
@@ -161,8 +162,8 @@ function ackOf(s: Session, acks: Map<string, number>): number {
 }
 
 /**
- * How many live claude sessions are owed a reload - the panel's "N sessions will pick
- * this up when they next go idle".
+ * How many live skill-loading sessions are owed a reload - the panel's "N sessions will
+ * pick this up when they next go idle".
  *
  * The selector's predicate minus the settle gate, SHARED rather than restated: the
  * count and the loop must agree on who is owed a reload, or the panel promises a
@@ -227,6 +228,12 @@ export async function reloadOne(
   prior: number,
   deps: ReloadDeps = defaultReloadDeps,
 ): Promise<boolean> {
+  // Re-asked here rather than assumed from the selector, because this is the boundary the
+  // KEYSTROKE crosses: `reloadOwed` runs against a snapshot, and the command about to be
+  // typed has to come from the harness of the session actually in hand.
+  const skills = harnessFor(session.agent).skills;
+  if (!skills) return false;
+
   const line = await deps.readModeLine(session);
   if (!line) return false;
 
@@ -244,12 +251,12 @@ export async function reloadOne(
   // that never heard about it - which is precisely the "toggle that silently no-ops"
   // failure the plan disqualified codex over.
   deps.ack(noteKeyFor(session), generation);
-  const sent = await deps.inject(session, RELOAD_SKILLS_COMMAND);
+  const sent = await deps.inject(session, skills.reloadCommand);
   if (sent.ok) {
     // Nobody asked for this one - the dashboard typed it because a skill changed on
     // disk. Say so, or the conversation log shows the human interrupting their agent
     // with a slash command they've never heard of.
-    recordInjection(session.id, RELOAD_SKILLS_COMMAND, "harness");
+    recordInjection(session.id, skills.reloadCommand, "harness");
     return true;
   }
 

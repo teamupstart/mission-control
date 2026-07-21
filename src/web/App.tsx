@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FleetCost, Session } from "@shared/types.ts";
 import { gateParked } from "@shared/session.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
@@ -822,8 +823,9 @@ function CommandBar({
   onDeselect: () => void;
 }): React.JSX.Element {
   const live = session.state !== "exited";
-  // Permission modes are Claude-only, and cycling one needs a pane to send into.
-  const canCycleMode = live && session.agent === "claude" && Boolean(session.tmux || session.wezterm);
+  // Cycling a mode needs a harness that has any, and a pane to send the keystroke into.
+  const canCycleMode =
+    live && Boolean(capabilitiesFor(session.agent).permissionModes) && Boolean(session.tmux || session.wezterm);
   const canRename = canRenameSession(session);
   const barRef = useRef<HTMLDivElement>(null);
 

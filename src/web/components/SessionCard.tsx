@@ -318,7 +318,7 @@ export function SessionCard({
             <span className="gated">◇ gated</span>
           </Tooltip>
         )}
-        {session.agent === "claude" && <ModePicker session={session} />}
+        <ModePicker session={session} />
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>
         <span className="spacer" />

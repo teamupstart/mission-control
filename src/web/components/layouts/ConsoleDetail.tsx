@@ -340,7 +340,7 @@ export function ConsoleDetail({
             ◇ gated
           </span>
         )}
-        {session.agent === "claude" && <ModePicker session={session} />}
+        <ModePicker session={session} />
         <span className="dot-sep">·</span>
         <span className="mono dim">pid {session.pid}</span>
         {!session.instrumented && (

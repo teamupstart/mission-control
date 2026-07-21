@@ -14,6 +14,7 @@ import {
 } from "./discovery/pane-dialog.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { paneToken } from "@shared/pane.ts";
+import { harnessFor } from "./harness/index.ts";
 import { listTmuxClients, readTmuxPaneMode } from "./discovery/tmux.ts";
 import {
   activateWeztermPane,
@@ -1404,7 +1405,11 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
   const base: ResetPreview = {
     ok: false, error: null, target: null, branch: session.gitBranch,
     dirtyFiles: 0, untrackedFiles: 0, aheadCommits: 0, aheadSubjects: [],
-    clean: false, canClear: Boolean(session.tmux || session.wezterm),
+    clean: false,
+    // Two conditions, both permanent-ish: somewhere to type, and a command worth
+    // typing. Without the second the modal offered a "clear the agent's context"
+    // checkbox that submitted `/clear` as a prompt on any harness that doesn't speak it.
+    canClear: Boolean((session.tmux || session.wezterm) && harnessFor(session.agent).clearContext),
   };
   if (!session.cwd) return { ...base, error: "session has no working directory" };
   // Anchor every git op at the worktree top, not the pane's (possibly nested)
@@ -1445,8 +1450,9 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
 
 /**
  * Pull latest and hard-reset the session's checkout to origin's default branch,
- * release the branch it was holding, then (optionally) clear the agent's context
- * with `/clear`. Order matters: fetch first so we reset onto the *current* remote;
+ * release the branch it was holding, then (optionally) clear the agent's context with
+ * its harness's `clearContext` command. Order matters: fetch first so we reset onto the
+ * *current* remote;
  * `reset --hard` moves the branch and tracked files; `git clean -fd` drops
  * untracked files/dirs so the worktree matches origin exactly (ignored files -
  * node_modules, .env - are kept); `releaseBranch` last, once the tree is pristine
@@ -1458,11 +1464,12 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
  * `releaseBranch`.
  *
  * The last two steps are best-effort: the git reset has already landed by then, so
- * a session with no pane reports `cleared: false`, and a checkout that couldn't be
- * detached reports `detached: false`, rather than either failing the whole
- * operation and telling the caller a reset that DID happen did not.
+ * a session with no pane - or with a harness that declares no clear command - reports
+ * `cleared: false`, and a checkout that couldn't be detached reports `detached: false`,
+ * rather than either failing the whole operation and telling the caller a reset that DID
+ * happen did not.
  *
- * `cleared` means the agent ACTED on the `/clear`, not that tmux took the keystrokes -
+ * `cleared` means the agent ACTED on the command, not that tmux took the keystrokes -
  * see `awaitClearProcessed`. The caller that depends on the difference is
  * `TaskManager.assign`, which types a task's intent immediately afterwards.
  */
@@ -1511,12 +1518,18 @@ export async function resetToOrigin(
   }
   const detached = await releaseBranch(root, branch, target);
 
-  if (!clear) return { ok: true, error: null, root, cleared: false, detached };
+  // `clearContext` is null for a harness that has no such command, and that answer lands
+  // on the SAME `cleared: false` a pane-less session has always produced - the already
+  // tested degradation, not a new branch. Before this, `/clear` was typed at every agent
+  // type ungated, so an agent that does not speak Claude's slash commands got a literal
+  // `/clear` submitted as a prompt.
+  const clearing = clear ? harnessFor(session.agent).clearContext : null;
+  if (!clearing) return { ok: true, error: null, root, cleared: false, detached };
   // Read the screen BEFORE the keystrokes, so "nothing has happened yet" is a state we
   // can recognise rather than one we mistake for a clear that already landed.
   const before = await deps.capture(session);
-  const sent = await sendText(session, "/clear", true, deps);
-  const cleared = sent.ok && (await awaitClearProcessed(session, before, deps));
+  const sent = await sendText(session, clearing.command, true, deps);
+  const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
   return { ok: true, error: null, root, cleared, detached };
 }
 
@@ -1528,24 +1541,30 @@ const CLEAR_POLL_MS = 100;
 const CLEAR_POLLS = Math.ceil(CLEAR_TIMEOUT_MS / CLEAR_POLL_MS);
 
 /**
- * Wait until the pane shows the `/clear` was actually acted on.
+ * Wait until the pane shows the clear command was actually acted on.
  *
  * `sendText` resolves when tmux has taken the keystrokes, which is not the same event:
- * Claude processes the command whenever it gets round to it. The caller that cannot
+ * the agent processes the command whenever it gets round to it. The caller that cannot
  * live with the difference is `TaskManager.assign`, which pastes a task's intent behind
- * this - a `/clear` processed after that paste wipes the composer, `awaitPasteSubmitted`
+ * this - a clear processed after that paste wipes the composer, `awaitPasteSubmitted`
  * then sees no pending paste and reports success, and the task is marked running with
  * nothing running it. That is the exact failure the type-before-claim ordering exists to
  * prevent, arriving silently.
  *
  * Two conditions, and both are needed. The screen must have CHANGED (an unchanged
- * capture is the window before Claude has even echoed the command), and the command must
- * no longer be in the composer (a screen showing `> /clear` has changed but proves the
- * opposite of what we want). A capture we cannot read is not evidence of anything, so it
- * ends the wait as a false - "I could not see it happen" must not read as "it happened".
+ * capture is the window before the agent has even echoed the command), and the command
+ * must no longer be in the composer (a screen showing `> /clear` has changed but proves
+ * the opposite of what we want). A capture we cannot read is not evidence of anything, so
+ * it ends the wait as a false - "I could not see it happen" must not read as "it
+ * happened".
+ *
+ * `command` is passed rather than spelled here so the read-back checks for the SAME bytes
+ * that were typed; a harness whose clear command is not `/clear` would otherwise look
+ * like it had never echoed anything and every reset would report `cleared: false`.
  */
 async function awaitClearProcessed(
   session: Session,
+  command: string,
   before: string | null,
   deps: InjectDeps,
 ): Promise<boolean> {
@@ -1553,7 +1572,7 @@ async function awaitClearProcessed(
     await deps.sleep(CLEAR_POLL_MS);
     const now = await deps.capture(session);
     if (now === null) return false;
-    if (now !== before && !hasPendingCommand(now, "/clear")) return true;
+    if (now !== before && !hasPendingCommand(now, command)) return true;
   }
   return false;
 }

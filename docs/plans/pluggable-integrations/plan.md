@@ -30,8 +30,8 @@ silently rather than failing to compile**.
 | TUI dialogs | `discovery/pane-dialog.ts` - 397 lines of Claude menu grammar |
 | Paste settle | `actions.ts:311` `PASTE_SETTLE_MS = 400`, measured against Claude Code 2.1.215 |
 | Paste placeholder | `discovery/pane-paste.ts:37` - Claude's `[Pasted text #N]` |
-| Skills | `skills/reconcile.ts:48-53`, `shared/skills.ts:73` `/reload-skills` |
-| Hooks + MCP install | `hooks/install.mjs` and `main/integrations.ts:183-206` - `~/.claude/settings.json` and `claude mcp add` only |
+| Skills | ~~`skills/reconcile.ts:48-53`, `shared/skills.ts:73` `/reload-skills`~~ - **closed**, `Harness.skills` |
+| Hooks + MCP install | **closed** - the event vocabulary is `Harness.hooks`, the MCP registration is `Harness.mcp`. `hooks/install.mjs` still writes `~/.claude/settings.json` because that path is Claude's, not ours. |
 | Model windows | `shared/model.ts:96-101` - only Claude families get a non-200k default |
 
 The union itself was written out **three** times (`shared/types.ts`, `shared/protocol.ts`,
@@ -41,7 +41,8 @@ collapsed both**: `AGENT_TYPES` (`shared/types.ts`) is the one source the zod en
 dashboard's dispatch input now derive from, and `AGENT_NAMES` (`shared/agent.ts`) holds the
 two registers as named fields (`label`, `speaker`) so neither can be mistaken for drift.
 
-**The first three rows and the hook row are closed.** `Harness.transcript` (`server/harness/types.ts`) now
+**The first three rows, the hook row, and skills / MCP / permission modes are closed.**
+`Harness.transcript` (`server/harness/types.ts`) now
 owns transcript, rollout, and the dispatch point between them: `runtime-meta.ts` names no
 agent, Claude's JSONL shape lives in `harness/claude/`, the rollout in `harness/codex/`,
 and the byte windowing that belongs to neither sits in `transcript.ts` behind a supplied
@@ -54,8 +55,10 @@ took it to **six** - `shared/agent.ts`, `shared/cost.ts`, `shared/goal.ts`, `sha
 pins by adding a probe agent id and asserting each one fails to typecheck. The transcript
 item swapped the last of those for `server/harness/index.ts`: the per-agent `GoalSource`
 record WAS this capability spelled twice, and one `Harness` entry forces a decision about
-every capability at once rather than about one reader. Every remaining row in the table
-above is still silent.
+every capability at once rather than about one reader. The capability-guards item added
+`shared/harness-capabilities.ts` beside it, taking the list to **seven** - the two harness
+records are a purity split, not a second vocabulary; see "Capability guards, as landed".
+The rows still marked silent in the table above are the ones nothing yet forces.
 
 ### Terminal coupling (tmux / wezterm)
 
@@ -385,6 +388,56 @@ specs. Four deltas from the sketch, each forced by something real:
   to search would have added a second map beside it. The poller now hands each harness the
   live ids and lets it prune its own.
 
+#### Capability guards, as landed
+
+The `if (agent !== "claude")` guards named in the evidence table are gone, and the win was
+the mechanical one predicted above - `if (!harness.skills)`, `if (!harness.permissionModes)`,
+`if (!capabilitiesFor(agent).workQueue)`. One structural delta, forced by where the
+guards actually live:
+
+- **The registry splits by PURITY, not by capability.** Most of these guards are answered
+  in the BROWSER - the dashboard decides whether to draw a mode picker, whether a
+  work-queue box can exist, and what sentence to show when it cannot - and the web bundle
+  cannot import a spec whose `locate` calls `statSync`. So the pure capabilities live in
+  `@shared/harness-capabilities.ts` as `HARNESS_CAPABILITIES`, and `Harness extends
+  HarnessCapabilities` with `HARNESSES` spreading that record in. A server call site
+  holding a harness still reads every slot off one object; the two records force disjoint
+  questions (the shared one asks for permission modes, skills, work queue, context
+  clearing and MCP; the server one asks only for `transcript`), so neither is a copy of
+  the other and a new harness that fills in one and not the other does not compile.
+  `session-contracts.test.ts` pins both.
+- **Absences that reach a human carry their sentence.** `workQueueUnsupportedWhy`
+  composes from `AGENT_NAMES`, so the panel's refusal, `ensureQueue`'s refusal and the
+  re-attach button's refusal are one sentence - and a fourth harness gets a true one
+  rather than inheriting Codex's. Same for the mode routes' 400 and the skills panel's
+  per-row chip, which used to be three literals containing the word "Claude".
+- **`permissionModes` carries `onDispatch`, not just `pickable`.** They answer different
+  questions - what a human may choose, versus what "auto mode on dispatch" promises on
+  the operator's behalf - and the dispatcher's guard was the literal `"auto"` sitting
+  behind an agent id.
+- **`ModePicker` owns its own absence**, so the three layouts mount it unconditionally
+  and none of them carries an agent check. That is the layout-parity rule paying off: one
+  guard in the leaf rather than the same guard in Cards, Console detail and Board detail,
+  where the third one is always the one left behind.
+
+The **`/clear` defect is fixed** by the same slot: `resetToOrigin` reads
+`harness.clearContext` and a null lands on the byte-identical `cleared: false` a pane-less
+session has always produced - and types nothing. `resetPreview.canClear` reflects it too,
+so the modal stops offering a checkbox that would submit `/clear` as a prompt. The
+read-back in `awaitClearProcessed` now checks for the bytes that were typed rather than a
+literal `/clear`, so a harness whose command is spelled differently is not reported as
+never having echoed anything. Test: `harness-capabilities.test.ts`, which pins each null
+against the pre-existing degradation rather than against a new shape.
+
+Two guards were deliberately NOT converted here, because their WHY belongs to a slot that
+has not landed: `discovery/processes.ts`'s argv signatures (`detect`) and
+`agents-shadow.ts`, which reads Claude's own `~/.claude` session-state files - a shadow
+reader that has no slot yet and is not `hooks` (nothing is pushed) or `transcript`
+(it is not the conversation).
+`annotatePaneState` is gated on `permissionModes` as instructed, which is exactly today's
+behaviour - but the dialog half of that function is really `tui`, and the Codex-reads-as-idle
+defect below moves with it.
+
 `transcript.ts` keeps what is about bytes rather than about a vendor - head/tail windows,
 the forward-from-an-offset read, the stream reads - and takes the line parser from the
 harness. `server/goal/source.ts`'s `Record<AgentType, GoalSource>` is gone: it was this
@@ -439,8 +492,9 @@ The codebase already has this pattern - `SESSION_FIELD_COMPARATORS` (`registry.t
 new `Session` field fail typecheck until it is given a comparator, and
 `session-contracts.test.ts` guards it.
 
-Apply the same shape here: `HARNESSES: Record<HarnessId, Harness>`,
-`MULTIPLEXERS: Record<MultiplexerId, Multiplexer>`, `EMULATORS: Record<EmulatorId, TerminalEmulator>`.
+Apply the same shape here: `HARNESS_CAPABILITIES: Record<HarnessId, HarnessCapabilities>`,
+`HARNESSES: Record<HarnessId, Harness>`, `MULTIPLEXERS: Record<MultiplexerId, Multiplexer>`,
+`EMULATORS: Record<EmulatorId, TerminalEmulator>`.
 A new id then cannot compile until every capability is either implemented or explicitly
 declared `null`. "I forgot skills exist" stops being a possible outcome.
 
@@ -466,7 +520,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | Phase | Items |
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_NAMES` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; then detection/bin, TUI, capability guards, UI |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; then detection/bin, TUI, UI |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
@@ -513,8 +567,11 @@ separately. The item that owns each fix is named in brackets.
 - **[Phase 1 - TUI]** `pane-paste.ts:37` + `actions.ts:344-379` - submit verification looks
   for Claude's paste placeholder, so for Codex `hasPendingPaste` is always false and
   `awaitPasteSubmitted` returns `ok` after one Enter with zero evidence.
-- **[Phase 1 - guards]** `actions.ts:1418` - `resetToOrigin` sends `/clear`, a Claude slash
-  command, to **every** agent type, ungated.
+- **[Phase 1 - guards, FIXED]** `actions.ts:1418` - `resetToOrigin` sent `/clear`, a Claude
+  slash command, to **every** agent type, ungated. It now reads `Harness.clearContext`, and
+  a harness that declares none has its context left alone: `cleared: false`, zero
+  keystrokes, and `canClear` false so the modal does not offer the checkbox. Test:
+  `harness-capabilities.test.ts`.
 - **[Phase 1 - hooks, FIXED]** `dispatcher.ts` - every dispatch waited `HOOK_READY_MS` (20s)
   for a hook, including for agents that will never send one. `awaitReady` now gates that wait
   on `hooksFor(agent)`; see "`hooks`, as landed".

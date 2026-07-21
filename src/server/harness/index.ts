@@ -1,5 +1,6 @@
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, Session } from "@shared/types.ts";
+import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import type { Harness, HookSpec, TranscriptMessages, TranscriptSpec } from "./types.ts";
 import { claudeHooks } from "./claude/hooks.ts";
 import { claudeTranscript } from "./claude/transcript.ts";
@@ -17,19 +18,26 @@ import { codexTranscript } from "./codex/transcript.ts";
 // Not to be confused with `src/server/harnesses.ts`, which is the settings blob behind the
 // Harnesses panel - operator choices, not capabilities.
 //
-// Server-side, because a spec reads the filesystem. What the web bundle needs about an
-// agent it gets from `@shared/agent.ts` (names) and `@shared/goal.ts` (what a card says
-// when a capability is absent). Test: `session-contracts.test.ts` pins the record,
-// `harness-transcript.test.ts` pins the degradation.
+// Server-side, because a spec reads the filesystem or a wire payload. The capabilities
+// that DON'T - permission modes, skills, the work queue, context clearing, MCP
+// registration - live in `@shared/harness-capabilities.ts`, because the dashboard has to
+// answer them in the browser, and are spread in below. So this record forces the decisions
+// that need a `node:` import (what a harness records on disk, and how it pushes its
+// lifecycle at us) and the shared one forces the rest; neither is a copy of the other, and
+// `Harness extends HarnessCapabilities` means a call site holding a harness still reads
+// every slot off one object. Naming still comes from `@shared/agent.ts`.
+//
+// Test: `session-contracts.test.ts` pins both records, `harness-transcript.test.ts` and
+// `harness-capabilities.test.ts` pin the degradations.
 
 export const HARNESSES: Record<AgentType, Harness> = {
-  claude: { id: "claude", transcript: claudeTranscript, hooks: claudeHooks },
+  claude: { ...HARNESS_CAPABILITIES.claude, transcript: claudeTranscript, hooks: claudeHooks },
   // `hooks: null` is a statement, not a gap: Codex pushes nothing at us, so a Codex card
   // is read passively (discovery, and whatever the rollout says) and the dispatcher does
   // not spend 20s waiting for a first hook. `todo/codex-instrumentation.md` has the spike
   // that would change this answer - a Codex-native hook reporting session id, rollout
   // path, cwd and lifecycle - and it lands here, as a spec, not as a second pipeline.
-  codex: { id: "codex", transcript: codexTranscript, hooks: null },
+  codex: { ...HARNESS_CAPABILITIES.codex, transcript: codexTranscript, hooks: null },
 };
 
 /** The harness for an agent. Total by construction - the Record cannot have a hole. */

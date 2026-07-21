@@ -2,6 +2,7 @@ import type { ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { readyBacklog } from "@shared/backlog.ts";
 import { resolveForemanModels } from "@shared/foreman-models.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
@@ -146,15 +147,15 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
 }
 
 /**
- * How many claude sessions currently sit in the shared `needs-you` bucket -
- * Foreman's drainable inbound queue. Non-claude (e.g. codex) sessions are
- * excluded because the worker's needsYouQueue only processes agent === "claude",
- * so counting them would leave a queueDepth badge that can never reach zero.
+ * How many drainable sessions currently sit in the shared `needs-you` bucket -
+ * Foreman's inbound queue. Gated on the same `workQueue` capability `tickTargets`
+ * selects with: a session the worker will never process must not be counted, or the
+ * queueDepth badge sits above zero forever.
  */
 function countNeedsYou(sessions: Session[]): number {
   let n = 0;
   for (const s of sessions) {
-    if (s.agent === "claude" && reportBucket(s, sessions) === "needs-you") n++;
+    if (capabilitiesFor(s.agent).workQueue && reportBucket(s, sessions) === "needs-you") n++;
   }
   return n;
 }

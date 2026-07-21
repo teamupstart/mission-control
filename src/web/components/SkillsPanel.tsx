@@ -1,4 +1,7 @@
-import { ENFORCEMENT_HINT, ENFORCEMENT_LABEL } from "@shared/skills.ts";
+import { ENFORCEMENT_LABEL, enforcementHint } from "@shared/skills.ts";
+import { AGENT_NAMES } from "@shared/agent.ts";
+import { capabilitiesFor, skillsAgents } from "@shared/harness-capabilities.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
 import type { SkillRow } from "@shared/types.ts";
 import type { SkillsState } from "../useSkills.ts";
 
@@ -9,17 +12,32 @@ import type { SkillsState } from "../useSkills.ts";
 // off is a row that lies about what it does.
 
 /**
+ * Who this switch actually reaches, and who it leaves alone - read off the `skills`
+ * capability rather than off the word "claude".
+ *
+ * Every sentence in this panel names an agent, and each one was a separate literal. A
+ * second skill-loading harness would have left all of them saying "Claude" over a grid
+ * that is no longer only Claude - which is the same "a toggle that lies about what it
+ * does" failure the panel is otherwise careful about.
+ */
+const SKILLED = skillsAgents();
+const SKILLED_LABEL = SKILLED.map((a) => AGENT_NAMES[a].label).join(" / ");
+const UNSKILLED_LABEL = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills)
+  .map((a) => AGENT_NAMES[a].label)
+  .join(" / ");
+
+/**
  * What the enforcement rung actually promises, said out loud on every row.
  *
  * Native skills are MODEL-INVOKED. Enabling one loads its description into context;
- * whether Claude reaches for it is Claude's call. `/reload-skills` fixes delivery, not
- * activation - a reloaded skill is loaded, not obeyed - so a panel that renders a
+ * whether the agent reaches for it is the agent's call. A reload command fixes delivery,
+ * not activation - a reloaded skill is loaded, not obeyed - so a panel that renders a
  * toggle and nothing else is quietly promising enforcement it cannot deliver. The
  * badge is where the promise gets scoped back down to the truth.
  */
 function EnforcementBadge({ row }: { row: SkillRow }): React.JSX.Element {
   return (
-    <span className={`skill-badge skill-badge-${row.enforcement}`} title={ENFORCEMENT_HINT[row.enforcement]}>
+    <span className={`skill-badge skill-badge-${row.enforcement}`} title={enforcementHint(row.enforcement)}>
       {ENFORCEMENT_LABEL[row.enforcement]}
     </span>
   );
@@ -42,14 +60,17 @@ function SkillRowView({
           /{row.name}
           <EnforcementBadge row={row} />
           {/*
-            Claude-only, on every row, because there is no version of this that works
-            on codex: it has no /reload-skills and no ~/.claude/skills, so the loop
-            filters it out entirely. A toggle that silently no-ops on half the grid is
-            the same failure that disqualified launch flags - saying so on the row is
-            what keeps it from being one.
+            Named on every row, because there is no version of this that works on a
+            harness with no `skills` capability: no reload command and no skills
+            directory, so the loop filters it out entirely. A toggle that silently
+            no-ops on half the grid is the same failure that disqualified launch flags -
+            saying so on the row is what keeps it from being one.
           */}
-          <span className="skill-badge skill-badge-agent" title="Codex sessions are unaffected - it has no skills directory.">
-            claude only
+          <span
+            className="skill-badge skill-badge-agent"
+            title={`${UNSKILLED_LABEL} sessions are unaffected - they have no skills directory.`}
+          >
+            {SKILLED.join(" / ")} only
           </span>
         </span>
         <span className="kb-row-desc">{row.description}</span>
@@ -61,7 +82,7 @@ function SkillRowView({
             checked={row.enabled}
             disabled={disabled}
             onChange={(e) => onToggle(e.target.checked)}
-            aria-label={`Enable /${row.name} in every Claude session`}
+            aria-label={`Enable /${row.name} in every ${SKILLED_LABEL} session`}
           />
         </label>
       </div>
@@ -80,8 +101,9 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
 
       <p className="settings-hint skills-blurb">
         Skills switched on here are symlinked into <code>~/.claude/skills</code>, so they reach{" "}
-        <strong>every</strong> Claude session on this machine - including ones this app never
-        launched. Running sessions pick them up at their next idle moment, without restarting.
+        <strong>every</strong> {SKILLED_LABEL} session on this machine - including ones this app
+        never launched. Running sessions pick them up at their next idle moment, without
+        restarting.
       </p>
 
       {error && <p className="settings-error">{error}</p>}
@@ -127,15 +149,16 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       )}
 
       {/*
-        Excludes codex, or the number lies on a mixed set of sessions. Phrased as a
-        promise about WHEN, not whether: the daemon waits for a session to be genuinely
-        at its prompt before typing, so a busy session is behind rather than missed.
+        Counts only harnesses that declare `skills`, or the number lies on a mixed set of
+        sessions. Phrased as a promise about WHEN, not whether: the daemon waits for a
+        session to be genuinely at its prompt before typing, so a busy session is behind
+        rather than missed.
       */}
       {view && view.pending > 0 && (
         <p className="settings-hint">
           {view.pending === 1
-            ? "1 Claude session will pick this up when it next goes idle."
-            : `${view.pending} Claude sessions will pick this up when they next go idle.`}
+            ? `1 ${SKILLED_LABEL} session will pick this up when it next goes idle.`
+            : `${view.pending} ${SKILLED_LABEL} sessions will pick this up when they next go idle.`}
         </p>
       )}
     </section>

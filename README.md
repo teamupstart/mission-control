@@ -151,6 +151,23 @@ JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps
 registry that broadcasts changes over SSE. Reviews and dispatched tasks are
 persisted in SQLite (`node:sqlite`).
 
+### What each agent can do is declared, not assumed
+
+Claude Code and Codex are not the same product, and several features below work for
+one and not the other. Rather than testing "is this Claude?" at each of those places,
+every agent **declares** what it has: permission modes, skills, work queues, a command
+that clears its context, an MCP client. Absent is a first-class answer.
+
+That is why the differences you see are consistent rather than piecemeal. A Codex card
+draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it; its
+work-queue drawer explains why instead of offering a box that would never drain; the
+skills panel says on every row which agents a skill actually reaches; and a **reset**
+of a Codex checkout does the git half and leaves the context alone, because Codex does
+not speak `/clear` - it would have been typed in as a prompt.
+
+Adding a third agent means filling that declaration in. The types make it impossible to
+add one and quietly inherit Claude's answers.
+
 ### Precise status (Claude hooks)
 
 Passive discovery can tell a session is *alive*, but not whether the agent is
@@ -594,8 +611,10 @@ it later never runs `git worktree remove` over a directory the harness didn't cr
 
 **The drop resets that agent's checkout first**, the same reset the card's **reset**
 control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release
-the branch, `/clear`. Without it the next task inherits the last one's branch and context,
-and no-mistakes - seeing a non-default branch - validates and pushes onto it, putting two
+the branch, and clear the context (`/clear` for Claude Code; an agent that declares no
+clear command has its context left alone rather than being sent a command it does not
+speak). Without it the next task inherits the last one's branch and context, and
+no-mistakes - seeing a non-default branch - validates and pushes onto it, putting two
 unrelated tasks in one PR.
 
 So the drop **asks first whenever there's something to lose**: a dialog naming the agent's
@@ -1262,9 +1281,10 @@ Three things worth knowing before you switch one on:
 - **Enabling a skill loads it; it does not oblige Claude to use it.** Native skills
   are model-invoked, so each row carries an **enforcement badge** saying which rung it
   sits on. "When relevant" means exactly that.
-- **Claude only.** Codex has no `/reload-skills` and no skills directory, so a toggle
-  does nothing to codex sessions. Every row says so, and the "N sessions will pick this
-  up" count excludes them.
+- **Claude only.** Codex declares no skills capability - no `/reload-skills`, no skills
+  directory - so a toggle does nothing to codex sessions. Every row names who a skill
+  reaches and who is unaffected, and the "N sessions will pick this up" count excludes
+  them. Both come from the same declaration, so they cannot drift apart.
 
 ### The daemon is no longer strictly reactive
 
@@ -1372,7 +1392,7 @@ without reaching for the mouse. Every shortcut works in every layout:
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
 | <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
-| <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context (confirms first) | Selected session |
+| <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 
 Every shortcut except the arrow keys and <kbd>Esc</kbd> is **customizable**. Open
 **Settings** - the ⚙ gear in the top bar, or (in the desktop app) **Mission Control →

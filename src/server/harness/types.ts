@@ -7,6 +7,7 @@ import type {
   ThinkingLevel,
   TranscriptMessage,
 } from "@shared/types.ts";
+import type { HarnessCapabilities } from "@shared/harness-capabilities.ts";
 
 // The Harness axis: one object per agent, holding what the daemon needs FROM that agent.
 //
@@ -246,13 +247,21 @@ export interface HookSpec {
 /**
  * One agent, and everything the daemon needs from it.
  *
+ * Extends `HarnessCapabilities` (`@shared/harness-capabilities.ts`) rather than
+ * re-declaring its slots, so a server call site holding a harness sees EVERY capability
+ * on one object - `harness.permissionModes` and `harness.transcript` read the same way -
+ * while the dashboard can still answer the pure ones in the browser. The split is by
+ * PURITY, not by capability: what is here is what needs a `node:` import. `HARNESSES`
+ * spreads the shared record in, so each record forces exactly its own questions and
+ * neither is a copy of the other.
+ *
  * More capabilities land here as the pluggable-integrations migration proceeds
- * (`detect`, `bin`, `control`, `tui`, `permissionModes`, `skills`, `mcp`, `models` - see
+ * (`detect`, `bin`, `control`, `tui`, `models` - see
  * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
  * one is a new field every harness must answer rather than an interface change every
  * migrated call site has to absorb.
  */
-export interface Harness {
+export interface Harness extends HarnessCapabilities {
   /** Matches this harness's key in `HARNESSES`. */
   id: AgentType;
   /** How this harness records a session on disk, or null when it records nothing. */

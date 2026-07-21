@@ -120,7 +120,7 @@ function EpisodeAsk({ episode }: { episode: ForemanEpisode }): React.JSX.Element
 /** The verdict's own fields, which the note has never carried. */
 function EpisodeMeta({ episode }: { episode: ForemanEpisode }): React.JSX.Element | null {
   const chips: string[] = [];
-  if (episode.situation) chips.push(episode.situation);
+  if (episode.situation) chips.push(pendingSituationLabel(episode.situation));
   if (episode.classification) chips.push(episode.classification);
   // Rendered only when present, and `!= null` rather than truthy: a confidence of 0
   // is a real and highly informative reading, and `0 &&` would hide exactly the
@@ -135,6 +135,18 @@ function EpisodeMeta({ episode }: { episode: ForemanEpisode }): React.JSX.Elemen
       ))}
     </div>
   );
+}
+
+/** Internal situation ids describe delivery capability, not terminal products. */
+function pendingSituationLabel(situation: string): string {
+  switch (situation) {
+    case "terminal-pane":
+      return "pane available";
+    case "terminal-no-pane":
+      return "no pane available";
+    default:
+      return situation;
+  }
 }
 
 /**

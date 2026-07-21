@@ -1,7 +1,7 @@
 # Mission Control
 
 A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
-across your **wezterm tabs** and **tmux sessions**. See every agent at a glance,
+across your **terminal panes**. See every agent at a glance,
 act on any of them, and let an agent push a **diff or plan** to you for review -
 and get your decision back.
 
@@ -11,10 +11,9 @@ and get your decision back.
 
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
-- **Names** each session by its **tmux session name**, else its terminal tab title
-  (**wezterm**, or **Ghostty** on macOS), else the repo folder. Click a card's title (or
-  press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying tmux session /
-  wezterm tab, which the next sweep reads straight back onto the card. Only a live session
+- **Names** each session from its **innermost terminal pane**, else the repo folder. Click a
+  card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying
+  terminal home, which the next sweep reads straight back onto the card. Only a live session
   with a terminal pane can be renamed - a session found in no backend at all, or one that
   has exited, has nothing to rename, so its title isn't clickable. A Ghostty tab is named
   and still cannot be renamed, for a different reason: its titles are read-only, so that
@@ -37,7 +36,7 @@ and get your decision back.
   [clickable options on the card](#answer-a-sessions-menu-from-the-dashboard).
   Read straight off the terminal, so it works with or without hooks.
 - **Dispatches** new agents: pick a repo, describe a task, and it launches an
-  agent in its own isolated worktree + detached tmux session (or shelves it in a
+  agent in its own isolated worktree + terminal home (or shelves it in a
   backlog for later, where clicking it [reopens the form](#edit-a-shelved-task) to
   edit or send).
 - **Pulls work in** from systems that already hold it: a [task source](#task-sources-pulling-work-into-the-backlog)
@@ -1775,7 +1774,7 @@ without reaching for the mouse. Every shortcut works in every layout:
 | <kbd>f</kbd> | Focus the selected session's pane | Selected session |
 | <kbd>q</kbd> | Show / hide the selected session's work queue | Selected session |
 | <kbd>⇧</kbd><kbd>Tab</kbd> | Cycle the permission mode (Claude only) | Selected session |
-| <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session (its tmux session / wezterm tab) | Selected session |
+| <kbd>⇧</kbd><kbd>O</kbd> | Rename the selected session's terminal home | Selected session |
 | <kbd>k</kbd> | Kill the selected session | Selected session |
 | <kbd>⌃</kbd><kbd>R</kbd> | Reset the selected session's checkout to origin and clear its context, if its agent has a clear command (confirms first) | Selected session |
 

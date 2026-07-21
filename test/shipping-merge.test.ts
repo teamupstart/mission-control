@@ -34,6 +34,7 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
       unresolvedThreads: 0,
       ...(over.pr ?? {}),
     },
+    inspector: "live",
     reviewedSha: "abc",
     rounds: 1,
     openFindings: 0,
@@ -70,6 +71,42 @@ test("a repo nobody trusted is not merged in, even with the switch on", () => {
 // worktrees: sessions run in pooled checkouts under ~/.treehouse, not in the repo itself.
 test("a worktree of a trusted repo is trusted", () => {
   assert.equal(mergeVerdict(ready({ cwd: "/tmp/pool/wt-3", repoRoot: "/repo" })).merge, true);
+});
+
+// ---- The Inspector's posture ----
+//
+// These four are the regression. A review the Inspector never PUBLISHED used to satisfy
+// every gate: `reviewRound` runs whether or not it may post - it records findings as
+// `drafted` instead - so it advances the reviewed head in dry run exactly as it does
+// live. A clean dry-run review therefore arrived here with a matching head and zero open
+// findings and merged to the default branch, having been seen by nobody. `not-reviewed`
+// cannot catch that: a review DID happen. Only the posture distinguishes them.
+
+test("a review the Inspector never published does not merge - dry run", () => {
+  assert.equal(blockOf(ready({ inspector: "dry-run" })), "inspector-dry-run");
+});
+
+test("a review the Inspector never published does not merge - untrusted repo", () => {
+  assert.equal(blockOf(ready({ inspector: "not-allowlisted" })), "inspector-not-allowlisted");
+});
+
+// Unreachable through the worker today, which is exactly why it is pinned: `maybeMerge`
+// is only called from inside the Inspector's tick, and that returns early while disabled.
+// The day anything else calls this predicate - the second poller `shipping/merge.ts`
+// argues against - the gate has to hold on its own rather than inherit a scheduling
+// accident.
+test("the Inspector being off is a veto here too, not just a tick that never runs", () => {
+  assert.equal(blockOf(ready({ inspector: "off" })), "inspector-off");
+});
+
+// The two allowlists are deliberately separate - trusting YOLO mode to merge in a repo is
+// a bigger grant than trusting the Inspector to comment on it - so this is the shape the
+// bug had in the field: shipping trusts the repo, the Inspector does not, and the merge
+// must lose that argument rather than win it.
+test("shipping's allowlist does not stand in for the Inspector's", () => {
+  const v = mergeVerdict(ready({ cwd: "/repo", repoRoot: "/repo", inspector: "not-allowlisted" }));
+  assert.equal(v.merge, false);
+  assert.equal(v.block, "inspector-not-allowlisted");
 });
 
 test("a draft is never merged", () => {
@@ -169,6 +206,9 @@ test("every block code the gate can return has a sentence for the panel", () => 
   const codes: MergeBlock[] = [
     "off",
     "not-allowlisted",
+    "inspector-off",
+    "inspector-dry-run",
+    "inspector-not-allowlisted",
     "not-open",
     "draft",
     "not-reviewed",

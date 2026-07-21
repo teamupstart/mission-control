@@ -17,6 +17,7 @@ import {
   foremanMayActLive,
   menuBlocksAnswer,
   planFromVerdict,
+  planLeavesAMark,
   ReviewFailureTracker,
 } from "./verdict.ts";
 import type { ReviewContext, Verdict } from "./verdict.ts";
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
     // leader's lease expires (a crash, a Ctrl-C), which is the whole point of an
     // expiring lease. The lease gates the WHOLE loop, including triage: two
     // workers double-answering a needs-you prompt is a real harm too, and
-    // sendStillValid narrows that window without closing it (both can pass the
+    // pendingStillLive narrows that window without closing it (both can pass the
     // re-check and then both send).
     if (!isLeader) {
       await sleep(IDLE_MS);
@@ -671,7 +672,7 @@ async function processTarget(
   // list cannot see that a SIBLING session is driving the same no-mistakes run, so
   // a gate nobody needs to answer read as "needs-you" and spawned a full `claude -p`
   // triage from a possibly minutes-old snapshot. In dry-run that never reaches
-  // `sendStillValid` (the one guard that does re-read the sessions), so it landed as a
+  // `pendingStillLive` (the one guard that does re-read the sessions), so it landed as a
   // spurious escalation note nagging the human about a gate that was already handled.
   const live = await client.sessions().catch(() => null);
   if (!live) return false;
@@ -1318,17 +1319,21 @@ async function processSession(
 
   // The review may have spawned a fresh `claude -p` that ran for up to two minutes, so
   // both the session snapshot and the config are stale by the time we're ready to act.
-  // Before a LIVE send, re-confirm against a fresh session list that this session still
+  // Before acting on it, re-confirm against a fresh session list that this session still
   // needs *this* exact prompt; if the human already handled it (answered, left
-  // needs-you, or a newer prompt arrived), skip the send but still record the
-  // purpose. Then re-plan from a fresh config so every "toggle stops acting" switch
-  // - disable, leaving live mode, dropping the repo from the allowlist, or turning
+  // needs-you, or a newer prompt arrived), record the decision but leave no mark on the
+  // session. Then, for a send, re-plan from a fresh config so every "toggle stops acting"
+  // switch - disable, leaving live mode, dropping the repo from the allowlist, or turning
   // off access auto-approval - is honoured even for an in-flight review. Re-planning
   // (not just re-checking mayActLive) makes autoApproveAccess=false downgrade a live
   // access approval to an escalation mid-review. This applies identically whether the
   // verdict came from Tier 1 or the full Tier 2 review.
-  if (plan.send) {
-    if (!(await sendStillValid(client, session.id, pending))) {
+  //
+  // The guard covers an ESCALATION and a DRAFT as well as a send, which is the half it used
+  // to be missing: its doc said "reads are cheap, so we only guard the send path", quietly
+  // assuming a note costs nothing to write. See `planLeavesAMark` for why it does.
+  if (planLeavesAMark(plan)) {
+    if (!(await pendingStillLive(client, session.id, pending))) {
       await client
         .putNote(session.id, { purpose: verdict.purpose, disposition: "skipped" })
         .catch(() => {});
@@ -1339,8 +1344,10 @@ async function processSession(
       // says "left for you" and the drawer would then have no matching entry to open.
       //
       // `send: null` because nothing reached the child, which leaves `sentText` and
-      // `sentBy` null through `episodeFromPlan`: a stale send is a decision that
-      // delivered nothing, and attributing one to it would be a lie in the record.
+      // `sentBy` null through `episodeFromPlan`: a stale decision is one that delivered
+      // nothing, and attributing one to it would be a lie in the record. The reviewer's
+      // judgment is not lost - `episodeFromPlan` keeps the brief and the recommendation,
+      // so a stale escalation is still readable in the drawer. It is only unpinned.
       await client
         .recordEpisode(
           session.id,
@@ -1361,9 +1368,11 @@ async function processSession(
           }),
         )
         .catch(() => {});
-      log(`${session.name}: skipped stale send (session changed during review)`);
+      log(`${session.name}: dropped a stale ${plan.send ? "send" : plan.note.disposition} (session changed during review)`);
       return true;
     }
+  }
+  if (plan.send) {
     const freshCfg = await client.getConfig().catch(() => null);
     plan = planFromVerdict(
       verdict,
@@ -1642,13 +1651,19 @@ function describeCheap(cheap: TriageOutcome): string {
 }
 
 /**
- * Re-confirm, immediately before a live send, that the session still needs this
- * exact prompt. A fresh session list + reviews snapshot guards the send against a queue
- * that moved while the (slow) review ran. Returns false (skip the send) if the
- * session left needs-you, a newer prompt arrived, the marker is already handled,
- * or the re-check itself failed - reads are cheap, so we only guard the send path.
+ * Re-confirm, immediately before acting, that the session still needs this exact prompt.
+ *
+ * A fresh session list + reviews snapshot guards the decision against a queue that moved
+ * while the (slow) review ran. Returns false if the session left needs-you, a newer prompt
+ * arrived, the marker is already handled, or the re-check itself failed.
+ *
+ * Named for what it establishes rather than for one caller ("sendStillValid"), because it
+ * now gates every outcome that leaves a mark: a send that would type into a child, and an
+ * escalation or draft that would pin a decision on a human. Those are the same question -
+ * is this episode still the live one? - and the answer must not depend on which of them is
+ * about to happen.
  */
-async function sendStillValid(
+async function pendingStillLive(
   client: ForemanClient,
   sessionId: string,
   pending: Pending,

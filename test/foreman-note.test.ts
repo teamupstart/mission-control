@@ -14,9 +14,26 @@ import { closeForemanNote } from "../src/web/lib/foreman.ts";
 const REPO = "/Users/me/workspace/ai-harness";
 const WORKTREE = "/Users/me/.treehouse/ai-harness-c7356c/14/ai-harness";
 
-/** ForemanNote reads only id/cwd/repoRoot off the session; the cast keeps that honest. */
+/**
+ * ForemanNote reads id/cwd/repoRoot and the pane handles off the session; the cast keeps
+ * that honest.
+ *
+ * The pane is not decoration. These tests are all about a `pending` draft - Foreman wrote a
+ * reply and is asking for an OK - and a draft is only ever produced when there was a channel
+ * to deliver it on: `planFromVerdict` escalates instead when `pickChannel` comes back empty.
+ * So a pane-less draft is not the state under test here, and leaving the handles undefined
+ * made the card explain the wrong absence, answering "there is nowhere to type this" over the
+ * allowlist question these cases are actually asking.
+ */
 function mkSession(over: Partial<Session> = {}): Session {
-  return { id: "s1", cwd: WORKTREE, repoRoot: REPO, ...over } as Session;
+  return {
+    id: "s1",
+    cwd: WORKTREE,
+    repoRoot: REPO,
+    tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" },
+    wezterm: null,
+    ...over,
+  } as Session;
 }
 
 function mkNote(over: Partial<SessionNoteSummary> = {}): SessionNoteSummary {

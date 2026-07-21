@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ForemanConfig, RecordEpisode, SetNote } from "@shared/protocol.ts";
-import { foremanAllowlisted } from "@shared/foreman.ts";
+import { foremanAllowlisted, noteAwaitsYou } from "@shared/foreman.ts";
 import { optionRowMiss } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
 import type { GateRef, Pending } from "./pending.ts";
@@ -139,6 +139,31 @@ export interface SendPlan {
 export interface VerdictPlan {
   note: SetNote;
   send: SendPlan | null;
+}
+
+/**
+ * Whether executing this plan would leave something behind that someone has to deal with -
+ * and therefore whether it must be re-confirmed against a fresh snapshot first.
+ *
+ * A review can block on a `claude -p` for up to four minutes, so by the time a plan is ready
+ * the session it describes may have moved on: the human answered the prompt, the menu closed,
+ * a newer ask arrived. `pendingStillLive` (worker.ts) is the re-read that catches that, and
+ * this is the rule for when it is owed.
+ *
+ * There are exactly two ways to leave a mark, and only one of them used to be counted. A
+ * SEND types into a child. An escalation or a draft pins a decision in the dashboard until a
+ * human clicks it away - which is a claim on someone's attention, made minutes after the
+ * evidence for it was gathered. Guarding only the send is what let Foreman pin "needs your
+ * decision" on a session that was visibly working, next to an Approve button offering to type
+ * the answer into it.
+ *
+ * A `skipped` note is the one outcome that genuinely leaves nothing: the strip does not pin
+ * it, the record is in the episode log either way, and so it is free to write from a stale
+ * snapshot. That is why this is a predicate and not an unconditional re-read - the cheap case
+ * stays cheap.
+ */
+export function planLeavesAMark(plan: VerdictPlan): boolean {
+  return Boolean(plan.send) || noteAwaitsYou(plan.note.disposition ?? "skipped");
 }
 
 /**

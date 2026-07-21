@@ -3,8 +3,27 @@
 // src/shared rather than being mirrored by hand on each side.
 
 import { repoAllowlisted } from "./allowlist.ts";
+import type { NoteDisposition } from "./types.ts";
 
 export { cwdAllowlisted } from "./allowlist.ts";
+
+/**
+ * Whether a note is one the human still owes an answer to.
+ *
+ * The whole lifecycle rule in one predicate, and shared because the two sides act on it
+ * rather than merely display it. The dashboard pins a note that awaits you and unmounts one
+ * that does not (`ForemanStrip`); the worker re-confirms the session before writing one,
+ * because writing it is what puts a decision in front of someone. Those have to be the same
+ * set - a disposition the server considers costless to write and the dashboard pins is a
+ * decision nobody decided to ask for.
+ *
+ * `answered` and `skipped` are terminal: the first was delivered, the second was declined,
+ * and neither leaves anything to clear. The record of both lives in the episode log, which
+ * is where a finished decision belongs.
+ */
+export function noteAwaitsYou(disposition: NoteDisposition): boolean {
+  return disposition === "escalated" || disposition === "pending";
+}
 
 /**
  * Whether Foreman may TYPE in a session, given where it's running (`cwd`) and which

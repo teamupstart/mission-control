@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Drives the REAL refiner loop against a fake `claude` binary: a real spawn, a real envelope,
 // the real parse ladder, the real registry write. Everything is pinned before importing the
@@ -90,8 +91,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
     startedAt: 0,
     ...over,
   };
@@ -118,7 +118,7 @@ function withSession(id: string, pane: string, agent: "claude" | "codex" = "clau
       syntheticId: id,
       agent,
       cwd: `/wt/${id}`,
-      tmux: { session: "s", window: "w", windowIndex: 0, paneId: pane },
+      terminals: [mkMuxHandle({ paneId: pane })],
     }),
   ]);
   const s = r.snapshot().sessions.find((x) => x.id === id)!;

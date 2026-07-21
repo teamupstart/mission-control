@@ -16,11 +16,17 @@ import {
 } from "./discovery/pane-dialog.ts";
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
-import { paneToken, type PaneHandles } from "@shared/pane.ts";
+import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
+import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
-import { bindSession } from "./terminal/handles.ts";
 import type { TerminalExec } from "./terminal/exec.ts";
-import { EMULATORS, MULTIPLEXERS, hostPanesFor, type BoundPane } from "./terminal/registry.ts";
+import {
+  EMULATORS,
+  MULTIPLEXERS,
+  bindSession,
+  hostPanesFor,
+  type BoundPane,
+} from "./terminal/registry.ts";
 import type { EmulatorPane, Key, TerminalResult } from "./terminal/types.ts";
 import {
   activateWeztermPane,
@@ -50,7 +56,7 @@ export interface ActionResult {
 }
 
 /** Shared error when a session has no pane handle we can drive. */
-const NO_HANDLE = "session has no tmux or wezterm handle to send to";
+const NO_HANDLE = "session has no terminal pane to send to";
 
 /** Shared error when another write already owns this pane. */
 const PANE_BUSY = "another write is already in flight for this session's pane";
@@ -93,7 +99,7 @@ const driving = new Set<string>();
  * only be asserted here.
  */
 export async function withPaneLock<T>(
-  session: Pick<Session, "tmux" | "wezterm">,
+  session: PaneHandles,
   busy: () => T,
   write: () => Promise<T>,
 ): Promise<T> {
@@ -1206,36 +1212,33 @@ function notInCycle(target: PermissionMode): string {
 /**
  * Validate a proposed session name against the handle that backs it, returning the
  * trimmed name or a human-readable reason it's rejected. Kept pure (no exec) so the
- * route can answer a bad name with a 400 and it can be unit-tested directly. tmux
- * is the handle we rename when present (as in `sendText`/`rename`), so its stricter
- * naming rules apply whenever the session has a tmux pane.
+ * route can answer a bad name with a 400 and it can be unit-tested directly.
+ *
+ * A multiplexer handle is the one a rename moves when present (see `rename` below), so its
+ * backend's own naming rules apply whenever the session has one. Those rules belong to the
+ * BACKEND - tmux's ban on `.`, `:` and a leading `$` comes from its target grammar
+ * (`session:window.pane`, `$0` as a session id) and no other multiplexer need share it - so
+ * they are read off `MuxSessions.validateName` rather than restated here. Restating them
+ * was the shape this migration keeps closing: a second multiplexer with looser rules would
+ * be refused names it accepts, in tmux's words.
  */
 export function validateSessionName(
-  session: Pick<Session, "tmux" | "wezterm">,
+  session: PaneHandles,
   rawName: string,
 ): { ok: true; name: string } | { ok: false; error: string } {
   const name = rawName.trim();
   if (!name) return { ok: false, error: "name can't be empty" };
-  // A newline would submit/split in a tmux name or a terminal title; other control
-  // chars are meaningless in a display name. Reject them for either handle.
+  // A newline would submit/split in a session name or a terminal title; other control
+  // chars are meaningless in a display name. Reject them for either axis.
   if (/[\u0000-\u001f\u007f]/.test(name)) {
     return { ok: false, error: "name can't contain control characters" };
   }
-  if (!session.tmux && !session.wezterm) {
-    return { ok: false, error: "this session has no tmux or wezterm pane to rename" };
+  const mux = muxHandle(session);
+  if (!mux && !emulatorHandle(session)) {
+    return { ok: false, error: "this session has no terminal pane to rename" };
   }
-  // tmux session names may not contain a period or colon - both are separators in
-  // tmux target specs (`session:window.pane`), so `rename-session` refuses them.
-  if (session.tmux && /[.:]/.test(name)) {
-    return { ok: false, error: "a tmux session name can't contain '.' or ':'" };
-  }
-  // A leading '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never
-  // falls back to a name lookup, so a session named `$0` would make focus/kill
-  // target whichever session holds ID 0 instead of this one.
-  if (session.tmux && /^\$/.test(name)) {
-    return { ok: false, error: "a tmux session name can't start with '$'" };
-  }
-  return { ok: true, name };
+  const refused = mux ? (MULTIPLEXERS[mux.backend].sessions?.validateName?.(name) ?? null) : null;
+  return refused ? { ok: false, error: refused } : { ok: true, name };
 }
 
 /**
@@ -1259,13 +1262,13 @@ export function validateSessionName(
  * `Registry.renameSession`.
  */
 export function validateSessionNameAgainstTasks(
-  session: Pick<Session, "tmux" | "cwd">,
+  session: PaneHandles & Pick<Session, "cwd">,
   name: string,
   tasks: readonly Pick<Task, "tmuxSession" | "worktreePath">[],
 ): { ok: true } | { ok: false; error: string } {
-  // Only a tmux rename moves a name teardown targets - a wezterm tab title is
+  // Only a multiplexer rename moves a name teardown targets - an emulator tab title is
   // free-form and no task binds to it.
-  if (!session.tmux) return { ok: true };
+  if (!muxHandle(session)) return { ok: true };
   const collides = tasks.some(
     (t) => t.worktreePath !== null && t.tmuxSession === name && t.worktreePath !== session.cwd,
   );
@@ -1275,8 +1278,58 @@ export function validateSessionNameAgainstTasks(
 }
 
 /**
+ * The handle these three writes can actually drive, or null.
+ *
+ * `focus`, `rename` and `kill` are the last writes still shelling out to `tmux` and to
+ * wezterm's CLI by name - the focus/spawn/kill item owns them, not the `Session` handle
+ * list. What the list DID buy is that the debt now fails to compile: a second backend on
+ * either axis reaches `noDriver` with a type that is not `never`, so it is a typecheck
+ * error here rather than a Ghostty tab handed to `activateWeztermPane`, or a zellij session
+ * name handed to `tmux kill-session`.
+ *
+ * Degrading to null rather than throwing is the answer for the runtime that cannot happen:
+ * the session simply reads as having no handle, which is a state every one of these three
+ * already refuses honestly.
+ */
+function noDriver(backend: never): null {
+  console.warn(`[actions] no terminal driver for backend ${String(backend)}`);
+  return null;
+}
+
+function tmuxOnly(session: PaneHandles): MuxHandle | null {
+  const mux = muxHandle(session);
+  if (!mux) return null;
+  switch (mux.backend) {
+    case "tmux":
+      return mux;
+    default:
+      return noDriver(mux.backend);
+  }
+}
+
+function weztermOnly(session: PaneHandles): EmulatorHandle | null {
+  const emu = emulatorHandle(session);
+  if (!emu) return null;
+  switch (emu.backend) {
+    case "wezterm":
+      return emu;
+    // Ghostty answered this guard rather than tripping it, which is what it is for. These
+    // three paths still shell out to `wezterm cli` by name, and Ghostty is not reachable
+    // that way at all - it is driven by Apple Events. It is NOT a missing capability: the
+    // adapter focuses a surface and spawns a window today (`terminal/ghostty.ts`), and only
+    // `retitle` is genuinely null, because its tab titles are read-only. What is missing is
+    // the caller - focus, rename and kill belong to the focus/spawn/kill item, and until
+    // that lands the honest answer is the one every handleless session already gets.
+    case "ghostty":
+      return null;
+    default:
+      return noDriver(emu.backend);
+  }
+}
+
+/**
  * Side effects `rename` performs, injectable so tests can assert the branching
- * (tmux vs wezterm) without renaming a real tmux session or shelling out.
+ * (multiplexer vs emulator) without renaming a real tmux session or shelling out.
  */
 export interface RenameDeps {
   /** `tmux rename-session -t <from> -- <to>`. */
@@ -1296,9 +1349,11 @@ export interface RenameDeps {
  * backend that reported the prefix on both sides; the adapters normalize both ttys, so this
  * is an equality test.
  *
- * Still spelled tmux-to-wezterm at the call sites below, because they hold `session.tmux`
- * and hand numeric ids to `activateWeztermPane` - the focus/spawn migration item, not this
- * one.
+ * Still spelled tmux-to-wezterm here and at the three call sites below, which shell out to
+ * `tmux` and to `activateWeztermPane` by name. Those are the last un-migrated writes
+ * (`Multiplexer.select` / `MuxSessions` / `EmulatorFocus` already exist for them) and they
+ * belong to the focus/spawn/kill item, not to the `Session` handle list. See `tmuxOnly` /
+ * `weztermOnly` for what that list did buy: the debt fails to compile now.
  */
 async function tmuxHosts(
   session: string,
@@ -1327,21 +1382,22 @@ const defaultRenameDeps: RenameDeps = {
  * Rename a session's terminal home so the next discovery sweep reads the new name
  * back onto its card, and so the terminal tab the user is looking at agrees.
  *
- * A wezterm-hosted session is one call: its tab title IS its card name. A
- * tmux-hosted one takes two, because its name lives in two places the harness
- * has to keep in step:
+ * An emulator-hosted session is one call: its tab title IS its card name. A
+ * multiplexer-hosted one takes two, because its name lives in two places the
+ * harness has to keep in step:
  *
- *   - the tmux session name, which is the card name (`nameSource: "tmux"`), and
+ *   - the multiplexer session name, which is the card name (`nameSource`), and
  *     what Focus/Kill target; and
  *   - the title of the wezterm tab running `tmux attach`, which `spawnWeztermTab`
  *     stamped once at spawn and nothing has updated since.
  *
- * The tab is NOT reachable via `session.wezterm` - that handle is keyed on the
+ * That tab is NOT the session's own emulator handle - that one is keyed on the
  * agent's tty, and an agent inside tmux sits on a tmux pane tty while its tab
- * sits on the client tty, so a tmux-hosted session's `wezterm` is always null.
- * We find the tab the way Focus does, by joining tmux clients to wezterm panes
- * on that shared client tty. Skipping this was the whole bug: renames landed in
- * tmux while every tab kept its spawn-time title forever.
+ * sits on the client tty, so a multiplexer-hosted session holds no emulator
+ * handle at all. We find the tab the way Focus does, by joining multiplexer
+ * clients to emulator panes on that shared client tty. Skipping this was the
+ * whole bug: renames landed in tmux while every tab kept its spawn-time title
+ * forever.
  *
  * Assumes `name` was already validated - the route calls `validateSessionName`
  * first so a bad name is a 400, not a shelled-out failure.
@@ -1351,8 +1407,9 @@ export async function rename(
   name: string,
   deps: RenameDeps = defaultRenameDeps,
 ): Promise<ActionResult> {
-  if (session.tmux) {
-    const from = session.tmux.session;
+  const mux = tmuxOnly(session);
+  if (mux) {
+    const from = mux.session;
     // Resolve the tabs BEFORE the rename, while they still answer to `from` -
     // after it, this lookup would have to guess which name tmux now reports.
     const hosts = await deps.findTmuxHostPanes(from);
@@ -1361,14 +1418,15 @@ export async function rename(
     // Best-effort: the tmux name is the card's source of truth and it already
     // moved, so a tmux-only user (or a wezterm GUI that just went away) gets the
     // rename they asked for rather than a failure over a cosmetic tab title.
-    // `Number` because the adapter normalizes pane ids to strings and `setWeztermTabTitle`
-    // still takes wezterm's numeric one. It goes when this file moves behind the interface.
+    // `Number` because handles normalize pane ids to strings and `setWeztermTabTitle` still
+    // takes wezterm's numeric one. It goes when this file moves behind the interface.
     for (const h of hosts) await deps.setWeztermTabTitle(Number(h.paneId), name);
     return renamed;
   }
-  if (session.wezterm) {
+  const emu = weztermOnly(session);
+  if (emu) {
     return check(
-      await deps.setWeztermTabTitle(session.wezterm.paneId, name),
+      await deps.setWeztermTabTitle(Number(emu.paneId), name),
       "wezterm set-tab-title failed",
     );
   }
@@ -1377,17 +1435,19 @@ export async function rename(
 
 /** Bring the session's pane/tab into focus. */
 export async function focus(session: Session): Promise<ActionResult> {
-  if (session.wezterm) {
-    const r = await activateWeztermPane(session.wezterm.tabId, session.wezterm.paneId);
+  const emu = weztermOnly(session);
+  if (emu) {
+    const r = await activateWeztermPane(Number(emu.tabId), Number(emu.paneId));
     return check(r, "wezterm activate failed");
   }
-  if (session.tmux) {
-    const sess = session.tmux.session;
-    const windowTarget = `${sess}:${session.tmux.windowIndex}`;
+  const mux = tmuxOnly(session);
+  if (mux) {
+    const sess = mux.session;
+    const windowTarget = `${sess}:${mux.windowIndex}`;
     // Point tmux at the agent's own pane/window. This only touches this
     // session's internal state, so whichever terminal shows it lands on the
     // right pane - and it never disturbs any other session.
-    const selected = await step("tmux", ["select-pane", "-t", session.tmux.paneId], "tmux select-pane failed");
+    const selected = await step("tmux", ["select-pane", "-t", mux.paneId], "tmux select-pane failed");
     if (!selected.ok) return selected;
     await run("tmux", ["select-window", "-t", windowTarget]);
 
@@ -1399,8 +1459,8 @@ export async function focus(session: Session): Promise<ActionResult> {
     const { hosts, attached } = await tmuxHosts(sess);
     const host = hosts[0] ?? null;
     if (host) {
-      // `Number` for the same reason as in `rename` - the adapter normalizes pane ids to
-      // strings, and this call site still holds wezterm's numeric ones.
+      // `Number` for the same reason as in `rename` - handles normalize pane ids to
+      // strings, and this call site still speaks wezterm's numeric ones.
       const r = await activateWeztermPane(Number(host.tabId), Number(host.paneId));
       return check(r, "wezterm activate failed");
     }
@@ -1445,19 +1505,22 @@ const defaultKillDeps: KillDeps = {
 
 /**
  * Terminate the agent and tear down its terminal home. SIGTERMs the leaf agent
- * process, then - for a tmux-hosted session - kills the whole tmux session so no
- * orphaned window/pane is left behind. The UI confirms before calling this.
+ * process, then - for a multiplexer-hosted session - kills the whole named session so
+ * no orphaned window/pane is left behind. An emulator has no such thing to tear down,
+ * which is why this is the multiplexer handle and not the innermost one. The UI
+ * confirms before calling this.
  *
  * The two steps race by nature: the agent's own exit can collapse its tmux session
  * before (or after) we reach kill-session, so we count the action as successful
  * when EITHER the signal or the kill-session landed, and only surface an error when
- * both fail. For a non-tmux session the signal result stands on its own.
+ * both fail. With no multiplexer session the signal result stands on its own.
  */
 export async function kill(session: Session, deps: KillDeps = defaultKillDeps): Promise<ActionResult> {
   const signalled = deps.signal(session.pid);
 
-  if (session.tmux) {
-    const killed = await deps.killTmuxSession(session.tmux.session);
+  const mux = tmuxOnly(session);
+  if (mux) {
+    const killed = await deps.killTmuxSession(mux.session);
     if (killed.code === 0 || signalled.ok) return { ok: true };
     // Both failed: the session was already gone AND the process couldn't be signalled.
     return { ok: false, error: killed.stderr.trim() || signalled.error || "tmux kill-session failed" };

@@ -295,7 +295,7 @@ test("the card's title and rename affordance are the shared SessionTitle", () =>
   // the pencil affordance only exists in the first.
   const cases: { over: Partial<Session>; canRename: boolean }[] = [
     { over: {}, canRename: true },
-    { over: { state: "exited", tmux: null, wezterm: null }, canRename: false },
+    { over: { state: "exited", terminals: [] }, canRename: false },
   ];
   for (const { over, canRename } of cases) {
     const session = mkSession(over);

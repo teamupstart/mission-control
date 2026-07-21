@@ -18,6 +18,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ReviewItem } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 openDb();
 const TOKEN = ensureToken();
@@ -42,8 +43,7 @@ const discovered: DiscoveredSession = {
   nomistakesGated: false,
   pid: 4242,
   tty: "ttys003",
-  wezterm: null,
-  tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%3" },
+  terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%3" })],
   startedAt: 0,
 };
 registry.applyDiscovery([discovered]);

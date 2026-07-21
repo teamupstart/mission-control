@@ -278,8 +278,22 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   names it. **They are two axes, not one**: a tmux pane lives *inside* a wezterm pane, so a
   `Multiplexer` has named sessions and a copy-mode probe and cannot raise a window, while a
   `TerminalEmulator` raises windows and has no persistence. Optional capabilities are
-  `T | null` and null is a declaration - Ghostty has no scripting CLI, so `list` / `write` /
-  `capture` are all legitimately null. Writes bind to the innermost handle (`bindPane`);
+  `T | null` and null is a declaration - Ghostty cannot read its own screen or retitle a tab,
+  so `capture` and `retitle` are legitimately null. **Declare a null only after pointing the
+  capability at a real install.** This line used to say Ghostty "has no scripting CLI, so
+  `list` / `write` / `capture` are all legitimately null", which was three wrong claims read
+  off release notes: the CLI is useless, and the AppleScript dictionary enumerates, focuses,
+  spawns and types. `todo/ghostty-emulator.md` is what checking costs. **`hostProcess` is the
+  second correlation key**, and the field Ghostty had to add to this interface: `tty` was the
+  only join, and an emulator can answer every other `EmulatorPane` field and still not know
+  which tty a pane is on. It declares argv0 basenames of the GUI process - DATA, matched at
+  argv0 only, for the `DetectSpec` reason - and `terminal/host.ts` walks ancestry generically.
+  Null means "my panes carry their own ttys", which both other backends declare. It also
+  gates the sweep: an Apple Events backend LAUNCHES its terminal by being asked anything, so
+  a non-running host is skipped rather than started every 1500ms. Correlation pairs a
+  tty-less pane only where exactly one pairing is possible (cwd agreement, then last one
+  standing) and DECLINES otherwise, because a wrong pairing does not degrade, it types into a
+  stranger's tab. Writes bind to the innermost handle (`bindPane`);
   focus walks outward via `clients` -> `hostPanesFor` -> `spawn(attachArgv)`. Adding a `Key`
   fails typecheck in every adapter's `Record<Key, string>` until it says what that key looks
   like in its own convention (tmux `BTab`, wezterm `\x1b[Z`). **A `BinSpec` is how a
@@ -301,12 +315,18 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   subprocess (real argv) or a hand-built pane (capability nulls no shipped backend declares
   yet). Tests:
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
-  `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`.
-  **Migration in progress** - discovery and pane I/O are through the registries; focus,
-  rename, kill and spawn still branch on `session.tmux` / `session.wezterm` directly, and
-  `legacyHandles` (`correlate.ts`) plus its mirror `handlesOf` (`terminal/handles.ts`) are
-  the only places projecting onto those two fields;
-  see `docs/plans/pluggable-integrations/plan.md` phase 2.
+  `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`,
+  `terminal-host-join.test.ts`, `terminal-ghostty.test.ts`.
+  **Migration in progress** - discovery, pane I/O and the `Session` model are through the
+  registries; focus, rename, kill and spawn still shell out to `tmux` / wezterm by name.
+  They no longer branch on a field per vendor, though: each takes its handle from
+  `tmuxOnly` / `weztermOnly` (`actions.ts`), whose `noDriver(backend: never)` default makes
+  a second backend on either axis a TYPECHECK ERROR there rather than a Ghostty tab handed
+  to `activateWeztermPane`. That guard has now been ANSWERED once rather than only promised:
+  `weztermOnly` carries an explicit `case "ghostty": return null`, because those three paths
+  drive `wezterm cli` and Ghostty is only reachable by Apple Events - a missing CALLER, not a
+  missing capability, since its adapter focuses and spawns today. The `never` arm stays live
+  for the next backend. See `docs/plans/pluggable-integrations/plan.md` phase 2.
 - **Task sources (what pulls work INTO the backlog)**: the same purity split as the
   harnesses. `TASK_SOURCE_KIND_INFO` (`@shared/task-source.ts`) holds what the settings
   panel can answer in the browser - the name, the blurb, the config schema - and
@@ -346,6 +366,19 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   One input renders it, `ModelField.tsx`. Blank is "cleared", never `--model ""`, at every
   layer - including the config schema, which must ADMIT the empty string or the field cannot
   be cleared at all. Test: `foreman-models.test.ts`, `inspector-model.test.ts`.
+- **A session's terminal handles**: `Session.terminals` is a LIST of `TerminalHandle`
+  (`@shared/terminal.ts`), one per backend, discriminated on the AXIS (`multiplexer` /
+  `emulator`) and never on the vendor. It replaced `Session.tmux` / `Session.wezterm`,
+  which made "how many backends are there" a fact of the type. Read it through
+  `@shared/pane.ts`, never by hand: **`canWriteTo`** answers "is there a composer to type
+  into?" - the question ~20 call sites across both processes were spelling as
+  `Boolean(s.tmux || s.wezterm)` - and `innermostPane` / `paneToken` answer which pane a
+  write lands on (multiplexer first: its pane is the agent's, the emulator's is the client
+  showing it). `muxHandle` / `emulatorHandle` are for the questions that genuinely ARE
+  about one axis - a named session to kill or rename, a tab to raise - and for nothing
+  else. `bindPane` (`terminal/registry.ts`) defers to `innermostPane` rather than
+  restating it, so the write lock guards the pane the write reaches by construction.
+  Test: `session-terminals.test.ts`, `pane-lock.test.ts`, `terminal-registry.test.ts`.
 - **Pane token**: `paneToken` (`@shared/pane.ts`) spells the key every pane-scoped map uses -
   the write lock, the hook overlay, the capture-miss counter, the Foreman's send guard. There
   were four copies in two spellings (`wezterm:` and `wez:`); each subsystem only compared the

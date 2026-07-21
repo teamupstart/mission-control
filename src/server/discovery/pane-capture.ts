@@ -1,5 +1,5 @@
 import type { PaneHandles } from "@shared/pane.ts";
-import { bindSession } from "../terminal/handles.ts";
+import { bindSession } from "../terminal/registry.ts";
 
 /**
  * Reading a terminal pane's visible text - the one primitive every "what is this session

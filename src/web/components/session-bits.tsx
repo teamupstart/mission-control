@@ -36,16 +36,15 @@ import { Tooltip } from "./Tooltip.tsx";
 /**
  * Where this session was found, phrased for the small grey subtitle.
  *
- * Derived from `nameSource` rather than matched against a list of vendors, because that list
- * was already wrong the moment a third backend named a session: `nameSource` is
- * `TerminalBackendId | "process"`, so an id with no arm here fell through to "process" and
- * the subtitle said the session had no terminal at all - about a session a terminal had just
- * named. The only special case left is the one carrying EXTRA information (tmux's pane id),
- * not the one carrying a different spelling of its own name.
+ * The pane id rides along only for a MULTIPLEXER, and that asymmetry is about the axis
+ * rather than about tmux: a multiplexer names a SESSION that may hold many panes, so which
+ * pane this card is only answerable by saying it, while an emulator names the tab itself
+ * and has nothing left to disambiguate. Both shipped backends read exactly as they always
+ * did; a third one inherits whichever rule its axis already states.
  */
 export function subtitle(session: Session): string {
-  if (session.nameSource === "process") return "process";
-  if (session.nameSource === "tmux" && session.tmux) return `tmux · ${session.tmux.paneId}`;
+  const namer = session.terminals.find((h) => h.backend === session.nameSource);
+  if (namer?.kind === "multiplexer") return `${namer.backend} · ${namer.paneId}`;
   return session.nameSource;
 }
 

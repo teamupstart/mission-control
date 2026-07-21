@@ -15,10 +15,11 @@ and get your decision back.
   (**wezterm**, or **Ghostty** on macOS), else the repo folder. Click a card's title (or
   press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying tmux session /
   wezterm tab, which the next sweep reads straight back onto the card. Only a live session
-  with a tmux or wezterm pane can be renamed - a session found in neither, or one that has
-  exited, has nothing to rename, so its title isn't clickable. (A Ghostty tab is named and
-  cannot be renamed: Ghostty's tab titles are read-only. See
-  [Which terminal you use is declared](#which-terminal-you-use-is-declared-not-assumed).)
+  with a terminal pane can be renamed - a session found in no backend at all, or one that
+  has exited, has nothing to rename, so its title isn't clickable. A Ghostty tab is named
+  and still cannot be renamed, for a different reason: its titles are read-only, so that
+  backend declares no retitle at all. See
+  [Which terminal you use is declared](#which-terminal-you-use-is-declared-not-assumed).
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
@@ -174,6 +175,13 @@ outlive any window and a copy-mode that can swallow keystrokes; a **terminal emu
 raises windows and has no persistence. Neither is a subset of the other, and a backend
 declares what it genuinely cannot do rather than stubbing it.
 
+A session therefore carries a **list** of the panes it is reachable through, one per
+backend, rather than a field per vendor - so a backend the dashboard has never heard of
+is drawn, typed into and torn down like any other. "Is there a composer to type into?"
+is one predicate over that list, asked identically by the Send box, the mode picker,
+Rename, the work queue and Foreman, instead of twenty booleans each naming the two
+terminals they happened to be written beside.
+
 The same declaration decides how a session is **typed into and read**. A reply, a queued
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
 the backend holding the innermost pane, which renders them in its own convention - tmux
@@ -209,11 +217,15 @@ where exactly one match is possible. Two Ghostty tabs open on the same directory
 agent in each are ambiguous, and **neither is named** rather than one being guessed: a
 wrong match would raise someone else's tab and type your next prompt into it.
 
-That naming is all you get today. A Ghostty session is discovered, named and shown, and
-**cannot yet be typed into or focused from the dashboard** - its Send is disabled and Focus
-refuses, exactly as for a session with no terminal handle at all. Ghostty also cannot have
-its tab retitled or its screen read, which it genuinely does not offer. Run the agent under
-tmux, inside a Ghostty window or anywhere else, if you want the full set now.
+A matched Ghostty session is discovered, named, and **can be typed into** - replies, queued
+prompts and the send chord all reach the surface. Three things it does not do. **Focus** and
+**Rename** refuse, because those two paths still drive WezTerm's CLI directly and Ghostty is
+not reachable that way; they are the next thing to move behind the interface. Its **tab
+cannot be retitled** at all, which is Ghostty's own limit - its titles are read-only. And its
+**screen cannot be read**, so anything built on reading a pane back is unavailable on a
+Ghostty session rather than quietly wrong: the permission-mode chip, dialog detection, and
+the read-back that confirms a pasted prompt was actually submitted. Run the agent under tmux,
+inside a Ghostty window or anywhere else, if you want all of it today.
 
 ### What each agent can do is declared, not assumed
 
@@ -734,7 +746,7 @@ landed commit has a different SHA and never appears on `origin/main`).
 its tmux session is cut - so a recycled agent's card is titled by its work rather than by
 the pooled worktree it was handed out as, or by the task it finished ten minutes ago. This
 happens after the task has been typed, and never fails the assign: if the terminal can't be
-renamed (no tmux or wezterm handle, or the name is already spoken for) the old name simply
+renamed (no terminal handle at all, or the name is already spoken for) the old name simply
 stands. It applies to [the backlog
 autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // "Discovered" is not "ready", and a successful tmux write is not a delivered prompt.
 //
@@ -43,8 +44,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys015",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
     startedAt: 0,
     ...over,
   } as DiscoveredSession;
@@ -148,7 +148,7 @@ test("waitForPromptAcceptedAtCwd ignores a `working` session at a DIFFERENT cwd"
   const registry = new Registry();
   registry.applyDiscovery([
     mkDiscovered({ syntheticId: "mine-1" }),
-    mkDiscovered({ syntheticId: "other-1", cwd: "/wt/task-2", tmux: { session: "o", window: "w", windowIndex: 0, paneId: "%2" } }),
+    mkDiscovered({ syntheticId: "other-1", cwd: "/wt/task-2", terminals: [mkMuxHandle({ session: "o", paneId: "%2" })] }),
   ]);
 
   const accepted = registry.waitForPromptAcceptedAtCwd(CWD, BRIEF_MS);

@@ -7,12 +7,13 @@ import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { RuntimeMetaRead } from "../src/server/harness/types.ts";
 import type { Session, ServerEvent } from "@shared/types.ts";
 import type { StatusLineIngest } from "@shared/protocol.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-meta-"));
 const { Registry } = await import("../src/server/registry.ts");
 
-const PANE = { session: "w", window: "w", windowIndex: 0, paneId: "%3" };
+const PANE = mkMuxHandle({ session: "w", windowName: "w", paneId: "%3" });
 
 function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -27,8 +28,7 @@ function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: PANE,
+    terminals: [PANE],
     startedAt: 0,
     ...over,
   };

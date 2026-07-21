@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 
 import { correlate, type DiscoveryInput } from "../src/server/discovery/correlate.ts";
 import type { Proc } from "../src/server/discovery/processes.ts";
+import { canWriteTo, emulatorHandle, muxHandle } from "../src/shared/pane.ts";
 import {
   argv0Basename,
   hostIsRunning,
@@ -123,6 +124,22 @@ test("a lone hosted tty and a lone tty-less pane are paired, and the pane names 
   assert.equal(s?.nameSource, "ghostty");
   assert.equal(s?.name, "alpha");
   assert.equal(s?.tty, "ttys5");
+
+  // And it records a real HANDLE, not just a name. This is the half that was impossible
+  // before phase 3 landed the handle list: `legacyHandles` could project onto
+  // `Session.tmux` / `Session.wezterm` and nothing else, so a correctly correlated Ghostty
+  // pane was named and then dropped on the floor - discovered but unreachable. A pane the
+  // second key had to work this hard to find would have been thrown away at the last step.
+  assert.deepEqual(emulatorHandle(s!), {
+    kind: "emulator",
+    backend: "ghostty",
+    paneId: "UUID-A",
+    tabId: "tab-UUID-A",
+    windowId: "win-UUID-A",
+    tabTitle: "alpha",
+    isActive: false,
+  });
+  assert.equal(canWriteTo(s!), true, "a paired session has a composer to type into");
 });
 
 test("distinct working directories pair both, because neither has a choice to make", () => {
@@ -261,5 +278,8 @@ test("a multiplexer inside a hosted window keeps the pane - the axes do not figh
   });
   assert.equal(s?.nameSource, "tmux");
   assert.equal(s?.name, "api");
-  assert.equal(s?.tmux?.paneId, "%3");
+  assert.equal(muxHandle(s!)?.paneId, "%3");
+  // And no emulator handle was invented for it: Ghostty's surface is a real pane, but it is
+  // not the pane this agent sits on, and the ancestry walk is what knows the difference.
+  assert.equal(emulatorHandle(s!), null);
 });

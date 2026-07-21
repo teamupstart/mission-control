@@ -6,7 +6,6 @@ import {
   MULTIPLEXERS,
   bindPane,
   hostPanesFor,
-  type TerminalHandles,
 } from "../src/server/terminal/registry.ts";
 import type {
   EmulatorPane,
@@ -14,13 +13,13 @@ import type {
   TerminalEmulator,
 } from "../src/server/terminal/types.ts";
 import { paneToken } from "../src/shared/pane.ts";
-import type { TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
+import type { TerminalHandle } from "../src/shared/terminal.ts";
 
 // What is at stake: that a new terminal backend cannot be half-integrated.
 //
-// The failure mode this whole layer exists for is silent. Today ~20 call sites branch
-// `if (session.tmux) … else if (session.wezterm) …`, so a third backend does not break a
-// build - it produces a session whose Focus does nothing, whose queue never sends, and
+// The failure mode this whole layer exists for is silent. Call sites used to branch
+// `if (session.tmux) … else if (session.wezterm) …`, so a third backend did not break a
+// build - it produced a session whose Focus does nothing, whose queue never sends, and
 // whose card looks entirely normal. The registries are the compiler enforcement that
 // replaces that: an id in the union with no adapter is a type error, and an adapter is
 // only complete once every capability is implemented OR explicitly declared null.
@@ -78,21 +77,37 @@ test("the interface admits an emulator that can only be launched into", () => {
   assert.equal(launchOnly.focus?.granularity, "app");
 });
 
-const MUX_HANDLE = { backend: "tmux" as const, session: "api", windowIndex: 0, paneId: "%3" };
-const EMU_HANDLE = { backend: "wezterm" as const, paneId: "5", tabId: "2" };
+const MUX_HANDLE: TerminalHandle = {
+  kind: "multiplexer",
+  backend: "tmux",
+  session: "api",
+  windowIndex: 0,
+  windowName: "w",
+  paneId: "%3",
+};
+const EMU_HANDLE: TerminalHandle = {
+  kind: "emulator",
+  backend: "wezterm",
+  paneId: "5",
+  tabId: "2",
+  windowId: "0",
+  tabTitle: "",
+  isActive: true,
+};
 
 test("writes prefer the innermost handle", () => {
   // The agent's real pane is the multiplexer pane; the emulator handle addresses the client
   // showing it, so typing there types at whatever that client is currently displaying. Four
   // call sites resolve this identically today and each states the rule again.
-  const both: TerminalHandles = { multiplexer: MUX_HANDLE, emulator: EMU_HANDLE };
-  const bound = bindPane(both);
+  // Emulator FIRST in the list, so this cannot pass by reading position: the list's order
+  // is a naming priority, and the write target is decided by the handle's axis.
+  const bound = bindPane([EMU_HANDLE, MUX_HANDLE]);
   assert.equal(bound?.kind, "multiplexer");
   assert.equal(bound?.token, "tmux:%3");
 });
 
 test("an emulator-only session binds to its emulator", () => {
-  const bound = bindPane({ multiplexer: null, emulator: EMU_HANDLE });
+  const bound = bindPane([EMU_HANDLE]);
   assert.equal(bound?.kind, "emulator");
   assert.equal(bound?.token, "wezterm:5");
   assert.ok(bound?.write, "wezterm can be typed into");
@@ -102,22 +117,20 @@ test("an emulator-only session binds to its emulator", () => {
 });
 
 test("a session with no terminal handle binds to nothing", () => {
-  assert.equal(bindPane({ multiplexer: null, emulator: null }), null);
+  assert.equal(bindPane([]), null);
 });
 
 test("the bound token is the one phase 0 collapsed the four copies into", () => {
-  // `bindPane` builds its token from the backend id so a third multiplexer needs no token
-  // function of its own, which only stays honest while a backend id is its `paneToken`
-  // prefix. Both spellings are in-memory keys today, so drift is silent: two subsystems
-  // would key the same pane differently and each would claim the other's lock was free.
+  // `bindPane` and `paneToken` now resolve the same handle through `innermostPane` and
+  // spell it with the same constructor, so a third multiplexer needs no token function of
+  // its own. Pinned anyway, because these are in-memory keys and drift is silent: two
+  // subsystems would key the same pane differently and each would claim the other's lock
+  // was free.
   assert.equal(
-    bindPane({ multiplexer: MUX_HANDLE, emulator: EMU_HANDLE })?.token,
-    paneToken({ tmux: { paneId: MUX_HANDLE.paneId } as TmuxInfo, wezterm: null }),
+    bindPane([MUX_HANDLE, EMU_HANDLE])?.token,
+    paneToken({ terminals: [MUX_HANDLE, EMU_HANDLE] }),
   );
-  assert.equal(
-    bindPane({ multiplexer: null, emulator: EMU_HANDLE })?.token,
-    paneToken({ tmux: null, wezterm: { paneId: Number(EMU_HANDLE.paneId) } as WeztermInfo }),
-  );
+  assert.equal(bindPane([EMU_HANDLE])?.token, paneToken({ terminals: [EMU_HANDLE] }));
 });
 
 test("the host-tab join is an equality test on normalized ttys", () => {

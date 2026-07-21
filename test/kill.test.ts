@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { kill, type KillDeps } from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { stubRun } from "../src/server/util/exec.ts";
-import type { Session, SessionState, TmuxInfo } from "../src/shared/types.ts";
+import type { Session, SessionState } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -20,8 +21,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 4242,
     tty: null,
     permissionMode: null,
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
@@ -50,7 +50,8 @@ function mkSession(over: Partial<Session> = {}): Session {
   };
 }
 
-const tmux: TmuxInfo = { session: "work", window: "0", windowIndex: 0, paneId: "%3" };
+/** A session hosted on a named multiplexer session - the handle Kill tears down. */
+const onTmux = { terminals: [mkMuxHandle({ session: "work", windowName: "0", paneId: "%3" })] };
 
 /** Records what `kill` drove: which pid was signalled and which tmux session was killed. */
 function spyDeps(over: Partial<KillDeps> = {}): { deps: KillDeps; signalled: number[]; killedSessions: string[] } {
@@ -89,7 +90,7 @@ test("kill: non-tmux session surfaces a failed signal", async () => {
 
 test("kill: tmux session signals the pid AND kills the whole tmux session by name", async () => {
   const { deps, signalled, killedSessions } = spyDeps();
-  const r = await kill(mkSession({ pid: 99, tmux }), deps);
+  const r = await kill(mkSession({ pid: 99, ...onTmux }), deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(signalled, [99]);
@@ -99,7 +100,7 @@ test("kill: tmux session signals the pid AND kills the whole tmux session by nam
 test("kill: tmux session succeeds when the process is already gone but kill-session lands", async () => {
   // Race: the agent's own exit collapsed nothing, but the pid is already reaped.
   const { deps } = spyDeps({ signal: () => ({ ok: false, error: "kill ESRCH" }) });
-  const r = await kill(mkSession({ tmux }), deps);
+  const r = await kill(mkSession(onTmux), deps);
 
   assert.deepEqual(r, { ok: true }, "kill-session succeeding is enough");
 });
@@ -108,7 +109,7 @@ test("kill: tmux session succeeds when the session is already gone but the signa
   // Race the other way: the agent exit already collapsed its tmux session.
   const gone: RunResult = stubRun({ stdout: "", stderr: "can't find session: work", code: 1 });
   const { deps } = spyDeps({ killTmuxSession: () => Promise.resolve(gone) });
-  const r = await kill(mkSession({ tmux }), deps);
+  const r = await kill(mkSession(onTmux), deps);
 
   assert.deepEqual(r, { ok: true }, "signalling the process is enough");
 });
@@ -119,7 +120,7 @@ test("kill: tmux session fails only when BOTH the signal and kill-session fail",
     signal: () => ({ ok: false, error: "kill EPERM" }),
     killTmuxSession: () => Promise.resolve(gone),
   });
-  const r = await kill(mkSession({ tmux }), deps);
+  const r = await kill(mkSession(onTmux), deps);
 
   assert.equal(r.ok, false);
   assert.equal(r.error, "can't find session: work");

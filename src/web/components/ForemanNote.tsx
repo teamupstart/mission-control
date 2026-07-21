@@ -1,6 +1,7 @@
 import { Markdown } from "./Markdown.tsx";
 import type { Session, SessionNoteSummary } from "@shared/types.ts";
 import { noteAwaitsYou } from "@shared/foreman.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
 import { relativeTime } from "../lib/format.ts";
@@ -39,7 +40,7 @@ export function ForemanNote({
     note,
     inputReviewId,
     pendingReviewIds,
-    canSend: Boolean(session.tmux || session.wezterm),
+    canSend: canWriteTo(session),
   });
 
   const escalated = note.disposition === "escalated";

@@ -230,9 +230,10 @@ handle, or both; writes prefer the innermost (multiplexer), focus walks outward.
 which are the composition rule made executable), `tmux.ts` and `wezterm.ts`, `exec.ts` (the
 subprocess seam the adapters are testable through), `bin.ts` and `enumerate.ts` (the third
 composition primitive: what each backend can SEE, in the order that decides which names a
-session), and `handles.ts` (the `Session`-to-handle-list projection, `legacyHandles` run
-backwards, which phase 3 deletes with its mirror). Discovery was the first call site
-migrated and pane I/O the second; focus, spawn and kill are not, and the adapters stay
+session). `handles.ts` - the `Session`-to-handle-list projection, `legacyHandles` run
+backwards - is gone, deleted with its mirror by the `Session` handle list below; its one
+remaining function, `bindSession`, sits beside `bindPane`. Discovery was the first call
+site migrated and pane I/O the second; focus, spawn and kill are not, and the adapters stay
 mechanism only - the copy-mode refusal, pane lock, paste settle and submit read-back
 remain in `actions.ts` as the policy that composes them.
 
@@ -301,12 +302,12 @@ can no longer be dropped by an early `else`. Five deltas, each forced by somethi
   emulator pane and is the inner, more specific answer. `correlate.test.ts` pins it by
   enumerating emulator-first and asserting the emulator names the session: if that still
   said "tmux", an arm order would still be the real rule.
-- **`legacyHandles` is the one place left that names a vendor**, and it is the phase 3
-  seam rather than a leftover: `Session.tmux` / `Session.wezterm` are still two named
-  nullable siblings, and `WeztermInfo` still holds numeric ids the adapters normalized to
-  strings. A backend with no field to land in correlates and names normally and simply
-  records no handle - the honest shape of a half-finished migration, and what that function
-  deleting looks like.
+- ~~**`legacyHandles` is the one place left that names a vendor**, and it is the phase 3
+  seam rather than a leftover.~~ **Closed** by the `Session` handle list below. It projected
+  onto `Session.tmux` / `Session.wezterm`, so a backend with no field of its own correlated,
+  named its session and then recorded no handle at all - discovered, drawn, and unreachable
+  by every write. It is now `handleOf`, which names no vendor and drops the `Number` casts
+  with the field that wanted them.
 - **A registered-but-absent adapter costs no spawn per tick.** Discovery sweeps every
   backend every 1500ms, so the registry must be free to carry Ghostty, cmux and iTerm2 on a
   machine that has none of them. `binPresent` answers "installed?" by walking PATH with
@@ -407,6 +408,79 @@ flowchart LR
   A -. "writes: innermost first" .-> M
   M -. "focus: walks outward" .-> E
 ```
+
+#### The `Session` handle list, as landed
+
+Structural blocker #2, and the last place the wire format itself said there are exactly two
+terminals. `Session.wezterm: WeztermInfo | null` and `Session.tmux: TmuxInfo | null` are one
+`Session.terminals: TerminalHandle[]`, in naming-priority order, at most one per backend.
+
+The union is discriminated on the **axis** (`multiplexer` / `emulator`) and never on the
+vendor, which is what makes it more than a rename: the axis is a real difference every
+caller already needed (writes go innermost, focus walks outward, only a multiplexer has a
+named session to kill), while the vendor was a difference nothing outside an adapter was
+ever entitled to see. The types moved to `@shared/terminal.ts` beside the ids, for the
+`HARNESS_CAPABILITIES` reason: the browser holds handles now.
+
+Six deltas, each forced by something real:
+
+- **One predicate, `canWriteTo` (`@shared/pane.ts`), replaces ~20 spellings of
+  `Boolean(s.tmux || s.wezterm)`** across both processes and every layout - the Send box in
+  three of the four session views, the mode picker, Rename, the work queue's delivery check,
+  Foreman's `canSend` on two surfaces, the reset preview's "will this clear context". Not
+  one of them was a question about tmux or wezterm; each was "is there a composer to type
+  into?", asked by restating the handle list. That is the shape a third backend fails
+  silently in twenty times over, and each site looks right on its own. The two per-axis
+  accessors (`muxHandle`, `emulatorHandle`) exist for the questions that genuinely ARE about
+  an axis - a named session to rename or tear down, a tab to raise - and their doc says so,
+  because they are the obvious wrong tool for the first question.
+- **`innermostPane` is the composition rule, stated once and shared.** `bindPane` used to
+  restate it and `paneToken` restated it again - fine while they agreed, and a session with
+  both handles locking its emulator pane while typing into its multiplexer pane the moment
+  they did not. `bindPane` now calls it and spells its token with the same constructor. The
+  rule is decided by the handle's AXIS rather than by its position in the list, because the
+  list's own order is a NAMING priority and reading one as the other would let a re-ordered
+  registry silently re-aim every write on the machine.
+- **The comparator is field-by-field, and it closed two gaps rather than porting two.** This
+  runs on every session on every 1500ms tick, so `byJson` over an array of six-key objects to
+  answer what three string compares answer is a real cost. `wezterm` compared `isActive` and
+  `tmux` compared `window`, and nothing else - but the pane id reaches the card's subtitle
+  and the multiplexer session name reaches Kill's confirm tooltip, so a pane that moved under
+  an otherwise-still card kept displaying the old one until something unrelated shook it
+  loose. Those two are in; `windowIndex` and `windowId`, which churn and are rendered
+  nowhere, stay out.
+- **`legacyHandles` and `handlesOf` are deleted together**, as their own docs promised. What
+  replaced the first is `handleOf`, which names no vendor and drops the `Number` casts along
+  with the field that wanted them - `WeztermInfo` held wezterm's numeric ids while the
+  adapters had already normalized pane ids to strings, so every write site converted back.
+  `terminal/handles.ts` is gone; `bindSession` moved beside `bindPane`.
+- **Focus, rename and kill still shell out to `tmux` and wezterm by name - and now fail to
+  COMPILE for a second backend rather than misleading.** They belong to the focus/spawn/kill
+  item, not this one, so the mechanism is untouched; but each takes its handle from
+  `tmuxOnly` / `weztermOnly`, whose `default` arm calls `noDriver(backend: never)`. Adding
+  an id to either axis is a typecheck error at those two functions, instead of a Ghostty tab
+  handed to `activateWeztermPane` or a zellij name handed to `tmux kill-session`. The
+  runtime that cannot happen degrades to "no handle", which all three already refuse
+  honestly. `validateSessionName` went further because it could: tmux's ban on
+  `.`, `:` and a leading `$` comes from its own target grammar, and that rule already existed
+  on the adapter as `MuxSessions.validateName`, so the copy in `actions.ts` is gone.
+- **Two user-visible sentences de-tmuxed, and one asymmetry kept on purpose.** `NO_HANDLE`
+  and the rename refusal named both vendors; they now say "terminal pane". Kill's confirm
+  tooltip takes the backend's name from the handle, so the tmux copy is byte-identical. The
+  card subtitle still shows a pane id for a multiplexer and not for an emulator - which is
+  about the AXIS rather than about tmux: a multiplexer names a SESSION that may hold many
+  panes, so which pane is only answerable by saying it, while an emulator names the tab
+  itself and has nothing left to disambiguate.
+
+Not a `ServerEvent` change: `Session` rides the existing `session_upsert` / `snapshot`
+collections, so no `useEventStream` case, `registry.snapshot()` or `MissionState` moved. It
+IS a wire-format change, so the daemon and the dashboard have to ship together - there is no
+version negotiation on the SSE stream and none is being invented for it.
+
+Tests: `session-terminals.test.ts` (the predicate, the axis rule, and a backend the shared
+layer has never heard of), `session-contracts.test.ts` (the comparator, including the two
+gaps it closed), `correlate.test.ts` (a zellij pane now lands a HANDLE, not just a name),
+`terminal-registry.test.ts`, `pane-lock.test.ts`, `rename.test.ts`, `kill.test.ts`.
 
 #### Ghostty, as landed - and the premise it overturned
 
@@ -514,14 +588,26 @@ Two smaller things the adapter settled:
   derived from `nameSource` now, with tmux's pane id the one special case left, because it
   carries EXTRA information rather than a different spelling of its own name.
 
-**What is still not reachable, plainly.** `legacyHandles` can only land a tmux or a wezterm
-handle, and `WeztermInfo` holds NUMERIC ids where Ghostty's are UUIDs, so a Ghostty session
-correlates and is NAMED (`nameSource: "ghostty"`) and records no handle: its Send is disabled
-and its Focus refuses. That is the existing, already-tested handleless degradation rather
-than a new failure, and it is exactly the shape structural blocker #2 has - typing into and
-focusing a Ghostty surface needs phase 3's `Session` handle list. The adapter's `write`,
-`focus` and `spawn` are complete and tested; nothing in production calls them yet, in the
-same way wezterm's own focus and spawn still bypass this interface.
+**What the handle list bought, and what is still not reachable.** This item was written
+expecting to end with "named but unreachable": `legacyHandles` could project onto
+`Session.tmux` / `Session.wezterm` and nothing else, and `WeztermInfo` held NUMERIC ids where
+Ghostty's are UUIDs, so a correctly correlated Ghostty pane would have been named and then
+dropped on the floor. The handle-list item landed first and that paragraph never had to be
+written. A Ghostty session records a real `EmulatorHandle`, `canWriteTo` is true, and a reply
+routes through `bindPane` to the adapter and into the surface. Verified live through the
+whole path - `sendText` on a discovered Ghostty session, with a child on the far pty
+recording exactly the bytes typed plus the CR from submit. Two items that never met each
+other composed with no seam between them, which is the strongest evidence either one is
+shaped right.
+
+What remains is the CALLER, not a capability. Focus, rename and kill still shell out to
+`wezterm cli` by name and belong to the focus/spawn/kill item, so `weztermOnly` gets an
+explicit `case "ghostty": return null` and those three degrade to the handleless refusal.
+That case is the `noDriver(backend: never)` guard doing exactly what its doc promised - a
+second emulator id stopped the build and made someone answer, rather than handing a Ghostty
+tab to `activateWeztermPane`. The `never` arm is still live for the third one. Ghostty's own
+`focus` and `spawn` are implemented and tested and are waiting for that item; `retitle` is
+the only one of the three that is genuinely absent, because its tab titles are read-only.
 
 Verified live end to end rather than from the diff: a real agent-shaped process in a real
 Ghostty window correlated with `nameSource: "ghostty"`, the right tty and the right cwd, and
@@ -955,9 +1041,10 @@ cleanly until they become lists:
    `gatherDiscoveryInput` unconditionally `Promise.all`-ing both listers.~~ **Closed** -
    `{ procs, terminals }`, a list of adapter results. See "Enumeration and correlation, as
    landed".
-2. `Session.tmux` / `Session.wezterm` (`shared/types.ts:140-141`) - two nullable siblings,
+2. ~~`Session.tmux` / `Session.wezterm` (`shared/types.ts:140-141`) - two nullable siblings,
    with per-field SSE comparators at `registry.ts:2237-2238` and ~20 call sites doing
-   `Boolean(s.tmux || s.wezterm)` as a stand-in for "can we type here?".
+   `Boolean(s.tmux || s.wezterm)` as a stand-in for "can we type here?".~~ **Closed** -
+   `Session.terminals`, a list. See "The `Session` handle list, as landed".
 3. `Task.tmuxSession` (`shared/types.ts:830`) - persisted as `tmux_session`
    (`db.ts:109`) and driving **destructive teardown** (`dispatcher.ts:408-421`). Generalizing
    it is a schema migration, not a rename, and needs an `addColumn` call in `migrate()`.
@@ -972,7 +1059,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
-| 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
+| 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface: Ghostty **(landed)** - and it was not written only against the interface, because the interface was missing a field (see "Ghostty, as landed"); then cmux, iTerm2, pi |
 

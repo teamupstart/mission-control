@@ -41,8 +41,7 @@ function mkDisco(id: string, cwd: string, branch: string): DiscoveredSession {
     nomistakesGated: false,
     pid: 4242,
     tty: "ttys003",
-    wezterm: null,
-    tmux: null, // no pane -> the reset's best-effort `/clear` is a safe no-op
+    terminals: [],
     startedAt: 0,
   } as DiscoveredSession;
 }

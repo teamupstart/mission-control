@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import { GOAL_MAX_CHARS } from "../src/shared/goal.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "mission-goals-"));
@@ -29,8 +30,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
     startedAt: 0,
     ...over,
   };
@@ -44,7 +44,7 @@ function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
 function withSession(id: string, pane: string) {
   const r = new Registry();
   r.applyDiscovery([
-    mkDiscovered({ syntheticId: id, cwd: `/wt/${id}`, tmux: { session: "s", window: "w", windowIndex: 0, paneId: pane } }),
+    mkDiscovered({ syntheticId: id, cwd: `/wt/${id}`, terminals: [mkMuxHandle({ paneId: pane })] }),
   ]);
   const s = r.snapshot().sessions.find((x) => x.id === id)!;
   return { r, s, env: { tmuxPane: pane } };
@@ -247,7 +247,7 @@ test("the prune clears the registry's in-memory goals too, not just the table", 
   // A fresh Registry loads every row into the Map, which is what a restart does - and the
   // discovery comes FIRST, because the sweep refuses to judge a key until the sessions is known.
   const r2 = new Registry();
-  r2.applyDiscovery([mkDiscovered({ syntheticId: "g14", cwd: "/wt/g14", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%24" } })]);
+  r2.applyDiscovery([mkDiscovered({ syntheticId: "g14", cwd: "/wt/g14", terminals: [mkMuxHandle({ paneId: "%24" })] })]);
   assert.ok(loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "precondition: the row is on disk");
   assert.equal(r2.pruneGoals(200), 1, "the sweep reached past its own orphan");
   assert.ok(!loadSessionGoals().some((g) => g.noteKey === "orphan-mem"), "the row survived the sweep");
@@ -277,7 +277,7 @@ test("a sweep before the first discovery deletes nothing", () => {
   // And once the sessions ARE known, the same row is fair game - the guard delays the sweep, it
   // does not disable it. Asserted on the key rather than a count: this cutoff is above every
   // band in the file, so it reaches the rows the tests above left behind too.
-  r2.applyDiscovery([mkDiscovered({ syntheticId: "g15", cwd: "/wt/g15", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%25" } })]);
+  r2.applyDiscovery([mkDiscovered({ syntheticId: "g15", cwd: "/wt/g15", terminals: [mkMuxHandle({ paneId: "%25" })] })]);
   r2.pruneGoals(600_000);
   assert.equal(getSessionGoal("boot-orphan"), undefined, "the sweep never ran even after discovery");
 });

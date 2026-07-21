@@ -1,5 +1,5 @@
 import { test, after } from "node:test";
-import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { gitIn, mkOriginAndClone } from "./helpers/git-fixture.ts";
 import type { ResetResult, Task } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { muxHandle } from "../src/shared/pane.ts";
 
 // Throwaway state dir, set before anything reads config - see tasks-db.test.ts.
 const home = mkdtempSync(join(tmpdir(), "mission-assign-"));
@@ -49,8 +50,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     startedAt: 0,
     ...over,
   };
@@ -166,14 +166,14 @@ function setupOnTmux(prefix: string, session: string) {
   return setupInRepo(prefix, {
     name: session,
     nameSource: "tmux",
-    tmux: { session, window: "agent", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session, windowName: "agent" })],
   });
 }
 
 /**
- * A pane that says yes to the readiness probe. The fixture sessions have no tmux or
- * wezterm handle, so the real probe refuses them BEFORE the reset - which is the point of
- * the probe, and the reason every case that means to reach the reset has to stub it.
+ * A pane that says yes to the readiness probe. The fixture sessions hold no terminal
+ * handle, so the real probe refuses them BEFORE the reset - which is the point of the
+ * probe, and the reason every case that means to reach the reset has to stub it.
  */
 const paneReady = async (): Promise<{ ok: boolean }> => ({ ok: true });
 
@@ -439,7 +439,7 @@ test("a handover names the agent's terminal after the task it just took", async 
     reset: cleanReset,
     inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
     rename: async (s, name) => {
-      renamed.push({ from: s.tmux!.session, to: name });
+      renamed.push({ from: muxHandle(s)!.session, to: name });
       return { ok: true };
     },
   });
@@ -449,7 +449,7 @@ test("a handover names the agent's terminal after the task it just took", async 
   // Applied to the live card too, not just to tmux - the whole point is the board.
   const s = r.getSession(sessionId)!;
   assert.equal(s.name, "Fix flaky worktree cleanup");
-  assert.equal(s.tmux?.session, "Fix flaky worktree cleanup");
+  assert.equal(muxHandle(s)?.session, "Fix flaky worktree cleanup");
 });
 
 test("a rename that fails does not un-run a task the agent is already working on", async () => {

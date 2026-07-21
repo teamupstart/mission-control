@@ -8,6 +8,7 @@ import type {
 } from "@shared/types.ts";
 import { reportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
   autoWrapupPayload,
@@ -132,9 +133,14 @@ export function waitingOnHuman(item: WorkItem): boolean {
   return item.state === "proposed" && item.approvedAt === null;
 }
 
-/** True when the session has a pane we can actually type into. */
+/**
+ * True when the session has a pane we can actually type into.
+ *
+ * A named alias for the shared predicate, not a second one: the queue machine reads as a
+ * sequence of questions about an ITEM, and "does its session have a pane" is one of them.
+ */
 export function hasPane(s: Session): boolean {
-  return Boolean(s.tmux || s.wezterm);
+  return canWriteTo(s);
 }
 
 /** True once an item has no further lifecycle. */

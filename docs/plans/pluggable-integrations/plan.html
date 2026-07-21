@@ -479,7 +479,7 @@
 <tr><td>2 &mdash; Terminal</td><td><code>Multiplexer</code> + <code>TerminalEmulator</code> interfaces <strong>(landed)</strong>; enumeration and correlation <strong>(landed)</strong>; pane I/O <strong>(landed)</strong>; then focus/spawn/kill</td></tr>
 <tr><td>3 &mdash; Structural</td><td><code>Session</code> handle list; <code>Task.tmuxSession</code> migration; de-tmux user-visible strings</td></tr>
 <tr><td>4 &mdash; LLM runner</td><td><code>LlmRunner</code> interface + registry (<strong>landed</strong>); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest</td></tr>
-<tr><td>5 &mdash; Proof</td><td>A third adapter on each axis, written <em>only</em> against the interface</td></tr>
+<tr><td>5 &mdash; Proof</td><td>A third adapter on each axis, written <em>only</em> against the interface. cmux <strong>(landed)</strong>; Ghostty, iTerm2 and <code>pi</code> still queued</td></tr>
 </tbody>
 </table>
 </div>
@@ -500,6 +500,71 @@
 <li>A <strong>cmux</strong> multiplexer adapter &mdash; the same exercise on the multiplexer axis.</li>
 </ul>
 <div class="callout"><p>If any of the four requires editing a file outside its own adapter, the interface is wrong.</p></div>
+
+<h4>cmux, as landed &mdash; and the three things it found</h4>
+<p><code>src/server/terminal/cmux.ts</code>, registered by appending one id to <code>MULTIPLEXER_IDS</code>. cmux 0.64.20 is a native macOS terminal with named workspaces, splits and a Unix-socket control API, and it was the right first proof for exactly the reason it looked like the easy one: a NEAR NEIGHBOUR only fails where the interface mistook a tmux fact for a universal one. It found three, and the acceptance criterion held in the way that matters &mdash; <strong>every edit outside the adapter was to the interface itself, and none was a special case for cmux</strong>:</p>
+<ul>
+<li><strong><code>MuxPane.sessionName</code>, split from <code>MuxTarget.session</code>.</strong> A tmux session&rsquo;s name IS its target spec, so one field did both jobs and <code>correlate.ts</code> titled cards from the address. cmux cannot do that: a workspace has a UUID stable for its lifetime and a title that defaults to whatever the shell reports, so the title changes as someone cds and two workspaces sitting at <code>~</code> share one. Naming cards by the id is unreadable; addressing by the title makes <code>kill</code> a coin flip between two live sessions. <code>EmulatorPane</code> had this split from the start (<code>tabId</code> addresses, <code>tabTitle</code> displays) &mdash; this is the multiplexer side catching up, and tmux sets both from one string.</li>
+<li><strong><code>MuxSessions.attachArgv</code> is nullable.</strong> It is handed to <code>EmulatorSpawn.tab(&hellip;)</code> at the end of the focus walk, which encodes &ldquo;a multiplexer session can exist with nothing displaying it&rdquo;. True of tmux, screen and zellij; false of cmux, where a workspace is drawn by the app from the moment it exists. Every candidate value was a lie &mdash; the nearest, <code>cmux select-workspace</code>, opens a stray empty tab in a FOREIGN terminal beside a window already on screen.</li>
+<li><strong><code>MuxPane.panePid</code> is nullable.</strong> Nothing joins on it &mdash; the tty is the join &mdash; and it was required because tmux hands it over in the same format string for free. cmux answers it only from a resource-sampling call that walks every process in every surface, which is not a thing to spend on the 1500ms tick for a field no reader consults.</li>
+</ul>
+
+<p>The nesting is why those last two nulls fall where they do. tmux sits <em>inside</em> an emulator and needs it to be seen; cmux IS the window, so the outward half of the walk has nowhere to go:</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 700 250" role="img" aria-label="tmux nests three layers deep inside a wezterm pane, so focus walks outward through clients to a host tab to attachArgv. cmux is two layers: the cmux surface draws itself, so clients and attachArgv are both null.">
+  <defs>
+    <marker id="ah-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--arrow)"/>
+    </marker>
+    <marker id="ah-ca" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+  <text x="20" y="26" class="b-title">TMUX: THREE LAYERS, FOCUS WALKS OUT</text>
+  <rect class="grp" x="18" y="38" width="664" height="80" rx="10"/>
+  <rect class="box" x="42" y="58" width="164" height="42" rx="7"/>
+  <text class="b-label" x="124" y="76" text-anchor="middle">wezterm pane</text>
+  <text class="b-sub" x="124" y="92" text-anchor="middle">emulator</text>
+  <line class="arr" x1="210" y1="79" x2="252" y2="79" marker-end="url(#ah-c)"/>
+  <rect class="box" x="256" y="58" width="164" height="42" rx="7"/>
+  <text class="b-label" x="338" y="76" text-anchor="middle">tmux pane</text>
+  <text class="b-sub" x="338" y="92" text-anchor="middle">multiplexer</text>
+  <line class="arr" x1="424" y1="79" x2="466" y2="79" marker-end="url(#ah-c)"/>
+  <rect class="box-accent" x="470" y="58" width="160" height="42" rx="7"/>
+  <text class="b-label" x="550" y="76" text-anchor="middle">agent process</text>
+  <path class="arr-dash" d="M300,118 C280,140 150,140 124,104" marker-end="url(#ah-ca)"/>
+  <text class="b-note" x="300" y="152" text-anchor="middle">clients -&gt; host tab -&gt; attachArgv</text>
+
+  <text x="20" y="186" class="b-title">CMUX: TWO LAYERS, NOTHING OUTSIDE IT</text>
+  <rect class="grp" x="18" y="196" width="664" height="46" rx="10"/>
+  <rect class="box" x="42" y="206" width="230" height="26" rx="7"/>
+  <text class="b-label" x="157" y="223" text-anchor="middle">cmux surface - draws itself</text>
+  <line class="arr" x1="276" y1="219" x2="318" y2="219" marker-end="url(#ah-c)"/>
+  <rect class="box-accent" x="322" y="206" width="160" height="26" rx="7"/>
+  <text class="b-label" x="402" y="223" text-anchor="middle">agent process</text>
+  <text class="b-note" x="590" y="223" text-anchor="middle">clients: null, attachArgv: null</text>
+</svg>
+</div>
+<figcaption>A tmux session is invisible until something attaches to it; a cmux workspace never is, which is why <code>attachArgv</code> had to become nullable.</figcaption>
+</figure>
+
+<p><strong>What was NOT added, deliberately: a <code>raise</code> capability.</strong> cmux can bring its own window forward, which no multiplexer this interface was built for could, so the focus walk (select &rarr; host tab &rarr; spawn an attach) ends in two nulls for it. The slot that fixes this belongs to the focus/spawn/kill item, which is the phase that rewrites the walk and the first phase to have a caller for it. Landing a null nobody has designed is what the harness work explicitly refused to do (&ldquo;the remaining slots arrive with their phases&rdquo;), and the same discipline applies here.</p>
+
+<p><strong>cmux is a multiplexer that is not persistent, and that is fine.</strong> Its workspaces do not outlive the app &mdash; verified by killing it: the list comes back from a snapshot with fresh shells and every child process gone, which is what cmux&rsquo;s own <code>surface resume --kind tmux --shell "tmux attach -t work"</code> exists to paper over. It still belongs on this axis rather than the emulator one, because <code>MuxSessions</code> &mdash; create a named session for a task, rename it, kill it on teardown &mdash; is precisely what the dispatcher needs from it and precisely what an emulator has no answer for. Note it ranks BELOW tmux in <code>MULTIPLEXER_IDS</code>: tmux can run inside a cmux surface, so tmux is the inner answer.</p>
+
+<p>Two defects in cmux itself were found by pointing the adapter at it, and both are handled here rather than worked around at a call site:</p>
+<div class="callout warn">
+<p><strong><code>cmux send</code> cannot express literal text.</strong> It replaces the two-character sequences <code>\n</code>, <code>\r</code> and <code>\t</code> wherever they appear, <code>\n</code> and <code>\r</code> with a CR &mdash; which in an agent composer is Enter. There is no escape (<code>\\n</code> does not collapse; verified across single, double and quadruple backslashes), so a reply containing <code>printf("\n")</code> submits itself halfway through and one containing a Windows path silently loses characters. Same class as tmux&rsquo;s getopt eating a dash-leading reply, one layer worse: tmux refused loudly, this delivers corrupted text and exits 0. <code>write.text</code> goes through the socket method <code>surface.send_text</code>, which applies no scanner.</p>
+</div>
+<div class="callout warn">
+<p><strong>cmux mis-attributes ttys in a multi-surface workspace.</strong> Reproduced from clean, against <code>ps</code> as ground truth: a workspace running <code>sleep 12345</code> on <code>ttys031</code> is reported correctly until one <code>new-split</code>, after which cmux reports <code>ttys032</code> for that process (the split&rsquo;s own tty) and <code>nil</code> for the split. <code>debug-terminals</code> shows the same, so it is cmux&rsquo;s tracking rather than its rendering. The tty is the ONLY join between a process and a pane, so passing it on binds a card to a pane its agent is not in and types the next prompt into someone&rsquo;s shell. The adapter reports a tty only from a workspace holding one terminal surface, and <code>spawnDetached</code> therefore declines <code>sidePane</code> &mdash; which the contract already allows, and which costs a convenience shell rather than the session&rsquo;s card.</p>
+</div>
+
+<p>One deployment fact worth stating because it is cmux&rsquo;s default rather than a bug: the socket ships as <code>socketControlMode: "cmuxOnly"</code>, admitting only processes cmux started, and the daemon is not one. An operator sets <code>allowAll</code> in <code>~/.config/cmux/cmux.json</code>. Until they do, <code>list()</code> answers <code>[]</code> and their cmux sessions are named <code>&lt;agent&gt; &lt;pid&gt;</code> &mdash; the same degradation as any unrecognised terminal, which is the right one.</p>
+
+<p>Verified the way the pane-I/O item was, not from the diff: the real adapter driven against a real cmux, with a child recording every byte it received. Spawn, enumerate (tty checked against <code>ps</code>), literal text carrying <code>\n</code> / <code>\t</code> / backslashes, all six keys byte for byte, a multi-line bracketed paste that did not submit, a capture, select, rename (title changed, address did not), every name rule cross-checked against what the live app accepts, and kill &mdash; workspace gone, process gone. Tests: <code>cmux-adapter.test.ts</code> against <code>test/fixtures/cmux-panes.ts</code>, which is a verbatim capture holding the mis-attributed tty in the act.</p>
 
 <h2>Fixes found along the way</h2>
 <p>Real defects, each folded into the migration item that rewrites its file rather than queued separately. The item that owns each fix is named in brackets.</p>

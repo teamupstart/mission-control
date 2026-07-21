@@ -136,9 +136,14 @@ overlay still needs the "session disappeared" reconciliation effect in `App.tsx`
 in the browser build). Push-direction channels also need `webContents.send` plus a
 subscribe/unsubscribe pair in preload.
 
-**Claude hook events are declared twice** - `EVENTS` and `MATCHER_EVENTS` in both
-`hooks/install.mjs` and `src/main/integrations.ts`. Edit both, plus `hooks/harness-hook.mjs`
-and `hookToState` in `registry.ts`. Hand-kept; nothing catches drift.
+**Claude hook events are declared ONCE**, on the harness: `claudeHooks.events` /
+`.matcherEvents` (`src/server/harness/claude/hooks.ts`). Both installers - `hooks/install.mjs`
+and `src/main/integrations.ts` - import it, and `harness-hooks.test.ts` fails if either
+names an event itself again. A new event is that list plus a `toState` case beside it, plus
+whatever `hooks/harness-hook.mjs` has to lift out of its payload. Keep that file importing
+only types and pure functions: the Electron main bundle reaches it, and must not pull the
+daemon (and `node:sqlite`) in behind nine strings, which is why both installers import the
+spec's module directly rather than `harness/index.ts`.
 
 **MCP tool args are validated twice** - hand-written zod in `src/mcp/server.ts` duplicating
 `src/shared/protocol.ts`. Change both. Hand-kept; nothing catches drift.
@@ -198,10 +203,15 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   is either implemented or explicitly `null`. **`null` is a first-class answer, never a
   stub**: `HARNESSES.codex.transcript.messages` is null because a rollout carries metadata
   and no turns, and every reader then takes the one already-tested "unavailable" path
-  instead of an empty window that reads as "this session said nothing". Reach a capability
-  through the registry (`sessionMessages`, `transcriptFor`), never by testing `s.agent`;
-  each phase of `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
-  `harness-transcript.test.ts`, `session-contracts.test.ts`.
+  instead of an empty window that reads as "this session said nothing". `HARNESSES.codex.hooks`
+  is null for the same kind of reason - Codex pushes nothing at us - and a null there is
+  load-bearing in three places: the ingest is refused rather than read by Claude's event
+  vocabulary, the pane-keyed hook overlay is agent-scoped so the card Codex started in a
+  vacated pane does not inherit Claude's last state, and `awaitReady` skips its 20s wait.
+  Reach a capability through the registry (`sessionMessages`, `transcriptFor`, `hooksFor`),
+  never by testing `s.agent`; each phase of `docs/plans/pluggable-integrations/plan.md` adds
+  a slot. Test: `harness-transcript.test.ts`, `harness-hooks.test.ts`,
+  `session-contracts.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the
   enforcement - a new id that is not implemented does not compile, and every capability is

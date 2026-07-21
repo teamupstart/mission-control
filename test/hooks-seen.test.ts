@@ -56,6 +56,7 @@ test("a hook sets both flags", () => {
   const registry = new Registry();
   registry.applyDiscovery([mkDiscovered({ syntheticId: "hooked-1" })]);
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-1",
     cwd: "/repo",
@@ -75,6 +76,7 @@ test("going QUIET past the overlay TTL clears `instrumented` but never `hooksSee
   const d = mkDiscovered({ syntheticId: "quiet-1", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%9" } });
   registry.applyDiscovery([d]);
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-9",
     cwd: "/repo",
@@ -102,6 +104,7 @@ test("`hooksSeen` survives a daemon RESTART - overlays don't, and that's the poi
   const d = mkDiscovered({ syntheticId: "restart-1", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%7" } });
   first.applyDiscovery([d]);
   first.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-7",
     cwd: "/repo",

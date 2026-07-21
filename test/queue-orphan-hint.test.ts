@@ -196,6 +196,7 @@ test("a session the SessionEnd hook marked exited stops holding its key", async 
 
   // Ctrl-D: the hook reports the session ended, with no eviction timer behind it.
   registry.applyHook({
+    agent: "claude",
     event: "SessionEnd",
     sessionId: null,
     transcriptPath: null,

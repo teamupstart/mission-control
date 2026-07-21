@@ -62,6 +62,7 @@ function seedQueue(syntheticId: string, agentSessionId: string, paneId: string):
   const queues = new QueueManager(registry);
   registry.applyDiscovery([mkDiscovered(syntheticId, paneId)]);
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: agentSessionId,
     cwd: "/repo",
@@ -156,6 +157,7 @@ test("a hook that lands BEFORE discovery still gets its binding persisted", () =
   const registry = new Registry();
   const queues = new QueueManager(registry);
   registry.applyHook({
+    agent: "claude",
     event: "UserPromptSubmit",
     sessionId: "agent-early",
     cwd: "/repo",
@@ -190,6 +192,7 @@ test("a /clear orphans the queue it left behind, even across a restart", () => {
   const queues = new QueueManager(registry);
   registry.applyDiscovery([mkDiscovered("clear-1", "%4")]);
   registry.applyHook({
+    agent: "claude",
     event: "UserPromptSubmit",
     sessionId: "agent-after-clear",
     cwd: "/repo",

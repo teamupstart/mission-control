@@ -27,20 +27,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse, modify, applyEdits } from "jsonc-parser";
 import { writeOtelEnv } from "@shared/claude-settings.ts";
+// One definition of the event vocabulary, on the harness that fires it - this file and
+// `hooks/install.mjs` each used to hold a copy, hand-kept, with nothing catching drift.
+// Imported from the spec's own module rather than through `harness/index.ts`: this file
+// is bundled into the Electron main process, which must not pull the daemon (and
+// `node:sqlite` behind it) in for the sake of nine strings. `harness/claude/hooks.ts`
+// imports nothing but types and pure functions, and is kept that way for this reason.
+import { claudeHooks } from "../server/harness/claude/hooks.ts";
 
 const MARKER = "harness-hook";
-const EVENTS = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PostToolUse",
-  "Notification",
-  "Stop",
-  "SubagentStop",
-  "PreCompact",
-  "SessionEnd",
-];
-const MATCHER_EVENTS = new Set(["PreToolUse", "PostToolUse"]);
+const EVENTS = claudeHooks.events;
+const MATCHER_EVENTS = new Set(claudeHooks.matcherEvents);
 
 export interface IntegrationResult {
   ok: boolean;

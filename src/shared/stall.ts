@@ -197,7 +197,7 @@ export function detectStall(
   }
 
   // 4. Went idle and stayed there while work was still outstanding. This is the
-  //    isIdleNudge hole (src/server/registry.ts): a turn that ended with a question
+  //    isIdleNudge hole (src/server/harness/claude/hooks.ts): a turn that ended with a question
   //    in prose is indistinguishable by state from one that ended having finished,
   //    so neither nags. Scoping to sessions with open work is what makes this
   //    signal rather than noise - see workOutstanding.

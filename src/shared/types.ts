@@ -1553,8 +1553,8 @@ export interface ToolCall {
    * This is the only place the CONCRETE action a turn takes is written down: the name
    * says "Bash", the input says `rm -rf /`. Foreman's whole judgment surface rests on
    * it - on the terminal surface the pending question is the generic, 120-char-capped
-   * "Claude needs your permission" (see the Notification branch of registry.ts's
-   * `hookToState`), so an `AskUserQuestion`'s options and a `Bash`'s command reach the
+   * "Claude needs your permission" (see the Notification branch of the Claude hook
+   * spec's `toState`), so an `AskUserQuestion`'s options and a `Bash`'s command reach the
    * reviewer through here or not at all.
    */
   input?: string;

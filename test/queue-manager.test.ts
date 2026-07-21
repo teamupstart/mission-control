@@ -54,6 +54,7 @@ function seedSession(
   const d = mkDiscovered(syntheticId, over);
   registry.applyDiscovery([d]);
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: agentSessionId,
     cwd: d.cwd,
@@ -190,6 +191,7 @@ test("re-attach refuses a source key a live session still holds", () => {
     mkDiscovered("s-other", { cwd: "/repo" }),
   ]);
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-live",
     cwd: "/repo",
@@ -197,6 +199,7 @@ test("re-attach refuses a source key a live session still holds", () => {
     env: { tmuxPane: registry.getSession("s-live")!.tmux!.paneId },
   });
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-other",
     cwd: "/repo",
@@ -232,6 +235,7 @@ test("re-attach still moves a genuinely orphaned queue, and heals BOTH cards", (
 
   // The `/clear`: same pane, new agent session id. The old key now belongs to nobody.
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-new",
     cwd: "/repo",
@@ -266,6 +270,7 @@ test("re-attach is refused before the sessions has ever been observed", () => {
 
   registry.applyDiscovery([mkDiscovered("s-target")]);
   registry.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-target",
     cwd: "/repo",
@@ -279,6 +284,7 @@ test("re-attach is refused before the sessions has ever been observed", () => {
   const unswept = new Registry();
   const unsweptQueues = new QueueManager(unswept);
   unswept.applyHook({
+    agent: "claude",
     event: "Stop",
     sessionId: "agent-seed-2",
     cwd: "/repo",

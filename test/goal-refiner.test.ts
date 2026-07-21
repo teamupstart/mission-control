@@ -98,7 +98,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 }
 
 function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
-  return { sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
+  return { agent: "claude", sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
 }
 
 /** Poll until `fn` is true, or fail. Beats a fixed sleep: the loop is async by nature. */

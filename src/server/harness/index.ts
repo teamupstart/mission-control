@@ -1,6 +1,7 @@
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, Session } from "@shared/types.ts";
-import type { Harness, TranscriptMessages, TranscriptSpec } from "./types.ts";
+import type { Harness, HookSpec, TranscriptMessages, TranscriptSpec } from "./types.ts";
+import { claudeHooks } from "./claude/hooks.ts";
 import { claudeTranscript } from "./claude/transcript.ts";
 import { codexTranscript } from "./codex/transcript.ts";
 
@@ -22,8 +23,13 @@ import { codexTranscript } from "./codex/transcript.ts";
 // `harness-transcript.test.ts` pins the degradation.
 
 export const HARNESSES: Record<AgentType, Harness> = {
-  claude: { id: "claude", transcript: claudeTranscript },
-  codex: { id: "codex", transcript: codexTranscript },
+  claude: { id: "claude", transcript: claudeTranscript, hooks: claudeHooks },
+  // `hooks: null` is a statement, not a gap: Codex pushes nothing at us, so a Codex card
+  // is read passively (discovery, and whatever the rollout says) and the dispatcher does
+  // not spend 20s waiting for a first hook. `todo/codex-instrumentation.md` has the spike
+  // that would change this answer - a Codex-native hook reporting session id, rollout
+  // path, cwd and lifecycle - and it lands here, as a spec, not as a second pipeline.
+  codex: { id: "codex", transcript: codexTranscript, hooks: null },
 };
 
 /** The harness for an agent. Total by construction - the Record cannot have a hole. */
@@ -39,6 +45,18 @@ export function allHarnesses(): Harness[] {
 /** A session's transcript capability, or null when its harness records nothing readable. */
 export function transcriptFor(session: Session): TranscriptSpec | null {
   return HARNESSES[session.agent].transcript;
+}
+
+/**
+ * An agent's push-instrumentation capability, or null when it pushes nothing.
+ *
+ * Null is what every hook-shaped caller degrades on: the ingest is refused rather than
+ * interpreted by another agent's vocabulary, and the dispatcher skips a wait for a
+ * signal that is never coming. Ask this rather than `agent === "claude"`, which says
+ * nothing about why.
+ */
+export function hooksFor(agent: AgentType): HookSpec | null {
+  return HARNESSES[agent].hooks;
 }
 
 /** A located file and the capability that can read its CONVERSATION. */

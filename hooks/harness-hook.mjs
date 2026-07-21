@@ -1,16 +1,23 @@
 #!/usr/bin/env node
-// Claude Code hook -> Mission Control bridge.
+// Claude Code's hook bridge -> Mission Control.
 //
-// Configured to run for every hook event (the event name is passed as argv[2]).
-// It reads the hook JSON on stdin, captures the terminal env that lets the
-// daemon bind the event to a discovered session (tmux/wezterm pane ids), and
-// POSTs it to the daemon.
+// Configured to run for every event in `claudeHooks.events` (the event name arrives as
+// argv[2]). Everything in this file is Claude's half of the bridge: the payload key
+// mapping below is Anthropic's hook JSON schema, and the two sniffs read fields only a
+// `PostToolUse` on `Bash` has. The transport - stdin, the POST, the timeouts, exit 0 - is
+// nobody's, and lives in `@shared/hook-bridge.mjs`; a second agent's bridge is another
+// file this size beside this one, not a fork of the pipeline.
 //
-// Contract with Claude: be fast, write NOTHING to stdout (Claude would inject it
-// into the model's context), swallow every error, and always exit 0 so a hook
-// never blocks or fails the agent - even when the daemon is down.
+// The daemon's other half is `HARNESSES.claude.hooks` (`src/server/harness/claude/
+// hooks.ts`), which says what each of these events MEANS. The two are a pair: this file
+// decides what reaches the wire, that one decides what the card does with it.
+//
+// The filename is load-bearing and must not change: it is the marker both installers
+// match on to find their own entries in a user's `~/.claude/settings.json`, and those
+// entries are live on machines running older checkouts.
 
-import { BASE_URL, captureTerminalEnv, readToken } from "../src/shared/harness-runtime.mjs";
+import { captureTerminalEnv } from "../src/shared/harness-runtime.mjs";
+import { postHookEvent, readStdin } from "../src/shared/hook-bridge.mjs";
 import { opensPullRequest } from "../src/shared/pr-command.mjs";
 
 // A GitHub PR URL as printed by `gh pr create` / `gh pr view`. Scoped to a real
@@ -25,8 +32,7 @@ const PR_URL_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
  * because the link won't match the session's branch. Returns undefined when
  * there's nothing to report - the common case, kept cheap.
  */
-function sniffPrUrl(payload) {
-  const event = payload.hook_event_name ?? process.argv[2] ?? "";
+function sniffPrUrl(payload, event) {
   if (event !== "PostToolUse") return undefined;
   if (payload.tool_name && payload.tool_name !== "Bash") return undefined;
   const field = payload.tool_response;
@@ -51,44 +57,24 @@ function sniffPrUrl(payload) {
  * nothing to the wire. The command itself is NEVER sent - only this boolean - so a
  * command line carrying a secret doesn't leave the machine on account of this.
  */
-function sniffPrCreated(payload) {
-  const event = payload.hook_event_name ?? process.argv[2] ?? "";
+function sniffPrCreated(payload, event) {
   if (event !== "PostToolUse") return undefined;
   if (payload.tool_name !== "Bash") return undefined;
   return opensPullRequest(payload.tool_input?.command) ? true : undefined;
 }
 
-function readStdin() {
-  return new Promise((resolve) => {
-    if (process.stdin.isTTY) return resolve("");
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (c) => (data += c));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
-    setTimeout(() => resolve(data), 500);
-  });
-}
-
-async function main() {
-  // A headless `claude -p` the daemon or Foreman spawned is Claude Code, so it fires
-  // these hooks exactly like a human's session - but it is our own machinery talking to
-  // itself, not a session anyone is watching. Reporting it binds the run to a real card
-  // (see `headlessEnv` in src/server/claude-cli.ts) and, once it can't, still leaves a
-  // trail of phantom prompts in `session_events`. Declining here is the cheaper half of
-  // the fix: no POST at all rather than a POST the daemon has to reject.
-  if (process.env.MISSION_HEADLESS) return;
-
-  const event = process.argv[2] || "";
-  let payload = {};
-  try {
-    payload = JSON.parse(await readStdin());
-  } catch {
-    payload = {};
-  }
-
-  const body = {
-    event: event || payload.hook_event_name || "",
+/**
+ * Claude's hook JSON, as `HookIngest`.
+ *
+ * Every key on the left is Anthropic's, version by version. Everything optional is sent
+ * as `undefined` rather than null so it drops out of the JSON entirely - the daemon
+ * distinguishes "this event omits the field" (keep what we knew) from "this event says
+ * the field is empty", and `permission_mode` is the one that depends on it.
+ */
+function toIngest(payload, event) {
+  return {
+    agent: "claude",
+    event,
     sessionId: payload.session_id ?? null,
     cwd: payload.cwd ?? null,
     transcriptPath: payload.transcript_path ?? null,
@@ -103,24 +89,28 @@ async function main() {
     // hook events. Undefined on events that omit it - the daemon keeps the last
     // known mode rather than clearing it.
     permissionMode: payload.permission_mode,
-    prUrl: sniffPrUrl(payload),
-    prCreated: sniffPrCreated(payload),
+    prUrl: sniffPrUrl(payload, event),
+    prCreated: sniffPrCreated(payload, event),
   };
+}
 
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 800);
+async function main() {
+  // A headless `claude -p` the daemon or Foreman spawned is Claude Code, so it fires
+  // these hooks exactly like a human's session - but it is our own machinery talking to
+  // itself, not a session anyone is watching. Reporting it binds the run to a real card
+  // (see `headlessEnv` in src/server/claude-cli.ts) and, once it can't, still leaves a
+  // trail of phantom prompts in `session_events`. Declining here is the cheaper half of
+  // the fix: no POST at all rather than a POST the daemon has to reject.
+  if (process.env.MISSION_HEADLESS) return;
+
+  let payload = {};
   try {
-    await fetch(`${BASE_URL}/hooks/${encodeURIComponent(body.event)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-harness-token": readToken() },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
+    payload = JSON.parse(await readStdin());
   } catch {
-    // daemon down or slow - ignore, the poller still tracks the session.
-  } finally {
-    clearTimeout(timer);
+    payload = {};
   }
+  const event = process.argv[2] || payload.hook_event_name || "";
+  await postHookEvent(toIngest(payload, event));
 }
 
 main().finally(() => process.exit(0));

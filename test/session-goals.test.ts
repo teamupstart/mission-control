@@ -37,7 +37,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 }
 
 function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
-  return { sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
+  return { agent: "claude", sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
 }
 
 /** A registry with one live, pane-matched session ready to take hooks. */
@@ -54,7 +54,7 @@ test("a prompt hook captures the full ask, not the 120-char ticker", () => {
   openDb();
   const { r, s, env } = withSession("g1", "%11");
   // Longer than the `activity` trim, which is exactly why the goal can't read that field:
-  // `hookToState` cuts at 120 chars for the ticker and the whole text exists only here.
+  // the hook spec's `toState` cuts at 120 chars for the ticker; the whole text is only here.
   const prompt = `refactor the registry so that ${"the note key is stable ".repeat(12)}`;
   assert.ok(prompt.length > 120);
   r.applyHook(evt({ event: "UserPromptSubmit", env, prompt }));

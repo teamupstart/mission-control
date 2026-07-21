@@ -176,6 +176,15 @@ This adds one `command` hook per event to `~/.claude/settings.json`, each runnin
 to stdout, swallows every error, and always exits 0, so a hook never blocks or
 fails the agent even when the daemon is down.
 
+Which events those are, and what each one means for a card, belongs to the agent rather
+than to the installer: both live on `HARNESSES.claude.hooks`
+(`src/server/harness/claude/hooks.ts`), which this script and the packaged app's
+**Install Claude integrations…** both read. Only the payload mapping - Claude's hook JSON
+keys - is in the bridge itself; the transport under it
+(`src/shared/hook-bridge.mjs`) names no agent. An agent that reports nothing declares
+`hooks: null` instead - Codex does - and its cards are read passively, off discovery and
+whatever its own session file says.
+
 **2. Start a new Claude Code session.** Claude reads hook config when a session
 starts, so **sessions already running when you install won't report until you
 restart them.** This is the #1 reason a busy agent is stuck on grey "running"
@@ -229,10 +238,13 @@ every invocation. Paths are absolute (your `node` and this repo):
 }
 ```
 
-Each fired hook POSTs `{ event, sessionId, cwd, env }` to
+Each fired hook POSTs `{ agent, event, sessionId, cwd, env }` to
 `http://127.0.0.1:7317/hooks/<event>` with the `~/.mission-control/token`. The daemon
 binds it to the right card via the terminal pane env (`TMUX_PANE` /
-`WEZTERM_PANE`) and maps the event to a state (see the table below).
+`WEZTERM_PANE`) and maps the event to a state (see the table below). `agent` is what says
+whose event vocabulary `event` is written in: a pane outlives the agent in it, so an
+event is only ever applied to a card running the harness that sent it. It defaults to
+`claude` when absent, since a bridge installed by an older checkout predates any other.
 
 </details>
 
@@ -1641,7 +1653,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_NM_POLL_MS` | `5000` | no-mistakes status interval |
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
-| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt |
+| `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt. The fallback, reached only when the wait below finds nothing |
+| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the agent's first hook - the only honest "I can read input" signal - before falling back to the settle above. Skipped outright for an agent that reports no hooks at all (Codex), which would otherwise spend it in certain silence on every dispatch |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |

@@ -5,6 +5,7 @@ import { TITLE_MAX_CHARS } from "@shared/title.ts";
 import { WORKTREES_DIR, resolveAgentBin, envVar } from "./config.ts";
 import { askChannelArgs } from "./ask-channel.ts";
 import { injectPrompt, setPermissionMode } from "./actions.ts";
+import { hooksFor } from "./harness/index.ts";
 import { getHarnessesConfig, resolveDispatchModel } from "./harnesses.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import type { Registry } from "./registry.ts";
@@ -158,17 +159,25 @@ export class Dispatcher {
    * hook, so wait for that. Returns whether we got it, because that decides whether a
    * later silence is evidence of anything.
    *
-   * The fallback is deliberate. An agent with no hooks installed will never satisfy
+   * The fallback is deliberate. An agent whose hooks aren't installed will never satisfy
    * this, and refusing to dispatch to it would be a regression, so a timeout degrades
    * to the old fixed sleep - the pre-existing best-effort behaviour, now confined to
    * the only case that has no better option instead of applying to everything.
+   *
+   * "Aren't installed" and "don't exist" are different, though, and only the first is
+   * worth waiting out. A harness that declares no `hooks` capability cannot produce this
+   * signal at all, so the wait is 20 seconds of certain silence on EVERY dispatch - dead
+   * time a Codex task paid before its prompt was typed. Ask the registry rather than the
+   * session: the answer is a property of the agent, not of this particular launch.
    */
   private async awaitReady(
     cwd: string,
     discovered: Session,
   ): Promise<{ session: Session; instrumented: boolean }> {
-    const ready = await this.registry.waitForReadySessionAtCwd(cwd, HOOK_READY_MS);
-    if (ready) return { session: ready, instrumented: true };
+    if (hooksFor(discovered.agent)) {
+      const ready = await this.registry.waitForReadySessionAtCwd(cwd, HOOK_READY_MS);
+      if (ready) return { session: ready, instrumented: true };
+    }
     await sleep(SETTLE_MS);
     // Re-read: `discovered` is a snapshot from before the wait, and its pane may have
     // been filled in since. Typing needs the freshest pane we have.

@@ -81,7 +81,7 @@ code lives, and in which capabilities exist at all:
 
 | | wezterm.ts | tmux.ts |
 |---|---|---|
-| bin resolution | `resolveWeztermBin()`, `WEZTERM_BIN` | literal `"tmux"` at ~19 inline call sites |
+| bin resolution | ~~`resolveWeztermBin()`, `WEZTERM_BIN`~~ | ~~literal `"tmux"` at ~19 inline call sites~~ **closed for the adapters**: one `BinSpec` each, `resolveBin` + `binEnv`. The remaining inline `run("tmux", …)` writes belong to the pane-I/O item |
 | pane id type | `number` | `string` (`"%3"`) |
 | cwd | `file://` URL, needs `weztermCwdToPath` | plain path |
 | spawn | `spawnWeztermTab` (used only as a focus fallback) | lives in `dispatcher.ts:449-468`, not in `tmux.ts` |
@@ -228,16 +228,21 @@ handle, or both; writes prefer the innermost (multiplexer), focus walks outward.
 **Landed** in `src/server/terminal/` - `types.ts` (both interfaces, the `Key` vocabulary,
 `BinSpec`), `registry.ts` (`MULTIPLEXERS` / `EMULATORS`, plus `bindPane` and `hostPanesFor`,
 which are the composition rule made executable), `tmux.ts` and `wezterm.ts`, `exec.ts` (the
-subprocess seam the adapters are testable through) and `bin.ts`. No call site is migrated
-yet; the adapters are mechanism only, and the copy-mode refusal, pane lock, paste settle and
-submit read-back stay in `actions.ts` as the policy that composes them.
+subprocess seam the adapters are testable through), `bin.ts` and `enumerate.ts` (the third
+composition primitive: what each backend can SEE, in the order that decides which names a
+session). Discovery is the first call site migrated; the WRITE call sites are not, and the
+adapters stay mechanism only - the copy-mode refusal, pane lock, paste settle and submit
+read-back remain in `actions.ts` as the policy that composes them.
 
 `bin.ts` closes the first row of the divergence table rather than adding to it:
 `resolveWeztermBin` moved its body there as `resolveBin(BinSpec)` and `config.ts` keeps a
 one-line wrapper for the call sites this phase does not reach, so the change whose purpose is
 to stop copies multiplying does not land a fifth copy of bin resolution. Behavior is
 unchanged (env override, then the first existing candidate, then the bare name on PATH), and
-no `TMUX_BIN` env var was invented, because tmux has no such convention.
+no `TMUX_BIN` env var was invented, because tmux has no such convention. The enumeration
+item then gave `BinSpec` its other two jobs - `dropEnv` and `binPresent` - since "which
+binary", "in what environment" and "is it even here" are one question asked of one spec, and
+splitting them is how tmux came to have the third answered and neither of the first two.
 
 Three refinements the sketch above did not have, each forced by the existing code:
 
@@ -268,6 +273,65 @@ for a pure move:
   from `listWeztermPanes`, which drops it. Routing them through the adapter puts commands and
   ids on the same mux.
 
+#### Enumeration and correlation, as landed
+
+`correlate.ts` names no backend. `DiscoveryInput` is `{ procs, terminals }` where
+`terminals` is a list of `TerminalEnumeration`s produced by `enumerateTerminals`
+(`terminal/enumerate.ts`), which sweeps `MULTIPLEXER_IDS` then `EMULATOR_IDS` and asks each
+registered adapter what it can see. The three-arm `if (tmuxPane) … else if (weztermPane) …
+else …` is a priority walk over that list, and the "keep the wezterm handle too" fixup is
+gone - taking the first pane of each AXIS *is* the composition rule, so the emulator handle
+can no longer be dropped by an early `else`. Five deltas, each forced by something real:
+
+- **The ids moved to `@shared/terminal.ts`, and only the ids.** `NameSource` was the closed
+  union `"tmux" | "wezterm" | "process"` sitting in `shared/types.ts` with nothing
+  connecting it to the registries, so a third backend would stamp a value the type did not
+  admit and the dashboard could not read. It is now `TerminalBackendId | "process"`. The
+  split is the `HARNESS_CAPABILITIES` one exactly: the browser renders `nameSource` and
+  cannot import an adapter whose `list` spawns a subprocess, so ids are shared and mechanism
+  is not. `Record<MultiplexerId, Multiplexer>` still does the enforcing.
+- **The id arrays are ORDERED, and that is the precedence.** tmux-beats-wezterm was the arm
+  order of an if/else - unstated, and unavailable to a third backend. It is now
+  multiplexers-before-emulators, declared once, because a multiplexer pane lives inside an
+  emulator pane and is the inner, more specific answer. `correlate.test.ts` pins it by
+  enumerating emulator-first and asserting the emulator names the session: if that still
+  said "tmux", an arm order would still be the real rule.
+- **`legacyHandles` is the one place left that names a vendor**, and it is the phase 3
+  seam rather than a leftover: `Session.tmux` / `Session.wezterm` are still two named
+  nullable siblings, and `WeztermInfo` still holds numeric ids the adapters normalized to
+  strings. A backend with no field to land in correlates and names normally and simply
+  records no handle - the honest shape of a half-finished migration, and what that function
+  deleting looks like.
+- **A registered-but-absent adapter costs no spawn per tick.** Discovery sweeps every
+  backend every 1500ms, so the registry must be free to carry Ghostty, cmux and iTerm2 on a
+  machine that has none of them. `binPresent` answers "installed?" by walking PATH with
+  `existsSync` - microseconds against the ~1-3ms of a `fork`+`execve` that fails ENOENT.
+  Deliberately NOT a "did it work last tick?" memo: wezterm installed with no GUI running
+  must keep being swept, or a session never appears after the user opens their terminal.
+- **`BinSpec` grew `dropEnv`, and tmux's is EMPTY - which is the finding, not the gap.**
+  wezterm had `weztermEnv` stripping `WEZTERM_UNIX_SOCKET`; tmux had no env handling at all,
+  and `TMUX` looks like the same variable - it pins every client to one socket path, verified
+  against tmux 3.6b with two servers up. Scrubbing it was written, then reverted, because the
+  two cases only rhyme. wezterm's pin goes STALE (`gui-sock-<pid>` dies with its GUI), so
+  dropping it recovers the live default; tmux's names a server that is alive by construction,
+  so dropping it picks a *different* live server rather than restoring anything - and "every
+  session on the machine" is not on offer either way, since a tmux client talks to exactly one
+  socket. Worse, the ~19 inline `run("tmux", …)` writes this item does not reach still inherit
+  `TMUX`, so scrubbing it here alone splits enumeration from actuation: cards built from one
+  server's pane ids while `send-keys -t %3` lands on another server's `%3`, and `tmuxSendKeys`
+  probing copy-mode on one server while writing to the other, where the probe answers "no such
+  pane", fails open, and silently stops guarding. An empty list is a declaration in the same
+  register as a null capability. `TMUX` goes when the writes go, in that commit. Data rather
+  than a scrub function, for the reason `DetectSpec` is data rather than a predicate.
+
+Verified as a no-op the way the detection item was: `discover()` run on a live machine with
+18 tmux panes and 15 wezterm panes, against `HEAD` and against this code, output compared
+field by field over all 10 sessions - name, `nameSource`, both handles, cwd and branch -
+with zero differences. `discovery/tmux.ts` is deleted; `discovery/wezterm.ts` keeps only
+what `actions.ts` still calls (focus, spawn, retitle) and goes with that file. Tests:
+`correlate.test.ts`, `terminal-enumerate.test.ts`, `terminal-adapters.test.ts`,
+`terminal-registry.test.ts`.
+
 ```mermaid
 flowchart LR
   subgraph N["nesting today"]
@@ -280,9 +344,10 @@ flowchart LR
 
 ### How the call graph changes
 
-Today `correlate.ts` and `actions.ts` import the two backend modules directly, so every
-new backend edits both. After the migration they resolve an adapter from a registry and
-never name a vendor.
+`correlate.ts` and `actions.ts` both imported the two backend modules directly, so every
+new backend edited both. After the migration they resolve an adapter from a registry and
+never name a vendor. **`correlate.ts` is there now** - it reads `enumerateTerminals()` and
+knows no backend at all; `actions.ts` still holds the write and focus call sites.
 
 ```mermaid
 flowchart TB
@@ -687,8 +752,10 @@ declared `null`. "I forgot skills exist" stops being a possible outcome.
 Three places assume exactly two backends as *named fields*, and no adapter work can land
 cleanly until they become lists:
 
-1. `DiscoveryInput` (`correlate.ts:78-82`) - `{ procs, tmux, wezterm }`, with
-   `gatherDiscoveryInput` unconditionally `Promise.all`-ing both listers.
+1. ~~`DiscoveryInput` (`correlate.ts:78-82`) - `{ procs, tmux, wezterm }`, with
+   `gatherDiscoveryInput` unconditionally `Promise.all`-ing both listers.~~ **Closed** -
+   `{ procs, terminals }`, a list of adapter results. See "Enumeration and correlation, as
+   landed".
 2. `Session.tmux` / `Session.wezterm` (`shared/types.ts:140-141`) - two nullable siblings,
    with per-field SSE comparators at `registry.ts:2237-2238` and ~20 call sites doing
    `Boolean(s.tmux || s.wezterm)` as a stand-in for "can we type here?".
@@ -705,7 +772,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
-| 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
+| 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; then pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface |

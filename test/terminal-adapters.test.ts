@@ -2,19 +2,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
-import { resolveBin, TMUX_BIN } from "../src/server/terminal/bin.ts";
-import { tmuxMultiplexer, toMuxClient, toMuxPane } from "../src/server/terminal/tmux.ts";
-import { toEmulatorPane, weztermEmulator } from "../src/server/terminal/wezterm.ts";
+import { binEnv, resolveBin, TMUX_BIN, WEZTERM_BIN } from "../src/server/terminal/bin.ts";
+import { parseClients, parsePanes, tmuxMultiplexer } from "../src/server/terminal/tmux.ts";
+import { parsePanes as parseEmulatorPanes, weztermEmulator } from "../src/server/terminal/wezterm.ts";
 import { ALL_KEYS } from "../src/server/terminal/types.ts";
 
-// What is at stake: the three things the two backends disagree about, which are resolved at
-// ~20 call sites today and must be resolved once, here.
+// What is at stake: the things the two backends disagree about, which used to be resolved at
+// ~20 call sites and must be resolved once, here.
 //
 //   - keys. tmux takes NAMES ("BTab", "Up"); wezterm takes escape SEQUENCES ("\x1b[Z",
 //     "\x1b[A"). A caller that knows either convention has a vendor written into it, and a
 //     third backend will use a third convention.
 //   - pane ids. wezterm's are numbers, tmux's are strings ("%3").
 //   - cwd. wezterm reports a `file://` URL, tmux a plain path.
+//   - the environment. Each backend has one inherited variable that pins its CLI to a single
+//     server instance, and an adapter that enumerates on one socket and writes on another is
+//     the failure this layer exists to make impossible.
 //
 // Asserted against a fake exec, deliberately: the interesting property of an adapter is the
 // argv it emits, and a test that shells out to a real tmux asserts that on the machines
@@ -204,47 +207,109 @@ test("tmux rejects the names its own target grammar cannot express", () => {
   assert.equal(names("api-v2"), null);
 });
 
-test("pane ids and cwds are normalized at the boundary", () => {
-  const emu = toEmulatorPane({
-    paneId: 5,
-    tabId: 2,
-    windowId: 0,
-    tabTitle: "api",
-    windowTitle: "",
-    cwd: "file://host/Users/me/w%20ork",
-    tty: "ttys012",
-    isActive: true,
-  });
-  // Numbers become strings, so a caller can hold a pane id without knowing whose it is.
-  assert.equal(emu.paneId, "5");
-  assert.equal(emu.tabId, "2");
-  // A URL is not a path, and only one call site converts it today.
-  assert.equal(emu.cwd, "/Users/me/w ork");
+test("each backend enumerates through its own adapter, and normalizes at that boundary", async () => {
+  // Enumeration moved off `discovery/*` and onto the adapters, so this is where the format
+  // strings and the JSON shape are now pinned - against verbatim backend output, which is
+  // the only way it asserts anything on a machine with neither installed.
+  const tmuxOut = ["api\x1f1\x1fagent\x1f%3\x1f42\x1f/dev/ttys028\x1f/w/api", ""].join("\n");
+  const tmux = recorder([stubRun({ stdout: tmuxOut, stderr: "", code: 0 })]);
+  const [muxPane] = await tmuxMultiplexer(tmux.exec).list();
+  assert.deepEqual(tmux.calls[0]!.args.slice(0, 3), ["list-panes", "-a", "-F"]);
+  assert.equal(muxPane?.paneId, "%3");
+  assert.equal(muxPane?.windowIndex, 1);
+  // tmux reports `/dev/ttys028` and wezterm reports `ttys012`; both arrive normalized so the
+  // host-tab join is an equality test rather than a strip at the one call site that does it.
+  assert.equal(muxPane?.tty, "ttys028");
+  assert.equal(muxPane?.cwd, "/w/api");
 
-  const mux = toMuxPane({
-    session: "api",
-    windowIndex: 1,
-    windowName: "agent",
-    paneId: "%3",
-    panePid: 42,
-    tty: "ttys028",
-    currentCommand: "claude",
-    currentPath: "/w/api",
-  });
-  assert.equal(mux.paneId, "%3");
-  assert.equal(mux.cwd, "/w/api");
+  const wezOut = JSON.stringify([
+    {
+      pane_id: 5,
+      tab_id: 2,
+      window_id: 0,
+      tab_title: "api",
+      cwd: "file://host/Users/me/w%20ork",
+      tty_name: "ttys012",
+      is_active: true,
+    },
+  ]);
+  const wez = recorder([stubRun({ stdout: wezOut, stderr: "", code: 0 })]);
+  const [emuPane] = await weztermEmulator(wez.exec).list!();
+  assert.deepEqual(wez.calls[0]!.args, ["cli", "--no-auto-start", "list", "--format", "json"]);
+  // Numbers become strings, so a caller can hold a pane id without knowing whose it is.
+  assert.equal(emuPane?.paneId, "5");
+  assert.equal(emuPane?.tabId, "2");
+  // A URL is not a path.
+  assert.equal(emuPane?.cwd, "/Users/me/w ork");
 });
 
-test("client ttys are normalized so the host-tab join is an equality test", () => {
-  // tmux reports `/dev/ttys028` and wezterm reports `ttys012`. The strip happens inline at
-  // the one join today, which is a normalization bug waiting for a backend that reports the
-  // prefix on both sides.
-  assert.equal(toMuxClient({ tty: "/dev/ttys028", session: "api" }).tty, "ttys028");
-  assert.equal(toMuxClient({ tty: "", session: "api" }).tty, null);
+test("an absent or unparseable backend enumerates as empty, never as a throw", async () => {
+  // The silent-degradation contract discovery is built on: the product works fine on a
+  // machine with neither backend installed, and a sweep that threw would take every card on
+  // the machine down with it.
+  const dead = stubRun({ stdout: "", stderr: "no server running", code: 1 });
+  assert.deepEqual(await tmuxMultiplexer(recorder([dead]).exec).list(), []);
+  assert.deepEqual(await tmuxMultiplexer(recorder([dead]).exec).clients!(), []);
+  assert.deepEqual(await weztermEmulator(recorder([dead]).exec).list!(), []);
+
+  // Short lines and non-JSON are the same answer: a half-parsed pane is no more use than none.
+  assert.deepEqual(parsePanes("\n  \napi\x1f1\n"), []);
+  assert.deepEqual(parseClients("nosep\n"), []);
+  assert.deepEqual(parseEmulatorPanes("<html>not json</html>"), []);
+  assert.deepEqual(parseEmulatorPanes('{"panes":[]}'), [], "an object is not the array we asked for");
+});
+
+test("a client with no tty is dropped rather than joined against every pane that has none", () => {
+  assert.deepEqual(parseClients("/dev/ttys028\x1fapi"), [{ tty: "ttys028", session: "api" }]);
+  assert.deepEqual(parseClients("\x1fapi"), []);
+});
+
+test("a backend drops its own environment pin, and only its own", async () => {
+  const base = {
+    PATH: "/usr/bin",
+    TMUX: "/private/tmp/tmux-501/work,123,0",
+    WEZTERM_UNIX_SOCKET: "/Users/x/.local/share/wezterm/gui-sock-79736",
+  };
+
+  // wezterm's pin goes STALE - `gui-sock-<pid>` dies with the GUI that minted it, and the
+  // inherited value then resolves to nothing, so every tab falls back to a `claude <pid>`
+  // name that Focus cannot raise. Dropping it recovers the live default.
+  const wezEnv = binEnv(WEZTERM_BIN, base);
+  assert.equal(wezEnv.WEZTERM_UNIX_SOCKET, undefined);
+  assert.equal(wezEnv.PATH, "/usr/bin", "everything else passes through untouched");
+  // Not the other backend's. A shared scrub list would be one vendor's rule applied to
+  // every backend on the machine.
+  assert.equal(wezEnv.TMUX, base.TMUX);
+
+  // tmux declares NOTHING to drop, and that is a decision rather than an omission - see
+  // `TMUX_BIN`. `TMUX` names a server that is alive by construction, so dropping it picks a
+  // different live server rather than restoring a dead one; and the ~19 inline
+  // `run("tmux", …)` writes still inherit it, so scrubbing it here alone would build cards
+  // from one server's pane ids and send keystrokes to another server's pane of that name.
+  assert.deepEqual(binEnv(TMUX_BIN, base), base);
+});
+
+test("the env rule reaches every command, not just the spec", async () => {
+  // Enumeration and writes have to hit the SAME server, or a pane id from one is addressed
+  // against another - so a per-command `env` that any one method forgets is the whole bug.
+  const seen: (NodeJS.ProcessEnv | undefined)[] = [];
+  const exec = async (_b: string, _a: string[], opts?: { env?: NodeJS.ProcessEnv }) => {
+    seen.push(opts?.env);
+    return stubRun({ stdout: "", stderr: "", code: 0 });
+  };
+  const wez = weztermEmulator(exec);
+  await wez.list!();
+  await wez.write!.text(EMU, "hello");
+  await wez.capture!(EMU);
+  assert.equal(seen.length, 3);
+  for (const env of seen) {
+    assert.ok(env, "every wezterm command carries an explicit environment");
+    assert.equal(env.WEZTERM_UNIX_SOCKET, undefined);
+  }
 });
 
 test("a binary is the env override, then the first path that exists, then PATH", () => {
-  const spec = { env: "MISSION_TEST_BIN", candidates: ["/definitely/not/here", "widget"] };
+  const spec = { env: "MISSION_TEST_BIN", candidates: ["/definitely/not/here", "widget"], dropEnv: [] };
   // The bare name is never probed on disk - it is resolved by the OS at spawn time, which
   // is what makes it the fallback rather than a match.
   assert.equal(resolveBin(spec), "widget");

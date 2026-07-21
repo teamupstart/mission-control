@@ -1,7 +1,5 @@
-import { listTmuxClients, listTmuxPanes, readTmuxPaneMode } from "../discovery/tmux.ts";
-import type { TmuxClient, TmuxPane } from "../discovery/tmux.ts";
 import { normTty } from "../discovery/tty.ts";
-import { resolveBin, TMUX_BIN } from "./bin.ts";
+import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import type {
   DetachedSessionSpec,
@@ -19,15 +17,19 @@ import type {
  * Mechanism only. The copy-mode REFUSAL, the pane lock, the paste settle and the submit
  * read-back stay in `actions.ts` where they belong - they are decisions about when to
  * write, and they are the same decisions for every backend. What lives here is the part
- * that is tmux's alone: its key names, its target grammar, its buffer dance.
+ * that is tmux's alone: its key names, its format strings, its target grammar, its buffer
+ * dance.
  *
- * Enumeration delegates to `discovery/tmux.ts` rather than reparsing its format strings;
- * that module's `FMT`/`MODE_FMT` comments carry hard-won detail (the unit separator that
- * does not survive a non-UTF-8 locale) which must not be duplicated into a second copy
- * that drifts. The command surfaces are written here because they have no existing home -
- * today they are inline `run("tmux", …)` calls at ~19 sites in `actions.ts`,
- * `dispatcher.ts` and `pane-capture.ts`, which the following migration items delete as
- * they route through this adapter.
+ * Enumeration moved in from `discovery/tmux.ts`, which is gone: discovery now asks the
+ * registry what each backend can see rather than importing two vendors by name. The two
+ * format strings came with their comments, which carry hard-won detail about what does and
+ * does not survive a non-UTF-8 locale.
+ *
+ * The remaining inline `run("tmux", …)` calls - ~19 of them across `actions.ts`,
+ * `dispatcher.ts` and `pane-capture.ts` - are the following migration items, and they are
+ * what this file's `bin()` and `env()` exist to end: none of them resolves a binary or
+ * sanitizes the environment, so they can address a different tmux server than the one the
+ * pane ids they are given were enumerated on.
  */
 
 /**
@@ -52,29 +54,124 @@ const CAPTURE_TIMEOUT_MS = 1000;
 /** Session teardown and creation are user-visible actions, not poll work. */
 const SESSION_TIMEOUT_MS = 10000;
 
-/** Normalize one enumerated tmux pane. The ids are already strings; the tty and cwd are not. */
-export function toMuxPane(p: TmuxPane): MuxPane {
-  return {
-    session: p.session,
-    windowIndex: p.windowIndex,
-    windowName: p.windowName,
-    paneId: p.paneId,
-    panePid: p.panePid,
-    tty: p.tty,
-    cwd: p.currentPath || null,
-  };
+const PANE_FMT = [
+  "#{session_name}",
+  "#{window_index}",
+  "#{window_name}",
+  "#{pane_id}",
+  "#{pane_pid}",
+  "#{pane_tty}",
+  "#{pane_current_path}",
+].join("\x1f"); // unit separator: safe against spaces in names/paths
+
+const CLIENT_FMT = ["#{client_tty}", "#{client_session}"].join("\x1f");
+
+/**
+ * A SPACE, not the unit separator the two `-F` formats use, and the difference is
+ * load-bearing.
+ *
+ * tmux sanitizes non-printable bytes out of its own argv - a `\x1f` arrives at the
+ * server as `_` - unless the client's locale is UTF-8. A daemon started by launchd, or
+ * a CI runner, frequently has no `LANG` at all, and there the separator never survives
+ * the round trip: the probe below fails to parse, reads as "not in a mode", and the
+ * guard it exists to power silently stops guarding on exactly those machines.
+ *
+ * The `-F` formats above get away with `\x1f` because they are read back off stdout rather
+ * than passed through the same sanitizer, and because a session name or path may legitimately
+ * contain a space. Neither field HERE can - `pane_in_mode` is `0` or `1`, and tmux's mode
+ * names are single words (`copy-mode`, `view-mode`, ...) - so nothing is lost, and the parse
+ * below rejoins the tail anyway rather than assuming that stays true.
+ */
+const MODE_FMT = ["#{pane_in_mode}", "#{pane_mode}"].join(" ");
+
+/** Split one `-F` line on the unit separator, or null when it is blank or short. */
+function fields(line: string, want: number): string[] | null {
+  if (!line.trim()) return null;
+  const f = line.split("\x1f");
+  return f.length < want ? null : f;
 }
 
 /**
- * Normalize one attached client.
+ * Parse `list-panes -a -F PANE_FMT`.
+ *
+ * Exported so the argv-to-panes round trip is testable against verbatim tmux output rather
+ * than against a real server, which is the only way this asserts anything on a machine with
+ * no tmux installed.
+ */
+export function parsePanes(stdout: string): MuxPane[] {
+  const panes: MuxPane[] = [];
+  for (const line of stdout.split("\n")) {
+    const f = fields(line, 7);
+    if (!f) continue;
+    panes.push({
+      session: f[0] ?? "",
+      windowIndex: Number(f[1] ?? 0),
+      windowName: f[2] ?? "",
+      paneId: f[3] ?? "",
+      panePid: Number(f[4] ?? 0),
+      tty: normTty(f[5] ?? ""),
+      // A plain path already, unlike wezterm's `file://` URL - the normalization the
+      // interface promises is a no-op on this backend, and empty becomes null rather than "".
+      cwd: f[6] || null,
+    });
+  }
+  return panes;
+}
+
+/**
+ * Parse `list-clients -F CLIENT_FMT`.
  *
  * tmux reports `/dev/ttys028` while wezterm reports `ttys012`, and the join between them is
- * the only link from a session to the window showing it. Normalizing here is what turns
- * `findSessionHostPanes`'s inline `.replace(/^\/dev\//, "")` into an equality test that a
- * third backend cannot get wrong by reporting the prefix.
+ * the only link from a session to the window showing it. Normalizing here is what turns the
+ * inline `.replace(/^\/dev\//, "")` the old join did into an equality test that a third
+ * backend cannot get wrong by reporting the prefix.
  */
-export function toMuxClient(c: TmuxClient): MuxClient {
-  return { tty: normTty(c.tty), session: c.session };
+export function parseClients(stdout: string): MuxClient[] {
+  const clients: MuxClient[] = [];
+  for (const line of stdout.split("\n")) {
+    const f = fields(line, 2);
+    if (!f) continue;
+    const tty = normTty(f[0] ?? "");
+    if (!tty) continue;
+    clients.push({ tty, session: f[1] ?? "" });
+  }
+  return clients;
+}
+
+/**
+ * The tmux mode a pane is sitting in (`copy-mode`, `view-mode`, ...), or null when it is in
+ * none and keystrokes reach the child normally.
+ *
+ * This exists for the writers in `actions.ts`, which cannot tell the difference on
+ * their own: a pane in a mode routes every key to tmux's OWN key table, so `send-keys`
+ * and `paste-buffer` still exit 0 while the child receives nothing.
+ *
+ * Null is also the answer when the question can't be asked - no tmux, no such pane, or
+ * a tmux too old to know these formats. That direction is deliberate. A probe that
+ * cannot see a mode is not evidence of one, and treating an unrecognized probe as
+ * "blocked" would refuse every write on such a system - a far worse failure than the
+ * swallowed keystroke this exists to catch. Only an explicit `1` blocks.
+ *
+ * Exported standing alone, and not only reachable as `Multiplexer.paneMode`, because
+ * `actions.ts` still holds a bare pane id and threads its own `exec` to keep the refusal
+ * reachable from a fake. It moves behind the interface with the rest of that file.
+ */
+export async function readTmuxPaneMode(
+  paneId: string,
+  exec: TerminalExec = defaultExec,
+): Promise<string | null> {
+  const res = await exec(resolveBin(TMUX_BIN), ["display-message", "-p", "-t", paneId, MODE_FMT], {
+    env: binEnv(TMUX_BIN),
+  });
+  if (res.code !== 0) return null;
+  const [inMode, ...rest] = res.stdout.trim().split(" ");
+  if (inMode !== "1") return null;
+  const mode = rest.join(" ");
+  // `pane_mode` is empty on tmux versions that predate it. The pane is still in a mode,
+  // so the flag alone has to be enough to block; naming it copy-mode is a guess, but it
+  // is the one a person can act on (and the one it nearly always is) where "unknown mode"
+  // would leave them nothing to clear.
+  return mode.trim() || "copy-mode";
 }
 
 /** The tmux target spec for a pane. Pane ids are globally unique, so the session is implied. */
@@ -93,19 +190,34 @@ function pasteBuffer(t: MuxTarget): string {
 
 export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
   const bin = () => resolveBin(TMUX_BIN);
+  /**
+   * Every tmux command, with the inherited socket pin dropped. Uniform on purpose: the
+   * enumeration and the writes have to reach the SAME server, or a pane id from one is
+   * addressed against another.
+   */
+  const tmux = (args: string[], opts: { timeoutMs?: number } = {}) =>
+    exec(bin(), args, { ...opts, env: binEnv(TMUX_BIN) });
   const cmd = async (args: string[], fail: string, timeoutMs?: number): Promise<TerminalResult> =>
-    toResult(await exec(bin(), args, timeoutMs ? { timeoutMs } : undefined), fail);
+    toResult(await tmux(args, timeoutMs ? { timeoutMs } : {}), fail);
 
   return {
     id: "tmux",
     label: "tmux",
     bin: TMUX_BIN,
 
-    async list() {
-      return (await listTmuxPanes()).map(toMuxPane);
+    // Returns [] when tmux isn't running (no server / no sessions), which is the common case
+    // on a fresh machine. Discovery must degrade silently: the product works fine with a
+    // wezterm-only or bare-terminal setup, so an absent backend is not an error.
+    list: async () => {
+      const res = await tmux(["list-panes", "-a", "-F", PANE_FMT]);
+      return res.code === 0 ? parsePanes(res.stdout) : [];
     },
 
-    clients: async () => (await listTmuxClients()).map(toMuxClient),
+    // Same contract: [] when tmux isn't running or nothing is attached.
+    clients: async () => {
+      const res = await tmux(["list-clients", "-F", CLIENT_FMT]);
+      return res.code === 0 ? parseClients(res.stdout) : [];
+    },
 
     write: {
       // `-l` sends the text literally, so a body containing something that looks like a key
@@ -139,17 +251,13 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
     },
 
     capture: async (t) => {
-      const r = await exec(bin(), ["capture-pane", "-p", "-t", paneTarget(t)], {
+      const r = await tmux(["capture-pane", "-p", "-t", paneTarget(t)], {
         timeoutMs: CAPTURE_TIMEOUT_MS,
       });
       return r.code === 0 ? r.stdout : null;
     },
 
-    // Delegated, and it resolves `"tmux"` itself rather than through `bin()`. Identical
-    // today, since that is the only candidate - but the probe moves in here with the rest
-    // of `discovery/tmux.ts` when the migration reaches it, rather than growing a second
-    // way to find the binary now.
-    paneMode: (t) => readTmuxPaneMode(t.paneId, (b, a) => exec(b, a)),
+    paneMode: (t) => readTmuxPaneMode(t.paneId, exec),
 
     select: async (t) => {
       const selected = await cmd(["select-pane", "-t", paneTarget(t)], "tmux select-pane failed");

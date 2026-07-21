@@ -4,6 +4,7 @@
 
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
 import type { SkillEnforcement } from "./skills.ts";
+import type { TerminalBackendId } from "./terminal.ts";
 
 /**
  * Every agent harness Mission Control can drive. THE source of the union - the
@@ -35,8 +36,17 @@ export type SessionState =
   | "awaiting_review"
   | "exited";
 
-/** Where the session's display name came from. */
-export type NameSource = "tmux" | "wezterm" | "process";
+/**
+ * Where the session's display name came from: the terminal backend that supplied it, or
+ * `process` when no backend holds a pane on its tty and the name is a `<agent> <pid>`
+ * fallback.
+ *
+ * Derived from `TerminalBackendId` rather than written out, so a new multiplexer or
+ * emulator widens this automatically. It used to be the closed union `"tmux" | "wezterm" |
+ * "process"` with nothing connecting it to the registries - which meant a third backend
+ * would stamp a `nameSource` the type did not admit and the dashboard could not read.
+ */
+export type NameSource = TerminalBackendId | "process";
 
 /** Reasoning effort, shared by Claude (`/effort`) and Codex (rollout `effort`). */
 export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";

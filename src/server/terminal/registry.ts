@@ -181,9 +181,9 @@ export function bindPane(handles: TerminalHandles): BoundPane | null {
  * The emulator panes whose tabs host a client attached to `session`, in enumeration order.
  *
  * The outward half of the composition rule, kept pure because it is a join and not an
- * effect. Both ttys arrive normalized (`normTty`), so this is an equality test - the
- * `/dev/` strip that `findSessionHostPanes` does inline is a normalization bug waiting for
- * a backend that reports the prefix on both sides.
+ * effect. Both ttys arrive normalized by the adapters (`normTty`), so this is an equality
+ * test. The join it replaced did that strip inline, on one side only - a normalization bug
+ * waiting for a backend that reports the `/dev/` prefix on both.
  */
 export function hostPanesFor(
   session: string,

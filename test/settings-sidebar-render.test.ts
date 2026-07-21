@@ -52,6 +52,7 @@ const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
 const COST_ONLY = /Track what the fleet costs/; // the telemetry master toggle label
 const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
+const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -243,6 +244,45 @@ test("with no answer from the daemon, the Inspector panel says so rather than sh
   assert.doesNotMatch(
     html,
     /No repos yet - the Inspector won't post anywhere/,
+    "an unanswered panel must not assert an empty allowlist",
+  );
+});
+
+// Shipping is the only category whose switch MERGES code, so reachability matters here
+// for a sharper version of the Inspector's reason: a panel that silently fails to render
+// is one whose armed/disarmed state nobody can see or change, while the daemon goes on
+// landing pull requests on whatever was last stored.
+test("Shipping is a category of its own: its panel shows, the others don't", () => {
+  const html = render("shipping");
+  assert.match(html, SHIPPING_ONLY);
+  assert.doesNotMatch(html, INSPECTOR_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⚑<\/span>Shipping/);
+});
+
+// Ships disarmed, with the documented soak. A static render runs no effects, so this is
+// the pre-poll state - the state a first-run user sees - and it must not show a config
+// that would merge anything.
+test("the Shipping panel's defaults are the off position, with a ten minute soak", () => {
+  const html = render("shipping");
+  assert.doesNotMatch(html, /ship-live-warn/, "an unarmed panel must not fly the merge warning");
+  const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
+  assert.ok(toggle, "the shipping panel has a master toggle");
+  assert.doesNotMatch(toggle, /checked/);
+  assert.match(html, /value="10"/, "the soak field shows the shipped ten minutes");
+});
+
+// Same rule as the Inspector's: the fallbacks this panel draws pre-poll are the OFF
+// posture, and presenting them as the daemon's answer is how an operator reads "nothing
+// is merging" as fact while the stored config is armed and the daemon is merely
+// restarting. Disabled inputs are not a statement about what is running.
+test("with no answer from the daemon, the Shipping panel says so rather than showing defaults as fact", () => {
+  const html = render("shipping");
+  assert.match(html, /ship-unknown/);
+  assert.match(html, /is unknown/);
+  assert.doesNotMatch(
+    html,
+    /No repos yet - nothing will merge itself anywhere/,
     "an unanswered panel must not assert an empty allowlist",
   );
 });

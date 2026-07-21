@@ -43,18 +43,26 @@ function toggleTrigger(
  * field reads as `Number("") === 0`, which the schema refuses. So: hold the text
  * locally, send only a value that is actually in range, and otherwise snap back to
  * what's in force rather than firing a patch we know the server will refuse.
+ *
+ * Exported because the Shipping panel's soak window needs exactly this, and needs it
+ * MORE: there, `Number("") === 0` is not a value the schema refuses but a legal one
+ * meaning "no soak at all", so clearing the field to retype would quietly disarm the
+ * safety valve rather than fail loudly. One implementation, so that stays impossible.
  */
-function NumberSetting({
+export function NumberSetting({
   value,
   min,
   max,
   label,
+  disabled = false,
   onCommit,
 }: {
   value: number;
   min: number;
   max: number;
   label: string;
+  /** Pre-poll, when the panel has no answer from the daemon to edit. */
+  disabled?: boolean;
   onCommit: (n: number) => void;
 }): React.JSX.Element {
   const [draft, setDraft] = useState(String(value));
@@ -79,6 +87,7 @@ function NumberSetting({
         min={min}
         max={max}
         value={draft}
+        disabled={disabled}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {

@@ -374,6 +374,8 @@ export function openDb(): DatabaseSync {
       last_fail_kind   TEXT,              -- push-fixable | persistent (may a push skip the wait)
       next_attempt_at  INTEGER,          -- not before this; null = due now
       last_attempt_sha TEXT,             -- the head the backoff was earned on
+      merged_at        INTEGER,          -- when YOLO mode landed it; null = we did not
+      merge_block      TEXT,             -- why it has not merged itself (see shipping.ts)
       adopted_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -523,6 +525,13 @@ function migrate(d: DatabaseSync): void {
   // it somehow survives alongside a non-zero `fail_count`, since an unnamed class falls
   // under the cap rather than escaping it.
   addColumn(d, "inspector_prs", "last_fail_kind", "TEXT");
+  // `merged_at` / `merge_block`: YOLO mode's half of the ledger - when we landed a PR
+  // ourselves, and why we have not. Both nullable, and NULL reads as "never merged by us,
+  // and nothing has evaluated it yet", which is the truthful answer for every row written
+  // before the feature existed. Unlike the four above these DO land on shipped databases,
+  // so the migration is not optional: the adoption INSERT names both columns.
+  addColumn(d, "inspector_prs", "merged_at", "INTEGER");
+  addColumn(d, "inspector_prs", "merge_block", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -2081,6 +2090,8 @@ interface InspectorPrRow {
   last_fail_kind: string | null;
   next_attempt_at: number | null;
   last_attempt_sha: string | null;
+  merged_at: number | null;
+  merge_block: string | null;
   adopted_at: number;
   updated_at: number;
 }
@@ -2105,6 +2116,8 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     lastFailKind: (r.last_fail_kind as InspectorFailKind | null) ?? null,
     nextAttemptAt: r.next_attempt_at,
     lastAttemptSha: r.last_attempt_sha,
+    mergedAt: r.merged_at,
+    mergeBlock: r.merge_block,
     adoptedAt: r.adopted_at,
     updatedAt: r.updated_at,
   };
@@ -2125,8 +2138,8 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
           head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
-          next_attempt_at, last_attempt_sha, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          next_attempt_at, last_attempt_sha, merged_at, merge_block, adopted_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -2148,6 +2161,8 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.lastFailKind,
       pr.nextAttemptAt,
       pr.lastAttemptSha,
+      pr.mergedAt,
+      pr.mergeBlock,
       pr.adoptedAt,
       pr.updatedAt,
     );
@@ -2177,6 +2192,8 @@ export function updateInspectorPr(
     lastFailKind?: InspectorFailKind | null;
     nextAttemptAt?: number | null;
     lastAttemptSha?: string | null;
+    mergedAt?: number | null;
+    mergeBlock?: string | null;
   },
   now: number,
 ): void {
@@ -2188,7 +2205,8 @@ export function updateInspectorPr(
       `UPDATE inspector_prs
           SET state = ?, head_sha = ?, round = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
-              next_attempt_at = ?, last_attempt_sha = ?, updated_at = ?
+              next_attempt_at = ?, last_attempt_sha = ?,
+              merged_at = ?, merge_block = ?, updated_at = ?
         WHERE key = ?`,
     )
     .run(
@@ -2201,6 +2219,8 @@ export function updateInspectorPr(
       next.lastFailKind,
       next.nextAttemptAt,
       next.lastAttemptSha,
+      next.mergedAt,
+      next.mergeBlock,
       now,
       key,
     );

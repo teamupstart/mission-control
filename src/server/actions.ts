@@ -13,7 +13,9 @@ import {
   submitAnswersRow,
   type OptionRowMiss,
   type PaneDialog,
+  type PaneOption,
 } from "./discovery/pane-dialog.ts";
+import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { paneToken } from "@shared/pane.ts";
 import { harnessFor } from "./harness/index.ts";
@@ -656,20 +658,57 @@ export interface ModeResult extends ActionResult {
   mode?: PermissionMode | null;
 }
 
-/** How long to wait for the TUI to repaint after a Shift+Tab before calling it swallowed. */
-const REPAINT_TIMEOUT_MS = 900;
+// How long a repaint may take and how long the mode cycle may be are the AGENT's
+// properties, so they arrive on `harness.tui` (`repaintTimeoutMs`, `maxCycleSteps`) rather
+// than being constants here. How often WE re-read while waiting is ours, and stays.
+
 /** How often to re-read the pane while waiting for that repaint. */
 const REPAINT_POLL_MS = 50;
+
 /**
- * Cap on Shift+Tabs per request. The longest cycle Claude has is five
- * (manual, accept edits, plan, bypass, auto), so anything beyond six steps means
- * loop detection already should have fired - this is a backstop, not a budget.
+ * How long to let this session's agent repaint before re-reading its pane.
+ *
+ * Falls back to the poll interval for a harness with no TUI capability at all, which is a
+ * value no walk actually spends: every caller of this has already refused such a session
+ * for want of a grammar to read the repaint WITH.
  */
-const MAX_CYCLE_STEPS = 6;
+function repaintTimeoutFor(session: Session): number {
+  return tuiFor(session.agent)?.repaintTimeoutMs ?? REPAINT_POLL_MS;
+}
+
+/**
+ * Parse the menu on a session's pane with its own harness's grammar.
+ *
+ * A harness that draws no readable menus reads as "no menu", which is the answer every
+ * caller here already handles and the one that routes them to their safe path - refusing
+ * rather than spending an unaimed keystroke. It must never be reached by testing the agent
+ * id: that guard is what kept the parser off Codex panes it could have read.
+ */
+function readPaneDialog(session: Session, paneText: string | null): PaneDialog | null {
+  const spec = dialogSpecFor(session.agent);
+  return spec ? parsePaneDialog(paneText, spec) : null;
+}
+
+/** This dialog's send row, per the session's own form vocabulary. Null when it has none. */
+function readSubmitRow(session: Session, dialog: PaneDialog): PaneOption | null {
+  const spec = dialogSpecFor(session.agent);
+  return spec ? submitAnswersRow(dialog, spec) : null;
+}
+
+/**
+ * Whether the review screen is refusing because a question is unanswered.
+ *
+ * False for a harness with no forms, which is correct rather than merely safe: it draws no
+ * such banner, so there is nothing to be refused BY.
+ */
+function readUnansweredWarning(session: Session, paneText: string | null): boolean {
+  const spec = dialogSpecFor(session.agent);
+  return spec ? hasUnansweredWarning(paneText, spec) : false;
+}
 
 /** Wait for the pane's mode line to differ from `prev`, or null if it never does. */
 async function awaitModeLineChange(session: Session, prev: string): Promise<PaneModeLine | null> {
-  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  const deadline = Date.now() + repaintTimeoutFor(session);
   for (;;) {
     const line = await readPaneModeLine(session);
     if (line && line.text !== prev) return line;
@@ -698,7 +737,7 @@ async function cycleLocked(session: Session): Promise<ModeResult> {
 }
 
 /**
- * Drive a Claude session to a specific permission mode.
+ * Drive a session to a specific permission mode.
  *
  * Shift+Tab is the only lever, and it only steps forward - so reaching a chosen
  * mode means walking the cycle to it. We can't precompute how far: the optional
@@ -707,22 +746,28 @@ async function cycleLocked(session: Session): Promise<ModeResult> {
  * until we walk it. Instead of counting steps we read the pane after each one,
  * which makes every step self-verifying and needs no model of the cycle at all.
  *
- * Three ways this stops short, each fail-safe:
- *   - No mode line to start from. A dialog or menu is foreground, where Claude
+ * Four ways this stops short, each fail-safe:
+ *   - The harness has no permission modes (`tui.modeLine` is null). There is no
+ *     cycle to walk and no footer to read it off, so this refuses by declaration
+ *     rather than walking an agent around a loop it does not have.
+ *   - No mode line to start from. A dialog or menu is foreground, where the agent
  *     binds Tab itself and would swallow the keystroke (or worse, act on it). We
  *     refuse rather than fire blind keystrokes at a dialog.
- *   - The line doesn't change within `REPAINT_TIMEOUT_MS`. Something ate the
- *     keystroke; stop rather than hammer.
+ *   - The line doesn't change within the harness's `repaintTimeoutMs`. Something
+ *     ate the keystroke; stop rather than hammer.
  *   - We come back to a mode line we've already seen. The cycle is a loop, so
  *     this means the target isn't in it - and, because it's a loop, walking it
  *     fully has landed us back where we started. Nothing to undo.
  */
 export async function setPermissionMode(session: Session, target: PermissionMode): Promise<ModeResult> {
   if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  if (!modeLineSpecFor(session.agent)) return { ok: false, error: NO_MODES, mode: null };
   return withPaneLock<ModeResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => walkToMode(session, target));
 }
 
 async function walkToMode(session: Session, target: PermissionMode): Promise<ModeResult> {
+  const spec = modeLineSpecFor(session.agent);
+  if (!spec) return { ok: false, error: NO_MODES, mode: null };
   let line = await readPaneModeLine(session);
   if (!line) return { ok: false, error: CANNOT_SEE_MODE, mode: null };
   if (line.mode === target) return { ok: true, mode: target };
@@ -730,7 +775,7 @@ async function walkToMode(session: Session, target: PermissionMode): Promise<Mod
   // Keyed on the line text, not the parsed mode, so a mode this build doesn't
   // recognize is still a distinct position we can step through and loop on.
   const seen = new Set<string>([line.text]);
-  for (let i = 0; i < MAX_CYCLE_STEPS; i++) {
+  for (let i = 0; i < spec.maxCycleSteps; i++) {
     const sent = await injectShiftTab(session);
     if (!sent.ok) return { ...sent, mode: line.mode };
     const next = await awaitModeLineChange(session, line.text);
@@ -743,9 +788,14 @@ async function walkToMode(session: Session, target: PermissionMode): Promise<Mod
   return { ok: false, error: notInCycle(target), mode: line.mode };
 }
 
+// Operator-facing, so they say "the agent" rather than naming one: these reach a session
+// of whichever harness, and a Codex card reporting what "Claude" did is the kind of wrong
+// that makes an operator doubt the whole readout.
 const CANNOT_SEE_MODE =
-  "can't see Claude's mode line - a dialog or menu is probably open in this session";
-const SWALLOWED = "Claude ignored Shift+Tab - a dialog may have opened in this session";
+  "can't see the agent's mode line - a dialog or menu is probably open in this session";
+const SWALLOWED = "the agent ignored Shift+Tab - a dialog may have opened in this session";
+/** Refused by declaration: this harness has no permission modes to drive. */
+const NO_MODES = "this agent has no permission modes";
 
 /** The row a caller wants selected: the number Claude printed, and the label it read there. */
 export interface OptionTarget {
@@ -787,9 +837,9 @@ async function injectArrow(
 
 /** Wait for the menu's cursor to leave `from`, or null if it never does. */
 async function awaitCursorMove(session: Session, from: number, deps: PaneDeps): Promise<PaneDialog | null> {
-  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  const deadline = Date.now() + repaintTimeoutFor(session);
   for (;;) {
-    const d = parsePaneDialog(await deps.capture(session));
+    const d = readPaneDialog(session, await deps.capture(session));
     if (d && d.highlighted !== from) return d;
     if (Date.now() >= deadline) return null;
     await sleep(REPAINT_POLL_MS);
@@ -836,7 +886,7 @@ async function selectOptionLocked(
   target: OptionTarget,
   deps: PaneDeps,
 ): Promise<ActionResult> {
-  const dialog = parsePaneDialog(await deps.capture(session));
+  const dialog = readPaneDialog(session, await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
   // The number alone is a position; the label is what makes it an ANSWER. If the screen
   // doesn't read as the row we were told to answer, the menu on it isn't that menu, and
@@ -858,7 +908,7 @@ async function selectOptionLocked(
 
   // Read once more rather than trusting the walk: this is the last look before the only
   // irreversible keystroke in the function.
-  const final = parsePaneDialog(await deps.capture(session));
+  const final = readPaneDialog(session, await deps.capture(session));
   if (!final || final.highlighted !== target.number || optionRowMiss(final, target)) {
     return { ok: false, error: "the menu changed before the selection could be confirmed" };
   }
@@ -969,7 +1019,7 @@ async function submitFormLocked(
   targets: FormTarget[],
   deps: PaneDeps,
 ): Promise<FormResult> {
-  let dialog = parsePaneDialog(await deps.capture(session));
+  let dialog = readPaneDialog(session, await deps.capture(session));
   if (!dialog) return { ok: false, error: NO_MENU };
   if (!dialog.multiSelect) return { ok: false, error: NOT_A_FORM };
 
@@ -1008,18 +1058,18 @@ async function submitFormLocked(
   const stepped = await injectArrow(session, "Right", deps);
   if (!stepped.ok) return stepped;
   const next = await awaitDialogChange(session, before, deps);
-  if (!next) return { ok: false, error: "Claude did not move on from this question" };
+  if (!next) return { ok: false, error: "the agent did not move on from this question" };
 
   // Another question rather than the review tab: the ticks stand, and the human answers
   // the next one from whichever surface they are on.
-  const submit = submitAnswersRow(next);
+  const submit = readSubmitRow(session, next);
   if (!submit) return { ok: true, outcome: "next-question" };
-  if (hasUnansweredWarning(await deps.capture(session))) return stepBackFromReview(session, next, deps);
+  if (readUnansweredWarning(session, await deps.capture(session))) return stepBackFromReview(session, next, deps);
 
   const onSubmit = await walkCursorTo(session, next, submit.number, deps);
   if (!onSubmit.ok) return onSubmit;
-  const final = parsePaneDialog(await deps.capture(session));
-  const stillThere = final && submitAnswersRow(final);
+  const final = readPaneDialog(session, await deps.capture(session));
+  const stillThere = final && readSubmitRow(session, final);
   if (!final || !stillThere || final.highlighted !== stillThere.number) {
     return { ok: false, error: "the review screen changed before the answers could be sent" };
   }
@@ -1076,9 +1126,9 @@ async function awaitChecked(
   want: boolean,
   deps: PaneDeps,
 ): Promise<PaneDialog | null> {
-  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  const deadline = Date.now() + repaintTimeoutFor(session);
   for (;;) {
-    const d = parsePaneDialog(await deps.capture(session));
+    const d = readPaneDialog(session, await deps.capture(session));
     if (d?.options.find((o) => o.number === number)?.checked === want) return d;
     if (Date.now() >= deadline) return null;
     await sleep(REPAINT_POLL_MS);
@@ -1095,9 +1145,9 @@ async function awaitDialogChange(
   from: string,
   deps: PaneDeps,
 ): Promise<PaneDialog | null> {
-  const deadline = Date.now() + REPAINT_TIMEOUT_MS;
+  const deadline = Date.now() + repaintTimeoutFor(session);
   for (;;) {
-    const d = parsePaneDialog(await deps.capture(session));
+    const d = readPaneDialog(session, await deps.capture(session));
     if (d && dialogIdentity(d) !== from) return d;
     if (Date.now() >= deadline) return null;
     await sleep(REPAINT_POLL_MS);

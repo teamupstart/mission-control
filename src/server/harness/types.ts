@@ -2,6 +2,7 @@ import type { HookIngest } from "@shared/protocol.ts";
 import type {
   AgentType,
   MetaSource,
+  PermissionMode,
   Session,
   SessionState,
   ThinkingLevel,
@@ -412,6 +413,129 @@ export type ControlSpec =
   | { kind: "stream-json" };
 
 /**
+ * Reading the agent's own permission-mode footer off a pane.
+ *
+ * Null on `TuiSpec` means the agent has no permission-mode notion at all - not that we
+ * failed to read one. The distinction is the whole point: an unread footer falls back to
+ * the hook-reported mode, while a harness that has no modes must never have a mode chip
+ * invented for it, and the Shift+Tab walk that drives one must never be pointed at it.
+ */
+export interface ModeLineSpec {
+  /**
+   * How many trailing non-empty lines may hold the mode line. The last one in practice;
+   * the margin absorbs a trailing notice without opening the window wide enough for
+   * transcript prose to be misread as a mode.
+   */
+  scanLines: number;
+  /** The glyphs the agent prefixes the line with, stripped before the wording is matched. */
+  glyphs: RegExp;
+  /** This agent's footer wording for each mode, matched after the glyph is stripped. */
+  modes: ReadonlyArray<readonly [RegExp, PermissionMode]>;
+  /**
+   * A glyph-prefixed line naming a mode THIS BUILD doesn't recognize - a newer agent's
+   * wording, or a mode behind a flag we couldn't observe. Unlabelable, but still a real
+   * position in the cycle, so the walk must be able to step through it rather than give up.
+   */
+  unknownMode: RegExp;
+  /**
+   * How many cycle keystrokes one walk may spend before giving up. A backstop against an
+   * endless walk, NOT a count of the modes above: it must EXCEED the real cycle length, or
+   * a mode this build has never heard of becomes the one nobody can reach.
+   */
+  maxCycleSteps: number;
+}
+
+/**
+ * The multi-select FORM vocabulary - a dialog you fill in rather than answer.
+ *
+ * Null on `DialogSpec` means this agent's menus are all single-select, which is a claim
+ * about its chrome and not a gap in ours. Every word here is one agent's own wording,
+ * matched off a screen we can see rather than a state we can query, so a harness that
+ * renders no such form declares null instead of inheriting another agent's nouns.
+ */
+export interface DialogFormSpec {
+  /**
+   * How many rows must carry a checkbox before the dialog reads as a form.
+   *
+   * Two, not one, for Claude: a real multi-select always clears it (the agent appends its
+   * own free-text row with a box of its own), while a lone `[ ]` is as likely to be a
+   * permission prompt quoting a command that contains one - and reading that as a form
+   * strips the brackets out of a label a human is being asked to confirm.
+   */
+  minCheckboxRows: number;
+  /** The box glyphs that mean ticked; anything else between the brackets is empty. */
+  checkedBox: RegExp;
+  /** The row that SENDS the form, as opposed to answering one of its questions. */
+  submitRow: RegExp;
+  /**
+   * The trailing row that opens a text field. It renders a box and is NOT one - ticking it
+   * selects nothing - so it is excluded from the form's answerable rows at the parse.
+   */
+  freeTextRow: RegExp;
+  /** The banner saying some question still has no answer. A refusal condition for a walk. */
+  unansweredWarning: RegExp;
+}
+
+/**
+ * Reading an option dialog - a permission prompt, a trust check, a menu - off a pane.
+ *
+ * The GRAMMAR is not here, deliberately. `discovery/pane-dialog.ts` keeps it, because a
+ * numbered block with one cursor on it, a question wrapped across a viewport's width and a
+ * label compared across a hard wrap are facts about terminals rather than about a vendor -
+ * the same split `transcript.ts` makes when it keeps byte windowing and takes the line
+ * parser from the harness.
+ *
+ * What is here is the token that actually differs. Measured, not assumed: pointed at real
+ * `codex-cli` captures, the existing grammar returns null on every one of them and parses
+ * all three correctly the moment the cursor glyph is its own (`test/fixtures/codex-panes.ts`).
+ */
+export interface DialogSpec {
+  /**
+   * The glyph marking the row an Enter would land on, as a regex character class body.
+   *
+   * Load-bearing twice over: it is what separates a menu from prose that merely looks like
+   * one, and it is the only way to know where an Enter lands - a caller cannot navigate
+   * from an unknown position. Claude renders U+276F, Codex U+203A.
+   */
+  cursor: string;
+  /** The multi-select form vocabulary, or null when this agent's menus are all single-select. */
+  form: DialogFormSpec | null;
+}
+
+/**
+ * Reading this agent's terminal UI off a pane capture. PARSING only.
+ *
+ * How a turn is DELIVERED is `control`'s question, not this one, and the split is load
+ * bearing: `settleMs` and the paste placeholder are about writing to a screen, and putting
+ * them here would make "you talk to an agent by typing into its terminal" a permanent
+ * assumption of the TUI-reading capability.
+ *
+ * `null` on `Harness` means we cannot read this agent's screen at all. That is a strong
+ * claim and it should be rare - it costs the session every hookless signal we have, since
+ * `activePaneDialog` is the ONLY evidence of "parked and waiting" that needs no
+ * instrumentation. Before declaring it, point the parser at a real capture: the last time
+ * this was assumed rather than measured, it was wrong.
+ */
+export interface TuiSpec {
+  /**
+   * How long to let this agent's TUI repaint after a keystroke before re-reading the pane.
+   *
+   * On `TuiSpec` rather than on either capability below because BOTH walks need it - the
+   * mode cycle waits for the footer to redraw, the dialog walks wait for the cursor to
+   * move - and it is one fact about how fast the agent paints, not two.
+   *
+   * A read taken before the repaint lands sees the PREVIOUS screen, which for the mode
+   * cycle means walking one step too far and for a dialog means confirming a row the
+   * cursor has already left.
+   */
+  repaintTimeoutMs: number;
+  /** Reading the permission-mode footer, or null when the agent has no modes. */
+  modeLine: ModeLineSpec | null;
+  /** Reading an option dialog, or null when the agent renders none we can read. */
+  dialog: DialogSpec | null;
+}
+
+/**
  * One agent, and everything the daemon needs from it.
  *
  * Extends `HarnessCapabilities` (`@shared/harness-capabilities.ts`) rather than
@@ -425,7 +549,7 @@ export type ControlSpec =
  * record forces exactly its own questions and neither is a copy of the other.
  *
  * More capabilities land here as the pluggable-integrations migration proceeds
- * (`tui`, `models` - see
+ * (`models` - see
  * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
  * one is a new field every harness must answer rather than an interface change every
  * migrated call site has to absorb.
@@ -441,6 +565,8 @@ export interface Harness extends HarnessCapabilities {
   detect: DetectSpec;
   /** Which CLI to launch, and what overrides it. Required - a harness runs something. */
   bin: BinSpec;
+  /** How this harness's screen READS, or null when we cannot read it at all. */
+  tui: TuiSpec | null;
   /** How a turn reaches this harness. Not nullable - see `ControlSpec`. */
   control: ControlSpec;
 }

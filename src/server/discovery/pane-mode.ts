@@ -1,15 +1,16 @@
-import type { PermissionMode } from "@shared/types.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import type { AgentType, PermissionMode } from "@shared/types.ts";
 import { paneToken } from "@shared/pane.ts";
 import type { DiscoveredSession } from "./correlate.ts";
 import { forgetPanesExcept, paneReadLost, paneReadOk } from "./capture-tolerance.ts";
 import { capturePaneText, type PaneHandles } from "./pane-capture.ts";
 import { parsePaneDialog } from "./pane-dialog.ts";
+import { dialogSpecFor, modeLineSpecFor } from "../harness/index.ts";
+import type { ModeLineSpec } from "../harness/types.ts";
 
 /**
- * Read a Claude session's permission mode off its terminal pane.
+ * Read a session's permission mode off its terminal pane.
  *
- * Claude offers no way to *query* the mode: hooks carry `permission_mode` but
+ * The agent offers no way to *query* the mode: Claude's hooks carry `permission_mode` but
  * only fire on activity, and nothing fires when Shift+Tab changes it. The one
  * always-current source is the pane itself - Claude prints the mode on the last
  * line, below the input box and below any statusLine the user configured:
@@ -28,34 +29,6 @@ import { parsePaneDialog } from "./pane-dialog.ts";
  *   - Claude is older than v2.1.203, which drew no line for `manual`.
  */
 
-/**
- * How many trailing non-empty lines may hold the mode line. It is the last one
- * in practice; the small margin absorbs any trailing notice Claude adds without
- * opening the window wide enough for transcript prose to be misread as a mode.
- */
-const FOOTER_SCAN_LINES = 3;
-
-/** The glyphs Claude prefixes the mode line with (`⏸` when passive, `⏵⏵` when acting). */
-const MODE_GLYPHS = /^[⏸⏵]+\s*/u;
-
-/** Claude's footer wording for each mode, matched after the glyph is stripped. */
-const FOOTER_MODES: ReadonlyArray<readonly [RegExp, PermissionMode]> = [
-  [/^manual mode on\b/, "default"],
-  [/^accept edits on\b/, "acceptEdits"],
-  [/^plan mode on\b/, "plan"],
-  [/^auto mode on\b/, "auto"],
-  [/^bypass permissions on\b/, "bypassPermissions"],
-  [/^don't ask on\b/, "dontAsk"],
-];
-
-/**
- * A glyph-prefixed line naming a mode this build doesn't recognize - a newer
- * Claude's wording, or a mode gated behind a flag we couldn't observe. We can't
- * label it, but it's still a real position in the Shift+Tab cycle, so the walk
- * in `setPermissionMode` must be able to step *through* it rather than give up.
- */
-const UNKNOWN_MODE_LINE = /^[a-z' ]{3,24} on\b/;
-
 /** A mode line as read off a pane. */
 export interface PaneModeLine {
   /**
@@ -69,38 +42,47 @@ export interface PaneModeLine {
 }
 
 /**
- * Find Claude's mode line in a pane capture, or null when it isn't showing one
+ * Find the agent's mode line in a pane capture, or null when it isn't showing one
  * (a dialog is up, or it's a pre-2.1.203 Claude sitting in `manual`).
  *
  * Scans upward from the bottom so the footer wins over anything above it, and
  * requires the wording to start the line - transcript prose that merely mentions
  * "plan mode on" reads as a sentence, not as a line beginning with it.
+ *
+ * The scan is machinery; the wording is the harness's (`ModeLineSpec`).
  */
-export function parsePaneModeLine(paneText: string | null): PaneModeLine | null {
+export function parsePaneModeLine(paneText: string | null, spec: ModeLineSpec): PaneModeLine | null {
   if (!paneText) return null;
   const lines = paneText
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean)
-    .slice(-FOOTER_SCAN_LINES);
+    .slice(-spec.scanLines);
 
   for (const line of lines.reverse()) {
     // Normalize the typographic apostrophe Claude renders in "don't ask".
-    const body = line.replace(MODE_GLYPHS, "").replace(/’/g, "'").toLowerCase();
-    const hadGlyph = MODE_GLYPHS.test(line);
-    for (const [re, mode] of FOOTER_MODES) {
+    const body = line.replace(spec.glyphs, "").replace(/’/g, "'").toLowerCase();
+    const hadGlyph = spec.glyphs.test(line);
+    for (const [re, mode] of spec.modes) {
       const m = re.exec(body);
       if (m) return { text: m[0], mode };
     }
-    const unknown = hadGlyph ? UNKNOWN_MODE_LINE.exec(body) : null;
+    const unknown = hadGlyph ? spec.unknownMode.exec(body) : null;
     if (unknown) return { text: unknown[0], mode: null };
   }
   return null;
 }
 
-/** Read a session's mode line straight off its pane. */
-export async function readPaneModeLine(session: PaneHandles): Promise<PaneModeLine | null> {
-  return parsePaneModeLine(await capturePaneText(session));
+/**
+ * Read a session's mode line straight off its pane, or null when this harness has no
+ * permission modes to read.
+ */
+export async function readPaneModeLine(
+  session: PaneHandles & { agent: AgentType },
+): Promise<PaneModeLine | null> {
+  const spec = modeLineSpecFor(session.agent);
+  if (!spec) return null;
+  return parsePaneModeLine(await capturePaneText(session), spec);
 }
 
 /**
@@ -122,25 +104,38 @@ export async function readPaneModeLine(session: PaneHandles): Promise<PaneModeLi
  * not blank the chip), while the dialog is written unconditionally on a successful
  * capture - including as null, which is how a dismissed menu clears the card.
  *
- * Skipped for a harness with no `permissionModes` capability: there is no footer mode line
- * to find, so the capture would buy nothing. Note that the DIALOG half rides along on that
- * same guard - `parsePaneDialog` is Claude's menu grammar, and it will move to its own
- * `tui` capability when that slot lands (see the plan's "Fixes found along the way": a
- * Codex session parked on a prompt currently reads as idle). Gating both on
- * `permissionModes` is exactly today's behaviour, restated as a capability rather than as
- * an agent id.
+ * Which of the two a given session gets is the HARNESS's answer, not an agent check. It
+ * used to be `s.agent !== "claude"`, and that guard was wrong in the most expensive
+ * direction: Codex renders the same numbered menus and pushes no hooks at all, so the one
+ * signal that could ever have shown a Codex session as blocked was the one the guard
+ * skipped - and because it skipped it, nobody found out for the life of the parser. A
+ * harness that genuinely draws nothing readable declares `dialog: null` and takes the same
+ * path, but it has to SAY so.
+ *
+ * The guard this replaces had already been restated once, as
+ * `capabilitiesFor(s.agent).permissionModes`, with a note that the dialog half was riding
+ * along on it until this slot landed. That restatement changed no behaviour and could not:
+ * Codex has no permission modes, so gating the DIALOG on them skipped exactly the sessions
+ * whose dialogs are the only signal they can produce. The two capabilities are now asked
+ * for separately, which is the whole point of asking a capability rather than an id.
  */
 export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<void> {
   // The token IS the handle check: a session with no pane has no token, and one without
   // a token has nothing to capture and nothing to count misses against.
+  //
+  // A session whose harness can read NEITHER a mode line nor a dialog is dropped here
+  // rather than captured and thrown away: the capture is a subprocess per session per
+  // tick, and there is nothing either parse could tell us about it.
   const keyed = sessions.flatMap((s) => {
-    if (!capabilitiesFor(s.agent).permissionModes) return [];
+    const dialog = dialogSpecFor(s.agent);
+    const modeLine = modeLineSpecFor(s.agent);
+    if (!dialog && !modeLine) return [];
     const key = paneToken(s);
-    return key ? [{ s, key }] : [];
+    return key ? [{ s, key, dialog, modeLine }] : [];
   });
   forgetPanesExcept(new Set(keyed.map((k) => k.key)));
   await Promise.all(
-    keyed.map(async ({ s, key }) => {
+    keyed.map(async ({ s, key, dialog, modeLine }) => {
       const text = await capturePaneText(s);
       // A failed capture is not "no dialog" - it is no information, and saying null here
       // would clear a live menu off the card on one flaky tmux call. So the last dialog
@@ -154,9 +149,14 @@ export async function annotatePaneState(sessions: DiscoveredSession[]): Promise<
         return;
       }
       paneReadOk(key);
-      const line = parsePaneModeLine(text);
-      if (line?.mode) s.permissionMode = line.mode;
-      s.paneDialog = parsePaneDialog(text);
+      if (modeLine) {
+        const line = parsePaneModeLine(text, modeLine);
+        if (line?.mode) s.permissionMode = line.mode;
+      }
+      // Left UNTOUCHED - not set to null - for a harness that draws no readable menus, so
+      // the field keeps the registry's "no news" meaning rather than this tick asserting
+      // "there is no menu" about a screen we never asked a question of.
+      if (dialog) s.paneDialog = parsePaneDialog(text, dialog);
     }),
   );
 }

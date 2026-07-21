@@ -45,11 +45,15 @@ top-level collection, also extend the `snapshot` case, `registry.snapshot()`, an
 `z.enum` in `protocol.ts`, `DispatchInput`, the dispatch modal's `<option>`s and the
 Harnesses rows all derive from it. `AgentType` is that array's element type, so every
 `Record<AgentType, …>` then fails to compile until the new harness has said what it is
-called (`AGENT_NAMES`, `@shared/agent.ts`), which models it offers, which of its
-capabilities exist at all - including how its process is recognised and which binary it
-launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it answers goals and cost.
-Fill each in rather than defaulting one. Test: `session-contracts.test.ts`, which pins
-that list.
+called AND what colour it wears (`AGENT_IDENTITY`, `@shared/agent.ts`), which models it
+offers, which of its capabilities exist at all - including how its process is recognised
+and which binary it launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it
+answers goals and cost. Fill each in rather than defaulting one. Nothing in `styles.css`
+and no component needs editing: the accent is a literal colour that reaches CSS as one
+inline `--agent-accent`, and every sentence naming which agents a feature reaches is
+computed (`agentList`, `skillsAgents`, `autoModeAgents`). Test:
+`session-contracts.test.ts`, which pins that list, and `agent-accent.test.ts`, which
+fails if an agent id turns up in the stylesheet again.
 
 ## Layout parity
 
@@ -203,9 +207,9 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   answered without a `node:` import - permission modes, skills, work queue, context
   clearing, MCP - because the dashboard decides most of these in the browser and cannot
   import a spec that calls `statSync`. `HARNESSES` (`src/server/harness/index.ts`) spreads
-  that record in and adds what needs one (`transcript`, `hooks`, plus a spec per capability
-  under `src/server/harness/<agent>/`); `Harness extends HarnessCapabilities`, so a server
-  call site holding a harness still reads every slot off one object. The two
+  that record in and adds what needs one (`transcript`, `hooks`, `control`, plus a spec per
+  capability under `src/server/harness/<agent>/`); `Harness extends HarnessCapabilities`, so
+  a server call site holding a harness still reads every slot off one object. The two
   `Record<AgentType, …>`s are the enforcement - a new agent id that declares nothing does
   not compile - and they ask disjoint questions, so neither is a copy of the other. Do not
   put a pure capability in the server record or a filesystem-reading one in shared.
@@ -216,9 +220,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   Codex pushes nothing at us - and a null there is load-bearing in three places: the
   ingest is refused rather than read by Claude's event vocabulary, the pane-keyed hook
   overlay is agent-scoped so the card Codex started in a vacated pane does not inherit
-  Claude's last state, and `awaitReady` skips its 20s wait. **`detect` and `bin` are the
-  two that are NOT nullable**: a harness nothing can find on the process table has no card
-  at all, and one that names no binary cannot be dispatched. `discovery/processes.ts`
+  Claude's last state, and `awaitReady` skips its 20s wait. **`detect`, `bin` and `control`
+  are the three that are NOT nullable**: a harness nothing can find on the process table has
+  no card at all, one that names no binary cannot be dispatched, and one we cannot talk to
+  is not one we can dispatch to. Inside `control`, though, `pastePlaceholder: null` is
+  first-class again - it says this TUI renders no collapsed-paste placeholder, so submit
+  verification has no evidence to read, which is NOT the same claim as "the composer is
+  clear"; the delivery path spends one Enter and reports `submitVerified: false`.
+  `discovery/processes.ts`
   iterates `detect` and names no vendor - including the background roles, which are TOKENS
   matched at argv[1]/argv[2] and never substrings of a command line carrying an operator's
   paths and a 1.2KB prompt. `resolveAgentBin` (`harness/index.ts`) is the ONE bin resolver,
@@ -227,9 +236,10 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   because `/clear` is Claude's slash command, and reset degrades to the byte-identical
   `cleared: false` a pane-less session produces. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
-  `HARNESSES.codex.tui` is the counter-example, and the one to read before declaring any
-  capability `null`: it is NOT null. The guard it replaced said `agent !== "claude"`, with a
-  comment above it asserting Codex "doesn't render these dialogs" - and because the guard
+  refusing surface. `HARNESSES.codex.tui` is the counter-example, and the one to read
+  before declaring any capability `null`: it is NOT null. The guard it replaced said
+  `agent !== "claude"`, with a comment above it asserting Codex "doesn't render these
+  dialogs" - and because the guard
   skipped the parse, nothing ever tested that claim. It is false. Codex renders the same
   numbered, single-cursor menus and differs by ONE token, the cursor glyph (U+203A against
   U+276F), so `DialogSpec` carries the glyph and `discovery/pane-dialog.ts` stays
@@ -241,15 +251,13 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   fixtures are verbatim, never hand-written. Getting it wrong is expensive in one specific
   way here: Codex sends no hooks, so `activePaneDialog` is the ONLY "needs you" evidence it
   can ever produce, and a Codex session parked on a command-approval prompt read as merely
-  unconfirmed.
-  refusing surface. Reach a capability through a registry (`capabilitiesFor`,
-  `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` /
-  `dialogSpecFor` / `modeLineSpecFor`), never by testing
-  `s.agent`; each phase of `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
+  unconfirmed. Reach a capability through a registry (`capabilitiesFor`,
+  `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` / `dialogSpecFor` /
+  `modeLineSpecFor`, `controlFor`), never by testing `s.agent`; each phase of
+  `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
   `harness-capabilities.test.ts`, `harness-transcript.test.ts`, `harness-hooks.test.ts`,
-  `harness-tui.test.ts`, `detection.test.ts`, `harness-bin.test.ts`,
-  `process-background-filter.test.ts`,
-  `session-contracts.test.ts`.
+  `harness-tui.test.ts`, `harness-control.test.ts`, `detection.test.ts`,
+  `harness-bin.test.ts`, `process-background-filter.test.ts`, `session-contracts.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the
   enforcement - a new id that is not implemented does not compile, and every capability is
@@ -318,6 +326,11 @@ are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`
 
 - **When you remove or rename a `className`, grep `styles.css` for it in the same change.** No
   linter, no stylelint, no unused-CSS check catches a class that lost its rule.
+- **No vendor is named in this file, and no token is named after one.** A harness's colour is
+  declared on the harness (`AGENT_IDENTITY`) and arrives as an inline `--agent-accent`; rules
+  read `var(--agent-accent, var(--neutral))`. Foreman is `--foreman`, its own token, because
+  it borrowed `--claude` for five rules and a retune of one silently restyled the other.
+  Test: `agent-accent.test.ts`, which fails on any agent id appearing here.
 - **In the desktop shell the topbar IS the title bar**, so it carries
   `-webkit-app-region: drag`. The property's initial value is `none`, which is not `no-drag` -
   only an explicit `no-drag` subtracts from the region, so painting a layer over the bar does

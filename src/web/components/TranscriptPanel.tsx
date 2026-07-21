@@ -7,7 +7,7 @@ import type {
   TranscriptStreamMsg,
   TurnOrigin,
 } from "@shared/types.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
@@ -16,6 +16,7 @@ import { mergeEpisodes } from "../lib/episodes.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
+import { agentAccentStyle } from "./session-bits.tsx";
 import {
   AttachmentStrip,
   readyAttachments,
@@ -253,8 +254,14 @@ export function TranscriptPanel({
   }
 
   return (
-    // Stop clicks inside the panel from re-selecting / collapsing the card.
-    <div className="transcript" onClick={(e) => e.stopPropagation()}>
+    // Stop clicks inside the panel from re-selecting / collapsing the card. The accent
+    // is set here rather than per turn: every assistant byline in this log belongs to
+    // the same harness, and the stylesheet then names no agent to colour them.
+    <div
+      className="transcript"
+      style={agentAccentStyle(agent)}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="transcript-log" ref={logRef} onScroll={onScroll}>
         {/* An unavailable transcript still shows Foreman's record, and this is the
             case that most needs it: a session with no resolvable JSONL is exactly
@@ -278,9 +285,9 @@ export function TranscriptPanel({
                   <ForemanEpisodeCard episode={row.episode} />
                 </div>
               ) : row.kind === "tools" ? (
-                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_NAMES[agent].speaker} />
+                <ToolRun key={row.id} tools={row.tools} agentLabel={AGENT_IDENTITY[agent].speaker} />
               ) : (
-                <Turn key={row.id} m={row.message} agentLabel={AGENT_NAMES[agent].speaker} />
+                <Turn key={row.id} m={row.message} agentLabel={AGENT_IDENTITY[agent].speaker} />
               ),
             )}
           </>

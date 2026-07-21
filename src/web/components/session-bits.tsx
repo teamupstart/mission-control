@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  AgentType,
   PrState,
   RateLimitWindow,
   Session,
@@ -7,6 +8,7 @@ import type {
   SessionMeta,
   TaskPriority,
 } from "@shared/types.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { GOAL_UNSUPPORTED } from "@shared/goal.ts";
 import { costTone } from "@shared/cost.ts";
 import { PRIORITY_LABELS } from "@shared/task.ts";
@@ -39,8 +41,24 @@ export function subtitle(session: Session): string {
   return "process";
 }
 
+/**
+ * The agent's brand colour, handed to CSS as one custom property.
+ *
+ * Every surface that wants to wear a harness's colour sets this and then styles against
+ * `var(--agent-accent)`. The alternative - what this replaced - was an `agent-${agent}`
+ * class per harness, which meant a new harness rendered a colourless dot until someone
+ * noticed and hand-wrote a rule in a 7,800-line stylesheet. Nothing fails when that is
+ * forgotten, which is exactly why it kept being forgotten.
+ *
+ * The fallback in the stylesheet is `--neutral`, not a vendor colour: a surface that
+ * forgets to set this looks unremarkable rather than looking like Claude.
+ */
+export function agentAccentStyle(agent: AgentType): React.CSSProperties {
+  return { "--agent-accent": AGENT_IDENTITY[agent].accent } as React.CSSProperties;
+}
+
 export function AgentDot({ agent }: { agent: Session["agent"] }): React.JSX.Element {
-  return <span className={`agent-dot agent-${agent}`} aria-hidden />;
+  return <span className="agent-dot" style={agentAccentStyle(agent)} aria-hidden />;
 }
 
 /**

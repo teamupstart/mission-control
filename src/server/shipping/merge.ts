@@ -1,8 +1,10 @@
 import { getInspectorPr, updateInspectorPr } from "../db.ts";
 import { mergePr } from "../inspector/github.ts";
 import { mergeVerdict } from "@shared/shipping.ts";
+import { inspectorPosture } from "@shared/inspector.ts";
 import type { PrSnapshot } from "../inspector/github.ts";
 import type { InspectorComment, InspectorPr } from "@shared/types.ts";
+import type { InspectorConfig } from "@shared/protocol.ts";
 import { getShippingConfig } from "./config.ts";
 
 // YOLO mode's one action: land a pull request that the Inspector reviewed clean, CI
@@ -18,6 +20,14 @@ import { getShippingConfig } from "./config.ts";
 // The consequence, stated plainly because it is load-bearing: with the Inspector switched
 // off nothing is reviewed, so nothing is ever `reviewedSha === headSha`, so nothing
 // merges. YOLO mode is not a way to merge unreviewed pull requests.
+//
+// That sentence used to lean entirely on the tick never running, which was true of the
+// Inspector being OFF and false of the two softer ways it declines to act. In `dry-run`,
+// or in a repo missing from the INSPECTOR's allowlist (a separate list from the one
+// below), the tick runs and the review runs - it just posts nothing - and it advances the
+// reviewed head all the same. So a clean review nobody ever saw used to satisfy every
+// gate and land on the default branch. `inspectorPosture` is now passed to the verdict
+// and vetoes all three, so "reviewed" means published.
 
 /** Findings the Inspector is currently carrying, by the same rule the panel counts them. */
 function openFindings(rows: Map<string, InspectorComment>): number {
@@ -52,6 +62,7 @@ function recordBlock(pr: InspectorPr, block: string | null, now: number): void {
  * one that changes without anything on our side changing.
  */
 export async function maybeMerge(
+  inspector: InspectorConfig,
   pr: InspectorPr,
   dir: string,
   s: PrSnapshot,
@@ -61,6 +72,11 @@ export async function maybeMerge(
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
     cfg,
+    // The caller's config snapshot, not a fresh read: this must be the same posture the
+    // round that produced `pr.headSha` ran under. Re-reading here would let a switch to
+    // dry-run mid-sweep still merge on the live review before it, or - worse - a switch
+    // to live merge on the dry-run review that preceded it.
+    inspector: inspectorPosture(inspector, pr.cwd, pr.repoRoot),
     cwd: pr.cwd,
     repoRoot: pr.repoRoot,
     pr: {

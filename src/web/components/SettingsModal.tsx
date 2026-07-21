@@ -171,7 +171,7 @@ export function SettingsModal({
         return (
           <ShippingSettingsPanel
             state={shipping}
-            inspectorEnabled={inspector.config ? inspector.config.enabled : null}
+            inspectorConfig={inspector.config ?? null}
           />
         );
     }

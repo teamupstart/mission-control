@@ -18,7 +18,7 @@ import {
 } from "../claude-cli.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
-import { repoAllowlisted } from "@shared/allowlist.ts";
+import { inspectorPosture } from "@shared/inspector.ts";
 import type { PrOpened, Registry } from "../registry.ts";
 import type {
   InspectorComment,
@@ -216,10 +216,15 @@ export const DENY_SETTINGS = JSON.stringify({
  * Three independent gates, all of which must pass, and each of which the operator set
  * separately: the feature is on, the mode is live, and this repo is trusted. `dry-run`
  * still reviews - that is the point of it - it just never posts.
+ *
+ * The rule itself moved to `@shared/inspector.ts` when YOLO mode became a second caller
+ * that had to ask the same question. It asks it about the merge rather than the comment,
+ * and the two answers must not be able to differ: a copy of these three conditions that
+ * drifted from this one would decide that an unpublished review is worth landing on the
+ * default branch.
  */
 function mayPost(cfg: InspectorConfig, pr: InspectorPr): boolean {
-  if (!cfg.enabled || cfg.mode !== "live") return false;
-  return repoAllowlisted(pr.cwd, pr.repoRoot, cfg.repoAllowlist);
+  return inspectorPosture(cfg, pr.cwd, pr.repoRoot) === "live";
 }
 
 /**
@@ -517,7 +522,7 @@ async function processPr(
   // inside `mergeVerdict`, so a PR with an unreviewed push waits for the review below and
   // the next sweep. `rows` is passed rather than re-read: it is this tick's ledger, and
   // the reply step above may already have moved it.
-  if (await maybeMerge(pr, dir, s, rows, now)) return true;
+  if (await maybeMerge(cfg, pr, dir, s, rows, now)) return true;
 
   // 3. Nothing pushed since the last review: there is nothing new to say.
   //

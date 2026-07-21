@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import { streamSSE } from "hono/streaming";
 import type { Context } from "hono";
 import type { TranscriptMessage, TranscriptStreamMsg } from "@shared/types.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { Registry } from "./registry.ts";
 import { sessionMessages, transcriptFor } from "./harness/index.ts";
 import { originOf } from "./injections.ts";
@@ -60,7 +60,7 @@ export function transcriptStreamHandler(registry: Registry) {
             ? "No such session."
             : readable
               ? "No transcript for this session yet (needs an agent session id from hooks)."
-              : `${AGENT_NAMES[session.agent].label} doesn't write a readable transcript.`,
+              : `${AGENT_IDENTITY[session.agent].label} doesn't write a readable transcript.`,
         });
         return;
       }

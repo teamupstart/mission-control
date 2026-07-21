@@ -230,7 +230,7 @@ test("a retriage made while the prompt is being typed survives the assignment", 
     reset: cleanReset,
     inject: async () => {
       await tasks.update("t1", { priority: "blocker", labels: ["infra", "urgent"] });
-      return { ok: true, pasted: true };
+      return { ok: true, pasted: true, submitVerified: true };
     },
   });
   assert.equal(res.ok, true);
@@ -282,7 +282,7 @@ test("a /clear the agent was never seen acting on fails the assign rather than c
     reset: async () => ({ ok: true, error: null, root: clone, cleared: false, detached: true }),
     inject: async () => {
       typed = true;
-      return { ok: true, pasted: true };
+      return { ok: true, pasted: true, submitVerified: true };
     },
   });
   assert.equal(res.ok, false);
@@ -394,7 +394,7 @@ test("the same drop with the confirmation goes through", async () => {
   const res = await tasks.assign("t1", sessionId, {
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true }),
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
     confirmReset: true,
   });
   assert.equal(res.ok, true);
@@ -411,7 +411,7 @@ test("a clean, queue-less agent takes the drop with no confirmation at all", asy
   const res = await tasks.assign("t1", sessionId, {
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true }),
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
   });
   assert.equal(res.ok, true, res.error);
   assert.equal(res.resetConfirm, undefined);
@@ -437,7 +437,7 @@ test("a handover names the agent's terminal after the task it just took", async 
   const res = await tasks.assign("t1", sessionId, {
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true }),
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
     rename: async (s, name) => {
       renamed.push({ from: s.tmux!.session, to: name });
       return { ok: true };
@@ -463,7 +463,7 @@ test("a rename that fails does not un-run a task the agent is already working on
   const res = await tasks.assign("t1", sessionId, {
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true }),
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
     rename: async () => {
       throw new Error("tmux went away");
     },
@@ -495,7 +495,7 @@ test("a name another task's teardown still aims at is not taken", async () => {
   const res = await tasks.assign("t1", sessionId, {
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true }),
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
     rename: async (_s, name) => {
       tried.push(name);
       return { ok: true };
@@ -518,7 +518,7 @@ test("an agent with no terminal handle is left alone rather than failed", async 
   const res = await tasks.assign("t1", sessionId, {
     paneReady,
     reset: cleanReset,
-    inject: async () => ({ ok: true, pasted: true }),
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
     rename: async () => {
       called = true;
       return { ok: true };

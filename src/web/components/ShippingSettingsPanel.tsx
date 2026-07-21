@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { InspectorInspection } from "@shared/types.ts";
 import { MERGE_BLOCK_LABEL } from "@shared/shipping.ts";
 import type { MergeBlock } from "@shared/shipping.ts";
+import { repoAllowlisted } from "@shared/allowlist.ts";
+import type { InspectorConfig } from "@shared/protocol.ts";
 import type { ShippingState } from "../useShipping.ts";
 import { fetchRepos, resolveRepo } from "../lib/api.ts";
 import { RepoCombobox } from "./RepoCombobox.tsx";
@@ -49,18 +51,21 @@ function when(row: InspectorInspection, now: number): string {
 
 export function ShippingSettingsPanel({
   state,
-  inspectorEnabled,
+  inspectorConfig,
 }: {
   state: ShippingState;
   /**
-   * Whether the Inspector is running, from the config the Inspector panel edits.
+   * The Inspector's consent settings, from the config the Inspector panel edits. Null
+   * when the daemon is unreachable, which is "unknown", not "off".
    *
    * Passed in rather than polled again here because it is not this panel's setting - but
-   * it IS this panel's biggest gotcha: YOLO mode merges what the Inspector reviewed
-   * clean, so with the Inspector off nothing is ever reviewed and nothing ever merges.
-   * Without saying so, that reads as a feature that silently does nothing.
+   * it IS this panel's biggest gotcha, and in three flavours rather than one. YOLO mode
+   * merges what the Inspector reviewed AND PUBLISHED, so each of the Inspector's three
+   * switches can independently leave this feature doing nothing: off reviews nothing,
+   * and dry-run or a missing repo reviews without publishing, which `mergeVerdict`
+   * refuses to act on. Without saying so, all three read as a feature that is broken.
    */
-  inspectorEnabled: boolean | null;
+  inspectorConfig: Pick<InspectorConfig, "enabled" | "mode" | "repoAllowlist"> | null;
 }): React.JSX.Element {
   const { config, inspections, update, error } = state;
   const [repos, setRepos] = useState<string[]>([]);
@@ -83,6 +88,14 @@ export function ShippingSettingsPanel({
   allowlistRef.current = allowlist;
   const candidates = candidateRepos(repos, allowlist);
   const now = Date.now();
+  // Repos this panel would merge in that the Inspector may not review. Computed with the
+  // same predicate the daemon gates on, so the warning cannot claim a repo is covered
+  // when `inspectorPosture` will call it `not-allowlisted` an hour later. Only meaningful
+  // once the Inspector is on and live - before that the warnings above are the answer.
+  const untrustedByInspector =
+    inspectorConfig?.enabled === true && inspectorConfig.mode === "live"
+      ? allowlist.filter((p) => !repoAllowlisted(p, null, inspectorConfig.repoAllowlist))
+      : [];
 
   async function add(): Promise<void> {
     const path = draft.trim();
@@ -151,11 +164,30 @@ export function ShippingSettingsPanel({
         </p>
       )}
 
-      {/* The gotcha that would otherwise read as a broken feature. */}
-      {autoMerge && inspectorEnabled === false && (
+      {/* The gotchas that would otherwise read as a broken feature. Each names the switch
+          to flip, and they are mutually exclusive in the order `inspectorPosture` checks
+          them - telling someone whose Inspector is off that their repo is untrusted too
+          is three problems presented where they can only act on the first. */}
+      {autoMerge && inspectorConfig?.enabled === false && (
         <p className="settings-warn ship-needs-inspector">
           The Inspector is switched off, so no pull request is being reviewed and none will
           qualify. Turn it on in Settings → Inspector.
+        </p>
+      )}
+
+      {autoMerge && inspectorConfig?.enabled === true && inspectorConfig.mode !== "live" && (
+        <p className="settings-warn ship-needs-inspector">
+          The Inspector is in dry run, so it reviews but publishes nothing - and YOLO mode
+          will not merge on a review nobody can see. Set it to live in Settings → Inspector.
+        </p>
+      )}
+
+      {/* The two allowlists are separate on purpose (see below), so this is the one state
+          where both features are fully on and a specific repo still never merges. */}
+      {autoMerge && untrustedByInspector.length > 0 && (
+        <p className="settings-warn ship-needs-inspector">
+          The Inspector is not allowed to review {untrustedByInspector.join(", ")}, so
+          nothing there will merge. Add it in Settings → Inspector.
         </p>
       )}
 

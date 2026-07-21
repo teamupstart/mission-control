@@ -6,7 +6,7 @@ import {
   type AgentType,
   type TaskPriority,
 } from "@shared/types.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
@@ -516,7 +516,7 @@ function DispatchModal({
                   everywhere except the modal that dispatches. */}
               {AGENT_TYPES.map((a) => (
                 <option key={a} value={a}>
-                  {AGENT_NAMES[a].label}
+                  {AGENT_IDENTITY[a].label}
                 </option>
               ))}
             </select>

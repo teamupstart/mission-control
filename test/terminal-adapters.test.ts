@@ -197,7 +197,8 @@ test("the argv that attaches a terminal honours the resolved binary", () => {
 });
 
 test("tmux rejects the names its own target grammar cannot express", () => {
-  const names = tmuxMultiplexer().sessions!.validateName!;
+  // The other direction, and the agreement between them, is `terminal-name-rules.test.ts`.
+  const names = tmuxMultiplexer().sessions!.names.validate;
   // Separators in `session:window.pane`.
   assert.ok(names("api.v2"));
   assert.ok(names("api:v2"));

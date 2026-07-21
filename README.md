@@ -180,6 +180,29 @@ terminal it is talking to. Everything you send arrives as written, including a m
 that begins with a dash. A backend that cannot be typed into at all refuses and names
 itself, rather than reporting that the session has no terminal.
 
+The same declaration decides a session's **lifecycle** - Focus, Rename, Kill, and where a
+dispatched agent is launched in the first place. Focus is the clearest case, because it is
+genuinely two steps on two axes: the multiplexer selects the pane, which decides what the
+session *shows* and raises nothing, and then an emulator puts a window in front of you -
+the tab already running a client for that session, else its own tab, else a fresh one
+opened on the multiplexer's own attach command. A machine with a multiplexer and no
+scriptable terminal still lands the first half and says plainly that it could not do the
+second.
+
+Rename and Kill split the same way. Renaming a multiplexer-hosted session moves the
+session name *and* retitles every tab attached to it; renaming an emulator-hosted one sets
+a tab title. Kill always signals the agent, and additionally tears down the whole group
+when the backend says it has one - a multiplexer session is a group, a terminal tab is
+not, and that is declared rather than inferred from which vendor answered.
+
+**Dispatch follows whichever backend you actually have.** With a multiplexer installed you
+get what you always got: a detached session with a shell pane split beside the agent. With
+none, the agent is launched into a terminal tab rooted at the same worktree, so a machine
+without tmux can still dispatch instead of failing with a bare `ENOENT`. What a name may
+be follows the backend too - the characters tmux cannot hold in a target spec are tmux's
+rule, applied when a name is cut from a task title and when you type one into Rename, from
+one declaration rather than two half-copies.
+
 You pay nothing for backends you do not use: a terminal whose binary is not installed is
 skipped from the filesystem, without a process being spawned for it on any tick.
 
@@ -630,9 +653,10 @@ Dispatch** (or press <kbd>+</kbd>), pick a repo, describe the task, and the daem
    [treehouse](#isolated-worktrees-per-session-treehouse) tree when the repo opted in,
    else a plain `git worktree` on a fresh `harness/…` branch - so an agent never shares
    a working tree with another session),
-2. launches the agent (`claude`/`codex`) in a **detached tmux session** rooted there -
-   with a second **shell pane split beside it** in the same worktree, so a terminal for
-   ad-hoc git/build/inspection is one attach away, and
+2. launches the agent (`claude`/`codex`) in a **terminal home** rooted there - a detached
+   tmux session with a second **shell pane split beside it** in the same worktree, so a
+   terminal for ad-hoc git/build/inspection is one attach away; on a machine with no
+   multiplexer it opens a terminal tab in that worktree instead, and
 3. injects your task as its first prompt once passive discovery binds the session.
 
 **Model** starts on the default configured for the chosen harness (see [Default
@@ -706,11 +730,12 @@ that shipped is still a drop target (which is what a squash-merged PR needs, sin
 landed commit has a different SHA and never appears on `origin/main`).
 
 **The agent is renamed after the task it takes**, the way a dispatched one is named when
-its tmux session is cut - so a recycled agent's card is titled by its work rather than by
-the pooled worktree it was handed out as, or by the task it finished ten minutes ago. This
-happens after the task has been typed, and never fails the assign: if the terminal can't be
-renamed (no tmux or wezterm handle, or the name is already spoken for) the old name simply
-stands. It applies to [the backlog
+its session is cut - so a recycled agent's card is titled by its work rather than by
+the pooled worktree it was handed out as, or by the task it finished ten minutes ago. The
+name is cut to the rules of the backend *this* session lives in, which is not necessarily
+the one a fresh dispatch would land on. This happens after the task has been typed, and
+never fails the assign: if the terminal can't be renamed (no terminal handle at all, or
+the name is already spoken for) the old name simply stands. It applies to [the backlog
 autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.
 

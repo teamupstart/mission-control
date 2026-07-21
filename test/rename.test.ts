@@ -4,11 +4,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RenameDeps } from "../src/server/actions.ts";
-import type { RunResult } from "../src/server/util/exec.ts";
-import { stubRun } from "../src/server/util/exec.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { EmulatorPane } from "../src/server/terminal/types.ts";
+import {
+  OK,
+  fakeEmulator,
+  fakeMultiplexer,
+  fakeTerminals,
+} from "./helpers/terminal-fakes.ts";
+import type { TerminalDeps } from "../src/server/terminal/registry.ts";
+import type { EmulatorPane, MuxClient, TerminalResult } from "../src/server/terminal/types.ts";
 import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
 
 // Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
@@ -166,13 +170,11 @@ test("validateSessionNameAgainstTasks ignores task bindings for a wezterm-only s
   );
 });
 
-// ---- rename (dep-injected branching) ----
+// ---- rename (registry-driven branching) ----
 
-/** A wezterm pane whose tab hosts a `tmux attach` client (only paneId/tty matter here). */
+/** A wezterm-ish pane whose tab hosts a multiplexer client (only the ids and tty matter). */
 function hostPane(paneId: number, over: Partial<EmulatorPane> = {}): EmulatorPane {
   return {
-    // The adapter normalizes pane ids to strings (tmux's are "%3"); `rename` converts back
-    // for `setWeztermTabTitle`, which still takes wezterm's numeric one.
     paneId: String(paneId),
     tabId: String(paneId),
     windowId: "1",
@@ -185,159 +187,198 @@ function hostPane(paneId: number, over: Partial<EmulatorPane> = {}): EmulatorPan
   };
 }
 
-function spyDeps(
-  over: Partial<RenameDeps> = {},
-): {
-  deps: RenameDeps;
-  tmuxCalls: [string, string][];
-  wezCalls: [number, string][];
-  hostLookups: string[];
-} {
-  const tmuxCalls: [string, string][] = [];
-  const wezCalls: [number, string][] = [];
-  const hostLookups: string[] = [];
-  const ok: RunResult = stubRun({ stdout: "", stderr: "", code: 0 });
-  const deps: RenameDeps = {
-    renameTmuxSession: (from, to) => {
-      tmuxCalls.push([from, to]);
-      return Promise.resolve(ok);
-    },
-    setWeztermTabTitle: (paneId, title) => {
-      wezCalls.push([paneId, title]);
-      return Promise.resolve(ok);
-    },
-    // Default to "no wezterm tab hosts this session" - the tmux-only case.
-    findTmuxHostPanes: (session) => {
-      hostLookups.push(session);
-      return Promise.resolve([]);
-    },
-    ...over,
-  };
-  return { deps, tmuxCalls, wezCalls, hostLookups };
+/** The client list a host lookup joins against - one client per host pane, same ttys. */
+function clientsFor(panes: EmulatorPane[], session = "work"): MuxClient[] {
+  return panes.map((p) => ({ tty: p.tty, session }));
 }
 
-test("rename: a tmux session renames the tmux session by its current name", async () => {
-  const { deps, tmuxCalls, wezCalls } = spyDeps();
+interface RenameSpy {
+  deps: TerminalDeps;
+  muxCalls: [string, string][];
+  retitled: [string, string][];
+}
+
+/**
+ * A multiplexer that renames and an emulator that retitles, both recording.
+ *
+ * `hosts` is what the emulator enumerates; the multiplexer reports a client on each of their
+ * ttys, so the composition join finds them the way it does on a real machine rather than
+ * through a `findTmuxHostPanes` hook that skipped the join entirely.
+ */
+function spyDeps(
+  opts: {
+    hosts?: EmulatorPane[];
+    renameResult?: TerminalResult;
+    retitleResult?: TerminalResult;
+    sessions?: boolean;
+    retitle?: boolean;
+  } = {},
+): RenameSpy {
+  const hosts = opts.hosts ?? [];
+  const muxCalls: [string, string][] = [];
+  const retitled: [string, string][] = [];
+  const mux = fakeMultiplexer({
+    clients: async () => clientsFor(hosts),
+    sessions:
+      opts.sessions === false
+        ? null
+        : {
+            spawnDetached: async () => OK,
+            attachArgv: (name) => ["fake", "attach", name],
+            rename: async (from, to) => {
+              muxCalls.push([from, to]);
+              return opts.renameResult ?? OK;
+            },
+            kill: async () => OK,
+            names: { validate: () => null, sanitize: (t) => t },
+          },
+  });
+  const emu = fakeEmulator({
+    list: async () => hosts,
+    retitle:
+      opts.retitle === false
+        ? null
+        : async (t, title) => {
+            retitled.push([t.paneId, title]);
+            return opts.retitleResult ?? OK;
+          },
+  });
+  return { deps: fakeTerminals(mux, emu), muxCalls, retitled };
+}
+
+test("rename: a multiplexer session renames by its current name", async () => {
+  const { deps, muxCalls, retitled } = spyDeps();
   const r = await rename(mkSession({ tmux }), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
-  assert.deepEqual(tmuxCalls, [["work", "renamed"]]);
-  assert.deepEqual(wezCalls, [], "no wezterm tab hosts it, so there's no title to retitle");
+  assert.deepEqual(muxCalls, [["work", "renamed"]]);
+  assert.deepEqual(retitled, [], "no tab hosts it, so there's no title to retitle");
 });
 
-test("rename: a tmux session also retitles the wezterm tab hosting its client", async () => {
-  // The regression this guards: an agent inside tmux never gets a `wezterm`
-  // handle (correlate keys it on the agent's tty, which is a tmux pane tty), so
-  // the tab showing it is only reachable via its tmux client - and renames used
-  // to skip it, leaving the tab on its spawn-time title forever.
-  const { deps, tmuxCalls, wezCalls } = spyDeps({
-    findTmuxHostPanes: () => Promise.resolve([hostPane(1)]),
-  });
+test("rename: a multiplexer session also retitles the tab hosting its client", async () => {
+  // The regression this guards: an agent inside a multiplexer never gets an emulator handle
+  // (correlate keys it on the agent's tty, which is a multiplexer pane tty), so the tab
+  // showing it is only reachable via its client - and renames used to skip it, leaving the
+  // tab on its spawn-time title forever.
+  const { deps, muxCalls, retitled } = spyDeps({ hosts: [hostPane(1)] });
   const r = await rename(mkSession({ tmux }), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
-  assert.deepEqual(tmuxCalls, [["work", "renamed"]]);
-  assert.deepEqual(wezCalls, [[1, "renamed"]]);
+  assert.deepEqual(muxCalls, [["work", "renamed"]]);
+  assert.deepEqual(retitled, [["1", "renamed"]]);
 });
 
-test("rename: a tmux session retitles every tab attached to it", async () => {
-  // One session can be attached from several tabs; a tab left on the old title
-  // is the same staleness bug, just in a second window.
-  const { deps, wezCalls } = spyDeps({
-    findTmuxHostPanes: () => Promise.resolve([hostPane(1), hostPane(2)]),
-  });
+test("rename: a multiplexer session retitles every tab attached to it", async () => {
+  // One session can be attached from several tabs; a tab left on the old title is the same
+  // staleness bug, just in a second window.
+  const { deps, retitled } = spyDeps({ hosts: [hostPane(1), hostPane(2)] });
   await rename(mkSession({ tmux }), "renamed", deps);
 
-  assert.deepEqual(wezCalls, [
-    [1, "renamed"],
-    [2, "renamed"],
+  assert.deepEqual(retitled, [
+    ["1", "renamed"],
+    ["2", "renamed"],
   ]);
 });
 
-test("rename: host tabs are looked up by the OLD name, before the rename lands", async () => {
-  // The lookup joins tmux clients to wezterm panes by the session name, so it
-  // has to run while the session still answers to `from`.
+test("rename: host tabs are resolved by the OLD name, before the rename lands", async () => {
+  // The lookup joins clients to emulator panes by the session name, so it has to run while
+  // the session still answers to `from`.
   const order: string[] = [];
-  const ok: RunResult = stubRun({ stdout: "", stderr: "", code: 0 });
-  const { deps, hostLookups } = spyDeps({
-    findTmuxHostPanes: (session) => {
-      order.push(`find:${session}`);
-      return Promise.resolve([hostPane(1)]);
+  const hosts = [hostPane(1)];
+  const mux = fakeMultiplexer({
+    clients: async () => {
+      order.push("clients");
+      return clientsFor(hosts);
     },
-    renameTmuxSession: () => {
-      order.push("rename");
-      return Promise.resolve(ok);
+    sessions: {
+      spawnDetached: async () => OK,
+      attachArgv: (name) => ["fake", "attach", name],
+      rename: async () => {
+        order.push("rename");
+        return OK;
+      },
+      kill: async () => OK,
+      names: { validate: () => null, sanitize: (t) => t },
     },
   });
-  await rename(mkSession({ tmux }), "renamed", deps);
+  const emu = fakeEmulator({ list: async () => hosts, retitle: async () => OK });
+  await rename(mkSession({ tmux }), "renamed", fakeTerminals(mux, emu));
 
-  assert.deepEqual(hostLookups, [], "spy replaced - lookups tracked in `order`");
-  assert.deepEqual(order, ["find:work", "rename"]);
+  assert.deepEqual(order, ["clients", "rename"]);
 });
 
-test("rename: a tmux rename still succeeds when the tab retitle fails", async () => {
-  // wezterm may not be running at all (tmux-only user) or its GUI may have gone
-  // away. The card name already moved, so a cosmetic title must not fail this.
-  const boom: RunResult = stubRun({ stdout: "", stderr: "no wezterm mux", code: 1 });
-  const { deps, tmuxCalls } = spyDeps({
-    findTmuxHostPanes: () => Promise.resolve([hostPane(1)]),
-    setWeztermTabTitle: () => Promise.resolve(boom),
+test("rename: a session rename still succeeds when the tab retitle fails", async () => {
+  // The emulator may not be running at all, or its GUI may have gone away. The card name
+  // already moved, so a cosmetic title must not fail this.
+  const { deps, muxCalls } = spyDeps({
+    hosts: [hostPane(1)],
+    retitleResult: { ok: false, error: "no wezterm mux", outcomeUnknown: false },
   });
   const r = await rename(mkSession({ tmux }), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
-  assert.deepEqual(tmuxCalls, [["work", "renamed"]]);
+  assert.deepEqual(muxCalls, [["work", "renamed"]]);
 });
 
-test("rename: a failed tmux rename leaves the tab title alone", async () => {
+test("rename: a failed session rename leaves the tab title alone", async () => {
   // The tab must keep showing the name the session actually still has.
-  const fail: RunResult = stubRun({ stdout: "", stderr: "duplicate session: renamed", code: 1 });
-  const { deps, wezCalls } = spyDeps({
-    findTmuxHostPanes: () => Promise.resolve([hostPane(1)]),
-    renameTmuxSession: () => Promise.resolve(fail),
+  const { deps, retitled } = spyDeps({
+    hosts: [hostPane(1)],
+    renameResult: { ok: false, error: "duplicate session: renamed", outcomeUnknown: false },
   });
   const r = await rename(mkSession({ tmux }), "renamed", deps);
 
   assert.equal(r.ok, false);
-  assert.deepEqual(wezCalls, [], "no rename landed, so no title should move");
+  assert.deepEqual(retitled, [], "no rename landed, so no title should move");
 });
 
-test("rename: a wezterm-only session sets the tab title on its pane", async () => {
-  const { deps, tmuxCalls, wezCalls } = spyDeps();
+test("rename: an emulator-only session sets the tab title on its own pane", async () => {
+  const { deps, muxCalls, retitled } = spyDeps();
   const r = await rename(mkSession({ tmux: null, wezterm, nameSource: "wezterm" }), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
-  assert.deepEqual(wezCalls, [[12, "renamed"]]);
-  assert.deepEqual(tmuxCalls, []);
+  assert.deepEqual(retitled, [["12", "renamed"]]);
+  assert.deepEqual(muxCalls, []);
 });
 
-test("rename: tmux wins when a session has both handles", async () => {
-  // `session.wezterm` on a tmux session would be the pane the agent's own tty
-  // maps to, not the tab hosting the client - renaming through it would title
-  // the wrong tab. The tab is found via `findTmuxHostPanes` instead.
-  const { deps, tmuxCalls, wezCalls } = spyDeps();
+test("rename: the multiplexer wins when a session has both handles", async () => {
+  // `session.wezterm` on a multiplexer-hosted session would be the pane the agent's own tty
+  // maps to, not the tab hosting the client - renaming through it would title the wrong tab.
+  // The tab is found through the client join instead.
+  const { deps, muxCalls, retitled } = spyDeps();
   await rename(mkSession({ tmux, wezterm }), "renamed", deps);
 
-  assert.deepEqual(tmuxCalls, [["work", "renamed"]]);
-  assert.deepEqual(wezCalls, [], "pane 12 (session.wezterm) is never titled");
+  assert.deepEqual(muxCalls, [["work", "renamed"]]);
+  assert.deepEqual(retitled, [], "pane 12 (session.wezterm) is never titled");
 });
 
-test("rename: a failed tmux rename surfaces stderr", async () => {
-  const fail: RunResult = stubRun({ stdout: "", stderr: "duplicate session: renamed", code: 1 });
-  const { deps } = spyDeps({ renameTmuxSession: () => Promise.resolve(fail) });
+test("rename: a failed session rename surfaces the backend's own words", async () => {
+  const { deps } = spyDeps({
+    renameResult: { ok: false, error: "duplicate session: renamed", outcomeUnknown: false },
+  });
   const r = await rename(mkSession({ tmux }), "renamed", deps);
 
   assert.equal(r.ok, false);
   assert.equal(r.error, "duplicate session: renamed");
 });
 
+test("rename: an emulator that can't retitle refuses by name instead of silently succeeding", async () => {
+  // The capability null. Ghostty can be launched into and raised and can rename nothing, and
+  // the honest answer names the backend rather than reporting a rename that never happened.
+  const { deps } = spyDeps({ retitle: false });
+  const r = await rename(mkSession({ tmux: null, wezterm }), "renamed", deps);
+
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /WezTerm/);
+});
+
 test("rename: a handle-less session is an error, not a crash", async () => {
-  const { deps, tmuxCalls, wezCalls } = spyDeps();
+  const { deps, muxCalls, retitled } = spyDeps();
   const r = await rename(mkSession(), "renamed", deps);
 
   assert.equal(r.ok, false);
-  assert.deepEqual(tmuxCalls, []);
-  assert.deepEqual(wezCalls, []);
+  assert.deepEqual(muxCalls, []);
+  assert.deepEqual(retitled, []);
 });
 
 // ---- Registry.renameSession (optimistic echo) ----

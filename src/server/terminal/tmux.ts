@@ -1,6 +1,7 @@
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, TMUX_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { plainName, plainValidate } from "./names.ts";
 import type {
   DetachedSessionSpec,
   Key,
@@ -8,6 +9,7 @@ import type {
   MuxPane,
   MuxTarget,
   Multiplexer,
+  NameRules,
   TerminalResult,
 } from "./types.ts";
 
@@ -177,6 +179,57 @@ export async function readTmuxPaneMode(
   return mode.trim() || "copy-mode";
 }
 
+/**
+ * What a tmux session may be called, in both directions - see `NameRules`.
+ *
+ * Exported because these rules are asserted directly rather than through a live server:
+ * they are the whole of what tmux's target grammar forbids, and a test that had to have
+ * tmux installed to check them would not run on CI.
+ *
+ * This is one rule set where there were two halves. `validateSessionName` (`actions.ts`)
+ * held the rejections and `sessionLabel` (`dispatcher.ts`) held the coercion, and they had
+ * already drifted: the coercion also stripped a leading `=` and `{`, the rejection did not,
+ * so a name a dispatch would never have produced could still be typed in. Both halves are
+ * here now, and the drift is a diff rather than a discovery.
+ */
+export const TMUX_NAMES: NameRules = {
+  validate: (name) => {
+    // The shared half first - see `plainValidate`. Every backend's rules are its own
+    // grammar ON TOP OF what no display name can hold, never instead of it.
+    const plain = plainValidate(name);
+    if (plain) return plain;
+    // Both are separators in a tmux target spec (`session:window.pane`), so
+    // `rename-session` refuses them outright.
+    if (/[.:]/.test(name)) return "a tmux session name can't contain '.' or ':'";
+    // A leading '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never falls
+    // back to a name lookup, so a session named `$0` would make focus and kill target
+    // whichever session holds ID 0 instead of this one.
+    if (/^\$/.test(name)) return "a tmux session name can't start with '$'";
+    return null;
+  },
+  /**
+   * Keeps the text's spaces and capitals - a session name is what the card is titled, so it
+   * should read like a heading rather than a slug - and strips only what a tmux name
+   * genuinely cannot hold.
+   *
+   * The leading-sigil strip reaches slightly further than `validate` does, and deliberately:
+   * `=` (exact-match), `$` (session ID) and `{` (special token) all lead a tmux target spec,
+   * and a name starting with one makes every `-t` we ever aim at it - `has-session`,
+   * `kill-session`, the `name:0.0` split and select - resolve to the wrong session or to
+   * none. `validate` bars only `$` because that is the one tmux itself will not refuse, and
+   * widening a rejection a human sees is a behaviour change; widening a coercion nobody sees
+   * is free.
+   */
+  sanitize: (text) =>
+    plainName(
+      text
+        .replace(/[.:]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/^[=${]+/, ""),
+    ),
+};
+
 /** The tmux target spec for a pane. Pane ids are globally unique, so the session is implied. */
 function paneTarget(t: MuxTarget): string {
   return t.paneId;
@@ -308,18 +361,11 @@ export function tmuxMultiplexer(exec: TerminalExec = defaultExec): Multiplexer {
       // `--` ends flag parsing so a name like "-wip" is read as the new name rather than as
       // a flag bundle (which surfaces an arg-parser dump behind a 500).
       rename: (from, to) => cmd(["rename-session", "-t", from, "--", to], "tmux rename-session failed"),
+      // A tmux session IS a killable group - every window and pane in it goes at once,
+      // which is what stops a dispatched agent's shell pane outliving the agent.
       kill: (session) =>
         cmd(["kill-session", "-t", session], "tmux kill-session failed", SESSION_TIMEOUT_MS),
-      validateName: (name) => {
-        // Both are separators in a tmux target spec (`session:window.pane`), so
-        // `rename-session` refuses them outright.
-        if (/[.:]/.test(name)) return "a tmux session name can't contain '.' or ':'";
-        // A leading '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never
-        // falls back to a name lookup, so a session named `$0` would make focus and kill
-        // target whichever session holds ID 0 instead of this one.
-        if (/^\$/.test(name)) return "a tmux session name can't start with '$'";
-        return null;
-      },
+      names: TMUX_NAMES,
     },
   };
 }

@@ -302,11 +302,30 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   yet). Tests:
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
   `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`.
-  **Migration in progress** - discovery and pane I/O are through the registries; focus,
-  rename, kill and spawn still branch on `session.tmux` / `session.wezterm` directly, and
-  `legacyHandles` (`correlate.ts`) plus its mirror `handlesOf` (`terminal/handles.ts`) are
-  the only places projecting onto those two fields;
-  see `docs/plans/pluggable-integrations/plan.md` phase 2.
+  **Lifecycle is composition, and it is the reason there are two interfaces.** Focus is
+  `Multiplexer.select` (decides what the session SHOWS, raises nothing) then an emulator
+  raise - host tab via the `hostPanesFor` client-tty join, else the session's own emulator
+  handle, else `spawn.tab(attachArgv)`. Rename moves the multiplexer session name AND
+  retitles every hosting tab. `MuxSessions.kill` is NULLABLE and that is load-bearing:
+  "has a killable group" was the else-branch of `if (session.tmux)`, so a second
+  multiplexer would silently have inherited the tab path. **Where a dispatched agent
+  lands is `terminal/home.ts`**, and its rule is that the axis is chosen ONCE
+  (`homeBackends` - multiplexers if any is installed, emulators only if none is) so
+  launch, name-uniqueness, liveness and teardown cannot disagree about which backend
+  holds the home. `homeAlive` returns `boolean | null` and **null is not `false`**: null
+  means no installed backend could tell us, and only `false` may reclaim a worktree -
+  `reconcileOnStartup` runs `git worktree remove --force` on that branch, so an adapter
+  lookup that misses must never arrive there by omission (`t.tmuxSession ? probe : false`
+  did). `killHome` reports `asked` beside `ok` for the same reason. **Name rules belong to
+  the adapter** (`NameRules`, both directions): tmux's target grammar was written out
+  twice, as rejections in `validateSessionName` and as coercion in `sessionLabel`, and the
+  two had already drifted by one character class - `terminal-name-rules.test.ts` pins that
+  whatever a backend sanitizes, the same backend accepts. Tests: `focus-composition.test.ts`,
+  `terminal-home.test.ts`, `terminal-name-rules.test.ts`, `rename.test.ts`, `kill.test.ts`.
+  **Migration in progress** - `Session.tmux` / `Session.wezterm` are still two named fields,
+  and `legacyHandles` (`correlate.ts`) plus its mirror `handlesOf` (`terminal/handles.ts`)
+  are the only places projecting onto them;
+  see `docs/plans/pluggable-integrations/plan.md` phase 3.
 - **Task sources (what pulls work INTO the backlog)**: the same purity split as the
   harnesses. `TASK_SOURCE_KIND_INFO` (`@shared/task-source.ts`) holds what the settings
   panel can answer in the browser - the name, the blurb, the config schema - and

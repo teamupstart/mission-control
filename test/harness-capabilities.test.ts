@@ -6,6 +6,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Session } from "../src/shared/types.ts";
+// Type-only, so it is erased rather than resolved: a static import of `actions.ts` here
+// would reach the db before the HARNESS_HOME preamble below has run.
+import type { InjectDeps } from "../src/server/actions.ts";
 
 // What is at stake: a harness that declares a capability `null` must land on the SAME
 // path the daemon already takes when that capability is unavailable for any other reason
@@ -40,6 +43,7 @@ const { reloadOwed, pendingReloads } = await import("../src/server/skills/reload
 const { tickTargets } = await import("../src/server/foreman/queue-machine.ts");
 const { decidePromptedWrapup } = await import("../src/server/foreman/prompted-wrapup.ts");
 const { resetToOrigin } = await import("../src/server/actions.ts");
+const { bindSession } = await import("../src/server/terminal/handles.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 const { mkSession } = await import("./helpers/session-fixture.ts");
 const { mkOriginAndClone } = await import("./helpers/git-fixture.ts");
@@ -205,7 +209,13 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
 
 // ---- clearing context: the defect this item fixes ----
 
-/** A session with a pane, and a fake terminal that counts what was written to it. */
+/**
+ * A session with a pane, and a fake terminal that counts every command run against it.
+ *
+ * Counted at the SUBPROCESS, below the adapter, so "nothing was typed at this agent" means
+ * no command ran at all - not even the mode probe that precedes a write. A counter above
+ * the adapter would be counting the policy's intentions rather than the pane's traffic.
+ */
 function withCountedPane(clone: string, agent: Session["agent"], screens: (string | null)[]) {
   let writes = 0;
   const session = mkSession({
@@ -215,11 +225,12 @@ function withCountedPane(clone: string, agent: Session["agent"], screens: (strin
     tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
     wezterm: null,
   });
-  const deps = {
-    exec: async () => {
-      writes++;
-      return stubRun({ stdout: "", stderr: "", code: 0 });
-    },
+  const deps: InjectDeps = {
+    pane: (s) =>
+      bindSession(s, async () => {
+        writes++;
+        return stubRun({ stdout: "", stderr: "", code: 0 });
+      }),
     capture: async () => (screens.length ? screens.shift()! : null),
     sleep: async () => {},
   };
@@ -233,7 +244,7 @@ test("a harness with no clear command has NOTHING typed at it, and reports clear
     // A pane, a live session, and `clear: true` - every precondition the old code needed
     // to send Claude's `/clear`. The capability is the only thing stopping it.
     const { session, deps, writes } = withCountedPane(clone, agent, ["> ", "> ", "cleared"]);
-    const r = await resetToOrigin(session, true, deps as never);
+    const r = await resetToOrigin(session, true, deps);
     assert.equal(r.ok, true, "the git half still lands - this is a degradation, not a failure");
     assert.equal(r.cleared, false);
     assert.equal(writes(), 0, `${agent} must not be sent a slash command it does not speak`);
@@ -248,9 +259,9 @@ test("that degradation is byte-identical to asking for no clear at all", async (
   for (const agent of hasnt) {
     const { clone } = mkOriginAndClone("harness-caps-clear-eq-");
     const a = withCountedPane(clone, agent, ["> ", "> ", "cleared"]);
-    const asked = await resetToOrigin(a.session, true, a.deps as never);
+    const asked = await resetToOrigin(a.session, true, a.deps);
     const b = withCountedPane(clone, agent, ["> ", "> ", "cleared"]);
-    const notAsked = await resetToOrigin(b.session, false, b.deps as never);
+    const notAsked = await resetToOrigin(b.session, false, b.deps);
     assert.deepEqual(asked, notAsked);
   }
 });
@@ -264,7 +275,7 @@ test("a harness that DOES declare a clear command still clears - the other half 
     // so a harness whose command is spelled differently is not reported as never having
     // echoed anything.
     const { session, deps } = withCountedPane(clone, agent, ["> ", `> ${command}`, "welcome back"]);
-    const r = await resetToOrigin(session, true, deps as never);
+    const r = await resetToOrigin(session, true, deps);
     assert.equal(r.cleared, true, `${agent} declares ${command} and must be reported as having run it`);
   }
 });

@@ -91,13 +91,15 @@ export function binPresent(spec: BinSpec, env: NodeJS.ProcessEnv = process.env):
  *     Dropping it does not restore reachability, it just picks a DIFFERENT live server, and
  *     "every session on the machine" is not on offer either way: a tmux client talks to
  *     exactly one socket.
- *   - **Enumeration and actuation have to agree.** The ~19 inline `run("tmux", …)` writes in
- *     `actions.ts`, `dispatcher.ts` and `pane-capture.ts` inherit `TMUX` and this migration
- *     item does not reach them. Scrubbing it here alone splits the two: cards would be built
- *     from one server's pane ids while `send-keys -t %3` and `kill-session -t <name>` landed
- *     on another server's `%3`. `tmuxSendKeys` is the sharpest version - it would probe
- *     copy-mode on one server and write to another, so the guard reads "no such pane", fails
- *     open, and silently stops guarding.
+ *   - **Enumeration and actuation have to agree.** The inline `run("tmux", …)` calls left in
+ *     `actions.ts` (focus, rename, kill) and `dispatcher.ts` (spawn, teardown, the
+ *     name probes) inherit `TMUX`, and the pane-I/O item does not reach them - eleven of
+ *     them, down from ~19. Scrubbing it here alone splits the two: cards would be built
+ *     from one server's pane ids while `kill-session -t <name>` landed on another server's
+ *     session of that name, and `focus` selected a pane in a server nobody is looking at.
+ *     The pane WRITES have moved behind this spec and would be on the scrubbed socket while
+ *     the teardown that kills their session was not, which is a worse split than the one
+ *     that exists now, not a smaller one.
  *
  * So an empty list is a DECLARATION, like a null capability: this backend has nothing to
  * scrub. If `TMUX` is ever dropped it belongs in the same commit that routes those writes

@@ -30,16 +30,15 @@ import type {
  * took a while to learn: `--no-auto-start`, which turns a 2.5s block into a fast failure
  * when no GUI is running, and the inherited `WEZTERM_UNIX_SOCKET` that goes stale when a GUI
  * restarts (now `WEZTERM_BIN.dropEnv`, so tmux gets the same treatment for the same reason).
- * Writing and capturing are implemented here because they have no existing home - today they
- * are inline in `actions.ts` and `pane-capture.ts`.
  *
- * Which means routing writes and captures through here will be a DELIBERATE behavior change,
- * not a move, and that migration commit should be read as one: the inline call sites still
- * left in `actions.ts` and `discovery/pane-capture.ts` use neither `--no-auto-start` nor a
- * scrubbed environment, so they inherit `WEZTERM_UNIX_SOCKET` and may auto-start a mux. The
- * pane ids they are given come from `list` below, which drops that socket - so today such a
- * write can address a different mux than the one the id came from. Sending every command
- * down the same socket the ids were enumerated on is the point of doing it here.
+ * Writing and capturing were implemented here before anything called them, and routing the
+ * pane I/O through them was a DELIBERATE behavior change rather than a move - the commit
+ * that did it should be read as one. The inline call sites it replaced (in `actions.ts` and
+ * `discovery/pane-capture.ts`) used neither `--no-auto-start` nor a scrubbed environment, so
+ * they inherited `WEZTERM_UNIX_SOCKET` and could auto-start a mux, while the pane ids they
+ * were given came from `list` below, which drops it. A write could therefore address a
+ * different mux than the one its id came from. Every command now goes down the socket the
+ * ids were enumerated on, which was the point of implementing them here.
  */
 
 /**

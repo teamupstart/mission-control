@@ -81,12 +81,12 @@ code lives, and in which capabilities exist at all:
 
 | | wezterm.ts | tmux.ts |
 |---|---|---|
-| bin resolution | ~~`resolveWeztermBin()`, `WEZTERM_BIN`~~ | ~~literal `"tmux"` at ~19 inline call sites~~ **closed for the adapters**: one `BinSpec` each, `resolveBin` + `binEnv`. The remaining inline `run("tmux", …)` writes belong to the pane-I/O item |
+| bin resolution | ~~`resolveWeztermBin()`, `WEZTERM_BIN`~~ | ~~literal `"tmux"` at ~19 inline call sites~~ **closed for the adapters**: one `BinSpec` each, `resolveBin` + `binEnv`. The eleven remaining inline `run("tmux", …)` calls are focus/rename/kill and dispatch, and belong to the focus/spawn/kill item |
 | pane id type | `number` | `string` (`"%3"`) |
 | cwd | `file://` URL, needs `weztermCwdToPath` | plain path |
 | spawn | `spawnWeztermTab` (used only as a focus fallback) | lives in `dispatcher.ts:449-468`, not in `tmux.ts` |
 | retitle | `setWeztermTabTitle` | inline in `actions.ts:1090` |
-| copy-mode probe | none - no such concept | `readTmuxPaneMode:57-71` |
+| copy-mode probe | none - no such concept | ~~`readTmuxPaneMode:57-71`~~ **closed**: `Multiplexer.paneMode`, and null there means "no such concept" rather than "in no mode" |
 | focus | `activateWeztermPane:83-87` | cannot focus alone |
 | kill group | none - SIGTERM only (`actions.ts:1234`) | `kill-session` |
 
@@ -230,9 +230,11 @@ handle, or both; writes prefer the innermost (multiplexer), focus walks outward.
 which are the composition rule made executable), `tmux.ts` and `wezterm.ts`, `exec.ts` (the
 subprocess seam the adapters are testable through), `bin.ts` and `enumerate.ts` (the third
 composition primitive: what each backend can SEE, in the order that decides which names a
-session). Discovery is the first call site migrated; the WRITE call sites are not, and the
-adapters stay mechanism only - the copy-mode refusal, pane lock, paste settle and submit
-read-back remain in `actions.ts` as the policy that composes them.
+session), and `handles.ts` (the `Session`-to-handle-list projection, `legacyHandles` run
+backwards, which phase 3 deletes with its mirror). Discovery was the first call site
+migrated and pane I/O the second; focus, spawn and kill are not, and the adapters stay
+mechanism only - the copy-mode refusal, pane lock, paste settle and submit read-back
+remain in `actions.ts` as the policy that composes them.
 
 `bin.ts` closes the first row of the divergence table rather than adding to it:
 `resolveWeztermBin` moved its body there as `resolveBin(BinSpec)` and `config.ts` keeps a
@@ -332,6 +334,67 @@ what `actions.ts` still calls (focus, spawn, retitle) and goes with that file. T
 `correlate.test.ts`, `terminal-enumerate.test.ts`, `terminal-adapters.test.ts`,
 `terminal-registry.test.ts`.
 
+#### Pane I/O, as landed
+
+Every read from and write to a pane now resolves through `bindPane`, and `actions.ts`
+names no vendor on any of those paths. `capturePaneText`, `sendText`, `injectPrompt`,
+`injectShiftTab`, `injectArrow` and `injectEnter` were six copies of the same
+tmux-else-wezterm chain; they are one `BoundPane` and a capability check each. The
+copy-mode refusal, the pane lock, the paste settle and the submit read-back stayed exactly
+where they were - they are decisions about WHEN to write, and they are the same decisions
+for every backend. Six deltas, each forced by something real:
+
+- **The seam moved from a command runner to the PANE.** `PaneDeps.exec` was the only way a
+  test could drive these writers, and after the migration nothing in the write paths used
+  it except to build an adapter - so it is `PaneDeps.pane: (session) => BoundPane | null`,
+  and `bindSession(session, fakeExec)` is how a test that wants real argv still gets it
+  (`pane-copy-mode.test.ts` reads the same `send-keys` lines it always did). What that
+  bought is the other half: the capability NULLS - no `write`, no `paste`, no `mode` - are
+  reachable from a test through a hand-built pane, before the adapter that depends on them
+  exists. A path first exercised by Ghostty is a path that ships broken.
+- **`tmuxWriteBlock` became `paneWriteBlock`, and its null capability is not its null
+  answer.** An emulator has no input mode to be stuck in, which is why the wezterm path
+  never probed; a multiplexer that HAS one and is in none is a different claim, and the
+  same value would have conflated them. The probe-then-write gap is unchanged and is still
+  a shrunk race rather than an eliminated one - moving it behind an interface bought
+  nothing there, and the comment says so.
+- **The refusal names the backend it came from.** `inModeError` said "this pane is in tmux
+  copy-mode" literally, which a second multiplexer would have sent someone hunting for a
+  tmux they are not running. It reads `BoundPane.label`, so the tmux sentence is
+  byte-identical and a `cmux` one is true. (The rest of the user-visible de-tmuxing -
+  `NO_HANDLE`, the rename copy - is still phase 3's; this one moved because the sentence
+  is composed at the moment a specific backend refuses.)
+- **`ActionResult.paneBlocked` kept its name and lost its tmux wording.** It was already
+  vendor-neutral, and renaming it would have touched `routes.ts` and
+  `foreman/queue-apply.ts` for nothing.
+- **`outcomeUnknown` finally decides something**, which is what `TerminalResult` always
+  said it was for. A `paste-buffer` that reported failure resolved its target before
+  writing, so nothing reached the pane and `pasted: false` invites a safe retry; a paste
+  that was KILLED may be sitting in the composer, and the same answer would re-paste onto
+  it and append a second copy. That case now reports `pasted: true`. Erring this way costs
+  a prompt someone re-sends by hand; erring the other way corrupts one already delivered.
+- **Two behavior changes came along, both stated in the adapters' own docs.** The `--`
+  terminator means a reply beginning with a dash reaches the pane instead of tmux's getopt
+  or wezterm's clap parser - verified live on both. And every wezterm command now carries
+  `--no-auto-start` with `WEZTERM_UNIX_SOCKET` dropped, so writes and captures address the
+  same mux the pane ids were enumerated on.
+
+`TMUX` is still NOT in `TMUX_BIN.dropEnv`, and this was the commit that was supposed to
+add it. It cannot: the writes that moved are only some of them. Focus, rename, kill and
+`dispatcher.ts`'s spawn/teardown are eleven inline `run("tmux", …)` calls that still
+inherit `TMUX`, and scrubbing it for pane I/O alone would put keystrokes on one server
+while the `kill-session` tearing that session down landed on another - a worse split than
+the one that exists now. It goes with the focus/spawn/kill item.
+
+Verified the way the enumeration item was, on live backends rather than from the diff: a
+real tmux pane and a real WezTerm tab, each with a child recording every byte it received.
+Typed text, a dash-leading body (which fails on `HEAD`), a multi-line bracketed paste and
+its Enter, and a capture read back - all delivered, in order, on both. The suite's
+existing real-tmux cases (the copy-mode swallow, the placeholder through a live
+`capture-pane`) pass unchanged. Tests: `pane-write-capabilities.test.ts` (the capability
+nulls, the innermost-handle rule, the two `outcomeUnknown` directions),
+`pane-copy-mode.test.ts`, `inject-prompt-submit.test.ts`, `harness-control.test.ts`.
+
 ```mermaid
 flowchart LR
   subgraph N["nesting today"]
@@ -347,7 +410,9 @@ flowchart LR
 `correlate.ts` and `actions.ts` both imported the two backend modules directly, so every
 new backend edited both. After the migration they resolve an adapter from a registry and
 never name a vendor. **`correlate.ts` is there now** - it reads `enumerateTerminals()` and
-knows no backend at all; `actions.ts` still holds the write and focus call sites.
+knows no backend at all - and so is every pane READ and WRITE in `actions.ts`, which
+resolves one `BoundPane` and branches only on what that pane can do. What still imports a
+vendor by name is focus, rename and kill, plus `dispatcher.ts`'s spawn and teardown.
 
 ```mermaid
 flowchart TB
@@ -772,7 +837,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
-| 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; then pane I/O, focus/spawn/kill |
+| 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface |

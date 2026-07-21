@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
+import { bindSession } from "../src/server/terminal/handles.ts";
 import { hasPendingCommand, hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
 import { HARNESSES } from "../src/server/harness/index.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
@@ -61,12 +62,16 @@ function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
   return {
     events,
     deps: {
-      exec: async (bin, args) => {
-        const argv = [bin, ...args].join(" ");
-        events.push({ kind: "exec", argv });
-        if (isEnter(argv)) entersSeen++;
-        return stubRun({ stdout: "", stderr: "", code: 0 });
-      },
+      // The real adapter on a fake subprocess, so the argv recorded here is the argv the
+      // backend actually emits - which is what makes "pasted exactly once" a claim about
+      // tmux commands rather than about a stand-in nobody ships.
+      pane: (session) =>
+        bindSession(session, async (bin, args) => {
+          const argv = [bin, ...args].join(" ");
+          events.push({ kind: "exec", argv });
+          if (isEnter(argv)) entersSeen++;
+          return stubRun({ stdout: "", stderr: "", code: 0 });
+        }),
       capture: async () => {
         events.push({ kind: "capture" });
         return entersSeen >= clearsAfterEnters ? EMPTY_COMPOSER : PLACEHOLDER;
@@ -79,8 +84,14 @@ function harness(clearsAfterEnters = 1): { deps: InjectDeps; events: Event[] } {
   };
 }
 
-/** Both handles submit with a keystroke of their own shape. */
-const isEnter = (argv: string): boolean => /send-keys .* Enter$/.test(argv) || argv.includes("--no-paste \r");
+/**
+ * Both handles submit with a keystroke of their own shape - a tmux key NAME, a wezterm
+ * escape SEQUENCE - which is the whole reason the delivery path names a `Key` and lets the
+ * adapter render it. The `--` in both is the adapters' flag terminator, so a prompt
+ * beginning with a dash reaches the pane instead of the arg parser.
+ */
+const isEnter = (argv: string): boolean =>
+  /send-keys .* -- Enter$/.test(argv) || argv.includes("--no-paste -- \r");
 
 const argvs = (events: Event[]): string[] =>
   events.filter((e): e is Extract<Event, { kind: "exec" }> => e.kind === "exec").map((e) => e.argv);
@@ -99,7 +110,7 @@ test("the Enter waits for the paste to settle - it is never sent back-to-back wi
   const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
   const pasteAt = kinds.findIndex((k) => typeof k === "string" && k.includes("paste-buffer"));
   const sleepAt = kinds.findIndex((k) => k === "sleep");
-  const enterAt = kinds.findIndex((k) => typeof k === "string" && /send-keys .* Enter$/.test(k));
+  const enterAt = kinds.findIndex((k) => typeof k === "string" && /send-keys .* -- Enter$/.test(k));
 
   assert.ok(pasteAt >= 0 && sleepAt >= 0 && enterAt >= 0, "all three steps should have run");
   assert.ok(pasteAt < sleepAt, "the settle must come after the paste");
@@ -139,7 +150,7 @@ test("the pane is read once BEFORE the Enter, while the paste is still definitiv
   const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
   const sleepAt = kinds.indexOf("sleep");
   const captureAt = kinds.indexOf("capture");
-  const enterAt = kinds.findIndex((k) => typeof k === "string" && /send-keys .* Enter$/.test(k));
+  const enterAt = kinds.findIndex((k) => typeof k === "string" && /send-keys .* -- Enter$/.test(k));
 
   assert.ok(captureAt > sleepAt, "the pre-Enter read must come after the settle");
   assert.ok(captureAt < enterAt, "it must come BEFORE the Enter, or it proves nothing");
@@ -207,10 +218,11 @@ test("an unreadable pane ends the retry rather than spending a blind keystroke",
   // for its own accept.
   const events: Event[] = [];
   const deps: InjectDeps = {
-    exec: async (bin, args) => {
-      events.push({ kind: "exec", argv: [bin, ...args].join(" ") });
-      return stubRun({ stdout: "", stderr: "", code: 0 });
-    },
+    pane: (session) =>
+      bindSession(session, async (bin, args) => {
+        events.push({ kind: "exec", argv: [bin, ...args].join(" ") });
+        return stubRun({ stdout: "", stderr: "", code: 0 });
+      }),
     capture: async () => {
       events.push({ kind: "capture" });
       return null;
@@ -231,7 +243,10 @@ test("a paste that never left the buffer is still reported as retryable", async 
   // `pasted: false` is the ONLY state a caller may re-deliver from, so a failure before the
   // paste must keep saying so.
   const deps: InjectDeps = {
-    exec: async (_bin, args) => (stubRun({ stdout: "", stderr: "no such pane", code: args.includes("paste-buffer") ? 1 : 0 })),
+    pane: (session) =>
+      bindSession(session, async (_bin, args) =>
+        stubRun({ stdout: "", stderr: "no such pane", code: args.includes("paste-buffer") ? 1 : 0 }),
+      ),
     capture: async () => EMPTY_COMPOSER,
     sleep: async () => {},
   };
@@ -247,7 +262,7 @@ test("wezterm settles before its Enter too", async () => {
   assert.equal(r.ok, true);
   const kinds = events.map((e) => (e.kind === "exec" ? e.argv : e.kind));
   const sleepAt = kinds.indexOf("sleep");
-  const enterAt = kinds.findIndex((k) => typeof k === "string" && k.includes("--no-paste \r"));
+  const enterAt = kinds.findIndex((k) => typeof k === "string" && k.includes("--no-paste -- \r"));
   assert.ok(sleepAt >= 0 && enterAt > sleepAt, "wezterm must settle before submitting");
 });
 

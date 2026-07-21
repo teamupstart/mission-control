@@ -1,3 +1,4 @@
+import { defaultExec, type TerminalExec } from "./exec.ts";
 import { tmuxMultiplexer } from "./tmux.ts";
 import { weztermEmulator } from "./wezterm.ts";
 import type {
@@ -32,8 +33,10 @@ import type {
  *   - **Writes and captures prefer the innermost handle.** The agent's real pane is the
  *     multiplexer pane; the emulator handle addresses the client showing it, so typing
  *     there types at whatever that client currently displays. `bindPane` is this rule, and
- *     it is the only place it should be written - it is currently open-coded, identically,
- *     in `sendText`, `injectPrompt`, `capturePaneText` and `paneKey`.
+ *     it is the only place it is written: `sendText`, `injectPrompt` and `capturePaneText`
+ *     each open-coded it identically before the pane-I/O migration, and `paneToken`
+ *     (`@shared/pane.ts`) is the fourth - it stays separate because the lock key must be
+ *     answerable without a subprocess seam, and `token` below is pinned against it.
  *
  *   - **Focus walks outward.** Selecting the pane inside the multiplexer
  *     (`Multiplexer.select`) decides what the session shows; it raises nothing. Bringing it
@@ -48,13 +51,31 @@ import type {
  * the other axis does not have.
  */
 
-export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = {
-  tmux: tmuxMultiplexer(),
-};
+/**
+ * The registries are FACTORIES over the subprocess seam, with the module-level records
+ * below being them at the default one.
+ *
+ * The seam has to reach this far because the policy in `actions.ts` is a read-write-read -
+ * probe the pane's mode, write, read the pane back - and a caller that can fake only some
+ * of those commands drives none of the sequences. Before the pane-I/O migration that file
+ * threaded its own `Exec` into hand-rolled `run("tmux", …)` calls; the adapters are now
+ * what run the commands, so the seam is theirs to be built with. Every other caller
+ * (discovery, enumeration) wants the real thing and reads the records.
+ *
+ * Each id is still written exactly once per axis, which is what `Record<MultiplexerId, …>`
+ * is here to enforce.
+ */
+export function multiplexers(exec: TerminalExec = defaultExec): Record<MultiplexerId, Multiplexer> {
+  return { tmux: tmuxMultiplexer(exec) };
+}
 
-export const EMULATORS: Record<EmulatorId, TerminalEmulator> = {
-  wezterm: weztermEmulator(),
-};
+export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, TerminalEmulator> {
+  return { wezterm: weztermEmulator(exec) };
+}
+
+export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = multiplexers();
+
+export const EMULATORS: Record<EmulatorId, TerminalEmulator> = emulators();
 
 /** A multiplexer pane on a session: which backend, and how to address it there. */
 export interface MuxHandle extends MuxTarget {
@@ -90,10 +111,10 @@ export interface BoundWrite {
  *
  * Partial application is the point. A caller holding this cannot ask which vendor it got,
  * and so cannot branch on one: the difference between a multiplexer target and an emulator
- * target - the difference that forces `if (session.tmux) … else if (session.wezterm) …`
- * into twelve functions today - is closed over here. What remains visible are capability
- * nulls, which callers SHOULD branch on, because those are real differences in what can be
- * done rather than in who is doing it.
+ * target - the difference that put `if (session.tmux) … else if (session.wezterm) …` into
+ * six pane-I/O functions, and still shapes focus and rename - is closed over here. What
+ * remains visible are capability nulls, which callers SHOULD branch on, because those are
+ * real differences in what can be done rather than in who is doing it.
  */
 export interface BoundPane {
   kind: "multiplexer" | "emulator";
@@ -128,11 +149,17 @@ export interface BoundPane {
  * The innermost handle wins - see the composition rule above. Null means the session has no
  * pane we can drive, which is a legitimate state (an agent in a terminal we do not
  * integrate with) and the honest error for every caller that needed one.
+ *
+ * `exec` is the subprocess seam the bound adapter runs its commands through; the default is
+ * the real one. See `multiplexers` for why a policy caller supplies its own.
  */
-export function bindPane(handles: TerminalHandles): BoundPane | null {
+export function bindPane(
+  handles: TerminalHandles,
+  exec: TerminalExec = defaultExec,
+): BoundPane | null {
   const mux = handles.multiplexer;
   if (mux) {
-    const backend = MULTIPLEXERS[mux.backend];
+    const backend = multiplexers(exec)[mux.backend];
     const target: MuxTarget = mux;
     // Each capability is read out before being bound, so a null stays a null rather than
     // becoming a closure that dereferences one.
@@ -153,7 +180,7 @@ export function bindPane(handles: TerminalHandles): BoundPane | null {
   }
   const emu = handles.emulator;
   if (emu) {
-    const backend = EMULATORS[emu.backend];
+    const backend = emulators(exec)[emu.backend];
     const target: EmulatorTarget = emu;
     const { write, capture } = backend;
     return {

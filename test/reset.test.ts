@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetPreview, resetToOrigin } from "../src/server/actions.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { bindSession } from "../src/server/terminal/handles.ts";
+import type { PaneHandles } from "../src/shared/pane.ts";
 import { gitIn, mkCloneOnBranch, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
 
@@ -184,8 +186,9 @@ function withFakePane(clone: string, screens: (string | null)[]) {
     tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
   };
   const deps = {
-    // Exit 0 with empty output: tmux took the keystrokes, and the pane is in no mode.
-    exec: async () => stubRun({ stdout: "", stderr: "", code: 0 }),
+    // Exit 0 with empty output: the terminal took the keystrokes, and the pane is in no
+    // mode. The real adapter runs on it, so the commands are the ones tmux would get.
+    pane: (s: PaneHandles) => bindSession(s, async () => stubRun({ stdout: "", stderr: "", code: 0 })),
     capture: async () => (screens.length ? screens.shift()! : screens[screens.length - 1] ?? null),
     sleep: async () => {},
   };

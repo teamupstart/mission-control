@@ -47,12 +47,19 @@ export function LlmSettingsPanel({ state }: { state: LlmState }): React.JSX.Elem
         <h3>Models</h3>
       </div>
 
+      {/* Names no harness, deliberately. The point being made is that the two axes are
+          independent, and an illustration spelled "review a Codex session with Claude" makes
+          that point by enumerating today's two - which is the sentence a third harness
+          silently makes stale. The dashboard's rule is that copy naming which agents a
+          feature reaches is COMPUTED (`agentList`); copy that needs no enumeration to be
+          true should not acquire one. */}
       <p className="settings-hint">
         Mission Control does a little model work of its own - naming an untitled task,
         rewriting a prompt into the sentence on a card, narrating what happened while you were
         away. This is the provider those calls go through, and which model each of them uses.
-        It has nothing to do with the agent in a card: you can review a Codex session with
-        Claude, or run the cheap jobs somewhere cheaper.
+        It has nothing to do with the agent in a card: which harness a session runs and which
+        model judges it are independent choices, so the cheap jobs can run somewhere cheaper
+        than whatever is in your cards.
       </p>
 
       {/* The daemon has not answered. Said out loud, because everything below falls back to

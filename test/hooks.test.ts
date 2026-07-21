@@ -30,6 +30,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: false,
+    stateConfirmed: false,
     hooksSeen: false,
     activity: null,
     startedAt: null,
@@ -108,12 +109,14 @@ test("a session parked by the idle nudge reports idle, not needs-you", () => {
   const s = sessionFixture({
     state: claudeHooks.toState(evt({ event: "Notification", message: OBSERVED_IDLE_NUDGE })).state,
     instrumented: true,
+    stateConfirmed: true,
   });
   assert.equal(reportBucket(s, [s]), "idle");
 
   const asking = sessionFixture({
     state: claudeHooks.toState(evt({ event: "Notification", message: OBSERVED_PERMISSION })).state,
     instrumented: true,
+    stateConfirmed: true,
   });
   assert.equal(reportBucket(asking, [asking]), "needs-you");
 });

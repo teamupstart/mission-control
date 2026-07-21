@@ -70,6 +70,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: `agent-session-${n}`,
     transcriptPath: null,
     instrumented: true,
+    stateConfirmed: true,
     hooksSeen: true,
     activity: "idle",
     startedAt: 0,

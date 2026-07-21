@@ -151,13 +151,13 @@ export function runInFlight(s: Session): boolean {
  * Which report section a session belongs to:
  *  - needs-you: prompting you - a pending review, a parked gate that needs you,
  *    or the agent explicitly awaiting your input/review.
- *  - working: an agent we can *confirm* is running. That takes hook
- *    instrumentation (starting/working) or a live no-mistakes run the agent
- *    backgrounded (runInFlight); an uninstrumented session with neither reports
- *    no live state, so we don't claim it's busy.
- *  - idle: open but not prompting you and not confirmed running - instrumented
- *    sessions the agent has parked at idle, plus uninstrumented sessions with no
- *    run in flight behind them.
+ *  - working: an agent we can *confirm* is running. That takes a fresh lifecycle
+ *    reading (from hooks or an explicit transcript marker) or a live no-mistakes run
+ *    the agent backgrounded (runInFlight); a session with neither reports no live
+ *    state, so we don't claim it's busy.
+ *  - idle: open but not prompting you and not confirmed running - sessions whose
+ *    lifecycle source reports idle, plus sessions with no fresh state and no run in
+ *    flight behind them.
  *
  * `sessions` lets a parked gate defer to a same-run session that's still driving it
  * (see gateParked).
@@ -178,7 +178,7 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
   // exactly the case it exists for, and `decideQueueTick` still escalates on `!hooksSeen`.
   if (activePaneDialog(s)) return "needs-you";
   if (gateParked(s, sessions)) return "needs-you";
-  if (s.instrumented) {
+  if (s.stateConfirmed) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
   }

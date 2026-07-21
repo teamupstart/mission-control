@@ -171,6 +171,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
+    stateConfirmed: true,
     hooksSeen: true,
     activity: "idle",
     startedAt: now - 600_000,

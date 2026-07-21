@@ -276,6 +276,15 @@ export interface Session {
    */
   instrumented: boolean;
   /**
+   * True while `state` is backed by a fresh lifecycle reading. Hooks are one source;
+   * a harness transcript that records explicit start/complete markers is another.
+   *
+   * Keep this separate from `instrumented`: prompt-delivery and queue safeguards need
+   * to know that hooks specifically are live, while the dashboard only needs to know
+   * whether `idle` / `working` was observed rather than guessed from process existence.
+   */
+  stateConfirmed: boolean;
+  /**
    * True once a hook has EVER been seen from this session - the installation fact,
    * with no freshness window on it.
    *

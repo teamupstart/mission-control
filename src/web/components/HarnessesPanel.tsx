@@ -1,6 +1,8 @@
 import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY, agentList } from "@shared/agent.ts";
+import { autoModeAgents, autoModeUnsupportedWhy, capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelChoicesFor } from "@shared/model.ts";
+import { permissionModeDisplay } from "../lib/format.ts";
 import type { HarnessesState } from "../useHarnesses.ts";
 
 // The Harnesses settings section: defaults the app applies to the sessions IT
@@ -19,8 +21,36 @@ import type { HarnessesState } from "../useHarnesses.ts";
  */
 const MODEL_ROWS: { agent: AgentType; label: string }[] = AGENT_TYPES.map((agent) => ({
   agent,
-  label: AGENT_NAMES[agent].label,
+  label: AGENT_IDENTITY[agent].label,
 }));
+
+/**
+ * Who the auto-mode switch reaches, and who it leaves alone - read off the
+ * `permissionModes.onDispatch` capability rather than off the word "claude".
+ *
+ * Every sentence on that row named an agent, and each was its own literal ("claude
+ * only", "Every Claude session…", "Codex support comes later"). A third harness would
+ * have left all three describing a grid that no longer matches, with nothing failing to
+ * compile to say so - and "Codex support comes later" is a promise this panel is in no
+ * position to make on the harness's behalf.
+ */
+const AUTO_AGENTS = autoModeAgents();
+const AUTO_LABEL = agentList(AUTO_AGENTS, "and");
+const AUTO_EXCLUDED = AGENT_TYPES.filter((a) => !AUTO_AGENTS.includes(a));
+
+/**
+ * What "auto mode" is called, when every harness it reaches calls it the same thing.
+ *
+ * Null when they disagree, and the sentence then falls back to "its most autonomous"
+ * rather than naming one harness's spelling over another's - the alternative being a
+ * settings row that promises a mode half the grid does not have.
+ */
+const AUTO_MODE_LABEL = ((): string | null => {
+  const labels = new Set(
+    AUTO_AGENTS.map((a) => permissionModeDisplay(capabilitiesFor(a).permissionModes!.onDispatch)?.label),
+  );
+  return labels.size === 1 ? ([...labels][0] ?? null) : null;
+})();
 
 /**
  * One harness's default-model picker. The empty value is a real choice, not a
@@ -97,17 +127,19 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
         <div className="kb-row-text">
           <span className="kb-row-label">
             Auto mode on dispatch
-            <span
-              className="skill-badge skill-badge-agent"
-              title="Codex has no permission mode, so codex dispatches are unaffected for now."
-            >
-              claude only
-            </span>
+            {AUTO_EXCLUDED.length > 0 && (
+              <span
+                className="skill-badge skill-badge-agent"
+                title={AUTO_EXCLUDED.map((a) => autoModeUnsupportedWhy(a)).join(" ")}
+              >
+                {AUTO_AGENTS.join(" / ")} only
+              </span>
+            )}
           </span>
           <span className="kb-row-desc">
-            Every Claude session dispatched from Mission Control is switched to{" "}
-            <strong>auto</strong> permission mode once it's ready, so it works through its task
-            without stopping for permission prompts. Codex support comes later.
+            Every {AUTO_LABEL} session dispatched from Mission Control is switched to{" "}
+            <strong>{AUTO_MODE_LABEL ?? "its most autonomous"}</strong> permission mode once it's
+            ready, so it works through its task without stopping for permission prompts.
           </span>
         </div>
         <div className="kb-row-controls">
@@ -117,7 +149,7 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
               checked={autoMode}
               disabled={!config}
               onChange={(e) => void update({ autoModeOnDispatch: e.target.checked })}
-              aria-label="Put every dispatched Claude session into auto mode"
+              aria-label={`Put every dispatched ${AUTO_LABEL} session into ${AUTO_MODE_LABEL ?? "its most autonomous"} mode`}
             />
           </label>
         </div>

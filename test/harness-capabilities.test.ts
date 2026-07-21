@@ -28,7 +28,7 @@ process.env.HARNESS_HOME = join(home, "state");
 process.env.CODEX_HOME = join(home, "codex");
 
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
-const { AGENT_NAMES } = await import("../src/shared/agent.ts");
+const { AGENT_IDENTITY } = await import("../src/shared/agent.ts");
 const { HARNESS_CAPABILITIES, capabilitiesFor, skillsAgents, workQueueUnsupportedWhy } = await import(
   "../src/shared/harness-capabilities.ts"
 );
@@ -110,7 +110,7 @@ test("both mode routes refuse a harness with no permission modes, and name it", 
       // inherit "permission modes are a Claude feature".
       assert.equal(res.status, 400, path);
       const body = (await res.json()) as { error: string };
-      assert.equal(body.error, `${AGENT_NAMES[agent].label} has no permission modes`, path);
+      assert.equal(body.error, `${AGENT_IDENTITY[agent].label} has no permission modes`, path);
     }
   }
 });
@@ -187,7 +187,7 @@ test("a harness that can't hold a queue is never selected for a tick, or asked t
       now: 0,
     } as never);
     assert.equal(verdict.kind, "skip");
-    assert.match(verdict.why ?? "", new RegExp(AGENT_NAMES[agent].label));
+    assert.match(verdict.why ?? "", new RegExp(AGENT_IDENTITY[agent].label));
   }
 });
 
@@ -196,9 +196,9 @@ test("the panel's refusal and the daemon's are the same sentence, composed once"
   for (const agent of hasnt) {
     const why = workQueueUnsupportedWhy(agent);
     assert.ok(why, `${agent} needs a reason, not a bare false`);
-    // Named from AGENT_NAMES rather than hardcoded, so a fourth harness gets a true
+    // Named from AGENT_IDENTITY rather than hardcoded, so a fourth harness gets a true
     // sentence instead of inheriting Codex's.
-    assert.match(why!, new RegExp(AGENT_NAMES[agent].label));
+    assert.match(why!, new RegExp(AGENT_IDENTITY[agent].label));
   }
   for (const agent of has) assert.equal(workQueueUnsupportedWhy(agent), null);
 });

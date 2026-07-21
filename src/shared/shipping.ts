@@ -1,4 +1,5 @@
 import { repoAllowlisted } from "./allowlist.ts";
+import type { InspectorPosture } from "./inspector.ts";
 import type { ShippingConfig } from "./protocol.ts";
 
 // YOLO mode: the one rule that decides whether a pull request merges itself.
@@ -32,6 +33,9 @@ export type ReviewDecision = "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED
 export type MergeBlock =
   | "off"
   | "not-allowlisted"
+  | "inspector-off"
+  | "inspector-dry-run"
+  | "inspector-not-allowlisted"
   | "not-open"
   | "draft"
   | "not-reviewed"
@@ -56,6 +60,10 @@ export type MergeBlock =
 export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   off: "YOLO mode is off",
   "not-allowlisted": "this repo is not on the auto-merge list",
+  "inspector-off": "the Inspector is switched off, so nothing is reviewing this",
+  "inspector-dry-run": "the Inspector is in dry run, so its review was never published",
+  "inspector-not-allowlisted":
+    "this repo is not on the Inspector's list, so its review was never published",
   "not-open": "the pull request is closed",
   draft: "still a draft",
   "not-reviewed": "the Inspector has not reviewed this push yet",
@@ -90,6 +98,14 @@ export interface MergeInput {
     /** Any review thread on the PR that nobody has resolved - ours or a colleague's. */
     unresolvedThreads: number;
   };
+  /**
+   * What the Inspector could actually do about this PR - see `inspectorPosture`.
+   *
+   * Passed in rather than derived from an `InspectorConfig` here because this predicate
+   * stays pure data-in: the posture already folds a path-allowlist match against THIS
+   * checkout, which is a question about the PR, not about the config.
+   */
+  inspector: InspectorPosture;
   /** The head the Inspector last completed a review of, and how many rounds it has run. */
   reviewedSha: string | null;
   rounds: number;
@@ -132,6 +148,12 @@ function blocked(block: MergeBlock, waitMs = 0): MergeVerdict {
  *   by the Inspector", and `findings` is that gate. This one is separate and stricter:
  *   merging over a colleague's unanswered question is not a thing an automation gets to
  *   do, whoever raised it.
+ * - **The Inspector's posture is a gate, not a precondition someone else checks.** A
+ *   review that was never published is not a review this may act on, and `not-reviewed`
+ *   cannot see the difference: `reviewRound` advances the reviewed head in dry run
+ *   exactly as it does live. Whoever calls this may not be the worker - the two
+ *   `inspector-*` blocks below are also the backstop against the second poller that
+ *   `shipping/merge.ts` warns about - so the veto lives with the decision.
  */
 export function mergeVerdict(input: MergeInput): MergeVerdict {
   const { cfg, pr } = input;
@@ -139,6 +161,21 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
   if (!repoAllowlisted(input.cwd, input.repoRoot, cfg.repoAllowlist)) {
     return blocked("not-allowlisted");
   }
+
+  // Before any fact about the PR, because none of them mean anything if the review
+  // behind them was never real. Grouped with the two consent gates above: all three are
+  // answers about how the operator configured this, and each names the switch to flip.
+  switch (input.inspector) {
+    case "off":
+      return blocked("inspector-off");
+    case "dry-run":
+      return blocked("inspector-dry-run");
+    case "not-allowlisted":
+      return blocked("inspector-not-allowlisted");
+    case "live":
+      break;
+  }
+
   if (pr.state !== "OPEN") return blocked("not-open");
   if (pr.isDraft) return blocked("draft");
 

@@ -2,7 +2,7 @@ import type { Session, SessionQueue } from "@shared/types.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import { autoWrapupPayload, isWrapupPayload, wrapupTriggerOn } from "@shared/queue.ts";
 import type { WrapupMode, WrapupTrigger } from "@shared/queue.ts";
-import { AGENT_NAMES } from "@shared/agent.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { VERIFY_FAILURE_CAP, hasPane, settledIdle } from "./queue-machine.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
@@ -107,7 +107,7 @@ export function decidePromptedWrapup(input: PromptedInput): PromptedCandidate {
   //    `workQueue` capability means no hooks, no goal capture and no queue - there is
   //    nothing here to judge finished; an exited session has nothing left to type into.
   if (!capabilitiesFor(session.agent).workQueue) {
-    return { kind: "skip", why: `${AGENT_NAMES[session.agent].label} sessions can't hold a queue` };
+    return { kind: "skip", why: `${AGENT_IDENTITY[session.agent].label} sessions can't hold a queue` };
   }
   if (session.state === "exited") return { kind: "skip", why: "the session exited" };
 

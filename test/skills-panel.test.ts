@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SkillsPanel } from "../src/web/components/SkillsPanel.tsx";
 import type { SkillsState } from "../src/web/useSkills.ts";
 import type { SkillRow, SkillsView } from "../src/shared/types.ts";
-import { AGENT_NAMES } from "../src/shared/agent.ts";
+import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import { AGENT_TYPES } from "../src/shared/types.ts";
 import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
 
@@ -79,7 +79,7 @@ test("every row names exactly the harnesses a skill actually reaches", () => {
   const html = render();
   for (const a of SKILLED) assert.match(html, new RegExp(`${a} only`, "i"));
   for (const a of UNSKILLED) {
-    assert.match(html, new RegExp(`${AGENT_NAMES[a].label} sessions are unaffected`));
+    assert.match(html, new RegExp(`${AGENT_IDENTITY[a].label} sessions are unaffected`));
   }
 });
 
@@ -87,7 +87,7 @@ test("the panel says the change is global before you click anything", () => {
   const html = render();
   assert.match(html, /~\/\.claude\/skills/);
   for (const a of SKILLED) {
-    assert.match(html, new RegExp(`every</strong> ${AGENT_NAMES[a].label} session`));
+    assert.match(html, new RegExp(`every</strong> ${AGENT_IDENTITY[a].label} session`));
   }
 });
 
@@ -115,16 +115,16 @@ test("a catalog problem renders, rather than a row silently vanishing", () => {
 });
 
 test("the pending count is a promise about WHEN, and names who it is about", () => {
-  const who = SKILLED.map((a) => AGENT_NAMES[a].label).join(" / ");
+  const who = SKILLED.map((a) => AGENT_IDENTITY[a].label).join(" / ");
   const html = render({ view: mkView({ pending: 3 }) });
   assert.match(html, new RegExp(`3 ${who} sessions will pick this up when they next go idle`));
   // The count excludes harnesses that cannot load a skill, so naming one here would be
   // a number that can never reach zero attached to a session it never described.
-  for (const a of UNSKILLED) assert.doesNotMatch(html, new RegExp(`${AGENT_NAMES[a].label} sessions will`));
+  for (const a of UNSKILLED) assert.doesNotMatch(html, new RegExp(`${AGENT_IDENTITY[a].label} sessions will`));
 });
 
 test("one pending session is not '1 sessions'", () => {
-  const who = SKILLED.map((a) => AGENT_NAMES[a].label).join(" / ");
+  const who = SKILLED.map((a) => AGENT_IDENTITY[a].label).join(" / ");
   assert.match(render({ view: mkView({ pending: 1 }) }), new RegExp(`1 ${who} session will pick this up`));
 });
 

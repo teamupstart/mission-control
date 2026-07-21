@@ -38,8 +38,9 @@ The union itself was written out **three** times (`shared/types.ts`, `shared/pro
 `web/lib/api.ts`) and `AGENT_LABEL` **twice**, holding different values for the same key -
 `session-bits.tsx` said "Claude Code" where `TranscriptPanel.tsx` said "claude". **Phase 0
 collapsed both**: `AGENT_TYPES` (`shared/types.ts`) is the one source the zod enum and the
-dashboard's dispatch input now derive from, and `AGENT_NAMES` (`shared/agent.ts`) holds the
-two registers as named fields (`label`, `speaker`) so neither can be mistaken for drift.
+dashboard's dispatch input now derive from, and `AGENT_IDENTITY` (`shared/agent.ts`, `AGENT_NAMES` until the UI item
+widened it) holds each register as a named field (`label`, `speaker`, and now `accent`)
+so none can be mistaken for drift.
 
 **The first five rows, the hook row, and skills / MCP / permission modes are closed.**
 `Harness.transcript` (`server/harness/types.ts`) owns transcript, rollout, and the dispatch
@@ -382,10 +383,11 @@ code change.
 `harness/types.ts` holds the interface; `harness/claude/` and `harness/codex/` hold the two
 specs. Four deltas from the sketch, each forced by something real:
 
-- **No `label` / `accent` on `Harness`.** `AGENT_NAMES` (`@shared/agent.ts`) already owns
-  naming and the web bundle imports it; a second register on a server-only object is the
-  exact defect Phase 0 collapsed, re-created one layer down. The remaining slots arrive
-  with their phases rather than landing as `null` placeholders nobody has designed.
+- **No `label` / `accent` on `Harness`.** `AGENT_IDENTITY` (`@shared/agent.ts`) already
+  owns naming and the web bundle imports it; a second register on a server-only object is
+  the exact defect Phase 0 collapsed, re-created one layer down. The remaining slots arrive
+  with their phases rather than landing as `null` placeholders nobody has designed - and
+  `accent` duly landed there, not here, with the UI item.
 - **The capability splits in two: `TranscriptSpec` and its `messages`.** "There is a file
   we can read runtime facts out of" and "that file contains the turns" are separate claims,
   and Codex is the proof - its rollout carries model / effort / tokens and no conversation.
@@ -420,7 +422,7 @@ guards actually live:
   the other and a new harness that fills in one and not the other does not compile.
   `session-contracts.test.ts` pins both.
 - **Absences that reach a human carry their sentence.** `workQueueUnsupportedWhy`
-  composes from `AGENT_NAMES`, so the panel's refusal, `ensureQueue`'s refusal and the
+  composes from `AGENT_IDENTITY`, so the panel's refusal, `ensureQueue`'s refusal and the
   re-attach button's refusal are one sentence - and a fourth harness gets a true one
   rather than inheriting Codex's. Same for the mode routes' 400 and the skills panel's
   per-row chip, which used to be three literals containing the word "Claude".
@@ -618,6 +620,56 @@ and none should be.
 Tests: `harness-tui.test.ts`, with `test/fixtures/codex-panes.ts` holding the verbatim
 captures. Note the fixture rule from `claude-panes.ts` applies: recapture, never hand-write.
 
+#### UI, as landed
+
+The last Phase 1 item, and the one that closes the acceptance clause "whose unsupported
+capabilities are visibly disabled in the UI rather than silently absent". Two halves: the
+dashboard must PAINT a harness it has never heard of, and every sentence naming an agent
+must be computed rather than typed.
+
+- **`accent` went on `AGENT_IDENTITY`, and it is a VALUE.** The register that held two
+  names now holds three facts about how an agent presents itself, because name and colour
+  are one question asked at the same surfaces - a second `Record<AgentType, …>` beside it
+  in the same module, at the same purity, over the same domain, would have been the list
+  to keep in step that this whole plan is about. It is not a capability (an accent is not
+  something an agent can *do*, so it does not belong on `HarnessCapabilities`) and not on
+  the server-side `Harness` (the browser cannot import that). The value is `#d97757`, not
+  `var(--claude)`: a token NAME would have left the coupling exactly where it was, with a
+  new harness rendering correctly only once someone remembered to add its token to a
+  7,800-line stylesheet.
+- **One `--agent-accent` custom property, set inline, and `styles.css` names no agent.**
+  `AgentDot` and the transcript set it (`agentAccentStyle`, `session-bits.tsx`); the
+  stylesheet reads it back with `var(--agent-accent, var(--neutral))`. The fallback is the
+  neutral grey deliberately - a surface that forgets to set it should look unremarkable,
+  not look like Claude. `.turn-assistant .turn-role` moved onto it too, so an agent's
+  byline over its own turns is its own colour rather than a hardcoded terracotta.
+- **Foreman has `--foreman`, and it is purple.** The collision the old comment admitted was
+  not just a shared token, it was a shared APPEARANCE: Foreman's byline in the no-mistakes
+  log was drawn in Claude Code's terracotta, in a log that sits beside a Claude agent's own
+  turns. Foreman was already purple in the one place the two had to sit side by side
+  (`.turn-foreman`), and that is the decision the other five rules have been brought onto -
+  so Foreman is one colour everywhere and is never read as an agent. `--syntax-type` picked
+  up the terracotta for `.hljs-type`, which had `--claude` by pure coincidence of hue.
+- **The remaining agent-naming prose is computed.** `agentList` (`@shared/agent.ts`) says a
+  set of harnesses out loud for the empty grid; `autoModeAgents` / `autoModeUnsupportedWhy`
+  (`@shared/harness-capabilities.ts`) replace the settings panel's "claude only", "Every
+  Claude session…" and "Codex support comes later" - the last of which was a promise the
+  dashboard was in no position to make on a vendor's behalf. The skills panel's
+  `~/.claude/skills` is read off `skills.homeDir`, and `MODE_DISPLAY`'s tooltips say "the
+  agent" rather than "Claude".
+- **Nothing was left for the dispatch modal or the layout leaves.** The agent `<select>`
+  was already generated from `AGENT_TYPES`, and the mode picker, work-queue refusal and
+  action bar were already reading capabilities from the guards item - so the four surfaces
+  a session is drawn by (`SessionCard`, `ConsoleDetail`, `SessionTile`, `RailRow`) all
+  reach the accent through the one shared `AgentDot` and none of them gained a branch.
+
+Test: `agent-accent.test.ts`, which is the enforcement the old arrangement lacked - it
+fails if any agent id reappears anywhere in `styles.css`, if an accent is declared as a
+token name rather than a value, or if a Foreman rule borrows an agent's colour again.
+`harnesses-panel.test.ts` asserts the auto-mode row as a PAIR (reached agents named,
+unreached agents never claimed), and `session-contracts.test.ts` pins that the accent is
+non-empty for every declared agent.
+
 ### Compiler enforcement
 
 The codebase already has this pattern - `SESSION_FIELD_COMPARATORS` (`registry.ts`) makes a
@@ -651,8 +703,8 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 
 | Phase | Items |
 |---|---|
-| 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_NAMES` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; then UI |
+| 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
@@ -723,9 +775,11 @@ separately. The item that owns each fix is named in brackets.
   by agent did not make the match safer - it hid the one ambiguity that matters, a Claude
   and a Codex session sharing a worktree, and bound the caller to the Claude card with full
   confidence.
-- **[Phase 1 - UI]** `styles.css:2657` - `--claude` doubles as the Foreman accent colour; the
-  comment admits it. `AgentDot` renders `agent-${agent}`, so a new harness gets an unstyled
-  dot.
+- **[Phase 1 - UI, FIXED]** `styles.css` - `--claude` doubled as the Foreman accent colour
+  in five rules; the comment admitted it. `AgentDot` rendered `agent-${agent}`, so a new
+  harness got an unstyled dot. Foreman has its own `--foreman` token, the per-agent tokens
+  and rules are gone, and the colour now arrives from the harness as `--agent-accent`. See
+  "UI, as landed".
 
 ## Prior art in this repo
 

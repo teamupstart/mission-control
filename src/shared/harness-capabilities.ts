@@ -1,9 +1,9 @@
 import { AGENT_TYPES } from "./types.ts";
 import type { AgentType, PermissionMode } from "./types.ts";
 // By value, because `workQueueUnsupportedWhy` composes prose from it. Naming stays
-// `AGENT_NAMES`' job - a second register on a capability object is the exact defect
+// `AGENT_IDENTITY`'s job - a second register on a capability object is the exact defect
 // Phase 0 collapsed.
-import { AGENT_NAMES } from "./agent.ts";
+import { AGENT_IDENTITY } from "./agent.ts";
 
 // The Harness axis' PURE half: what an agent can do, spelled as data, with no `node:`
 // imports and no filesystem.
@@ -229,15 +229,45 @@ export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
  * Composed from the capability rather than written out at each refusing surface: the
  * panel hiding its add box, the daemon refusing the write, and the re-attach button all
  * have to give the same answer, and a sentence typed three times is how they stop.
- * Derived from `AGENT_NAMES` so a fourth harness gets a correct sentence for free instead
+ * Derived from `AGENT_IDENTITY` so a fourth harness gets a correct sentence for free instead
  * of inheriting Codex's.
  */
 export function workQueueUnsupportedWhy(agent: AgentType): string | null {
   if (HARNESS_CAPABILITIES[agent].workQueue) return null;
-  return `Work queues need hook reporting and a readable transcript, which ${AGENT_NAMES[agent].label} sessions don't have.`;
+  return `Work queues need hook reporting and a readable transcript, which ${AGENT_IDENTITY[agent].label} sessions don't have.`;
 }
 
 /** The agents whose harness can load skills - who a skills surface is actually about. */
 export function skillsAgents(): AgentType[] {
   return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].skills !== null);
+}
+
+/**
+ * The agents "auto mode on dispatch" actually reaches - the ones that both have
+ * permission modes and name one meaning "proceed autonomously".
+ *
+ * A setting whose switch reaches only some of the grid has to say which some, and the
+ * settings panel used to answer that with the literal words "claude only" and "Codex
+ * support comes later" - a sentence that is wrong the moment a third harness lands and
+ * that nothing would fail to catch.
+ */
+export function autoModeAgents(): AgentType[] {
+  return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].permissionModes?.onDispatch);
+}
+
+/**
+ * Why "auto mode on dispatch" leaves this harness alone, or null when it doesn't.
+ *
+ * Two different absences, said differently, because they are different facts: a harness
+ * with no permission modes at all has nothing to switch, while one that HAS modes but
+ * names no `onDispatch` has nothing that would mean "proceed without asking". Rolling
+ * both into one sentence would make the second read as the first.
+ */
+export function autoModeUnsupportedWhy(agent: AgentType): string | null {
+  const modes = HARNESS_CAPABILITIES[agent].permissionModes;
+  const who = AGENT_IDENTITY[agent].label;
+  if (!modes) return `${who} has no permission modes, so its dispatches are unaffected.`;
+  if (!modes.onDispatch)
+    return `${who} has permission modes but none that mean "proceed without asking", so its dispatches are unaffected.`;
+  return null;
 }

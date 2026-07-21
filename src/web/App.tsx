@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FleetCost, Session } from "@shared/types.ts";
+import { AGENT_TYPES, type FleetCost, type Session } from "@shared/types.ts";
+import { agentList } from "@shared/agent.ts";
 import { gateParked } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { useEventStream } from "./useEventStream.ts";
@@ -750,9 +751,12 @@ export function App(): React.JSX.Element {
         {sessions.length === 0 && (
           <div className="empty">
             <p className="empty-title">No agent sessions detected</p>
+            {/* Names the harnesses off the union, not by hand: an operator running an
+                agent this build can discover but this sentence never mentioned would
+                read it as "that one isn't supported" and stop looking. */}
             <p className="empty-sub">
-              Start a <code>claude</code> or <code>codex</code> session in a wezterm tab or tmux
-              session and it will appear here.
+              Start a {agentList(AGENT_TYPES)} session in a wezterm tab or tmux session and it
+              will appear here.
             </p>
           </div>
         )}

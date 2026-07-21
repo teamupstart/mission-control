@@ -45,11 +45,15 @@ top-level collection, also extend the `snapshot` case, `registry.snapshot()`, an
 `z.enum` in `protocol.ts`, `DispatchInput`, the dispatch modal's `<option>`s and the
 Harnesses rows all derive from it. `AgentType` is that array's element type, so every
 `Record<AgentType, …>` then fails to compile until the new harness has said what it is
-called (`AGENT_NAMES`, `@shared/agent.ts`), which models it offers, which of its
-capabilities exist at all - including how its process is recognised and which binary it
-launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it answers goals and cost.
-Fill each in rather than defaulting one. Test: `session-contracts.test.ts`, which pins
-that list.
+called AND what colour it wears (`AGENT_IDENTITY`, `@shared/agent.ts`), which models it
+offers, which of its capabilities exist at all - including how its process is recognised
+and which binary it launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it
+answers goals and cost. Fill each in rather than defaulting one. Nothing in `styles.css`
+and no component needs editing: the accent is a literal colour that reaches CSS as one
+inline `--agent-accent`, and every sentence naming which agents a feature reaches is
+computed (`agentList`, `skillsAgents`, `autoModeAgents`). Test:
+`session-contracts.test.ts`, which pins that list, and `agent-accent.test.ts`, which
+fails if an agent id turns up in the stylesheet again.
 
 ## Layout parity
 
@@ -232,9 +236,10 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   because `/clear` is Claude's slash command, and reset degrades to the byte-identical
   `cleared: false` a pane-less session produces. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
-  `HARNESSES.codex.tui` is the counter-example, and the one to read before declaring any
-  capability `null`: it is NOT null. The guard it replaced said `agent !== "claude"`, with a
-  comment above it asserting Codex "doesn't render these dialogs" - and because the guard
+  refusing surface. `HARNESSES.codex.tui` is the counter-example, and the one to read
+  before declaring any capability `null`: it is NOT null. The guard it replaced said
+  `agent !== "claude"`, with a comment above it asserting Codex "doesn't render these
+  dialogs" - and because the guard
   skipped the parse, nothing ever tested that claim. It is false. Codex renders the same
   numbered, single-cursor menus and differs by ONE token, the cursor glyph (U+203A against
   U+276F), so `DialogSpec` carries the glyph and `discovery/pane-dialog.ts` stays
@@ -246,8 +251,7 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   fixtures are verbatim, never hand-written. Getting it wrong is expensive in one specific
   way here: Codex sends no hooks, so `activePaneDialog` is the ONLY "needs you" evidence it
   can ever produce, and a Codex session parked on a command-approval prompt read as merely
-  unconfirmed.
-  refusing surface. Reach a capability through a registry (`capabilitiesFor`,
+  unconfirmed. Reach a capability through a registry (`capabilitiesFor`,
   `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` / `dialogSpecFor` /
   `modeLineSpecFor`, `controlFor`), never by testing `s.agent`; each phase of
   `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
@@ -306,6 +310,11 @@ are `block-element` with per-feature prefixes (`wq-`, `nm-`, `rt-`, `qc-`, `tf-`
 
 - **When you remove or rename a `className`, grep `styles.css` for it in the same change.** No
   linter, no stylelint, no unused-CSS check catches a class that lost its rule.
+- **No vendor is named in this file, and no token is named after one.** A harness's colour is
+  declared on the harness (`AGENT_IDENTITY`) and arrives as an inline `--agent-accent`; rules
+  read `var(--agent-accent, var(--neutral))`. Foreman is `--foreman`, its own token, because
+  it borrowed `--claude` for five rules and a retune of one silently restyled the other.
+  Test: `agent-accent.test.ts`, which fails on any agent id appearing here.
 - **In the desktop shell the topbar IS the title bar**, so it carries
   `-webkit-app-region: drag`. The property's initial value is `none`, which is not `no-drag` -
   only an explicit `no-drag` subtracts from the region, so painting a layer over the bar does

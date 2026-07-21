@@ -59,6 +59,7 @@ test("every editable field can actually be changed", async () => {
     kind: "scout",
     agent: "codex",
     model: "gpt-5.6-sol",
+    effort: "xhigh",
   });
   assert.equal(res.ok, true);
   const t = r.getTask("t1")!;
@@ -70,6 +71,7 @@ test("every editable field can actually be changed", async () => {
       kind: t.kind,
       agent: t.agent,
       model: t.model,
+      effort: t.effort,
     },
     {
       repoRoot: "/other",
@@ -78,6 +80,7 @@ test("every editable field can actually be changed", async () => {
       kind: "scout",
       agent: "codex",
       model: "gpt-5.6-sol",
+      effort: "xhigh",
     },
   );
 });

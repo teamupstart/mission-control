@@ -1,5 +1,6 @@
 import { AGENT_TYPES } from "./types.ts";
-import type { AgentType, PermissionMode } from "./types.ts";
+import { THINKING_LEVELS } from "./types.ts";
+import type { AgentType, PermissionMode, ThinkingLevel } from "./types.ts";
 // By value, because `workQueueUnsupportedWhy` composes prose from it. Naming stays
 // `AGENT_IDENTITY`'s job - a second register on a capability object is the exact defect
 // Phase 0 collapsed.
@@ -156,6 +157,14 @@ export interface McpSpec {
   serverName: string;
 }
 
+/** Selecting and applying reasoning effort when a harness is launched. */
+export interface EffortSpec {
+  /** Values the harness accepts, in increasing order of reasoning spend. */
+  levels: readonly ThinkingLevel[];
+  /** Exact argv fragment that applies one level to a newly launched session. */
+  launchArgs(level: ThinkingLevel): readonly string[];
+}
+
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
 export interface HarnessCapabilities {
   /** Matches this entry's key in `HARNESS_CAPABILITIES`. */
@@ -165,6 +174,8 @@ export interface HarnessCapabilities {
   workQueue: WorkQueueSpec | null;
   clearContext: ClearContextSpec | null;
   mcp: McpSpec | null;
+  /** Null only for a harness with no launch-time reasoning-effort control. */
+  effort: EffortSpec | null;
 }
 
 /**
@@ -201,6 +212,10 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     },
     clearContext: { command: "/clear" },
     mcp: { cli: "claude", scope: "user", envFlag: "-e", serverName: "mission-control" },
+    effort: {
+      levels: THINKING_LEVELS,
+      launchArgs: (level) => ["--effort", level],
+    },
   },
   codex: {
     id: "codex",
@@ -231,6 +246,12 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // real difference - Codex writes one registration and has no `-s user|project` to
     // choose between.
     mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
+    effort: {
+      levels: THINKING_LEVELS,
+      // `-c` parses its value as TOML, falling back to a raw string. The level is a
+      // closed enum, so it is both valid here and safe on tmux's shell command line.
+      launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
+    },
   },
 };
 

@@ -30,6 +30,7 @@ const mkTask = (over: Partial<Task> = {}): Task =>
     priority: null,
     labels: [],
     model: null,
+    effort: null,
     ...over,
   });
 
@@ -110,6 +111,17 @@ test("un-pinning the model sends null, and pinning one sends the id", () => {
   });
 });
 
+test("un-pinning effort sends null, and pinning one sends the level", () => {
+  const pinned = mkTask({ effort: "xhigh" });
+  assert.deepEqual(taskUpdatePatch(pinned, edited(pinned, { effort: "" }), pinned.intent), {
+    effort: null,
+  });
+  const free = mkTask();
+  assert.deepEqual(taskUpdatePatch(free, edited(free, { effort: "high" }), free.intent), {
+    effort: "high",
+  });
+});
+
 test("the composed intent is what the patch compares, so an attachment alone is a change", () => {
   // The stored intent carries the paths `withAttachments` appended, so a drop with no
   // typing still rewrites it - and a save that only re-composed the same text does not.
@@ -162,6 +174,7 @@ test("every field on the form reaches the patch", () => {
     priority: "blocker",
     labels: "moved",
     model: "gpt-5.6-sol",
+    effort: "xhigh",
   };
   // Attachments are excluded on purpose: they are not a task field, they are how the
   // intent gets composed, which the `intent` case above covers.

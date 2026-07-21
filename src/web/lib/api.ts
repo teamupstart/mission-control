@@ -305,6 +305,8 @@ export interface DispatchInput {
   labels?: string[];
   /** Model override; omitted follows the configured harness default at dispatch time. */
   model?: string;
+  /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
+  effort?: import("@shared/types.ts").ThinkingLevel;
   backlog?: boolean;
 }
 

@@ -148,6 +148,7 @@ export function mkTask(over: Partial<Task> = {}): Task {
     priority: null,
     labels: [],
     model: null,
+    effort: null,
     source: null,
     repoRoot: "/repo",
     worktreePath: null,

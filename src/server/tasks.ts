@@ -43,6 +43,8 @@ export interface CreateTaskInput {
   labels?: string[];
   /** Launch this agent on a specific model; omitted follows the harness default. */
   model?: string;
+  /** Launch with a specific reasoning effort; omitted follows the harness default. */
+  effort?: import("@shared/types.ts").ThinkingLevel;
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -171,6 +173,7 @@ export class TaskManager {
       // the harness config at launch time, so shelving a task doesn't freeze the
       // default it happened to see (see `resolveDispatchModel`).
       model: input.model ?? null,
+      effort: input.effort ?? null,
       source: input.source ?? null,
       repoRoot: input.repoRoot,
       worktreePath: null,
@@ -315,6 +318,7 @@ export class TaskManager {
       // `undefined` leaves the override as it stands; `null` is the caller clearing it,
       // which is a value the row can hold and so cannot go through `??`.
       model: patch.model === undefined ? t.model : patch.model,
+      effort: patch.effort === undefined ? t.effort : patch.effort,
       updatedAt: Date.now(),
     };
     this.registry.upsertTask(next);

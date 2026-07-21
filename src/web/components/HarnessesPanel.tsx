@@ -1,4 +1,4 @@
-import { AGENT_TYPES, type AgentType } from "@shared/types.ts";
+import { AGENT_TYPES, type AgentType, type ThinkingLevel } from "@shared/types.ts";
 import { AGENT_IDENTITY, agentList } from "@shared/agent.ts";
 import { autoModeAgents, autoModeUnsupportedWhy, capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { modelChoicesFor } from "@shared/model.ts";
@@ -104,6 +104,49 @@ function DefaultModelRow({
   );
 }
 
+function DefaultEffortRow({
+  agent,
+  label,
+  value,
+  disabled,
+  onChange,
+}: {
+  agent: AgentType;
+  label: string;
+  value: ThinkingLevel | null;
+  disabled: boolean;
+  onChange: (level: ThinkingLevel | null) => void;
+}): React.JSX.Element {
+  return (
+    <div className="kb-row harnesses-row">
+      <div className="kb-row-text">
+        <span className="kb-row-label">{label}</span>
+        <span className="kb-row-desc">
+          {value
+            ? `Dispatched ${label} sessions start with ${value} reasoning effort.`
+            : `Dispatched ${label} sessions keep the effort configured by ${label}.`}
+        </span>
+      </div>
+      <div className="kb-row-controls">
+        <select
+          className="harnesses-select"
+          value={value ?? ""}
+          disabled={disabled}
+          onChange={(e) => onChange((e.target.value || null) as ThinkingLevel | null)}
+          aria-label={`Default effort for dispatched ${label} sessions`}
+        >
+          <option value="">Harness default</option>
+          {capabilitiesFor(agent).effort?.levels.map((level) => (
+            <option key={level} value={level}>
+              {level}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.Element {
   const { config, update, error } = state;
   // `config` is null only in the pre-poll instant; the switch reads off (its shipped
@@ -171,6 +214,24 @@ export function HarnessesPanel({ state }: { state: HarnessesState }): React.JSX.
           value={config?.defaultModel[row.agent] ?? null}
           disabled={!config}
           onChange={(id) => void update({ defaultModel: { [row.agent]: id } })}
+        />
+      ))}
+
+      <div className="settings-section-head harnesses-subhead">
+        <h4>Default effort</h4>
+      </div>
+      <p className="settings-hint harnesses-blurb">
+        The reasoning effort each harness starts with when a dispatch doesn't name one.
+        Each task can override this immediately after its model selection.
+      </p>
+      {MODEL_ROWS.map((row) => (
+        <DefaultEffortRow
+          key={row.agent}
+          agent={row.agent}
+          label={row.label}
+          value={config?.defaultEffort[row.agent] ?? null}
+          disabled={!config}
+          onChange={(level) => void update({ defaultEffort: { [row.agent]: level } })}
         />
       ))}
     </section>

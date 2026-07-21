@@ -9,7 +9,7 @@
 // never meant to touch it. The API takes a patch for exactly this reason: an omitted key
 // means "leave it alone" (see `UpdateTaskSchema`).
 
-import type { Task, TaskKind, AgentType, TaskPriority } from "@shared/types.ts";
+import type { Task, TaskKind, AgentType, TaskPriority, ThinkingLevel } from "@shared/types.ts";
 import type { UpdateTask } from "@shared/protocol.ts";
 import { normalizeLabels } from "@shared/task.ts";
 import type { PendingAttachment } from "../components/ImageDrop.tsx";
@@ -42,6 +42,8 @@ export type DispatchDraft = {
    * daemon reads the default when it launches, which is what a shelved task needs.
    */
   model: string;
+  /** Effort override, or "" to follow the configured default for `agent`. */
+  effort: ThinkingLevel | "";
   /** Images dropped on the task box; sent as paths appended to the intent. */
   attachments: PendingAttachment[];
 };
@@ -55,6 +57,7 @@ export const EMPTY_DISPATCH_DRAFT: DispatchDraft = {
   priority: "",
   labels: "",
   model: "",
+  effort: "",
   attachments: [],
 };
 
@@ -93,6 +96,7 @@ export function draftFromTask(t: Task): DispatchDraft {
     // A stored null is the deferral, and it reads back as the same empty option it was
     // picked from - so reopening a shelved task shows "Default", not a model it never chose.
     model: t.model ?? "",
+    effort: t.effort ?? "",
     attachments: [],
   };
 }
@@ -120,6 +124,7 @@ export function draftsEqual(a: DispatchDraft, b: DispatchDraft): boolean {
     a.priority === b.priority &&
     a.labels === b.labels &&
     a.model === b.model &&
+    a.effort === b.effort &&
     a.attachments.length === b.attachments.length &&
     a.attachments.every((att, i) => att.id === b.attachments[i]!.id)
   );
@@ -166,5 +171,7 @@ export function taskUpdatePatch(task: Task, draft: DispatchDraft, intent: string
   // "follow the harness default again" - so it cannot go through a truthiness check.
   const model = draft.model || null;
   if (model !== task.model) patch.model = model;
+  const effort = draft.effort || null;
+  if (effort !== task.effort) patch.effort = effort;
   return Object.keys(patch).length > 0 ? patch : null;
 }

@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DB_PATH, envVar } from "./config.ts";
+import { THINKING_LEVELS } from "@shared/types.ts";
 import type {
   EpisodeAuthor,
   ForemanEpisode,
@@ -148,6 +149,7 @@ export function openDb(): DatabaseSync {
       priority      TEXT,               -- low|med|high|blocker, NULL = nobody set one
       labels        TEXT,               -- JSON array of strings, NULL = none
       model         TEXT,
+      effort        TEXT,
       -- Where a task source swept this task from. The LINK BACK only: identity for
       -- de-duplication lives in task_source_seen below, whose rows outlive the task.
       -- NULL on every task a human typed, which is nearly all of them.
@@ -533,6 +535,9 @@ function migrate(d: DatabaseSync): void {
   // the harness default", which is the truthful answer for every task dispatched before
   // a model could be chosen at all.
   addColumn(d, "tasks", "model", "TEXT");
+  // `effort`: the per-task reasoning override. NULL follows the launch-time harness
+  // default, which is also the truthful value for every task created before it existed.
+  addColumn(d, "tasks", "effort", "TEXT");
 
   // `source_id` / `external_id` / `source_url`: where a task source swept a task from,
   // added to `tasks` long after it shipped. Same exposure as `model` above and the same
@@ -1223,6 +1228,7 @@ interface TaskRow {
   priority: string | null;
   labels: string | null;
   model: string | null;
+  effort: string | null;
   source_id: string | null;
   external_id: string | null;
   source_url: string | null;
@@ -1254,6 +1260,13 @@ function parseLabels(raw: string | null): string[] {
   }
 }
 
+/** A stale/newer effort value cannot be trusted onto tmux's shell command line. */
+function parseEffort(raw: string | null): Task["effort"] {
+  return raw && (THINKING_LEVELS as readonly string[]).includes(raw)
+    ? (raw as Task["effort"])
+    : null;
+}
+
 function rowToTask(r: TaskRow): Task {
   return {
     id: r.id,
@@ -1269,6 +1282,7 @@ function rowToTask(r: TaskRow): Task {
     // bad row must not take out `listTasks` and with it the whole backlog.
     labels: parseLabels(r.labels),
     model: r.model,
+    effort: parseEffort(r.effort),
     // Both key columns or nothing: half a provenance would render as a link to an item
     // nobody can name, and `source_id` alone cannot be matched back to anything.
     source:
@@ -1296,14 +1310,14 @@ export function upsertTask(t: Task): void {
   openDb()
     .prepare(
       `INSERT INTO tasks (
-         id, title, intent, kind, agent, priority, labels, model,
+         id, title, intent, kind, agent, priority, labels, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
          provider, tmux_session, session_id, status, outcome, outcome_url, error,
          created_at, updated_at, dispatched_at, completed_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title=excluded.title, intent=excluded.intent, kind=excluded.kind, agent=excluded.agent,
-         priority=excluded.priority, labels=excluded.labels, model=excluded.model,
+         priority=excluded.priority, labels=excluded.labels, model=excluded.model, effort=excluded.effort,
          source_id=excluded.source_id, external_id=excluded.external_id,
          source_url=excluded.source_url,
          repo_root=excluded.repo_root, worktree_path=excluded.worktree_path, branch=excluded.branch,
@@ -1319,6 +1333,7 @@ export function upsertTask(t: Task): void {
       // third state to tell apart, and `parseLabels` maps both back to [].
       t.labels.length > 0 ? JSON.stringify(t.labels) : null,
       t.model,
+      t.effort,
       t.source?.sourceId ?? null, t.source?.externalId ?? null, t.source?.url ?? null,
       t.repoRoot, t.worktreePath, t.branch, t.provider,
       t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,

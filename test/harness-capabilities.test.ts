@@ -110,7 +110,16 @@ test("the server harness registry IS the shared record, plus what needs a filesy
     assert.equal(harness.workQueue, caps.workQueue);
     assert.equal(harness.clearContext, caps.clearContext);
     assert.equal(harness.mcp, caps.mcp);
+    assert.equal(harness.effort, caps.effort);
   }
+});
+
+test("each shipped harness declares its launch-time effort syntax", () => {
+  assert.deepEqual(capabilitiesFor("claude").effort?.launchArgs("high"), ["--effort", "high"]);
+  assert.deepEqual(capabilitiesFor("codex").effort?.launchArgs("xhigh"), [
+    "-c",
+    "model_reasoning_effort=xhigh",
+  ]);
 });
 
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {

@@ -44,6 +44,16 @@ test("the editor opens holding the task, not an empty form", () => {
   assert.match(html, /<option value="codex" selected=""/);
 });
 
+test("effort is selectable immediately after model for both harnesses", () => {
+  for (const agent of ["claude", "codex"] as const) {
+    const html = editor(mkTask({ agent, effort: "xhigh" }));
+    const modelAt = html.indexOf("Model");
+    const effortAt = html.indexOf(`aria-label="Effort for dispatched ${agent === "claude" ? "Claude Code" : "Codex"} session"`);
+    assert.ok(modelAt >= 0 && effortAt > modelAt, `${agent}: effort follows model`);
+    assert.match(html, /<option value="xhigh" selected=""/);
+  }
+});
+
 test("the verbs say edit, not create", () => {
   const html = editor(mkTask());
   assert.match(html, /Edit backlog task/);

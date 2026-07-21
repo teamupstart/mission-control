@@ -4,7 +4,7 @@ import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
-import { AGENT_TYPES } from "./types.ts";
+import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
 
 /**
  * `normalizeLabels`, but absent stays absent.
@@ -366,6 +366,8 @@ export const DispatchSchema = z.object({
    * pick up a default changed after it was shelved.
    */
   model: ModelIdSchema.optional(),
+  /** Reasoning-effort override; omitted follows the harness default at launch time. */
+  effort: z.enum(THINKING_LEVELS).optional(),
   backlog: z.boolean().optional().default(false),
   ...TASK_TRIAGE_FIELDS,
 });
@@ -416,7 +418,7 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent` and `model` are PROVISIONING fields -
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model` and `effort` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and a tmux session at dispatch and
  * cannot be rewritten afterwards, and the model is baked into the launched command line -
  * so a patch touching any of them is refused once the task has left the backlog.
@@ -427,7 +429,7 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model` is nullable for the same reason: an absent field leaves the stored override
+ * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
  * "follow the harness default again" about a row that already names a model.
  */
@@ -441,6 +443,7 @@ export const UpdateTaskSchema = z
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
+    effort: z.enum(THINKING_LEVELS).nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "empty task update" });
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
@@ -1016,6 +1019,13 @@ export const HarnessesConfigSchema = z.object({
       codex: ModelIdSchema.nullable().default(null),
     })
     .default({ claude: null, codex: null }),
+  /** Launch-time reasoning effort per harness; null leaves the harness in control. */
+  defaultEffort: z
+    .object({
+      claude: z.enum(THINKING_LEVELS).nullable().default(null),
+      codex: z.enum(THINKING_LEVELS).nullable().default(null),
+    })
+    .default({ claude: null, codex: null }),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 
@@ -1035,6 +1045,12 @@ export const HarnessesConfigPatchSchema = z
       .object({
         claude: ModelIdSchema.nullable().optional(),
         codex: ModelIdSchema.nullable().optional(),
+      })
+      .optional(),
+    defaultEffort: z
+      .object({
+        claude: z.enum(THINKING_LEVELS).nullable().optional(),
+        codex: z.enum(THINKING_LEVELS).nullable().optional(),
       })
       .optional(),
   })

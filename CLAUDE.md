@@ -45,10 +45,11 @@ top-level collection, also extend the `snapshot` case, `registry.snapshot()`, an
 `z.enum` in `protocol.ts`, `DispatchInput`, the dispatch modal's `<option>`s and the
 Harnesses rows all derive from it. `AgentType` is that array's element type, so every
 `Record<AgentType, …>` then fails to compile until the new harness has said what it is
-called (`AGENT_NAMES`, `@shared/agent.ts`), which binary it launches (`AGENT_BINS`,
-`server/config.ts`), which models it offers, which of its capabilities exist at all
-(`HARNESSES`, `src/server/harness/index.ts`), and how it answers goals and cost. Fill each
-in rather than defaulting one. Test: `session-contracts.test.ts`, which pins that list.
+called (`AGENT_NAMES`, `@shared/agent.ts`), which models it offers, which of its
+capabilities exist at all - including how its process is recognised and which binary it
+launches (`HARNESSES`, `src/server/harness/index.ts`) - and how it answers goals and cost.
+Fill each in rather than defaulting one. Test: `session-contracts.test.ts`, which pins
+that list.
 
 ## Layout parity
 
@@ -215,7 +216,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   Codex pushes nothing at us - and a null there is load-bearing in three places: the
   ingest is refused rather than read by Claude's event vocabulary, the pane-keyed hook
   overlay is agent-scoped so the card Codex started in a vacated pane does not inherit
-  Claude's last state, and `awaitReady` skips its 20s wait. `codex.clearContext` is null
+  Claude's last state, and `awaitReady` skips its 20s wait. **`detect` and `bin` are the
+  two that are NOT nullable**: a harness nothing can find on the process table has no card
+  at all, and one that names no binary cannot be dispatched. `discovery/processes.ts`
+  iterates `detect` and names no vendor - including the background roles, which are TOKENS
+  matched at argv[1]/argv[2] and never substrings of a command line carrying an operator's
+  paths and a 1.2KB prompt. `resolveAgentBin` (`harness/index.ts`) is the ONE bin resolver,
+  for dispatched sessions and headless runs alike; it lived in `config.ts` while
+  `claude-cli.ts` kept a second chain, and the two disagreed. `codex.clearContext` is null
   because `/clear` is Claude's slash command, and reset degrades to the byte-identical
   `cleared: false` a pane-less session produces. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
@@ -223,6 +231,7 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`), never by testing
   `s.agent`; each phase of `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
   `harness-capabilities.test.ts`, `harness-transcript.test.ts`, `harness-hooks.test.ts`,
+  `detection.test.ts`, `harness-bin.test.ts`, `process-background-filter.test.ts`,
   `session-contracts.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the

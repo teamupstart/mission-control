@@ -245,18 +245,122 @@ export interface HookSpec {
 }
 
 /**
+ * How to recognise this harness's process in a `ps` snapshot.
+ *
+ * NOT nullable on `Harness`, unlike every capability above it: a harness nothing can find
+ * has no card, no transcript and no queue - it simply is not there, and nothing reports a
+ * problem. Detection is what "a harness" means.
+ *
+ * Data rather than a `match(command)` function, because the tests are the point: a spec
+ * that hid its rules inside a predicate could not be audited, while a declared one lets
+ * `detection.test.ts` assert every claim about every harness - so a new one inherits the
+ * coverage instead of needing its own tests written.
+ */
+export interface DetectSpec {
+  /**
+   * Command names this harness is invoked as, matched two ways: as argv0's basename (the
+   * real binary, `/opt/homebrew/bin/codex`), and as a bare token under a known wrapper
+   * (`make claude`, `sh -c codex`). One list rather than two, because they are the same
+   * fact - a launcher runs the command by its name - and two would drift.
+   *
+   * The bare-token reading counts only under a wrapper, which is what keeps
+   * `git commit -m "fix claude bug"` from being read as a session.
+   */
+  commands: readonly string[];
+  /**
+   * Substrings anywhere in argv that prove the real binary through a disguise: the
+   * `claude` launcher re-execs a version-named binary (`.../claude/versions/2.1.195`) and
+   * `codex` runs as a node script (`node .../@openai/codex/bin/codex.js`), so neither has
+   * its own name in argv0.
+   *
+   * Strong signals: a match here counts as native. Keep them specific enough that no
+   * ordinary command line contains one.
+   */
+  argvSignatures: readonly string[];
+  /** This harness's own background roles, which are not sessions. */
+  background: BackgroundSpec;
+}
+
+/**
+ * The tokens that name a background ROLE - the harness's own daemon, its MCP server, the
+ * workers it keeps alive beside a session. A process matching one is infrastructure, not
+ * somebody's session.
+ *
+ * Per harness rather than one global list, because this is the vendor's own subcommand
+ * grammar: `bg-pty-host` is a Claude Code internal, and a global list is how one vendor's
+ * exclusion silently starts hiding another vendor's real sessions.
+ *
+ * TOKENS, never substrings, and this is the load-bearing part. A dispatched session's argv
+ * carries a state-dir path and a ~1.2KB inline prompt, so a spec written as patterns over
+ * the raw command line hands the decision to text nobody controls: an operator whose
+ * `MISSION_HOME` is `~/daemon-state`, or a prompt whose prose quotes `--bg-pty-host`, made
+ * every dispatched agent undetectable. Both were observed. See `isBackgroundAgent`
+ * (`discovery/processes.ts`) for which argv positions are consulted, and
+ * `process-background-filter.test.ts` for the real `ps` lines that pin it.
+ *
+ * APPEND-ONLY as new roles appear. A mistake is costly in both directions: a form missed
+ * becomes a phantom session on the dashboard, and a form matched too eagerly makes a real
+ * agent silently disappear from it.
+ */
+export interface BackgroundSpec {
+  /**
+   * Subcommands naming a background role. One token (`daemon`), or two where the vendor
+   * spells it that way (`mcp serve`).
+   */
+  subcommands: readonly string[];
+  /**
+   * The same roles as flags, for the forms spawned with no subcommand at all
+   * (`.../ClaudeCode.app/Contents/MacOS/claude --bg-pty-host <sock>`).
+   */
+  flags: readonly string[];
+}
+
+/**
+ * Which binary this harness launches, and how an operator overrides it.
+ *
+ * Names, not values, and no resolution here: `resolveAgentBin` (`index.ts`) is the one
+ * resolver, so a dispatched session and a headless run of the same harness cannot disagree
+ * about what `claude` means on this machine.
+ *
+ * Not to be confused with the terminal axis's `BinSpec` (`server/terminal/bin.ts`), which
+ * is a different rule for a different problem: a raw env key plus an ordered list of
+ * absolute candidates probed with `existsSync`, because a terminal emulator hides inside a
+ * `.app`. An agent CLI is bare on PATH, and validated separately at dispatch
+ * (`resolveBinPath`). Do not unify them without a reason beyond the shared word "bin".
+ */
+export interface BinSpec {
+  /**
+   * Suffix of the `MISSION_` / `FLEET_` / `HARNESS_` env chain that overrides the binary,
+   * resolved through `envVar` (`@shared/harness-runtime.mjs`).
+   */
+  env: string;
+  /**
+   * Raw env names kept for compatibility, consulted after the chain above.
+   *
+   * Append-only, for the same reason that chain is: these are read by processes installed
+   * into an environment once, so dropping one does not fail loudly - it quietly stops
+   * honouring a setting that is still set.
+   */
+  legacyEnv: readonly string[];
+  /** What to run when the operator has set no override. Bare, so PATH resolves it. */
+  command: string;
+}
+
+/**
  * One agent, and everything the daemon needs from it.
  *
  * Extends `HarnessCapabilities` (`@shared/harness-capabilities.ts`) rather than
  * re-declaring its slots, so a server call site holding a harness sees EVERY capability
  * on one object - `harness.permissionModes` and `harness.transcript` read the same way -
  * while the dashboard can still answer the pure ones in the browser. The split is by
- * PURITY, not by capability: what is here is what needs a `node:` import. `HARNESSES`
- * spreads the shared record in, so each record forces exactly its own questions and
- * neither is a copy of the other.
+ * PURITY, not by capability: what is here is what only the DAEMON can answer - because it
+ * needs a `node:` import (`transcript`, `hooks`), or because it is about processes and
+ * binaries that exist only on the machine (`detect`, `bin`, which are pure data the
+ * browser has no question to ask of). `HARNESSES` spreads the shared record in, so each
+ * record forces exactly its own questions and neither is a copy of the other.
  *
  * More capabilities land here as the pluggable-integrations migration proceeds
- * (`detect`, `bin`, `control`, `tui`, `models` - see
+ * (`control`, `tui`, `models` - see
  * `docs/plans/pluggable-integrations/plan.md`). Each arrives as its own slot, so adding
  * one is a new field every harness must answer rather than an interface change every
  * migrated call site has to absorb.
@@ -268,4 +372,8 @@ export interface Harness extends HarnessCapabilities {
   transcript: TranscriptSpec | null;
   /** How this harness pushes its lifecycle at us, or null when it pushes nothing. */
   hooks: HookSpec | null;
+  /** How to find this harness's process. Required - see `DetectSpec`. */
+  detect: DetectSpec;
+  /** Which CLI to launch, and what overrides it. Required - a harness runs something. */
+  bin: BinSpec;
 }

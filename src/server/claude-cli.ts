@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import type { ZodTypeAny, TypeOf } from "zod";
+import { resolveAgentBin } from "./harness/index.ts";
 
 // Runs ONE headless `claude -p` and hands back its output, so every caller starts
 // from a clean context. Two very different callers share it, which is why it lives
@@ -28,11 +29,17 @@ import type { ZodTypeAny, TypeOf } from "zod";
 /**
  * The claude binary; overridable so a test/E2E can point at a fake.
  *
- * `FOREMAN_CLAUDE_BIN` is still read: it predates this module's move out of
- * `foreman/` and may be set in an existing environment, so dropping it would break
- * those silently rather than loudly.
+ * Resolved through the harness registry rather than read here, because there is exactly
+ * one right answer to "what does `claude` mean on this machine" and a dispatched session
+ * has to get the same one - this module's own chain quietly answered differently.
+ * `FOREMAN_CLAUDE_BIN` survives as that harness's legacy name (`harness/claude/bin.ts`):
+ * it predates this module's move out of `foreman/` and may be set in an existing
+ * environment, so dropping it would break those silently rather than loudly.
+ *
+ * Still resolved at MODULE LOAD, which several tests depend on - they point the env at a
+ * fake bin in a preamble that runs before this import.
  */
-const CLAUDE_BIN = process.env.MISSION_CLAUDE_BIN || process.env.FOREMAN_CLAUDE_BIN || "claude";
+const CLAUDE_BIN = resolveAgentBin("claude");
 /**
  * Default cap on a single run so a hung child can't stall its caller. Sized for the
  * full reviewer (Opus reading 48 turns with the whole POLICY), which is the most

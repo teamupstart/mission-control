@@ -6,6 +6,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Session } from "../src/shared/types.ts";
 import { isDragSelection, SessionTile } from "../src/web/components/layouts/SessionTile.tsx";
+import { PrTileFlag } from "../src/web/components/session-bits.tsx";
+import { Tooltip } from "../src/web/components/Tooltip.tsx";
 import { mkSession } from "./helpers/session-fixture.ts";
 
 /**
@@ -111,5 +113,19 @@ test("a failing check still rides along on the link rather than needing its own 
   const anchor = html.match(/<a [^>]*class="tile-flag tile-flag-link[^"]*"[^>]*>([^<]*)<\/a>/)?.[1];
   assert.ok(anchor != null, "expected the PR anchor");
   assert.match(anchor, /⚠/);
-  assert.match(html, /title="A CI check failed on this pull request - open on GitHub"/);
+});
+
+// The flag's tooltip is delivered by the shared `Tooltip` component rather than a native
+// `title` - `Tooltip` renders no DOM node or attribute until hovered, so the wording can
+// only be asserted against the un-rendered element tree, not the rendered markup. See
+// `session-leaf-parity.test.ts` for why a rendered-markup assertion here couldn't catch a
+// regression back to a native `title`.
+test("the failing-check tooltip explains itself, not just the healthy case", () => {
+  const session = mkSession({ ...withPr, prChecks: "failing" });
+  const flagEl = PrTileFlag({ session });
+  assert.equal(flagEl?.type, Tooltip, "expected the PR flag to be wrapped in the shared Tooltip");
+  assert.equal(
+    (flagEl?.props as { label: string }).label,
+    "A CI check failed on this pull request - open on GitHub",
+  );
 });

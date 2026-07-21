@@ -10,11 +10,15 @@ import {
   AgentDot,
   CostChip,
   InspectorChip,
+  InspectorRailMark,
+  InspectorTileFlag,
   PrChip,
+  PrTileFlag,
   RuntimeMetaRow,
   SessionTitle,
   StateBadge,
 } from "../src/web/components/session-bits.tsx";
+import { Tooltip } from "../src/web/components/Tooltip.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
@@ -135,6 +139,142 @@ test("a PR that was never adopted gets no inspector chip at all", () => {
   };
   assert.equal(bit(InspectorChip, { session: mkSession(over) }), "");
   assert.ok(!card(over).includes("insp-chip"));
+});
+
+// The rail draws the Inspector in its own terse vocabulary, but the glyph-and-count
+// span itself has to come from `InspectorRailMark` rather than a private copy, or a
+// fix to the shared tooltip silently misses the rail.
+test("the rail's inspector mark is the shared InspectorRailMark", () => {
+  const cases: Partial<Session>[] = [
+    { inspector: insp({ open: 3, round: 2 }) },
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const rail = renderToStaticMarkup(
+      createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
+    );
+    assert.ok(
+      rail.includes(bit(InspectorRailMark, { session })),
+      `rail should render the shared InspectorRailMark for ${JSON.stringify(over.inspector)}`,
+    );
+  }
+});
+
+// The board tile draws the Inspector as a `.tile-flag`, but that link has to come from
+// `InspectorTileFlag` rather than a private copy - including the queued and clean states
+// the rail suppresses, since the tile shows every state the card does.
+test("the board tile's inspector flag is the shared InspectorTileFlag", () => {
+  const cases: Partial<Session>[] = [
+    { inspector: insp({ open: 3, round: 2 }) },
+    { inspector: insp({ open: 0, round: 1 }) },
+    { inspector: insp({ open: 0, round: 0 }) },
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const tile = renderToStaticMarkup(
+      createElement(SessionTile, {
+        session,
+        gateNeedsYou: false,
+        onOpen: () => {},
+        draggingRepo: null,
+        onDropped: () => {},
+        onDropError: () => {},
+        onDropConfirm: () => {},
+      }),
+    );
+    assert.ok(
+      tile.includes(bit(InspectorTileFlag, { session })),
+      `tile should render the shared InspectorTileFlag for ${JSON.stringify(over.inspector)}`,
+    );
+  }
+});
+
+// All four surfaces must show the IDENTICAL tooltip copy for the same state, delivered by
+// the actual `Tooltip` component - not merely an `aria-label` that happens to match. A
+// component wrapped in `Tooltip` and one carrying a bare `aria-label`/`title` render
+// IDENTICAL static markup (`Tooltip` adds no DOM node or attribute until it is hovered), so
+// asserting on rendered HTML strings cannot tell them apart - the whole point of this test
+// would silently stop holding the moment someone reverted a surface to a native `title`
+// while leaving its `aria-label` in place. Calling each component as a plain function
+// (rather than rendering it) returns its un-rendered element tree, whose root can be
+// checked to actually be a `<Tooltip>` carrying the expected `label` prop.
+test("all four inspector surfaces are wrapped in the shared Tooltip with identical copy", () => {
+  const cases: Partial<Session>[] = [
+    { inspector: insp({ open: 3, round: 2 }) },
+    { inspector: insp({ open: 0, round: 1 }) },
+    { inspector: insp({ open: 0, round: 0 }) },
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const chipEl = InspectorChip({ session });
+    assert.equal(chipEl?.type, Tooltip, "card chip should be wrapped in the shared Tooltip");
+    const title = (chipEl?.props as { label: string }).label;
+    assert.ok(title, `card chip should have a tooltip label for ${JSON.stringify(over.inspector)}`);
+
+    const tileEl = InspectorTileFlag({ session });
+    assert.equal(tileEl?.type, Tooltip, "tile flag should be wrapped in the shared Tooltip");
+    assert.equal(
+      (tileEl?.props as { label: string }).label,
+      title,
+      `tile flag tooltip should match the card's for "${title}"`,
+    );
+
+    // The rail suppresses the clean/queued states entirely, so only assert there when
+    // it actually renders something.
+    const railEl = InspectorRailMark({ session });
+    if (railEl) {
+      assert.equal(railEl.type, Tooltip, "rail mark should be wrapped in the shared Tooltip");
+      assert.equal(
+        (railEl.props as { label: string }).label,
+        title,
+        `rail mark tooltip should match the card's for "${title}"`,
+      );
+    }
+  }
+});
+
+// The tile's PR flag sits right beside the Inspector flag with the same `.tile-flag`
+// styling, so the two must behave identically on hover - both wrapped in the shared
+// `Tooltip`, never one instant and the other a slow native `title`.
+test("the board tile's PR flag is the shared PrTileFlag, wrapped in the shared Tooltip", () => {
+  const cases: Partial<Session>[] = [
+    { prUrl: "https://example.test/pr/7", prNumber: 7, prState: "open" },
+    { prUrl: "https://example.test/pr/7", prNumber: 7, prState: "merged" },
+    { prUrl: "https://example.test/pr/7", prNumber: 7, prState: "open", prChecks: "failing" },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const flagEl = PrTileFlag({ session });
+    assert.equal(flagEl?.type, Tooltip, `tile PR flag should be wrapped in the shared Tooltip for ${JSON.stringify(over)}`);
+
+    const tile = renderToStaticMarkup(
+      createElement(SessionTile, {
+        session,
+        gateNeedsYou: false,
+        onOpen: () => {},
+        draggingRepo: null,
+        onDropped: () => {},
+        onDropError: () => {},
+        onDropConfirm: () => {},
+      }),
+    );
+    assert.ok(
+      tile.includes(bit(PrTileFlag, { session })),
+      `tile should render the shared PrTileFlag for ${JSON.stringify(over)}`,
+    );
+  }
+
+  // A PR number with no URL yet stays the plain, unlinked flag it always was - nothing to
+  // hover for, so no Tooltip.
+  const noUrl = mkSession({ prUrl: null, prNumber: 9, prState: "open" });
+  const noUrlEl = PrTileFlag({ session: noUrl });
+  assert.notEqual(noUrlEl?.type, Tooltip, "a PR with no URL yet should not be wrapped in a Tooltip");
 });
 
 test("the card's state badge is the shared StateBadge", () => {

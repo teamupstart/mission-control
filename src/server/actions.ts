@@ -17,22 +17,27 @@ import {
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
+import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
-import type { TerminalExec } from "./terminal/exec.ts";
+import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
-  EMULATORS,
-  MULTIPLEXERS,
   bindSession,
+  defaultTerminalDeps,
   hostPanesFor,
   type BoundPane,
+  type TerminalDeps,
 } from "./terminal/registry.ts";
-import type { EmulatorPane, Key, TerminalResult } from "./terminal/types.ts";
-import {
-  activateWeztermPane,
-  setWeztermTabTitle,
-  spawnWeztermTab,
-} from "./discovery/wezterm.ts";
+import type {
+  EmulatorFocus,
+  EmulatorPane,
+  EmulatorTarget,
+  Key,
+  Multiplexer,
+  NameRules,
+  TerminalEmulator,
+  TerminalResult,
+} from "./terminal/types.ts";
 import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
 
@@ -114,37 +119,6 @@ export async function withPaneLock<T>(
   }
 }
 
-/** Reduce a finished command to an ActionResult, using stderr (or a fallback) as the error. */
-function check(r: RunResult, failMsg: string): ActionResult {
-  return r.code !== 0 ? { ok: false, error: r.stderr.trim() || failMsg } : { ok: true };
-}
-
-/**
- * The subprocess seam of what is left shelling out here - focus and rename, the next
- * migration item.
- *
- * No pane WRITE runs through it any more: a write's seam is the PANE (`PaneDeps.pane`),
- * because the adapters are what run the commands now. `TerminalExec` itself rather than a
- * narrower alias, so a fake built for one is a fake for the other.
- */
-export type Exec = TerminalExec;
-
-/**
- * Run a command and reduce it to an ActionResult in one step.
- *
- * What is left of the hand-rolled shelling out: the focus and rename paths below, which
- * the next migration item moves behind `Multiplexer.select` / `EmulatorFocus.raise`. No
- * pane WRITE reaches it any more - those go through `writeText` / `sendKeys`.
- */
-async function step(
-  bin: string,
-  args: string[],
-  failMsg: string,
-  exec: Exec = run,
-): Promise<ActionResult> {
-  return check(await exec(bin, args), failMsg);
-}
-
 /**
  * The seams a pane WRITE needs: the pane itself, and the read that verifies what it did.
  *
@@ -200,9 +174,22 @@ const inModeError: DescribeMode = (backend, mode) =>
 const inModeAfterPasteError: DescribeMode = (backend, mode) =>
   `this pane entered ${backend} ${mode} after the prompt was pasted, so the Enter that submits it was swallowed - the text is sitting in the composer, unsubmitted. Leave ${mode} (q, or scroll to the bottom) and press Enter to send it.`;
 
-/** Reduce a finished terminal operation to an `ActionResult`. */
-function fromTerminal(r: TerminalResult): ActionResult {
-  return r.ok ? { ok: true } : { ok: false, error: r.error };
+/**
+ * Reduce a finished terminal operation to an `ActionResult`.
+ *
+ * `fallback` is only reached when a backend failed SILENTLY, which both shipped ones do for
+ * an unresolvable target; an adapter that has something to say has already put it in
+ * `error`. Optional because most callers here are reporting a write, where the pane's own
+ * refusal is the whole message, while the lifecycle operations have a sentence of their own
+ * worth falling back to.
+ *
+ * `outcomeUnknown` is deliberately dropped rather than carried. It exists so a WRITE can
+ * tell "refused" from "never found out" and decide whether re-pasting is safe; a focus or a
+ * rename that may or may not have landed has no such choice to make - it is reported as
+ * failed, and the human clicks again.
+ */
+function fromTerminal(r: TerminalResult, fallback?: string): ActionResult {
+  return r.ok ? { ok: true } : { ok: false, error: r.error ?? fallback };
 }
 
 /**
@@ -1210,35 +1197,58 @@ function notInCycle(target: PermissionMode): string {
 }
 
 /**
- * Validate a proposed session name against the handle that backs it, returning the
- * trimmed name or a human-readable reason it's rejected. Kept pure (no exec) so the
- * route can answer a bad name with a 400 and it can be unit-tested directly.
+ * The naming rules that apply to this session's renameable handle - see `NameRules`.
  *
- * A multiplexer handle is the one a rename moves when present (see `rename` below), so its
- * backend's own naming rules apply whenever the session has one. Those rules belong to the
- * BACKEND - tmux's ban on `.`, `:` and a leading `$` comes from its target grammar
- * (`session:window.pane`, `$0` as a session id) and no other multiplexer need share it - so
- * they are read off `MuxSessions.validateName` rather than restated here. Restating them
- * was the shape this migration keeps closing: a second multiplexer with looser rules would
- * be refused names it accepts, in tmux's words.
+ * The INNERMOST handle's rules, matching `rename` below: a session inside a multiplexer is
+ * renamed by moving the multiplexer session's name, so that backend's grammar is the one the
+ * name has to survive and its hosting tab merely follows. A session with only an emulator
+ * handle is renamed by retitling a tab, which is display text.
+ *
+ * The rules belong to the BACKEND. tmux's ban on `.`, `:` and a leading `$` comes from its
+ * target grammar (`session:window.pane`, `$0` as a session id) and no other multiplexer need
+ * share it, so a second one with looser rules would otherwise be refused names it accepts,
+ * in tmux's words.
+ *
+ * `PLAIN_NAMES` for a handleless session, so this stays total; its caller refuses that
+ * session for having nothing to rename, which is a better sentence than any name rule would
+ * produce.
+ */
+export function nameRulesFor(
+  session: PaneHandles,
+  deps: TerminalDeps = defaultTerminalDeps,
+): NameRules {
+  const mux = muxHandle(session);
+  if (mux) return deps.multiplexers[mux.backend].sessions?.names ?? PLAIN_NAMES;
+  const emu = emulatorHandle(session);
+  if (emu) return deps.emulators[emu.backend].names;
+  return PLAIN_NAMES;
+}
+
+/**
+ * Validate a proposed session name against the handle that backs it, returning the trimmed
+ * name or a human-readable reason it is rejected. Kept pure (no exec) so the route can answer
+ * a bad name with a 400 and it can be unit-tested directly.
+ *
+ * What is left here is what is true of every backend: a name has to be something, and a
+ * session has to have somewhere for a name to live. The GRAMMAR belongs to the adapter
+ * (`NameRules`), beside the `sanitize` that has to agree with it - these rules and
+ * `sessionLabel`'s coercion were two half-copies of tmux's target spec in two files, and they
+ * had already drifted by one character class. What no display name can hold - a newline
+ * submits, splits or truncates depending on which surface reads it first - is the shared
+ * half every backend's rules are built on (`plainValidate`), not a check restated here.
  */
 export function validateSessionName(
   session: PaneHandles,
   rawName: string,
+  deps: TerminalDeps = defaultTerminalDeps,
 ): { ok: true; name: string } | { ok: false; error: string } {
   const name = rawName.trim();
   if (!name) return { ok: false, error: "name can't be empty" };
-  // A newline would submit/split in a session name or a terminal title; other control
-  // chars are meaningless in a display name. Reject them for either axis.
-  if (/[\u0000-\u001f\u007f]/.test(name)) {
-    return { ok: false, error: "name can't contain control characters" };
-  }
-  const mux = muxHandle(session);
-  if (!mux && !emulatorHandle(session)) {
+  if (!muxHandle(session) && !emulatorHandle(session)) {
     return { ok: false, error: "this session has no terminal pane to rename" };
   }
-  const refused = mux ? (MULTIPLEXERS[mux.backend].sessions?.validateName?.(name) ?? null) : null;
-  return refused ? { ok: false, error: refused } : { ok: true, name };
+  const why = nameRulesFor(session, deps).validate(name);
+  return why ? { ok: false, error: why } : { ok: true, name };
 }
 
 /**
@@ -1277,203 +1287,223 @@ export function validateSessionNameAgainstTasks(
     : { ok: true };
 }
 
-/**
- * The handle these three writes can actually drive, or null.
- *
- * `focus`, `rename` and `kill` are the last writes still shelling out to `tmux` and to
- * wezterm's CLI by name - the focus/spawn/kill item owns them, not the `Session` handle
- * list. What the list DID buy is that the debt now fails to compile: a second backend on
- * either axis reaches `noDriver` with a type that is not `never`, so it is a typecheck
- * error here rather than a Ghostty tab handed to `activateWeztermPane`, or a zellij session
- * name handed to `tmux kill-session`.
- *
- * Degrading to null rather than throwing is the answer for the runtime that cannot happen:
- * the session simply reads as having no handle, which is a state every one of these three
- * already refuses honestly.
- */
-function noDriver(backend: never): null {
-  console.warn(`[actions] no terminal driver for backend ${String(backend)}`);
-  return null;
-}
-
-function tmuxOnly(session: PaneHandles): MuxHandle | null {
-  const mux = muxHandle(session);
-  if (!mux) return null;
-  switch (mux.backend) {
-    case "tmux":
-      return mux;
-    // cmux is enumerated, typed into and captured through its adapter like any multiplexer;
-    // it is only these three writes it cannot reach, because they are the ones still
-    // shelling out to `tmux` by name. So this arm is the tripwire above being ANSWERED
-    // rather than silenced: a cmux session reads as having no handle for focus, rename and
-    // kill, which is the state all three already refuse honestly, and it keeps `default`
-    // typed `never` so a fourth backend still has to come here and say the same thing out
-    // loud. The focus/spawn/kill item is what deletes this arm along with the shelling out.
-    case "cmux":
-      return null;
-    default:
-      return noDriver(mux.backend);
-  }
-}
-
-function weztermOnly(session: PaneHandles): EmulatorHandle | null {
-  const emu = emulatorHandle(session);
-  if (!emu) return null;
-  switch (emu.backend) {
-    case "wezterm":
-      return emu;
-    default:
-      return noDriver(emu.backend);
-  }
+/** One emulator tab that hosts a multiplexer client, with the backend that can act on it. */
+interface HostTab {
+  emulator: TerminalEmulator;
+  pane: EmulatorPane;
 }
 
 /**
- * Side effects `rename` performs, injectable so tests can assert the branching
- * (multiplexer vs emulator) without renaming a real tmux session or shelling out.
- */
-export interface RenameDeps {
-  /** `tmux rename-session -t <from> -- <to>`. */
-  renameTmuxSession: (from: string, to: string) => Promise<RunResult>;
-  /** `wezterm cli set-tab-title --pane-id <id> -- <title>`. */
-  setWeztermTabTitle: (paneId: number, title: string) => Promise<RunResult>;
-  /** The wezterm panes whose tabs host a tmux client attached to `session`. */
-  findTmuxHostPanes: (session: string) => Promise<EmulatorPane[]>;
-}
-
-/**
- * The emulator panes whose tabs host a multiplexer client for `session`.
+ * The emulator tabs whose windows host a client attached to `session`, and whether anything
+ * is attached at all.
  *
- * Both sides come from the registries and the join is `hostPanesFor` - the outward half of
- * the composition rule, which now has exactly one implementation. It replaces
- * `findSessionHostPanes`, whose inline `/dev/` strip was a normalization bug waiting for a
- * backend that reported the prefix on both sides; the adapters normalize both ttys, so this
- * is an equality test.
+ * The outward half of the composition rule, and the reason the terminal axis is two
+ * interfaces rather than one. An agent inside a multiplexer sits on a multiplexer PANE tty
+ * while the tab showing it sits on the CLIENT tty, so the session's own emulator handle is
+ * never the tab to raise or retitle - it is null for such a session anyway. The link is the
+ * shared client tty, and `hostPanesFor` is the join.
  *
- * Still spelled tmux-to-wezterm here and at the three call sites below, which shell out to
- * `tmux` and to `activateWeztermPane` by name. Those are the last un-migrated writes
- * (`Multiplexer.select` / `MuxSessions` / `EmulatorFocus` already exist for them) and they
- * belong to the focus/spawn/kill item, not to the `Session` handle list. See `tmuxOnly` /
- * `weztermOnly` for what that list did buy: the debt fails to compile now.
+ * Both nulls here are declared capabilities and both degrade to "no tabs": a multiplexer
+ * that cannot report its clients (`clients: null`) can never be walked outward from, and an
+ * emulator that cannot be enumerated (`list: null` - Ghostty) can never be found on the
+ * other side of the join. `attached` is then false too, which is honest: without a client
+ * list we do not know that anyone is looking.
  */
-async function tmuxHosts(
+async function hostTabs(
+  mux: Multiplexer,
   session: string,
-): Promise<{ hosts: EmulatorPane[]; attached: boolean }> {
-  const [clients, panes] = await Promise.all([
-    MULTIPLEXERS.tmux.clients?.() ?? [],
-    EMULATORS.wezterm.list?.() ?? [],
-  ]);
-  return {
-    hosts: hostPanesFor(session, clients, panes),
-    // Attached with no host tab means attached in a terminal we cannot raise, which is the
-    // one case Focus reports as success without having raised anything.
-    attached: clients.some((c) => c.session === session),
-  };
+  deps: TerminalDeps,
+): Promise<{ tabs: HostTab[]; attached: boolean }> {
+  if (!mux.clients) return { tabs: [], attached: false };
+  const clients = await mux.clients();
+  const tabs: HostTab[] = [];
+  // In `EMULATOR_IDS` order, which is the declared precedence - the same order enumeration
+  // uses to decide which backend names a session.
+  for (const id of EMULATOR_IDS) {
+    const emulator = deps.emulators[id];
+    if (!emulator.list) continue;
+    for (const pane of hostPanesFor(session, clients, await emulator.list())) {
+      tabs.push({ emulator, pane });
+    }
+  }
+  // Attached with no host tab means attached in a terminal we cannot raise, which is the one
+  // case Focus reports as success without having raised anything.
+  return { tabs, attached: clients.some((c) => c.session === session) };
 }
 
-const defaultRenameDeps: RenameDeps = {
-  // `--` ends flag parsing so a name like "-wip" is read as the new name rather
-  // than as a flag bundle (which would surface an arg-parser dump behind a 500).
-  renameTmuxSession: (from, to) => run("tmux", ["rename-session", "-t", from, "--", to]),
-  setWeztermTabTitle,
-  findTmuxHostPanes: async (session) => (await tmuxHosts(session)).hosts,
-};
-
 /**
- * Rename a session's terminal home so the next discovery sweep reads the new name
- * back onto its card, and so the terminal tab the user is looking at agrees.
+ * Rename a session's terminal home so the next discovery sweep reads the new name back onto
+ * its card, and so the terminal tab the user is looking at agrees.
  *
  * An emulator-hosted session is one call: its tab title IS its card name. A
- * multiplexer-hosted one takes two, because its name lives in two places the
- * harness has to keep in step:
+ * multiplexer-hosted one takes two, because its name lives in two places the harness has to
+ * keep in step:
  *
- *   - the multiplexer session name, which is the card name (`nameSource`), and
- *     what Focus/Kill target; and
- *   - the title of the wezterm tab running `tmux attach`, which `spawnWeztermTab`
- *     stamped once at spawn and nothing has updated since.
+ *   - the multiplexer session name, which is the card name (`nameSource`) and what Focus and
+ *     Kill target; and
+ *   - the title of every tab running a client for it, which `spawn` stamped once and nothing
+ *     has updated since.
  *
- * That tab is NOT the session's own emulator handle - that one is keyed on the
- * agent's tty, and an agent inside tmux sits on a tmux pane tty while its tab
- * sits on the client tty, so a multiplexer-hosted session holds no emulator
- * handle at all. We find the tab the way Focus does, by joining multiplexer
- * clients to emulator panes on that shared client tty. Skipping this was the
- * whole bug: renames landed in tmux while every tab kept its spawn-time title
- * forever.
+ * Skipping the second was the whole bug: renames landed in tmux while every tab kept its
+ * spawn-time title forever. Both halves are capabilities now rather than two vendors - a
+ * multiplexer with no `sessions` has no name to move, and an emulator with no `retitle`
+ * simply keeps its title, which is the same best-effort the wezterm path always had.
  *
- * Assumes `name` was already validated - the route calls `validateSessionName`
- * first so a bad name is a 400, not a shelled-out failure.
+ * Assumes `name` was already validated - the route calls `validateSessionName` first, so a
+ * bad name is a 400 rather than a shelled-out failure.
  */
 export async function rename(
   session: Session,
   name: string,
-  deps: RenameDeps = defaultRenameDeps,
+  deps: TerminalDeps = defaultTerminalDeps,
 ): Promise<ActionResult> {
-  const mux = tmuxOnly(session);
-  if (mux) {
-    const from = mux.session;
-    // Resolve the tabs BEFORE the rename, while they still answer to `from` -
-    // after it, this lookup would have to guess which name tmux now reports.
-    const hosts = await deps.findTmuxHostPanes(from);
-    const renamed = check(await deps.renameTmuxSession(from, name), "tmux rename-session failed");
-    if (!renamed.ok) return renamed;
-    // Best-effort: the tmux name is the card's source of truth and it already
-    // moved, so a tmux-only user (or a wezterm GUI that just went away) gets the
-    // rename they asked for rather than a failure over a cosmetic tab title.
-    // `Number` because handles normalize pane ids to strings and `setWeztermTabTitle` still
-    // takes wezterm's numeric one. It goes when this file moves behind the interface.
-    for (const h of hosts) await deps.setWeztermTabTitle(Number(h.paneId), name);
-    return renamed;
+  const inside = muxHandle(session);
+  if (inside) {
+    const mux = deps.multiplexers[inside.backend];
+    if (!mux.sessions) return { ok: false, error: `${mux.label} has no session to rename` };
+    const from = inside.session;
+    // Resolve the tabs BEFORE the rename, while they still answer to `from` - after it, this
+    // lookup would have to guess which name the backend now reports.
+    const { tabs } = await hostTabs(mux, from, deps);
+    const renamed = await mux.sessions.rename(from, name);
+    if (!renamed.ok) return fromTerminal(renamed, `${mux.label} could not rename that session`);
+    // Best-effort: the multiplexer name is the card's source of truth and it already moved,
+    // so a multiplexer-only user (or an emulator GUI that just went away) gets the rename
+    // they asked for rather than a failure over a cosmetic tab title.
+    for (const tab of tabs) await tab.emulator.retitle?.(tab.pane, name);
+    return { ok: true };
   }
-  const emu = weztermOnly(session);
-  if (emu) {
-    return check(
-      await deps.setWeztermTabTitle(Number(emu.paneId), name),
-      "wezterm set-tab-title failed",
+  const tab = emulatorHandle(session);
+  if (tab) {
+    const emulator = deps.emulators[tab.backend];
+    if (!emulator.retitle) return { ok: false, error: `${emulator.label} can't retitle a tab` };
+    return fromTerminal(
+      await emulator.retitle(tab, name),
+      `${emulator.label} could not retitle that tab`,
     );
   }
   return { ok: false, error: NO_HANDLE };
 }
 
-/** Bring the session's pane/tab into focus. */
-export async function focus(session: Session): Promise<ActionResult> {
-  const emu = weztermOnly(session);
-  if (emu) {
-    const r = await activateWeztermPane(Number(emu.tabId), Number(emu.paneId));
-    return check(r, "wezterm activate failed");
-  }
-  const mux = tmuxOnly(session);
-  if (mux) {
-    const sess = mux.session;
-    const windowTarget = `${sess}:${mux.windowIndex}`;
-    // Point tmux at the agent's own pane/window. This only touches this
-    // session's internal state, so whichever terminal shows it lands on the
-    // right pane - and it never disturbs any other session.
-    const selected = await step("tmux", ["select-pane", "-t", mux.paneId], "tmux select-pane failed");
-    if (!selected.ok) return selected;
-    await run("tmux", ["select-window", "-t", windowTarget]);
+/** Raise a tab, or the whole application for a backend that can only be aimed that far. */
+function raiseThrough(focus: EmulatorFocus, target: EmulatorTarget): Promise<TerminalResult> {
+  return focus.granularity === "pane" ? focus.raise(target) : focus.raise();
+}
 
-    // Surface the session at the terminal-tab level. If a wezterm tab already
-    // runs a tmux client for this session, raise that tab. Otherwise open the
-    // session in a NEW, titled tab. We deliberately never repoint an existing
-    // client at a different session or detach/kill one - that would yank a tab
-    // the user has another session open in.
-    const { hosts, attached } = await tmuxHosts(sess);
-    const host = hosts[0] ?? null;
-    if (host) {
-      // `Number` for the same reason as in `rename` - handles normalize pane ids to
-      // strings, and this call site still speaks wezterm's numeric ones.
-      const r = await activateWeztermPane(Number(host.tabId), Number(host.paneId));
-      return check(r, "wezterm activate failed");
-    }
-    // No tab hosts it yet: open it in a fresh tab titled with the session name.
-    const paneId = await spawnWeztermTab(["tmux", "attach", "-t", sess], sess);
-    if (paneId != null) return { ok: true };
-    // wezterm couldn't open a tab. If the session is already attached somewhere
-    // (e.g. a non-wezterm terminal we can't raise), we've at least selected the
-    // right pane - report success rather than switching a client's session.
-    if (attached) return { ok: true };
-    return { ok: false, error: "no terminal tab hosts this tmux session and none could be opened" };
+/**
+ * Bring the session's pane and window into focus.
+ *
+ * Two steps, and they are the composition rule rather than a tmux special case:
+ *
+ *   1. **Inward** - `Multiplexer.select` decides what the session SHOWS. It raises nothing,
+ *      and it touches only this session's own state, so whichever terminal is displaying it
+ *      lands on the right pane and no other session is disturbed.
+ *   2. **Outward** - an emulator puts a window in front of the human (`raiseOutward`).
+ *
+ * A session with only an emulator handle skips step 1 because there is no inside to select;
+ * a multiplexer with no emulator anywhere lands on the same refusal it always did. Neither
+ * is a branch on which vendor we found.
+ */
+export async function focus(
+  session: Session,
+  deps: TerminalDeps = defaultTerminalDeps,
+): Promise<ActionResult> {
+  const inside = muxHandle(session);
+  const mux = inside ? deps.multiplexers[inside.backend] : null;
+
+  if (mux?.select && inside) {
+    const selected = await mux.select(inside);
+    if (!selected.ok) return fromTerminal(selected, `${mux.label} could not select that pane`);
   }
-  return { ok: false, error: "session has no focusable pane" };
+  return raiseOutward(session, mux, deps);
+}
+
+/**
+ * The outward half of focus: get a window in front of the human, in the order that never
+ * takes a tab away from something else.
+ *
+ * We deliberately never repoint an existing client at a different session, and never detach
+ * or kill one - that would yank a tab the user has another session open in. So the walk only
+ * ever raises a tab that is ALREADY showing this session, or opens a new one.
+ */
+async function raiseOutward(
+  session: PaneHandles,
+  mux: Multiplexer | null,
+  deps: TerminalDeps,
+): Promise<ActionResult> {
+  const inside = muxHandle(session);
+  let attached = false;
+
+  // 1. A tab already hosting a client for this session. For a multiplexer-hosted session
+  //    this is the only correct tab - see `hostTabs`.
+  if (mux && inside) {
+    const hosts = await hostTabs(mux, inside.session, deps);
+    attached = hosts.attached;
+    const host = hosts.tabs[0];
+    if (host?.emulator.focus) {
+      return fromTerminal(
+        await raiseThrough(host.emulator.focus, host.pane),
+        `${host.emulator.label} could not raise that tab`,
+      );
+    }
+  }
+
+  // 2. The session's own emulator handle. For a session with BOTH handles this is the pane
+  //    the agent's tty maps to, which is worth raising once step 1 found no client tab; for
+  //    an emulator-only session it is the whole answer.
+  const own = emulatorHandle(session);
+  if (own) {
+    const emulator = deps.emulators[own.backend];
+    if (!emulator.focus) return { ok: false, error: `${emulator.label} can't raise a window` };
+    return fromTerminal(
+      await raiseThrough(emulator.focus, own),
+      `${emulator.label} could not raise that tab`,
+    );
+  }
+
+  if (!mux || !inside) return { ok: false, error: "session has no focusable pane" };
+
+  // 3. This backend's sessions are never without a window, so there is nothing to attach and
+  //    the walk ENDS here rather than failing. `attachArgv: null` is cmux's declaration: a
+  //    workspace is drawn by the cmux app from the moment it exists, and step 1 already
+  //    selected it there, so the session is showing what it should be showing. That is the
+  //    same claim `attached` makes below for a terminal we cannot raise, arrived at by
+  //    declaration instead of by observation.
+  //
+  //    What is NOT claimed is that anything was brought to the FRONT. Raising a
+  //    self-hosting multiplexer's own window is a capability this interface still does not
+  //    have; cmux can do it (`focus-window`) and the adapter deliberately did not invent a
+  //    slot for it. It stays uninvented HERE too, because the rule that kept it out of the
+  //    adapter is the same one that governs this file - a capability gets designed against a
+  //    live backend, and there is no cmux on the machine this was written on to point one at.
+  //    Recorded as an open gap on the plan rather than guessed at.
+  const attachArgv = mux.sessions?.attachArgv;
+  if (mux.sessions && !attachArgv) return { ok: true };
+
+  // 4. Nothing hosts it yet: open it in a fresh tab, titled with the session name, running
+  //    the multiplexer's own attach argv. A backend that cannot say what it opened still
+  //    counts - `SpawnResult.ok` is "a tab opened", and the human has their window.
+  if (attachArgv) {
+    const argv = attachArgv(inside.session);
+    for (const id of EMULATOR_IDS) {
+      const spawn = deps.emulators[id].spawn;
+      if (!spawn) continue;
+      const opened = await spawn.tab({ argv, title: inside.session, cwd: null });
+      if (opened.ok) return { ok: true };
+    }
+  }
+
+  // 5. No tab could be opened. If the session is attached somewhere anyway (a terminal we do
+  //    not integrate with), step 1 already selected the right pane inside it - report success
+  //    rather than switching some client's session.
+  if (attached) return { ok: true };
+  // Composed from the backend's own label rather than written as a tmux sentence, for the
+  // reason `inModeError` is: this is the moment one specific backend refuses, so the tmux
+  // wording stays byte-identical and a cmux one is true.
+  return {
+    ok: false,
+    error: `no terminal tab hosts this ${mux.label} session and none could be opened`,
+  };
 }
 
 /** Send SIGTERM to a pid, reduced to an ActionResult. */
@@ -1487,46 +1517,51 @@ function signalProcess(pid: number): ActionResult {
 }
 
 /**
- * Side effects `kill` performs, injectable so tests can drive the branching
- * without signalling real processes or shelling out to tmux.
+ * Side effects `kill` performs, injectable so tests can drive the branching without
+ * signalling real processes.
+ *
+ * The signal stays a function field - it is a syscall, not a backend - while the terminal
+ * half is the registries, so a test can hand `kill` a multiplexer whose sessions are not a
+ * killable group and watch the signal stand alone.
  */
 export interface KillDeps {
   /** SIGTERM the leaf agent process. */
   signal: (pid: number) => ActionResult;
-  /** Kill an entire tmux session by name (`tmux kill-session -t <name>`). */
-  killTmuxSession: (session: string) => Promise<RunResult>;
+  terminals: TerminalDeps;
 }
 
-const defaultKillDeps: KillDeps = {
-  signal: signalProcess,
-  killTmuxSession: (session) =>
-    run("tmux", ["kill-session", "-t", session], { timeoutMs: 10000 }),
-};
+const defaultKillDeps: KillDeps = { signal: signalProcess, terminals: defaultTerminalDeps };
 
 /**
- * Terminate the agent and tear down its terminal home. SIGTERMs the leaf agent
- * process, then - for a multiplexer-hosted session - kills the whole named session so
- * no orphaned window/pane is left behind. An emulator has no such thing to tear down,
- * which is why this is the multiplexer handle and not the innermost one. The UI
- * confirms before calling this.
+ * Terminate the agent and tear down its terminal home. SIGTERMs the leaf agent process, then
+ * - for a session whose home IS a killable group - kills the whole group so no orphaned
+ * window or pane is left behind. The UI confirms before calling this.
  *
- * The two steps race by nature: the agent's own exit can collapse its tmux session
- * before (or after) we reach kill-session, so we count the action as successful
- * when EITHER the signal or the kill-session landed, and only surface an error when
- * both fail. With no multiplexer session the signal result stands on its own.
+ * "Has a killable group" is `MuxSessions.kill`, asked out loud, and not the implicit else it
+ * used to be. An emulator tab is not a group: closing the window is the human's to do, and
+ * the agent is reached by its pid, which is exactly what the signal above already did. A
+ * multiplexer that declared no `kill` would have silently inherited that same path with
+ * nothing saying why its other panes were still running.
+ *
+ * The two steps race by nature: the agent's own exit can collapse its session before (or
+ * after) we reach the kill, so the action counts as successful when EITHER landed, and only
+ * surfaces an error when both fail. With no group, the signal result stands on its own.
  */
 export async function kill(session: Session, deps: KillDeps = defaultKillDeps): Promise<ActionResult> {
   const signalled = deps.signal(session.pid);
 
-  const mux = tmuxOnly(session);
-  if (mux) {
-    const killed = await deps.killTmuxSession(mux.session);
-    if (killed.code === 0 || signalled.ok) return { ok: true };
-    // Both failed: the session was already gone AND the process couldn't be signalled.
-    return { ok: false, error: killed.stderr.trim() || signalled.error || "tmux kill-session failed" };
-  }
+  const inside = muxHandle(session);
+  const mux = inside ? deps.terminals.multiplexers[inside.backend] : null;
+  const killGroup = mux?.sessions?.kill;
+  if (!inside || !mux || !killGroup) return signalled;
 
-  return signalled;
+  const killed = await killGroup(inside.session);
+  if (killed.ok || signalled.ok) return { ok: true };
+  // Both failed: the session was already gone AND the process couldn't be signalled.
+  return {
+    ok: false,
+    error: killed.error ?? signalled.error ?? `${mux.label} could not kill that session`,
+  };
 }
 
 /** Run a git command in a session's worktree. Network ops pass a longer timeout. */

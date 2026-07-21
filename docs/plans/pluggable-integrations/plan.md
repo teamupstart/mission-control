@@ -81,14 +81,14 @@ code lives, and in which capabilities exist at all:
 
 | | wezterm.ts | tmux.ts |
 |---|---|---|
-| bin resolution | ~~`resolveWeztermBin()`, `WEZTERM_BIN`~~ | ~~literal `"tmux"` at ~19 inline call sites~~ **closed for the adapters**: one `BinSpec` each, `resolveBin` + `binEnv`. The eleven remaining inline `run("tmux", …)` calls are focus/rename/kill and dispatch, and belong to the focus/spawn/kill item |
+| bin resolution | ~~`resolveWeztermBin()`, `WEZTERM_BIN`~~ | ~~literal `"tmux"` at ~19 inline call sites~~ **closed**: one `BinSpec` each, `resolveBin` + `binEnv`. The last eleven inline `run("tmux", …)` calls went with the lifecycle item, and `resolveWeztermBin` with them |
 | pane id type | `number` | `string` (`"%3"`) |
 | cwd | `file://` URL, needs `weztermCwdToPath` | plain path |
-| spawn | `spawnWeztermTab` (used only as a focus fallback) | lives in `dispatcher.ts:449-468`, not in `tmux.ts` |
-| retitle | `setWeztermTabTitle` | inline in `actions.ts:1090` |
+| spawn | ~~`spawnWeztermTab` (used only as a focus fallback)~~ | ~~lives in `dispatcher.ts:449-468`, not in `tmux.ts`~~ **closed**: `EmulatorSpawn.tab` / `MuxSessions.spawnDetached`, both reached through `launchHome` |
+| retitle | ~~`setWeztermTabTitle`~~ | ~~inline in `actions.ts:1090`~~ **closed**: `TerminalEmulator.retitle` |
 | copy-mode probe | none - no such concept | ~~`readTmuxPaneMode:57-71`~~ **closed**: `Multiplexer.paneMode`, and null there means "no such concept" rather than "in no mode" |
-| focus | `activateWeztermPane:83-87` | cannot focus alone |
-| kill group | none - SIGTERM only (`actions.ts:1234`) | `kill-session` |
+| focus | ~~`activateWeztermPane:83-87`~~ | ~~cannot focus alone~~ **closed**: `EmulatorFocus` / `Multiplexer.select`, composed in `focus` |
+| kill group | ~~none - SIGTERM only (`actions.ts:1234`)~~ | ~~`kill-session`~~ **closed**: `MuxSessions.kill`, nullable - "has a killable group" is now declared |
 
 Duplicated pane-token functions, in **two spellings**: `actions.ts` (the write lock) and
 `pane-mode.ts` (the capture-miss counter) emitted `wezterm:`; `registry.ts` (the hook
@@ -323,9 +323,9 @@ composition primitive: what each backend can SEE, in the order that decides whic
 session). `handles.ts` - the `Session`-to-handle-list projection, `legacyHandles` run
 backwards - is gone, deleted with its mirror by the `Session` handle list below; its one
 remaining function, `bindSession`, sits beside `bindPane`. Discovery was the first call
-site migrated and pane I/O the second; focus, spawn and kill are not, and the adapters stay
-mechanism only - the copy-mode refusal, pane lock, paste settle and submit read-back
-remain in `actions.ts` as the policy that composes them.
+site migrated, pane I/O the second and the lifecycle operations (`home.ts`, `names.ts`) the
+third, and the adapters stay mechanism only - the copy-mode refusal, pane lock, paste settle
+and submit read-back remain in `actions.ts` as the policy that composes them.
 
 `bin.ts` closes the first row of the divergence table rather than adding to it:
 `resolveWeztermBin` moved its body there as `resolveBin(BinSpec)` and `config.ts` keeps a
@@ -486,6 +486,99 @@ existing real-tmux cases (the copy-mode swallow, the placeholder through a live
 nulls, the innermost-handle rule, the two `outcomeUnknown` directions),
 `pane-copy-mode.test.ts`, `inject-prompt-submit.test.ts`, `harness-control.test.ts`.
 
+#### Lifecycle, as landed
+
+Focus, spawn, rename and kill - the last four call sites that named a vendor, and the one
+place the multiplexer/emulator composition is unavoidable. `discovery/wezterm.ts` is
+deleted, `config.ts`'s `resolveWeztermBin` with it, and the eleven inline `run("tmux", …)`
+calls are gone. Six deltas, each forced by something real:
+
+- **Focus is modelled as the composition, not as a tmux special case.** Two steps on two
+  axes: `Multiplexer.select` decides what the session SHOWS and raises nothing, then an
+  emulator raises a window - the tab already hosting a client for that session (the
+  `hostPanesFor` join), else the session's own emulator handle, else a fresh tab on
+  `MuxSessions.attachArgv`. The old code was `if (session.wezterm) … else if (session.tmux)`,
+  so the ORDER was an arm order, and the else carried three unstated claims: that a
+  multiplexer cannot raise, that an emulator has nothing to select inside, and that the tab
+  hosting a client is not the session's own handle. A multiplexer with no emulator lands on
+  the byte-identical refusal it always did, composed from `Multiplexer.label` for the
+  `inModeError` reason - the sentence is written at the moment one specific backend refuses.
+- **`MuxSessions.kill` is nullable, and that is the item's title.** "Has a killable group"
+  was the else-branch of `if (session.tmux)`, which quietly handed every other backend the
+  signal-only path. Correct for a tab, which is not a group; wrong for a second multiplexer,
+  whose windows would be left running with nothing saying why. `EmulatorSpawn` and
+  `EmulatorFocus` were already capabilities; this makes the third one match.
+- **Dispatch picks an axis, ONCE, and every later verb reads that choice.** `homeBackends`
+  (`terminal/home.ts`) returns multiplexers if any is installed and emulators only if none
+  is - `enumerateTerminals`'s precedence applied to creation instead of to naming - so a
+  machine with no tmux dispatches into a terminal tab rooted at the worktree rather than
+  failing on an `ENOENT`. Choosing once is the load-bearing part: launch, name-uniqueness,
+  liveness and teardown are asked minutes or a restart apart, and three of them are
+  destructive. If `launchHome` and `killHome` could disagree about which axis holds the
+  home, teardown would kill nothing and hand a live agent's worktree back to the pool.
+- **The liveness probe has THREE answers, and only one of them may reclaim.**
+  `tmuxSessionAlive` was a boolean, and `t.tmuxSession ? probe : false` turned an adapter
+  lookup that found nothing into the destructive answer by omission. `homeAlive` returns
+  `null` for "no installed backend could tell us", and both callers - `reconcileOnStartup`
+  and the dispatch failure path - group it with "survived". The failure modes are not
+  symmetric: a wrong `false` runs `git worktree remove --force` over a checkout an agent is
+  working in, a wrong `null` leaves a tree freed by one Reclaim click. `killHome` reports
+  `asked` beside `ok` for the same reason, and `teardownWorktree` warns by name when nothing
+  could act on the home it is about to reclaim the tree from.
+- **Name rules are one capability, and they had already drifted.** `validateSessionName`
+  (`actions.ts`) barred `.`, `:` and a leading `$`; `sessionLabel` (`dispatcher.ts`) stripped
+  those AND a leading `=` or `{`. Two half-copies of tmux's target grammar in two files with
+  nothing connecting them, so a name a dispatch would never produce could still be typed in.
+  `NameRules` carries both verbs - `validate` refuses, `sanitize` coerces - because the
+  product asks the question in both directions and only one of them has a human to tell. The
+  shared half (`plainName` / `plainValidate`) is what no display name can hold and applies
+  INSIDE every backend's rules; the asymmetry that remains is deliberate and now readable in
+  one place. `terminal-name-rules.test.ts` pins the round trip: whatever a backend
+  sanitizes, the same backend accepts. The rename path asks the session's OWN backend rather
+  than the one a fresh dispatch would land on, which are not always the same.
+- **`EmulatorSpawn.tab` takes a `TabSpec` with a cwd.** The focus fallback opens `attach`,
+  which lands wherever the session already is; a DISPATCH must root the agent in the worktree
+  just cut for it, and an agent that opened in the daemon's directory commits to the wrong
+  branch.
+- **A name is not an address, and `killHome` resolves one to the other.** The cmux adapter
+  landed while this item was open and split `MuxPane.sessionName` from `MuxTarget.session`;
+  everything here had been written when those were one string, because on tmux a session's
+  name IS its target spec. `held` therefore answers with a MAP - the name a human sees to the
+  string `kill` takes - and teardown resolves through it. Without that, `close-workspace
+  --workspace "Fix the login bug"` resolves nothing on cmux, tears down nothing, and hands a
+  live agent's worktree back to the pool: the exact failure this item is written against,
+  arriving through the one door it had left open. A name no backend holds is passed through
+  unchanged, so a backend's own "no such session" stays the reported error rather than our
+  lookup miss wearing its clothes.
+
+**One gap stays open, named rather than guessed at: raising a self-hosting multiplexer's own
+window.** `MuxSessions.attachArgv: null` is cmux declaring that a workspace is drawn by the
+cmux app from the moment it exists, so the walk's last step - open a terminal running
+`attach` - has nothing to do. The walk therefore ENDS there and reports the select, which is
+the same claim `attached` already makes for a terminal we cannot raise, arrived at by
+declaration instead of by observation. What it does not claim is that anything came to the
+front. cmux can do that (`focus-window` plus activating the app) and the cmux item deliberately
+left the slot to this one; it is still absent, because the machine this was written on has no
+cmux to point a capability at, and the rule that kept the adapter from inventing one governs
+this file too. A `Multiplexer.raise` belongs on the phase 5 item that can verify it.
+
+`Task.tmuxSession` keeps its name and its column, as phase 3 requires - what changed is that
+nothing reads a vendor OUT of it. `registry.ts`'s optimistic rename fan-out is untouched and
+still passes; it is the other half of the same phase 3 item.
+
+Verified on live backends rather than from the diff, the way the pane-I/O item was: a real
+tmux server and a real WezTerm GUI. A detached home spawned (agent in pane 0, shell split
+beside it, both rooted at the worktree, agent pane left focused); `heldHomeNames` matching
+exactly rather than by tmux's own prefix fallback; a focus that selected the pane on the
+real server and then opened exactly one titled tab; a rename that moved the tmux name AND
+followed the client-tty join out to retitle that tab; a kill that took the whole group; and
+`killHome` on a name nothing holds reporting `asked: true, ok: false` rather than silence.
+Tests: `focus-composition.test.ts` and `terminal-home.test.ts` (both driven through
+hand-built adapters, because the capability nulls - a multiplexer with no `clients`, an
+emulator that opens tabs it cannot enumerate, a multiplexer with no killable group - describe
+no shipped backend and so are unreachable through the real two), `terminal-name-rules.test.ts`,
+`rename.test.ts` and `kill.test.ts` rewritten onto the registries.
+
 ```mermaid
 flowchart LR
   subgraph N["nesting today"]
@@ -573,10 +666,11 @@ gaps it closed), `correlate.test.ts` (a zellij pane now lands a HANDLE, not just
 
 `correlate.ts` and `actions.ts` both imported the two backend modules directly, so every
 new backend edited both. After the migration they resolve an adapter from a registry and
-never name a vendor. **`correlate.ts` is there now** - it reads `enumerateTerminals()` and
-knows no backend at all - and so is every pane READ and WRITE in `actions.ts`, which
-resolves one `BoundPane` and branches only on what that pane can do. What still imports a
-vendor by name is focus, rename and kill, plus `dispatcher.ts`'s spawn and teardown.
+never name a vendor. **Both are there now**, and so is `dispatcher.ts`: `correlate.ts`
+reads `enumerateTerminals()`, every pane READ and WRITE in `actions.ts` resolves one
+`BoundPane`, and focus / rename / kill read the two registries while spawn and teardown go
+through `launchHome` / `killHome`. `discovery/wezterm.ts` is deleted and no file outside
+`src/server/terminal/` imports a backend by name.
 
 ```mermaid
 flowchart TB
@@ -990,8 +1084,11 @@ cleanly until they become lists:
    `Boolean(s.tmux || s.wezterm)` as a stand-in for "can we type here?".~~ **Closed** -
    `Session.terminals`, a list. See "The `Session` handle list, as landed".
 3. `Task.tmuxSession` (`shared/types.ts:830`) - persisted as `tmux_session`
-   (`db.ts:109`) and driving **destructive teardown** (`dispatcher.ts:408-421`). Generalizing
+   (`db.ts:109`) and driving **destructive teardown** (`dispatcher.ts`). Generalizing
    it is a schema migration, not a rename, and needs an `addColumn` call in `migrate()`.
+   The lifecycle item left the field spelled as it is and took the vendor out of what READS
+   it: the name is resolved against the registry (`killHome` / `homeAlive`), so what remains
+   is the column and its name.
 
 ## Sequence
 
@@ -1002,7 +1099,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_IDENTITY` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
-| 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
+| 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; focus/spawn/rename/kill **(landed)** |
 | 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**; Ghostty, iTerm2 and `pi` still queued |

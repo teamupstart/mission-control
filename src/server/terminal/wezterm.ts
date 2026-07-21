@@ -1,16 +1,13 @@
-import {
-  activateWeztermPane,
-  setWeztermTabTitle,
-  spawnWeztermTabResult,
-  weztermCwdToPath,
-} from "../discovery/wezterm.ts";
 import { normTty } from "../discovery/tty.ts";
 import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
+import { PLAIN_NAMES } from "./names.ts";
 import type {
   EmulatorPane,
   EmulatorTarget,
   Key,
+  SpawnResult,
+  TabSpec,
   TerminalEmulator,
 } from "./types.ts";
 
@@ -23,22 +20,20 @@ import type {
  * Ghostty adapter, which can do none of the above but launch and raise, needs a field
  * added, this file was allowed to dictate the boundary.
  *
- * Enumeration moved in from `discovery/wezterm.ts`, so discovery asks the registry what each
- * backend can see rather than importing two vendors by name. Focus, spawn and retitle still
- * delegate there - they are the next migration item, and `actions.ts` calls them directly
- * today. Both sides go through `cli` below, which carries the two operational facts that
- * took a while to learn: `--no-auto-start`, which turns a 2.5s block into a fast failure
- * when no GUI is running, and the inherited `WEZTERM_UNIX_SOCKET` that goes stale when a GUI
+ * Enumeration moved in first, then pane I/O, and the lifecycle item brought the last three -
+ * focus, spawn and retitle - in from `discovery/wezterm.ts`, which is now gone. Everything
+ * this backend does goes through `cli` below, which carries the two operational facts that
+ * took a while to learn: `--no-auto-start`, which turns a 2.5s block into a fast failure when
+ * no GUI is running, and the inherited `WEZTERM_UNIX_SOCKET` that goes stale when a GUI
  * restarts (now `WEZTERM_BIN.dropEnv`, so tmux gets the same treatment for the same reason).
  *
- * Writing and capturing were implemented here before anything called them, and routing the
- * pane I/O through them was a DELIBERATE behavior change rather than a move - the commit
- * that did it should be read as one. The inline call sites it replaced (in `actions.ts` and
- * `discovery/pane-capture.ts`) used neither `--no-auto-start` nor a scrubbed environment, so
- * they inherited `WEZTERM_UNIX_SOCKET` and could auto-start a mux, while the pane ids they
- * were given came from `list` below, which drops it. A write could therefore address a
- * different mux than the one its id came from. Every command now goes down the socket the
- * ids were enumerated on, which was the point of implementing them here.
+ * Routing the pane I/O through them was a DELIBERATE behavior change rather than a move -
+ * the commit that did it should be read as one. The inline call sites it replaced (in
+ * `actions.ts` and `discovery/pane-capture.ts`) used neither `--no-auto-start` nor a scrubbed
+ * environment, so they inherited `WEZTERM_UNIX_SOCKET` and could auto-start a mux, while the
+ * pane ids they were given came from `list` below, which drops it. A write could therefore
+ * address a different mux than the one its id came from. The lifecycle commit closed the same
+ * gap for focus and retitle, which had the identical split.
  */
 
 /**
@@ -71,6 +66,18 @@ interface RawPane {
   cwd?: string;
   tty_name?: string;
   is_active?: boolean;
+}
+
+/** Convert wezterm's `file://host/path` cwd URL to a plain filesystem path. */
+export function weztermCwdToPath(cwd: string): string | null {
+  if (!cwd) return null;
+  try {
+    const u = new URL(cwd);
+    if (u.protocol === "file:") return decodeURIComponent(u.pathname);
+  } catch {
+    /* fall through */
+  }
+  return cwd || null;
 }
 
 /**
@@ -137,6 +144,16 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       fail,
     );
 
+  /**
+   * Set a tab's explicit title - the value `cli list` reports back as `tab_title` and
+   * discovery reads as the card name.
+   *
+   * `--` ends flag parsing so a title like "-wip" is read as the title rather than as a flag
+   * bundle. Shared by `retitle` and by `spawn`, which stamps the new tab on the way out.
+   */
+  const setTabTitle = (paneId: string, title: string) =>
+    cmd(["set-tab-title", "--pane-id", paneId, "--", title], "wezterm set-tab-title failed");
+
   return {
     id: "wezterm",
     label: "WezTerm",
@@ -158,22 +175,36 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
 
     focus: {
       granularity: "pane",
-      raise: async (t) =>
-        toResult(await activateWeztermPane(Number(t.tabId), Number(t.paneId)), "wezterm activate failed"),
+      // The tab decides which pane the window shows; the pane decides which of that tab's
+      // splits has the cursor. Both, in that order - raising the tab alone lands the human
+      // on whichever split they left focused, which for a dispatched session is the shell.
+      raise: async (t) => {
+        const tab = await cmd(["activate-tab", "--tab-id", t.tabId], "wezterm activate-tab failed");
+        if (!tab.ok) return tab;
+        return cmd(["activate-pane", "--pane-id", t.paneId], "wezterm activate failed");
+      },
     },
 
     spawn: {
-      async tab(argv, title) {
-        const { paneId, result } = await spawnWeztermTabResult([...argv], title);
+      async tab(spec: TabSpec): Promise<SpawnResult> {
+        const result = await cli([
+          "spawn",
+          ...(spec.cwd ? ["--cwd", spec.cwd] : []),
+          "--",
+          ...spec.argv,
+        ]);
         // The spawn's own outcome, never a guess. A `wezterm cli spawn` that was killed
         // rather than answering may have died AFTER the compositor opened the tab, and
         // reporting that as a clean failure is how the focus fallback opens a second one.
         if (result.code !== 0) {
           return { ...toResult(result, "wezterm could not open a tab"), target: null };
         }
+        const paneId = Number(result.stdout.trim());
         // Exit 0 with an unreadable id is the `SpawnResult` split doing its job: a tab
-        // opened, and nothing may be typed into it.
-        if (paneId === null) return { ok: true, outcomeUnknown: false, target: null };
+        // opened, and nothing may be typed into it - including, note, the title, which is
+        // set through the pane.
+        if (!Number.isInteger(paneId)) return { ok: true, outcomeUnknown: false, target: null };
+        if (spec.title) await setTabTitle(String(paneId), spec.title);
         // wezterm's spawn reports only the pane. Resolving its tab costs one more `list`
         // and is what makes the returned target addressable - `focus` raises tabs, so a
         // target without one could not be brought forward by the caller that just made it.
@@ -186,7 +217,10 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
       },
     },
 
-    retitle: async (t, title) =>
-      toResult(await setWeztermTabTitle(Number(t.paneId), title), "wezterm set-tab-title failed"),
+    retitle: (t, title) => setTabTitle(t.paneId, title),
+
+    // A wezterm tab title is display text: nothing parses it, so nothing constrains it
+    // beyond what any name has to survive. Declared rather than assumed - see `NameRules`.
+    names: PLAIN_NAMES,
   };
 }

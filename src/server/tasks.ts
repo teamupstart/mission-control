@@ -14,17 +14,12 @@ import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import type { Registry } from "./registry.ts";
-import {
-  Dispatcher,
-  deriveTitle,
-  sessionLabel,
-  teardownWorktree,
-  tmuxSessionAlive,
-} from "./dispatcher.ts";
+import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
 import {
   branchReleasedByReset,
   injectPrompt,
   kill,
+  nameRulesFor,
   paneAcceptsPrompt,
   rename,
   resetWouldDestroyWork,
@@ -33,6 +28,7 @@ import {
   type ActionResult,
 } from "./actions.ts";
 import { resetSession } from "./reset.ts";
+import { homeAlive } from "./terminal/home.ts";
 import { summariseTaskTitle } from "./task-title.ts";
 
 export interface CreateTaskInput {
@@ -210,7 +206,7 @@ export class TaskManager {
    *
    * The ordering is the whole point, and it is why dispatch waits on a cosmetic call.
    * `Dispatcher.dispatch` reads `task.title` once, at the top, to build the git branch
-   * (`slugify`) and the tmux session name (`sessionLabel`) - both of which are permanent for
+   * (`slugify`) and the terminal session name (`sessionLabel`) - both of which are permanent for
    * the life of the task and neither of which can be renamed afterwards from the dashboard.
    * Dispatching first and patching the title after would leave every untitled task with a
    * card whose name no longer matches its branch or its terminal, which is worse than the
@@ -508,8 +504,8 @@ export class TaskManager {
   /**
    * Name the agent's terminal after the task it just took, the way a fresh dispatch does.
    *
-   * A dispatch cuts its tmux session from `sessionLabel(task.title)`, so a launched agent's
-   * card is titled by its work from the first frame. An assign reuses a terminal that was
+   * A dispatch cuts its session name from the task title, so a launched agent's card is
+   * titled by its work from the first frame. An assign reuses a terminal that was
    * named for something else - the pooled worktree it was handed out as, or the task it
    * finished ten minutes ago - and everything else about the handover (branch back to
    * origin's default, work queue dropped, context cleared) already says this is a fresh
@@ -533,11 +529,15 @@ export class TaskManager {
     t: Task,
     doRename: NonNullable<AssignOptions["rename"]>,
   ): Promise<void> {
-    const label = sessionLabel(t.title);
+    // This session's OWN backend spells the name, not the one a fresh dispatch would land
+    // on: the two can differ (an operator's tmux session on a machine where a dispatch
+    // would open a tab), and sanitizing for the wrong one strips characters this rename
+    // could have kept - or keeps ones it cannot.
+    const label = nameRulesFor(s).sanitize(t.title);
     if (s.name === label) return;
     for (const candidate of [label, `${label}-${t.id.slice(0, 6)}`]) {
-      // `sessionLabel` already strips what a tmux name cannot hold, so this normally only
-      // refuses a session with no tmux and no wezterm handle - one where there is nothing
+      // `sanitize` already strips what this backend's names cannot hold, so this normally
+      // only refuses a session with no terminal handle at all - one where there is nothing
       // to rename, whose card is named after its process.
       const valid = validateSessionName(s, candidate);
       if (!valid.ok) continue;
@@ -670,15 +670,23 @@ export class TaskManager {
   }
 
   /**
-   * Reconcile a resource-holding task after a restart. If its agent's tmux session
+   * Reconcile a resource-holding task after a restart. If its agent's terminal home
    * survived, keep it (a `running`/`failed` task re-binds to its rediscovered
    * session; a `dispatching` one can't confirm its prompt landed, so it fails
-   * honestly but keeps the live agent to Focus/Cancel). If the session is gone, the
+   * honestly but keeps the live agent to Focus/Cancel). If the home is gone, the
    * agent died with the daemon - reclaim its worktree so nothing leaks invisibly.
+   *
+   * `homeAlive` has three answers and only ONE of them may reclaim. `null` - no installed
+   * backend could hold a named home, so the recorded name proves nothing either way - is
+   * grouped with "survived", because this is the most destructive branch in the product:
+   * the reclaim path runs `git worktree remove --force` and hands a pooled lease back. A
+   * wrong "gone" deletes work an agent is still doing; a wrong "survived" leaves a tree the
+   * operator frees with one Reclaim. The `t.tmuxSession ? probe : false` this replaced
+   * turned an adapter lookup that found nothing into the destructive answer by omission.
    */
   private async reconcileOnStartup(t: Task): Promise<void> {
-    const alive = t.tmuxSession ? await tmuxSessionAlive(t.tmuxSession) : false;
-    if (alive) {
+    const alive = t.tmuxSession ? await homeAlive(t.tmuxSession) : false;
+    if (alive !== false) {
       if (t.status === "dispatching") {
         this.registry.upsertTask({
           ...t,

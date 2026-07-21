@@ -195,6 +195,36 @@ export interface PaneWrite<T> {
   paste: ((target: T, text: string) => Promise<TerminalResult>) | null;
 }
 
+/**
+ * What a name may be on one backend, in both directions.
+ *
+ * Two verbs rather than one because the product asks the question twice and gets to
+ * answer differently each time: a human typing a rename must be REFUSED with a reason
+ * they can act on, while a dispatch cutting a session name out of a task title must
+ * always end up with something usable and so has to COERCE. Splitting them is what stops
+ * "reject a leading `$`" and "strip a leading `$`" drifting apart, which is exactly what
+ * happened while `validateSessionName` (`actions.ts`) and `sessionLabel` (`dispatcher.ts`)
+ * each held half of tmux's target grammar: the second one also stripped `=` and `{`, the
+ * first did not, and nothing connected them.
+ *
+ * These belong to the ADAPTER and not to shared validation. `.` and `:` are separators in
+ * `session:window.pane` and a leading `$` is tmux's session-ID sigil - facts about one
+ * backend's target grammar, invisible to anything else, and precisely the kind of rule a
+ * second multiplexer gets wrong by inheriting.
+ */
+export interface NameRules {
+  /**
+   * The reason this name cannot be expressed on this backend, or null when it is fine.
+   * Reads as a sentence for a human, since it reaches them as a 400.
+   */
+  validate(name: string): string | null;
+  /**
+   * Coerce arbitrary text into a name this backend can hold. Never refuses: the result is
+   * always usable, falling back to a placeholder when nothing survives.
+   */
+  sanitize(text: string): string;
+}
+
 /** A detached session to create: what to run, where, and under what name. */
 export interface DetachedSessionSpec {
   name: string;
@@ -244,17 +274,24 @@ export interface MuxSessions {
    */
   attachArgv: ((session: string) => readonly string[]) | null;
   rename(from: string, to: string): Promise<TerminalResult>;
-  kill(session: string): Promise<TerminalResult>;
   /**
-   * Reject a name this backend's own target grammar cannot express, returning the reason
-   * or null when the name is fine. Null capability means anything goes.
+   * Kill the whole named session - every window and pane in it - or null when this
+   * backend's sessions are not a group anything can kill at once.
    *
-   * tmux is why this exists: `.` and `:` are separators in `session:window.pane` and a
-   * leading `$` is its session-ID sigil, so `-t '$0'` silently resolves to whichever
-   * session holds ID 0. Those rules are open-coded in `validateSessionName` today, which
-   * is exactly the shape of thing a second multiplexer gets wrong.
+   * Explicit rather than the implicit `else` it used to be. `kill` (`actions.ts`) signals
+   * the leaf agent and then tore down "the tmux session, if there is one"; a multiplexer
+   * that cannot do that would have silently inherited the emulator path and left the
+   * session's other panes running with nothing saying why. A null here is the same claim
+   * an emulator makes by having no `sessions` at all: the signal stands alone, which is a
+   * complete answer rather than half of a missing one.
    */
-  validateName: ((name: string) => string | null) | null;
+  kill: ((session: string) => Promise<TerminalResult>) | null;
+  /**
+   * How a session name is spelled on this backend - see `NameRules`. Required, because a
+   * backend with named sessions necessarily has an answer, even if that answer is "any
+   * text" (`PLAIN_NAMES`).
+   */
+  names: NameRules;
 }
 
 /**
@@ -312,7 +349,7 @@ export type EmulatorFocus =
  *   - `target` - can we address what opened?
  *
  * They are not the same question, and collapsing them into a nullable id (which is what
- * `spawnWeztermTab` returns today, and what the focus fallback reads as failure) makes an
+ * `spawnWeztermTab` used to return, and what the focus fallback read as failure) makes an
  * emulator that opens tabs perfectly well but cannot say what it made - Ghostty - look
  * broken. Null `target` with `ok: true` is a complete, honest answer: the human got their
  * window, and nothing may be typed into it.
@@ -321,9 +358,27 @@ export interface SpawnResult extends TerminalResult {
   target: EmulatorTarget | null;
 }
 
+/** A tab to open: what to run, what to call it, and where to root it. */
+export interface TabSpec {
+  argv: readonly string[];
+  title: string;
+  /**
+   * Working directory for the new tab, or null to inherit the daemon's.
+   *
+   * Nullable rather than absent because the two callers genuinely differ, and the one that
+   * needs it is why this is a spec rather than two positional arguments: the focus fallback
+   * opens `<mux> attach -t <name>`, which lands wherever the session already is, while a
+   * DISPATCH onto a machine with no multiplexer must root the agent in the worktree that
+   * was just cut for it. An emulator that cannot honour a cwd must say so by failing, never
+   * by opening the tab somewhere else - a dispatched agent in the wrong checkout commits to
+   * the wrong branch.
+   */
+  cwd: string | null;
+}
+
 export interface EmulatorSpawn {
-  /** Open a new tab running `argv` under `title`. */
-  tab(argv: readonly string[], title: string): Promise<SpawnResult>;
+  /** Open a new tab, per `TabSpec`. */
+  tab(spec: TabSpec): Promise<SpawnResult>;
 }
 
 /**
@@ -348,6 +403,16 @@ export interface TerminalEmulator {
   spawn: EmulatorSpawn | null;
   /** Rename the tab a pane lives in - the value `list` reports back as `tabTitle`. */
   retitle: ((target: EmulatorTarget, title: string) => Promise<TerminalResult>) | null;
+  /**
+   * What a TAB TITLE may be on this backend - see `NameRules`.
+   *
+   * Required for the same reason `MuxSessions.names` is, and declared even by a backend
+   * with no `retitle`: `spawn` stamps a title too, so an emulator that cannot rename a tab
+   * can still be handed one it cannot express. Both shipped answers are `PLAIN_NAMES` -
+   * a tab title is display text with no target grammar behind it - and the point of the
+   * slot is that this is a backend SAYING so rather than a caller assuming it.
+   */
+  names: NameRules;
 }
 
 /**

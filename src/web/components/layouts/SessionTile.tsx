@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, CostChip, InspectorTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
+import { AgentDot, CostChip, InspectorTileFlag, PrTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
@@ -176,39 +176,9 @@ export function SessionTile({
           <span className="tile-flag tf-queue">{session.queue.openCount} queued</span>
         )}
         {/* A PR the operator can reach in one click, from the board, without a detour
-            through the console. Only a link when there is somewhere to go: a number
-            with no URL yet stays the flag it always was. */}
-        {session.prNumber &&
-          (() => {
-            const tone = `pr-${session.prState ?? "open"}`;
-            const label = (
-              <>
-                #{session.prNumber}
-                {session.prChecks === "failing" && " ⚠"}
-              </>
-            );
-            return session.prUrl ? (
-              <a
-                className={`tile-flag tile-flag-link ${tone}`}
-                href={session.prUrl}
-                target="_blank"
-                rel="noreferrer"
-                // Without this the click also reaches the root's onClick and opens the
-                // console behind the new tab - the exact second click this fix removes.
-                // stopPropagation only: the link still has to navigate.
-                onClick={(e) => e.stopPropagation()}
-                title={
-                  session.prChecks === "failing"
-                    ? "A CI check failed on this pull request - open on GitHub"
-                    : `Pull request #${session.prNumber} - open on GitHub`
-                }
-              >
-                {label}
-              </a>
-            ) : (
-              <span className={`tile-flag ${tone}`}>{label}</span>
-            );
-          })()}
+            through the console. The DECISION and the tooltip are shared (`PrTileFlag`);
+            only the presentation differs, matching how the Inspector flag beside it works. */}
+        <PrTileFlag session={session} />
         {/* The Inspector, in the tile's own flag vocabulary. The DECISION and the tooltip
             are shared (`InspectorTileFlag`); only the presentation differs, so the three
             surfaces can't drift on what a state means or how it's explained on hover. */}

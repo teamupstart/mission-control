@@ -198,7 +198,9 @@ export function InspectorChip({ session }: { session: Session }): React.JSX.Elem
  */
 export function InspectorRailMark({ session }: { session: Session }): React.JSX.Element | null {
   const view = inspectorChipView(session.inspector);
-  if (!view || !session.inspector) return null;
+  // Unlike InspectorChip/InspectorTileFlag, this mark never dereferences
+  // `session.inspector` itself - `view` being non-null already implies it was non-null.
+  if (!view) return null;
   if (view.tone === "insp-clean" || view.tone === "insp-queued") return null;
   return (
     <Tooltip label={view.title}>
@@ -275,6 +277,46 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
         </Tooltip>
       )}
     </>
+  );
+}
+
+/**
+ * The board tile's own vocabulary for the PR - a `.tile-flag` link, folding the failing-
+ * checks state into the same chip with a `⚠` suffix rather than `PrChip`'s separate alert
+ * icon, since the tile has no room for a second element. Given the same instant `Tooltip`
+ * as `InspectorTileFlag` rather than a native `title`, so two adjacent flags on the same
+ * tile don't behave differently on hover. Renders nothing without a PR number, and a plain
+ * unlinked flag (the tile's own long-standing escape hatch) when there's a number but no
+ * URL yet - neither state has anything to hover for.
+ */
+export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
+  if (!session.prNumber) return null;
+  const tone = `pr-${session.prState ?? "open"}`;
+  const label = (
+    <>
+      #{session.prNumber}
+      {session.prChecks === "failing" && " ⚠"}
+    </>
+  );
+  if (!session.prUrl) return <span className={`tile-flag ${tone}`}>{label}</span>;
+  const title =
+    session.prChecks === "failing"
+      ? "A CI check failed on this pull request - open on GitHub"
+      : `Pull request #${session.prNumber} - open on GitHub`;
+  return (
+    <Tooltip label={title}>
+      <a
+        className={`tile-flag tile-flag-link ${tone}`}
+        href={session.prUrl}
+        target="_blank"
+        rel="noreferrer"
+        // Without this the click also reaches the tile's own onClick and opens the
+        // console behind the new tab. stopPropagation only: the link still has to navigate.
+        onClick={(e) => e.stopPropagation()}
+      >
+        {label}
+      </a>
+    </Tooltip>
   );
 }
 

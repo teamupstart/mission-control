@@ -13,10 +13,12 @@ import {
   InspectorRailMark,
   InspectorTileFlag,
   PrChip,
+  PrTileFlag,
   RuntimeMetaRow,
   SessionTitle,
   StateBadge,
 } from "../src/web/components/session-bits.tsx";
+import { Tooltip } from "../src/web/components/Tooltip.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
@@ -191,14 +193,16 @@ test("the board tile's inspector flag is the shared InspectorTileFlag", () => {
   }
 });
 
-// All four surfaces must show the IDENTICAL tooltip copy for the same state - the whole
-// point of routing them through one `inspectorChipView` and one `Tooltip`. This is the
-// regression a per-surface native `title` would reintroduce: each surface free to word
-// (or forget) its own explanation of what the glyph and the number mean. Rather than
-// hand-duplicating `inspectorChipView`'s wording here (a second copy of the copy), this
-// pulls the expected text out of the card's own rendering - the same source-of-truth
-// approach the rest of this file uses - and checks the other three surfaces match it.
-test("all four inspector surfaces carry the same tooltip text", () => {
+// All four surfaces must show the IDENTICAL tooltip copy for the same state, delivered by
+// the actual `Tooltip` component - not merely an `aria-label` that happens to match. A
+// component wrapped in `Tooltip` and one carrying a bare `aria-label`/`title` render
+// IDENTICAL static markup (`Tooltip` adds no DOM node or attribute until it is hovered), so
+// asserting on rendered HTML strings cannot tell them apart - the whole point of this test
+// would silently stop holding the moment someone reverted a surface to a native `title`
+// while leaving its `aria-label` in place. Calling each component as a plain function
+// (rather than rendering it) returns its un-rendered element tree, whose root can be
+// checked to actually be a `<Tooltip>` carrying the expected `label` prop.
+test("all four inspector surfaces are wrapped in the shared Tooltip with identical copy", () => {
   const cases: Partial<Session>[] = [
     { inspector: insp({ open: 3, round: 2 }) },
     { inspector: insp({ open: 0, round: 1 }) },
@@ -208,17 +212,69 @@ test("all four inspector surfaces carry the same tooltip text", () => {
   ];
   for (const over of cases) {
     const session = mkSession(over);
-    const chip = bit(InspectorChip, { session });
-    const [, title] = chip.match(/aria-label="([^"]+)"/) ?? [];
-    assert.ok(title, `card chip should have an aria-label for ${JSON.stringify(over.inspector)}`);
-    const pattern = new RegExp(`aria-label="${title!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`);
+    const chipEl = InspectorChip({ session });
+    assert.equal(chipEl?.type, Tooltip, "card chip should be wrapped in the shared Tooltip");
+    const title = (chipEl?.props as { label: string }).label;
+    assert.ok(title, `card chip should have a tooltip label for ${JSON.stringify(over.inspector)}`);
 
-    assert.match(bit(InspectorTileFlag, { session }), pattern, `tile flag for "${title}"`);
+    const tileEl = InspectorTileFlag({ session });
+    assert.equal(tileEl?.type, Tooltip, "tile flag should be wrapped in the shared Tooltip");
+    assert.equal(
+      (tileEl?.props as { label: string }).label,
+      title,
+      `tile flag tooltip should match the card's for "${title}"`,
+    );
+
     // The rail suppresses the clean/queued states entirely, so only assert there when
     // it actually renders something.
-    const railMark = bit(InspectorRailMark, { session });
-    if (railMark) assert.match(railMark, pattern, `rail mark for "${title}"`);
+    const railEl = InspectorRailMark({ session });
+    if (railEl) {
+      assert.equal(railEl.type, Tooltip, "rail mark should be wrapped in the shared Tooltip");
+      assert.equal(
+        (railEl.props as { label: string }).label,
+        title,
+        `rail mark tooltip should match the card's for "${title}"`,
+      );
+    }
   }
+});
+
+// The tile's PR flag sits right beside the Inspector flag with the same `.tile-flag`
+// styling, so the two must behave identically on hover - both wrapped in the shared
+// `Tooltip`, never one instant and the other a slow native `title`.
+test("the board tile's PR flag is the shared PrTileFlag, wrapped in the shared Tooltip", () => {
+  const cases: Partial<Session>[] = [
+    { prUrl: "https://example.test/pr/7", prNumber: 7, prState: "open" },
+    { prUrl: "https://example.test/pr/7", prNumber: 7, prState: "merged" },
+    { prUrl: "https://example.test/pr/7", prNumber: 7, prState: "open", prChecks: "failing" },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const flagEl = PrTileFlag({ session });
+    assert.equal(flagEl?.type, Tooltip, `tile PR flag should be wrapped in the shared Tooltip for ${JSON.stringify(over)}`);
+
+    const tile = renderToStaticMarkup(
+      createElement(SessionTile, {
+        session,
+        gateNeedsYou: false,
+        onOpen: () => {},
+        draggingRepo: null,
+        onDropped: () => {},
+        onDropError: () => {},
+        onDropConfirm: () => {},
+      }),
+    );
+    assert.ok(
+      tile.includes(bit(PrTileFlag, { session })),
+      `tile should render the shared PrTileFlag for ${JSON.stringify(over)}`,
+    );
+  }
+
+  // A PR number with no URL yet stays the plain, unlinked flag it always was - nothing to
+  // hover for, so no Tooltip.
+  const noUrl = mkSession({ prUrl: null, prNumber: 9, prState: "open" });
+  const noUrlEl = PrTileFlag({ session: noUrl });
+  assert.notEqual(noUrlEl?.type, Tooltip, "a PR with no URL yet should not be wrapped in a Tooltip");
 });
 
 test("the card's state badge is the shared StateBadge", () => {

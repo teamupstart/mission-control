@@ -23,8 +23,20 @@ import type { ControlSpec } from "../types.ts";
 /** Inherited from Claude's measurement, not measured against Codex. See above. */
 const SETTLE_MS = 400;
 
+/**
+ * Codex collapses nothing, which is `pastePlaceholder: null` said again at the other point
+ * the delivery path asks about this composer.
+ *
+ * One fact, stated twice because it is needed twice, and the two must not drift: a harness
+ * that claimed to collapse something while declaring no placeholder would have the
+ * delivery path spend a pane read hunting for a thing it has already been told does not
+ * exist.
+ */
+const COLLAPSES = (): boolean => false;
+
 export const codexControl: ControlSpec = {
   kind: "keystroke",
   settleMs: SETTLE_MS,
   pastePlaceholder: null,
+  collapses: COLLAPSES,
 };

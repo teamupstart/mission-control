@@ -381,8 +381,8 @@ export type ControlSpec =
        */
       settleMs: number;
       /**
-       * The placeholder this TUI collapses a multi-line paste into, or `null` when it
-       * renders none.
+       * The placeholder this TUI collapses a paste into, or `null` when it renders none.
+       * Which pastes those are is `collapses` below.
        *
        * Null is a CAPABILITY absence, not an answer: it means submit verification has no
        * on-screen evidence to read for this harness at all, which is a different claim
@@ -392,6 +392,22 @@ export type ControlSpec =
        * exists to end.
        */
       pastePlaceholder: RegExp | null;
+      /**
+       * Whether THIS text is one the composer will collapse into that placeholder.
+       *
+       * Inseparable from `pastePlaceholder`, and here for the same reason it is: a harness
+       * that says what its placeholder LOOKS like has also to say when it APPEARS, or the
+       * one reading that can establish a pending paste is taken on faith. The delivery
+       * path must be left making no claim of its own about any composer - a guess about
+       * one TUI applied to every agent is precisely the defect this capability closes, and
+       * "a paste only collapses when it is multi-line" was the last of them.
+       *
+       * Neither wrong answer can produce a verified-in-error: say `false` for something
+       * the composer does collapse and the reading is skipped, say `true` for something it
+       * does not and the reading finds nothing. Both cost only an honest `submitVerified:
+       * false`. Err toward `false` when you do not know.
+       */
+      collapses: (text: string) => boolean;
     }
   | { kind: "stream-json" };
 

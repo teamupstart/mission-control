@@ -17,15 +17,14 @@
  * placeholder proves the composer (not a dialog) is what has focus, so the only
  * thing a second Enter can do is submit the text we just pasted.
  *
- * A single-line paste is never collapsed, so it never produces a placeholder -
- * and it is also never affected by the coalescing window this guards against.
- * "No placeholder" therefore reads as "nothing pending", which is correct for
- * both cases.
+ * Which pastes get collapsed is not decided here and must not be guessed at: it is the
+ * harness's claim (`ControlSpec.collapses`), and a caller that has not asked it is
+ * reading a screen it has no reason to expect anything on.
  *
- * The placeholder itself is the HARNESS's, passed in rather than owned here: it was one
- * module-level Claude regex applied to every agent, which for a harness that renders no
- * placeholder is not a check that fails but a check that can never fire. It now lives on
- * `harness.control` (`ControlSpec.pastePlaceholder`), where its absence is declarable.
+ * The placeholder itself is the HARNESS's too, passed in rather than owned here: it was
+ * one module-level Claude regex applied to every agent, which for a harness that renders
+ * no placeholder is not a check that fails but a check that can never fire. It now lives
+ * on `harness.control` (`ControlSpec.pastePlaceholder`), where its absence is declarable.
  */
 
 /**

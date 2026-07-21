@@ -33,14 +33,25 @@ const SETTLE_MS = 400;
  * swallows an Enter as happily as it delivers one - so seeing this is what lets a retry
  * be gated on positive evidence rather than fired blind.
  *
- * A single-line paste is never collapsed and so never produces one; it is also never
- * affected by the coalescing window, so "no placeholder" reads as "nothing pending",
- * which is correct for that case.
+ * When it appears is `COLLAPSES` below, and the two are one claim about this composer.
  */
 const PASTED_PLACEHOLDER = /\[Pasted text #\d+/;
+
+/**
+ * Claude collapses a paste when the text carries a newline, and only then.
+ *
+ * The other half of the placeholder above, split out only because the delivery path asks
+ * the two at different moments - so they have to move together. A long single-line paste
+ * is echoed in full: nothing collapses, nothing can be watched leaving the composer, and
+ * that delivery honestly reports unverified rather than being confirmed by a screen that
+ * never showed anything. A single-line paste is also never caught by the coalescing
+ * window `SETTLE_MS` covers, so it has nothing to be verified against in the first place.
+ */
+const COLLAPSES = (text: string): boolean => text.includes("\n");
 
 export const claudeControl: ControlSpec = {
   kind: "keystroke",
   settleMs: SETTLE_MS,
   pastePlaceholder: PASTED_PLACEHOLDER,
+  collapses: COLLAPSES,
 };

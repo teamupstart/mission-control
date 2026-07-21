@@ -15,13 +15,16 @@ import type { Session } from "../src/shared/types.ts";
 // false, the retry had nothing to gate on, and a single Enter came back as a confirmed
 // submit having proved nothing. A wrong answer no caller could tell from a right one.
 //
-// So this pins the three claims the capability makes:
+// So this pins the four claims the capability makes:
 //   1. Every harness declares a delivery, and `control` is not nullable - there is no
 //      harness we can dispatch to without knowing how to talk to it.
 //   2. A null `pastePlaceholder` is a CAPABILITY absence, not "the composer is clear",
 //      and the delivery path degrades on it deliberately instead of looping for evidence
 //      that cannot appear.
-//   3. `ok: true` without evidence is reported as unverified rather than as success.
+//   3. What a composer renders, and WHEN, are both the harness's claims - the delivery
+//      path makes neither, because one TUI's habit applied to every agent is the defect
+//      above in its general form.
+//   4. `ok: true` without evidence is reported as unverified rather than as success.
 
 const home = mkdtempSync(join(tmpdir(), "harness-control-"));
 // Set before importing anything that resolves the state dir.
@@ -97,6 +100,35 @@ test("the two harnesses genuinely differ in what they can verify", () => {
   assert.equal(codex.kind, "keystroke");
   assert.ok(claude.kind === "keystroke" && claude.pastePlaceholder, "Claude renders a placeholder");
   assert.equal(codex.kind === "keystroke" && codex.pastePlaceholder, null);
+});
+
+test("a harness says both WHAT its composer renders and WHEN, and the two agree", () => {
+  // The pair is one fact asked at two moments, so a harness answering them inconsistently
+  // sends the delivery path hunting a pane for something it has already been told does
+  // not exist. The generic path asks; it never assumes - "a paste collapses when it is
+  // multi-line" was true of Claude and of nothing else by right.
+  for (const id of AGENT_TYPES) {
+    const control = HARNESSES[id].control;
+    if (control.kind !== "keystroke") continue;
+    assert.equal(typeof control.collapses, "function", `${id} never says when its placeholder appears`);
+    if (!control.pastePlaceholder) {
+      assert.equal(
+        control.collapses("a\nb"),
+        false,
+        `${id} renders no placeholder, so nothing it collapses could ever be seen`,
+      );
+    }
+  }
+});
+
+test("Claude collapses a multi-line paste and echoes a one-liner, and says so itself", () => {
+  // The claim the delivery path used to make on every harness's behalf, now made by the
+  // one harness it was ever measured against. A one-liner is echoed in full, so there is
+  // no placeholder to watch leave and the pre-Enter read is not worth taking.
+  const claude = HARNESSES.claude.control;
+  assert.ok(claude.kind === "keystroke");
+  assert.equal(claude.kind === "keystroke" && claude.collapses("a\nb"), true);
+  assert.equal(claude.kind === "keystroke" && claude.collapses("one line"), false);
 });
 
 test("the interface admits a harness driven without a terminal", () => {

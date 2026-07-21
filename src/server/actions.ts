@@ -5,6 +5,7 @@ import { capturePaneText } from "./discovery/pane-capture.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
+import type { ControlSpec } from "./harness/types.ts";
 import {
   hasUnansweredWarning,
   optionRowMiss,
@@ -286,10 +287,10 @@ export interface InjectResult extends ActionResult {
    *
    * Everything else is false, and false is "no news" rather than "it failed". Three
    * ordinary deliveries land there: a harness whose `control.pastePlaceholder` is null
-   * renders nothing to read; a SINGLE-LINE paste is never collapsed, so no placeholder
-   * ever appears (which makes false the common answer for Claude too, every one-line
-   * queue item included); and a capture that comes back null is evidence of nothing in
-   * either direction and must never be read as a clear composer.
+   * renders nothing to read; a prompt its `control.collapses` does not claim (for Claude,
+   * any one-liner) never puts a placeholder on screen, which makes false the COMMON answer
+   * there too, every one-line queue item included; and a capture that comes back null is
+   * evidence of nothing in either direction and must never be read as a clear composer.
    *
    * Required rather than optional, for the reason `TerminalResult.outcomeUnknown` is: an
    * optional flag defaults the decision to whoever forgot it, and this is exactly the
@@ -367,19 +368,21 @@ const defaultInjectDeps: InjectDeps = { ...defaultPaneDeps, sleep };
  * placeholder lingers, was the case most likely to report verified. The flag was close to
  * inverted and flipped between runs of the same delivery.
  *
- * One capture, and only where it can answer: a harness rendering no placeholder has
- * nothing to look for, and a single-line paste is never collapsed. Null (a capture that
- * failed) establishes nothing and is not retried - the delivery proceeds and reports
- * unverified, which is the honest answer and not a failure.
+ * One capture, and only where the HARNESS says it can answer: whether a placeholder exists
+ * at all and whether this text is one that produces it are both its claims, asked here and
+ * never guessed at. Null (a capture that failed) establishes nothing and is not retried -
+ * the delivery proceeds and reports unverified, which is the honest answer and not a
+ * failure.
  */
 async function pasteIsCollapsed(
   session: Session,
   text: string,
-  placeholder: RegExp | null,
+  control: Extract<ControlSpec, { kind: "keystroke" }>,
   deps: InjectDeps,
 ): Promise<boolean> {
-  if (!placeholder || !text.includes("\n")) return false;
-  return hasPendingPaste(await deps.capture(session), placeholder);
+  const { pastePlaceholder } = control;
+  if (!pastePlaceholder || !control.collapses(text)) return false;
+  return hasPendingPaste(await deps.capture(session), pastePlaceholder);
 }
 
 /**
@@ -504,10 +507,13 @@ export async function paneAcceptsPrompt(
  * dispatch to seed an agent's first task, and by the work queue to deliver an item.
  *
  * The Enter is NOT sent on the paste's heels, and that is load-bearing: an agent that
- * coalesces input for a window afterwards absorbs an Enter that arrives inside
- * it, which used to leave every multi-line prompt pasted-but-unsubmitted. We let
- * the paste settle, submit, then read the pane back to confirm the composer
- * actually emptied - see `ControlSpec.settleMs` and `awaitPasteSubmitted`.
+ * coalesces input for a window afterwards absorbs an Enter that arrives inside it, which
+ * used to leave every multi-line prompt pasted-but-unsubmitted. So the sequence is paste,
+ * settle, READ, Enter, read back. The settle outlasts that window (`ControlSpec.settleMs`);
+ * the read before the Enter catches the paste while it is still definitively in the
+ * composer (`pasteIsCollapsed`), which is the half that makes a confirmation a fact rather
+ * than a race with the TUI's redraw; the reads after it watch the paste leave
+ * (`awaitPasteSubmitted`).
  *
  * Reports which PHASE failed via `pasted`, because the two failures mean opposite
  * things to a caller: a paste that never happened is retryable, while a paste that
@@ -571,7 +577,7 @@ async function injectPromptLocked(
     if (!paste.ok) return undelivered(paste);
     // Past this point the text IS in the pane, submitted or not.
     await deps.sleep(settleMs);
-    const wasPending = await pasteIsCollapsed(session, text, pastePlaceholder, deps);
+    const wasPending = await pasteIsCollapsed(session, text, control, deps);
     // Re-probed per Enter rather than trusting the pre-paste check: the settle window
     // and the submit polls are ~1.6s of wall clock during which a human can start
     // scrolling, and this Enter is a tmux keystroke like any other. Routing it through
@@ -602,7 +608,7 @@ async function injectPromptLocked(
     const pasted = await cmd(bin, ["cli", "send-text", "--pane-id", id, text], "wezterm send-text failed");
     if (!pasted.ok) return undelivered(pasted);
     await deps.sleep(settleMs);
-    const wasPending = await pasteIsCollapsed(session, text, pastePlaceholder, deps);
+    const wasPending = await pasteIsCollapsed(session, text, control, deps);
     const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
     const submitted = await awaitPasteSubmitted(
       session,

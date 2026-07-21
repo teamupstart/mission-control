@@ -8,7 +8,7 @@ import type { RenameDeps } from "../src/server/actions.ts";
 import type { RunResult } from "../src/server/util/exec.ts";
 import { stubRun } from "../src/server/util/exec.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { WeztermPane } from "../src/server/discovery/wezterm.ts";
+import type { EmulatorPane } from "../src/server/terminal/types.ts";
 import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
 
 // Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
@@ -169,14 +169,16 @@ test("validateSessionNameAgainstTasks ignores task bindings for a wezterm-only s
 // ---- rename (dep-injected branching) ----
 
 /** A wezterm pane whose tab hosts a `tmux attach` client (only paneId/tty matter here). */
-function hostPane(paneId: number, over: Partial<WeztermPane> = {}): WeztermPane {
+function hostPane(paneId: number, over: Partial<EmulatorPane> = {}): EmulatorPane {
   return {
-    paneId,
-    tabId: paneId,
-    windowId: 1,
+    // The adapter normalizes pane ids to strings (tmux's are "%3"); `rename` converts back
+    // for `setWeztermTabTitle`, which still takes wezterm's numeric one.
+    paneId: String(paneId),
+    tabId: String(paneId),
+    windowId: "1",
     tabTitle: "old",
     windowTitle: "",
-    cwd: "",
+    cwd: null,
     tty: `ttys00${paneId}`,
     isActive: false,
     ...over,

@@ -16,9 +16,9 @@ import { join } from "node:path";
 //
 // Driven through a fake `wezterm` on WEZTERM_BIN rather than a stubbed exec, deliberately:
 // `spawn` delegates to `discovery/wezterm.ts`, which calls `run` directly and does not see
-// the adapter's exec seam (see `terminal/exec.ts`). A fake exec would asserts nothing about
+// the adapter's exec seam (see `terminal/exec.ts`). A fake exec would assert nothing about
 // this path. A real child process exercises the actual argv, the actual exit code, and the
-// `weztermEnv()` socket strip that only shows up in a spawned environment.
+// `WEZTERM_BIN.dropEnv` socket strip that only shows up in a spawned environment.
 
 const home = mkdtempSync(join(tmpdir(), "mission-emu-spawn-"));
 const FAKE = join(home, "fake-wezterm");

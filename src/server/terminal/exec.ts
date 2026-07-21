@@ -12,16 +12,17 @@ import type { TerminalResult } from "./types.ts";
  * factory rather than of every method: a caller that fakes half the commands drives none
  * of the read-write-read sequences the policy layer is made of.
  *
- * The seam covers only what an adapter runs ITSELF: tmux's `write`, `capture`, `select`,
- * `sessions` and `paneMode` (threaded on into `readTmuxPaneMode`), and wezterm's `write` and
- * `capture`. Everything that delegates to `discovery/*` - `list`, `clients`, and wezterm's
- * `focus`, `spawn` and `retitle` - calls `run` directly and ignores this parameter entirely.
- * So `tmuxMultiplexer(fake).list()` shells out to the host's real tmux: the developer's own
- * panes on a machine with a server running, `[]` on CI, green in both and asserting nothing;
- * and `weztermEmulator(fake).spawn.tab(...)` opens a real tab on the developer's desktop.
- * Drive those through a fake BINARY instead. The delegation is deliberate (see each
- * adapter's header); this note is so nobody reads the injection as broader than it is. Those
- * surfaces get a seam when the migration moves `discovery/*` behind this layer.
+ * The seam covers everything an adapter runs ITSELF, which since enumeration moved in is
+ * most of both: tmux's `list`, `clients`, `write`, `capture`, `select`, `sessions` and
+ * `paneMode` (threaded on into `readTmuxPaneMode`), and wezterm's `list`, `write` and
+ * `capture`.
+ *
+ * What is left delegating to `discovery/wezterm.ts` - `focus`, `spawn` and `retitle` - calls
+ * `run` directly and ignores this parameter entirely, so `weztermEmulator(fake).spawn.tab(…)`
+ * opens a real tab on the developer's desktop. Drive those through a fake BINARY instead
+ * (`terminal-emulator-spawn.test.ts` does). The delegation is deliberate while `actions.ts`
+ * still calls those functions too; they get a seam when the focus/spawn item moves that file
+ * behind this layer, and this note exists so nobody reads the injection as broader than it is.
  *
  * Nothing in `types.ts` mentions this type. An adapter is not obliged to be a subprocess -
  * iTerm2 scripts through AppleScript - and the interface must not assume otherwise.

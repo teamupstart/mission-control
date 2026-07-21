@@ -2,8 +2,8 @@
  * The two terminal integration points, and why there are two of them.
  *
  * A tmux pane lives INSIDE a wezterm pane. They are not peers and one flat `Terminal`
- * interface would be a lie: `discovery/wezterm.ts:findSessionHostPanes` exists solely to
- * join the two by shared tty, and focus for a tmux-hosted session is a COMPOSITION -
+ * interface would be a lie: `registry.ts:hostPanesFor` exists solely to join the two by
+ * shared tty, and focus for a tmux-hosted session is a COMPOSITION -
  * select-pane, select-window, find the wezterm tab hosting a client, raise it, else spawn
  * `tmux attach` in a fresh tab. Folding that into one interface would either force every
  * emulator to pretend it has named sessions or force every multiplexer to pretend it can
@@ -45,19 +45,24 @@
  *   - client tty: tmux reports `/dev/ttys028`, wezterm reports `ttys012`. Both normalized
  *     through `normTty`, so the composition join is an equality test rather than a strip.
  *
- * The ids stay server-side for now. Phase 3 of the migration promotes the handle types to
- * `@shared` when `Session.tmux` / `Session.wezterm` become one list.
+ * The backend IDS are already shared (`@shared/terminal.ts`), because `NameSource` derives
+ * from them. The handle TYPES stay server-side until phase 3 promotes them, which is when
+ * `Session.tmux` / `Session.wezterm` become one list.
  */
 
 /**
- * Multiplexers we can drive. Adding an id here fails typecheck until `MULTIPLEXERS` has a
- * complete adapter for it - which is the point: "I forgot copy-mode exists" stops being a
- * possible outcome.
+ * The backend ids live in `@shared/terminal.ts`, not here, and re-exporting them keeps every
+ * server call site reaching them where it always has.
+ *
+ * They moved because `NameSource` - a `Session` field the dashboard renders - is now derived
+ * from them, and the web bundle cannot import this module: `list` spawns a subprocess.
+ * Adding an id there still fails typecheck HERE, in `Record<MultiplexerId, Multiplexer>`,
+ * until a complete adapter exists, which is the enforcement that matters: "I forgot
+ * copy-mode exists" stops being a possible outcome.
  */
-export type MultiplexerId = "tmux";
+export type { EmulatorId, MultiplexerId, TerminalBackendId } from "@shared/terminal.ts";
 
-/** Terminal emulators we can drive. Same contract as `MultiplexerId`, against `EMULATORS`. */
-export type EmulatorId = "wezterm";
+import type { EmulatorId, MultiplexerId } from "@shared/terminal.ts";
 
 /**
  * The outcome of one terminal operation.
@@ -317,11 +322,12 @@ export interface TerminalEmulator {
 }
 
 /**
- * How to find a backend's binary: an env override, then paths tried in order.
+ * How to reach a backend's CLI: which binary, and in what environment.
  *
- * One shape because there is one behavior, and it is currently written once (for wezterm)
- * and assumed away everywhere else - `"tmux"` is a literal at ~19 call sites, so a tmux
- * outside PATH is unreachable with no way to say so.
+ * One shape because there is one behavior, and it was written once (for wezterm) and assumed
+ * away everywhere else - `"tmux"` is a literal at ~19 call sites, so a tmux outside PATH is
+ * unreachable with no way to say so, and nothing sanitized tmux's inherited environment at
+ * all.
  */
 export interface BinSpec {
   /** Env var that overrides everything, or null when the backend has no such convention. */
@@ -331,4 +337,19 @@ export interface BinSpec {
    * on PATH" - the answer when nothing else matched, not a match itself.
    */
   candidates: readonly string[];
+  /**
+   * Inherited env vars to DROP before running this backend's CLI.
+   *
+   * Both shipped backends need this and for the same reason: each has a var that pins its
+   * CLI to ONE server instance, and the daemon inherits whichever one it happened to be
+   * launched inside. `WEZTERM_UNIX_SOCKET` pins wezterm to a GUI's mux socket; `TMUX` pins
+   * tmux to a socket path. A daemon started from inside `tmux -L work` then enumerates only
+   * that server's panes and is blind to every session on the default socket - which is the
+   * wezterm bug, unfixed, on the other backend.
+   *
+   * DATA rather than a scrub function, for the reason `DetectSpec` is data rather than a
+   * predicate: a rule hidden inside a callback cannot be audited, and this is exactly the
+   * kind of rule a third backend gets wrong silently. `binEnv` (`bin.ts`) applies it.
+   */
+  dropEnv: readonly string[];
 }

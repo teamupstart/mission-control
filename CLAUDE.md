@@ -258,19 +258,35 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   Codex session with Claude. The contract is context isolation, not just the call shape -
   read `LlmRunner`'s doc before adding one. Test: `llm-runner-contract.test.ts`. WHICH model
   a given call uses is a different question, owned by `@shared/foreman-models.ts`.
-- **Terminal backends**: `MULTIPLEXERS` / `EMULATORS` in `src/server/terminal/registry.ts`,
-  typed `Record<MultiplexerId, …>` / `Record<EmulatorId, …>`, so a new id fails typecheck
-  until its adapter is complete. **They are two axes, not one**: a tmux pane lives *inside* a
-  wezterm pane, so a `Multiplexer` has named sessions and a copy-mode probe and cannot raise
-  a window, while a `TerminalEmulator` raises windows and has no persistence. Optional
-  capabilities are `T | null` and null is a declaration - Ghostty has no scripting CLI, so
-  `list` / `write` / `capture` are all legitimately null. Writes bind to the innermost handle
-  (`bindPane`); focus walks outward via `clients` -> `hostPanesFor` -> `spawn(attachArgv)`.
-  Adding a `Key` fails typecheck in every adapter's `Record<Key, string>` until it says what
-  that key looks like in its own convention (tmux `BTab`, wezterm `\x1b[Z`). Tests:
-  `terminal-registry.test.ts`, `terminal-adapters.test.ts`. **Migration in progress** - most
-  call sites still branch on `session.tmux` / `session.wezterm` directly; see
-  `docs/plans/pluggable-integrations/plan.md` phase 2.
+- **Terminal backends**: the ids are `MULTIPLEXER_IDS` / `EMULATOR_IDS`
+  (`@shared/terminal.ts`) and the adapters are `MULTIPLEXERS` / `EMULATORS`
+  (`src/server/terminal/registry.ts`), typed `Record<MultiplexerId, …>` /
+  `Record<EmulatorId, …>`, so a new id fails typecheck until its adapter is complete. The
+  ids are in `shared` for the `HARNESS_CAPABILITIES` reason - `NameSource` derives from
+  them and the browser renders it - and **an id is added there and nowhere else**. Those
+  two arrays are ORDERED, and the order is naming priority: `enumerateTerminals` sweeps
+  multiplexers then emulators, and the first backend holding a pane on a session's tty
+  names it. **They are two axes, not one**: a tmux pane lives *inside* a wezterm pane, so a
+  `Multiplexer` has named sessions and a copy-mode probe and cannot raise a window, while a
+  `TerminalEmulator` raises windows and has no persistence. Optional capabilities are
+  `T | null` and null is a declaration - Ghostty has no scripting CLI, so `list` / `write` /
+  `capture` are all legitimately null. Writes bind to the innermost handle (`bindPane`);
+  focus walks outward via `clients` -> `hostPanesFor` -> `spawn(attachArgv)`. Adding a `Key`
+  fails typecheck in every adapter's `Record<Key, string>` until it says what that key looks
+  like in its own convention (tmux `BTab`, wezterm `\x1b[Z`). **A `BinSpec` is how a
+  backend's CLI is reached, all three parts**: `env` override, `candidates`, and `dropEnv` -
+  inherited vars to drop, applied by `binEnv` to EVERY command that adapter runs. An empty
+  `dropEnv` is a declaration, not a gap: wezterm drops `WEZTERM_UNIX_SOCKET` because that pin
+  goes stale when a GUI restarts, and tmux drops nothing because `TMUX` names a live server
+  and the ~19 un-migrated inline `run("tmux", …)` writes still inherit it - enumerate on one
+  socket and write on another and the pane ids do not mean the same thing. `binPresent`
+  answers "installed?" from the filesystem so a registered-but-absent adapter costs no spawn
+  on the 1500ms tick. Tests:
+  `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
+  `correlate.test.ts`. **Migration in progress** - discovery is through the registries, but
+  most WRITE call sites still branch on `session.tmux` / `session.wezterm` directly, and
+  `legacyHandles` (`correlate.ts`) is the one place still projecting onto those two fields;
+  see `docs/plans/pluggable-integrations/plan.md` phase 2.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`
   rules.

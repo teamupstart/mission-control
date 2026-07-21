@@ -54,7 +54,7 @@ test("the interface admits an emulator that can only be launched into", () => {
   // the interface widened, the interface was shaped around `wezterm cli`.
   const ghostty: Omit<TerminalEmulator, "id"> = {
     label: "Ghostty",
-    bin: { env: "GHOSTTY_BIN", candidates: ["ghostty"] },
+    bin: { env: "GHOSTTY_BIN", candidates: ["ghostty"], dropEnv: [] },
     list: null,
     write: null,
     capture: null,
@@ -136,6 +136,24 @@ test("the host-tab join is an equality test on normalized ttys", () => {
   );
   // A client with no tty matches nothing rather than every pane that also has none.
   assert.deepEqual(hostPanesFor("nobody", clients, panes), []);
+  // Attached, but in a terminal we do not integrate with - Focus reads this as "nothing to
+  // raise" and falls through to spawning a tab, which is a different outcome from "not
+  // attached at all".
+  assert.deepEqual(hostPanesFor("api", [{ tty: "ttys099", session: "api" }], panes), []);
+});
+
+test("a session with several clients gets its hosts in enumeration order", () => {
+  // Callers take the first (`focus` raises one tab), so the pick has to be deterministic
+  // rather than whichever client tmux happened to list first this tick.
+  const clients: MuxClient[] = [
+    { tty: "ttys004", session: "web" },
+    { tty: "ttys019", session: "web" },
+  ];
+  const panes: EmulatorPane[] = [pane("9", "ttys019"), pane("2", "ttys004")];
+  assert.deepEqual(
+    hostPanesFor("web", clients, panes).map((p) => p.paneId),
+    ["9", "2"],
+  );
 });
 
 function pane(paneId: string, tty: string | null): EmulatorPane {

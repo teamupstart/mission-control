@@ -8,7 +8,7 @@ import {
   type InjectDeps,
   type PaneDeps,
 } from "../src/server/actions.ts";
-import { readTmuxPaneMode } from "../src/server/discovery/tmux.ts";
+import { readTmuxPaneMode } from "../src/server/terminal/tmux.ts";
 import { run, stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
 

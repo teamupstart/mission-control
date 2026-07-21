@@ -7,8 +7,13 @@ import type {
   WeztermInfo,
 } from "@shared/types.ts";
 import { listProcesses, type Proc } from "./processes.ts";
-import { listTmuxPanes, type TmuxPane } from "./tmux.ts";
-import { listWeztermPanes, weztermCwdToPath, type WeztermPane } from "./wezterm.ts";
+import { enumerateTerminals, type TerminalEnumeration } from "../terminal/enumerate.ts";
+import type {
+  EmulatorId,
+  EmulatorPane,
+  MultiplexerId,
+  MuxPane,
+} from "../terminal/types.ts";
 import { gitInfo } from "../util/git.ts";
 import { readProcCwds } from "./proc-cwd.ts";
 import { annotateNomistakesLaunches } from "./nomistakes-launch.ts";
@@ -77,18 +82,112 @@ export interface NmLaunch {
 
 export interface DiscoveryInput {
   procs: Proc[];
-  tmux: TmuxPane[];
-  wezterm: WeztermPane[];
+  /**
+   * What each terminal backend can see, in naming-priority order (see `enumerateTerminals`).
+   *
+   * A LIST, not the `{ tmux, wezterm }` pair of named fields this used to be. That struct was
+   * the structural blocker for the whole terminal migration: it made "how many backends are
+   * there" a fact of the type rather than of the registries, so a third one had nowhere to
+   * go and every consumer below had to be taught its name.
+   */
+  terminals: TerminalEnumeration[];
 }
 
-/** Gather the three raw sources. Exposed separately so tests can inject input. */
+/** Gather the raw sources. Exposed separately so tests can inject input. */
 export async function gatherDiscoveryInput(): Promise<DiscoveryInput> {
-  const [procs, tmux, wezterm] = await Promise.all([
-    listProcesses(),
-    listTmuxPanes(),
-    listWeztermPanes(),
-  ]);
-  return { procs, tmux, wezterm };
+  const [procs, terminals] = await Promise.all([listProcesses(), enumerateTerminals()]);
+  return { procs, terminals };
+}
+
+/**
+ * One backend's pane on one tty, plus the name that backend offers for a session sitting on
+ * it.
+ *
+ * `name` is precomputed because it is the ONE thing the two axes answer differently - a
+ * multiplexer names by session, an emulator by tab title - and resolving it here is what
+ * lets the correlation loop pick a namer by priority instead of by an `if/else` chain whose
+ * arm order silently IS the priority.
+ *
+ * The pane is carried whole rather than reduced to a handle: `Session`'s two vendor fields
+ * still want a window name, a window id, a tab title and an active flag, none of which a
+ * handle carries. See `legacyHandles`.
+ */
+type TerminalCandidate =
+  | { kind: "multiplexer"; backend: MultiplexerId; name: string; pane: MuxPane }
+  | { kind: "emulator"; backend: EmulatorId; name: string; pane: EmulatorPane };
+
+/**
+ * Index every enumerated pane by its controlling tty, keeping backend order within each tty.
+ *
+ * The tty is the reliable join between a process and a pane, and the only one: a session's
+ * handles are whatever backends hold a pane on the tty its agent process sits on.
+ */
+function panesByTty(terminals: readonly TerminalEnumeration[]): Map<string, TerminalCandidate[]> {
+  const byTty = new Map<string, TerminalCandidate[]>();
+  const add = (tty: string | null, c: TerminalCandidate): void => {
+    if (!tty) return;
+    let list = byTty.get(tty);
+    if (!list) byTty.set(tty, (list = []));
+    // At most one candidate per backend per tty, LAST reported winning - which is what the
+    // `Map.set` this replaced did, and the two are not the same by accident. One backend can
+    // report the same pane twice: `tmux list-panes -a` walks sessions then windows, so a
+    // window linked into two sessions (`new-session -t`, `link-window`) yields that pane once
+    // per session, with a different `session_name` each time. Appending both would let the
+    // arrival order of a duplicate decide a card's name - and, through `TmuxInfo.session`,
+    // which session `rename-session` and `kill-session` target.
+    const at = list.findIndex((x) => x.backend === c.backend);
+    if (at >= 0) list[at] = c;
+    else list.push(c);
+  };
+
+  for (const e of terminals) {
+    if (e.kind === "multiplexer") {
+      // A multiplexer session always has a name, so this never falls through to the cwd.
+      for (const p of e.panes) add(p.tty, { kind: "multiplexer", backend: e.backend, name: p.session, pane: p });
+    } else {
+      // The explicit tab title, and NOT the OS window title, which agents overwrite with a
+      // noisy status/spinner. An untitled tab falls back to the cwd basename below - it
+      // still names its session, and its `nameSource` is still this backend.
+      for (const p of e.panes) add(p.tty, { kind: "emulator", backend: e.backend, name: p.tabTitle, pane: p });
+    }
+  }
+  return byTty;
+}
+
+/**
+ * Project a session's handles onto `Session`'s two per-vendor fields.
+ *
+ * The only vendor names left in this file, and they are here because `Session.tmux` /
+ * `Session.wezterm` are still two named nullable siblings - structural blocker #2, which
+ * phase 3 replaces with a handle list. This function is what phase 3 deletes; until then it
+ * is the seam, kept in one place so the loop above never grows a second one. A backend with
+ * no field to land in (a zellij pane, today) correlates and names normally and simply has no
+ * handle recorded, which is the honest shape of a half-finished migration rather than a
+ * crash.
+ *
+ * The `Number` casts are that same debt from the other side: the adapters normalize pane ids
+ * to strings because tmux's are `"%3"`, and `WeztermInfo` still holds wezterm's numeric ones.
+ */
+function legacyHandles(
+  mux: TerminalCandidate | undefined,
+  emu: TerminalCandidate | undefined,
+): { tmux: TmuxInfo | null; wezterm: WeztermInfo | null } {
+  const t = mux?.kind === "multiplexer" && mux.backend === "tmux" ? mux.pane : null;
+  const w = emu?.kind === "emulator" && emu.backend === "wezterm" ? emu.pane : null;
+  return {
+    tmux: t
+      ? { session: t.session, window: t.windowName, windowIndex: t.windowIndex, paneId: t.paneId }
+      : null,
+    wezterm: w
+      ? {
+          paneId: Number(w.paneId),
+          tabId: Number(w.tabId),
+          windowId: Number(w.windowId),
+          tabTitle: w.tabTitle,
+          isActive: w.isActive,
+        }
+      : null,
+  };
 }
 
 /**
@@ -137,8 +236,11 @@ export function representativeAgentPids(procs: Proc[]): number[] {
  *
  * The reliable join is process -> controlling tty -> pane. We group agent
  * processes by tty, pick the representative agent process on each tty
- * (`chooseAgentRoot`), and name the session by the tmux session (if the tty is a
- * tmux pane) else the wezterm tab title.
+ * (`chooseAgentRoot`), and name the session by the highest-priority terminal backend
+ * holding a pane on that tty - which no longer means "tmux, else wezterm, else the pid",
+ * because this function names no backend at all. It reads the enumerations the registries
+ * produced, in the order they declared, and a machine running neither shipped backend gets
+ * the same already-tested `process` path a machine running both would if their panes moved.
  *
  * `procCwds` maps a representative pid to its real working directory (from
  * `readProcCwds`); it takes precedence over the pane's reported path, which only
@@ -149,14 +251,7 @@ export function correlate(
   input: DiscoveryInput,
   procCwds: Map<number, string> = new Map(),
 ): DiscoveredSession[] {
-  const { tmux, wezterm } = input;
-
-  const tmuxByTty = new Map<string, TmuxPane>();
-  for (const t of tmux) if (t.tty) tmuxByTty.set(t.tty, t);
-
-  const weztermByTty = new Map<string, WeztermPane>();
-  for (const w of wezterm) if (w.tty) weztermByTty.set(w.tty, w);
-
+  const byTty = panesByTty(input.terminals);
   const sessions: DiscoveredSession[] = [];
 
   for (const [tty, group] of groupAgentsByTty(input.procs)) {
@@ -164,57 +259,30 @@ export function correlate(
     if (!root) continue;
     const agent = root.agent!;
 
-    const tmuxPane = tmuxByTty.get(tty) ?? null;
-    const weztermPane = weztermByTty.get(tty) ?? null;
+    const candidates = byTty.get(tty) ?? [];
+    // The highest-priority backend holding a pane on this tty names the session and supplies
+    // the fallback cwd. Multiplexers outrank emulators (see `enumerateTerminals`), which is
+    // the old tmux-beats-wezterm arm order, now decided by the registries.
+    const primary = candidates[0];
     // The agent process's real cwd is authoritative; the pane path is a fallback.
     const realCwd = procCwds.get(root.pid) ?? null;
+    const cwd = realCwd ?? primary?.pane.cwd ?? null;
+    const fallbackName = `${agent} ${root.pid}`;
+    // The cwd basename is a backend's fallback, not the absence of one: a pane that offers
+    // no name (an untitled tab) is still what named this session, so `nameSource` stays that
+    // backend. With no pane at all there is nothing to have named it, and the session falls
+    // straight to `<agent> <pid>` rather than borrowing a directory name it was not told.
+    const name = primary ? primary.name || basename(cwd) || fallbackName : fallbackName;
+    const nameSource: NameSource = primary?.backend ?? "process";
 
-    let name: string;
-    let nameSource: NameSource;
-    let cwd: string | null;
-    let tmuxInfo: TmuxInfo | null = null;
-    let weztermInfo: WeztermInfo | null = null;
-
-    if (tmuxPane) {
-      name = tmuxPane.session;
-      nameSource = "tmux";
-      cwd = realCwd ?? (tmuxPane.currentPath || null);
-      tmuxInfo = {
-        session: tmuxPane.session,
-        window: tmuxPane.windowName,
-        windowIndex: tmuxPane.windowIndex,
-        paneId: tmuxPane.paneId,
-      };
-    } else if (weztermPane) {
-      cwd = realCwd ?? weztermCwdToPath(weztermPane.cwd);
-      // Prefer an explicit tab title; fall back to the cwd basename rather than
-      // the OS window title, which agents overwrite with a noisy status/spinner.
-      name = weztermPane.tabTitle || basename(cwd) || `${agent} ${root.pid}`;
-      nameSource = "wezterm";
-      weztermInfo = {
-        paneId: weztermPane.paneId,
-        tabId: weztermPane.tabId,
-        windowId: weztermPane.windowId,
-        tabTitle: weztermPane.tabTitle,
-        isActive: weztermPane.isActive,
-      };
-    } else {
-      cwd = realCwd;
-      name = `${agent} ${root.pid}`;
-      nameSource = "process";
-    }
-
-    // A tmux pane can itself live inside a wezterm pane; if we named by tmux but
-    // a wezterm pane also maps to this tty (rare), keep the wezterm handle too.
-    if (!weztermInfo && weztermPane) {
-      weztermInfo = {
-        paneId: weztermPane.paneId,
-        tabId: weztermPane.tabId,
-        windowId: weztermPane.windowId,
-        tabTitle: weztermPane.tabTitle,
-        isActive: weztermPane.isActive,
-      };
-    }
+    // A session may hold one handle per AXIS, and both at once - a multiplexer pane lives
+    // inside an emulator pane, which is why the two interfaces exist. Taking the first of
+    // each IS the composition rule; it replaces a "keep the wezterm handle too" fixup that
+    // ran after the naming branch and had to restate what that branch had just decided.
+    const { tmux: tmuxInfo, wezterm: weztermInfo } = legacyHandles(
+      candidates.find((c) => c.kind === "multiplexer"),
+      candidates.find((c) => c.kind === "emulator"),
+    );
 
     const git = gitInfo(cwd);
     sessions.push({

@@ -1,13 +1,11 @@
 import {
   activateWeztermPane,
-  listWeztermPanes,
   setWeztermTabTitle,
   spawnWeztermTabResult,
   weztermCwdToPath,
-  weztermEnv,
-  type WeztermPane,
 } from "../discovery/wezterm.ts";
-import { resolveBin, WEZTERM_BIN } from "./bin.ts";
+import { normTty } from "../discovery/tty.ts";
+import { binEnv, resolveBin, WEZTERM_BIN } from "./bin.ts";
 import { defaultExec, toResult, type TerminalExec } from "./exec.ts";
 import type {
   EmulatorPane,
@@ -25,21 +23,23 @@ import type {
  * Ghostty adapter, which can do none of the above but launch and raise, needs a field
  * added, this file was allowed to dictate the boundary.
  *
- * Enumeration, focus, spawn and retitle delegate to `discovery/wezterm.ts`, which carries
- * the two operational facts that took a while to learn: the inherited
- * `WEZTERM_UNIX_SOCKET` that goes stale when a GUI restarts, and `--no-auto-start`, which
- * turns a 2.5s block into a fast failure when no GUI is running. Duplicating those into a
- * second copy is how one of them gets fixed and the other does not. Writing and capturing
- * are implemented here because they have no existing home - today they are inline in
- * `actions.ts` and `pane-capture.ts`.
+ * Enumeration moved in from `discovery/wezterm.ts`, so discovery asks the registry what each
+ * backend can see rather than importing two vendors by name. Focus, spawn and retitle still
+ * delegate there - they are the next migration item, and `actions.ts` calls them directly
+ * today. Both sides go through `cli` below, which carries the two operational facts that
+ * took a while to learn: `--no-auto-start`, which turns a 2.5s block into a fast failure
+ * when no GUI is running, and the inherited `WEZTERM_UNIX_SOCKET` that goes stale when a GUI
+ * restarts (now `WEZTERM_BIN.dropEnv`, so tmux gets the same treatment for the same reason).
+ * Writing and capturing are implemented here because they have no existing home - today they
+ * are inline in `actions.ts` and `pane-capture.ts`.
  *
- * Which means routing writes and captures through here is a DELIBERATE behavior change, not
- * a move, and the migration commit should be read as one: the inline call sites in
- * `actions.ts` and `discovery/pane-capture.ts` use neither `--no-auto-start` nor
- * `weztermEnv()`, so they inherit `WEZTERM_UNIX_SOCKET` and may auto-start a mux. The pane
- * ids they are given come from `listWeztermPanes`, which already drops that socket - so
- * today a write can address a different mux than the one the id came from. Sending every
- * command down the same socket the ids were enumerated on is the point of doing it here.
+ * Which means routing writes and captures through here will be a DELIBERATE behavior change,
+ * not a move, and that migration commit should be read as one: the inline call sites still
+ * left in `actions.ts` and `discovery/pane-capture.ts` use neither `--no-auto-start` nor a
+ * scrubbed environment, so they inherit `WEZTERM_UNIX_SOCKET` and may auto-start a mux. The
+ * pane ids they are given come from `list` below, which drops that socket - so today such a
+ * write can address a different mux than the one the id came from. Sending every command
+ * down the same socket the ids were enumerated on is the point of doing it here.
  */
 
 /**
@@ -62,33 +62,69 @@ const KEY_SEQS: Record<Key, string> = {
 /** Capturing a pane is on the poll path - keep it well under the tick interval. */
 const CAPTURE_TIMEOUT_MS = 1000;
 
+/** Field names in wezterm's `cli list --format json` are snake_case; this is the subset we use. */
+interface RawPane {
+  window_id: number;
+  tab_id: number;
+  pane_id: number;
+  tab_title?: string;
+  window_title?: string;
+  cwd?: string;
+  tty_name?: string;
+  is_active?: boolean;
+}
+
 /**
- * Normalize one enumerated wezterm pane: numeric ids to strings, and the `file://` URL
- * wezterm reports as a cwd to a plain path.
+ * Parse `cli list --format json` into normalized panes: numeric ids to strings, and the
+ * `file://` URL wezterm reports as a cwd to a plain path.
  *
- * Both conversions exist today, scattered - `String(session.wezterm.paneId)` at every
- * write site, `weztermCwdToPath` at the one place that reads a cwd. Doing them at the
- * boundary is what lets a caller hold a pane id without knowing whose it is.
+ * Both conversions used to be scattered - `String(session.wezterm.paneId)` at every write
+ * site, `weztermCwdToPath` at the one place that read a cwd. Doing them at the boundary is
+ * what lets a caller hold a pane id without knowing whose it is.
+ *
+ * Returns [] for output that is not the JSON array we asked for, which is the same answer as
+ * "wezterm isn't running": a caller has no more to do with a half-parsed pane list than with
+ * none, and discovery must degrade silently on a machine with no wezterm at all.
  */
-export function toEmulatorPane(p: WeztermPane): EmulatorPane {
-  return {
-    paneId: String(p.paneId),
-    tabId: String(p.tabId),
-    windowId: String(p.windowId),
-    tabTitle: p.tabTitle,
-    windowTitle: p.windowTitle,
-    isActive: p.isActive,
-    tty: p.tty,
-    cwd: weztermCwdToPath(p.cwd),
-  };
+export function parsePanes(stdout: string): EmulatorPane[] {
+  if (!stdout.trim()) return [];
+  let raw: RawPane[];
+  try {
+    raw = JSON.parse(stdout) as RawPane[];
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map((p) => ({
+    paneId: String(p.pane_id),
+    tabId: String(p.tab_id),
+    windowId: String(p.window_id),
+    tabTitle: (p.tab_title ?? "").trim(),
+    windowTitle: (p.window_title ?? "").trim(),
+    isActive: Boolean(p.is_active),
+    tty: normTty(p.tty_name),
+    cwd: weztermCwdToPath(p.cwd ?? ""),
+  }));
 }
 
 export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmulator {
   const bin = () => resolveBin(WEZTERM_BIN);
   /** Every `wezterm cli` call: live default mux, no auto-start, inherited socket dropped. */
   const cli = (args: string[], opts: { timeoutMs?: number } = {}) =>
-    exec(bin(), ["cli", "--no-auto-start", ...args], { ...opts, env: weztermEnv() });
+    exec(bin(), ["cli", "--no-auto-start", ...args], { ...opts, env: binEnv(WEZTERM_BIN) });
   const cmd = async (args: string[], fail: string) => toResult(await cli(args), fail);
+
+  /**
+   * Returns [] when wezterm isn't running or the CLI isn't reachable - the product works
+   * fine with tmux-only or bare terminals, so this must degrade silently.
+   *
+   * Named rather than inlined on the interface because `spawn.tab` needs it too, and a
+   * second `cli list` written there would be the one that forgets `--no-auto-start`.
+   */
+  const list = async (): Promise<EmulatorPane[]> => {
+    const res = await cli(["list", "--format", "json"]);
+    return res.code === 0 ? parsePanes(res.stdout) : [];
+  };
 
   const sendText = (target: EmulatorTarget, text: string, literal: boolean, fail: string) =>
     cmd(
@@ -107,7 +143,7 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
     label: "WezTerm",
     bin: WEZTERM_BIN,
 
-    list: async () => (await listWeztermPanes()).map(toEmulatorPane),
+    list,
 
     write: {
       text: (t, text) => sendText(t, text, true, "wezterm send-text failed"),
@@ -142,11 +178,11 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
         // wezterm's spawn reports only the pane. Resolving its tab costs one more `list`
         // and is what makes the returned target addressable - `focus` raises tabs, so a
         // target without one could not be brought forward by the caller that just made it.
-        const tab = (await listWeztermPanes()).find((p) => p.paneId === paneId);
+        const tab = (await list()).find((p) => p.paneId === String(paneId));
         return {
           ok: true,
           outcomeUnknown: false,
-          target: tab ? { paneId: String(tab.paneId), tabId: String(tab.tabId) } : null,
+          target: tab ? { paneId: tab.paneId, tabId: tab.tabId } : null,
         };
       },
     },

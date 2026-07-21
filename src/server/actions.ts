@@ -17,15 +17,13 @@ import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
 import { paneToken } from "@shared/pane.ts";
 import { harnessFor } from "./harness/index.ts";
-import { listTmuxClients, readTmuxPaneMode } from "./discovery/tmux.ts";
+import { readTmuxPaneMode } from "./terminal/tmux.ts";
+import { EMULATORS, MULTIPLEXERS, hostPanesFor } from "./terminal/registry.ts";
+import type { EmulatorPane } from "./terminal/types.ts";
 import {
   activateWeztermPane,
-  findSessionHostPane,
-  findSessionHostPanes,
-  listWeztermPanes,
   setWeztermTabTitle,
   spawnWeztermTab,
-  type WeztermPane,
 } from "./discovery/wezterm.ts";
 import { run, type RunResult } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
@@ -1140,7 +1138,35 @@ export interface RenameDeps {
   /** `wezterm cli set-tab-title --pane-id <id> -- <title>`. */
   setWeztermTabTitle: (paneId: number, title: string) => Promise<RunResult>;
   /** The wezterm panes whose tabs host a tmux client attached to `session`. */
-  findTmuxHostPanes: (session: string) => Promise<WeztermPane[]>;
+  findTmuxHostPanes: (session: string) => Promise<EmulatorPane[]>;
+}
+
+/**
+ * The emulator panes whose tabs host a multiplexer client for `session`.
+ *
+ * Both sides come from the registries and the join is `hostPanesFor` - the outward half of
+ * the composition rule, which now has exactly one implementation. It replaces
+ * `findSessionHostPanes`, whose inline `/dev/` strip was a normalization bug waiting for a
+ * backend that reported the prefix on both sides; the adapters normalize both ttys, so this
+ * is an equality test.
+ *
+ * Still spelled tmux-to-wezterm at the call sites below, because they hold `session.tmux`
+ * and hand numeric ids to `activateWeztermPane` - the focus/spawn migration item, not this
+ * one.
+ */
+async function tmuxHosts(
+  session: string,
+): Promise<{ hosts: EmulatorPane[]; attached: boolean }> {
+  const [clients, panes] = await Promise.all([
+    MULTIPLEXERS.tmux.clients?.() ?? [],
+    EMULATORS.wezterm.list?.() ?? [],
+  ]);
+  return {
+    hosts: hostPanesFor(session, clients, panes),
+    // Attached with no host tab means attached in a terminal we cannot raise, which is the
+    // one case Focus reports as success without having raised anything.
+    attached: clients.some((c) => c.session === session),
+  };
 }
 
 const defaultRenameDeps: RenameDeps = {
@@ -1148,10 +1174,7 @@ const defaultRenameDeps: RenameDeps = {
   // than as a flag bundle (which would surface an arg-parser dump behind a 500).
   renameTmuxSession: (from, to) => run("tmux", ["rename-session", "-t", from, "--", to]),
   setWeztermTabTitle,
-  findTmuxHostPanes: async (session) => {
-    const [clients, panes] = await Promise.all([listTmuxClients(), listWeztermPanes()]);
-    return findSessionHostPanes(session, clients, panes);
-  },
+  findTmuxHostPanes: async (session) => (await tmuxHosts(session)).hosts,
 };
 
 /**
@@ -1192,7 +1215,9 @@ export async function rename(
     // Best-effort: the tmux name is the card's source of truth and it already
     // moved, so a tmux-only user (or a wezterm GUI that just went away) gets the
     // rename they asked for rather than a failure over a cosmetic tab title.
-    for (const h of hosts) await deps.setWeztermTabTitle(h.paneId, name);
+    // `Number` because the adapter normalizes pane ids to strings and `setWeztermTabTitle`
+    // still takes wezterm's numeric one. It goes when this file moves behind the interface.
+    for (const h of hosts) await deps.setWeztermTabTitle(Number(h.paneId), name);
     return renamed;
   }
   if (session.wezterm) {
@@ -1225,10 +1250,12 @@ export async function focus(session: Session): Promise<ActionResult> {
     // session in a NEW, titled tab. We deliberately never repoint an existing
     // client at a different session or detach/kill one - that would yank a tab
     // the user has another session open in.
-    const [clients, panes] = await Promise.all([listTmuxClients(), listWeztermPanes()]);
-    const host = findSessionHostPane(sess, clients, panes);
+    const { hosts, attached } = await tmuxHosts(sess);
+    const host = hosts[0] ?? null;
     if (host) {
-      const r = await activateWeztermPane(host.tabId, host.paneId);
+      // `Number` for the same reason as in `rename` - the adapter normalizes pane ids to
+      // strings, and this call site still holds wezterm's numeric ones.
+      const r = await activateWeztermPane(Number(host.tabId), Number(host.paneId));
       return check(r, "wezterm activate failed");
     }
     // No tab hosts it yet: open it in a fresh tab titled with the session name.
@@ -1237,7 +1264,7 @@ export async function focus(session: Session): Promise<ActionResult> {
     // wezterm couldn't open a tab. If the session is already attached somewhere
     // (e.g. a non-wezterm terminal we can't raise), we've at least selected the
     // right pane - report success rather than switching a client's session.
-    if (clients.some((c) => c.session === sess)) return { ok: true };
+    if (attached) return { ok: true };
     return { ok: false, error: "no terminal tab hosts this tmux session and none could be opened" };
   }
   return { ok: false, error: "session has no focusable pane" };

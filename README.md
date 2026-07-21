@@ -146,10 +146,34 @@ Three layers, most-to-least automatic:
 | **MCP review channel** | `claude mcp add …` (see below) | agents push diffs / plans / questions for you to decide |
 
 One long-lived **daemon** (`src/server`) serves the React SPA (`src/web`) plus a
-JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps
-`ps` + `wezterm cli list` + `tmux list-panes` and reconciles an in-memory
-registry that broadcasts changes over SSE. Reviews and dispatched tasks are
-persisted in SQLite (`node:sqlite`).
+JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps `ps` plus
+every terminal backend it knows about (today `tmux list-panes` and
+`wezterm cli list`) and reconciles an in-memory registry that broadcasts changes
+over SSE. Reviews and dispatched tasks are persisted in SQLite (`node:sqlite`).
+
+### Which terminal you use is declared, not assumed
+
+Discovery names no terminal. It asks each registered backend what panes it can see and
+joins them to agent processes by controlling tty, so a session is named by the
+**innermost** backend holding its pane: a multiplexer session name (tmux) if there is
+one, else a terminal tab title (WezTerm), else `<agent> <pid>`. A session can hold a
+handle from each - a tmux pane lives *inside* a WezTerm pane - and both are kept, because
+writes go to the innermost while raising a window is the outer one's job.
+
+The two axes are separate for that reason. A **multiplexer** has named sessions that
+outlive any window and a copy-mode that can swallow keystrokes; a **terminal emulator**
+raises windows and has no persistence. Neither is a subset of the other, and a backend
+declares what it genuinely cannot do rather than stubbing it.
+
+You pay nothing for backends you do not use: a terminal whose binary is not installed is
+skipped from the filesystem, without a process being spawned for it on any tick.
+
+Each backend also declares which inherited environment variables to drop before its CLI
+runs. WezTerm drops `WEZTERM_UNIX_SOCKET`: a daemon started from a WezTerm pane inherits a
+socket pinned to that GUI, and when the GUI restarts the socket goes stale and every tab
+would otherwise fall back to a `claude <pid>` name that Focus cannot raise. tmux declares
+nothing to drop - its `TMUX` names a server that is alive by definition, and it is the same
+server the app types into.
 
 ### What each agent can do is declared, not assumed
 

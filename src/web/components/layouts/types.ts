@@ -43,9 +43,9 @@ export interface SessionViewProps {
   gateAlerts: ReadonlySet<string>;
   selectedId: string | null;
   onSelect: (id: string) => void;
-  /** Drop the selection (reverses the board's drill-in, empties the console's detail). */
+  /** Close the current detail: reverses the board drill-in or empties the console. */
   onDeselect: () => void;
-  /** Grid focus mode. Meaningless where the detail is always open (console, board). */
+  /** Open detail id: grid focus mode, console selection, or the board's drill-in. */
   expandedId: string | null;
   onToggleExpand: (id: string) => void;
   onOpenReviews: (id: string) => void;

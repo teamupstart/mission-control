@@ -7116,6 +7116,17 @@ kbd {
     var(--shadow),
     0 0 20px color-mix(in oklab, var(--attention) 13%, transparent);
 }
+/* Arrow-key selection on the board. It mirrors the card-grid cursor without
+   opening the console detail; Enter performs that second step. Kept after the
+   attention treatment so the cursor remains visible on the card that needs you most. */
+.tile.selected,
+.tile.selected:hover {
+  border-color: color-mix(in oklab, var(--select) 70%, var(--border));
+  box-shadow:
+    var(--shadow),
+    0 0 0 2px color-mix(in oklab, var(--select) 65%, transparent),
+    0 0 22px color-mix(in oklab, var(--select) 20%, transparent);
+}
 .tile.tone-exited {
   opacity: 0.62;
 }

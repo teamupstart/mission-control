@@ -60,6 +60,10 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Board keyboard selection is deliberately separate from its open console detail:
+  // arrows move the cursor among tiles, then Enter promotes it into the drill-in.
+  // Pointer clicks set both in one gesture, as they always have.
+  const [boardOpenId, setBoardOpenId] = useState<string | null>(null);
   // Only whether the dispatch modal is open. The draft it edits belongs to
   // DispatchLayer, deliberately out of this component: App re-renders the whole
   // session grid, and the draft has to survive a close without dragging every
@@ -168,7 +172,9 @@ export function App(): React.JSX.Element {
    */
   const onKilled = useCallback(
     (id: string) => {
-      const drop = detailLayer(layout) === "expanded" ? setExpandedId : setSelectedId;
+      const layer = detailLayer(layout);
+      const drop =
+        layer === "expanded" ? setExpandedId : layer === "board" ? setBoardOpenId : setSelectedId;
       drop((cur) => (cur === id ? null : cur));
     },
     [layout],
@@ -295,10 +301,12 @@ export function App(): React.JSX.Element {
   // than leaving each view to force the prop:
   //   grid    - focus mode: at most one card, toggled, usually none.
   //   console - the detail pane IS the expanded card, so it's whatever is selected.
-  //   board   - same: selecting drills into the console detail, so it's whatever is selected.
+  //   board   - the console detail is separate from the arrow-key cursor; Enter or a
+  //             click opens it.
   // Keeping the state honest (rather than overriding `expanded` at the call site) is
   // what lets Escape, the expand chord and the card's own toggle all agree.
-  const expandedForView = layout === "grid" ? expandedId : selectedId;
+  const expandedForView =
+    layout === "grid" ? expandedId : layout === "board" ? boardOpenId : selectedId;
 
   const modalSession = reviewSessionId ? sessions.find((s) => s.id === reviewSessionId) : null;
   const modalReviews = modalSession
@@ -328,8 +336,14 @@ export function App(): React.JSX.Element {
     backlogPlan: foreman.backlogPlan,
     gateAlerts,
     selectedId,
-    onSelect: setSelectedId,
-    onDeselect: () => setSelectedId(null),
+    onSelect:
+      layout === "board"
+        ? (id) => {
+            setSelectedId(id);
+            setBoardOpenId(id);
+          }
+        : setSelectedId,
+    onDeselect: layout === "board" ? () => setBoardOpenId(null) : () => setSelectedId(null),
     expandedId: expandedForView,
     onToggleExpand: toggleExpand,
     onOpenReviews: setReviewSessionId,
@@ -383,11 +397,12 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (selectedId && !sessions.some((s) => s.id === selectedId)) setSelectedId(null);
     if (expandedId && !sessions.some((s) => s.id === expandedId)) setExpandedId(null);
+    if (boardOpenId && !sessions.some((s) => s.id === boardOpenId)) setBoardOpenId(null);
     for (const bound of sessionBoundOverlays) {
       if (bound.sessionId && !sessions.some((s) => s.id === bound.sessionId)) bound.close();
     }
     if (renamingId && !visible.some((s) => s.id === renamingId)) setRenamingId(null);
-  }, [sessions, visible, selectedId, expandedId, sessionBoundOverlays, renamingId]);
+  }, [sessions, visible, selectedId, expandedId, boardOpenId, sessionBoundOverlays, renamingId]);
 
   // Keep the keyboard-selected card in view as selection moves.
   useEffect(() => {
@@ -474,13 +489,16 @@ export function App(): React.JSX.Element {
           // Peel back one layer at a time: collapse an expanded card first, then
           // (on a second press) cancel any pending action and drop the selection.
           //
-          // Grid-only, because only the grid has a layer to peel: in the console and
-          // the board, "expanded" is just what the detail pane is, so collapsing would
-          // change nothing on screen while eating the Escape that should have closed
-          // the drawer. (`expandedId` can also be a leftover from a visit to the grid.)
+          // Grid focus and the board drill-in each sit above selection. Closing either
+          // leaves the keyboard cursor parked on the card it came from.
           if (layout === "grid" && expandedId) {
             e.preventDefault();
             setExpandedId(null);
+            return;
+          }
+          if (layout === "board" && boardOpenId) {
+            e.preventDefault();
+            setBoardOpenId(null);
             return;
           }
           if (!selectedId) return;
@@ -501,9 +519,22 @@ export function App(): React.JSX.Element {
             cols: columnCount(gridRef.current),
             columns: boardColumns,
           });
-          if (nextId) setSelectedId(nextId);
+          if (nextId) {
+            setSelectedId(nextId);
+            // Once drilled in, the board is a console rail: arrows switch the open
+            // detail too. In the overview they only move the tile cursor.
+            if (layout === "board" && boardOpenId) setBoardOpenId(nextId);
+          }
           return;
         }
+        case "Enter":
+          // Preserve the native activation of a tab-focused link or button. Arrow
+          // selection leaves focus on the page, so its Enter still comes through here.
+          if (target?.closest("button, a[href]")) return;
+          if (layout !== "board" || !selectedId || boardOpenId) return;
+          e.preventDefault();
+          setBoardOpenId(selectedId);
+          return;
       }
 
       // Actions on the selected card.
@@ -574,7 +605,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, renamingId, toggleExpand, bindings, layout]);
+  }, [visible, selectedId, expandedId, boardOpenId, renamingId, toggleExpand, bindings, layout]);
 
   // Land the cursor in a keyboard-expanded card's send box. The panel that renders
   // it mounts on the render this effect trails, so a synchronous focus in the chord

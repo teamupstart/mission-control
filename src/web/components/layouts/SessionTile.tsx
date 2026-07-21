@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { AgentDot, CostChip, InspectorTileFlag, PrTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
@@ -30,16 +30,21 @@ export function isDragSelection(sel: { isCollapsed: boolean } | null): boolean {
  */
 export function SessionTile({
   session,
+  selected = false,
   gateNeedsYou,
   onOpen,
+  registerEl,
   draggingRepo,
   onDropped,
   onDropError,
   onDropConfirm,
 }: {
   session: Session;
+  /** The board's arrow-key cursor. Selection does not open the tile until Enter. */
+  selected?: boolean;
   gateNeedsYou: boolean;
   onOpen: () => void;
+  registerEl?: (id: string, el: HTMLElement | null) => void;
   draggingRepo: string | null;
   onDropped: () => void;
   onDropError: (message: string) => void;
@@ -54,12 +59,19 @@ export function SessionTile({
   const gate = nm ? { ...gateStepView(nm), steps: nm.steps } : null;
   const isRunning = session.state === "working" || session.state === "starting";
   const [over, setOver] = useState(false);
+  const setTileRef = useCallback(
+    (el: HTMLDivElement | null) => registerEl?.(session.id, el),
+    [registerEl, session.id],
+  );
 
   const droppable = canAcceptTask(session, draggingRepo);
 
   return (
     <div
+      ref={setTileRef}
       className={`tile tone-${st.tone}${st.tone === "attention" ? " attention" : ""}${
+        selected ? " selected" : ""
+      }${
         droppable ? " can-drop" : ""
       }${over ? " drop-over" : ""}`}
       onDragOver={(e) => {
@@ -109,6 +121,7 @@ export function SessionTile({
           onOpen();
         }}
         aria-label={`Open ${session.name || "unnamed session"}`}
+        aria-current={selected}
       />
 
       <span className="tile-head">

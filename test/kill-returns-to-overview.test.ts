@@ -24,14 +24,14 @@ const src = (rel: string): string =>
 test("every layout says which layer a kill closes", () => {
   // A fourth layout answers here, not in another `layout === "grid"` ternary in App.
   for (const l of LAYOUTS) {
-    assert.ok(["expanded", "selection"].includes(detailLayer(l.id)), `${l.id} has no layer`);
+    assert.ok(["expanded", "selection", "board"].includes(detailLayer(l.id)), `${l.id} has no layer`);
   }
   // The grid keeps its selection - that's the keyboard's place among the cards, and focus
-  // mode is the only thing filling the screen. The console and the board have no separate
-  // expansion to drop, so the selection is what has to go for the overview to come back.
+  // mode is the only thing filling the screen. Console drops its selection; board drops
+  // its separate drill-in while leaving the new keyboard cursor parked on the card.
   assert.equal(detailLayer("grid"), "expanded");
   assert.equal(detailLayer("console"), "selection");
-  assert.equal(detailLayer("board"), "selection");
+  assert.equal(detailLayer("board"), "board");
 });
 
 test("a landed kill tells App, and a refused one does not", () => {

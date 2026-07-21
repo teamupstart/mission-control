@@ -1,6 +1,7 @@
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { parseModelJson, runStructured } from "../claude-cli.ts";
+import { runClaudeText } from "../claude-cli.ts";
+import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -42,10 +43,10 @@ export function reviewModel(cfg: { reviewModel?: string }): string {
  */
 export async function reviewSession(input: ReviewInput, model: string): Promise<ReviewResult> {
   const r = await runStructured<typeof VerdictSchema>(
+    (p) => runClaudeText(p, { model }),
     buildReviewPrompt(input),
     extractVerdict,
     "Foreman review",
-    { model },
   );
   return r.kind === "ok" ? { kind: "verdict", verdict: r.value } : { kind: "failed", reason: r.reason };
 }

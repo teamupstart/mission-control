@@ -9,13 +9,8 @@ import {
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
-import {
-  createLimiter,
-  parseModelJson,
-  resultText,
-  runClaudeText,
-  runStructured,
-} from "../claude-cli.ts";
+import { resultText, runClaudeText } from "../claude-cli.ts";
+import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
@@ -707,17 +702,21 @@ async function reviewRound(
     round: pr.round + 1,
   });
 
+  // Still `runClaudeText` directly rather than a runner: this is the one caller that
+  // holds TOOLS, and the grant's `cwd` + deny-list shape (`LlmToolGrant`) is a migration
+  // of its own - see the LLM-runner phase of docs/plans/pluggable-integrations/plan.md.
   const result = await runStructured<typeof InspectorVerdictSchema>(
+    (p) =>
+      runClaudeText(p, {
+        model: reviewModel(cfg),
+        timeoutMs: TIMEOUT_MS,
+        tools: REVIEW_TOOLS,
+        cwd: dir,
+        settings: DENY_SETTINGS,
+      }),
     prompt,
     (raw) => parseModelJson(raw, InspectorVerdictSchema),
     "The inspector",
-    {
-      model: reviewModel(cfg),
-      timeoutMs: TIMEOUT_MS,
-      tools: REVIEW_TOOLS,
-      cwd: dir,
-      settings: DENY_SETTINGS,
-    },
   );
   if (result.kind !== "ok") {
     // A transient failure must NEVER advance the head sha: doing so would record this

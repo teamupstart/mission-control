@@ -6,6 +6,7 @@ import type {
   ForemanStatus,
   InspectorInspection,
   InspectorStatus,
+  LlmStatus,
   NmFixDetail,
   PermissionMode,
   ResetPreview,
@@ -26,6 +27,8 @@ import type {
   HarnessesConfigPatch,
   InspectorConfig,
   InspectorConfigPatch,
+  LlmConfig,
+  LlmConfigPatch,
   ResolveEpisode,
   ShippingConfig,
   ShippingConfigPatch,
@@ -96,6 +99,16 @@ export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/c
 export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspector/config");
 export const fetchInspectorPrs = () => fetchJson<InspectorInspection[]>("/api/inspector/prs");
 export const fetchInspectorStatus = () => fetchJson<InspectorStatus>("/api/inspector/status");
+/** Which provider the app's offline work uses, and each background job's model override. */
+export const fetchLlmConfig = () => fetchJson<LlmConfig>("/api/llm/config");
+/**
+ * The RESOLVED runner and models, plus the providers this build has.
+ *
+ * Separate from the config for the reason the Inspector's status is: the config is what was
+ * stored, this is what the daemon will actually spawn with once the env layer - which the
+ * browser cannot see - has had its say.
+ */
+export const fetchLlmStatus = () => fetchJson<LlmStatus>("/api/llm/status");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 /**
@@ -382,6 +395,9 @@ export const api = {
   // --- Harnesses (dispatch-time defaults) ---
   setHarnessesConfig: (cfg: HarnessesConfigPatch) => put(`/api/harnesses/config`, cfg),
   setInspectorConfig: (cfg: InspectorConfigPatch) => put(`/api/inspector/config`, cfg),
+
+  // --- LLM (which provider does the app's own offline work, and on which model) ---
+  setLlmConfig: (cfg: LlmConfigPatch) => put(`/api/llm/config`, cfg),
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),

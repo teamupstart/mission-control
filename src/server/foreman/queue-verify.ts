@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
-import { parseModelJson, runStructured } from "../claude-cli.ts";
+import { runClaudeText } from "../claude-cli.ts";
+import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
 
@@ -171,10 +172,10 @@ export async function verifyItem(
   model: string,
 ): Promise<QueueVerifyResult> {
   const r = await runStructured<typeof QueueVerdictSchema>(
+    (p) => runClaudeText(p, { model }),
     buildVerifyPrompt(input),
     extractQueueVerdict,
     "Foreman verify",
-    { model },
   );
   return r.kind === "ok"
     ? { kind: "verdict", verdict: r.value as QueueVerdict }

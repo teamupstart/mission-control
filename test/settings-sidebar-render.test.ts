@@ -54,6 +54,7 @@ const COST_ONLY = /Track what the fleet costs/; // the telemetry master toggle l
 const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
+const MODELS_ONLY = /Background jobs/; // the LLM panel's per-job group label
 
 test("the rail lists every category exactly once", () => {
   const html = render();
@@ -136,6 +137,18 @@ test("Task sources is a category of its own: its panel shows, the others don't",
   assert.doesNotMatch(html, KEYBOARD_ONLY);
   assert.doesNotMatch(html, HARNESSES_ONLY);
   assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>⇊<\/span>Task sources/);
+});
+
+// Models is the category that decides which provider does the app's own offline work and on
+// which model. A panel that fails to render leaves that unanswerable from inside the app -
+// which is the exact state this whole surface exists to end: three hardcoded model ids that
+// nothing surfaced anywhere.
+test("Models is a category of its own: its panel shows, the others don't", () => {
+  const html = render("models");
+  assert.match(html, MODELS_ONLY);
+  assert.doesNotMatch(html, KEYBOARD_ONLY);
+  assert.doesNotMatch(html, TASK_SOURCES_ONLY);
+  assert.match(html, /settings-nav-item is-active"[^>]*><span[^>]*>◈<\/span>Models/);
 });
 
 // A static render runs no effects, so this is the pre-poll state - the state a first-run

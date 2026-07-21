@@ -4984,6 +4984,26 @@ kbd {
   opacity: 0.5;
 }
 
+/* ---- Models settings category (which provider does the app's own offline work) ----
+   Deliberately thin: the panel reuses `.inspector-modes` for its provider radio group and
+   `.foreman-model*` for its fields, because both are the shared widget's markup and a third
+   class vocabulary would be three selectors to keep in step for one control. Only what is
+   genuinely this panel's lands here. */
+/* Separated from the intro prose the way `.foreman-models` is from the fieldset above it -
+   `.inspector-modes` sits directly under a radio group in its own panel and only needs 10px. */
+.llm-runners {
+  margin-top: 18px;
+}
+/* In a field row the source line follows a blurb, so 4px is enough; here it follows a radio
+   and reads as jammed against it. Sized to sit with the row rather than under the legend. */
+.llm-runners .foreman-model-source {
+  margin-top: 7px;
+}
+/* Sits under the fields, so it needs the gap the field rows do not carry themselves. */
+.llm-elsewhere {
+  margin-top: 18px;
+}
+
 /* ---- Foreman settings category (the panel behind the rail) ---- */
 .foreman-settings-blurb {
   margin: 0 0 14px;

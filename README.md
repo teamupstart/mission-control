@@ -495,13 +495,14 @@ It lands in two tiers, both in the daemon:
 1. **Instantly, with no model.** The `UserPromptSubmit` hook already carries your prompt,
    so the moment you send one the card shows your own words, shortened to a line. Free,
    and the card is never blank waiting on anything.
-2. **Refined, a few seconds later.** A headless `claude -p` on Haiku rewrites it into one
-   sentence, reading your prompt plus a small window of the conversation. This runs
-   through the **local `claude` CLI, not the Anthropic API** - there's no API key, and it
-   bills through whatever your CLI is logged in as.
+2. **Refined, a few seconds later.** One headless model call rewrites it into one
+   sentence, reading your prompt plus a small window of the conversation. Which provider
+   and which model is **Settings → [Models](#models-what-the-apps-own-model-work-runs-on)**;
+   out of the box that is the **local `claude` CLI, not the Anthropic API** - there's no
+   API key, and it bills through whatever your CLI is logged in as.
 
-The goal refreshes as you steer the session, at most once a minute per session. If
-`claude` is missing, logged out, or slow, the card quietly keeps your own words - nothing
+The goal refreshes as you steer the session, at most once a minute per session. If the
+provider is missing, logged out, or slow, the card quietly keeps your own words - nothing
 breaks, you just get a rougher sentence.
 
 What it deliberately isn't:
@@ -951,8 +952,49 @@ not two notifications. A quiet window produces nothing at all.
 
 Away state lives in the daemon, not the browser, so it survives closing the tab -
 which is the case it exists for. The digest is read once; a refresh won't re-announce
-it. If the local `claude` CLI is missing or logged out, the narrative is simply absent
-and the rollup carries the summary on its own.
+it. If the provider is missing or logged out, the narrative is simply absent and the
+rollup carries the summary on its own. Which model writes it is
+**Settings → [Models](#models-what-the-apps-own-model-work-runs-on) → Away digest**.
+
+## Models (what the app's own model work runs on)
+
+Mission Control does a little model work of its own - naming an untitled [dispatch](#dispatch-an-agent),
+rewriting a prompt into the [Goal](#goal) on a card, narrating the [away digest](#away-mode). None of
+it is the agent in a card, and none of it should have to be: **Settings → Models** is where you
+say which provider does that work and which model each job uses.
+
+Two separate choices, deliberately.
+
+**The provider** is app-wide - it answers *how* a model is called, not which one. Today one ships
+(the local `claude` CLI, which is why there is no API key anywhere in this path: it bills through
+whatever that CLI is logged in as). The picker exists anyway, because "what is this running as?"
+should be answerable from inside the app rather than by reading the source. It is entirely
+independent of which harness a card runs, which is the point - you can review a Codex session with
+Claude, or run the cheap jobs somewhere cheaper.
+
+**The model** is per job:
+
+| Job | Default | Env | What it does |
+|---|---|---|---|
+| Task title | `claude-haiku-4-5` | `MISSION_TASK_TITLE_MODEL` | Names a dispatched task whose Title was left blank, for the card and the branch |
+| Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
+| Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
+
+Each resolves the same way [Foreman's four](#which-model-foreman-runs-as) and the
+[Inspector's one](#the-review-model) do: **your setting, then the environment variable, then the
+shipped default**. Clearing a field means "fall back", never "run with no model" - an unset
+`--model` inherits whatever the CLI happens to default to, which is the priciest tier available
+and is not recorded anywhere. The panel prints which of the three won, because an environment
+variable set in the daemon's shell outranks the box and would otherwise be invisible from the
+browser. Any id your `claude` CLI accepts works; the fields are free text, not a fixed list.
+
+All three are cheap calls with a deterministic tier standing behind them, so a missing or
+logged-out provider costs you a rougher title, your own words instead of a refined goal, or a
+digest with no narrative - never an error and never a failed dispatch.
+
+**Foreman's four models and the Inspector's review model are not here.** They live with the
+subsystem that spends them - **Settings → Foreman** and **Settings → Inspector** - because each
+panel owns the config it writes.
 
 ## Foreman (auto-responder)
 
@@ -1961,8 +2003,9 @@ that looks perfectly healthy would help nobody.
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt. The fallback, reached only when the wait below finds nothing |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the agent's first hook - the only honest "I can read input" signal - before falling back to the settle above. Skipped outright for an agent that reports no hooks at all (Codex), which would otherwise spend it in certain silence on every dispatch |
-| `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank |
+| `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
+| `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
@@ -1993,16 +2036,16 @@ that looks perfectly healthy would help nobody.
 | `FOREMAN_BACKLOG_RETRY_MS` | `600000` | Backlog autopilot: how long serial mode lasts before the dependency read is retried, so a transient outage doesn't degrade scheduling until a restart |
 | `FOREMAN_BACKLOG_STORE_BACKOFF_MS` | `15000` | Backlog autopilot: first wait after the daemon refuses to store a plan, doubling per consecutive failure up to 10 min - a broken route can't cost a model call per tick, and after three it schedules one task at a time rather than stopping |
 | `FOREMAN_QUEUE_SETTLE_MS` | `10000` | how long a session must sit idle before its work counts as settled - shared by the work queue's verify step and by the backlog autopilot's "is this agent free?" test |
-| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence |
+| `MISSION_GOAL_MODEL` | `claude-haiku-4-5` | [Goal](#goal): the model that rewrites a prompt into the card's sentence. **Settings → Models → Goal** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_POLL_MS` | `5000` | [Away mode](#away-mode): how often the daemon re-checks for stuck sessions |
-| `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative |
+| `MISSION_AWAY_DIGEST_MODEL` | `claude-haiku-4-5` | [Away mode](#away-mode): the model that writes the return digest's narrative. **Settings → Models → Away digest** wins where it is set, then this, then the shipped default |
 | `MISSION_AWAY_DIGEST_TIMEOUT_MS` | `20000` | Away mode: hard cap on the digest call; on a timeout the deterministic rollup stands alone |
 | `CLAUDE_SETTINGS_PATH` | `~/.claude/settings.json` | which settings file the hook / statusLine / [cost telemetry](#cost-telemetry) installers edit. Overridable so tests never touch your real one |
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
 shortcuts, alert delivery, message formatting, and the usage row's fold all live in the
-daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, Task sources, and Cost
-settings - so they are the same in every tab, on `localhost` and `127.0.0.1` alike, in the
+daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, Task sources, Models, and
+Cost settings - so they are the same in every tab, on `localhost` and `127.0.0.1` alike, in the
 desktop app and in a browser, and they survive an upgrade. The browser keeps a copy in
 `localStorage`, but only as a cache so the dashboard paints your layout in the first
 frame; deleting it costs one request, not a preference.

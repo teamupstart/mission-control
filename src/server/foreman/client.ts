@@ -1,4 +1,6 @@
 import { BASE_URL } from "@shared/harness-runtime.mjs";
+import { DEFAULT_LLM_RUNNER_ID, isLlmRunnerId } from "@shared/llm.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type {
   BacklogPlanInput,
@@ -127,6 +129,25 @@ export class ForemanClient implements ForemanActions {
    */
   async getConfig(): Promise<ForemanConfig> {
     return ForemanConfigSchema.parse(await get<unknown>("/api/foreman/config"));
+  }
+
+  /**
+   * Which provider the app's offline work spawns through, resolved by the DAEMON.
+   *
+   * Over a route rather than off the DB, because the Foreman worker is a separate process
+   * and never touches it - and off the daemon rather than re-derived here, because the
+   * setting is one ladder (config, then env, then default) and the daemon is the only side
+   * that can see the config layer at all. A worker resolving it from its own environment
+   * would answer differently from the panel that printed it.
+   *
+   * Falls back rather than throwing on anything it cannot read - an id this build does not
+   * have, a daemon too old to serve the route. The runner is a preference; a review loop
+   * that idled over one would be a worse failure than running on the default.
+   */
+  async llmRunner(): Promise<LlmRunnerId> {
+    const status = await get<{ runner?: { id?: string } }>("/api/llm/status");
+    const id = status?.runner?.id;
+    return id && isLlmRunnerId(id) ? id : DEFAULT_LLM_RUNNER_ID;
   }
 
   /**

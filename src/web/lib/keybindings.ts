@@ -136,7 +136,19 @@ const ACTION_BY_ID = new Map<ActionId, ActionDef>(ACTIONS.map((a) => [a.id, a]))
 // Keys the grid reserves for structural navigation. They can't be reassigned,
 // because the handler acts on them unconditionally (Esc peels back a layer;
 // arrows walk the grid regardless of modifiers), so a binding here could never win.
-const RESERVED_KEYS = new Set(["Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+//
+// Enter is reserved for a slightly different reason: it opens the board's selected tile,
+// and everywhere else it is the browser's own "activate the focused control". A binding
+// on it would work in some layouts and silently not in others, which is the one promise
+// the shortcut table makes.
+const RESERVED_KEYS = new Set([
+  "Escape",
+  "Enter",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+]);
 
 const MOD_TOKENS = ["cmd", "ctrl", "alt", "shift"] as const;
 

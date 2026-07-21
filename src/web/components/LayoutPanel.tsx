@@ -82,9 +82,10 @@ export function LayoutPanel({
       </div>
       <p className="settings-hint">
         Every layout reaches the same sessions and the same actions, so nothing is hidden by the
-        choice - only the shape around them changes. Only the card grid has a focus mode; in the
-        console and the board the selected session is already the open detail, so <kbd>e</kbd> and
-        the floating command bar don't apply there.
+        choice - only the shape around them changes. Only the card grid has a focus mode; the
+        console opens the selected session's detail as you move, so <kbd>e</kbd> and the floating
+        command bar don't apply there. The board keeps the two apart: the arrow keys move a
+        cursor over the tiles and <kbd>Enter</kbd> opens the one it's on.
       </p>
     </section>
   );

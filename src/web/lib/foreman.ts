@@ -90,11 +90,14 @@ export const DISPOSITION_LABEL: Record<NoteDisposition, string> = {
   skipped: "left for you",
 };
 
-/** Where an approved draft should be delivered, or that it can no longer be. */
+/** Where an approved draft should be delivered, or why it can no longer be. */
 export type DeliveryTarget =
   | { kind: "review"; reviewId: string }
   | { kind: "send" }
-  | { kind: "stale" };
+  /** The review this text was written to answer has already been resolved. */
+  | { kind: "stale" }
+  /** A terminal draft with no pane to type into - Foreman had no channel either. */
+  | { kind: "no-channel" };
 
 /**
  * Deliver to the channel the draft was actually made FOR, read from the note's
@@ -104,16 +107,27 @@ export type DeliveryTarget =
  * text was written to answer a question that is now closed, and sending it at whatever
  * review happens to be open next answers the wrong one in the human's name.
  *
- * A terminal marker types into the session; a marker-less draft falls back to the live
- * input review, else the terminal.
+ * A terminal marker types into the session, but only when there is something to type
+ * into. `canSend` is the same tmux/wezterm test the server's `classifyPending` makes, and
+ * it is asked here for the same reason it is asked there: an escalation carrying
+ * "no reply channel" was raised BECAUSE nothing could deliver it, so offering the human a
+ * button whose whole job is to deliver it describes a send that cannot happen.
  *
- * Pure, and out here with `foremanSendBlock`, because that stale rule is invisible
- * unless you know why it exists and it was previously written out once per surface.
+ * A marker-less draft falls back to the live input review, else the terminal.
+ *
+ * This is the ONE predicate the surfaces render from - `undeliverable` below turns it into
+ * the sentence they show. The two answers must come from one place: a card that offers
+ * Approve where `approve()` will silently dismiss is a button that lies about what it did.
+ *
+ * Pure, and out here with `foremanSendBlock`, because these rules are invisible unless you
+ * know why they exist and they were previously written out once per surface.
  */
 export function deliveryTarget(o: {
   handledMarker: string | null;
   inputReviewId: string | null;
   pendingReviewIds: ReadonlySet<string> | undefined;
+  /** Whether the session has a pane to type into. Absent reads as "yes", see below. */
+  canSend?: boolean;
 }): DeliveryTarget {
   const marker = o.handledMarker;
   if (marker?.startsWith("review:")) {
@@ -121,8 +135,33 @@ export function deliveryTarget(o: {
     if (o.pendingReviewIds?.has(reviewId) ?? false) return { kind: "review", reviewId };
     return { kind: "stale" };
   }
-  if (marker) return { kind: "send" };
-  return o.inputReviewId ? { kind: "review", reviewId: o.inputReviewId } : { kind: "send" };
+  // Defaulted to true rather than false so a caller that does not pass it keeps the old
+  // behaviour exactly. Withholding a send the human explicitly asked for is not the safe
+  // side here - the note may be the only way to unblock a child - so the refusal is made
+  // only on positive evidence that there is no pane.
+  const canSend = o.canSend ?? true;
+  if (marker) return canSend ? { kind: "send" } : { kind: "no-channel" };
+  if (o.inputReviewId) return { kind: "review", reviewId: o.inputReviewId };
+  return canSend ? { kind: "send" } : { kind: "no-channel" };
+}
+
+/**
+ * Why this note can no longer be delivered, in the human's terms, or null when it can.
+ *
+ * The sentence is composed from the capability rather than typed at each refusing surface,
+ * for the reason CLAUDE.md gives for `workQueueUnsupportedWhy`: two surfaces refusing the
+ * same thing in two wordings is two chances to explain it wrong, and this is the exact
+ * spot where the dashboard has to admit that Foreman wrote an answer it could not send.
+ */
+export function undeliverable(target: DeliveryTarget): string | null {
+  switch (target.kind) {
+    case "stale":
+      return "The question this answers has already been resolved, so there is nothing left to send it to.";
+    case "no-channel":
+      return "This session has no terminal pane to type into, which is why Foreman drafted this instead of sending it.";
+    default:
+      return null;
+  }
 }
 
 /**

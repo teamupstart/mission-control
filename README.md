@@ -887,8 +887,13 @@ reasoning kept as the recommendation - rather than typed at a menu that would di
 You get the same affordance for the same reason: a menu on any session is offered to you as
 [clickable rows](#answer-a-sessions-menu-from-the-dashboard) too, and whichever of you
 reaches it second is refused rather than pressing the wrong row. Because a visible menu puts
-a session in `needs-you` on its own, Foreman now also picks up sessions parked on one that
-no hook has told it about.
+a session in `needs-you` on its own, Foreman also picks up sessions parked on one that no
+hook has told it about - and it treats the menu itself as the question, rather than waiting
+for a hook to agree that one is being asked. That gap is real and measurable: Claude reports
+`AskUserQuestion` as *work in progress* when the menu opens and only says it is waiting for
+you about six seconds later, so an ask caught in between used to be handed straight back to
+you as "no reply channel", with an answer Foreman had already written. The menu's own rows
+identify the ask, so one question costs one review however the hooks land.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it
@@ -939,6 +944,14 @@ you still *owe* is a one-line strip above it - badge, disposition, purpose, **Ap
 send** - that expands for the recommendation and **Dismiss**. It can't cover the chat,
 because the prose isn't in it. The strip unmounts once the note is answered or dismissed;
 the inline entry stays.
+
+**Approve & send** appears only where there is somewhere to send it. A note whose question
+has since been resolved elsewhere, or one Foreman escalated *because* it had no reply channel,
+offers **Dismiss** and says which of the two it is - the alternative was a button that
+silently closed the note, which reads as having sent something. Foreman also re-checks the
+session before pinning a decision at all: a review takes up to a few minutes, and if the
+session moved on in that time the decision is filed in the **Foreman · N** history instead of
+waiting for a click on a question that has already closed.
 
 Every decision is also **kept**, which the note alone never was - a note is one upserted row,
 so each write erased the last one and approving erased the words that had just been sent.

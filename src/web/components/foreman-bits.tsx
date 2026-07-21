@@ -1,6 +1,13 @@
 import { useState } from "react";
 import type { Session, SessionNoteSummary } from "@shared/types.ts";
-import { allowlistSuggestion, closeForemanNote, deliveryTarget, sessionSendBlock } from "../lib/foreman.ts";
+import {
+  allowlistSuggestion,
+  closeForemanNote,
+  deliveryTarget,
+  sessionSendBlock,
+  undeliverable,
+} from "../lib/foreman.ts";
+import type { DeliveryTarget } from "../lib/foreman.ts";
 import { api } from "../lib/api.ts";
 
 // The parts both live Foreman surfaces need: the Approve/Dismiss machinery, and the
@@ -34,17 +41,31 @@ export function useForemanDecision(o: {
   inputReviewId: string | null;
   /** Live pending review ids, so a draft for a since-resolved review reads as stale. */
   pendingReviewIds?: ReadonlySet<string>;
+  /** Whether the session has a pane to type into; see `deliveryTarget`. */
+  canSend?: boolean;
 }): {
   busy: boolean;
   done: boolean;
+  /** Where an Approve would go - the surfaces render their controls from this. */
+  target: DeliveryTarget;
+  /** The sentence explaining an undeliverable note, or null when it can be sent. */
+  blocked: string | null;
   approve: () => Promise<void>;
   dismiss: () => Promise<void>;
 } {
-  const { sessionId, note, inputReviewId, pendingReviewIds } = o;
+  const { sessionId, note, inputReviewId, pendingReviewIds, canSend } = o;
   const [busy, setBusy] = useState(false);
   const [handled, setHandled] = useState<string | null | undefined>(undefined);
 
   const done = handled !== undefined && handled === note.handledMarker;
+  // Resolved once, here, and both returned for rendering and used by `approve` below, so
+  // the button a surface draws and the act it performs cannot disagree.
+  const target = deliveryTarget({
+    handledMarker: note.handledMarker,
+    inputReviewId,
+    pendingReviewIds,
+    canSend,
+  });
 
   async function dismiss(): Promise<void> {
     setBusy(true);
@@ -61,12 +82,11 @@ export function useForemanDecision(o: {
 
   async function approve(): Promise<void> {
     if (!note.recommendation) return;
-    const target = deliveryTarget({
-      handledMarker: note.handledMarker,
-      inputReviewId,
-      pendingReviewIds,
-    });
-    if (target.kind === "stale") {
+    // Kept as a guard even though no surface now draws an Approve for an undeliverable
+    // note: the target is recomputed from live props, so a review can resolve between the
+    // render and the click. Closing the note (rather than sending it somewhere else) is
+    // the same rule `deliveryTarget` documents.
+    if (target.kind === "stale" || target.kind === "no-channel") {
       await dismiss();
       return;
     }
@@ -87,7 +107,7 @@ export function useForemanDecision(o: {
     setBusy(false);
   }
 
-  return { busy, done, approve, dismiss };
+  return { busy, done, target, blocked: undeliverable(target), approve, dismiss };
 }
 
 /**

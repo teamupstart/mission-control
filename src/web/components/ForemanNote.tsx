@@ -1,5 +1,6 @@
 import { Markdown } from "./Markdown.tsx";
 import type { Session, SessionNoteSummary } from "@shared/types.ts";
+import { noteAwaitsYou } from "@shared/foreman.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
 import { relativeTime } from "../lib/format.ts";
@@ -33,17 +34,23 @@ export function ForemanNote({
   /** Live pending review ids, so a draft for a since-resolved review reads as stale. */
   pendingReviewIds?: ReadonlySet<string>;
 }): React.JSX.Element {
-  const { busy, done, approve, dismiss } = useForemanDecision({
+  const { busy, done, blocked, approve, dismiss } = useForemanDecision({
     sessionId: session.id,
     note,
     inputReviewId,
     pendingReviewIds,
+    canSend: Boolean(session.tmux || session.wezterm),
   });
 
   const escalated = note.disposition === "escalated";
   const pending = note.disposition === "pending";
   const answered = note.disposition === "answered";
-  const showProposal = (escalated || pending) && !done;
+  const showProposal = noteAwaitsYou(note.disposition) && !done;
+  // Same test the strip makes, from the same hook, because it is the same note. This card
+  // only ever drew controls for a `pending` draft, so the escalation-with-no-channel that
+  // motivated this never had a live button here - but it had no explanation either, which
+  // left the grid showing a suggested answer and no account of why it was never sent.
+  const sendable = Boolean(note.recommendation) && !blocked;
 
   return (
     <section
@@ -73,7 +80,21 @@ export function ForemanNote({
 
       {answered && note.lastAction && <p className="fn-audit">✓ {note.lastAction}</p>}
 
-      {pending && !done && note.recommendation && (
+      {/* The hint above the control, for the reason the strip gives: it is why Approve is
+          missing, and a reader who finds that out after the buttons has already decided the
+          card is broken. */}
+      {showProposal && blocked && (
+        <>
+          <p className="fn-hint dim">{blocked}</p>
+          <div className="fn-actions">
+            <button className="btn" disabled={busy} onClick={() => void dismiss()}>
+              Dismiss
+            </button>
+          </div>
+        </>
+      )}
+
+      {pending && !done && sendable && (
         <div className="fn-actions">
           <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
             Approve &amp; send
@@ -84,7 +105,7 @@ export function ForemanNote({
         </div>
       )}
 
-      {pending && !done && note.recommendation && (
+      {pending && !done && sendable && (
         <DraftHint session={session} mode={mode} enabled={enabled} allowlist={allowlist} />
       )}
 

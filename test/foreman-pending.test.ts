@@ -338,3 +338,121 @@ test("an open-ended input review is unchanged - no options, no preamble", () => 
   const p = classifyPending(mkSession(), [mkReview({ body: "What should I name it?" })]);
   assert.equal(p.question, "What should I name it?");
 });
+
+// ---- a menu on the screen is an answerable question (the AskUserQuestion window) ----
+//
+// What is at stake: every `AskUserQuestion` reaching the human as "Foreman needs your
+// decision" on a session that is visibly working, with an answer Foreman wrote and could
+// not send. `reportBucket` admits a session to needs-you on `activePaneDialog` alone, but
+// this function used to recognise only the `awaiting_input` hook - and the two disagree for
+// a measured interval. Claude fires `PreToolUse` when the menu opens (state `working`) and
+// the `Notification` that means `awaiting_input` about six seconds later; captured from a
+// live session, the window was 22:39:33 -> 22:39:38. A Foreman poll landing inside it fell
+// through to `no-question` with `canSend: false`, which `planFromVerdict` can only resolve
+// as "escalated (no reply channel)" - and an escalation is the one outcome that spends a
+// human's attention. The pane, the parsed menu and the row-verifying send all already
+// existed; this classification was the only thing holding them shut.
+
+const MENU = {
+  prompt: "Should this repo enable strict mode?",
+  options: [
+    { number: 1, label: "Yes", detail: "Turn it on now" },
+    { number: 2, label: "No" },
+  ],
+  highlighted: 1,
+};
+
+function mkDialogSession(over: Partial<Session> = {}): Session {
+  return mkSession({
+    // The window itself: the menu is up, and the hook still says `working`.
+    state: "working" as SessionState,
+    activity: "running AskUserQuestion",
+    tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%437" },
+    paneDialog: MENU,
+    lastActivity: 1784601688632,
+    ...over,
+  });
+}
+
+test("a menu on the screen is answerable even while the hook still says working", () => {
+  const p = classifyPending(mkDialogSession(), []);
+  assert.equal(p.situation, "terminal-pane", "not no-question - the ask is right there on the pane");
+  assert.equal(p.surface, "terminal");
+  assert.equal(p.canSend, true, "there is a pane, so a row can be selected");
+});
+
+test("the dialog window no longer forces an escalation with nowhere to send it", () => {
+  // The end of the chain this fix exists to break, asserted where it was actually felt:
+  // `canSend: false` leaves `pickChannel` with nothing, and a perfectly good answer becomes
+  // a decision pinned on the human. Verbatim from episode 106 of the reported session.
+  const p = classifyPending(mkDialogSession(), []);
+  const plan = planFromVerdict(
+    VerdictSchema.parse({
+      purpose: "The child is asking whether to enable strict mode.",
+      classification: "implementation",
+      action: "answer",
+      answer: { text: "Enable strict mode.", option: { number: 1, label: "Yes" } },
+    }),
+    { sessionId: "s1", promptMarker: p.marker, inputReviewId: p.inputReviewId, canSend: p.canSend, menu: MENU },
+    true,
+  );
+  assert.equal(plan.note.disposition, "answered");
+  assert.notEqual(plan.note.lastAction, "escalated (no reply channel)");
+  assert.equal(plan.send?.channel, "send");
+  assert.deepEqual(plan.send?.option, { number: 1, label: "Yes" }, "a menu is selected, not typed at");
+});
+
+test("a menu with no pane keeps its honest no-channel answer", () => {
+  // Fail-closed is unchanged: the dialog says a question exists, the pane fields say nothing
+  // can deliver to it, and `canSend` still answers the second question and not the first.
+  const p = classifyPending(mkDialogSession({ tmux: null, wezterm: null }), []);
+  assert.equal(p.situation, "terminal-no-pane");
+  assert.equal(p.canSend, false);
+});
+
+test("the dialog marker holds still when the hook lands, so one ask costs one review", () => {
+  // The half that keeps the fix from doubling Foreman's spend. `lastActivity` moves when the
+  // Notification arrives, so an `await:`-keyed marker would mint a second id for the same
+  // unchanged menu and buy a second `claude -p` answering the identical question.
+  const during = classifyPending(mkDialogSession(), []);
+  const after = classifyPending(
+    mkDialogSession({ state: "awaiting_input" as SessionState, activity: "Claude needs your permission", lastActivity: 1784601694000 }),
+    [],
+  );
+  assert.equal(after.marker, during.marker, "same menu, same episode");
+  assert.match(during.marker, /^dialog:/, "keyed on the rows, not on a clock");
+});
+
+test("a cursor moving in the menu is the same question, not a new one", () => {
+  // `dialogIdentity` excludes `highlighted` on purpose; the marker inherits that, so arrowing
+  // down a list cannot churn one ask into an unbounded run of episodes.
+  const a = classifyPending(mkDialogSession(), []);
+  const b = classifyPending(mkDialogSession({ paneDialog: { ...MENU, highlighted: 2 } }), []);
+  assert.equal(b.marker, a.marker);
+});
+
+test("a DIFFERENT menu is a different episode", () => {
+  const a = classifyPending(mkDialogSession(), []);
+  const b = classifyPending(
+    mkDialogSession({ paneDialog: { ...MENU, prompt: "Delete the branch?" } }),
+    [],
+  );
+  assert.notEqual(b.marker, a.marker);
+});
+
+test("awaiting_input with no menu keeps its await: marker", () => {
+  // The pre-existing path is untouched: a permission prompt the parser did not read still
+  // classifies off the hook, so nothing depends on the pane being legible.
+  const p = classifyPending(
+    mkSession({ state: "awaiting_input" as SessionState, activity: "Approve?", tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" }, lastActivity: 42 }),
+    [],
+  );
+  assert.equal(p.marker, "await:42");
+});
+
+test("an exited session's stale menu is not a question anyone can answer", () => {
+  // `activePaneDialog` drops the dialog on an exited session, and this branch has to inherit
+  // that rather than re-reading `paneDialog` itself - a dead pane's last screen is not an ask.
+  const p = classifyPending(mkDialogSession({ state: "exited" as SessionState }), []);
+  assert.equal(p.situation, "no-question");
+});

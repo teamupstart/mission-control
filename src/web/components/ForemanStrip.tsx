@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Session, SessionNoteSummary } from "@shared/types.ts";
+import { noteAwaitsYou } from "@shared/foreman.ts";
 import { DISPOSITION_LABEL } from "../lib/foreman.ts";
 import { DraftHint, useForemanDecision } from "./foreman-bits.tsx";
 
@@ -36,11 +37,12 @@ export function ForemanStrip({
   onJump?: () => void;
 }): React.JSX.Element | null {
   const [open, setOpen] = useState(false);
-  const { busy, done, approve, dismiss } = useForemanDecision({
+  const { busy, done, blocked, approve, dismiss } = useForemanDecision({
     sessionId: session.id,
     note,
     inputReviewId,
     pendingReviewIds,
+    canSend: Boolean(session.tmux || session.wezterm),
   });
 
   const escalated = note.disposition === "escalated";
@@ -51,8 +53,15 @@ export function ForemanStrip({
   // there is nothing left to pin - it unmounts rather than lingering as a status line
   // the reader has to learn to ignore. `done` covers the same state for the moment
   // between the write landing and SSE saying so, and unlatches on the next marker.
-  if ((!escalated && !pending) || done) return null;
+  if (!noteAwaitsYou(note.disposition) || done) return null;
 
+  // Whether Approve is a thing this note can still DO, from the one predicate that
+  // decides where an approval would go. A recommendation alone was the old test, and it
+  // answers a different question: Foreman writes one on the escalation paths where it
+  // explicitly could not deliver it ("no reply channel"), so the button appeared exactly
+  // where sending was impossible - and clicking it fell through to a silent dismiss that
+  // the human reads as "sent". Where it cannot be sent, the strip says so instead.
+  const sendable = Boolean(note.recommendation) && !blocked;
   const summary = note.purpose ?? note.recommendation ?? "Foreman is waiting on you.";
 
   return (
@@ -76,9 +85,14 @@ export function ForemanStrip({
             ▾
           </span>
         </button>
-        {note.recommendation && (
+        {sendable && (
           <button className="btn btn-primary fs-go" disabled={busy} onClick={() => void approve()}>
             Approve &amp; send
+          </button>
+        )}
+        {blocked && (
+          <button className="btn fs-go" disabled={busy} onClick={() => void dismiss()}>
+            Dismiss
           </button>
         )}
       </div>
@@ -93,8 +107,12 @@ export function ForemanStrip({
               <p className="fn-rec-text">{note.recommendation}</p>
             </div>
           )}
+          {/* Above the actions, not below: it is the reason the Approve button is missing,
+              and a reader who has to look past the buttons to find that out has already
+              concluded the control is broken. */}
+          {blocked && <p className="fn-hint dim">{blocked}</p>}
           <div className="fs-actions">
-            {note.recommendation && (
+            {sendable && (
               <button className="btn btn-primary" disabled={busy} onClick={() => void approve()}>
                 Approve &amp; send
               </button>
@@ -108,7 +126,7 @@ export function ForemanStrip({
               </button>
             )}
           </div>
-          {pending && note.recommendation && (
+          {pending && sendable && (
             <DraftHint session={session} mode={mode} enabled={enabled} allowlist={allowlist} />
           )}
         </div>

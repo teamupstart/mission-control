@@ -174,7 +174,7 @@ export type GuardResult = { ok: true; session: Session } | { ok: false; why: str
 
 /**
  * Re-confirm, immediately before typing, that this send is still the right thing
- * to do. The `sendStillValid` analogue, at higher stakes: that one guards against
+ * to do. The `pendingStillLive` analogue, at higher stakes: that one guards against
  * re-answering a settled question; this guards against typing a WORK INSTRUCTION
  * into a session that has moved on.
  *

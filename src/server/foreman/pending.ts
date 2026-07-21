@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { NmFinding, NmRunSummary, ReviewItem, Session } from "@shared/types.ts";
-import { gateParked } from "@shared/session.ts";
+import type { NmFinding, NmRunSummary, PaneDialog, ReviewItem, Session } from "@shared/types.ts";
+import { activePaneDialog, dialogIdentity, gateParked } from "@shared/session.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
 // classification the worker and the triage tiers share. Kept out of worker.ts so
@@ -13,8 +13,9 @@ import { gateParked } from "@shared/session.ts";
  * branches on, since each situation has a fixed, model-free disposition:
  * - `input-review`     - a pending MCP `input` review: answerable by resolving it.
  * - `non-input-review` - a plan/diff review: human-only, Foreman can't deliver.
- * - `terminal-pane`    - `awaiting_input` with a tmux/wezterm pane: answerable by typing.
- * - `terminal-no-pane` - `awaiting_input` but no pane: a real question, no channel.
+ * - `terminal-pane`    - a stopped child (`awaiting_input`, or a menu on its screen) with a
+ *                        tmux/wezterm pane: answerable by typing, or by selecting a row.
+ * - `terminal-no-pane` - the same ask with no pane: a real question, no channel.
  * - `gate-parked`      - a no-mistakes gate whose agent has stopped: answerable by typing.
  * - `no-question`      - needs-you for some other state, with no answerable question.
  */
@@ -120,6 +121,18 @@ function findingsDigest(findings: NmFinding[]): string {
 }
 
 /**
+ * A stable digest of the menu on the child's screen - the marker for a dialog episode.
+ *
+ * Digested rather than carried whole because a marker is only ever compared for equality
+ * (the worker's idempotency check), and `dialogIdentity` is a JSON blob of every row's
+ * number and label. Same reason, same shape, and the same 12 hex chars as
+ * `findingsDigest` above.
+ */
+function dialogDigest(dialog: PaneDialog): string {
+  return createHash("sha1").update(dialogIdentity(dialog)).digest("hex").slice(0, 12);
+}
+
+/**
  * Stand-in `question` `classifyPending` substitutes when a needs-you session carries no
  * activity line at all. It is phrased as prose because it goes straight into the Tier 2
  * reviewer prompt as the question.
@@ -171,9 +184,15 @@ export function withOfferedOptions(review: ReviewItem): string {
  * Work out what a needs-you session is blocked on, and how (if at all) Foreman may
  * reply. An `input` review is directly answerable (resolve it); any other kind -
  * plan, diff, plan-decisions - is not (Foreman can only frame it, so a plan's
- * decisions stay the human's to make); a terminal `awaiting_input` and a parked
- * no-mistakes gate are both answerable by typing when a pane exists; anything else
- * is purpose-only. Pure.
+ * decisions stay the human's to make); a stopped terminal - `awaiting_input`, a menu on
+ * the screen, or a parked no-mistakes gate - is answerable by typing when a pane exists;
+ * anything else is purpose-only. Pure.
+ *
+ * Every branch that reaches `no-question` is therefore a session with nothing to answer,
+ * which is the only shape that classification should ever have described. It is the
+ * cheapest disposition in the file and the one a mistake is most expensive on: it forces
+ * `canSend: false`, which `planFromVerdict` can only resolve as "no reply channel", and an
+ * escalation is the one outcome that costs a human's attention.
  *
  * `gateParked` is called WITHOUT a session list, which reduces it to "parked, and this agent has
  * stopped". The cross-session check (is a sibling still driving this run?) is the caller's,
@@ -209,15 +228,43 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       reviewTitle: other.title,
     };
   }
-  if (s.state === "awaiting_input") {
+  // A menu on the screen and `awaiting_input` are ONE situation, not two, because they are
+  // two reports of the same fact arriving over different channels: the child has stopped and
+  // cannot move until someone answers. `reportBucket` has always treated them that way - it
+  // admits a session on `activePaneDialog` alone (src/shared/session.ts), precisely so an
+  // uninstrumented session parked on a prompt is not read as idle - and this function used to
+  // recognise only the hook. The two disagree for a real, measured interval: Claude fires
+  // `PreToolUse` when `AskUserQuestion` opens (state `working`) and the `Notification` that
+  // means `awaiting_input` ~6s later, so every ask has a window in which the menu is on the
+  // pane and the state is still `working`. A poll landing there fell through to `no-question`
+  // with `canSend: false`, which `planFromVerdict` can only turn into "escalated (no reply
+  // channel)" - a decision pinned on the human for a question Foreman could see, had a pane
+  // for, and was about to be able to answer. Reading the dialog here is what makes the
+  // machinery downstream reachable at all: the pane is already captured, `ctx.menu` is already
+  // parsed from it, and `selectPaneOption` already verifies the row before pressing anything.
+  const dialog = activePaneDialog(s);
+  if (dialog || s.state === "awaiting_input") {
     const canSend = Boolean(s.tmux || s.wezterm);
     return {
       situation: canSend ? "terminal-pane" : "terminal-no-pane",
       surface: "terminal",
+      // Left as the activity even for a dialog, which reads "running AskUserQuestion". The
+      // reviewer does not learn the question from this field on this surface - the prompt
+      // renders the SCREEN and says to read the ask off it (see prompt.ts, which documents
+      // the same generic-question premise for `awaiting_input`). Framing the rows a second
+      // time here would be a second copy of the menu for the model to reconcile.
       question: s.activity ?? "",
       inputReviewId: null,
       canSend,
-      marker: `await:${s.lastActivity ?? s.firstSeen}`,
+      // The DIALOG wins the marker whenever there is one, and this is the half that keeps the
+      // fix from costing a second review per ask. `lastActivity` moves when the Notification
+      // hook lands, so a menu classified during the window above and again after it would
+      // mint two markers for one unchanged question and spend two `claude -p` calls on it.
+      // `dialogIdentity` is already the shared notion of "the same question" - it excludes
+      // `highlighted` and `checked` on purpose, so a cursor moving in the terminal is the same
+      // ask being read again - and hashing it holds the marker still for exactly as long as
+      // the rows do.
+      marker: dialog ? `dialog:${dialogDigest(dialog)}` : `await:${s.lastActivity ?? s.firstSeen}`,
     };
   }
   // Ordered AFTER `awaiting_input` on purpose: a session can be both (a gate parks, then the

@@ -1,8 +1,15 @@
 name: CI
 
-# Exercises the repository's quality gates - typecheck, unit tests, and build -
-# on every push to main and every pull request. Mirrors `make check` (typecheck +
-# tests) plus a production build so a broken bundle can't merge unnoticed.
+# Exercises the repository's quality gates - typecheck, unit tests, build, and a boot
+# smoke - on every push to main and every pull request. Mirrors `make check` (typecheck
+# + tests) plus a production build and a check that the built bundles actually RUN.
+#
+# That last step is not redundant with Build, and the comment it replaces claimed it was:
+# it said a production build meant "a broken bundle can't merge unnoticed", which was
+# false and shipped. `npm run build` only asserts that esbuild emitted a file. A daemon
+# bundle that throws on its first line still builds, still typechecks, and still passes
+# every unit test - because the tests import from `src/`, and nothing here ever ran the
+# artifact. See `scripts/smoke-bundles.mjs`.
 
 on:
   push:
@@ -52,6 +59,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # Runs the bundles Build just produced. Ordered after it because it needs `dist/`.
+      - name: Smoke the built bundles
+        run: npm run smoke
 
   # Full macOS app packaging. It's slow (downloads the Electron runtime + builds a
   # dmg), so it only runs for tagged releases or a manual dispatch - not every PR.

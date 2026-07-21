@@ -267,10 +267,17 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       marker: dialog ? `dialog:${dialogDigest(dialog)}` : `await:${s.lastActivity ?? s.firstSeen}`,
     };
   }
-  // Ordered AFTER `awaiting_input` on purpose: a session can be both (a gate parks, then the
-  // agent puts the finding up as a live prompt), and the live prompt is the precise thing
-  // blocked right now - answering it is what unblocks the run. The gate behind it is context,
-  // and the reviewer reads it off the transcript either way.
+  // Ordered AFTER the live-prompt branch on purpose: a session can be both (a gate parks,
+  // then the agent puts the finding up as a live prompt), and the live prompt is the precise
+  // thing blocked right now - answering it is what unblocks the run. The gate behind it is
+  // context, and the reviewer reads it off the transcript either way.
+  //
+  // A MENU now reaches that branch too, which widens this by one case: a parked gate whose
+  // agent has drawn a dialog is classified as the dialog, so no `gate` ref attaches and the
+  // fix log gets no byline for it. That is the conservative answer the paragraph below argues
+  // for, not a gap. A parked gate relays its ask-user finding as prose and ends its turn - it
+  // draws no menu - so a menu on a parked session is the agent asking something else, which
+  // is exactly the "may be about anything" case that must not be filed against the gate.
   //
   // That ordering decides the BYLINE too, and deliberately so: `gate` below is set on this
   // branch and nowhere else, so a send that answers a live prompt is filed against no gate

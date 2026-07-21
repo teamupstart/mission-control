@@ -5166,6 +5166,12 @@ kbd {
 .inspector-log-row:hover {
   background: var(--panel-2);
 }
+/* A closed pull request is out of the sweep for good, so it reads as history rather than
+   as work in hand. Without this the list is dominated by rows nothing will ever act on
+   again, and the two or three PRs actually in the queue are invisible inside it. */
+.inspector-log-row.is-retired .inspector-log-pr {
+  color: var(--muted);
+}
 .inspector-log-pr {
   color: var(--fg);
   text-decoration: none;

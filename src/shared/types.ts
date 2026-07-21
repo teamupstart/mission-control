@@ -3,6 +3,7 @@
 // that crosses the SSE / HTTP boundary.
 
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
+import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TerminalBackendId } from "./terminal.ts";
 
@@ -1552,6 +1553,17 @@ export interface InspectorSummary {
 export interface InspectorInspection extends InspectorPr {
   openFindings: number;
   resolvedFindings: number;
+}
+
+/**
+ * What the Inspector is set up to do, as opposed to what it has been asked to do.
+ *
+ * Separate from `InspectorConfig` because that is the STORED record and this is the
+ * resolved one: the model field here folds in an env var the browser cannot see. Same
+ * split, and the same reason, as `ForemanConfig` against `ForemanStatus.models`.
+ */
+export interface InspectorStatus {
+  model: ResolvedModel;
 }
 
 // ---- SSE events (daemon -> UI) ----

@@ -896,12 +896,20 @@ export const InspectorConfigSchema = z.object({
   repoAllowlist: z.array(z.string().min(1)).default([]),
   /**
    * Overrides the review model, for both the review pass and the follow-up replies.
-   * Undefined falls back to `INSPECTOR_MODEL`, and then to the CLI's own default.
+   * Empty or unset falls back to `MISSION_INSPECTOR_MODEL`, then to
+   * `INSPECTOR_MODEL_SPEC.fallback` - see there for why a default is named at all.
    *
    * `ModelIdSchema` rather than a bare string because this value becomes a `--model`
    * argument: an id starting with `-` would be read as a flag rather than rejected.
+   *
+   * The empty string is admitted ALONGSIDE it, and that is not a loosening - it is the
+   * only way to say "clear my override". The settings field is free text, so a cleared
+   * box commits `""`; with the regex alone the daemon refused it, the panel reverted, and
+   * an operator who had once typed a model could never get back to the default. Nothing
+   * downstream can act on it either way: every layer of `resolveModelChoice` treats blank
+   * as absent, so `--model ""` is unreachable.
    */
-  model: ModelIdSchema.optional(),
+  model: z.union([ModelIdSchema, z.literal("")]).optional(),
   /**
    * Ceiling on inline comments per round. A reviewer that leaves thirty notes on one
    * push is one nobody reads, and the cap is what turns "be thorough" into "lead with

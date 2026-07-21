@@ -5,6 +5,7 @@ import type {
   ForemanEpisode,
   ForemanStatus,
   InspectorInspection,
+  InspectorStatus,
   NmFixDetail,
   PermissionMode,
   ResetPreview,
@@ -92,6 +93,7 @@ export const fetchUiConfig = () => fetchJson<UiConfigView>("/api/ui/config");
 export const fetchCostConfig = () => fetchJson<CostTelemetryStatus>("/api/cost/config");
 export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspector/config");
 export const fetchInspectorPrs = () => fetchJson<InspectorInspection[]>("/api/inspector/prs");
+export const fetchInspectorStatus = () => fetchJson<InspectorStatus>("/api/inspector/status");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
 /** Away mode: whether you're away, since when, and the stall thresholds. */

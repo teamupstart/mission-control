@@ -26,8 +26,9 @@ import { getShippingConfig } from "./config.ts";
 // or in a repo missing from the INSPECTOR's allowlist (a separate list from the one
 // below), the tick runs and the review runs - it just posts nothing - and it advances the
 // reviewed head all the same. So a clean review nobody ever saw used to satisfy every
-// gate and land on the default branch. `inspectorPosture` is now passed to the verdict
-// and vetoes all three, so "reviewed" means published.
+// gate and land on the default branch. Both the current `inspectorPosture` and the posture
+// persisted with that reviewed head now have to be live; changing the setting later
+// cannot promote an unpublished review.
 
 /** Findings the Inspector is currently carrying, by the same rule the panel counts them. */
 function openFindings(rows: Map<string, InspectorComment>): number {
@@ -72,10 +73,8 @@ export async function maybeMerge(
   const cfg = getShippingConfig();
   const verdict = mergeVerdict({
     cfg,
-    // The caller's config snapshot, not a fresh read: this must be the same posture the
-    // round that produced `pr.headSha` ran under. Re-reading here would let a switch to
-    // dry-run mid-sweep still merge on the live review before it, or - worse - a switch
-    // to live merge on the dry-run review that preceded it.
+    // Current consent is a separate veto from the posture stored with the reviewed SHA.
+    // Both must be live: changing a setting now cannot rewrite how an earlier review ran.
     inspector: inspectorPosture(inspector, pr.cwd, pr.repoRoot),
     cwd: pr.cwd,
     repoRoot: pr.repoRoot,
@@ -90,6 +89,7 @@ export async function maybeMerge(
       unresolvedThreads: s.threads.filter((t) => !t.isResolved).length,
     },
     reviewedSha: pr.headSha,
+    reviewPosture: pr.reviewPosture,
     rounds: pr.round,
     openFindings: openFindings(rows),
     now,

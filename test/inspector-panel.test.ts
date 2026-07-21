@@ -43,6 +43,7 @@ function row(over: Partial<InspectorInspection> = {}): InspectorInspection {
     source: "hook",
     state: "open",
     headSha: null,
+    reviewPosture: null,
     round: 0,
     lastReviewedAt: null,
     lastError: null,

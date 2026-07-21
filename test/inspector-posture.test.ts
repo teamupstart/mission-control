@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inspectorPosture } from "../src/shared/inspector.ts";
+import { inspectorPosture, reviewNeedsLiveRerun } from "../src/shared/inspector.ts";
 import { InspectorConfigSchema } from "../src/shared/protocol.ts";
 import { mergeVerdict } from "../src/shared/shipping.ts";
 import { ShippingConfigSchema } from "../src/shared/protocol.ts";
@@ -53,6 +53,14 @@ test("a worktree of a trusted repo is trusted", () => {
   assert.equal(inspectorPosture(live, "/tmp/pool/wt-3", "/repo"), "live");
 });
 
+test("switching live makes a dry-run or legacy review due again", () => {
+  assert.equal(reviewNeedsLiveRerun("live", "dry-run"), true);
+  assert.equal(reviewNeedsLiveRerun("live", "not-allowlisted"), true);
+  assert.equal(reviewNeedsLiveRerun("live", null), true);
+  assert.equal(reviewNeedsLiveRerun("live", "live"), false);
+  assert.equal(reviewNeedsLiveRerun("dry-run", "dry-run"), false);
+});
+
 // The order is a product decision, not an implementation detail: an operator whose
 // Inspector is switched off cannot act on being told their repo is untrusted as well.
 test("the reason reported is the outermost switch that is withholding consent", () => {
@@ -96,6 +104,7 @@ test("the operator's config: armed for shipping, unpublished by the Inspector, d
     },
     // A completed, clean review of exactly this head - which dry run produces.
     reviewedSha: "deadbeef",
+    reviewPosture: "dry-run",
     rounds: 1,
     openFindings: 0,
     now: NOW,

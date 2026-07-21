@@ -13,7 +13,7 @@ import { createLimiter, parseModelJson, runStructured } from "../llm/structured.
 import { llmRunner } from "../llm/index.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
-import { inspectorPosture } from "@shared/inspector.ts";
+import { inspectorPosture, reviewNeedsLiveRerun } from "@shared/inspector.ts";
 import type { PrOpened, Registry } from "../registry.ts";
 import type {
   InspectorComment,
@@ -248,23 +248,6 @@ export const DENY_SETTINGS = JSON.stringify({
 });
 
 /**
- * Whether this PR may be acted on for real.
- *
- * Three independent gates, all of which must pass, and each of which the operator set
- * separately: the feature is on, the mode is live, and this repo is trusted. `dry-run`
- * still reviews - that is the point of it - it just never posts.
- *
- * The rule itself moved to `@shared/inspector.ts` when YOLO mode became a second caller
- * that had to ask the same question. It asks it about the merge rather than the comment,
- * and the two answers must not be able to differ: a copy of these three conditions that
- * drifted from this one would decide that an unpublished review is worth landing on the
- * default branch.
- */
-function mayPost(cfg: InspectorConfig, pr: InspectorPr): boolean {
-  return inspectorPosture(cfg, pr.cwd, pr.repoRoot) === "live";
-}
-
-/**
  * A directory that still exists to run things from, or null.
  *
  * The adopted `cwd` is a session worktree, and sessions run in POOLED worktrees under
@@ -355,6 +338,7 @@ export function adoptPr(
     source,
     state: "open",
     headSha: null,
+    reviewPosture: null,
     round: 0,
     lastReviewedAt: null,
     lastError: null,
@@ -523,7 +507,8 @@ async function processPr(
   }
 
   const rows = existingByFingerprint(pr.key);
-  const post = mayPost(cfg, pr);
+  const posture = inspectorPosture(cfg, pr.cwd, pr.repoRoot);
+  const post = posture === "live";
   let acted = false;
 
   // 1. Answer anyone waiting on us. Before the re-review, because a question asked three
@@ -563,11 +548,20 @@ async function processPr(
 
   // 3. Nothing pushed since the last review: there is nothing new to say.
   //
-  // Reaching here having failed nothing means the PR is healthy again, so a stale error
-  // from an earlier tick is cleared. `tick.failed` rather than the pre-tick snapshot,
-  // because a reply that failed moments ago is this tick's news and clearing it would
-  // hand the backoff back its own reset button.
-  if (s.headSha && s.headSha === pr.headSha) {
+  // A dry-run review is current as an analysis result, but not as merge provenance.
+  // Once the operator switches to live, deliberately fall through and review this same
+  // head again so a live result replaces it. In every non-live posture, keep the cheap
+  // no-op behavior: repeatedly reviewing a head we still cannot publish buys nothing.
+  //
+  // Reaching the no-op branch having failed nothing means the PR is healthy again, so a
+  // stale error from an earlier tick is cleared. `tick.failed` rather than the pre-tick
+  // snapshot, because a reply that failed moments ago is this tick's news and clearing
+  // it would hand the backoff back its own reset button.
+  if (
+    s.headSha &&
+    s.headSha === pr.headSha &&
+    !reviewNeedsLiveRerun(posture, pr.reviewPosture)
+  ) {
     if (!tick.failed) {
       const current = getInspectorPr(pr.key);
       if (current && (current.lastError || current.failCount > 0)) {
@@ -690,6 +684,7 @@ async function reviewRound(
       pr.key,
       {
         headSha: s.headSha,
+        reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
         lastReviewedAt: now,
         lastError: null,
         failCount: 0,
@@ -832,6 +827,7 @@ async function reviewRound(
     pr.key,
     {
       headSha: s.headSha,
+      reviewPosture: inspectorPosture(cfg, pr.cwd, pr.repoRoot),
       round,
       lastReviewedAt: now,
       lastError: null,

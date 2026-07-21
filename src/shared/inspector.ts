@@ -20,10 +20,11 @@ import type { LlmRunnerId } from "./llm.ts";
 // is the one action here nobody can undo. "Dry run" has to mean dry for the whole app,
 // not just for the half of it that posts comments.
 //
-// So the three switches are collapsed into one value with a REASON attached, and both
-// callers read it: the worker to decide whether to post, YOLO mode to decide whether the
-// review it is about to act on was ever worth anything. Pure - no config reads, no clock,
-// no `node:` import - so the dashboard can call it too.
+// So the three switches are collapsed into one value with a REASON attached. The worker
+// persists that value beside the reviewed SHA, while YOLO checks both that historical
+// posture and the current one. Current consent cannot retroactively promote a dry-run
+// review. Pure - no config reads, no clock, no `node:` import - so the dashboard can call
+// it too.
 
 /**
  * What the Inspector is currently able to do about one pull request.
@@ -53,6 +54,20 @@ export function inspectorPosture(
   if (cfg.mode !== "live") return "dry-run";
   if (!repoAllowlisted(cwd, repoRoot, cfg.repoAllowlist)) return "not-allowlisted";
   return "live";
+}
+
+/**
+ * Whether a reviewed head must be run again before it can carry live merge provenance.
+ *
+ * A non-live current posture does not spend another model run: it still could not
+ * publish the result. The transition to live is what makes an earlier dry-run,
+ * unallowlisted, or legacy review stale for shipping purposes.
+ */
+export function reviewNeedsLiveRerun(
+  current: InspectorPosture,
+  reviewed: InspectorPosture | null,
+): boolean {
+  return current === "live" && reviewed !== "live";
 }
 
 /**

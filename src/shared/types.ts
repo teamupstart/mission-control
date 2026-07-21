@@ -3,6 +3,7 @@
 // that crosses the SSE / HTTP boundary.
 
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
+import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
@@ -1488,6 +1489,8 @@ export interface InspectorPr {
    * force-push backwards still differs, and a no-op tick still costs nothing.
    */
   headSha: string | null;
+  /** The consent posture that produced `headSha`; null for rows from older builds. */
+  reviewPosture: InspectorPosture | null;
   /** Completed review rounds. Also the runaway guard. */
   round: number;
   lastReviewedAt: number | null;

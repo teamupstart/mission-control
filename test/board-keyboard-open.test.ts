@@ -45,6 +45,16 @@ test("a modified Enter still reaches the chord matching it merely shares a key w
   assert.match(arm, /layout !== "board" \|\| !selectedId \|\| boardOpen\) break;/, arm);
 });
 
+test("plain Enter on native controls wins over saved bindings", () => {
+  const nativeEnter = app.indexOf(
+    'if (chord === "Enter" && target?.closest("button, a[href]")) return;',
+  );
+  assert.notEqual(nativeEnter, -1);
+  assert.ok(nativeEnter < app.indexOf("chord === bindings.roundup"));
+  assert.ok(nativeEnter < app.indexOf("chord === bindings.dispatch"));
+  assert.ok(nativeEnter < app.indexOf("chord === bindings.filter"));
+});
+
 test("every action-bar chord is one the board can defer, not just perform", () => {
   const table = app.slice(app.indexOf("const BAR_ACTIONS"), app.indexOf("export function App"));
   for (const [id, method] of [

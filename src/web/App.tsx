@@ -504,6 +504,10 @@ export function App(): React.JSX.Element {
       const chord = chordFromEvent(e);
       if (!chord) return; // a lone modifier press
 
+      // Preserve the native activation of a focused link or button - including the
+      // selected tile's own open button, which the arrow keys put the cursor on.
+      if (chord === "Enter" && target?.closest("button, a[href]")) return;
+
       // Sitrep toggles whether it's open or closed, so it stands down for every overlay
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
       // others. Asking the registry rather than listing overlays here is the point: a new
@@ -591,9 +595,6 @@ export function App(): React.JSX.Element {
           // below - the switch keys off `e.key`, so it lands here too and used to be
           // eaten by the key it merely shares.
           if (chord !== "Enter") break;
-          // Preserve the native activation of a focused link or button - including the
-          // selected tile's own open button, which the arrow keys put the cursor on.
-          if (target?.closest("button, a[href]")) return;
           if (layout !== "board" || !selectedId || boardOpen) break;
           e.preventDefault();
           setBoardOpen(true);

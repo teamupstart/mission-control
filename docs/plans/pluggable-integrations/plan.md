@@ -1005,7 +1005,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
 | 3 - Structural | `Session` handle list **(landed)**; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
-| 5 - Proof | A third adapter on each axis, written *only* against the interface |
+| 5 - Proof | A third adapter on each axis, written *only* against the interface. cmux **(landed)**; Ghostty, iTerm2 and `pi` still queued |
 
 ### Decisions taken
 
@@ -1035,6 +1035,116 @@ be added without touching shared code. Phase 5 is the test:
 - A **cmux** multiplexer adapter - the same exercise on the multiplexer axis.
 
 If any of the four requires editing a file outside its own adapter, the interface is wrong.
+
+#### cmux, as landed - and the three things it found
+
+`src/server/terminal/cmux.ts`, registered by appending one id to `MULTIPLEXER_IDS`. cmux
+0.64.20 is a native macOS terminal with named workspaces, splits and a Unix-socket control
+API, and it was the right first proof for exactly the reason it looked like the easy one:
+a NEAR NEIGHBOUR only fails where the interface mistook a tmux fact for a universal one.
+It found three, and the acceptance criterion held in the way that matters - **every edit
+outside the adapter was to the interface itself, and none was a special case for cmux**:
+
+- **`MuxPane.sessionName`, split from `MuxTarget.session`.** A tmux session's name IS its
+  target spec, so one field did both jobs and `correlate.ts` titled cards from the address.
+  cmux cannot do that: a workspace has a UUID stable for its lifetime and a title that
+  defaults to whatever the shell reports, so the title changes as someone cds and two
+  workspaces sitting at `~` share one. Naming cards by the id is unreadable; addressing by
+  the title makes `kill` a coin flip between two live sessions. `EmulatorPane` had this
+  split from the start (`tabId` addresses, `tabTitle` displays) - this is the multiplexer
+  side catching up, and tmux sets both from one string.
+- **`MuxSessions.attachArgv` is nullable.** It is handed to `EmulatorSpawn.tab(...)` at the
+  end of the focus walk, which encodes "a multiplexer session can exist with nothing
+  displaying it". True of tmux, screen and zellij; false of cmux, where a workspace is drawn
+  by the app from the moment it exists. Every candidate value was a lie - the nearest,
+  `cmux select-workspace`, opens a stray empty tab in a FOREIGN terminal beside a window
+  already on screen.
+- **`MuxPane.panePid` is nullable.** Nothing joins on it - the tty is the join - and it was
+  required because tmux hands it over in the same format string for free. cmux answers it
+  only from a resource-sampling call that walks every process in every surface, which is not
+  a thing to spend on the 1500ms tick for a field no reader consults.
+
+The nesting is why those last two nulls fall where they do. tmux sits *inside* an emulator
+and needs it to be seen; cmux IS the window, so the outward half of the walk has nowhere to
+go:
+
+```mermaid
+flowchart LR
+  subgraph T["tmux: three layers, focus walks out"]
+    direction LR
+    E["wezterm pane<br/>(emulator)"] --> M["tmux pane<br/>(multiplexer)"] --> A["agent process"]
+  end
+  subgraph C["cmux: two layers, nothing outside it"]
+    direction LR
+    X["cmux surface<br/>(multiplexer, draws itself)"] --> B["agent process"]
+  end
+  M -. "clients -> host tab -> attachArgv" .-> E
+  X -. "clients: null, attachArgv: null" .-> X
+```
+
+**What was NOT added, deliberately: a `raise` capability.** cmux can bring its own window
+forward, which no multiplexer this interface was built for could, so the focus walk
+(select -> host tab -> spawn an attach) ends in two nulls for it. The slot that fixes this
+belongs to the focus/spawn/kill item, which is the phase that rewrites the walk and the
+first phase to have a caller for it. Landing a null nobody has designed is what the harness
+work explicitly refused to do ("the remaining slots arrive with their phases"), and the same
+discipline applies here.
+
+**cmux is a multiplexer that is not persistent, and that is fine.** Its workspaces do not
+outlive the app - verified by killing it: the list comes back from a snapshot with fresh
+shells and every child process gone, which is what cmux's own
+`surface resume --kind tmux --shell "tmux attach -t work"` exists to paper over. It still
+belongs on this axis rather than the emulator one, because `MuxSessions` - create a named
+session for a task, rename it, kill it on teardown - is precisely what the dispatcher needs
+from it and precisely what an emulator has no answer for. Note it ranks BELOW tmux in
+`MULTIPLEXER_IDS`: tmux can run inside a cmux surface, so tmux is the inner answer.
+
+Two defects in cmux itself were found by pointing the adapter at it, and both are handled
+here rather than worked around at a call site:
+
+- **`cmux send` cannot express literal text.** It replaces the two-character sequences
+  `\n`, `\r` and `\t` wherever they appear, `\n` and `\r` with a CR - which in an agent
+  composer is Enter. There is no escape (`\\n` does not collapse; verified across single,
+  double and quadruple backslashes), so a reply containing `printf("\n")` submits itself
+  halfway through and one containing a Windows path silently loses characters. Same class as
+  tmux's getopt eating a dash-leading reply, one layer worse: tmux refused loudly, this
+  delivers corrupted text and exits 0. `write.text` goes through the socket method
+  `surface.send_text`, which applies no scanner.
+- **cmux mis-attributes ttys in a multi-surface workspace.** Reproduced from clean, against
+  `ps` as ground truth: a workspace running `sleep 12345` on `ttys031` is reported correctly
+  until one `new-split`, after which cmux reports `ttys032` for that process (the split's
+  own tty) and `nil` for the split. `debug-terminals` shows the same, so it is cmux's
+  tracking rather than its rendering. The tty is the ONLY join between a process and a pane,
+  so passing it on binds a card to a pane its agent is not in and types the next prompt into
+  someone's shell. The adapter reports a tty only from a workspace holding one terminal
+  surface, and `spawnDetached` therefore declines `sidePane` - which the contract already
+  allows, and which costs a convenience shell rather than the session's card.
+
+**It lands as a fully driveable backend, which it would not have a phase earlier.** The
+`Session` handle list arrived first, so `handleOf` reads `backend` off the candidate and a
+cmux pane becomes a real `MuxHandle` rather than correlating with nowhere to land - the
+"honest shape of a half-finished migration" that `legacyHandles` used to impose on any
+backend without a named field. A cmux session therefore names its card, resolves through
+`bindPane`, and takes writes and captures, with its capability nulls intact. The one thing
+it does NOT reach is focus, rename and kill, which still shell out to `tmux` by name: those
+three answer `tmuxOnly`, whose `noDriver(backend: never)` tripwire is what forced cmux to
+say so out loud instead of being handed to `tmux kill-session`. That arm goes when the
+focus/spawn/kill item does.
+
+One deployment fact worth stating because it is cmux's default rather than a bug: the socket
+ships as `socketControlMode: "cmuxOnly"`, admitting only processes cmux started, and the
+daemon is not one. An operator sets `allowAll` in `~/.config/cmux/cmux.json`. Until they do,
+`list()` answers `[]` and their cmux sessions are named `<agent> <pid>` - the same
+degradation as any unrecognised terminal, which is the right one.
+
+Verified the way the pane-I/O item was, not from the diff: the real adapter driven against a
+real cmux, with a child recording every byte it received. Spawn, enumerate (tty checked
+against `ps`), literal text carrying `\n` / `\t` / backslashes, all six keys byte for byte,
+a multi-line bracketed paste that did not submit, a capture, select, rename (title changed,
+address did not), every name rule cross-checked against what the live app accepts, and kill
+- workspace gone, process gone. Tests: `cmux-adapter.test.ts` against
+`test/fixtures/cmux-panes.ts`, which is a verbatim capture holding the mis-attributed tty in
+the act.
 
 ## Fixes found along the way
 

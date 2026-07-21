@@ -113,9 +113,33 @@ export const ALL_KEYS = Object.keys(KEYS) as readonly Key[];
 
 /** One pane, as a multiplexer enumerates it. */
 export interface MuxPane extends MuxTarget {
+  /**
+   * The session's HUMAN name - what a card is titled, as opposed to what `session` addresses.
+   *
+   * These are one string in tmux, where a session name is also its target spec, and that
+   * coincidence is why this field did not exist until a second multiplexer needed it. cmux
+   * separates them and cannot be made not to: a workspace has a UUID that is stable for its
+   * lifetime and a title that defaults to whatever the shell reports, so the title changes
+   * as someone cds and two workspaces sitting at `~` share one. Naming cards by the id is
+   * unreadable; addressing by the title makes `kill` a coin flip between two sessions.
+   *
+   * `EmulatorPane` had this split from the start (`tabId` addresses, `tabTitle` displays);
+   * this is the multiplexer side catching up. A backend where the two genuinely are one
+   * string sets both to it, which is what tmux does.
+   */
+  sessionName: string;
   windowName: string;
-  /** The pane's root process, usually the shell. */
-  panePid: number;
+  /**
+   * The pane's root process, usually the shell, or null when the backend does not report it.
+   *
+   * Null is a declaration, and a cheap one to get wrong: nothing joins on this. The tty is
+   * what links a pane to the process in it (`correlate.ts`), and the pid is here because
+   * tmux hands it over in the same format string for free. A backend that would have to buy
+   * it separately says null instead of paying - cmux answers it only from a resource-sampling
+   * call that walks every process in every surface, which is not a thing to spend on the
+   * 1500ms discovery tick for a field no reader consults.
+   */
+  panePid: number | null;
   /** Controlling tty without the `/dev/` prefix, or null. The join key to everything else. */
   tty: string | null;
   /** A plain filesystem path, never a URL. */
@@ -204,8 +228,21 @@ export interface MuxSessions {
    * The argv that attaches a terminal to `session`. Not a command we run: it is handed to
    * an emulator's `spawn` so a session with no window gets one. Pure, so the focus walk
    * can build it without shelling out.
+   *
+   * Null when this multiplexer's sessions are never without a window - a claim tmux, screen
+   * and zellij cannot make and a GUI multiplexer cannot avoid. It was required until cmux,
+   * on the assumption every multiplexer is invisible until something attaches to it; a cmux
+   * workspace is drawn by cmux from the moment it exists, so the honest answer is that there
+   * is nothing to attach rather than an attach command we failed to find. Every candidate
+   * value was a lie: the nearest, `cmux select-workspace`, opens a stray empty tab in a
+   * FOREIGN terminal beside a window that was already on screen.
+   *
+   * A null here is not the end of focus for such a backend, it is the end of this walk for
+   * it. Raising its own window is a capability this interface does not yet have a slot for,
+   * and it arrives with the focus/spawn/kill migration item rather than as an undesigned
+   * placeholder - see `docs/plans/pluggable-integrations/plan.md`.
    */
-  attachArgv(session: string): readonly string[];
+  attachArgv: ((session: string) => readonly string[]) | null;
   rename(from: string, to: string): Promise<TerminalResult>;
   kill(session: string): Promise<TerminalResult>;
   /**

@@ -1302,6 +1302,15 @@ function tmuxOnly(session: PaneHandles): MuxHandle | null {
   switch (mux.backend) {
     case "tmux":
       return mux;
+    // cmux is enumerated, typed into and captured through its adapter like any multiplexer;
+    // it is only these three writes it cannot reach, because they are the ones still
+    // shelling out to `tmux` by name. So this arm is the tripwire above being ANSWERED
+    // rather than silenced: a cmux session reads as having no handle for focus, rename and
+    // kill, which is the state all three already refuse honestly, and it keeps `default`
+    // typed `never` so a fourth backend still has to come here and say the same thing out
+    // loud. The focus/spawn/kill item is what deletes this arm along with the shelling out.
+    case "cmux":
+      return null;
     default:
       return noDriver(mux.backend);
   }

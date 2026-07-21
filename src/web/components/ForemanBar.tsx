@@ -347,7 +347,7 @@ export function ForemanPopover({
               />
               {w === "ask" && "Ask me - show the Ship it? card"}
               {w === "no-mistakes" && "Run /no-mistakes automatically"}
-              {w === "pr" && "Straight to PR - commit, push, open a PR"}
+              {w === "pr" && "Straight to PR - commit, push, open a PR, then green CI"}
             </label>
           ))}
         </fieldset>

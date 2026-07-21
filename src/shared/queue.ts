@@ -102,7 +102,36 @@ export function wrapupTriggerOn(
  * card's "both ticked" case prefills it alone rather than asking for both.
  */
 export const WRAPUP_NO_MISTAKES = "/no-mistakes";
-export const WRAPUP_PR = "Please commit this work, push the branch, and open a PR.";
+/**
+ * The PR instruction, and it does not stop at `gh pr create`: an unattended wrap-up
+ * that opens a red or unmergeable PR has handed the human the work back, which is the
+ * one thing this mode exists not to do. So it names the finish line - green CI, no
+ * conflicts - rather than the act, and says to merge the default branch in
+ * unconditionally rather than "if there are conflicts", because an agent that has to
+ * first decide whether a conflict exists is an agent that decides wrong and stops.
+ *
+ * One line, for the same reason `/no-mistakes` is: `sendText` submits on every embedded
+ * newline, so a wrapped string here is several half-instructions typed in sequence.
+ */
+export const WRAPUP_PR =
+  "Please commit this work, push the branch, and open a PR. Then merge the default branch into" +
+  " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
+  " and push again until every check passes and the PR has no merge conflicts.";
+
+/**
+ * Wrap-up payloads we have sent in the past and no longer send. APPEND-ONLY.
+ *
+ * `isWrapupPayload` is the prompted trigger's loop-breaker: it recognises Foreman's own
+ * instruction coming back as the session goal. That comparison is against text living on
+ * a machine we do not control - a session captured its goal before the upgrade, and the
+ * daemon reads it after. Drop an old spelling and that session is a goal Foreman no
+ * longer recognises as its own, which re-arms the trigger and opens a second PR for work
+ * it already shipped. Retiring a payload therefore means moving it here, never deleting
+ * it.
+ */
+const RETIRED_WRAPUP_PAYLOADS: readonly string[] = [
+  "Please commit this work, push the branch, and open a PR.",
+];
 
 /**
  * The composed wrap-up instruction for the card's two checkboxes. A guess, which is
@@ -205,13 +234,15 @@ export function autoWrapupPayload(mode: WrapupMode): string | null {
  * and the session parks -> re-armed -> fire again. Forever, on a live repo, each pass
  * opening another PR.
  *
- * Deliberately a comparison against the two payloads rather than a general
- * "did Foreman type this" lookup: turn authorship (see `injections.ts`) is in-memory,
- * unpersisted, and annotated only on the browser's SSE stream, so the worker cannot
- * read it. These two strings are the only things this trigger can ever have sent, and
- * a constant it emitted itself is something it can always recognise.
+ * Deliberately a comparison against the payloads rather than a general "did Foreman
+ * type this" lookup: turn authorship (see `injections.ts`) is in-memory, unpersisted,
+ * and annotated only on the browser's SSE stream, so the worker cannot read it. These
+ * strings are the only things this trigger can ever have sent, and a constant it
+ * emitted itself is something it can always recognise - including the ones it emitted
+ * before the last upgrade, which is what `RETIRED_WRAPUP_PAYLOADS` is for.
  */
 export function isWrapupPayload(text: string | null | undefined): boolean {
   const t = text?.trim();
-  return t === WRAPUP_NO_MISTAKES || t === WRAPUP_PR;
+  if (t === undefined) return false;
+  return t === WRAPUP_NO_MISTAKES || t === WRAPUP_PR || RETIRED_WRAPUP_PAYLOADS.includes(t);
 }

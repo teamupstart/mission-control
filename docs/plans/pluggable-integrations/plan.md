@@ -20,8 +20,8 @@ silently rather than failing to compile**.
 
 | Capability | Where it is hardcoded |
 |---|---|
-| Process detection | `discovery/processes.ts:47-90` - literal argv signatures per agent |
-| Binary resolution | **three** independent paths: `config.ts` `AGENT_BINS` (a total map since Phase 0), `claude-cli.ts:26`, `main/integrations.ts:184` |
+| Process detection | ~~`discovery/processes.ts:47-90` - literal argv signatures per agent~~ **closed**: `Harness.detect` |
+| Binary resolution | ~~**three** independent paths: `config.ts` `AGENT_BINS`, `claude-cli.ts:26`, `main/integrations.ts:184`~~ **two of three closed**: `Harness.bin` + one `resolveAgentBin`. `main/integrations.ts:184` belongs to the hooks/MCP-install row |
 | Transcript | `transcript.ts:51` hard `return null` for non-Claude; Anthropic JSONL shape throughout (`:115-155`, `:500-505`, `:584`) |
 | Rollout (codex) | `codex-rollout.ts` - metadata only, no message parsing |
 | Dispatch point | `runtime-meta.ts:43-58` - an explicit `if claude … else if codex`. This is where the interface belongs. |
@@ -41,24 +41,30 @@ collapsed both**: `AGENT_TYPES` (`shared/types.ts`) is the one source the zod en
 dashboard's dispatch input now derive from, and `AGENT_NAMES` (`shared/agent.ts`) holds the
 two registers as named fields (`label`, `speaker`) so neither can be mistaken for drift.
 
-**The first three rows, the hook row, and skills / MCP / permission modes are closed.**
-`Harness.transcript` (`server/harness/types.ts`) now
-owns transcript, rollout, and the dispatch point between them: `runtime-meta.ts` names no
-agent, Claude's JSONL shape lives in `harness/claude/`, the rollout in `harness/codex/`,
-and the byte windowing that belongs to neither sits in `transcript.ts` behind a supplied
-line parser. See "`transcript`, as landed" below.
+**The first five rows, the hook row, and skills / MCP / permission modes are closed.**
+`Harness.transcript` (`server/harness/types.ts`) owns transcript, rollout, and the dispatch
+point between them: `runtime-meta.ts` names no agent, Claude's JSONL shape lives in
+`harness/claude/`, the rollout in `harness/codex/`, and the byte windowing that belongs to
+neither sits in `transcript.ts` behind a supplied line parser. `Harness.detect` and
+`Harness.bin` then closed the first two: `discovery/processes.ts` iterates the registry, and
+one `resolveAgentBin` serves both things that spawn an agent CLI. See "`transcript`, as
+landed", "`hooks`, as landed", "Capability guards, as landed" and "`detect` and `bin`, as
+landed" below.
 
 Before Phase 0, only **four** `Record<AgentType, …>` maps would fail to compile on a new
 agent. Everything else silently does nothing, and that asymmetry is the core problem. Phase 0
 took it to **six** - `shared/agent.ts`, `shared/cost.ts`, `shared/goal.ts`, `shared/model.ts`,
 `server/config.ts`, `server/goal/source.ts` - which is the list `session-contracts.test.ts`
 pins by adding a probe agent id and asserting each one fails to typecheck. The transcript
-item swapped the last of those for `server/harness/index.ts`: the per-agent `GoalSource`
-record WAS this capability spelled twice, and one `Harness` entry forces a decision about
-every capability at once rather than about one reader. The capability-guards item added
-`shared/harness-capabilities.ts` beside it, taking the list to **seven** - the two harness
-records are a purity split, not a second vocabulary; see "Capability guards, as landed".
-The rows still marked silent in the table above are the ones nothing yet forces.
+item swapped one of those for `server/harness/index.ts`: the per-agent `GoalSource` record
+WAS that capability spelled twice, and one `Harness` entry forces a decision about every
+capability at once rather than about one reader. The detection/bin item folded
+`server/config.ts` in the same way - `AGENT_BINS` was the bin capability spelled where the
+harnesses could not see it - so the list is `shared/agent.ts`, `shared/cost.ts`,
+`shared/goal.ts`, `shared/model.ts`, `server/harness/index.ts`, plus
+`shared/harness-capabilities.ts`, which the capability-guards item added beside it: the two
+harness records are a purity split, not a second vocabulary; see "Capability guards, as
+landed". The rows still marked silent in the table above are the ones nothing yet forces.
 
 ### Terminal coupling (tmux / wezterm)
 
@@ -485,6 +491,52 @@ Four things the sketch above did not have:
 
 Tests: `harness-hooks.test.ts` (the three things a hookless harness is owed, plus the
 installer drift guard), `hooks.test.ts` (the Claude vocabulary itself, now against the spec).
+#### `detect` and `bin`, as landed
+
+Two more slots on the same `Harness`, both **required** rather than nullable - a harness
+nothing can find has no card at all, and one that names no binary cannot be dispatched.
+`harness/<agent>/detect.ts` and `harness/<agent>/bin.ts` hold the specs;
+`discovery/processes.ts` iterates the registry and names no vendor. Three deltas from the
+sketch:
+
+- **`detect` is data, not a predicate.** `commands` (matched two ways - argv0's basename,
+  and a bare token under a `WRAPPERS` launcher, because those are the same fact),
+  `argvSignatures` (substrings that see through a re-exec or a node shim), and
+  `background`. A spec that hid its rules inside a `match(command)` could not be audited,
+  and the audit is the point: `detection.test.ts` asserts every claim about every declared
+  harness, so a new one inherits the coverage instead of needing its own tests written.
+- **`background` is TOKENS, and it is per harness.** Both halves are load-bearing, and the
+  first one is not this item's idea - it is the shape the ask-channel work arrived at after
+  two rewrites, because a dispatched session's argv now carries a state-dir path and a
+  ~1.2KB inline prompt, so anything decided by searching the raw command line can be
+  reached by an operator's directory name (`~/daemon-state`) or by prompt prose quoting
+  `--bg-pty-host`. Both were observed making real agents undetectable. The spec therefore
+  declares `subcommands` and `flags`, matched at argv[1]/argv[2] only, and
+  `isBackgroundAgent` keeps that logic exactly. What changed is WHOSE vocabulary is asked:
+  it was one global list consulted BEFORE classification, so Claude Code's `bg-pty-host`
+  was tried against every process on the machine - harmless with two harnesses, and the way
+  one vendor's exclusion starts hiding another vendor's sessions with three. Now the
+  command is classified first and its own harness is asked, which is why Codex declares
+  `mcp serve` (it was in that global list) and not `daemon` / `bg-pty-host` / `bg-spare`
+  (Claude Code internals, and a lie on a Codex spec). Answers for a real Claude line are
+  unchanged, and `process-background-filter.test.ts` pins that against verbatim `ps`
+  output.
+- **`bin` names env vars, it does not read them.** `resolveAgentBin` (`harness/index.ts`)
+  is the single resolver, for a dispatched session and a headless run alike. It could not
+  stay in `config.ts`: the map was there while `claude-cli.ts` kept a second,
+  differently-ordered chain beside it, so `MISSION_CLAUDE_BIN` pointed at a wrapper reached
+  one and not the other. `legacyEnv` is the raw-key slot that let that second chain be
+  deleted without dropping `FOREMAN_CLAUDE_BIN`, which cannot be spelled as a `MISSION_`
+  suffix - it now resolves for dispatch too, which is what the README always said it
+  aliased.
+
+Verified as a no-op the only way that claim is worth anything: the old `nativeAgent` /
+`classifyAgent` / `isBackgroundAgent` were run beside the new ones over every command line
+on a live machine (~1,000 of them) plus the background and wrapper edge cases, with zero
+differences except one, named rather than found: `codex daemon` was excluded by that
+global list and is not excluded by Codex's own spec. Codex has no `daemon` subcommand, so
+nothing on a real machine changes. Tests: `detection.test.ts` and `harness-bin.test.ts`,
+table-driven off the registry, plus `process-background-filter.test.ts` unchanged.
 
 ### Compiler enforcement
 
@@ -520,7 +572,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | Phase | Items |
 |---|---|
 | 0 - Seams **(landed)** | `AGENT_TYPES` + `AGENT_NAMES` as the one agent-union source (`shared/types.ts`, `shared/agent.ts`); one pane token (`shared/pane.ts`); the already-neutral helpers lifted out of the Claude modules into `server/util/file-tail.ts` (`readTailLines`) and `server/discovery/capture-tolerance.ts` (capture-miss tolerance) |
-| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; then detection/bin, TUI, UI |
+| 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; then TUI, UI |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces; enumeration, pane I/O, focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |

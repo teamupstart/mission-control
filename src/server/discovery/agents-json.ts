@@ -1,5 +1,5 @@
 import type { SessionState } from "../../shared/types.ts";
-import { resolveAgentBin } from "../config.ts";
+import { resolveAgentBin } from "../harness/index.ts";
 import { run } from "../util/exec.ts";
 
 // `claude agents --json` is Claude Code's own answer to the question this whole

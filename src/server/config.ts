@@ -1,6 +1,5 @@
 import { join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
-import type { AgentType } from "@shared/types.ts";
 import { HOST, PORT, envVar, stateDir, tokenPath } from "../shared/harness-runtime.mjs";
 import { resolveBin, WEZTERM_BIN } from "./terminal/bin.ts";
 
@@ -84,34 +83,11 @@ export function mcpServerPath(): string {
   return envVar("MCP_SERVER") ?? fileURLToPath(new URL("../../dist/mcp/server.mjs", import.meta.url));
 }
 
-/** The env override and the fallback command for one harness's CLI. */
-export interface AgentBin {
-  /** Suffix of the `MISSION_`/legacy env chain that overrides the binary. */
-  env: string;
-  /** What to run when the operator has set no override. */
-  bin: string;
-}
-
-/**
- * Which binary each harness launches - a total map and not a chain of `if`s.
- *
- * This is the function that decides what process a dispatch actually spawns, so the
- * cost of forgetting an entry is a new harness silently launching somebody else's
- * CLI: the `if claude ... else codex` this replaced resolved EVERY unrecognised agent
- * to `codex`, and the caller passes an `AgentType`, so nothing anywhere would have
- * complained. As a `Record<AgentType, ...>` the omission is a typecheck failure at
- * the point of the decision. Pinned by `session-contracts.test.ts`.
- */
-const AGENT_BINS: Record<AgentType, AgentBin> = {
-  claude: { env: "CLAUDE_BIN", bin: "claude" },
-  codex: { env: "CODEX_BIN", bin: "codex" },
-};
-
-/** Resolve the CLI to launch for a dispatched agent, overridable per agent. */
-export function resolveAgentBin(agent: AgentType): string {
-  const { env, bin } = AGENT_BINS[agent];
-  return envVar(env) ?? bin;
-}
+// Which binary each harness launches moved to the harness registry as `BinSpec`
+// (`harness/types.ts`), with `resolveAgentBin` in `harness/index.ts`. It was a
+// `Record<AgentType, AgentBin>` here, which forced the decision but left the resolution
+// in a file the harnesses know nothing about - and `claude-cli.ts` quietly kept a second
+// chain of its own beside it.
 
 /** How often the passive discovery poller sweeps the system. */
 export const POLL_INTERVAL_MS = Number(envVar("POLL_MS") ?? 1500);

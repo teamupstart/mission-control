@@ -384,6 +384,13 @@ export class TaskManager {
         scope: "session",
       };
     }
+    if (!s.instrumented) {
+      return {
+        ok: false,
+        error: "that agent has no live hook instrumentation to confirm a safe handover",
+        scope: "session",
+      };
+    }
     // Reports idle, but something is already parked on it waiting for the human. The
     // dashboard files such a session under "needs you" rather than "idle" and won't
     // offer it as a target; refuse it here too, so the API can't route around a rule
@@ -457,7 +464,7 @@ export class TaskManager {
     // several git invocations old, and the reset itself spends up to 30s in a fetch -
     // an agent a human woke up in that window must not be reset out from under them.
     const fresh = this.registry.getSession(sessionId);
-    if (!fresh || fresh.state !== "idle" || fresh.pendingReviews > 0) {
+    if (!fresh || !fresh.instrumented || fresh.state !== "idle" || fresh.pendingReviews > 0) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }
 

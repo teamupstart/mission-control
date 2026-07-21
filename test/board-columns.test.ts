@@ -128,15 +128,15 @@ test("only an idle agent in the task's own repo may be dropped on", () => {
   assert.equal(canAcceptTask(session(), null), false);
 });
 
-test("idle is judged by tone, so the lit tiles are exactly the Idle column's", () => {
+test("only hook-instrumented sessions in the Idle column accept drops", () => {
   // Both of these report state "idle" and would pass a naive raw-state check, and
   // neither sits in the Idle column - so neither may be handed more work.
   //
   // With no fresh lifecycle reading, "idle" is a guess. Shows as Unconfirmed.
   assert.equal(canAcceptTask(session({ instrumented: false, stateConfirmed: false }), "/repo"), false);
-  // A Codex rollout can confirm idle without a hook. It belongs in Idle and is safe
-  // to target even though hook-dependent delivery remains unavailable.
-  assert.equal(canAcceptTask(session({ instrumented: false, stateConfirmed: true }), "/repo"), true);
+  // A Codex rollout can confirm idle without a hook, so it belongs in Idle, but the
+  // hook-dependent handover remains unavailable.
+  assert.equal(canAcceptTask(session({ instrumented: false, stateConfirmed: true }), "/repo"), false);
   // A review already parked on it: the agent is idle precisely BECAUSE it is waiting
   // on the human. Shows under Needs you.
   assert.equal(canAcceptTask(session({ pendingReviews: 1 }), "/repo"), false);

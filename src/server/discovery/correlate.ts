@@ -1,11 +1,5 @@
-import type {
-  AgentType,
-  NameSource,
-  PaneDialog,
-  PermissionMode,
-  TmuxInfo,
-  WeztermInfo,
-} from "@shared/types.ts";
+import type { AgentType, NameSource, PaneDialog, PermissionMode } from "@shared/types.ts";
+import type { TerminalHandle } from "@shared/terminal.ts";
 import { listProcesses, type Proc } from "./processes.ts";
 import { enumerateTerminals, type TerminalEnumeration } from "../terminal/enumerate.ts";
 import type {
@@ -46,8 +40,8 @@ export interface DiscoveredSession {
   nomistakesGated: boolean;
   pid: number;
   tty: string | null;
-  wezterm: WeztermInfo | null;
-  tmux: TmuxInfo | null;
+  /** Every terminal pane this session is reachable through. See `Session.terminals`. */
+  terminals: TerminalHandle[];
   /** Agent process start time (epoch ms), 0 when unparseable. */
   startedAt: number;
   /**
@@ -108,9 +102,9 @@ export async function gatherDiscoveryInput(): Promise<DiscoveryInput> {
  * lets the correlation loop pick a namer by priority instead of by an `if/else` chain whose
  * arm order silently IS the priority.
  *
- * The pane is carried whole rather than reduced to a handle: `Session`'s two vendor fields
- * still want a window name, a window id, a tab title and an active flag, none of which a
- * handle carries. See `legacyHandles`.
+ * The pane is carried whole rather than reduced to a handle at this point, because the
+ * naming walk wants the whole pane (its cwd fallback, its title) while `handleOf` wants only
+ * what a `Session` records.
  */
 type TerminalCandidate =
   | { kind: "multiplexer"; backend: MultiplexerId; name: string; pane: MuxPane }
@@ -133,7 +127,7 @@ function panesByTty(terminals: readonly TerminalEnumeration[]): Map<string, Term
     // report the same pane twice: `tmux list-panes -a` walks sessions then windows, so a
     // window linked into two sessions (`new-session -t`, `link-window`) yields that pane once
     // per session, with a different `session_name` each time. Appending both would let the
-    // arrival order of a duplicate decide a card's name - and, through `TmuxInfo.session`,
+    // arrival order of a duplicate decide a card's name - and, through `MuxHandle.session`,
     // which session `rename-session` and `kill-session` target.
     const at = list.findIndex((x) => x.backend === c.backend);
     if (at >= 0) list[at] = c;
@@ -155,38 +149,36 @@ function panesByTty(terminals: readonly TerminalEnumeration[]): Map<string, Term
 }
 
 /**
- * Project a session's handles onto `Session`'s two per-vendor fields.
+ * Reduce an enumerated pane to the handle a `Session` carries.
  *
- * The only vendor names left in this file, and they are here because `Session.tmux` /
- * `Session.wezterm` are still two named nullable siblings - structural blocker #2, which
- * phase 3 replaces with a handle list. This function is what phase 3 deletes; until then it
- * is the seam, kept in one place so the loop above never grows a second one. A backend with
- * no field to land in (a zellij pane, today) correlates and names normally and simply has no
- * handle recorded, which is the honest shape of a half-finished migration rather than a
- * crash.
- *
- * The `Number` casts are that same debt from the other side: the adapters normalize pane ids
- * to strings because tmux's are `"%3"`, and `WeztermInfo` still holds wezterm's numeric ones.
+ * What `legacyHandles` was, with the vendor names gone: it projected onto `Session.tmux` /
+ * `Session.wezterm`, so a backend with no field of its own correlated, named its session,
+ * and then silently recorded no handle - discovered but unreachable. Phase 3 replaced those
+ * two named siblings with a list, and this is the whole of what was left to write. Nothing
+ * here can recognise a vendor, and there is no longer a `Number` cast either: the adapters
+ * normalize pane ids to strings and the handle keeps them that way.
  */
-function legacyHandles(
-  mux: TerminalCandidate | undefined,
-  emu: TerminalCandidate | undefined,
-): { tmux: TmuxInfo | null; wezterm: WeztermInfo | null } {
-  const t = mux?.kind === "multiplexer" && mux.backend === "tmux" ? mux.pane : null;
-  const w = emu?.kind === "emulator" && emu.backend === "wezterm" ? emu.pane : null;
+function handleOf(c: TerminalCandidate): TerminalHandle {
+  if (c.kind === "multiplexer") {
+    const p = c.pane;
+    return {
+      kind: "multiplexer",
+      backend: c.backend,
+      session: p.session,
+      windowIndex: p.windowIndex,
+      windowName: p.windowName,
+      paneId: p.paneId,
+    };
+  }
+  const p = c.pane;
   return {
-    tmux: t
-      ? { session: t.session, window: t.windowName, windowIndex: t.windowIndex, paneId: t.paneId }
-      : null,
-    wezterm: w
-      ? {
-          paneId: Number(w.paneId),
-          tabId: Number(w.tabId),
-          windowId: Number(w.windowId),
-          tabTitle: w.tabTitle,
-          isActive: w.isActive,
-        }
-      : null,
+    kind: "emulator",
+    backend: c.backend,
+    paneId: p.paneId,
+    tabId: p.tabId,
+    windowId: p.windowId,
+    tabTitle: p.tabTitle,
+    isActive: p.isActive,
   };
 }
 
@@ -279,10 +271,12 @@ export function correlate(
     // inside an emulator pane, which is why the two interfaces exist. Taking the first of
     // each IS the composition rule; it replaces a "keep the wezterm handle too" fixup that
     // ran after the naming branch and had to restate what that branch had just decided.
-    const { tmux: tmuxInfo, wezterm: weztermInfo } = legacyHandles(
+    const terminals = [
       candidates.find((c) => c.kind === "multiplexer"),
       candidates.find((c) => c.kind === "emulator"),
-    );
+    ]
+      .filter((c) => c !== undefined)
+      .map(handleOf);
 
     const git = gitInfo(cwd);
     sessions.push({
@@ -297,8 +291,7 @@ export function correlate(
       nomistakesGated: git.nomistakesGated,
       pid: root.pid,
       tty,
-      wezterm: weztermInfo,
-      tmux: tmuxInfo,
+      terminals,
       startedAt: root.startMs,
     });
   }

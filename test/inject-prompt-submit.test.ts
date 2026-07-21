@@ -2,12 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { injectPrompt, type InjectDeps } from "../src/server/actions.ts";
-import { bindSession } from "../src/server/terminal/handles.ts";
+import { bindSession } from "../src/server/terminal/registry.ts";
 import { hasPendingCommand, hasPendingPaste } from "../src/server/discovery/pane-paste.ts";
 import { HARNESSES } from "../src/server/harness/index.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
-import type { Session, TmuxInfo } from "@shared/types.ts";
+import type { Session } from "@shared/types.ts";
+import type { TerminalHandle } from "@shared/terminal.ts";
 import { stubRun } from "../src/server/util/exec.ts";
+import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Delivering a prompt is a NON-ATOMIC sequence - buffer, paste, settle, read, Enter, read
 // back - and the ORDER is the whole fix, so these tests assert the sequence rather than the
@@ -40,10 +42,10 @@ const PLACEHOLDER = "❯ [Pasted text #1 +3 lines]";
 const EMPTY_COMPOSER = "❯\n⏵⏵ auto mode on (shift+tab to cycle)";
 
 const tmuxSession = (paneId = "%1"): Session =>
-  ({ id: "s1", agent: "claude", tmux: { session: "s", window: "w", windowIndex: 0, paneId }, wezterm: null }) as Session;
+  ({ id: "s1", agent: "claude", terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId })] }) as Session;
 
 const weztermSession = (): Session =>
-  ({ id: "s2", agent: "claude", tmux: null, wezterm: { paneId: 7, tabId: 0, windowId: 0, tabTitle: "", isActive: true } }) as Session;
+  ({ id: "s2", agent: "claude", terminals: [mkEmuHandle({ paneId: "7", tabId: "0", windowId: "0", tabTitle: "" })] }) as Session;
 
 /** One entry per thing the delivery did, in order, so the sequence itself is assertable. */
 type Event = { kind: "exec"; argv: string } | { kind: "sleep"; ms: number } | { kind: "capture" };
@@ -268,7 +270,7 @@ test("wezterm settles before its Enter too", async () => {
 
 test("a session with no pane is refused before any of this", async () => {
   const { deps } = harness();
-  const r = await injectPrompt({ id: "s3", agent: "claude", tmux: null, wezterm: null } as Session, "a\nb", deps);
+  const r = await injectPrompt({ id: "s3", agent: "claude", terminals: [] as TerminalHandle[] } as Session, "a\nb", deps);
   assert.equal(r.ok, false);
   assert.equal(r.pasted, false);
 });
@@ -325,13 +327,13 @@ test("the placeholder is detected through a real capture-pane", { skip: tmuxAvai
   // bytes that actually round-tripped through a terminal - the composer line rendered into
   // a live pane and read back out by the real `capturePaneText`.
   const sessName = `mc-paste-${process.pid}`;
-  const tmux = (paneId: string): TmuxInfo => ({ session: sessName, window: "0", windowIndex: 0, paneId });
+  const tmux = (paneId: string) => mkMuxHandle({ session: sessName, windowName: "0", paneId });
   try {
     execFileSync("tmux", ["new-session", "-d", "-s", sessName, "-x", "200", "-y", "50"]);
     execFileSync("tmux", ["send-keys", "-t", sessName, "-l", 'clear; printf "\\n> [Pasted text #1 +3 lines]\\n"; read x']);
     execFileSync("tmux", ["send-keys", "-t", sessName, "Enter"]);
     const paneId = execFileSync("tmux", ["list-panes", "-t", sessName, "-F", "#{pane_id}"]).toString().trim();
-    const session = { id: "real", agent: "claude", tmux: tmux(paneId), wezterm: null } as Session;
+    const session = { id: "real", agent: "claude", terminals: [tmux(paneId)] } as Session;
 
     // Wait for the pane to RENDER the line - the shell's echo of the command is on screen
     // first, and `clear` has not run yet.

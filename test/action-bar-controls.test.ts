@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ActionBar } from "../src/web/components/ActionBar.tsx";
 import type { Session } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Which controls a card offers, and when.
 //
@@ -21,7 +22,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agent: "claude",
     name: "card",
     nameSource: "tmux",
-    tmux: { session: "dev", window: "@1", paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "dev", windowName: "@1" })],
     state: "idle",
     cwd: "/repo",
     startedAt: 0,
@@ -86,7 +87,7 @@ test("the queue button carries the open count, so a waiting batch is visible uno
 test("a session with no pane can't send, but can still be queued for", () => {
   // Send needs a pty to type into; the queue is stored server-side and delivered later,
   // so a pane-less session is exactly the kind you'd want to load up in advance.
-  const html = render({ session: mkSession({ tmux: undefined, wezterm: undefined }) });
+  const html = render({ session: mkSession({ terminals: [] }) });
   assert.match(html, /disabled="" title="No pane to send to">Send/, html);
   assert.match(html, /class="btn btn-queue"(?![^>]*disabled)/, html);
 });

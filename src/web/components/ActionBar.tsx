@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { canWriteTo, muxHandle } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { clearDraft, readDraft, writeDraft } from "../lib/drafts.ts";
 import { formatChord, useKeybindings } from "../lib/keybindings.ts";
@@ -82,7 +83,11 @@ export function ActionBar({
   const [flash, setFlash] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const canSend = Boolean(session.tmux || session.wezterm);
+  const canSend = canWriteTo(session);
+  // What Kill tears down beyond the process itself: a multiplexer's named session, which an
+  // emulator has no equivalent of. The backend names itself in the sentence, so the tmux
+  // copy is unchanged and a second multiplexer's is true rather than borrowed.
+  const killsMux = muxHandle(session);
   // Queued work is the reason to open a hidden panel, so the button carries the count
   // rather than making you press it to find out whether anything is waiting.
   const openQueued = session.queue?.openCount ?? 0;
@@ -242,8 +247,8 @@ export function ActionBar({
               className="act act-danger"
               onClick={() => void doKill()}
               title={
-                session.tmux
-                  ? `Terminates the agent and kills its tmux session "${session.tmux.session}"`
+                killsMux
+                  ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}"`
                   : "Terminates the agent process"
               }
             >
@@ -299,8 +304,8 @@ export function ActionBar({
               className="btn btn-danger"
               onClick={() => void doKill()}
               title={
-                session.tmux
-                  ? `Terminates the agent and kills its tmux session "${session.tmux.session}" (all its windows and panes)`
+                killsMux
+                  ? `Terminates the agent and kills its ${killsMux.backend} session "${killsMux.session}" (all its windows and panes)`
                   : "Terminates the agent process"
               }
             >

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What the worker's orphan sweep is allowed to escalate.
 //
@@ -47,8 +48,7 @@ function mkDiscovered(syntheticId: string, paneId: string): DiscoveredSession {
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId })],
     startedAt: 0,
   } as DiscoveredSession;
 }

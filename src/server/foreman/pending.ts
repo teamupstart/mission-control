@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { NmFinding, NmRunSummary, PaneDialog, ReviewItem, Session } from "@shared/types.ts";
 import { activePaneDialog, dialogIdentity, gateParked } from "@shared/session.ts";
+import { canWriteTo } from "@shared/pane.ts";
 
 // Works out what a needs-you session is actually blocked on - the single pure
 // classification the worker and the triage tiers share. Kept out of worker.ts so
@@ -14,7 +15,7 @@ import { activePaneDialog, dialogIdentity, gateParked } from "@shared/session.ts
  * - `input-review`     - a pending MCP `input` review: answerable by resolving it.
  * - `non-input-review` - a plan/diff review: human-only, Foreman can't deliver.
  * - `terminal-pane`    - a stopped child (`awaiting_input`, or a menu on its screen) with a
- *                        tmux/wezterm pane: answerable by typing, or by selecting a row.
+ *                        terminal pane: answerable by typing, or by selecting a row.
  * - `terminal-no-pane` - the same ask with no pane: a real question, no channel.
  * - `gate-parked`      - a no-mistakes gate whose agent has stopped: answerable by typing.
  * - `no-question`      - needs-you for some other state, with no answerable question.
@@ -244,7 +245,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
   // parsed from it, and `selectPaneOption` already verifies the row before pressing anything.
   const dialog = activePaneDialog(s);
   if (dialog || s.state === "awaiting_input") {
-    const canSend = Boolean(s.tmux || s.wezterm);
+    const canSend = canWriteTo(s);
     return {
       situation: canSend ? "terminal-pane" : "terminal-no-pane",
       surface: "terminal",
@@ -295,7 +296,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
       inputReviewId: null,
       // The agent has stopped, so there is no blocked call to release - typing into its pane
       // wakes it with a new prompt, exactly as a human answering this would.
-      canSend: Boolean(s.tmux || s.wezterm),
+      canSend: canWriteTo(s),
       // Keyed on the RUN id, not its branch (successive runs share one, and the second would
       // inherit the first's handled marker and be silently skipped - the very thing NmRunSummary
       // carries an id to prevent); on the step; and on the findings up at it (see

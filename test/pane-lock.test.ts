@@ -5,6 +5,8 @@ import { paneToken } from "../src/shared/pane.ts";
 import { overlayKeyFromEnv, sessionKey } from "../src/server/registry.ts";
 import { paneKeyOf } from "../src/server/foreman/queue-apply.ts";
 import type { Session } from "../src/shared/types.ts";
+import type { PaneHandles } from "../src/shared/pane.ts";
+import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The pane write lock. It used to guard only permission-mode cycling; the skills
 // reload loop is the first writer that types into many panes on its own schedule, so
@@ -21,19 +23,17 @@ import type { Session } from "../src/shared/types.ts";
 // ever compared the token against itself; the fifth copy, written for a third terminal
 // backend, is where a mismatch becomes a session whose hooks bind to nothing.
 
-type Handles = Pick<Session, "tmux" | "wezterm">;
+type Handles = PaneHandles;
 
 const tmuxPane = (paneId: string): Handles => ({
-  tmux: { session: "s", window: "w", windowIndex: 0, paneId },
-  wezterm: null,
+  terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId })],
 });
 
 const weztermPane = (paneId: number): Handles => ({
-  tmux: null,
-  wezterm: { paneId, tabId: 0, windowId: 0, tabTitle: "", isActive: true },
+  terminals: [mkEmuHandle({ paneId: String(paneId), tabId: "0", windowId: "0", tabTitle: "", isActive: true })],
 });
 
-const NO_PANE: Handles = { tmux: null, wezterm: null };
+const NO_PANE: Handles = { terminals: [] };
 
 /** A write that blocks until released, so two can genuinely overlap. */
 function gate(): { held: Promise<void>; release: () => void } {
@@ -93,7 +93,7 @@ test("the key is the pane, not the session - two reads of one pane collide", asy
     await g.held;
     return "wrote";
   });
-  const sameHandleDifferentObject = { tmux: { session: "other", window: "x", windowIndex: 9, paneId: "%1" }, wezterm: null };
+  const sameHandleDifferentObject = { terminals: [mkMuxHandle({ session: "other", windowName: "x", windowIndex: 9, paneId: "%1" })] };
   assert.equal(await withPaneLock(sameHandleDifferentObject, () => "busy", async () => "wrote"), "busy");
   g.release();
   await first;
@@ -142,8 +142,7 @@ test("handleless sessions never collide with each other", async () => {
 
 test("tmux wins when a session has both handles, exactly as the writes resolve", async () => {
   const both: Handles = {
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
-    wezterm: { paneId: 7, tabId: 0, windowId: 0, tabTitle: "", isActive: true },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" }), mkEmuHandle({ paneId: "7", tabId: "0", windowId: "0", tabTitle: "", isActive: true })],
   };
   const g = gate();
   const first = withPaneLock(both, () => "busy", async () => {
@@ -160,7 +159,7 @@ test("tmux wins when a session has both handles, exactly as the writes resolve",
 
 // ---- the token itself: one spelling, four subsystems ----
 
-/** A `Session` is only ever read for its two handles by the functions under test. */
+/** A `Session` is only ever read for its handle list by the functions under test. */
 const asSession = (h: Handles): Session => h as Session;
 
 test("every subsystem that keys on a pane spells the token identically", () => {
@@ -179,8 +178,8 @@ test("every subsystem that keys on a pane spells the token identically", () => {
 test("a hook's env and the discovered session agree, which is what makes binding work", () => {
   // The one place two subsystems' tokens are genuinely compared: an overlay is stored
   // under the key built from the hook's captured env, and found again under the key
-  // built from the session discovery saw. The env carries pane ids as strings and
-  // discovery as a number, so the two paths cannot share a code path - only a spelling.
+  // built from the session discovery saw. The env is a raw environment variable rather
+  // than a handle, so the two paths cannot share a code path - only a spelling.
   assert.equal(overlayKeyFromEnv({ tmuxPane: "%3" }), paneToken(tmuxPane("%3")));
   assert.equal(overlayKeyFromEnv({ weztermPane: "7" }), paneToken(weztermPane(7)));
 });
@@ -192,8 +191,8 @@ test("the token names its backend, so two backends' pane ids can never collide",
 });
 
 test("wezterm pane 0 has a token - presence of the handle decides, not truthiness of the id", () => {
-  // The id is a number, so a `if (paneId)` reading of it would silently un-handle the
-  // first pane wezterm ever numbers, and that session would lock against nothing.
+  // wezterm numbers its panes from zero, so a `if (paneId)` reading of it would silently
+  // un-handle the first pane it ever opens, and that session would lock against nothing.
   assert.equal(paneToken(weztermPane(0)), "wezterm:0");
 });
 

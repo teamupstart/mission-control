@@ -3,6 +3,7 @@ import { AGENT_TYPES, type FleetCost, type Session, type Task } from "@shared/ty
 import { agentList } from "@shared/agent.ts";
 import { backlogTasks, gateParked } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import { useEventStream } from "./useEventStream.ts";
 import type { ActionBarHandle } from "./components/ActionBar.tsx";
 import { ReviewModal } from "./components/ReviewModal.tsx";
@@ -530,7 +531,7 @@ export function App(): React.JSX.Element {
       if (chord === bindings.rename) {
         if (!selectedId) return;
         const sel = visible.find((s) => s.id === selectedId);
-        // Only renameable sessions (a live tmux/wezterm pane) open the editor.
+        // Only renameable sessions (a live terminal pane) open the editor.
         if (!sel || !canRenameSession(sel)) return;
         e.preventDefault();
         setRenamingId(selectedId);
@@ -856,7 +857,7 @@ function CommandBar({
   const live = session.state !== "exited";
   // Cycling a mode needs a harness that has any, and a pane to send the keystroke into.
   const canCycleMode =
-    live && Boolean(capabilitiesFor(session.agent).permissionModes) && Boolean(session.tmux || session.wezterm);
+    live && Boolean(capabilitiesFor(session.agent).permissionModes) && canWriteTo(session);
   const canRename = canRenameSession(session);
   const barRef = useRef<HTMLDivElement>(null);
 

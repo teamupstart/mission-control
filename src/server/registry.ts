@@ -42,7 +42,8 @@ import type {
 import { inFlightItem as inFlightItemOf, isTerminalState } from "@shared/queue.ts";
 import { goalLine } from "@shared/goal.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import { paneToken, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import { canWriteTo, muxHandle, paneToken, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
+import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -524,11 +525,10 @@ export class Registry extends EventEmitter {
       paneDialog:
         d.paneDialog !== undefined
           ? d.paneDialog
-          : d.tmux || d.wezterm
+          : canWriteTo(d)
             ? (prev?.paneDialog ?? null)
             : null,
-      wezterm: d.wezterm,
-      tmux: d.tmux,
+      terminals: d.terminals,
       // Seeded from the DB for the same reason `hooksSeen` below is: only a live
       // hook/statusLine reports it, so on a daemon restart a quiet-but-healthy
       // session would rebuild with a null binding - and `noteKeyFor` would hand its
@@ -769,24 +769,24 @@ export class Registry extends EventEmitter {
   }
 
   /**
-   * Optimistically apply a rename to the live card the instant the tmux/wezterm
-   * rename lands, rather than waiting up to a poll interval for discovery to read
-   * the new name back. For a tmux session the display name IS the tmux session
-   * name, so the tmux handle's `session` field moves with it - otherwise Focus and
-   * Kill (which target `tmux.session` by name) would address the now-renamed
-   * session by its old name until the next sweep. The wezterm handle's `tabTitle`
-   * is kept in step for the same consistency, though no action keys off it.
+   * Optimistically apply a rename to the live card the instant the terminal rename
+   * lands, rather than waiting up to a poll interval for discovery to read the new
+   * name back. For a multiplexer-hosted session the display name IS the multiplexer
+   * session name, so that handle's `session` field moves with it - otherwise Focus
+   * and Kill (which target it BY NAME) would address the now-renamed session by its
+   * old name until the next sweep. The emulator handle's `tabTitle` is kept in step
+   * for the same consistency, though no action keys off it.
    *
    * Discovery converges on this exact value on its next tick (the terminal really
    * was renamed), so there's nothing to reconcile - a stale in-flight sweep that
    * started before the rename can briefly show the old name, then self-heals.
    *
-   * Renaming a tmux session renames it for every card hosted on it: `correlate`
-   * groups agents by tty, so two agents in two windows of one tmux session are two
-   * cards sharing a `tmux.session`. All of them are re-pointed, or a sibling's Focus
-   * would attach by a name that no longer resolves until the next sweep. A sibling
-   * named after tmux (`nameSource`) takes the new display name too - its title just
-   * IS the tmux session name.
+   * Renaming a multiplexer session renames it for every card hosted on it:
+   * `correlate` groups agents by tty, so two agents in two windows of one tmux
+   * session are two cards sharing that handle's `session`. All of them are
+   * re-pointed, or a sibling's Focus would attach by a name that no longer resolves
+   * until the next sweep. A sibling named by that same backend (`nameSource`) takes
+   * the new display name too - its title just IS the session name.
    *
    * A dispatched task holds its own persisted copy of the tmux name, and that copy
    * drives destructive teardown: `reconcileOnStartup` reads `tmuxSession` back after
@@ -805,35 +805,41 @@ export class Registry extends EventEmitter {
   renameSession(sessionId: string, name: string): void {
     const s = this.sessions.get(sessionId);
     if (!s || s.name === name) return;
-    const priorTmux = s.tmux?.session ?? null;
+    const priorMux = muxHandle(s)?.session ?? null;
     const next: Session = {
       ...s,
       name,
-      tmux: s.tmux ? { ...s.tmux, session: name } : s.tmux,
-      wezterm: s.wezterm ? { ...s.wezterm, tabTitle: name } : s.wezterm,
+      terminals: s.terminals.map((h) =>
+        h.kind === "multiplexer" ? { ...h, session: name } : { ...h, tabTitle: name },
+      ),
     };
     this.sessions.set(sessionId, next);
     this.emitSession(next);
-    if (!priorTmux || priorTmux === name) return;
+    if (!priorMux || priorMux === name) return;
 
     const hostedCwds = new Set<string>();
     if (s.cwd) hostedCwds.add(s.cwd);
     for (const [id, other] of [...this.sessions]) {
       if (id === sessionId) continue;
-      const pane = other.tmux;
-      if (!pane || pane.session !== priorTmux) continue;
+      const pane = muxHandle(other);
+      if (!pane || pane.session !== priorMux) continue;
       if (other.cwd) hostedCwds.add(other.cwd);
       const renamed: Session = {
         ...other,
-        name: other.nameSource === "tmux" ? name : other.name,
-        tmux: { ...pane, session: name },
+        // Only a sibling this backend NAMED takes the new display name; one named by its
+        // own tab title keeps it. The tab title itself is left alone here, unlike on the
+        // session that was actually renamed - nothing renamed a sibling's tab.
+        name: other.nameSource === pane.backend ? name : other.name,
+        terminals: other.terminals.map((h) =>
+          h.kind === "multiplexer" ? { ...h, session: name } : h,
+        ),
       };
       this.sessions.set(id, renamed);
       this.emitSession(renamed);
     }
 
     for (const t of this.listTasks()) {
-      if (t.tmuxSession !== priorTmux) continue;
+      if (t.tmuxSession !== priorMux) continue;
       if (!t.worktreePath || !hostedCwds.has(t.worktreePath)) continue;
       this.upsertTask({ ...t, tmuxSession: name, updatedAt: Date.now() });
     }
@@ -2710,10 +2716,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   nomistakesGated: alwaysEqual,
   pid: byValue,
   permissionMode: byValue,
-  // Narrower than the whole object on purpose: only focus is rendered, and the pane
-  // geometry around it churns without the card ever looking different.
-  wezterm: (a, b) => a?.isActive === b?.isActive,
-  tmux: (a, b) => a?.window === b?.window,
+  terminals: terminalsEqual,
   agentSessionId: byValue,
   transcriptPath: byValue,
   instrumented: byValue,
@@ -2781,6 +2784,36 @@ export function sessionEqual(a: Session, b: Session): boolean {
     if (!equal(a[key], b[key])) return false;
   }
   return true;
+}
+
+/**
+ * Compare two handle lists by what a card actually reads off them.
+ *
+ * Field-by-field rather than `byJson`, and the reason is the loop it runs in: this is the
+ * 1500ms discovery sweep, every session, every tick, and the two per-vendor comparators it
+ * replaces were each a single `===`. Stringifying a two-element array of six-key objects to
+ * answer a question three string compares answer is the kind of cost that only shows up on
+ * the machine with forty sessions open.
+ *
+ * WHICH fields is the same judgement those two made - would the UI look different? - and
+ * the answer grew by two, both of which the old pair missed. `paneId` reaches the subtitle
+ * (`tmux · %3`) and the multiplexer session name reaches Kill's confirm tooltip, so a pane
+ * or session that moved under a card whose every other field held still would have gone on
+ * displaying the old one until something unrelated shook it loose. The geometry that churns
+ * without ever being rendered - `windowIndex`, `windowId` - stays out.
+ */
+function terminalsEqual(a: readonly TerminalHandle[], b: readonly TerminalHandle[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((x, i) => {
+    const y = b[i];
+    if (!y || x.kind !== y.kind || x.backend !== y.backend || x.paneId !== y.paneId) return false;
+    if (x.kind === "multiplexer") {
+      const o = y as MuxHandle;
+      return x.session === o.session && x.windowName === o.windowName;
+    }
+    const o = y as EmulatorHandle;
+    return x.tabTitle === o.tabTitle && x.isActive === o.isActive;
+  });
 }
 
 /**

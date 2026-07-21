@@ -103,7 +103,7 @@ export interface ReviewContext {
   promptMarker: string;
   /** A pending MCP `input` review's id, if the ask arrived that way. */
   inputReviewId: string | null;
-  /** True when the session has a pane we can type into (tmux/wezterm). */
+  /** True when the session has a terminal pane we can type into (`canWriteTo`). */
   canSend: boolean;
   /**
    * Which no-mistakes gate this prompt is, when it is one - so a send can be

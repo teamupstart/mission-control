@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-import type { Session, TmuxInfo } from "@shared/types.ts";
+import type { Session } from "@shared/types.ts";
+import type { TerminalHandle } from "@shared/terminal.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The dispatcher's `applyAutoMode` decision - the heart of the "auto mode on dispatch"
 // harness setting. It is exercised against the REAL harnesses config (a round-trip
@@ -43,7 +45,7 @@ const applyAutoMode = (session: Session, agent: Session["agent"]): Promise<void>
 
 /** A session with no pane handle - the cleanest way to make `setPermissionMode` fail fast. */
 function noHandleSession(agent: Session["agent"]): Session {
-  return { id: `s-${agent}`, agent, tmux: null, wezterm: null } as Session;
+  return { id: `s-${agent}`, agent, terminals: [] as TerminalHandle[] } as Session;
 }
 
 /** Run `fn`, returning every `console.warn` message it emitted. */
@@ -114,7 +116,7 @@ test("setting ON + claude, real pane already in auto: the session ends in auto, 
   // already the target, and reports success - so a claude dispatch confirms auto and the
   // dispatcher stays quiet. This exercises the true capture-pane path end to end.
   const sessName = `mc-auto-${process.pid}`;
-  const tmux = (paneId: string): TmuxInfo => ({ session: sessName, window: "0", windowIndex: 0, paneId });
+  const tmux = (paneId: string) => mkMuxHandle({ session: sessName, windowName: "0", paneId });
   try {
     execFileSync("tmux", ["new-session", "-d", "-s", sessName, "-x", "200", "-y", "50"]);
     // clear wipes the command echo; the printed glyph+wording is then the only footer line;
@@ -136,7 +138,7 @@ test("setting ON + claude, real pane already in auto: the session ends in auto, 
     }
     assert.ok(painted, "the fake pane should render the auto-mode footer before we drive it");
 
-    const session = { id: "s-real", agent: "claude", tmux: tmux(paneId), wezterm: null } as Session;
+    const session = { id: "s-real", agent: "claude", terminals: [tmux(paneId)] } as Session;
     const warnings = await warningsFrom(() => applyAutoMode(session, "claude"));
     assert.deepEqual(warnings, [], "a session already in auto should be confirmed silently, not warned about");
   } finally {

@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
-import { backlogTasks } from "@shared/session.ts";
 import { stateDisplay, type Tone } from "../../lib/format.ts";
 import { boardColumnModes, groupByTone } from "../../lib/tone.ts";
 import { AssignResetModal } from "../AssignResetModal.tsx";
@@ -69,7 +68,6 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
   const [draggingRepo, setDraggingRepo] = useState<string | null>(null);
 
   const groups = groupByTone(props.sessions);
-  const backlog = backlogTasks(props.tasks);
   // The dialog's target, resolved fresh every render: `null` here retires a confirm whose
   // agent has since disappeared, rather than leaving a dialog up over a session that is
   // no longer on the board.
@@ -97,7 +95,7 @@ export function BoardView(props: SessionViewProps): React.JSX.Element {
       data-dragging={draggingRepo != null ? "task" : undefined}
     >
       <BacklogColumn
-        tasks={backlog}
+        tasks={props.backlog}
         // The FULL task list as well as the backlog slice: a dependency very often
         // points at a task that has already left the backlog (it is running, or done),
         // and a column that could only see the backlog would report those as

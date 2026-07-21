@@ -1418,6 +1418,12 @@ console's permanent conversation earns two surfaces a card has nowhere to put:
   the board goes straight back to its columns, the console empties its pane, and Cards
   leaves focus mode with the card still selected. A killed session lingers for a few
   seconds before it's evicted, and there's nothing left to read in it.
+- **The filter box (<kbd>/</kbd>) narrows the whole board, backlog included.** A query is a
+  case-insensitive substring match against a session's title, status and agent - and, on the
+  board, against a backlog task's title, status, agent and labels. So `ghostty` finds the
+  queued *P5: Ghostty terminal emulator adapter* whether or not any live session matches, and
+  the board stays on screen to show it. Cards and Console draw no tasks, so there a query
+  matching only backlog items correctly reads as "nothing matches".
 - **The arrow keys follow the shape** - see below.
 
 ## Message formatting
@@ -1451,7 +1457,7 @@ without reaching for the mouse. Every shortcut works in every layout:
 | <kbd>Esc</kbd> | Peel back exactly one layer per press - first close whatever's open on top of the grid (a panel, a dialog, the away digest), then leave a focused text box, then collapse an expanded card (**Cards**), then deselect | Anywhere |
 | <kbd>r</kbd> | Toggle the Roundup panel | Anywhere |
 | <kbd>+</kbd> | Dispatch an agent | Anywhere |
-| <kbd>/</kbd> | Focus the filter box | Anywhere |
+| <kbd>/</kbd> | Focus the filter box (sessions, plus the board's backlog) | Anywhere |
 | <kbd>e</kbd> | Expand / collapse the selected card (**Cards** only - the other layouts always show the selected session expanded; expanding drops the cursor in its reply box, ready to type) | Selected session |
 | <kbd>d</kbd> | Open the selected session's diff | Selected session |
 | <kbd>s</kbd> | Send a message to the selected session (on an expanded card, jumps to the reply box already there) | Selected session |

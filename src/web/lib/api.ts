@@ -363,7 +363,9 @@ export const api = {
 
   // --- dispatch (agents) ---
   dispatch: (input: DispatchInput) => post(`/api/tasks`, input),
-  dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`),
+  // `{}` is intentional: the daemon validates every mutating route body. Foreman adds
+  // its launch-time default here; a human dispatch leaves the task's model untouched.
+  dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, {}),
   /**
    * Edit a task - the dispatch modal reopened on a card, or the backlog column's
    * priority picker. Rewriting repo/intent/title/kind/agent is refused (409) once the

@@ -111,6 +111,7 @@ const LIVE_CFG: ForemanConfig = {
   maxFixRounds: 10,
   autoBacklog: false,
   backlogRespectOpenPrs: true,
+  backlogDefaultModel: { claude: null, codex: null },
   maxSessions: 3,
 };
 

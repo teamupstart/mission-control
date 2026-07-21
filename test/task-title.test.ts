@@ -200,6 +200,26 @@ test("dispatching a task removed during titling is refused rather than resurrect
   assert.equal(await gone, null, "the post-wait re-read must see the removal");
 });
 
+test("a Foreman backlog launch pins its default only when the task has no model of its own", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const inner = tasks as unknown as { dispatcher: { dispatch(id: string): Promise<void> } };
+  inner.dispatcher.dispatch = async () => {};
+
+  const unpinned = tasks.create({
+    repoRoot: "/repo", intent: "do the first task", title: "First", kind: "ship", agent: "claude", backlog: true,
+  });
+  await tasks.dispatch(unpinned.id, { defaultModel: "claude-sonnet-5" });
+  assert.equal(registry.getTask(unpinned.id)?.model, "claude-sonnet-5");
+
+  const explicit = tasks.create({
+    repoRoot: "/repo", intent: "do the second task", title: "Second", kind: "ship", agent: "claude",
+    model: "claude-opus-4-8", backlog: true,
+  });
+  await tasks.dispatch(explicit.id, { defaultModel: "claude-haiku-4-5" });
+  assert.equal(registry.getTask(explicit.id)?.model, "claude-opus-4-8");
+});
+
 test("a long model title is clamped at a word boundary, not rejected", async () => {
   const { TitleSchema } = await import("../src/server/task-title.ts");
   const long = "Fix the flaky worktree cleanup that Reset leaves behind whenever the lease expires";

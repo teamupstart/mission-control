@@ -581,6 +581,7 @@ function cfg(over: Partial<ForemanConfig> = {}): ForemanConfig {
     wrapup: "ask",
     autoBacklog: false,
     backlogRespectOpenPrs: true,
+    backlogDefaultModel: { claude: null, codex: null },
     maxSessions: 3,
     ...over,
   };

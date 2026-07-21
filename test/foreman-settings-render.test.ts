@@ -26,6 +26,7 @@ const BASE: ForemanConfig = {
   wrapup: "ask",
   autoBacklog: false,
   backlogRespectOpenPrs: true,
+  backlogDefaultModel: { claude: null, codex: null },
   maxSessions: 3,
 };
 
@@ -94,6 +95,15 @@ test("Foreman provider and every model are catalog-backed dropdowns", () => {
   }
   assert.match(html, /GPT-5\.6 Sol/);
   assert.doesNotMatch(html, /Claude Code provider/);
+});
+
+test("Foreman exposes separate compatible defaults for fresh backlog launches", () => {
+  const html = renderPanel(mkState());
+  assert.match(html, /Backlog launch models/);
+  assert.match(html, /id="foreman-backlog-task-model-claude"/);
+  assert.match(html, /id="foreman-backlog-task-model-codex"/);
+  assert.match(html, /already names one/);
+  assert.match(html, /existing session.{0,50}unchanged/);
 });
 
 // ---- candidate filtering ----

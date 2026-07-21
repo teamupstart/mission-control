@@ -66,7 +66,6 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   );
 }
 
-
 /**
  * Which task the modal is over, when it is over one. `new` writes a task that does
  * not exist yet; `edit` rewrites one that is waiting in the backlog.
@@ -285,7 +284,7 @@ export function DispatchLayer({
 
 /**
  * Launch (or shelve) a new agent: pick a repo, describe the task, and dispatch.
- * The daemon provisions an isolated worktree, opens a detached terminal session, and
+ * The daemon provisions an isolated worktree, opens a terminal home, and
  * injects the intent - the new session then appears on the grid on the next poll.
  *
  * Also the EDITOR for a task already in the backlog (`mode.kind === "edit"`), which

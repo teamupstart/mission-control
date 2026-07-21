@@ -101,12 +101,21 @@ test("openDb adds the triage columns to a pre-triage tasks table", () => {
   const legacy = getTask("legacy-1");
   assert.equal(legacy?.priority, null);
   assert.deepEqual(legacy?.labels, []);
+  // Effort arrived later too; an old row follows the harness default rather than
+  // acquiring a made-up level during migration.
+  assert.equal(legacy?.effort, null);
 });
 
 test("a task written after the upgrade round-trips its triage fields", () => {
   const t = getTask("legacy-1")!;
-  upsertTask({ ...t, priority: "high", labels: ["infra", "flaky"] });
+  upsertTask({ ...t, priority: "high", labels: ["infra", "flaky"], effort: "xhigh" });
   const back = getTask("legacy-1");
   assert.equal(back?.priority, "high");
   assert.deepEqual(back?.labels, ["infra", "flaky"]);
+  assert.equal(back?.effort, "xhigh");
+});
+
+test("a persisted effort unsupported by its harness reads as default", () => {
+  openDb().prepare("UPDATE tasks SET agent = ?, effort = ? WHERE id = ?").run("codex", "max", "legacy-1");
+  assert.equal(getTask("legacy-1")?.effort, null);
 });

@@ -785,6 +785,12 @@ since a Claude id means nothing to Codex. Leaving it on **Default** stores no mo
 all rather than pinning today's, so a task you shelve now picks up the default in force
 when it's actually dispatched.
 
+**Effort** sits immediately after Model and follows the same rule: it starts on the
+chosen harness's default, can be overridden for one task, and switching Agent resets it.
+Claude launches with `--effort <level>`; Codex receives the corresponding
+`model_reasoning_effort` launch override. Leaving it on **Default** keeps the task tied
+to the effort default in force when it launches.
+
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
@@ -861,9 +867,9 @@ is where a stale name is most confusing - nobody watched that handover happen.
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
 [Roundup](#roundup) panel. Every field is editable: repo, kind, agent, title, and the task
-text itself, plus more screenshots dropped onto it. **Model** included - and putting it
-back on **Default** un-pins it, so the task goes back to following whatever the harness
-default is when it finally launches. **Save** keeps it in the backlog;
+text itself, plus more screenshots dropped onto it. **Model** and **Effort** included - and
+putting either back on **Default** un-pins it, so the task goes back to following the
+corresponding harness default when it finally launches. **Save** keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
@@ -943,6 +949,18 @@ Both model lists are maintained in `src/shared/model.ts`; a model released after
 build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
 `/api/harnesses/config`) still shows and still applies rather than being silently
 dropped.
+
+### Default effort
+
+**Settings → Harnesses → Default effort** sets the reasoning level each harness starts
+with when a dispatch does not name one. Claude Code and Codex have separate rows, and
+Claude Code offers `low`, `medium`, `high`, `xhigh`, and `max`; Codex offers `low`,
+`medium`, `high`, and `xhigh`.
+
+Both ship as **Harness default**, so Mission Control passes no effort override and the
+CLI keeps its own configured choice. Like the model default, this is resolved when the
+task launches: changing it applies to already-shelved tasks unless a task selected its
+own effort in the dispatch form.
 
 ## Task sources (pulling work into the backlog)
 

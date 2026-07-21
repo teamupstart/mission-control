@@ -305,6 +305,8 @@ export interface DispatchInput {
   labels?: string[];
   /** Model override; omitted follows the configured harness default at dispatch time. */
   model?: string;
+  /** Reasoning-effort override; omitted follows the harness default at dispatch time. */
+  effort?: import("@shared/types.ts").ThinkingLevel;
   backlog?: boolean;
 }
 
@@ -368,9 +370,9 @@ export const api = {
   dispatchBacklog: (id: string) => post(`/api/tasks/${encodeURIComponent(id)}/dispatch`, {}),
   /**
    * Edit a task - the dispatch modal reopened on a card, or the backlog column's
-   * priority picker. Rewriting repo/intent/title/kind/agent is refused (409) once the
-   * task has been dispatched, when its branch and tmux session are already cut from the
-   * title; a priority/labels-only patch is annotation and is accepted in any status.
+   * priority picker. Rewriting repo/intent/title/kind/agent/model/effort is refused (409)
+   * once the task has been dispatched, when its launch configuration is already in use;
+   * a priority/labels-only patch is annotation and is accepted in any status.
    * An omitted key means "leave it"; `priority: null` explicitly clears it to unset.
    */
   updateTask: (id: string, patch: UpdateTask) =>

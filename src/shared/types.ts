@@ -53,8 +53,13 @@ export type SessionState =
  */
 export type NameSource = TerminalBackendId | "process";
 
-/** Reasoning effort, shared by Claude (`/effort`) and Codex (rollout `effort`). */
-export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";
+/**
+ * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
+ * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
+ * dispatch pickers need the same values as the wire schemas and launch adapters.
+ */
+export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
  * Claude's permission mode - the state cycled by Shift+Tab. These are the exact
@@ -1027,6 +1032,12 @@ export interface Task {
    * is configured then.
    */
   model: string | null;
+  /**
+   * Reasoning-effort override for this task, or null to follow the harness default.
+   * Resolved at dispatch time for the same reason as `model`: a shelved task should
+   * follow a default changed while it waited unless somebody explicitly pinned it.
+   */
+  effort: ThinkingLevel | null;
   /**
    * Where this task was swept from, when a task source filed it, else null.
    *

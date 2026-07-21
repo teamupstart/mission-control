@@ -1,6 +1,6 @@
 import { HarnessesConfigSchema } from "@shared/protocol.ts";
 import type { HarnessesConfig, HarnessesConfigPatch } from "@shared/protocol.ts";
-import type { AgentType } from "@shared/types.ts";
+import type { AgentType, ThinkingLevel } from "@shared/types.ts";
 import { getAppConfig, setAppConfig } from "./db.ts";
 
 // The "Harnesses" SETTINGS section, mirroring foreman/config.ts and skills/config.ts:
@@ -24,9 +24,9 @@ export function getHarnessesConfig(): HarnessesConfig {
 /**
  * Merge a patch over the current config, persist, and return the result.
  *
- * `defaultModel` merges per-agent rather than being replaced wholesale, so a panel
- * that only changed the Claude default cannot clear the Codex one it never showed
- * the operator. Every other key is a scalar, for which the shallow spread is right.
+ * Per-agent maps merge rather than being replaced wholesale, so a panel that only
+ * changed the Claude default cannot clear the Codex one it never showed the operator.
+ * Scalar keys use the shallow spread.
  */
 export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig {
   const cur = getHarnessesConfig();
@@ -34,6 +34,7 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
     ...cur,
     ...patch,
     defaultModel: { ...cur.defaultModel, ...(patch.defaultModel ?? {}) },
+    defaultEffort: { ...cur.defaultEffort, ...(patch.defaultEffort ?? {}) },
   });
   setAppConfig(CONFIG_KEY, next);
   return next;
@@ -49,4 +50,12 @@ export function setHarnessesConfig(patch: HarnessesConfigPatch): HarnessesConfig
  */
 export function resolveDispatchModel(agent: AgentType, taskModel: string | null): string | null {
   return taskModel ?? getHarnessesConfig().defaultModel[agent];
+}
+
+/** The task override, then the launch-time harness default, else no effort override. */
+export function resolveDispatchEffort(
+  agent: AgentType,
+  taskEffort: ThinkingLevel | null,
+): ThinkingLevel | null {
+  return taskEffort ?? getHarnessesConfig().defaultEffort[agent];
 }

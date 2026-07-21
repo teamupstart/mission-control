@@ -12,6 +12,7 @@ import type {
 import type { UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
@@ -43,6 +44,8 @@ export interface CreateTaskInput {
   labels?: string[];
   /** Launch this agent on a specific model; omitted follows the harness default. */
   model?: string;
+  /** Launch with a specific reasoning effort; omitted follows the harness default. */
+  effort?: import("@shared/types.ts").ThinkingLevel;
   /**
    * Where a task source swept this from. Omitted by every human-facing caller, which is
    * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
@@ -174,8 +177,10 @@ export class TaskManager {
       labels: input.labels ?? [],
       // Stored as an override, not a resolved value: unset means the dispatcher asks
       // the harness config at launch time, so shelving a task doesn't freeze the
-      // default it happened to see (see `resolveDispatchModel`).
+      // defaults it happened to see (see `resolveDispatchModel` and
+      // `resolveDispatchEffort`).
       model: input.model ?? null,
+      effort: input.effort ?? null,
       source: input.source ?? null,
       repoRoot: input.repoRoot,
       worktreePath: null,
@@ -308,6 +313,13 @@ export class TaskManager {
     }
     const intent = patch.intent?.trim() ?? t.intent;
     const title = patch.title?.trim();
+    const agent = patch.agent ?? t.agent;
+    const agentChanged = agent !== t.agent;
+    const model = patch.model === undefined ? (agentChanged ? null : t.model) : patch.model;
+    const effort = patch.effort === undefined ? (agentChanged ? null : t.effort) : patch.effort;
+    if (effort !== null && !supportsEffort(agent, effort)) {
+      return { ok: false, error: `reasoning effort ${effort} is not supported by ${agent}` };
+    }
     const next: Task = {
       ...t,
       repoRoot: patch.repoRoot ?? t.repoRoot,
@@ -319,14 +331,15 @@ export class TaskManager {
       // can simply type.
       title: title === undefined ? t.title : title || deriveTitle(intent),
       kind: patch.kind ?? t.kind,
-      agent: patch.agent ?? t.agent,
+      agent,
       // Read by `in`, not by truthiness: `priority: null` is a caller deliberately
       // clearing the field back to unset, and `?? t.priority` would silently ignore them.
       priority: "priority" in patch ? (patch.priority ?? null) : t.priority,
       labels: patch.labels ?? t.labels,
-      // `undefined` leaves the override as it stands; `null` is the caller clearing it,
-      // which is a value the row can hold and so cannot go through `??`.
-      model: patch.model === undefined ? t.model : patch.model,
+      // `undefined` leaves an override as it stands unless the agent changed; `null` is
+      // the caller clearing it, which is a value the row can hold and cannot use `??`.
+      model,
+      effort,
       updatedAt: Date.now(),
     };
     this.registry.upsertTask(next);

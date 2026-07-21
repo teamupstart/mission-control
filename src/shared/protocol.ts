@@ -4,7 +4,14 @@ import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
-import { AGENT_TYPES } from "./types.ts";
+import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
+import { supportsEffort } from "./harness-capabilities.ts";
+
+const EffortLevelSchema = z.enum(THINKING_LEVELS);
+const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
+  EffortLevelSchema.refine((level) => supportsEffort(agent, level), {
+    message: "reasoning effort is not supported by this harness",
+  });
 
 /**
  * `normalizeLabels`, but absent stays absent.
@@ -353,22 +360,29 @@ export const ModelIdSchema = z
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
  * the backlog (no worktree/session yet); dispatch it later.
  */
-export const DispatchSchema = z.object({
-  repoRoot: z.string().min(1),
-  intent: z.string().min(1),
-  title: z.string().optional(),
-  kind: z.enum(["ship", "scout"]).default("ship"),
-  agent: z.enum(AGENT_TYPES).default("claude"),
-  /**
-   * Run this agent on a specific model instead of the harness default. Omitted
-   * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
-   * not the same as pinning today's default, and is what lets a backlogged task
-   * pick up a default changed after it was shelved.
-   */
-  model: ModelIdSchema.optional(),
-  backlog: z.boolean().optional().default(false),
-  ...TASK_TRIAGE_FIELDS,
-});
+export const DispatchSchema = z
+  .object({
+    repoRoot: z.string().min(1),
+    intent: z.string().min(1),
+    title: z.string().optional(),
+    kind: z.enum(["ship", "scout"]).default("ship"),
+    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * Run this agent on a specific model instead of the harness default. Omitted
+     * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
+     * not the same as pinning today's default, and is what lets a backlogged task
+     * pick up a default changed after it was shelved.
+     */
+    model: ModelIdSchema.optional(),
+    /** Reasoning-effort override; omitted follows the harness default at launch time. */
+    effort: EffortLevelSchema.optional(),
+    backlog: z.boolean().optional().default(false),
+    ...TASK_TRIAGE_FIELDS,
+  })
+  .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
+    path: ["effort"],
+    message: "reasoning effort is not supported by this harness",
+  });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
 /**
@@ -416,10 +430,10 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * again from the intent as it now reads, the same bargain the create form offers.
  *
  * The fields are NOT equivalent, and `TaskManager.update` treats them differently.
- * `repoRoot`, `intent`, `title`, `kind`, `agent` and `model` are PROVISIONING fields -
+ * `repoRoot`, `intent`, `title`, `kind`, `agent`, `model` and `effort` are PROVISIONING fields -
  * repo, intent and title are cut into a branch name and a tmux session at dispatch and
- * cannot be rewritten afterwards, and the model is baked into the launched command line -
- * so a patch touching any of them is refused once the task has left the backlog.
+ * cannot be rewritten afterwards, while model and effort are baked into the launched
+ * command line - so a patch touching any of them is refused once the task has left the backlog.
  * `priority` and `labels` are pure annotation that nothing is provisioned from, so they
  * can be changed at any point in a task's life, including while its agent is running.
  *
@@ -427,9 +441,9 @@ export type CompleteTask = z.infer<typeof CompleteTaskSchema>;
  * absent key has to keep meaning "leave it alone", and a default would turn every patch
  * that didn't mention priority into one that silently cleared it.
  *
- * `model` is nullable for the same reason: an absent field leaves the stored override
+ * `model` and `effort` are nullable for the same reason: an absent field leaves the stored override
  * alone, while an explicit `null` takes it back off - which is the only way to say
- * "follow the harness default again" about a row that already names a model.
+ * "follow the harness default again" about a row that already names an override.
  */
 export const UpdateTaskSchema = z
   .object({
@@ -441,8 +455,13 @@ export const UpdateTaskSchema = z
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
+    effort: EffortLevelSchema.nullable().optional(),
   })
-  .refine((o) => Object.keys(o).length > 0, { message: "empty task update" });
+  .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
+  .refine(
+    (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
+    { path: ["effort"], message: "reasoning effort is not supported by this harness" },
+  );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 
 /** True when this patch only re-describes a task, so no status guard applies. */
@@ -1056,6 +1075,13 @@ export const HarnessesConfigSchema = z.object({
       codex: ModelIdSchema.nullable().default(null),
     })
     .default({ claude: null, codex: null }),
+  /** Launch-time reasoning effort per harness; null leaves the harness in control. */
+  defaultEffort: z
+    .object({
+      claude: harnessEffortSchema("claude").nullable().default(null),
+      codex: harnessEffortSchema("codex").nullable().default(null),
+    })
+    .default({ claude: null, codex: null }),
 });
 export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
 
@@ -1063,10 +1089,10 @@ export type HarnessesConfig = z.infer<typeof HarnessesConfigSchema>;
  * Partial update of the harnesses config from the dashboard.
  *
  * Spelled out rather than `HarnessesConfigSchema.partial()`, because `.partial()`
- * only reaches the top level: a `{defaultModel: {claude}}` patch would parse under
- * it, fill `codex` in from the inner `.default(null)`, and the shallow merge in
- * `setHarnessesConfig` would then wipe the codex default the caller never mentioned.
- * Here an omitted inner key stays omitted, and the server merges per-agent.
+ * only reaches the top level: a partial per-agent map would parse under it, fill the
+ * omitted agent from the inner `.default(null)`, and the merge in `setHarnessesConfig`
+ * would then wipe a default the caller never mentioned. Here an omitted inner key stays
+ * omitted, and the server merges per-agent.
  */
 export const HarnessesConfigPatchSchema = z
   .object({
@@ -1075,6 +1101,12 @@ export const HarnessesConfigPatchSchema = z
       .object({
         claude: ModelIdSchema.nullable().optional(),
         codex: ModelIdSchema.nullable().optional(),
+      })
+      .optional(),
+    defaultEffort: z
+      .object({
+        claude: harnessEffortSchema("claude").nullable().optional(),
+        codex: harnessEffortSchema("codex").nullable().optional(),
       })
       .optional(),
   })

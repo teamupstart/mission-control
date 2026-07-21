@@ -286,6 +286,8 @@ test("a hookless session still takes the passive path", () => {
   registry.applyDiscovery([mkDiscovered({ syntheticId: "cx-4", agent: "codex" })]);
 
   assert.equal(registry.getSession("cx-4")?.state, "idle", "read off disk, not off a hook");
+  assert.equal(registry.getSession("cx-4")?.stateConfirmed, true, "a fresh rollout marker confirms the state");
+  assert.equal(registry.getSession("cx-4")?.instrumented, false, "passive proof does not impersonate hooks");
 });
 
 // ---- attribution: what a hook may be refused FOR --------------------------------

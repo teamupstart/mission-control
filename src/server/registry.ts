@@ -563,6 +563,7 @@ export class Registry extends EventEmitter {
       agentSessionId: known,
       transcriptPath: d.transcriptPath ?? prev?.transcriptPath ?? null,
       instrumented: false,
+      stateConfirmed: false,
       // Sticky, and seeded from the DB the first time we see a session so it
       // survives a daemon restart. `instrumented` above is rebuilt as false every
       // sweep because it tracks the overlay's freshness; this tracks whether hooks
@@ -596,6 +597,7 @@ export class Registry extends EventEmitter {
     if (overlay) base.hooksSeen = true;
     if (overlay && now - overlay.updatedAt < OVERLAY_TTL_MS) {
       base.instrumented = true;
+      base.stateConfirmed = true;
       base.state = overlay.state;
       base.activity = overlay.activity;
       // The hook overlay is a fallback for the pane read, never an override of it.
@@ -616,6 +618,7 @@ export class Registry extends EventEmitter {
       // report (the rebuild default is `working`), never an absence of data.
       const passive = this.passiveStateFor(base);
       if (passive && now - passive.updatedAt < OVERLAY_TTL_MS) {
+        base.stateConfirmed = true;
         base.state = passive.state;
         base.lastActivity = passive.lastActivity;
       }
@@ -722,6 +725,7 @@ export class Registry extends EventEmitter {
         ...target,
         ...pr,
         instrumented: true,
+        stateConfirmed: true,
         hooksSeen: true,
         state,
         activity,
@@ -802,7 +806,8 @@ export class Registry extends EventEmitter {
    * that omits permission_mode reconciles to the new mode rather than the old one.
    * `updatedAt` is deliberately left alone: that stamp is the overlay's freshness
    * clock, and bumping it here would revive an overlay already past OVERLAY_TTL_MS,
-   * re-applying all of its stale fields (instrumented, state, activity) over the card.
+   * re-applying all of its stale fields (instrumented, stateConfirmed, state, activity)
+   * over the card.
    */
   recordObservedPermissionMode(sessionId: string, mode: PermissionMode | null): void {
     if (!mode) return;
@@ -1191,6 +1196,7 @@ export class Registry extends EventEmitter {
     const next: Session = {
       ...s,
       instrumented: true,
+      stateConfirmed: true,
       hooksSeen: true,
       activity,
       lastActivity: Date.now(),
@@ -2807,6 +2813,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   agentSessionId: byValue,
   transcriptPath: byValue,
   instrumented: byValue,
+  stateConfirmed: byValue,
   hooksSeen: byValue,
   activity: byValue,
   // Excluded so a still-alive session doesn't spam the UI every poll: `lastSeen`

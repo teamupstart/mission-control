@@ -307,10 +307,12 @@ stylesheet edited to show up.
 
 ### Precise status (Claude hooks)
 
-Passive discovery can tell a session is *alive*, but not whether the agent is
-actively working, sitting idle, or waiting on you. Claude Code **hooks** close
-that gap: a tiny bridge reports each lifecycle event to the daemon so every card
-shows a live, precise state and a one-line activity.
+Passive discovery can tell a session is *alive*, but process discovery alone cannot
+say whether the agent is actively working, sitting idle, or waiting on you. Claude
+Code **hooks** close that gap: a tiny bridge reports each lifecycle event to the daemon
+so every card shows a live, precise state and a one-line activity. Codex can also
+confirm working and idle passively from explicit lifecycle markers in its rollout file;
+its hook-only safeguards remain separate, as described below.
 
 **1. Install** (idempotent - it merges into `settings.json` in place, rewriting
 only the hook arrays it changes, so your other settings, your own hooks, and
@@ -354,7 +356,7 @@ restart), not a code change.
 
 ```sh
 curl -s http://127.0.0.1:7317/api/sessions | grep -o '"instrumented":[a-z]*'
-# "instrumented":true  once a session has reported at least one event
+# "instrumented":true  while the session has fresh hook evidence
 ```
 
 **Uninstall** (removes only our entries, leaves your other hooks intact):
@@ -423,7 +425,10 @@ Codex's are **launch-scoped**: the dispatcher builds one `-c hooks.<Event>=[…]
 per event, pointing at the bundled bridge (`dist/satellites/codex-hook.mjs`, overridable
 with `MISSION_CODEX_HOOK`), and passes them on the command line. So a **dispatched** Codex
 session is instrumented from its first breath, and a Codex session **you** started
-yourself sends nothing and is read passively, off discovery and its rollout file. If the
+yourself sends nothing but still reports confirmed **working** and **idle** states from
+explicit lifecycle markers in its rollout file. That passive evidence is enough to place
+the session in the right board column; it does not enable readiness, prompt delivery,
+task handover, queues, or other safeguards that specifically require live hooks. If the
 bridge bundle is missing - `npm run build` never ran - the launch drops the overrides and
 runs uninstrumented rather than failing.
 
@@ -825,9 +830,12 @@ your fields intact so you can retry.
 ### Hand a shelved task to an agent that's already running
 
 On the [Board](#layout-cards-console-or-board), **drag a backlog card onto an idle
-agent** in the same repo and it starts there instead of in a new worktree. The task owns
-no checkout of its own - the agent keeps the one it had - which is exactly why cancelling
-it later never runs `git worktree remove` over a directory the harness didn't create.
+agent with live hook instrumentation** in the same repo and it starts there instead of in
+a new worktree. A passively confirmed Codex session can appear in the Idle column without
+lighting up as a drop target: the rollout proves its displayed state, but not that the
+reset and prompt handover can be observed safely. The task owns no checkout of its own -
+the agent keeps the one it had - which is exactly why cancelling it later never runs
+`git worktree remove` over a directory the harness didn't create.
 
 **The drop resets that agent's checkout first**, the same reset the card's **reset**
 control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release

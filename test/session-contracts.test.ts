@@ -64,6 +64,7 @@ test("a visible change emits", () => {
     { agentSessionId: "agent-2" },
     { transcriptPath: "/t.jsonl" },
     { instrumented: false },
+    { stateConfirmed: false },
     { hooksSeen: false },
     { activity: "something else" },
     { permissionMode: "plan" },

@@ -183,7 +183,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s1", agent: "claude", name: "sess", nameSource: "process", state: "awaiting_input" as SessionState,
     cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null,
     permissionMode: null, terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })],
-    agentSessionId: null, transcriptPath: null, instrumented: true, hooksSeen: true, activity: HOOK_LINE,
+    agentSessionId: null, transcriptPath: null, instrumented: true, stateConfirmed: true, hooksSeen: true, activity: HOOK_LINE,
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [], nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null,
     prChecks: null, meta: null, note: null, cost: null, goal: null, queue: null, orphanedQueue: null,

@@ -32,9 +32,10 @@ export function finishedTasks(tasks: Task[]): Task[] {
 /**
  * True while the agent is (or is presumed to be) actively driving its own work,
  * so it will answer a parked no-mistakes gate itself rather than waiting on you.
- * A hook-instrumented session is active in `starting`/`working`; an
- * uninstrumented session only ever reports `working` while alive, so we treat it
- * as an active agent too (same "can't prove it's waiting" stance as reportBucket).
+ * This intentionally reads the raw lifecycle state rather than its confidence: a
+ * confirmed hook or transcript reading may report `starting`/`working`, while the
+ * unconfirmed discovery default also presumes `working` rather than claiming a human
+ * must answer a gate.
  */
 export function agentActive(s: Session): boolean {
   return s.state === "starting" || s.state === "working";
@@ -151,13 +152,13 @@ export function runInFlight(s: Session): boolean {
  * Which report section a session belongs to:
  *  - needs-you: prompting you - a pending review, a parked gate that needs you,
  *    or the agent explicitly awaiting your input/review.
- *  - working: an agent we can *confirm* is running. That takes hook
- *    instrumentation (starting/working) or a live no-mistakes run the agent
- *    backgrounded (runInFlight); an uninstrumented session with neither reports
- *    no live state, so we don't claim it's busy.
- *  - idle: open but not prompting you and not confirmed running - instrumented
- *    sessions the agent has parked at idle, plus uninstrumented sessions with no
- *    run in flight behind them.
+ *  - working: an agent we can *confirm* is running. That takes a fresh lifecycle
+ *    reading (from hooks or an explicit transcript marker) or a live no-mistakes run
+ *    the agent backgrounded (runInFlight); a session with neither reports no live
+ *    state, so we don't claim it's busy.
+ *  - idle: open but not prompting you and not confirmed running - sessions whose
+ *    lifecycle source reports idle, plus sessions with no fresh state and no run in
+ *    flight behind them.
  *
  * `sessions` lets a parked gate defer to a same-run session that's still driving it
  * (see gateParked).
@@ -178,7 +179,7 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
   // exactly the case it exists for, and `decideQueueTick` still escalates on `!hooksSeen`.
   if (activePaneDialog(s)) return "needs-you";
   if (gateParked(s, sessions)) return "needs-you";
-  if (s.instrumented) {
+  if (s.stateConfirmed) {
     if (s.state === "awaiting_input" || s.state === "awaiting_review") return "needs-you";
     if (s.state === "starting" || s.state === "working") return "working";
   }
@@ -186,7 +187,7 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
   // input" still wins over a run churning in the background. A gate that needs
   // YOU already returned above, so this only claims the run is self-driving.
   if (runInFlight(s)) return "working";
-  return "idle"; // instrumented-idle, or uninstrumented (open, not confirmed busy)
+  return "idle"; // confirmed idle, or open without confirmed busy evidence
 }
 
 /** A one-line reason a session needs you, or null when it doesn't. */

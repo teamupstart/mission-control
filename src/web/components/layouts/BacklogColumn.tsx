@@ -246,19 +246,18 @@ function BacklogCard({
 /**
  * Whether a session can accept the task currently being dragged.
  *
- * Idle is judged by the session's TONE, not its raw `state`, so the tiles that light
- * up are exactly the ones sitting in the board's Idle column - which is what the
- * gesture promises. The two disagree in both directions and the tone is right both
- * times: an uninstrumented session reports `idle` while we have no idea what it's
- * doing (it shows as Unconfirmed), and a session with a review waiting on you reports
- * `idle` while already needing you (it shows under Needs you). Neither should be
- * handed more work.
+ * Idle is judged by the session's TONE, not its raw `state`, so a session with a review
+ * waiting on you cannot accept more work just because its agent state says `idle`.
+ * Live hook instrumentation is a separate requirement: passive rollout evidence may
+ * place a Codex session in the Idle column, but cannot confirm the reset and prompt
+ * delivery that assigning work performs.
  *
  * The server re-checks in `TaskManager.assign` regardless, because a session can go
  * busy between the hover and the drop.
  */
 export function canAcceptTask(session: Session, repoRoot: string | null): boolean {
   if (!repoRoot) return false;
+  if (!session.instrumented) return false;
   if (stateDisplay(session).tone !== "idle") return false;
   return session.repoRoot != null && session.repoRoot === repoRoot;
 }

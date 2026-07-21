@@ -164,10 +164,10 @@ export function activeAgentCount(sessions: Session[], tasks: Task[]): number {
  *    is the same predicate, so "an idle agent got given work" matches what you saw.
  *  - `settledIdle`: idle for the settle window, so a pause between turns of a multi-turn
  *    flow is not mistaken for being finished.
- *  - `hooksSeen`: we have to be able to OBSERVE this session. `reportBucket` files an
- *    uninstrumented session under idle by default ("open, not confirmed busy"), which is
- *    the right default for a readout and the wrong one for an autopilot - it would hand
- *    a task to an agent that may be mid-thought and would then be unable to tell.
+ *  - `hooksSeen`: we have to be able to OBSERVE this session after delivery. Passive
+ *    lifecycle evidence may place a Codex session in the board's Idle column, but it
+ *    cannot prove that a later prompt was accepted or completed. That is enough for a
+ *    readout and not enough for an autopilot handing the session new work.
  *  - a pane: there is nowhere to type otherwise.
  *  - an empty work queue: Foreman is already feeding this session, one item at a time.
  *  - no OPEN PR on its branch. The one clause here that is about the WORK rather than

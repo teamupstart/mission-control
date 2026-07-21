@@ -41,6 +41,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
+    stateConfirmed: true,
     hooksSeen: true,
     activity: null,
     startedAt: null,

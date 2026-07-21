@@ -129,6 +129,44 @@ test("a busy agent is refused - the prompt would land mid-turn", async () => {
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 
+test("passively confirmed idle cannot bypass the live-hook handover gate", async () => {
+  const r = new Registry();
+  const disc = mkDiscovered({
+    agent: "codex",
+    terminals: [mkMuxHandle({ session: "codex", windowName: "agent", paneId: "%9" })],
+  });
+  r.applyDiscovery([disc]);
+  r.applyPassiveActivity(r.getSession(disc.syntheticId)!, {
+    state: "idle",
+    lastActivity: Date.now(),
+  });
+  r.applyDiscovery([disc]);
+  const live = r.getSession(disc.syntheticId)!;
+  assert.equal(live.state, "idle");
+  assert.equal(live.stateConfirmed, true);
+  assert.equal(live.instrumented, false);
+
+  r.upsertTask(mkTask());
+  let probedPane = false;
+  let reset = false;
+  const res = await new TaskManager(r).assign("t1", live.id, {
+    paneReady: async () => {
+      probedPane = true;
+      return { ok: true };
+    },
+    reset: async () => {
+      reset = true;
+      return cleanReset();
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /live hook instrumentation/);
+  assert.equal(probedPane, false);
+  assert.equal(reset, false);
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
 test("an agent in a different repo is refused - the one unrecoverable mistake", async () => {
   // Typing a task's intent at an agent sitting in someone else's checkout is not
   // something the operator can undo from the dashboard, so it is never best-efforted.

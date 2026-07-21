@@ -164,9 +164,10 @@ retry. `usage_ledger.model_id` / `query_source` are `NOT NULL DEFAULT ''` for th
 
 **New build entry point** → the `package.json` script, the `build` chain, the
 `--alias:@shared` flag, the `files:` allowlist in `electron-builder.yml`, and the hard-coded
-`dist/` paths in `src/main/index.ts` and `src/main/integrations.ts`. The `@shared` alias is
-declared in four places that must agree: `tsconfig.json`, `vite.config.ts`, and the esbuild
-flags.
+`dist/` paths in `src/main/index.ts`, `src/main/integrations.ts` and `mcpServerPath()` in
+`src/server/config.ts` (the MCP bundle the ask channel points a dispatch at). The `@shared`
+alias is declared in four places that must agree: `tsconfig.json`, `vite.config.ts`, and the
+esbuild flags.
 
 **Never enable asar**, and never move `skills/` into `dist` - Claude launches
 `dist/satellites/hook.mjs` and `dist/mcp/server.mjs` with an external node, and `skills/` is

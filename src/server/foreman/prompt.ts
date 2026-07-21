@@ -34,14 +34,20 @@ export interface ReviewInput {
    * pane, the capture failed, or the surface answers itself (an `input-review` carries its
    * body as the question).
    *
-   * This is the ONLY place an in-flight ask exists. Claude appends an assistant turn to the
-   * transcript when it COMPLETES, so a tool call blocked on the user - an `AskUserQuestion`
-   * menu, a permission dialog - is not in the file yet, and `Pending.question` on this
-   * surface is only the Notification hook's generic "Claude needs your permission", which
-   * never names what is being approved (see `classifyPending`). Both of the reviewer's
-   * inputs therefore described everything EXCEPT the decision it was convened to make, and
-   * it skipped ("can't tell what is being asked") on the sessions it was most needed for.
-   * Measured against the live sessions: 5 of the last 8 dispositions were that skip.
+   * On the `terminal` surface this is the ONLY place an in-flight ask exists. Claude appends
+   * an assistant turn to the transcript when it COMPLETES, so a tool call blocked on the user
+   * - a permission dialog, a clarification menu - is not in the file yet, and
+   * `Pending.question` on this surface is only the Notification hook's generic "Claude needs
+   * your permission", which never names what is being approved (see `classifyPending`). Both
+   * of the reviewer's inputs therefore described everything EXCEPT the decision it was
+   * convened to make, and it skipped ("can't tell what is being asked") on the sessions it
+   * was most needed for. Measured against the live sessions: 5 of the last 8 dispositions
+   * were that skip.
+   *
+   * A DISPATCHED session's clarifying question no longer arrives here at all: `ask-channel.ts`
+   * disallows Claude's built-in `AskUserQuestion`, so the agent calls `request_input` and the
+   * ask lands as an `input-review`, whose body IS the question. This surface still carries
+   * permission dialogs, and still carries everything from a session a human started.
    *
    * A COMPLEMENT to the transcript, never a replacement: it is a viewport snapshot, so it is
    * hard-wrapped, holds only what fits on screen, and has no history behind it. The
@@ -184,8 +190,9 @@ WHEN TO SKIP (action="skip"):
   above - answer when the call is clear from the session's goal, escalate when it turns on the user's
   intent or is risky - but never skip merely for being a gate.
 
-ANSWERING A MENU (a numbered list on the terminal screen - a permission prompt, an AskUserQuestion
-menu): you MUST fill "answer.option" with the row you are choosing. A menu is answered by SELECTING a
+ANSWERING A MENU (a numbered list on the terminal screen - a permission prompt, or a clarification
+menu in a session the harness did not launch): you MUST fill "answer.option" with the row you are
+choosing. A menu is answered by SELECTING a
 row, and your prose never reaches it: the child's UI is not a text box, it discards typed characters,
 so a reply with no "option" cannot be delivered and gets handed back to the human instead of answered.
 - Copy "number" and "label" from the screen exactly as rendered. They are checked against the live
@@ -346,10 +353,15 @@ function queueItemSection(item: NonNullable<ReviewInput["queueItem"]>): string[]
  *
  * A tool renders as `Name(input)` - the input already capped at parse time (TOOL_INPUT_CAP).
  * Carrying it is what makes the terminal surface legible at all: the pending question there
- * is the generic "Claude needs your permission", so an `AskUserQuestion(...)` rendering its
+ * is the generic "Claude needs your permission", so a question-asking tool call rendering its
  * question and options is the ONLY place the reviewer can read what it is being asked to
  * decide. A name-only chip left it judging blind, and the policy correctly escalated rather
  * than guess - which read as Foreman being unhelpful when it was being honest.
+ *
+ * Still load-bearing after `ask-channel.ts`, and for two reasons. A session a human started
+ * keeps its built-in `AskUserQuestion`. And a dispatched one now calls
+ * `mcp__mission-control__request_input`, whose arguments carry the question and its options
+ * in exactly the same way - so the tool that must stay legible changed name, not role.
  */
 export function formatTranscript(
   messages: TranscriptMessage[],

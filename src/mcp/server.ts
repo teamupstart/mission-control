@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { ReviewItem } from "@shared/types.ts";
 import { BASE_URL, captureTerminalEnv, readToken } from "@shared/harness-runtime.mjs";
+import { titleLine } from "@shared/title.ts";
 
 // This runs as a stdio MCP server, launched by Claude Code per session. Because
 // it's a child of the agent it inherits the terminal env (TMUX_PANE /
@@ -155,17 +156,81 @@ server.registerTool(
   },
 );
 
+// This is the replacement for Claude's built-in `AskUserQuestion`, which dispatched sessions
+// have taken away from them (see `src/server/ask-channel.ts`). It therefore has to cover what
+// the built-in covered: a question with discrete options, answered by clicking one. `options`
+// is optional so the same tool still serves a genuinely open-ended ask - one tool for the
+// redirect prompt to name, with the agent choosing the SHAPE from the question rather than
+// choosing between two tools.
+//
+// The description says what the tool DOES and stops there. It deliberately does NOT claim
+// that nobody is reading your terminal, or that this is the only way to reach your human:
+// this one MCP server is shared by every session on the machine, including the ones a human
+// started themselves, which keep `AskUserQuestion` on purpose and whose terminal usually IS
+// being watched. Asserting it here would be false for that half of the fleet, and would push
+// exactly those sessions off the built-in menu this change deliberately preserved for them.
+// That instruction is dispatch-scoped and lives in `REDIRECT_PROMPT` (`ask-channel.ts`),
+// which only ever reaches the sessions it is true for.
 server.registerTool(
   "request_input",
   {
     title: "Ask the human a question",
     description:
-      "Ask the human a question in the Mission Control dashboard and BLOCK until they answer. Returns their answer.",
-    inputSchema: { question: z.string().describe("The question to ask") },
+      "Ask your human operator a question in the Mission Control dashboard and BLOCK until " +
+      "they answer. Returns their answer. Pass `options` whenever the answer is a choice " +
+      "between discrete alternatives - they become real controls the human clicks, which is " +
+      "faster and less ambiguous than free text. Omit `options` only for open-ended asks.",
+    inputSchema: {
+      question: z.string().describe("The question to ask"),
+      options: z
+        .array(
+          z.object({
+            label: z.string().describe("What the human reads on the control"),
+            detail: z.string().optional().describe("Optional one-line elaboration"),
+            recommended: z
+              .boolean()
+              .optional()
+              .describe("Marks a suggested choice; does not preselect"),
+          }),
+        )
+        .optional()
+        .describe("Discrete choices. Omit entirely for a free-text answer."),
+      multiSelect: z
+        .boolean()
+        .optional()
+        .describe("Checkboxes (choose many) when true, radios (choose one) otherwise"),
+      allowOther: z
+        .boolean()
+        .optional()
+        .describe("Adds a free-text 'Other' field for an answer outside the options"),
+    },
   },
-  async ({ question }) => {
+  async ({ question, options, multiSelect, allowOther }) => {
     try {
-      const id = await createReview("input", question, question);
+      // Option ids are positional and generated here rather than asked of the agent. The
+      // human's answer comes back as LABELS (see `formatResponse`), so an id is only ever a
+      // wire-level handle between the form and its submit - making the agent invent stable
+      // ids for something it never reads back would be ceremony with a chance of collision.
+      const decisions = options?.length
+        ? [
+            {
+              id: "q",
+              question,
+              options: options.map((o, i) => ({ ...o, id: `o${i}` })),
+              multiSelect,
+              allowOther,
+            },
+          ]
+        : undefined;
+      // The title is a HEADING and the body is the question itself, so a long or multi-line
+      // ask is readable rather than folded into a bold one-liner with its newlines collapsed.
+      // Sending the question as both (which this did) made them equal for every review the
+      // tool produced, and the modal's de-duplication then suppressed the readable paragraph
+      // in every case - including the ones it exists to protect. `titleLine` is the shared
+      // clipper (word boundary, ellipsis, `TITLE_MAX_CHARS`), so a heading here and a heading
+      // on a task card are cut the same way; a question already short enough comes back
+      // unchanged, which keeps the equal case genuinely equal and still de-duplicated.
+      const id = await createReview("input", titleLine(question), question, decisions);
       const review = await waitForResolution(id);
       return textResult(review.response ?? "(no answer given)");
     } catch (err) {

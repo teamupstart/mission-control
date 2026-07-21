@@ -67,6 +67,23 @@ export function foremanInstructionsPath(): string {
   return envVar("FOREMAN_INSTRUCTIONS") ?? fileURLToPath(new URL("../../FOREMAN.md", import.meta.url));
 }
 
+/**
+ * The bundled MCP server (`dist/mcp/server.mjs`) - what a dispatched session is pointed at
+ * with `--mcp-config` so `request_input` is guaranteed present in the very session where
+ * `AskUserQuestion` has been taken away (see `ask-channel.ts`).
+ *
+ * `../../dist/mcp/server.mjs` for exactly the reason `skillsDir` documents above, and it has
+ * to live in THIS file for the same reason: esbuild collapses the whole server into one
+ * bundle, so `import.meta.url` becomes that bundle's, and only a module already two levels
+ * down in the source tree resolves the same before and after bundling.
+ *
+ * Not asserted to exist here - the caller checks, because "the bundle is missing" is the one
+ * condition that must disarm the whole ask channel rather than half of it.
+ */
+export function mcpServerPath(): string {
+  return envVar("MCP_SERVER") ?? fileURLToPath(new URL("../../dist/mcp/server.mjs", import.meta.url));
+}
+
 /** The env override and the fallback command for one harness's CLI. */
 export interface AgentBin {
   /** Suffix of the `MISSION_`/legacy env chain that overrides the binary. */

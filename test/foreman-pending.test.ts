@@ -297,3 +297,44 @@ test("only pending reviews for THIS session are considered", () => {
   // Neither review applies (wrong session / already resolved) -> falls through to state.
   assert.equal(p.situation, "no-question");
 });
+
+// ---- options reach the reviewer (the ask channel) ----
+//
+// What is at stake: Foreman answering a multiple-choice question without ever seeing the
+// choices. Before `ask-channel.ts`, a dispatched session asked by drawing a menu on its pane
+// and the reviewer read the rows off the screen capture. Now it calls `request_input` and the
+// choices live in the review's `decisions` - and the transcript cannot cover for that, because
+// a blocked tool call is not written to it until it returns. Pass only `body` and the reviewer
+// is free to answer outside the offered set, on exactly the asks this feature routes to it.
+
+const OPTIONS = [
+  { id: "o0", label: "biome", detail: "lint + format in one binary" },
+  { id: "o1", label: "eslint" },
+];
+
+test("an input review's offered options reach the reviewer's question", () => {
+  const p = classifyPending(
+    mkSession(),
+    [mkReview({ body: "Which linter?", decisions: [{ id: "q", question: "Which linter?", options: OPTIONS }] })],
+  );
+  assert.match(p.question, /Which linter\?/, "the question itself survives");
+  assert.match(p.question, /biome/);
+  assert.match(p.question, /lint \+ format in one binary/, "detail is what makes a label judgeable");
+  assert.match(p.question, /eslint/);
+  // The reply is typed as prose, so "option 2" reaches the agent as the words "option 2".
+  assert.match(p.question, /state the LABEL/);
+  assert.match(p.question, /escalate rather than inventing one that was not offered/);
+});
+
+test("a multi-select ask says so, so the reviewer may name more than one", () => {
+  const p = classifyPending(
+    mkSession(),
+    [mkReview({ decisions: [{ id: "q", question: "Which?", options: OPTIONS, multiSelect: true }] })],
+  );
+  assert.match(p.question, /accept more than one/);
+});
+
+test("an open-ended input review is unchanged - no options, no preamble", () => {
+  const p = classifyPending(mkSession(), [mkReview({ body: "What should I name it?" })]);
+  assert.equal(p.question, "What should I name it?");
+});

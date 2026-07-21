@@ -472,11 +472,48 @@ launches. It exposes five tools:
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
   options (radios / checkboxes) and **block** until the human submits their choices
 - `request_review(title, diff)` - show a diff and **block** for approve / changes
-- `request_input(question)` - ask a question and **block** for the answer
+- `request_input(question, options?)` - ask a question and **block** for the answer.
+  With `options` the human gets clickable choices (radios, or checkboxes with
+  `multiSelect`, plus an optional free-text "Other"); without them, a text box
 - `report_status(activity)` - update the session's activity line
 
 Because the MCP server is a child of the agent, it inherits the terminal env and
 binds every call to the correct session automatically.
+
+Registering it by hand as above covers sessions **you** start. Sessions the dashboard
+dispatches get it automatically - see [The ask channel](#the-ask-channel).
+
+### The ask channel
+
+Sessions the dashboard **dispatches** do not use Claude's built-in `AskUserQuestion`.
+It is disallowed on the spawn, and the agent is pointed at `request_input` instead, so
+a clarifying question arrives as structured arguments in the dashboard rather than as a
+menu drawn on a terminal nobody is watching.
+
+Four flags go on together or not at all (`src/server/ask-channel.ts`): `--mcp-config`
+supplies the tool, `--allowed-tools` pre-approves it so calling it doesn't itself raise a
+permission prompt, `--disallowed-tools` removes the built-in, and `--append-system-prompt`
+carries the redirect that tells the agent where to go instead, inline.
+
+If **anything** prevents the full set - the MCP bundle is missing (`npm run build` never
+ran), or the state directory cannot be written - then **none** of them are passed and the
+session keeps the built-in menu. An agent with nowhere to ask is worse than one with a menu
+we can read, so every failure disarms the whole channel rather than half of it, and none of
+them fails the dispatch: setting this up is best-effort, and the daemon logs which condition
+it hit.
+
+The redirect is not optional. Measured on live sessions, `--disallowed-tools` on its own
+does not send the agent anywhere - it asks its question in prose and ends the turn. It rides
+inline on `--append-system-prompt` rather than in a file: that flag is listed plainly in
+`claude --help`, so there is nothing to probe for, and tmux passes the whole prompt through
+as one unmodified argv element. That combination is verified end to end, not inferred - a
+dispatched agent given a question-inviting prompt calls `request_input` with structured
+options and blocks, with no permission prompt, and resumes when the review is answered in the
+dashboard. The tradeoff is that a dispatched agent's `ps` line carries the prompt, which is
+fine - it is a static instruction with no secrets in it.
+
+Sessions **you** start are untouched: they keep the built-in menu, which the dashboard
+still reads off the pane and answers. Codex is untouched too - these are Claude's flags.
 
 ## Dispatch an agent
 
@@ -1609,6 +1646,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
+| `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |

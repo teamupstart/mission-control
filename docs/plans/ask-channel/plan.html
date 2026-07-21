@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>The ask channel - plan</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1c1e21;
+    --muted: #62676e;
+    --dim: #8b9199;
+    --line: #e3dfd8;
+    --line-soft: #efece7;
+    --accent: #b06a1f;
+    --accent-soft: #f7efe3;
+    --green: #1f7a55;
+    --red: #c0392b;
+    --code-bg: #f3f1ec;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116;
+      --panel: #14181e;
+      --panel-2: #1b2129;
+      --fg: #e7ebf1;
+      --muted: #98a2b1;
+      --dim: #5d6775;
+      --line: #242b34;
+      --line-soft: #1b2129;
+      --accent: #f6a733;
+      --accent-soft: #1e1a12;
+      --green: #35c08a;
+      --red: #ef6f61;
+      --code-bg: #0a0c0f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e1116;
+    --panel: #14181e;
+    --panel-2: #1b2129;
+    --fg: #e7ebf1;
+    --muted: #98a2b1;
+    --dim: #5d6775;
+    --line: #242b34;
+    --line-soft: #1b2129;
+    --accent: #f6a733;
+    --accent-soft: #1e1a12;
+    --green: #35c08a;
+    --red: #ef6f61;
+    --code-bg: #0a0c0f;
+  }
+  :root[data-theme="light"] {
+    --bg: #fbfaf8;
+    --panel: #ffffff;
+    --panel-2: #f4f2ee;
+    --fg: #1c1e21;
+    --muted: #62676e;
+    --dim: #8b9199;
+    --line: #e3dfd8;
+    --line-soft: #efece7;
+    --accent: #b06a1f;
+    --accent-soft: #f7efe3;
+    --green: #1f7a55;
+    --red: #c0392b;
+    --code-bg: #f3f1ec;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.62;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 56px 24px 110px; }
+
+  header.masthead { margin-bottom: 34px; }
+  .eyebrow {
+    font: 600 11px/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    line-height: 1.1;
+    letter-spacing: -0.022em;
+    margin: 0 0 16px;
+    text-wrap: balance;
+  }
+  .lede { font-size: 18px; color: var(--muted); margin: 0; max-width: 64ch; }
+  .lede strong { color: var(--fg); font-weight: 620; }
+
+  h2 {
+    font-size: 13px;
+    font-family: var(--mono);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 56px 0 18px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 18px; margin: 34px 0 10px; letter-spacing: -0.01em; }
+  p { margin: 0 0 14px; color: var(--muted); }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 7px; color: var(--muted); }
+  li > ul, li > ol { margin-top: 7px; }
+  strong { color: var(--fg); font-weight: 620; }
+  em { font-style: italic; }
+  a { color: var(--accent); }
+
+  .meta {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 14px 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 9px;
+    font-size: 13.5px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .meta b {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--code-bg);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--fg);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--fg); }
+
+  .table-scroll { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+  th {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-weight: 500;
+    padding: 12px 15px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--line);
+  }
+  td {
+    padding: 12px 15px;
+    border-bottom: 1px solid var(--line-soft);
+    color: var(--muted);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { color: var(--fg); font-family: var(--mono); font-weight: 700; }
+
+  .arm-a td:first-child { color: var(--dim); }
+  .arm-b td:first-child { color: var(--red); }
+  .arm-c td:first-child { color: var(--red); }
+  .arm-d td:first-child { color: var(--green); }
+
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    padding: 16px 20px;
+    margin: 0 0 22px;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout.warn { border-left-color: var(--red); }
+  .callout.good { border-left-color: var(--green); }
+  .callout.key { background: var(--accent-soft); }
+
+  figure { margin: 0 0 26px; }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 16px 12px;
+    overflow-x: auto;
+  }
+  .diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; min-width: 560px; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; text-align: center; }
+
+  svg text { font-family: var(--mono); fill: var(--fg); }
+  .n-fill { fill: var(--panel-2); stroke: var(--line); }
+  .n-accent { fill: var(--accent-soft); stroke: var(--accent); }
+  .n-ext { fill: none; stroke: var(--muted); stroke-dasharray: 5 4; }
+  .n-good { fill: none; stroke: var(--green); }
+  .n-dead { fill: none; stroke: var(--red); stroke-dasharray: 4 4; }
+  .edge { stroke: var(--muted); fill: none; stroke-width: 1.4; }
+  .edge-new { stroke: var(--accent); fill: none; stroke-width: 1.8; }
+  .edge-back { stroke: var(--green); fill: none; stroke-width: 1.6; }
+  .rule { stroke: var(--line); stroke-width: 1; }
+  .lbl { font-size: 10.5px; fill: var(--muted); }
+  .lbl-new { font-size: 10.5px; fill: var(--accent); font-weight: 700; }
+  .lbl-back { font-size: 10.5px; fill: var(--green); font-weight: 700; }
+  .lbl-bad { font-size: 10.5px; fill: var(--red); font-weight: 700; }
+  .ttl { font-size: 12px; font-weight: 700; }
+  .sub { font-size: 10px; fill: var(--muted); }
+  .band {
+    font-size: 10.5px;
+    fill: var(--dim);
+    letter-spacing: 0.1em;
+  }
+
+  .pill {
+    display: inline-block;
+    font: 600 10.5px/1 var(--mono);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 4px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--muted);
+    vertical-align: 2px;
+  }
+  .pill.ok { border-color: var(--green); color: var(--green); }
+
+  footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">Mission Control &middot; plan</div>
+  <h1>The ask channel</h1>
+  <p class="lede">Stop reading Claude's option menu off the screen. Disallow the built-in
+  <code>AskUserQuestion</code> in sessions the harness dispatches, so a clarifying question arrives
+  as <strong>structured tool arguments</strong> through the MCP channel this repo already ships,
+  instead of as a picture of a menu we parse with a regex grammar.</p>
+</header>
+
+<div class="meta">
+  <div><b>Status</b>implemented</div>
+  <div><b>Owner</b>ai-harness</div>
+  <div><b>Blocks</b>"P1: Move TUI mode and dialog grammar behind <code>harness.tui</code>" - do this first.</div>
+  <div><b>Related</b><code>src/server/discovery/pane-dialog.ts</code> (397 lines of TUI grammar this makes redundant for dispatched sessions), <code>src/mcp/server.ts</code> (the replacement channel, already shipped).</div>
+</div>
+
+<h2>Goal</h2>
+
+<p>Stop reading Claude's option menu off the screen. Disallow the built-in
+<code>AskUserQuestion</code> in sessions the harness dispatches, so a clarifying question arrives as
+<strong>structured tool arguments</strong> through the MCP channel this repo already ships, instead
+of as a picture of a menu we parse with a regex grammar.</p>
+
+<figure>
+  <div class="diagram">
+    <svg viewBox="0 0 700 190" role="img" aria-label="Before: the Claude agent draws an AskUserQuestion menu onto the tmux pane, pane-dialog.ts scrapes that screen capture with a regex grammar, and the parsed rows reach the dashboard and Foreman.">
+      <defs>
+        <marker id="m-before" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="14" y="20" class="ttl">BEFORE</text>
+      <text x="86" y="20" class="band">a picture of a menu, parsed</text>
+
+      <text x="83" y="52" text-anchor="middle" class="lbl">draws menu</text>
+      <text x="261" y="52" text-anchor="middle" class="lbl">capture</text>
+      <text x="439" y="52" text-anchor="middle" class="lbl">parsed rows</text>
+
+      <rect x="17" y="62" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="83" y="88" text-anchor="middle" class="ttl">Claude agent</text>
+      <text x="83" y="106" text-anchor="middle" class="sub">AskUserQuestion</text>
+
+      <g color="var(--muted)"><path d="M153,94 L191,94" class="edge" marker-end="url(#m-before)"/></g>
+
+      <rect x="195" y="62" width="132" height="64" rx="9" class="n-ext"/>
+      <text x="261" y="88" text-anchor="middle" class="ttl">tmux pane</text>
+      <text x="261" y="106" text-anchor="middle" class="sub">the screen</text>
+
+      <g color="var(--muted)"><path d="M331,94 L369,94" class="edge" marker-end="url(#m-before)"/></g>
+
+      <rect x="373" y="62" width="132" height="64" rx="9" class="n-accent"/>
+      <text x="439" y="88" text-anchor="middle" class="ttl">pane-dialog.ts</text>
+      <text x="439" y="106" text-anchor="middle" class="sub">397-line grammar</text>
+
+      <g color="var(--muted)"><path d="M509,94 L547,94" class="edge" marker-end="url(#m-before)"/></g>
+
+      <rect x="551" y="62" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="617" y="88" text-anchor="middle" class="ttl">dashboard</text>
+      <text x="617" y="106" text-anchor="middle" class="sub">and Foreman</text>
+
+      <text x="439" y="150" text-anchor="middle" class="lbl">cursor glyph, numbered rows, Submit answers,</text>
+      <text x="439" y="166" text-anchor="middle" class="lbl">Type something, have not answered all questions</text>
+    </svg>
+  </div>
+  <figcaption>Before - the question only ever exists as TUI chrome, so a regex grammar is what stands between the agent and the dashboard.</figcaption>
+</figure>
+
+<figure>
+  <div class="diagram">
+    <svg viewBox="0 0 700 372" role="img" aria-label="After: a dispatched agent calls request_input over MCP, the MCP server posts to the daemon's /mcp/reviews route, the dashboard renders a DecisionForm, and the human's answer returns through the long poll so the blocked tool call resumes. Below, the human-started session path is unchanged: the agent still draws an AskUserQuestion menu on the tmux pane, pane-dialog.ts still parses it.">
+      <defs>
+        <marker id="m-after" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+        <marker id="m-after-new" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="14" y="20" class="ttl">AFTER</text>
+      <text x="80" y="20" class="band">structured arguments, over the channel we already ship</text>
+
+      <text x="14" y="44" class="lbl-new">dispatched session - the new route</text>
+
+      <text x="83" y="72" text-anchor="middle" class="lbl-new">request_input</text>
+      <text x="261" y="72" text-anchor="middle" class="lbl-new">POST /mcp/reviews</text>
+      <text x="439" y="72" text-anchor="middle" class="lbl-new">SSE</text>
+
+      <rect x="17" y="82" width="132" height="64" rx="9" class="n-accent"/>
+      <text x="83" y="108" text-anchor="middle" class="ttl">Claude agent</text>
+      <text x="83" y="126" text-anchor="middle" class="sub">blocks on the call</text>
+
+      <g color="var(--accent)"><path d="M153,114 L191,114" class="edge-new" marker-end="url(#m-after-new)"/></g>
+
+      <rect x="195" y="82" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="261" y="108" text-anchor="middle" class="ttl">MCP server</text>
+      <text x="261" y="126" text-anchor="middle" class="sub">stdio child</text>
+
+      <g color="var(--accent)"><path d="M331,114 L369,114" class="edge-new" marker-end="url(#m-after-new)"/></g>
+
+      <rect x="373" y="82" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="439" y="108" text-anchor="middle" class="ttl">daemon</text>
+      <text x="439" y="126" text-anchor="middle" class="sub">input review</text>
+
+      <g color="var(--accent)"><path d="M509,114 L547,114" class="edge-new" marker-end="url(#m-after-new)"/></g>
+
+      <rect x="551" y="82" width="132" height="64" rx="9" class="n-accent"/>
+      <text x="617" y="108" text-anchor="middle" class="ttl">dashboard</text>
+      <text x="617" y="126" text-anchor="middle" class="sub">DecisionForm</text>
+
+      <text x="350" y="172" text-anchor="middle" class="lbl-back">human answers, the long poll returns, the blocked call resumes</text>
+      <g color="var(--green)"><path d="M617,150 L617,184 L83,184 L83,152" class="edge-back" marker-end="url(#m-after)"/></g>
+
+      <line x1="14" y1="216" x2="686" y2="216" class="rule"/>
+
+      <text x="14" y="240" class="lbl">human-started session - unchanged, and not deleted</text>
+
+      <rect x="17" y="256" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="83" y="282" text-anchor="middle" class="ttl">Claude agent</text>
+      <text x="83" y="300" text-anchor="middle" class="sub">no harness flags</text>
+
+      <g color="var(--muted)"><path d="M153,288 L191,288" class="edge" marker-end="url(#m-after)"/></g>
+
+      <rect x="195" y="256" width="132" height="64" rx="9" class="n-ext"/>
+      <text x="261" y="282" text-anchor="middle" class="ttl">tmux pane</text>
+      <text x="261" y="300" text-anchor="middle" class="sub">AskUserQuestion</text>
+
+      <g color="var(--muted)"><path d="M331,288 L369,288" class="edge" marker-end="url(#m-after)"/></g>
+
+      <rect x="373" y="256" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="439" y="282" text-anchor="middle" class="ttl">pane-dialog.ts</text>
+      <text x="439" y="300" text-anchor="middle" class="sub">stays reachable</text>
+
+      <g color="var(--muted)"><path d="M509,288 L547,288" class="edge" marker-end="url(#m-after)"/></g>
+
+      <rect x="551" y="256" width="132" height="64" rx="9" class="n-fill"/>
+      <text x="617" y="282" text-anchor="middle" class="ttl">dashboard</text>
+      <text x="617" y="300" text-anchor="middle" class="sub">and Foreman</text>
+
+      <text x="350" y="348" text-anchor="middle" class="lbl">Codex gets nothing either: the flags are Claude's.</text>
+    </svg>
+  </div>
+  <figcaption>After - only sessions the harness launched get the flags. The grammar keeps its job for every session a human started.</figcaption>
+</figure>
+
+<h2>Why now, ahead of the TUI capability</h2>
+
+<p><code>pane-dialog.ts</code> is 397 lines of grammar matching TUI chrome - <code>OPTION_ROW</code>'s
+cursor glyph, numbered rows, <code>Submit answers</code>, <code>Type something</code>,
+<code>have not answered all questions</code> - plus the <code>actions.ts</code> walkers that arrow
+through it and re-verify each label against a fresh capture. That is the bulk of what the TUI task
+proposes to move behind an interface. Moving code we intend to delete costs the interface design,
+the migration and the tests, then throws all three away.</p>
+
+<p>This is prior art, not speculation. Sculptor (Imbue) drives Claude Code with
+<code>--disallowed-tools 'AskUserQuestion,ExitPlanMode'</code> plus in-process SDK-MCP
+replacements, so the agent blocks on a tool call while their UI renders natively and answers on its
+behalf.</p>
+
+<h2>What the experiment showed</h2>
+
+<p>Four arms, live <code>tmux</code> sessions against the running daemon, each sent the same
+question-inviting prompt. <strong>Nothing below is inferred from a diff.</strong></p>
+
+<div class="table-scroll">
+<table>
+  <thead><tr><th>Arm</th><th>Configuration</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr class="arm-a">
+      <td>A</td>
+      <td>(control, no flags)</td>
+      <td>Renders an <code>AskUserQuestion</code> menu - the status quo.</td>
+    </tr>
+    <tr class="arm-b">
+      <td>B</td>
+      <td><code>--disallowed-tools AskUserQuestion</code></td>
+      <td>Agent asked <strong>in prose and stopped.</strong> Never attempted the tool, never sought an alternative.</td>
+    </tr>
+    <tr class="arm-c">
+      <td>C</td>
+      <td>B + the <code>--append-system-prompt</code> redirect</td>
+      <td><strong>Still prose.</strong> The agent said so explicitly: <em>"my instructions say to ask you questions via a Mission Control <code>request_input</code> tool, but that tool isn't actually registered in this session (I checked)."</em></td>
+    </tr>
+    <tr class="arm-d">
+      <td>D</td>
+      <td>C + <code>--mcp-config</code></td>
+      <td>Agent called <code>request_input(question: "Which linter should I set up&hellip;")</code> and <strong>blocked</strong>. Review appeared in the dashboard; answering <code>biome</code> over HTTP resumed it with <em>"Biome it is."</em></td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>Arms C and D delivered the redirect with <code>--append-system-prompt-file &lt;path&gt;</code>,
+which is what shipped first. That variant is gone: review round 2 showed its capability probe
+could never return true, and the documented <code>--append-system-prompt &lt;text&gt;</code>
+replaced it. Arm D was then <strong>re-run against the running daemon on the flag that actually
+ships</strong> - see <a href="#reverified">Re-verified on the inline flag</a>. Everything the arms
+established about the DESIGN (a disallowed tool does not redirect itself; provide must be atomic
+with disallow) is unchanged by which flag carries the prompt.</p>
+
+<h3>Arm B is the risk, confirmed</h3>
+
+<p>The task asked us to prove that <code>--disallowed-tools</code> does not degrade into the agent
+simply never asking. It degrades into something adjacent and just as bad: the agent asks in
+<strong>prose and ends its turn</strong>. That is <em>worse</em> than the menu it replaces. A menu at
+least sits on the screen where <code>pane-dialog.ts</code> reads it and Foreman can answer it. A
+prose question ends the turn and the dashboard shows an idle session with no pending anything.</p>
+
+<div class="callout warn">
+  <p><strong>A disallowed tool does not redirect itself.</strong> The redirect is not a nicety; it is
+  the feature.</p>
+</div>
+
+<h3>Arm C is the finding that shapes the design</h3>
+
+<p>The premise that we are "one step away" is not true on this machine. <code>claude mcp list</code>
+has no <code>mission-control</code> entry. Registration happens only through the Electron
+<em>Install integrations</em> button (<code>integrations.ts:197</code>) or a hand-run
+<code>claude mcp add</code> that <code>hooks/install.mjs:350</code> merely <em>prints</em>. So
+<code>request_input</code> is currently unreachable by <strong>every</strong> session here - it has
+never fired, not because agents decline to call it, but because it is not there.</p>
+
+<p>Arm C is precisely what "disallow the built-in and trust user-scope registration" looks like in
+practice: <strong>both doors shut</strong>, and the agent politely narrates its own gagging.</p>
+
+<div class="callout key">
+  <p>So <code>--mcp-config</code> on the dispatch argv is load-bearing, not an optimisation. It makes
+  <em>disallow</em> and <em>provide</em> <strong>atomic</strong> - the same spawn that removes the
+  built-in supplies the replacement, so no machine state can have one without the other. User-scope
+  registration keeps working for human-started sessions and stops being the thing this feature rests
+  on.</p>
+</div>
+
+<h3>Two further findings from the probe</h3>
+
+<ul>
+  <li><strong>The MCP call raises its own permission prompt.</strong> Arm D stopped on
+    <code>Do you want to proceed? 1. Yes &hellip;</code> before the tool ran. Without pre-approval we
+    trade one menu for another. <code>--allowed-tools mcp__mission-control__request_input</code>
+    fixes it. Auto-mode-on-dispatch would also cover it, but <code>autoModeOnDispatch</code> is an
+    optional setting, so it cannot be the guarantee. Verified separately:
+    <code>--allowed-tools</code> adds an auto-approve rule and does <strong>not</strong> restrict the
+    toolset - the full tool list survives it.</li>
+  <li><strong>The options collapsed into prose.</strong> <code>request_input(question)</code> is
+    free-text only, so "eslint, biome, or oxlint" arrived inside the question string. That misses the
+    stated goal.</li>
+</ul>
+
+<h2>Design</h2>
+
+<h3>1 &middot; <code>request_input</code> gains structured options</h3>
+
+<p><code>PlanDecision</code> + <code>DecisionForm</code> already render exactly the
+<code>AskUserQuestion</code> form - options, radio vs checkbox, <code>allowOther</code>. They are
+only reachable through <code>request_plan_decisions</code>, which demands a plan body and renders as
+a plan. Rather than start a parallel tool, <code>request_input</code> takes an optional
+<code>options</code> array and carries it as a single-element <code>decisions</code> array on an
+<code>input</code> review.</p>
+
+<p>Free text stays the fallback for genuinely open asks, so the redirect prompt names
+<strong>one</strong> tool and the agent picks the shape from the question rather than choosing
+between two tools.</p>
+
+<p><code>CreateReviewSchema</code> already passes <code>decisions</code> through generically; only
+the refine needed widening. <code>ReviewModal</code> gains one branch: an <code>input</code> review
+that carries decisions renders the <code>DecisionForm</code> instead of the textarea.</p>
+
+<h3>2 &middot; The ask channel is four argv pieces, built together or not at all</h3>
+
+<p>A new <code>src/server/ask-channel.ts</code> owns the whole contract and returns one argv
+fragment:</p>
+
+<pre><code>--mcp-config            &lt;STATE_DIR&gt;/ask-channel/mcp.json
+--allowed-tools         mcp__mission-control__request_input
+--disallowed-tools      AskUserQuestion
+--append-system-prompt  &lt;the redirect prompt itself, inline&gt;</code></pre>
+
+<figure>
+  <div class="diagram">
+    <svg viewBox="0 0 700 250" role="img" aria-label="One function decides: if the MCP server bundle is present, the dispatch argv gets all four flags together; if it is absent, it gets nothing at all and AskUserQuestion stays intact. The half-configured state - disallow without provide - is never emitted, because that is arm B.">
+      <defs>
+        <marker id="m-atom" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <rect x="14" y="88" width="128" height="58" rx="9" class="n-fill"/>
+      <text x="78" y="111" text-anchor="middle" class="ttl">dispatch</text>
+      <text x="78" y="129" text-anchor="middle" class="sub">Claude only</text>
+
+      <g color="var(--muted)"><path d="M146,117 L180,117" class="edge" marker-end="url(#m-atom)"/></g>
+
+      <rect x="184" y="82" width="146" height="70" rx="9" class="n-accent"/>
+      <text x="257" y="108" text-anchor="middle" class="ttl">ask-channel.ts</text>
+      <text x="257" y="126" text-anchor="middle" class="sub">MCP bundle there?</text>
+      <text x="257" y="142" text-anchor="middle" class="sub">one function, one answer</text>
+
+      <g color="var(--green)"><path d="M334,104 L378,64" class="edge-back" marker-end="url(#m-atom)"/></g>
+      <text x="342" y="60" class="lbl-back">yes</text>
+
+      <g color="var(--muted)"><path d="M334,132 L378,178" class="edge" marker-end="url(#m-atom)"/></g>
+      <text x="342" y="190" class="lbl">no</text>
+
+      <rect x="382" y="14" width="304" height="86" rx="9" class="n-good"/>
+      <text x="534" y="36" text-anchor="middle" class="ttl">all four flags, together</text>
+      <text x="534" y="55" text-anchor="middle" class="sub">--mcp-config &middot; --allowed-tools</text>
+      <text x="534" y="71" text-anchor="middle" class="sub">--disallowed-tools &middot; --append-system-prompt</text>
+      <text x="534" y="90" text-anchor="middle" class="sub">mcp.json written on demand, self-healing</text>
+
+      <rect x="382" y="154" width="304" height="58" rx="9" class="n-fill"/>
+      <text x="534" y="177" text-anchor="middle" class="ttl">nothing at all</text>
+      <text x="534" y="195" text-anchor="middle" class="sub">AskUserQuestion intact - the status quo</text>
+
+      <line x1="382" y1="224" x2="686" y2="224" class="rule"/>
+      <text x="534" y="243" text-anchor="middle" class="lbl-bad">never emitted: disallow without provide = arm B</text>
+    </svg>
+  </div>
+  <figcaption>The dangerous half can never ship without the half that makes it safe.</figcaption>
+</figure>
+
+<p>They are produced by a single function so the dangerous half can never ship without the half that
+makes it safe. If the MCP server bundle is missing, the function returns <strong>nothing at
+all</strong> - a session with <code>AskUserQuestion</code> intact is the status quo, whereas one with
+it removed and no replacement is arm B.</p>
+
+<p><code>mcp.json</code> is written into the state dir on demand, self-healing on every dispatch, and
+atomically (temp file + <code>rename</code>) so a concurrently-starting <code>claude</code> can never
+read it torn. The redirect needs no file: it travels inline as
+<code>--append-system-prompt</code>'s value.</p>
+
+<h3>3 &middot; Scope: dispatched sessions only</h3>
+
+<p>Matches <code>applyAutoMode</code>'s existing precedent - only sessions the harness launched,
+never one the operator started and we merely discovered. <code>pane-dialog.ts</code> stays reachable
+and stays intact. <strong>Do not delete the grammar in this task</strong>; establish the replacement
+first, delete it in the TUI task.</p>
+
+<p>Codex gets nothing: the flags are Claude's.</p>
+
+<h3>4 &middot; Foreman's prompt stops describing a menu it will no longer see</h3>
+
+<p><code>foreman/prompt.ts</code> names <code>AskUserQuestion</code> in three places as <em>the</em>
+canonical menu and as the only place a pending ask exists. For a dispatched session that is now
+false: the ask arrives as an <code>input-review</code>, a surface Foreman already handles. The menu
+guidance stays - permission prompts and human-started sessions still produce menus - but permission
+prompts become the canonical example, and the comments note which surface a dispatched ask actually
+lands on.</p>
+
+<h2>What this does not do</h2>
+
+<ul>
+  <li><strong><code>ExitPlanMode</code> is out of scope.</strong> We have <code>share_plan</code> /
+    <code>request_plan_decisions</code>, but plan mode interacts with permission modes - a separate
+    question.</li>
+  <li><strong>No grammar is deleted.</strong> A session a human started does not get our flags, so
+    <code>pane-dialog</code> stays reachable and correct for those.</li>
+</ul>
+
+<h2>A note on <code>tmux</code> argv</h2>
+
+<p><code>dispatcher.ts:455-459</code> claimed tmux "joins the trailing arguments with spaces and runs
+the result through a shell rather than exec'ing the argv", and constrained model ids to a safe
+charset because of it. Measured on tmux 3.6b, that is not what happens: <code>$HOME</code>,
+<code>a*b</code> and <code>two words</code> each arrive as one unmodified argv element. Modern tmux
+(&gt;= 3.3) uses multiple arguments as the argv directly. The comment is corrected; the model-id
+charset constraint stays as cheap insurance for older tmux, where the old description did hold.</p>
+
+<p>This matters here because the argv now carries filesystem paths, whose charset we do not
+control.</p>
+
+<h2>Tests</h2>
+
+<ul>
+  <li><code>ask-channel.test.ts</code> - the argv fragment's shape, including that the redirect
+    travels as the flag's own inline value; that it is empty when the MCP bundle is absent or the
+    state dir cannot be written (never disallow without provide, and never throw into a dispatch);
+    that codex gets nothing; that <code>mcp.json</code> is written, refreshed, and left with no
+    stray temp file.</li>
+  <li><code>review-input-decisions.test.ts</code> - <code>request_input</code> with options produces
+    an <code>input</code> review carrying one decision; the schema accepts it;
+    <code>ReviewModal</code> renders the form rather than the textarea.</li>
+</ul>
+
+<h2>Review round 1</h2>
+
+<p>Six findings, all fixed. Four were the operator's call and they chose to fix all of them.</p>
+
+<ul>
+  <li><strong>Foreman was answering blind.</strong> <code>classifyPending</code> passed only
+    <code>inputReview.body</code>, so the options the agent offered never reached the reviewer.
+    Before this change the choices were rows on the pane and the prompt told the reviewer to copy
+    one exactly; after it, they were nowhere - the transcript cannot cover for it, since a blocked
+    tool call is not written there until it returns. Foreman was free to answer outside the offered
+    set on exactly the asks this feature routes to it. <code>withOfferedOptions</code> now renders
+    the labels and details into the question, and says to name one of them or escalate, because
+    this surface is answered with prose rather than by selecting a row.</li>
+  <li><strong>A filesystem error failed the whole dispatch.</strong> Only the missing-bundle path
+    returned <code>[]</code>; <code>mkdirSync</code> / <code>writeFileSync</code> threw into
+    <code>Dispatcher.dispatch</code>'s try block and marked the task <code>failed</code>. That
+    inverted the module's own contract. <code>askChannelArgs</code> now cannot throw at all.</li>
+  <li><strong>The channel rested on an undocumented flag.</strong>
+    <code>--append-system-prompt-file</code> is absent from <code>claude --help</code>, and Claude
+    Code hard-errors on unknown options, so on a CLI without it every dispatch died at spawn and
+    surfaced as "agent session never appeared". Round 1 added a one-time, per-binary
+    <code>--help</code> probe for it; round 2 removed the flag instead (see below).</li>
+  <li><strong>The tool description over-claimed.</strong> It asserted "your terminal is not being
+    read" to every session on the machine, including human-started ones that keep
+    <code>AskUserQuestion</code> and are being watched. That claim is dispatch-scoped and now lives
+    only in <code>REDIRECT_PROMPT</code>.</li>
+  <li><strong>The modal hid too much.</strong> Suppressing an <code>input</code> body outright
+    hard-coded <code>title === body</code> into the UI and flattened long free-text questions into a
+    heading. The test is now <code>body !== title</code> (<code>showsBody</code>), so a body with
+    content of its own still renders as a paragraph. (Round 2 found that escape hatch was
+    unreachable, and fixed the producer - see below.)</li>
+  <li><strong>The channel files were written non-atomically.</strong> A torn <code>mcp.json</code>
+    means no <code>request_input</code> while <code>--disallowed-tools</code> still applies - arm B.
+    Writes now go to a temp file and <code>rename</code>.</li>
+</ul>
+
+<p>One note on the run itself: the first fix round died on an account session limit, not on anything
+in the code, and the daemon reset the shared checkout to <code>main</code> mid-run (its own "reset
+checkouts before assigning" behaviour). The commit survived; the work continued in a dedicated
+worktree.</p>
+
+<h2>Review round 2</h2>
+
+<p>Four findings, all fixed. Two were the operator's call.</p>
+
+<ul>
+  <li><strong>The probe never returned true, so the whole feature was inert.</strong> Round 1's fix
+    grepped <code>claude --help</code> for the literal <code>--append-system-prompt-file</code>. Real
+    <code>claude</code> (2.1.216) prints the two variants folded together as
+    <code>--append-system-prompt[-file]</code>, so the literal never appears, the probe always
+    answered "unsupported", and every dispatch silently kept the built-in menu. It passed its tests
+    only because the stub binary echoed the literal string - the test asserted the assumption rather
+    than the world.
+    <br>
+    The fix simplifies rather than hardens: the channel now passes the documented
+    <code>--append-system-prompt &lt;text&gt;</code> with the prompt <strong>inline</strong>. That
+    deletes the probe, its cache, the <code>agentBin</code> parameter threaded in for it,
+    <code>redirect.md</code>, and the second <code>writeIfChanged</code> call. Passing ~1.2KB as one
+    argv element was measured before it was chosen: 1260 bytes arrived byte-identical through tmux,
+    including <code>$HOME</code>, <code>a*b</code> globs, both quote styles, backticks,
+    <code>$(cmd)</code>, semicolons, pipes, ampersands and newlines. The accepted tradeoff is that
+    the prompt is visible in a dispatched agent's <code>ps</code> line; it is a static instruction
+    with no secrets in it. <code>writeIfChanged</code> stays for <code>mcp.json</code>, atomicity
+    included.</li>
+  <li><strong>Round 1's <code>showsBody</code> escape hatch could never fire.</strong>
+    <code>request_input</code> sent the question as BOTH title and body, so
+    <code>body !== title</code> was false for every review the tool produced, and a long or
+    multi-line question rendered only as the flex-row <code>&lt;h3&gt;</code> - the
+    <code>white-space: pre-wrap</code> added to <code>.question</code> in the same change was
+    unreachable. Fixed at the producer, where the duplication was: the review now takes
+    <code>titleLine(question)</code> as its title (the shared clipper, word boundary and ellipsis at
+    <code>TITLE_MAX_CHARS</code>) and the whole question as its body. A short question still clips to
+    itself, so the equal case stays de-duplicated; past the clip the readable paragraph is back.</li>
+  <li><strong>Two pending questions shared one radio group.</strong> <code>DecisionForm</code> used
+    the decision id as the group <code>name</code>, and <code>request_input</code> hardcodes that id
+    as <code>q</code>. A <code>name</code> is document-scoped and <code>ReviewModal</code> draws every
+    pending review into one document, so two option-carrying <code>input</code> reviews - an
+    abandoned ask still pending while the agent asks again - collided: clicking in one unchecked the
+    other in the DOM while React re-rendered only the card that changed, leaving the first showing no
+    selection with its Submit still enabled. The form now takes a <code>namePrefix</code> and the
+    modal passes the review id. The decision id is untouched, because it is echoed back in the
+    response payload.</li>
+  <li><strong><code>MISSION_MCP_SERVER</code> was undocumented.</strong> New env var, no
+    Configuration row. Added.</li>
+</ul>
+
+<h2>Review round 3</h2>
+
+<h3 id="reverified">Re-verified on the inline flag</h3>
+
+<p>Round 2 swapped the redirect's delivery mechanism, and the only end-to-end evidence on record
+had been collected on the mechanism it replaced. Round 2's tests asserted the argv's shape, which
+is exactly the shape of the failure round 2 was fixing: round 1 typechecked and passed its tests
+while being completely inert.</p>
+
+<p>So arm D was run again, against the running daemon, on the shipped commit.
+<code>askChannelArgs</code> emitted 8 argv elements (4 flags) with a 1292-byte inline prompt; the
+agent was spawned through the real <code>spawnDetachedSession</code>, was given a
+question-inviting prompt, and called <code>mcp__mission-control__request_input</code> with three
+structured options (biome / eslint / oxlint), blocking with <strong>no permission prompt</strong>.
+Resolving the review from the dashboard returned the answer and the session resumed.</p>
+
+<p>That closes the one open question - whether Claude Code applies
+<code>--append-system-prompt</code> in INTERACTIVE mode, some prompt flags having historically
+been <code>--print</code>-only - and confirms a ~1.2KB multi-line value survives tmux intact.</p>
+
+<p>Measured alongside it, on the title/body split: a 54-character question keeps
+<code>title === body</code> and stays de-duplicated, while a long multi-line one clips to
+<em>"Should the retry policy use exponential backoff with&hellip;"</em>, so
+<code>title !== body</code> and the <code>pre-wrap</code> paragraph renders.</p>
+
+<p>The <code>ask-channel.test.ts</code> assertion was tightened to match: it now asserts the
+element after <code>--append-system-prompt</code> IS the prompt text, not merely that the flag is
+present.</p>
+
+<h3>The dispatch argv reached the process filter</h3>
+
+<p><code>isBackgroundAgent</code> (<code>discovery/processes.ts</code>) decided "this is a daemon,
+not a session" by content-matching the WHOLE <code>ps</code> command string for
+<code>claude &hellip; daemon</code> and <code>mcp serve</code>. That was safe while a dispatched
+line was <code>&lt;claude&gt; --model &lt;id&gt;</code>. It is not now: the line is ~1594
+characters and carries <code>--mcp-config &lt;MISSION_HOME&gt;/ask-channel/mcp.json</code> plus the
+whole inline prompt.</p>
+
+<p>Measured on the live process: today's line matches neither pattern, so nothing was broken. But
+an operator whose <code>MISSION_HOME</code> is <code>~/daemon-state</code>, or one edit putting the
+word "daemon" into the prompt's prose, would make every dispatched session undetectable - it never
+binds, and the dispatch fails <code>READY_TIMEOUT_MS</code> later as "agent session never
+appeared".</p>
+
+<p>The filter was fixed rather than the prompt. The first attempt narrowed the patterns to the
+command HEAD, which removed the coupling but was written against two plausible-looking forms
+rather than the machine: <code>ps</code> shows FIVE background Claude Code processes, and only
+<code>claude daemon run &hellip;</code> names its role in head position. The pty-host and spare
+workers name theirs as a subcommand (<code>claude bg-pty-host &hellip;</code>,
+<code>claude bg-spare &hellip;</code>) or as a flag on the app bundle with no subcommand at all
+(<code>&hellip;/ClaudeCode.app/Contents/MacOS/claude --bg-pty-host &hellip;</code>), so
+head-matching dropped four of the five. They had all been caught only by ACCIDENT before, because
+their socket path contains <code>cc-daemon-501</code> and that satisfied a <code>\bdaemon\b</code>
+search of the whole line. That accident was load-bearing.</p>
+
+<p>So the heuristic is gone entirely, replaced by an explicit allowlist matched at a fixed argv
+POSITION: <code>BACKGROUND_SUBCOMMANDS</code> (<code>daemon</code>, <code>bg-pty-host</code>,
+<code>bg-spare</code>, <code>mcp serve</code>) or <code>BACKGROUND_FLAGS</code>
+(<code>--bg-pty-host</code>, <code>--bg-spare</code>), read from argv[1] alone (argv[2] as well,
+for <code>mcp serve</code>'s second word). Both lists are append-only: a form we miss becomes a
+phantom session in the dashboard, and a form we match too eagerly makes a real agent disappear
+from it.</p>
+
+<p>Position, not just whole tokens, because a token scan of the entire argv still had the hole one
+rung up. Checking that on the live machine caught it: a headless <code>claude -p</code> whose
+prompt happened to quote the token <code>--bg-pty-host</code> was classified as a pty host. Prose
+quoting a flag is prose; argv[1] is the one slot no argument VALUE can occupy, and every real form
+declares its role there.</p>
+
+<p><code>process-background-filter.test.ts</code> is built from the five real <code>ps</code> lines
+verbatim rather than from invented ones, which is the point of the finding, plus
+<code>claude mcp serve</code>, a bare interactive <code>claude</code>, a full dispatched argv, a
+<code>--mcp-config</code> path containing "daemon", and prompt prose containing "daemon" and
+"mcp serve".</p>
+
+<footer>
+  Rendered from <code>docs/plans/ask-channel/plan.md</code>, which stays the source of truth.
+</footer>
+
+</div>
+</body>
+</html>

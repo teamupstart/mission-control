@@ -127,6 +127,47 @@ function findingsDigest(findings: NmFinding[]): string {
 export const NO_QUESTION_PLACEHOLDER = "(the session needs you, but no explicit question was found)";
 
 /**
+ * Render an `input` review as the question Foreman actually judges, options included.
+ *
+ * This exists because of what `ask-channel.ts` changed. A dispatched session used to ask a
+ * multiple-choice question by drawing a menu on its pane, and the reviewer read the rows off
+ * the screen capture - the Foreman prompt still tells it to copy a row's number and label
+ * from there. Now that session calls `request_input` and the choices live in the review's
+ * `decisions`, which nothing was passing on: the reviewer got the question sentence alone.
+ * The transcript cannot cover for that either, because a blocked tool call is not written to
+ * it until it returns (the premise documented on `ReviewInput.pane`).
+ *
+ * So Foreman was answering multiple-choice questions having never seen the choices, on
+ * exactly the asks this feature routes to it - free to invent an answer outside the offered
+ * set. Hence the closing instruction as well as the list: this surface is resolved with free
+ * prose (there is no row to select), so naming one of the labels is the reviewer's only way
+ * to actually choose.
+ *
+ * Guarding is the caller's: `buildReviewPrompt` puts the whole `question` through
+ * `fromChild`, which is what confines every child-authored string here - labels and details
+ * included - to the section it was given.
+ */
+export function withOfferedOptions(review: ReviewItem): string {
+  const decision = review.decisions?.[0];
+  if (!decision?.options.length) return review.body;
+  const rows = decision.options.map((o) => `- ${o.label}${o.detail ? `: ${o.detail}` : ""}`);
+  return [
+    review.body,
+    "",
+    decision.multiSelect
+      ? "The agent offered these options (it will accept more than one):"
+      : "The agent offered these options:",
+    ...rows,
+    "",
+    // Named rather than implied: the reviewer's reply is typed as prose, so "pick option 2"
+    // reaches the agent as the words "pick option 2" and nothing else.
+    "Your answer is delivered as text, so state the LABEL of the option you are choosing," +
+      " exactly as written above. If none of them is an answer you are willing to give," +
+      " escalate rather than inventing one that was not offered.",
+  ].join("\n");
+}
+
+/**
  * Work out what a needs-you session is blocked on, and how (if at all) Foreman may
  * reply. An `input` review is directly answerable (resolve it); any other kind -
  * plan, diff, plan-decisions - is not (Foreman can only frame it, so a plan's
@@ -147,7 +188,7 @@ export function classifyPending(s: Session, reviews: ReviewItem[]): Pending {
     return {
       situation: "input-review",
       surface: "input-review",
-      question: inputReview.body,
+      question: withOfferedOptions(inputReview),
       inputReviewId: inputReview.id,
       canSend: false,
       marker: `review:${inputReview.id}`,

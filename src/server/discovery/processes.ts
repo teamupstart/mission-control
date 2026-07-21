@@ -90,13 +90,52 @@ export function classifyAgent(command: string): AgentType | null {
 }
 
 /**
- * Exclude background/daemon processes that match a signature but aren't
- * interactive sessions (e.g. `claude daemon run ...`). Interactive sessions are
+ * Claude Code's own background invocations, by the subcommand that names the role.
+ * `mcp serve` is two tokens; the rest are one.
+ *
+ * APPEND-ONLY as new ones appear. Both directions of a mistake here are costly: a
+ * form we miss becomes a phantom session in the dashboard, and a form we match too
+ * eagerly makes a real agent silently disappear from it.
+ */
+const BACKGROUND_SUBCOMMANDS = new Set(["daemon", "bg-pty-host", "bg-spare", "mcp serve"]);
+
+/**
+ * The same roles again, as the flags the app bundle takes when it is spawned with no
+ * subcommand at all (`.../ClaudeCode.app/Contents/MacOS/claude --bg-pty-host <sock>`).
+ * Matched as a whole token in flag position, never as a substring.
+ */
+const BACKGROUND_FLAGS = new Set(["--bg-pty-host", "--bg-spare"]);
+
+/**
+ * Exclude background processes that carry an agent signature but are not interactive
+ * sessions: `claude daemon run …`, `claude mcp serve`, and the pty-host / spare
+ * workers Claude Code keeps alive beside a session. Interactive sessions are
  * additionally required to have a tty by the caller, but this catches the case
  * defensively.
+ *
+ * Decided over TOKENS against an explicit allowlist, never by searching the raw
+ * string. A dispatched session's argv now carries a state-dir path (`--mcp-config
+ * <MISSION_HOME>/ask-channel/mcp.json`) and the entire ~1.2KB inline redirect prompt
+ * (`ask-channel.ts`), so any substring test hands the decision to text we do not
+ * control: an operator whose `MISSION_HOME` is `~/daemon-state`, or one edit putting
+ * the word "daemon" into that prompt's prose, would make every dispatched agent
+ * undetectable. It would never bind to a session and would simply vanish.
+ *
+ * The workers were previously caught only by ACCIDENT - their socket path contains
+ * `cc-daemon-501`, which satisfied a `\bdaemon\b` search of the whole line. Naming
+ * them is what stops that accident from being load-bearing.
+ *
+ * Only argv[1] and argv[2] are ever looked at, because that is where every real form
+ * declares its role and it is the one position no argument VALUE can occupy. Scanning
+ * further would reopen the hole one rung up: a `claude -p '<prompt>'` whose prompt
+ * merely quotes the token `--bg-pty-host` is prose, not a pty host, and was observed
+ * matching a whole-argv token scan.
  */
-function isBackgroundAgent(command: string): boolean {
-  return /\bclaude\b.*\bdaemon\b/.test(command) || command.includes("mcp serve");
+export function isBackgroundAgent(command: string): boolean {
+  const [, one, two] = command.split(/\s+/).filter(Boolean);
+  if (one === undefined) return false;
+  if (BACKGROUND_FLAGS.has(one) || BACKGROUND_SUBCOMMANDS.has(one)) return true;
+  return two !== undefined && BACKGROUND_SUBCOMMANDS.has(`${one} ${two}`);
 }
 
 function parseStart(raw: string): number {

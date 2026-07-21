@@ -20,8 +20,14 @@ function isAnswered(d: PlanDecision, a: { selected: string[]; other: string } | 
  * Format the selections into the response string the agent receives verbatim as its
  * tool result. Deterministic and human-legible (it also shows in the transcript), one
  * block per question with the chosen labels and any free-text note.
+ *
+ * `lead` names what was answered, because this form now serves two askers: a
+ * `plan-decisions` review resolving several choices about a plan, and an `input` review
+ * where `request_input` asked one question with options - the replacement for Claude's
+ * built-in `AskUserQuestion`. Telling the second one "Plan decisions submitted" would hand
+ * the agent a plan it never wrote.
  */
-function formatResponse(decisions: PlanDecision[], answers: Answers): string {
+function formatResponse(decisions: PlanDecision[], answers: Answers, lead: string): string {
   const blocks = decisions.map((d) => {
     const a = answers[d.id] ?? { selected: [], other: "" };
     const labels = d.options.filter((o) => a.selected.includes(o.id)).map((o) => o.label);
@@ -31,7 +37,7 @@ function formatResponse(decisions: PlanDecision[], answers: Answers): string {
     if (!labels.length && !(d.allowOther && a.other.trim())) lines.push("  → (no selection)");
     return lines.join("\n");
   });
-  return `Plan decisions submitted:\n\n${blocks.join("\n\n")}`;
+  return `${lead}\n\n${blocks.join("\n\n")}`;
 }
 
 /**
@@ -43,10 +49,40 @@ export function DecisionForm({
   decisions,
   busy,
   onSubmit,
+  /** Opening line of the response the agent receives - see `formatResponse`. */
+  lead = "Plan decisions submitted:",
+  /**
+   * Drop the visible `<legend>`, because the caller already displays the question.
+   *
+   * For an `input` review the question is already above the form - as the review's title,
+   * and in full as the body paragraph when the title had to be clipped - so a legend beneath
+   * it says the same sentence a third time. The text still reaches assistive tech as the
+   * fieldset's `aria-label` - the group needs a name whether or not one is drawn. A
+   * `plan-decisions` form has several questions under one plan title and always shows them.
+   */
+  hideQuestions = false,
+  /**
+   * Namespace for the radio/checkbox `name` attributes this form emits.
+   *
+   * A group `name` is DOCUMENT-scoped, not component-scoped, and `ReviewModal` renders every
+   * pending review of a session into one document. `request_input` hardcodes its decision id
+   * as `q`, so two option-carrying `input` reviews - an abandoned ask still pending while the
+   * agent asks again - would put two radio groups on screen under the same name. The browser
+   * then treats them as ONE group: clicking in the second unchecks the first in the DOM,
+   * while React re-renders only the card whose state changed, so the first card shows nothing
+   * selected even though its state still holds a selection and its Submit stays enabled.
+   *
+   * Defaulted rather than required because a form rendered on its own cannot collide, and
+   * because the decision id itself must stay untouched - it is echoed in the response payload.
+   */
+  namePrefix = "d",
 }: {
   decisions: PlanDecision[];
   busy: boolean;
   onSubmit: (response: string) => void;
+  lead?: string;
+  hideQuestions?: boolean;
+  namePrefix?: string;
 }): React.JSX.Element {
   const [answers, setAnswers] = useState<Answers>({});
 
@@ -81,13 +117,17 @@ export function DecisionForm({
   return (
     <div className="decisions">
       {decisions.map((d) => (
-        <fieldset key={d.id} className="decision">
-          <legend className="decision-q">{d.question}</legend>
+        <fieldset
+          key={d.id}
+          className="decision"
+          aria-label={hideQuestions ? d.question : undefined}
+        >
+          {!hideQuestions && <legend className="decision-q">{d.question}</legend>}
           {d.options.map((o) => (
             <label key={o.id} className="decision-option">
               <input
                 type={d.multiSelect ? "checkbox" : "radio"}
-                name={d.id}
+                name={`${namePrefix}-${d.id}`}
                 checked={get(d.id).selected.includes(o.id)}
                 onChange={(e) => choose(d, o.id, e.target.checked)}
                 disabled={busy}
@@ -116,7 +156,7 @@ export function DecisionForm({
         <button
           className="btn btn-approve"
           disabled={busy || !complete}
-          onClick={() => onSubmit(formatResponse(decisions, answers))}
+          onClick={() => onSubmit(formatResponse(decisions, answers, lead))}
         >
           Submit
         </button>

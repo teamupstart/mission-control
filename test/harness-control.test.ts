@@ -42,15 +42,25 @@ const TMUX = { session: "s", window: "w", windowIndex: 0, paneId: "%1" };
 const session = (over: Partial<Session>): Session =>
   ({ id: "s1", agent: "claude", tmux: TMUX, wezterm: null, ...over }) as Session;
 
-/** Every pane read comes back as `text`; every command succeeds. */
-function harness(text: string | null): { deps: InjectDeps; calls: string[][] } {
+const PENDING = "❯ [Pasted text #1 +3 lines]\n⏵⏵ auto mode on";
+const CLEAR = "❯\n⏵⏵ auto mode on";
+
+/**
+ * Every command succeeds; each pane read yields the next `reads` entry, the last repeating.
+ *
+ * A SEQUENCE rather than one screen because the claim under test is a transition - a paste
+ * seen pending and then seen gone - and a single fixed screen cannot express one.
+ */
+function harness(reads: (string | null)[] | string | null): { deps: InjectDeps; calls: string[][] } {
+  const queue = Array.isArray(reads) ? reads : [reads];
   const calls: string[][] = [];
+  let read = 0;
   const deps: InjectDeps = {
     exec: async (bin, args) => {
       calls.push([bin, ...args]);
       return stubRun({ stdout: "", stderr: "", code: 0 });
     },
-    capture: async () => text,
+    capture: async () => queue[Math.min(read++, queue.length - 1)] ?? null,
     sleep: async () => {},
   };
   return { deps, calls };
@@ -106,26 +116,49 @@ test("controlFor answers for a session without naming a vendor", () => {
 test("no placeholder means no evidence, whatever is on screen", () => {
   const claude = HARNESSES.claude.control;
   const placeholder = claude.kind === "keystroke" ? claude.pastePlaceholder : null;
-  const pane = "❯ [Pasted text #1 +3 lines]\n⏵⏵ auto mode on";
 
   // The same screen, read with and without a placeholder to look for. A harness that
   // renders none cannot report a pending paste even when one is literally displayed -
   // which is why `false` here has to mean "no evidence", never "nothing pending".
-  assert.equal(hasPendingPaste(pane, placeholder), true);
-  assert.equal(hasPendingPaste(pane, null), false);
+  assert.equal(hasPendingPaste(PENDING, placeholder), true);
+  assert.equal(hasPendingPaste(PENDING, null), false);
 });
 
 // ---- delivery degrades deliberately ----
 
-test("a harness that can verify keeps pressing Enter until the composer clears", async () => {
-  // Claude's path, unchanged: the placeholder is gone on the read back, so one Enter is
-  // enough and the submit is reported as actually verified.
-  const { deps, calls } = harness("❯\n⏵⏵ auto mode on");
+test("a submit is verified by watching the paste leave the composer, not by one reading", async () => {
+  // The only shape that earns `true`: the placeholder is there on the first read back and
+  // gone on the next, so the Enter demonstrably landed rather than being swallowed. One
+  // Enter still suffices - the verification claim changed, the keystroke budget did not.
+  const { deps, calls } = harness([PENDING, CLEAR]);
   const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
   assert.equal(r.ok, true);
   assert.equal(r.pasted, true);
-  assert.equal(r.submitVerified, true, "seeing the composer clear IS the verification");
+  assert.equal(r.submitVerified, true, "pending then gone IS the verification");
   assert.equal(enters(calls), 1);
+});
+
+test("a single-line prompt is ok and unverified - it never renders a placeholder to watch", async () => {
+  // The COMMON case, and the one the flag used to lie about: a single-line paste is never
+  // collapsed, so the composer reads clear from the first poll and nothing was ever
+  // observed pending. `false` here is "no news", not "it failed".
+  const { deps, calls } = harness(CLEAR);
+  const r = await injectPrompt(session({ agent: "claude" }), "one line", deps);
+  assert.equal(r.ok, true);
+  assert.equal(r.pasted, true);
+  assert.equal(r.submitVerified, false, "an empty composer we never saw fill proves nothing");
+  assert.equal(enters(calls), 1, "an unverifiable delivery must not cost extra keystrokes");
+});
+
+test("a pane we cannot read is not a clear composer", async () => {
+  // A failed capture is evidence of nothing in either direction. Reading it as "the paste
+  // is gone" is how a delivery nobody could see came back confirmed - and it must not buy
+  // an extra Enter either, because that one would be aimed at a screen we cannot see.
+  const { deps, calls } = harness(null);
+  const r = await injectPrompt(session({ agent: "claude" }), "a\nb", deps);
+  assert.equal(r.ok, true, "the Enter we sent stands");
+  assert.equal(r.submitVerified, false, "nothing on screen, therefore nothing verified");
+  assert.equal(enters(calls), 1, "it must not keep firing at a pane it cannot read");
 });
 
 test("a harness with no placeholder spends ONE Enter and says the outcome is unverified", async () => {
@@ -133,7 +166,7 @@ test("a harness with no placeholder spends ONE Enter and says the outcome is unv
   // Claude would drive the retry loop - but Codex renders no placeholder, so there is
   // nothing to gate a second Enter on. An ungated one is the keystroke that answers a
   // foreground dialog on the operator's behalf, so exactly one is sent.
-  const { deps, calls } = harness("❯ [Pasted text #1 +3 lines]\nsomething on screen");
+  const { deps, calls } = harness(PENDING);
   const r = await injectPrompt(session({ agent: "codex" }), "a\nb", deps);
   assert.equal(r.pasted, true);
   assert.equal(enters(calls), 1, "no retry may be spent on evidence that cannot appear");
@@ -142,10 +175,11 @@ test("a harness with no placeholder spends ONE Enter and says the outcome is unv
 
 test("an unverified submit is reported as ok - but ok and unverified are distinguishable", async () => {
   // The whole point of the flag being required. Before it, this call and the verified one
-  // above returned byte-identical results, so no caller could tell them apart.
-  const { deps: cdeps } = harness("❯ clear");
+  // above returned byte-identical results, so no caller could tell them apart. Same pane,
+  // same sequence, two harnesses: only the one that renders a placeholder can verify.
+  const { deps: cdeps } = harness([PENDING, CLEAR]);
   const claude = await injectPrompt(session({ agent: "claude" }), "a\nb", cdeps);
-  const { deps: xdeps } = harness("❯ clear");
+  const { deps: xdeps } = harness([PENDING, CLEAR]);
   const codex = await injectPrompt(session({ agent: "codex" }), "a\nb", xdeps);
 
   assert.equal(claude.ok, true);

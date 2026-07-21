@@ -616,9 +616,14 @@ separately. The item that owns each fix is named in brackets.
   `paneDialog` is never set for Codex. Since `activePaneDialog` is the only hookless
   "needs-you" evidence (`shared/session.ts:172`), **a Codex session parked on a prompt reads
   as idle**. The most user-visible of the six.
-- **[Phase 1 - TUI]** `pane-paste.ts:37` + `actions.ts:344-379` - submit verification looks
-  for Claude's paste placeholder, so for Codex `hasPendingPaste` is always false and
-  `awaitPasteSubmitted` returns `ok` after one Enter with zero evidence.
+- **[Phase 1 - control, FIXED]** `pane-paste.ts:37` + `actions.ts:344-379` - submit
+  verification looked for Claude's paste placeholder, so for Codex `hasPendingPaste` was
+  always false and `awaitPasteSubmitted` returned `ok` after one Enter with zero evidence.
+  The placeholder now lives on `harness.control` as `ControlSpec.pastePlaceholder`, which
+  Codex declares `null`; `hasPendingPaste` takes it rather than owning one. The delivery path
+  reads that absence and spends exactly ONE Enter - the retries are safe only because a
+  visible placeholder proves the composer has focus - and reports the outcome as
+  `submitVerified: false` instead of returning `ok` having proved nothing.
 - **[Phase 1 - guards, FIXED]** `actions.ts:1418` - `resetToOrigin` sent `/clear`, a Claude
   slash command, to **every** agent type, ungated. It now reads `Harness.clearContext`, and
   a harness that declares none has its context left alone: `cleared: false`, zero

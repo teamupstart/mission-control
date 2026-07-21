@@ -279,22 +279,36 @@ async function sendTextLocked(
 export interface InjectResult extends ActionResult {
   pasted: boolean;
   /**
-   * Whether `ok: true` was reached by SEEING the composer clear, or only by sending an
-   * Enter and having nothing to check.
+   * True ONLY when the collapsed-paste placeholder was seen PENDING and then seen GONE.
+   * Verification is that transition, never a single reading, because only the transition
+   * rules out an Enter the TUI swallowed.
+   *
+   * Everything else is false, and false is "no news" rather than "it failed". Three
+   * ordinary deliveries land there: a harness whose `control.pastePlaceholder` is null
+   * renders nothing to read; a SINGLE-LINE paste is never collapsed, so no placeholder
+   * ever appears (which makes false the common answer for Claude too, every one-line
+   * queue item included); and a capture that comes back null is evidence of nothing in
+   * either direction and must never be read as a clear composer.
    *
    * Required rather than optional, for the reason `TerminalResult.outcomeUnknown` is: an
    * optional flag defaults the decision to whoever forgot it, and this is exactly the
-   * decision that was being defaulted. A harness whose `control.pastePlaceholder` is null
-   * renders nothing that distinguishes a submitted prompt from a swallowed Enter, so
-   * `ok: true` from that path is a report that the keystroke was sent - not that the
-   * agent took it. Before this existed the two were indistinguishable at the call site
-   * and the unverified one was being read as confirmed.
-   *
-   * Callers that escalate on a stuck prompt should treat `ok && !submitVerified` as "no
-   * news", not as success.
+   * decision that was being defaulted - before this existed a verified submit and an
+   * unverified one were byte-identical at the call site, and the unverified one was being
+   * read as confirmed. No caller acts on it yet; the point is that one now can.
    */
   submitVerified: boolean;
 }
+
+/**
+ * Nothing reached the pane, so nothing could have been verified. Stated once because the
+ * failure mode is a future early return that sets one of the two flags and forgets the
+ * other, leaving a caller told it may safely retry a prompt that is sitting in a composer.
+ */
+const undelivered = (r: ActionResult): InjectResult => ({
+  ...r,
+  pasted: false,
+  submitVerified: false,
+});
 
 // The settle window and the collapsed-paste placeholder used to be constants here, both
 // measured against one Claude build and both applied to every agent. They are properties
@@ -348,6 +362,14 @@ const defaultInjectDeps: InjectDeps = { ...defaultPaneDeps, sleep };
  * Reports true when the paste is gone from the composer, false when it outlasted
  * every attempt. A capture we can't read is not evidence of a stuck paste, so it
  * ends the loop rather than spending an unaimed keystroke on it.
+ *
+ * `submitVerified` answers a stricter question than `ok`, and the two part company on
+ * purpose. `ok` says the Enter went out and nothing on screen contradicts it; verified
+ * says we WATCHED the paste leave the composer. Only a placeholder observed pending and
+ * then observed gone can say that, so a single-line paste - which never collapses, so
+ * never renders one - comes back ok and unverified, as does a delivery we could not read
+ * the pane for at all. Claiming otherwise would be the flag reporting confirmed in
+ * exactly the cases it exists to expose.
  */
 async function awaitPasteSubmitted(
   session: Session,
@@ -370,16 +392,32 @@ async function awaitPasteSubmitted(
     return { ...entered, submitVerified: false };
   }
 
+  // Ever seen pending, across attempts. This is the whole of the verification evidence:
+  // the one exit below that reports true is the reading where a paste we had watched
+  // sitting in the composer is no longer there.
+  let sawPending = false;
   for (let attempt = 1; attempt <= MAX_SUBMIT_ENTERS; attempt++) {
     const entered = await pressEnter();
     if (!entered.ok) return { ...entered, submitVerified: false };
 
+    // Re-armed per Enter, because the next one is only safe while THIS wait is still
+    // looking at a pending paste. Evidence from a wait ago is stale by a second and more.
+    let pendingThisWait = false;
     for (let poll = 0; poll < SUBMIT_POLLS; poll++) {
       if (poll > 0) await deps.sleep(SUBMIT_POLL_MS);
-      if (!hasPendingPaste(await deps.capture(session), placeholder)) {
-        return { ok: true, submitVerified: true };
-      }
+      const pane = await deps.capture(session);
+      // A capture we could not read neither ends the wait nor counts towards it - it is
+      // not a clear composer, and treating it as one is how an unverified submit came
+      // back confirmed. Keep polling; the next read may say something.
+      if (pane === null) continue;
+      if (!hasPendingPaste(pane, placeholder)) return { ok: true, submitVerified: sawPending };
+      sawPending = true;
+      pendingThisWait = true;
     }
+    // Nothing readable said the paste is still there, so there is nothing to aim the next
+    // Enter at - and an unaimed one is the keystroke that answers a foreground dialog on
+    // the operator's behalf. The Enter we did send stands, unverified.
+    if (!pendingThisWait) return { ok: true, submitVerified: false };
   }
   return { ok: false, error: PASTE_NOT_SUBMITTED, submitVerified: false };
 }
@@ -412,6 +450,11 @@ export async function paneAcceptsPrompt(
   session: Session,
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<ActionResult> {
+  // Asked before the handles, and refused in `injectPrompt`'s own words: a harness that
+  // does not take keystrokes cannot become deliverable by owning a pane, so answering
+  // `ok` on the strength of one is how the destructive step runs anyway and the refusal
+  // arrives afterwards, on a stripped agent whose task went back to the backlog.
+  if (controlFor(session).kind !== "keystroke") return { ok: false, error: NO_KEYSTROKE_DELIVERY };
   if (session.tmux) return (await tmuxWriteBlock(session.tmux.paneId, deps.exec)) ?? { ok: true };
   if (session.wezterm) return { ok: true };
   return { ok: false, error: NO_HANDLE };
@@ -447,7 +490,7 @@ export async function injectPrompt(
   // allowed to retry from.
   return withPaneLock<InjectResult>(
     session,
-    () => ({ ok: false, error: PANE_BUSY, pasted: false, submitVerified: false }),
+    () => undelivered({ ok: false, error: PANE_BUSY }),
     () => injectPromptLocked(session, text, deps),
   );
 }
@@ -467,7 +510,7 @@ async function injectPromptLocked(
   // pane at all, so it cannot fall through to the tmux/wezterm paths below and quietly
   // type at nothing - it is refused here, by declaration, until that path exists.
   if (control.kind !== "keystroke") {
-    return { ok: false, error: NO_KEYSTROKE_DELIVERY, pasted: false, submitVerified: false };
+    return undelivered({ ok: false, error: NO_KEYSTROKE_DELIVERY });
   }
   const { settleMs, pastePlaceholder } = control;
 
@@ -477,10 +520,10 @@ async function injectPromptLocked(
     // `send-keys` is, and just as silently, so the "the text IS in the pane" invariant
     // below is only true once this has cleared.
     const blocked = await tmuxWriteBlock(target, deps.exec);
-    if (blocked) return { ...blocked, pasted: false, submitVerified: false };
+    if (blocked) return undelivered(blocked);
     const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
     const set = await cmd("tmux", ["set-buffer", "-b", buf, "--", text], "tmux set-buffer failed");
-    if (!set.ok) return { ...set, pasted: false, submitVerified: false };
+    if (!set.ok) return undelivered(set);
     // -p: bracketed paste (so embedded newlines don't submit); -d: drop the buffer after.
     // A non-zero exit here means tmux couldn't resolve the buffer or the pane, both
     // of which it checks BEFORE writing: nothing reached the pane.
@@ -489,7 +532,7 @@ async function injectPromptLocked(
       ["paste-buffer", "-p", "-d", "-b", buf, "-t", target],
       "tmux paste-buffer failed",
     );
-    if (!paste.ok) return { ...paste, pasted: false, submitVerified: false };
+    if (!paste.ok) return undelivered(paste);
     // Past this point the text IS in the pane, submitted or not.
     await deps.sleep(settleMs);
     // Re-probed per Enter rather than trusting the pre-paste check: the settle window
@@ -519,7 +562,7 @@ async function injectPromptLocked(
     const id = String(session.wezterm.paneId);
     // Omitting --no-paste makes wezterm send the text as a bracketed paste.
     const pasted = await cmd(bin, ["cli", "send-text", "--pane-id", id, text], "wezterm send-text failed");
-    if (!pasted.ok) return { ...pasted, pasted: false, submitVerified: false };
+    if (!pasted.ok) return undelivered(pasted);
     await deps.sleep(settleMs);
     const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
     const submitted = await awaitPasteSubmitted(
@@ -530,7 +573,7 @@ async function injectPromptLocked(
     );
     return { ...submitted, pasted: true };
   }
-  return { ok: false, error: NO_HANDLE, pasted: false, submitVerified: false };
+  return undelivered({ ok: false, error: NO_HANDLE });
 }
 
 /**

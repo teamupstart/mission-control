@@ -5,6 +5,7 @@ import type { ReloadDeps } from "../src/server/skills/reload.ts";
 import type { InjectResult } from "../src/server/actions.ts";
 import type { PaneModeLine } from "../src/server/discovery/pane-mode.ts";
 import type { Session } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What one reload actually DOES, in order. The ordering here is the whole safety
 // argument - read the pane, then ack, then type - and an argument no test can see is
@@ -19,8 +20,7 @@ function mkSession(): Session {
     agent: "claude",
     state: "idle",
     agentSessionId: "agent-1",
-    tmux: { session: "w", window: "w", windowIndex: 0, paneId: "%1" },
-    wezterm: null,
+    terminals: [mkMuxHandle({ session: "w", windowName: "w", windowIndex: 0, paneId: "%1" })],
     instrumented: true,
     lastActivity: 0,
     firstSeen: 0,

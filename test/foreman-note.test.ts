@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Session, SessionNoteSummary } from "../src/shared/types.ts";
 import { ForemanNote } from "../src/web/components/ForemanNote.tsx";
 import { closeForemanNote } from "../src/web/lib/foreman.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Rendered rather than checked as a pure rule, because the bug WAS the render: the
 // hint's condition (`mode !== "live"`) suppressed the explanation in the one state
@@ -30,8 +31,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     id: "s1",
     cwd: WORKTREE,
     repoRoot: REPO,
-    tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" },
-    wezterm: null,
+    terminals: [mkMuxHandle({ session: "m", windowName: "w", windowIndex: 1, paneId: "%1" })],
     ...over,
   } as Session;
 }

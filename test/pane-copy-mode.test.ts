@@ -8,11 +8,12 @@ import {
   type InjectDeps,
   type PaneDeps,
 } from "../src/server/actions.ts";
-import { bindSession } from "../src/server/terminal/handles.ts";
+import { bindSession } from "../src/server/terminal/registry.ts";
 import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { readTmuxPaneMode } from "../src/server/terminal/tmux.ts";
 import { run, stubRun, type RunResult } from "../src/server/util/exec.ts";
-import type { Session, TmuxInfo } from "@shared/types.ts";
+import type { Session } from "@shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // A tmux pane in copy-mode routes every key to tmux's OWN key table. `send-keys` and
 // `paste-buffer` both still exit 0, and the child receives NOTHING - so the daemon's only
@@ -31,7 +32,7 @@ import type { Session, TmuxInfo } from "@shared/types.ts";
 // own scrollback, and a refusal is a no-op the caller retries once they leave.
 
 const tmuxSession = (paneId = "%1"): Session =>
-  ({ id: "s1", agent: "claude", tmux: { session: "s", window: "w", windowIndex: 0, paneId }, wezterm: null }) as Session;
+  ({ id: "s1", agent: "claude", terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId })] }) as Session;
 
 const ok = (stdout: string): RunResult => stubRun({ stdout, stderr: "", code: 0 });
 
@@ -239,7 +240,7 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
   // `send-keys` exits 0 while the child gets nothing. If that were ever false the guard
   // would be pointless, so it is asserted against a real tmux rather than assumed.
   const sessName = `mc-copymode-${process.pid}`;
-  const tmux = (paneId: string): TmuxInfo => ({ session: sessName, window: "0", windowIndex: 0, paneId });
+  const tmux = (paneId: string) => mkMuxHandle({ session: sessName, windowName: "0", paneId });
   try {
     // A pane that appends every line it receives, so "did the child see it" is a fact on
     // disk rather than an inference from the screen. It paints a menu first, in the shape
@@ -257,7 +258,7 @@ test("a real pane in copy-mode swallows keystrokes that tmux reports as sent", {
       `sh -c '${paint}; while IFS= read -r l; do echo "$l" >> ${sink}; done'`,
     ]);
     const paneId = execFileSync("tmux", ["list-panes", "-t", sessName, "-F", "#{pane_id}"]).toString().trim();
-    const session = { id: "real", agent: "claude", tmux: tmux(paneId), wezterm: null } as Session;
+    const session = { id: "real", agent: "claude", terminals: [tmux(paneId)] } as Session;
 
     // Baseline: the pane takes keystrokes, and the guard lets them through.
     assert.equal(await readTmuxPaneMode(paneId), null, "a fresh pane is in no mode");

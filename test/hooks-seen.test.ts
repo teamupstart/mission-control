@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // `instrumented` vs `hooksSeen`: a freshness window vs an installation fact.
 //
@@ -37,8 +38,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
     startedAt: 0,
     ...over,
   } as DiscoveredSession;
@@ -73,7 +73,7 @@ test("going QUIET past the overlay TTL clears `instrumented` but never `hooksSee
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
 
   const registry = new Registry();
-  const d = mkDiscovered({ syntheticId: "quiet-1", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%9" } });
+  const d = mkDiscovered({ syntheticId: "quiet-1", terminals: [mkMuxHandle({ paneId: "%9" })] });
   registry.applyDiscovery([d]);
   registry.applyHook({
     agent: "claude",
@@ -101,7 +101,7 @@ test("`hooksSeen` survives a daemon RESTART - overlays don't, and that's the poi
   // `session_events`, keyed by the synthetic id (tty+pid+start), which is stable for
   // the same agent process across a restart.
   const first = new Registry();
-  const d = mkDiscovered({ syntheticId: "restart-1", tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%7" } });
+  const d = mkDiscovered({ syntheticId: "restart-1", terminals: [mkMuxHandle({ paneId: "%7" })] });
   first.applyDiscovery([d]);
   first.applyHook({
     agent: "claude",

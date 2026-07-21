@@ -1,6 +1,7 @@
 import { activePaneDialog, runInFlight } from "@shared/session.ts";
 import type { AgentType, NmRunSummary, PermissionMode, Session, SessionState } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { canWriteTo, type PaneHandles } from "@shared/pane.ts";
 
 export function relativeTime(ms: number | null): string {
   if (!ms) return "";
@@ -286,11 +287,11 @@ export function pickableModes(agent: AgentType): readonly PermissionMode[] {
 }
 
 /**
- * True when a session can be renamed: renaming drives its tmux session / wezterm
- * tab, so it needs one of those handles, and a dead session has nothing to rename.
- * Shared by the clickable card title, the command bar's keycap, and the hotkey gate
- * so the rule can't drift between them.
+ * True when a session can be renamed: renaming drives the terminal a session lives in, so
+ * it needs a handle on one, and a dead session has nothing to rename. Shared by the
+ * clickable card title, the command bar's keycap, and the hotkey gate so the rule can't
+ * drift between them.
  */
-export function canRenameSession(s: Pick<Session, "state" | "tmux" | "wezterm">): boolean {
-  return s.state !== "exited" && Boolean(s.tmux || s.wezterm);
+export function canRenameSession(s: PaneHandles & Pick<Session, "state">): boolean {
+  return s.state !== "exited" && canWriteTo(s);
 }

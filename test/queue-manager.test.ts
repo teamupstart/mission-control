@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { innermostPane, type PaneHandles } from "../src/shared/pane.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The QueueManager's own writes - the ones the daemon owns rather than the pure
 // machine. Everything here is about a clock or a guard that only the write boundary
@@ -37,8 +39,7 @@ function mkDiscovered(
     nomistakesGated: false,
     pid: 1,
     tty: `ttys${++paneN}`,
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: `%${paneN}` },
+    terminals: [mkMuxHandle({ paneId: `%${paneN}` })],
     startedAt: 0,
     ...over,
   } as DiscoveredSession;
@@ -59,8 +60,19 @@ function seedSession(
     sessionId: agentSessionId,
     cwd: d.cwd,
     transcriptPath: null,
-    env: { tmuxPane: d.tmux!.paneId },
+    env: { tmuxPane: paneOf(d) },
   });
+}
+
+/**
+ * The pane id a hook would carry in its `TMUX_PANE`, off whichever handle the session's
+ * writes address. The hook env is the one place a pane id is still spelled per vendor, so
+ * this reads the handle the daemon would key on rather than naming a field.
+ */
+function paneOf(s: PaneHandles): string {
+  const pane = innermostPane(s);
+  assert.ok(pane, "fixture session must have a pane");
+  return pane.paneId;
 }
 
 // ---- sentAt is the SEND's clock, on every round ----
@@ -196,7 +208,7 @@ test("re-attach refuses a source key a live session still holds", () => {
     sessionId: "agent-live",
     cwd: "/repo",
     transcriptPath: null,
-    env: { tmuxPane: registry.getSession("s-live")!.tmux!.paneId },
+    env: { tmuxPane: paneOf(registry.getSession("s-live")!) },
   });
   registry.applyHook({
     agent: "claude",
@@ -204,7 +216,7 @@ test("re-attach refuses a source key a live session still holds", () => {
     sessionId: "agent-other",
     cwd: "/repo",
     transcriptPath: null,
-    env: { tmuxPane: registry.getSession("s-other")!.tmux!.paneId },
+    env: { tmuxPane: paneOf(registry.getSession("s-other")!) },
   });
 
   const item = queues.add("s-live", "work on the live session")!;
@@ -240,7 +252,7 @@ test("re-attach still moves a genuinely orphaned queue, and heals BOTH cards", (
     sessionId: "agent-new",
     cwd: "/repo",
     transcriptPath: null,
-    env: { tmuxPane: registry.getSession("s-cleared")!.tmux!.paneId },
+    env: { tmuxPane: paneOf(registry.getSession("s-cleared")!) },
   });
   assert.equal(registry.getSession("s-cleared")?.agentSessionId, "agent-new");
 
@@ -275,7 +287,7 @@ test("re-attach is refused before the sessions has ever been observed", () => {
     sessionId: "agent-target",
     cwd: "/repo",
     transcriptPath: null,
-    env: { tmuxPane: registry.getSession("s-target")!.tmux!.paneId },
+    env: { tmuxPane: paneOf(registry.getSession("s-target")!) },
   });
 
   assert.ok(registry.sessionsObserved(), "applyDiscovery is what marks the sessions observed");

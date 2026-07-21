@@ -14,8 +14,8 @@ and get your decision back.
 - **Names** each session by its **tmux session name**, else its **wezterm tab
   title**, else the repo folder. Click a card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to
   rename it - it renames the underlying tmux session / wezterm tab, which the next
-  sweep reads straight back onto the card. Only a live session with a tmux or wezterm
-  pane can be renamed - a session found in neither, or one that has exited, has
+  sweep reads straight back onto the card. Only a live session with a terminal pane can
+  be renamed - a session found in no backend at all, or one that has exited, has
   nothing to rename, so its title isn't clickable.
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
@@ -171,6 +171,13 @@ The two axes are separate for that reason. A **multiplexer** has named sessions 
 outlive any window and a copy-mode that can swallow keystrokes; a **terminal emulator**
 raises windows and has no persistence. Neither is a subset of the other, and a backend
 declares what it genuinely cannot do rather than stubbing it.
+
+A session therefore carries a **list** of the panes it is reachable through, one per
+backend, rather than a field per vendor - so a backend the dashboard has never heard of
+is drawn, typed into and torn down like any other. "Is there a composer to type into?"
+is one predicate over that list, asked identically by the Send box, the mode picker,
+Rename, the work queue and Foreman, instead of twenty booleans each naming the two
+terminals they happened to be written beside.
 
 The same declaration decides how a session is **typed into and read**. A reply, a queued
 prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
@@ -710,7 +717,7 @@ landed commit has a different SHA and never appears on `origin/main`).
 its tmux session is cut - so a recycled agent's card is titled by its work rather than by
 the pooled worktree it was handed out as, or by the task it finished ten minutes ago. This
 happens after the task has been typed, and never fails the assign: if the terminal can't be
-renamed (no tmux or wezterm handle, or the name is already spoken for) the old name simply
+renamed (no terminal handle at all, or the name is already spoken for) the old name simply
 stands. It applies to [the backlog
 autopilot's](#backlog-autopilot-foreman-schedules-the-fleet) assignments too, which
 is where a stale name is most confusing - nobody watched that handover happen.

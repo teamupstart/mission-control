@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PermissionMode, Session } from "@shared/types.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 import { permissionModeDisplay, pickableModes } from "../lib/format.ts";
 
@@ -39,7 +40,7 @@ export function ModePicker({ session }: { session: Session }): React.JSX.Element
   const modes = pickableModes(session.agent);
   const current = permissionModeDisplay(session.permissionMode);
   // Driving the mode means sending a keystroke, which needs a live pane to send into.
-  const canPick = session.state !== "exited" && Boolean(session.tmux || session.wezterm);
+  const canPick = session.state !== "exited" && canWriteTo(session);
 
   const place = useCallback(() => {
     const el = chipRef.current;

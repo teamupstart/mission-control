@@ -8,6 +8,7 @@ import type { ScanWindow, TriageDeps, TriageReport } from "../src/server/foreman
 import type { Pending } from "../src/server/foreman/pending.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { Session, SessionState, TranscriptMessage } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The child's screen as an input to Foreman's reviewers (see `ReviewInput.pane`).
 //
@@ -181,7 +182,7 @@ function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1", agent: "claude", name: "sess", nameSource: "process", state: "awaiting_input" as SessionState,
     cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null,
-    permissionMode: null, wezterm: null, tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" },
+    permissionMode: null, terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })],
     agentSessionId: null, transcriptPath: null, instrumented: true, hooksSeen: true, activity: HOOK_LINE,
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [], nomistakesNarration: null, task: null, prUrl: null, prNumber: null, prState: null,

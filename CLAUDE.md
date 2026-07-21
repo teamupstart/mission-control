@@ -323,11 +323,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   yet). Tests:
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
   `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`.
-  **Migration in progress** - discovery and pane I/O are through the registries; focus,
-  rename, kill and spawn still branch on `session.tmux` / `session.wezterm` directly, and
-  `legacyHandles` (`correlate.ts`) plus its mirror `handlesOf` (`terminal/handles.ts`) are
-  the only places projecting onto those two fields;
-  see `docs/plans/pluggable-integrations/plan.md` phase 2.
+  **Migration in progress** - discovery, pane I/O and the `Session` model are through the
+  registries; focus, rename, kill and spawn still shell out to `tmux` / wezterm by name.
+  They no longer branch on a field per vendor, though: each takes its handle from
+  `tmuxOnly` / `weztermOnly` (`actions.ts`), whose `noDriver(backend: never)` default makes
+  a second backend on either axis a TYPECHECK ERROR there rather than a Ghostty tab handed
+  to `activateWeztermPane`. See `docs/plans/pluggable-integrations/plan.md` phase 2.
 - **Task sources (what pulls work INTO the backlog)**: the same purity split as the
   harnesses. `TASK_SOURCE_KIND_INFO` (`@shared/task-source.ts`) holds what the settings
   panel can answer in the browser - the name, the blurb, the config schema - and
@@ -376,6 +377,19 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   than the next restart; it never names a model or a provider itself. Test:
   `foreman-models.test.ts`, `inspector-model.test.ts`, `llm-jobs.test.ts`,
   `llm-config.test.ts`.
+- **A session's terminal handles**: `Session.terminals` is a LIST of `TerminalHandle`
+  (`@shared/terminal.ts`), one per backend, discriminated on the AXIS (`multiplexer` /
+  `emulator`) and never on the vendor. It replaced `Session.tmux` / `Session.wezterm`,
+  which made "how many backends are there" a fact of the type. Read it through
+  `@shared/pane.ts`, never by hand: **`canWriteTo`** answers "is there a composer to type
+  into?" - the question ~20 call sites across both processes were spelling as
+  `Boolean(s.tmux || s.wezterm)` - and `innermostPane` / `paneToken` answer which pane a
+  write lands on (multiplexer first: its pane is the agent's, the emulator's is the client
+  showing it). `muxHandle` / `emulatorHandle` are for the questions that genuinely ARE
+  about one axis - a named session to kill or rename, a tab to raise - and for nothing
+  else. `bindPane` (`terminal/registry.ts`) defers to `innermostPane` rather than
+  restating it, so the write lock guards the pane the write reaches by construction.
+  Test: `session-terminals.test.ts`, `pane-lock.test.ts`, `terminal-registry.test.ts`.
 - **Pane token**: `paneToken` (`@shared/pane.ts`) spells the key every pane-scoped map uses -
   the write lock, the hook overlay, the capture-miss counter, the Foreman's send guard. There
   were four copies in two spellings (`wezterm:` and `wez:`); each subsystem only compared the

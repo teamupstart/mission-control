@@ -249,7 +249,7 @@ export function tier0(pending: Pending): TriageOutcome | { kind: "continue" } {
       };
     }
     case "terminal-no-pane": {
-      // A real question with no tmux/wezterm pane to type an answer into, so Foreman would
+      // A real question with no terminal pane to type an answer into, so Foreman would
       // escalate regardless. The plan has Tier 0 escalate directly when the question is short
       // AND self-contained - but on this surface it never is, so this routes up instead. That
       // is the faithful reading of the plan's bullet given the real shape of the data:

@@ -1,3 +1,4 @@
+import { claudeTui } from "../src/server/harness/claude/tui.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -5,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "@shared/protocol.ts";
+
+/** The mode-line spec the registry holds, so the parser is pinned to the shipped wording. */
+const CLAUDE_MODE_LINE = claudeTui.modeLine!;
+
 
 // Isolate the daemon's SQLite DB before anything reads config/db.
 process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-mode-"));
@@ -74,7 +79,7 @@ test("parsePaneModeLine reads every mode Claude renders", () => {
     ["⏵⏵ don't ask on", "dontAsk"],
   ];
   for (const [line, mode] of cases) {
-    assert.equal(parsePaneModeLine(line)?.mode, mode, line);
+    assert.equal(parsePaneModeLine(line, CLAUDE_MODE_LINE)?.mode, mode, line);
   }
 });
 
@@ -91,15 +96,15 @@ test("parsePaneModeLine reads a real pane, statusLine and all", () => {
     "  ⏵⏵ auto mode on · 1 shell · ← 3 agents",
     "",
   ].join("\n");
-  assert.deepEqual(parsePaneModeLine(pane), { text: "auto mode on", mode: "auto" });
+  assert.deepEqual(parsePaneModeLine(pane, CLAUDE_MODE_LINE), { text: "auto mode on", mode: "auto" });
 });
 
 test("parsePaneModeLine tolerates the typographic apostrophe in don't ask", () => {
-  assert.equal(parsePaneModeLine("⏵⏵ don’t ask on · 2 agents")?.mode, "dontAsk");
+  assert.equal(parsePaneModeLine("⏵⏵ don’t ask on · 2 agents", CLAUDE_MODE_LINE)?.mode, "dontAsk");
 });
 
 test("parsePaneModeLine ignores the trailing `·` segments", () => {
-  const line = parsePaneModeLine("⏸ manual mode on · ← 3 agents");
+  const line = parsePaneModeLine("⏸ manual mode on · ← 3 agents", CLAUDE_MODE_LINE);
   // The text is the cycle position's identity, so it must not drift with the
   // agent/shell counts that trail it - those change on their own.
   assert.deepEqual(line, { text: "manual mode on", mode: "default" });
@@ -114,7 +119,7 @@ test("parsePaneModeLine finds nothing when a dialog covers the mode line", () =>
     "  ◉ xHigh effort ←/→ to adjust",
     "  Enter to set as default · s to use this session only · Esc to cancel",
   ].join("\n");
-  assert.equal(parsePaneModeLine(pane), null);
+  assert.equal(parsePaneModeLine(pane, CLAUDE_MODE_LINE), null);
 });
 
 test("parsePaneModeLine doesn't mistake transcript prose for the mode line", () => {
@@ -125,25 +130,25 @@ test("parsePaneModeLine doesn't mistake transcript prose for the mode line", () 
     "  Toggling plan mode on would just slow it down.",
     "",
   ].join("\n");
-  assert.equal(parsePaneModeLine(pane), null);
+  assert.equal(parsePaneModeLine(pane, CLAUDE_MODE_LINE), null);
 });
 
 test("parsePaneModeLine keeps a mode line it doesn't recognize as a cycle position", () => {
   // A newer Claude's wording, or a mode gated behind a flag we can't observe. We
   // can't label it, but the walk still has to be able to step through it.
-  assert.deepEqual(parsePaneModeLine("⏵⏵ yolo mode on · 1 shell"), {
+  assert.deepEqual(parsePaneModeLine("⏵⏵ yolo mode on · 1 shell", CLAUDE_MODE_LINE), {
     text: "yolo mode on",
     mode: null,
   });
 });
 
 test("parsePaneModeLine needs a glyph before trusting unfamiliar wording", () => {
-  assert.equal(parsePaneModeLine("the build is on"), null);
+  assert.equal(parsePaneModeLine("the build is on", CLAUDE_MODE_LINE), null);
 });
 
 test("parsePaneModeLine handles an empty or missing capture", () => {
-  assert.equal(parsePaneModeLine(""), null);
-  assert.equal(parsePaneModeLine(null), null);
+  assert.equal(parsePaneModeLine("", CLAUDE_MODE_LINE), null);
+  assert.equal(parsePaneModeLine(null, CLAUDE_MODE_LINE), null);
 });
 
 // ---- the chip's sources, in priority order ----

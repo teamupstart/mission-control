@@ -1,3 +1,4 @@
+import { claudeTui } from "../src/server/harness/claude/tui.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
@@ -9,6 +10,12 @@ import { MULTI_SELECT } from "./fixtures/claude-panes.ts";
 import { activePaneDialog, reportBucket, needsYouReason } from "../src/shared/session.ts";
 import { stateDisplay } from "../src/web/lib/format.ts";
 import type { PaneDialog, Session } from "../src/shared/types.ts";
+
+// The dialog spec the REGISTRY actually holds, not a test-local copy: this suite exists to
+// catch our model of a TUI drifting from the TUI, and a fixture checked against a spec the
+// daemon does not use would certify a grammar nobody runs.
+const CLAUDE_DIALOG = claudeTui.dialog!;
+
 
 // Answering, from the dashboard, the option menu a session's terminal is parked on.
 //
@@ -35,7 +42,7 @@ Which database should this project use?
 Enter to select · ↑/↓ to navigate · Esc to cancel
 `;
 
-const dialog = parsePaneDialog(CAPTURE)!;
+const dialog = parsePaneDialog(CAPTURE, CLAUDE_DIALOG)!;
 
 function render(d: PaneDialog = dialog): string {
   return renderToStaticMarkup(createElement(PaneDialogPrompt, { sessionId: "s1", dialog: d }));
@@ -76,7 +83,7 @@ test("a menu with no question renders its rows rather than nothing", () => {
 
 // ---- A multi-select is a FORM, and must not be dressed as a menu ----
 
-const form = parsePaneDialog(MULTI_SELECT)!;
+const form = parsePaneDialog(MULTI_SELECT, CLAUDE_DIALOG)!;
 
 test("a multi-select renders checkboxes carrying the terminal's own ticks", () => {
   const html = render(form);

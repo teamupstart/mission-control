@@ -1,8 +1,16 @@
 import type { PaneDialog, PaneOption } from "@shared/types.ts";
+import type { DialogSpec } from "../harness/types.ts";
 
 /**
- * Read a Claude option dialog - a permission prompt, an `AskUserQuestion` menu, the
+ * Read an agent's option dialog - a permission prompt, an `AskUserQuestion` menu, a
  * folder-trust check - off its terminal pane.
+ *
+ * The GRAMMAR here is harness-neutral machinery and the vendor's tokens arrive in a
+ * `DialogSpec`, which is the same split `transcript.ts` makes: a numbered block with one
+ * cursor on it, a question wrapped across a viewport's width, and a label compared across
+ * a hard wrap are facts about TERMINALS, not about whose agent drew them. Measured rather
+ * than assumed - pointed at real `codex-cli` captures this parser needed exactly one token
+ * changed, the cursor glyph, to read all three (`test/fixtures/codex-panes.ts`).
  *
  * This exists because prose is not an answer to a menu. Foreman's reply reaches a child
  * through `sendText`, which types the text and presses Enter; measured against live
@@ -54,10 +62,23 @@ export type { PaneDialog, PaneOption } from "@shared/types.ts";
  * change - see `multiSelect` below for why that made a sitting form permanently
  * unanswerable.
  */
-const OPTION_ROW = /^\s*(❯)?\s*(\d{1,2})\.\s+(?:\[([ ✔✓xX])\]\s+)?(\S.*?)\s*$/u;
+function optionRowFor(cursor: string): RegExp {
+  return new RegExp(`^\\s*(${cursor})?\\s*(\\d{1,2})\\.\\s+(?:\\[([ ✔✓xX])\\]\\s+)?(\\S.*?)\\s*$`, "u");
+}
 
-/** The box glyphs Claude renders for a ticked row; anything else in the brackets is empty. */
-const CHECKED_BOX = /[✔✓xX]/u;
+/**
+ * One compiled row matcher per cursor glyph.
+ *
+ * Cached because `parsePaneDialog` runs once per session per poll tick, and there are as
+ * many distinct matchers as there are harnesses - two - not as many as there are calls.
+ * Keyed by the glyph itself so two harnesses that happen to share one share the regex.
+ */
+const OPTION_ROWS = new Map<string, RegExp>();
+function optionRow(cursor: string): RegExp {
+  let re = OPTION_ROWS.get(cursor);
+  if (!re) OPTION_ROWS.set(cursor, (re = optionRowFor(cursor)));
+  return re;
+}
 
 /**
  * Parse the option dialog a pane is showing, or null when it isn't showing one.
@@ -76,9 +97,10 @@ const CHECKED_BOX = /[✔✓xX]/u;
  * Rows need not be adjacent: `AskUserQuestion` prints a description under each row and a
  * separator above its trailing "Chat about this", and those lines are simply not rows.
  */
-export function parsePaneDialog(paneText: string | null): PaneDialog | null {
+export function parsePaneDialog(paneText: string | null, spec: DialogSpec): PaneDialog | null {
   if (!paneText) return null;
   const lines = paneText.split("\n");
+  const row = optionRow(spec.cursor);
 
   // Collected bottom-up, so `rows` runs N..1 and reverses into the rendered order.
   const rows: Array<{
@@ -90,7 +112,7 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
     line: number;
   }> = [];
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = OPTION_ROW.exec(lines[i]!);
+    const m = row.exec(lines[i]!);
     if (!m) continue;
     const number = Number(m[2]);
     // The next row up must continue the run downward (N, N-1, ...). Anything else means
@@ -115,23 +137,28 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
   const options = rows.reverse();
   const cursors = options.filter((o) => o.cursor);
   if (cursors.length !== 1) return null;
-  const multiSelect = options.filter((o) => o.box !== undefined).length >= MIN_CHECKBOX_ROWS;
+  // A harness with no form vocabulary has no multi-select to detect: every dialog it draws
+  // is single-select, so a bracketed row is the row's own text and stays in the label. That
+  // is the same path a Claude permission prompt quoting a `[ ]` already takes.
+  const form = spec.form;
+  const multiSelect =
+    form !== null && options.filter((o) => o.box !== undefined).length >= form.minCheckboxRows;
   const prompt = readPrompt(lines, options[0]!.line);
   return {
     options: options.map((o, k) => {
       const detail = readDetail(lines, o.line, options[k + 1]?.line ?? lines.length);
-      // A checkbox is only READ as one on a form that has several - see MIN_CHECKBOX_ROWS.
+      // A checkbox is only READ as one on a form that has several - see `minCheckboxRows`.
       // Anywhere else the brackets are the row's own text and belong in the label, which
       // keeps every single-select dialog parsing byte-for-byte as it did before.
       const onForm = multiSelect && o.box !== undefined;
       // ...and the free-text row is on a form without being answerable on one, so it comes
       // out of the label like any other box but is reported with no `checked` at all.
-      const boxed = onForm && !FREE_TEXT_ROW.test(o.label);
+      const boxed = onForm && !form!.freeTextRow.test(o.label);
       return {
         number: o.number,
         label: onForm ? o.label : restoreBox(o),
         ...(detail ? { detail } : {}),
-        ...(boxed ? { checked: CHECKED_BOX.test(o.box!) } : {}),
+        ...(boxed ? { checked: form!.checkedBox.test(o.box!) } : {}),
       };
     }),
     highlighted: cursors[0]!.number,
@@ -139,21 +166,6 @@ export function parsePaneDialog(paneText: string | null): PaneDialog | null {
     ...(prompt ? { prompt } : {}),
   };
 }
-
-/**
- * How many rows must carry a checkbox before the dialog is read as a multi-select form.
- *
- * Two, not one. A real multi-select always clears it - `AskUserQuestion` appends its own
- * "Type something" row with a box of its own, so even a one-option question renders two -
- * while a lone `[ ]` is as likely to be a permission prompt quoting a command that
- * contains one. Getting that wrong is not cosmetic: it would strip the brackets out of a
- * label the human is asked to confirm, and route their click down the form path.
- *
- * That trailing row is counted here and only here: it is what proves the screen is a form,
- * but `FREE_TEXT_ROW` keeps it out of the form's ANSWERABLE rows, so a one-option question
- * still parses as a form with exactly one box to tick.
- */
-const MIN_CHECKBOX_ROWS = 2;
 
 /** Put a box back into the label, for a row parsed on a dialog that isn't a form. */
 function restoreBox(row: { label: string; box: string | undefined }): string {
@@ -283,28 +295,20 @@ function readDetail(lines: string[], row: number, nextRow: number): string | und
  *
  * The two readers below are how the submit walk knows it has ARRIVED there (rather than
  * on the next question's tab) and whether it may press the row when it has. Both are
- * matched on Claude's own words, like everything else in this file, because the tab is a
- * screen we can see and not a state we can query - recapture them here when its chrome
- * moves. `FREE_TEXT_ROW` below is read off the same words and belongs to the same list.
+ * matched on the agent's OWN words - the tab is a screen we can see and not a state we can
+ * query - so they arrive on `DialogFormSpec` rather than being spelled here, and a harness
+ * whose menus are all single-select declares `form: null` instead of inheriting nouns from
+ * an agent whose chrome it does not share.
  */
-const SUBMIT_ROW = /^submit answers$/i;
 
 /**
- * Claude's own trailing row on a multi-select - the one that opens a text field.
- *
- * It renders a box like every other row, and it is NOT a box: ticking it selects nothing.
- * Measured live, a form with it ticked and no text typed still met "You have not answered
- * all questions" on the review tab. So offering it as a checkbox lets a human tick what
- * looks like a choice, submit, and be told they answered nothing - and the submit walk
- * would meanwhile press Enter on the row, opening a field that eats the arrows the walk
- * needs (see `submitPaneForm`'s park step). Excluded from the form's answerable rows at
- * the parse, so it stays a plain numbered row that `selectPaneOption` may still press.
+ * The review tab's send row, or null when this dialog is not the review tab (or this
+ * harness has no forms, in which case there is no such row by declaration).
  */
-const FREE_TEXT_ROW = /^type something\.?$/i;
-
-/** The review tab's send row, or null when this dialog is not the review tab. */
-export function submitAnswersRow(dialog: PaneDialog): PaneOption | null {
-  return dialog.options.find((o) => SUBMIT_ROW.test(o.label.trim())) ?? null;
+export function submitAnswersRow(dialog: PaneDialog, spec: DialogSpec): PaneOption | null {
+  const form = spec.form;
+  if (!form) return null;
+  return dialog.options.find((o) => form.submitRow.test(o.label.trim())) ?? null;
 }
 
 /**
@@ -312,11 +316,17 @@ export function submitAnswersRow(dialog: PaneDialog): PaneOption | null {
  *
  * Read off the raw pane rather than the parsed dialog because it is a banner above the
  * rows, outside the question `readPrompt` captures. It is a REFUSAL condition for the
- * submit walk: Claude will happily send a half-filled form, and a walk that pressed
+ * submit walk: the agent will happily send a half-filled form, and a walk that pressed
  * through this would answer, in the human's name, questions they were never shown.
+ *
+ * A harness with no forms answers false: it has no such banner, and inventing one from
+ * another agent's wording is how a screen nobody can produce becomes a refusal nobody can
+ * clear.
  */
-export function hasUnansweredWarning(paneText: string | null): boolean {
-  return paneText !== null && /have not answered all questions/i.test(paneText);
+export function hasUnansweredWarning(paneText: string | null, spec: DialogSpec): boolean {
+  const form = spec.form;
+  if (!form || paneText === null) return false;
+  return form.unansweredWarning.test(paneText);
 }
 
 /**

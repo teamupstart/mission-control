@@ -2,12 +2,22 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
-import type { Harness, HookSpec, TranscriptMessages, TranscriptSpec } from "./types.ts";
+import type {
+  DialogSpec,
+  Harness,
+  HookSpec,
+  ModeLineSpec,
+  TranscriptMessages,
+  TranscriptSpec,
+  TuiSpec,
+} from "./types.ts";
 import { claudeHooks } from "./claude/hooks.ts";
 import { claudeTranscript } from "./claude/transcript.ts";
+import { claudeTui } from "./claude/tui.ts";
 import { claudeDetect } from "./claude/detect.ts";
 import { claudeBin } from "./claude/bin.ts";
 import { codexTranscript } from "./codex/transcript.ts";
+import { codexTui } from "./codex/tui.ts";
 import { codexDetect } from "./codex/detect.ts";
 import { codexBin } from "./codex/bin.ts";
 
@@ -42,18 +52,27 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: claudeHooks,
     detect: claudeDetect,
     bin: claudeBin,
+    tui: claudeTui,
   },
   // `hooks: null` is a statement, not a gap: Codex pushes nothing at us, so a Codex card
   // is read passively (discovery, and whatever the rollout says) and the dispatcher does
   // not spend 20s waiting for a first hook. `todo/codex-instrumentation.md` has the spike
   // that would change this answer - a Codex-native hook reporting session id, rollout
   // path, cwd and lifecycle - and it lands here, as a spec, not as a second pipeline.
+  //
+  // `tui` is NOT null, and that is this registry earning its keep. Because Codex pushes no
+  // hooks, reading its screen is the only evidence of "parked and waiting" it can produce
+  // at all - and the guard this capability replaced meant nobody had ever pointed the
+  // parser at a Codex pane to find out whether it could. It can; see `codex/tui.ts`. Note
+  // this is NOT `permissionModes`, which Codex genuinely lacks: gating the dialog on that
+  // was the same skip wearing a capability's name.
   codex: {
     ...HARNESS_CAPABILITIES.codex,
     transcript: codexTranscript,
     hooks: null,
     detect: codexDetect,
     bin: codexBin,
+    tui: codexTui,
   },
 };
 
@@ -107,6 +126,39 @@ export function transcriptFor(session: Session): TranscriptSpec | null {
  */
 export function hooksFor(agent: AgentType): HookSpec | null {
   return HARNESSES[agent].hooks;
+}
+
+/**
+ * An agent's TUI-reading capability, or null when we cannot read its screen at all.
+ *
+ * Ask this rather than `agent === "claude"`. The guard it replaces is the one that hid
+ * whether Codex renders readable dialogs for the entire life of the parser.
+ */
+export function tuiFor(agent: AgentType): TuiSpec | null {
+  return HARNESSES[agent].tui;
+}
+
+/**
+ * How to read this agent's option dialogs, or null when it draws none we can read.
+ *
+ * Two nulls collapse here on purpose - "we cannot read this screen at all" and "we can read
+ * this screen but it draws no menus" - because every caller degrades identically: no dialog
+ * is reported, and the session keeps whatever state its other signals gave it. What must
+ * NOT collapse into them is a harness that CAN be read being skipped by an agent check,
+ * which is exactly the defect this function exists to make impossible to write again.
+ */
+export function dialogSpecFor(agent: AgentType): DialogSpec | null {
+  return HARNESSES[agent].tui?.dialog ?? null;
+}
+
+/**
+ * How to read and drive this agent's permission-mode footer, or null when it has no modes.
+ *
+ * Null is what the mode chip and `setPermissionMode` degrade on: an agent with no modes
+ * gets no invented chip and no walk around a cycle it does not have.
+ */
+export function modeLineSpecFor(agent: AgentType): ModeLineSpec | null {
+  return HARNESSES[agent].tui?.modeLine ?? null;
 }
 
 /** A located file and the capability that can read its CONVERSATION. */

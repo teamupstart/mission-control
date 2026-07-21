@@ -1,7 +1,9 @@
+import { existsSync, realpathSync } from "node:fs";
 import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { envVar } from "./config.ts";
+import { run } from "./util/exec.ts";
 
 /**
  * Index the git repositories a dispatch can target. The dispatch form needs the
@@ -88,4 +90,25 @@ export async function listRepos(): Promise<string[]> {
   const repos = await scanRepos(workspaceRoots());
   cache = { at: now, repos };
   return repos;
+}
+
+/**
+ * Validate a task's target is a git repo and return its realpath top-level, or null.
+ *
+ * ONE definition, deliberately. It began as a private helper in `routes.ts` behind
+ * `POST /api/tasks`, and it has to stay the same check for every door into the task
+ * list: a task source files rows with nobody looking at the path it named, so if its
+ * validation drifted from the dispatch form's, the first anyone would learn of it is a
+ * dispatcher half-way through cutting a worktree in a directory that is not a checkout.
+ */
+export async function resolveRepoRoot(p: string): Promise<string | null> {
+  if (!existsSync(p)) return null;
+  const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
+  const top = r.stdout.trim();
+  if (r.code !== 0 || !top) return null;
+  try {
+    return realpathSync(top);
+  } catch {
+    return top;
+  }
 }

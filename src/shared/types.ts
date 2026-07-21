@@ -3,7 +3,9 @@
 // that crosses the SSE / HTTP boundary.
 
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
+import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
+import type { TaskSourceRef } from "./task-source.ts";
 import type { TerminalBackendId } from "./terminal.ts";
 
 /**
@@ -996,6 +998,15 @@ export interface Task {
    * is configured then.
    */
   model: string | null;
+  /**
+   * Where this task was swept from, when a task source filed it, else null.
+   *
+   * The LINK BACK, and nothing more. De-duplication is decided against the
+   * `task_source_seen` table, never against this - dedupe here would mean deleting a
+   * swept task un-sees it, so the next sweep re-files it and the delete button becomes a
+   * no-op. A seen row deliberately outlives the task; this field dies with it.
+   */
+  source: TaskSourceRef | null;
   /** Absolute path of the source repo the worktree is cut from. */
   repoRoot: string;
   /** Isolated worktree the agent runs in (realpath) - the correlation key. Null while in the backlog. */
@@ -1552,6 +1563,17 @@ export interface InspectorSummary {
 export interface InspectorInspection extends InspectorPr {
   openFindings: number;
   resolvedFindings: number;
+}
+
+/**
+ * What the Inspector is set up to do, as opposed to what it has been asked to do.
+ *
+ * Separate from `InspectorConfig` because that is the STORED record and this is the
+ * resolved one: the model field here folds in an env var the browser cannot see. Same
+ * split, and the same reason, as `ForemanConfig` against `ForemanStatus.models`.
+ */
+export interface InspectorStatus {
+  model: ResolvedModel;
 }
 
 // ---- SSE events (daemon -> UI) ----

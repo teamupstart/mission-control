@@ -27,7 +27,7 @@ import type {
   InspectorSource,
 } from "@shared/types.ts";
 import type { InspectorConfig } from "@shared/protocol.ts";
-import { getInspectorConfig } from "./config.ts";
+import { getInspectorConfig, inspectorModel } from "./config.ts";
 import { readBrief } from "./brief.ts";
 import { changedPaths, commentableLines } from "./diff-lines.ts";
 import { buildReplyPrompt, buildReviewPrompt } from "./prompt.ts";
@@ -64,10 +64,36 @@ import type { PrSnapshot, ThreadSnapshot } from "./github.ts";
 
 /** How often to look at the adopted PRs. Slow: a review is expensive and a push is not frequent. */
 const POLL_MS = Number(envVar("INSPECTOR_POLL_MS") ?? 90_000);
-/** Sized for a whole-diff review WITH tool round-trips inside it. */
-const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 180_000);
-/** A follow-up reply is a much smaller job than a review. */
-const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 90_000);
+/**
+ * Sized for a whole-diff review WITH tool round-trips inside it, from measurement.
+ *
+ * It was 180s, which is BELOW the floor of the job it was wrapping, and that is a
+ * uniquely bad way for this to fail: the run is killed at the wire, `noteFailure` books
+ * a `persistent` failure, the head never advances, and the PR climbs the backoff ladder
+ * toward the six-hour ceiling - having produced nothing while paying full price for a
+ * review that was nearly finished. Every open PR on this repo was in that state, and the
+ * ledger said only "claude -p timed out".
+ *
+ * Measured on one 10.7KB, five-file diff (44.6KB prompt): 225s / 13 turns on Opus, 272s
+ * / 23 turns on Sonnet. So the floor is ~4-5 MINUTES for a small PR on a repo with a
+ * standards bundle, and a bigger diff is worse. 600s leaves real headroom above that
+ * while still bounding a run that has genuinely hung.
+ *
+ * The reason a generous ceiling is affordable: nothing waits on this. One PR is reviewed
+ * at a time (`createLimiter(1)`), the sweep is 90s, and a slow round delays the next
+ * poll rather than a person. A timeout here should mean "something is wrong", not
+ * "review of an ordinary pull request".
+ */
+export const TIMEOUT_MS = Number(envVar("INSPECTOR_TIMEOUT_MS") ?? 600_000);
+/**
+ * A follow-up reply is a smaller job than a review - one thread to answer rather than a
+ * whole diff to judge - so it keeps its own, tighter wire. Half the review's, and moved
+ * with it: the 90s here came from the same guess as the 180s above, and it carries the
+ * SAME shape (the diff in the prompt, the same three tools, the same repo to read), so
+ * whatever made the review overrun applies to it too. Unmeasured, unlike the review, and
+ * marked as such rather than dressed up.
+ */
+export const REPLY_TIMEOUT_MS = Number(envVar("INSPECTOR_REPLY_TIMEOUT_MS") ?? 300_000);
 /** Cap on the diff we put in a prompt. A 2MB refactor is not reviewable in one pass anyway. */
 const MAX_DIFF_BYTES = Number(envVar("INSPECTOR_MAX_DIFF_BYTES") ?? 400_000);
 /**
@@ -84,16 +110,15 @@ const MAX_REPLIES_PER_THREAD = 6;
 const MAX_ROUNDS = 100;
 
 /**
- * The model both the review and the follow-up replies run on. Config first, then
- * `INSPECTOR_MODEL`, then whatever the CLI defaults to.
+ * The model both the review and the follow-up replies run on: config, then
+ * `MISSION_INSPECTOR_MODEL`, then the spec's shipped default.
  *
- * Resolved on every call rather than captured once at import: the config is editable at
- * runtime through `PUT /api/inspector/config`, and a value read at module load would
- * need a daemon restart to take effect. Same read-at-use-time rule as `dispatcher.ts`
- * asking `getHarnessesConfig()` at dispatch time rather than at construction.
+ * One resolver, in `config.ts`, because the settings panel prints this same answer
+ * through `/api/inspector/status` and the two must not be able to disagree about it. See
+ * `INSPECTOR_MODEL_SPEC` for why the default is named at all rather than left to the CLI.
  */
-function reviewModel(cfg: InspectorConfig): string | undefined {
-  return cfg.model ?? envVar("INSPECTOR_MODEL");
+function reviewModel(cfg: InspectorConfig): string {
+  return inspectorModel(cfg).id;
 }
 
 /**

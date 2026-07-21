@@ -12,7 +12,7 @@ import { DEFAULT_TRIAGE_MODEL } from "../src/server/foreman/triage.ts";
 import { DEFAULT_BACKLOG_MODEL } from "../src/server/foreman/backlog-plan.ts";
 import { DEFAULT_REVIEW_MODEL } from "../src/server/foreman/review.ts";
 import { DEFAULT_VERIFY_MODEL } from "../src/server/foreman/queue-verify.ts";
-import { modelSourceNote } from "../src/web/components/ForemanSettingsPanel.tsx";
+import { modelSourceNote } from "../src/web/components/ModelField.tsx";
 
 // What's at stake: the worker SPAWNS a model and the settings panel PRINTS one, and a
 // user who cannot trust the printed answer is back where this feature started - unable
@@ -126,7 +126,7 @@ test("the deep calls default to a deeper model than the cheap ones", () => {
 
 test("the source note stays silent for a value the box already shows", () => {
   const note = modelSourceNote(
-    { role: "review", id: "claude-opus-4-8", source: "config" },
+    { id: "claude-opus-4-8", source: "config" },
     "FOREMAN_REVIEW_MODEL",
   );
   assert.equal(note, null);
@@ -136,7 +136,7 @@ test("the source note names the env var that is outranking an empty box", () => 
   // The case the panel could not work out on its own: the browser has no `process`, so
   // without the daemon reporting this the field would claim the shipped default.
   const note = modelSourceNote(
-    { role: "triage", id: "claude-haiku-4-5", source: "env" },
+    { id: "claude-haiku-4-5", source: "env" },
     "FOREMAN_TRIAGE_MODEL",
   );
   assert.match(note ?? "", /FOREMAN_TRIAGE_MODEL/);
@@ -144,7 +144,7 @@ test("the source note names the env var that is outranking an empty box", () => 
 
 test("the source note says so when nothing has been configured at all", () => {
   const note = modelSourceNote(
-    { role: "verify", id: "claude-opus-4-8", source: "default" },
+    { id: "claude-opus-4-8", source: "default" },
     "FOREMAN_VERIFY_MODEL",
   );
   assert.match(note ?? "", /default/i);
@@ -155,7 +155,7 @@ test("the source note never repeats the id the input is already showing", () => 
   // below reads as two separate facts. This line explains the SOURCE, nothing else.
   for (const source of ["env", "default"] as const) {
     const note = modelSourceNote(
-      { role: "review", id: "claude-opus-4-8", source },
+      { id: "claude-opus-4-8", source },
       "FOREMAN_REVIEW_MODEL",
     );
     assert.doesNotMatch(note ?? "", /claude-opus-4-8/);

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InspectorConfig, InspectorConfigPatch } from "@shared/protocol.ts";
 import type { InspectorInspection } from "@shared/types.ts";
-import { api, fetchInspectorConfig, fetchInspectorPrs } from "./lib/api.ts";
+import type { ResolvedModel } from "@shared/model-choice.ts";
+import {
+  api,
+  fetchInspectorConfig,
+  fetchInspectorPrs,
+  fetchInspectorStatus,
+} from "./lib/api.ts";
 
 // Inspector config plus the recent-inspections list. Polled rather than streamed for the
 // same reason Foreman's is: coarse, low-frequency control-panel chrome, not worth another
@@ -19,6 +25,12 @@ export interface InspectorState {
   config: InspectorConfig | null;
   /** Adopted PRs, newest activity first. What makes dry-run legible. */
   inspections: InspectorInspection[];
+  /**
+   * The model the daemon will actually spawn with, and which layer chose it. Null until
+   * the daemon answers - the field falls back to showing the shipped default, which is
+   * the same thing an unreachable daemon does to every other control here.
+   */
+  model: ResolvedModel | null;
   update: (patch: InspectorConfigPatch) => Promise<void>;
   /** Why the last edit didn't stick, or null. Cleared by the next one that does. */
   error: string | null;
@@ -27,6 +39,7 @@ export interface InspectorState {
 export function useInspector(): InspectorState {
   const [config, setConfigState] = useState<InspectorConfig | null>(null);
   const [inspections, setInspections] = useState<InspectorInspection[]>([]);
+  const [model, setModel] = useState<ResolvedModel | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The config as last written, readable without making `update` depend on it (which
   // would rebuild the callback on every keystroke). This is what a revert restores.
@@ -52,11 +65,19 @@ export function useInspector(): InspectorState {
     let alive = true;
     const tick = async (): Promise<void> => {
       const at = writes.current;
-      const [c, prs] = await Promise.all([fetchInspectorConfig(), fetchInspectorPrs()]);
+      const [c, prs, status] = await Promise.all([
+        fetchInspectorConfig(),
+        fetchInspectorPrs(),
+        fetchInspectorStatus(),
+      ]);
       if (!alive) return;
       // The inspections list is a read-only display and cannot be raced with, so it is
       // applied regardless; only the config a write may have just changed is dropped.
       if (prs) setInspections(prs);
+      // The resolved model IS raced by a write - it is derived from the config a `PUT`
+      // may have just changed - so it takes the same guard, or committing a model would
+      // flash the old id back for a poll interval.
+      if (status && writes.current === at) setModel(status.model);
       if (c && writes.current === at) setConfig(c);
     };
     void tick();
@@ -89,11 +110,16 @@ export function useInspector(): InspectorState {
       }
       setError(null);
       const at = (writes.current += 1);
-      const c = await fetchInspectorConfig();
-      if (c && writes.current === at) setConfig(c);
+      // The status comes back with the config, not on the next poll: a committed model
+      // has to re-resolve NOW, or the source line under the box goes on saying "Shipped
+      // default" for up to `POLL_MS` after you typed an override into it.
+      const [c, status] = await Promise.all([fetchInspectorConfig(), fetchInspectorStatus()]);
+      if (writes.current !== at) return;
+      if (status) setModel(status.model);
+      if (c) setConfig(c);
     },
     [setConfig],
   );
 
-  return { config, inspections, update, error };
+  return { config, inspections, model, update, error };
 }

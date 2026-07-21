@@ -37,6 +37,11 @@ and get your decision back.
   agent in its own isolated worktree + detached tmux session (or shelves it in a
   backlog for later, where clicking it [reopens the form](#edit-a-shelved-task) to
   edit or send).
+- **Pulls work in** from systems that already hold it: a [task source](#task-sources-pulling-work-into-the-backlog)
+  sweeps GitHub issues on a schedule and files them into the backlog, so the work you
+  already wrote down somewhere doesn't have to be re-typed. It files backlog rows and
+  nothing else - it never dispatches an agent and never types into a session. Ships with
+  no sources configured.
 - **Rounds up** every session: who needs you, who's working, what's idle,
   the backlog, and recent outcomes - as a panel, JSON, or markdown digest.
 - **Alerts** you when a session needs you: a desktop notification + sound the
@@ -797,6 +802,76 @@ build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT
 `/api/harnesses/config`) still shows and still applies rather than being silently
 dropped.
 
+## Task sources (pulling work into the backlog)
+
+Every task in Mission Control is typed by a human into the dispatch form. Meanwhile the
+work already exists somewhere: open issues, a triage board, an on-call queue. A **task
+source** reads one of those on a schedule and files what it finds into the
+[backlog](#dispatch-an-agent).
+
+**A source files backlog rows and nothing else.** It never dispatches an agent, never cuts
+a worktree, never resets a checkout and never types into a session. That is what makes
+turning one on a much smaller decision than [Inspector](#inspector-automated-pr-review) or
+[Shipping](#shipping-yolo-mode): the worst a broken source can do is put junk in a list you
+then read and delete. Auto-dispatching swept work is deliberately **not** a feature - it is
+a different risk class, and it would need its own gate (an allowlist, a rate limit, a dry
+run) of exactly the kind Foreman carries.
+
+**Settings → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures them. Add
+one by picking a kind and the repo its tasks should be filed against; it arrives **switched
+off**, because adding a source is configuration and turning it on is consent. Per source:
+
+| Control | What it does |
+|---|---|
+| **Enable** | whether the background loop sweeps it. Off, it still sweeps on demand |
+| **Files tasks against** | the repo swept tasks are based on, resolved server-side so a typo can't enter |
+| **Sweep every** | how often, clamped to 1 minute - 24 hours. Default 15 minutes |
+| **Most tasks per sweep** | hard cap, default 25. What it drops is logged and reported, never silently truncated |
+| **What a swept task looks like** | the agent, kind, priority and labels every task from this source carries |
+| **Sweep now** | run it once, right now, and see what it filed |
+| **Check it works** | is `gh` installed, authenticated, and able to list issues here? |
+| **Forget seen items** | make everything this source has filed fileable again |
+
+### GitHub issues
+
+The first (and so far only) kind. **Auth is the `gh` CLI**, run inside the repo, so this
+feature stores no token, opens no OAuth flow and adds no new secret - if `gh auth status`
+works in that checkout, the source works.
+
+| Filter | Meaning |
+|---|---|
+| **Repository** | `owner/repo`; blank uses the checkout's own `origin` |
+| **Labels (any of)** | match issues carrying **any** of these. Blank matches all |
+| **Assignee** | anyone / assigned to me / unassigned. One choice, not two switches - "assigned to me *and* unassigned" selects nothing, so it isn't expressible |
+| **Milestone** | restrict to one milestone |
+| **Issues per sweep** | how many `gh` is asked for |
+| **Copy labels** | put the issue's GitHub labels on the task, case intact |
+| **Priority from a label** | map a GitHub label to a [priority](#priority-and-labels), e.g. `P0` → Blocker. The first mapped label the issue carries wins |
+
+Each issue becomes one task: its title, and an intent carrying the issue's **URL and body**,
+so the agent's first prompt has the actual text rather than a number to go and look up.
+
+**A broken `gh` never reads as "no issues".** A non-zero exit, unparseable output or an
+abandoned sweep is reported as an error on the source and shown in the panel - because an
+empty sweep and a broken one are otherwise indistinguishable, and the difference is a week
+of silence.
+
+### A task you delete stays deleted
+
+Each source keeps its own ledger of what it has already filed, keyed on the item's id in
+the external system. **That ledger outlives the task.** Delete a swept task and the next
+sweep does *not* re-file it - otherwise the source would be impossible to say no to, and
+Delete would be a snooze button that doesn't even snooze.
+
+The way back is deliberate: **Forget seen items** on that source clears its ledger, and the
+next sweep files everything again. Removing a source clears it too, so re-adding one
+doesn't leave it permanently silent.
+
+Two things v1 deliberately does not do: it does not **re-sync** an item that changes
+upstream (a sweep files new work; it does not reconcile old work, which has to decide what
+happens when a human has edited the task since), and it never **writes back** to the
+external system.
+
 ## Roundup
 
 Click **Roundup** for a one-look snapshot of every session, assembled from the same live
@@ -1387,6 +1462,13 @@ which a dialog or menu replaces. If you add a second autonomous writer, it needs
 same gate, and it needs `withPaneLock` in `actions.ts` - the reload loop is why that
 guard covers every pane write rather than just permission-mode cycling.
 
+[Task sources](#task-sources-pulling-work-into-the-backlog) are the worked example of the
+other answer. The sweeper also runs in the daemon, holds no lease and acts on its own
+schedule - and it needs **none** of that gate, because **it never types**. It writes
+backlog rows: no pane is read, no keystroke is sent, nothing is provisioned. That is why
+the test is "does it type?" rather than "is it autonomous?". The moment a source can type,
+this whole argument has to be redone for it.
+
 The mutual exclusion is the **port bind**, and it holds for the default port: a second
 `npm start` can't take `:7317`, so there's exactly one reload loop. It does *not* hold
 for `MISSION_PORT=<other>`. A daemon on a spare port is a second, fully autonomous writer
@@ -1593,12 +1675,33 @@ request. The console rail carries the same mark without the link, and only when 
 something to say - open findings or a failed round - because a rail line is scanned rather
 than read.
 
+### The review model
+
+**Settings → Inspector → Model** names what the review and the follow-up replies spawn as.
+It ships as `claude-sonnet-5`, and the field's own line tells you where the value in force
+came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's environment, or the
+shipped default. Leave it empty to accept whichever of the other two applies.
+
+Naming a default at all is the point. An unset `--model` inherits whatever the local
+`claude` CLI happens to default to - on one machine that resolved to the 1M-context Opus
+tier at roughly $2 a round - and nothing in the app recorded it or could show it to you.
+
+A model is a **cost** choice here, not a latency one. The same 10KB PR measured 225s on
+Opus and 272s on Sonnet: the cheaper model read more files to reach the same verdict. See
+`MISSION_INSPECTOR_TIMEOUT_MS` for the ceiling those numbers set.
+
 ### Dry run
 
 `dry-run` does everything except post: it adopts, reviews, computes findings and dedupes
 them, then records them instead of publishing. **Settings → Inspector → Recent
 inspections** is where you read what it would have said. Run it there on a few of your own
 PRs before you let it speak.
+
+Each row says where that PR stands: `queued` (adopted, not yet looked at), `failed` (the
+last round errored - hover the link for why), a finding count, or `clean`. A PR that has
+since closed reads `merged` or `closed` and is dimmed: it left the sweep for good, so it is
+history rather than a queue. A closed PR that *was* reviewed keeps its findings, because
+what the Inspector said about something that landed is the more useful fact.
 
 ## Shipping (YOLO mode)
 
@@ -1839,14 +1942,16 @@ that looks perfectly healthy would help nobody.
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |
 | `MISSION_FOREMAN_INSTRUCTIONS` | app's `FOREMAN.md` | the seed for [Foreman's standing instructions](#its-standing-instructions-foremanmd). Only the DEFAULT - once saved through the API the stored value wins, and this is what a reset restores |
 | `MISSION_MCP_SERVER` | app's `dist/mcp/server.mjs` | path to the bundled MCP server that dispatched sessions are pointed at through [the ask channel](#the-ask-channel)'s `--mcp-config`. If the path doesn't exist the channel is skipped entirely and the session keeps Claude's built-in menu |
+| `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
+| `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
 | `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
-| `MISSION_INSPECTOR_MODEL` | CLI default | Inspector: the model both the review and the follow-up replies run on. The stored config's `model` wins where it is set (`PUT /api/inspector/config`; the settings panel doesn't expose it), then this, then the `claude` CLI's own default (the most capable, and the priciest) |
-| `MISSION_INSPECTOR_TIMEOUT_MS` | `180000` | Inspector: hard cap on one review. Larger than the Foreman reviewer's 120s because this one has tool round-trips inside it |
-| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `90000` | Inspector: hard cap on one follow-up reply - a much smaller job than a review |
+| `MISSION_INSPECTOR_MODEL` | `claude-sonnet-5` | Inspector: the model both the review and the follow-up replies run on. **Settings → Inspector → Model** wins where it is set, then this, then the shipped default. Named rather than left to the `claude` CLI: an unset `--model` inherits whatever that CLI defaults to, which is the priciest tier available and is not recorded anywhere |
+| `MISSION_INSPECTOR_TIMEOUT_MS` | `600000` | Inspector: hard cap on one review. Far larger than the Foreman reviewer's 120s because this one has tool round-trips inside it: a 10KB five-file diff measured 225s on Opus and 272s on Sonnet, so a wire near either is a guaranteed failure rather than a safety net - the run is killed, the head never advances, and the PR climbs the retry backoff having produced nothing |
+| `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it moves with the review's ceiling rather than sitting at a fraction of it |
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
@@ -1871,7 +1976,7 @@ that looks perfectly healthy would help nobody.
 
 **Your dashboard settings are stored per machine, not per browser.** Layout, keyboard
 shortcuts, alert delivery, message formatting, and the usage row's fold all live in the
-daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, and Cost
+daemon's database (`app_config`), alongside the Foreman, Skills, Harnesses, Task sources, and Cost
 settings - so they are the same in every tab, on `localhost` and `127.0.0.1` alike, in the
 desktop app and in a browser, and they survive an upgrade. The browser keeps a copy in
 `localStorage`, but only as a cache so the dashboard paints your layout in the first
@@ -1927,6 +2032,7 @@ npm start              # daemon serving built UI
 npm run foreman        # Foreman worker (needs-you queue, work queues, backlog autopilot)
 npm run build          # build web + MCP bundle
 npm test               # unit tests (detection, correlation, hook mapping, dispatch, report, alerts, stalls, away mode, foreman, skills)
+npm run smoke          # boot the built bundles and check they actually run (after build)
 npm run typecheck      # tsc --noEmit
 npm run install-hooks  # wire Claude hooks
 npm run install-statusline # + wrap the status line (model / thinking / context %, plan meters)

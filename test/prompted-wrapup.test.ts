@@ -8,7 +8,7 @@ import {
 import type { PromptedConfig, PromptedInput } from "../src/server/foreman/prompted-wrapup.ts";
 import { VERIFY_FAILURE_CAP, tickTargets } from "../src/server/foreman/queue-machine.ts";
 import type { QueueVerdict } from "../src/server/foreman/queue-machine.ts";
-import { WRAPUP_NO_MISTAKES, WRAPUP_PR } from "../src/shared/queue.ts";
+import { isWrapupPayload, WRAPUP_NO_MISTAKES, WRAPUP_PR } from "../src/shared/queue.ts";
 import type { ReportBucket } from "../src/shared/session.ts";
 import type {
   GapSeverity,
@@ -242,6 +242,27 @@ test("THE LOOP GUARD: a goal that is Foreman's own wrap-up never re-fires", () =
   }
   // Whitespace must not smuggle it past - the pane echo is not byte-exact.
   assert.equal(decide({ goalPrompt: `  ${WRAPUP_NO_MISTAKES}  ` }).kind, "skip");
+});
+
+test("THE LOOP GUARD holds for wrap-up text we no longer send", () => {
+  // The goal was captured on the operator's machine BEFORE the upgrade that reworded
+  // this payload, and is read back after it. Recognise only the current spelling and
+  // that session's goal stops being Foreman's own voice: the trigger re-arms and opens
+  // a second PR for work it already shipped. `RETIRED_WRAPUP_PAYLOADS` is append-only
+  // for this reason, and this is the test that notices when someone deletes from it.
+  const retired = "Please commit this work, push the branch, and open a PR.";
+  assert.notEqual(retired, WRAPUP_PR, "reword the fixture only by ADDING to the retired list");
+  assert.ok(isWrapupPayload(retired));
+  assert.equal(decide({ goalPrompt: retired }).kind, "skip");
+});
+
+test("both payloads are ONE line - a newline is a premature submit", () => {
+  // `sendText` submits on every embedded newline, so wrapping either of these to keep
+  // it under a column limit types half an instruction and then sends it. The PR payload
+  // is the long one and therefore the one that will tempt someone.
+  for (const payload of [WRAPUP_NO_MISTAKES, WRAPUP_PR]) {
+    assert.ok(!/[\r\n]/.test(payload), payload);
+  }
 });
 
 test("THE RE-ARM: the same goal is decided once; a new prompt arms it again", () => {

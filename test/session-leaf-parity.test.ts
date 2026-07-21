@@ -10,6 +10,8 @@ import {
   AgentDot,
   CostChip,
   InspectorChip,
+  InspectorRailMark,
+  InspectorTileFlag,
   PrChip,
   RuntimeMetaRow,
   SessionTitle,
@@ -135,6 +137,88 @@ test("a PR that was never adopted gets no inspector chip at all", () => {
   };
   assert.equal(bit(InspectorChip, { session: mkSession(over) }), "");
   assert.ok(!card(over).includes("insp-chip"));
+});
+
+// The rail draws the Inspector in its own terse vocabulary, but the glyph-and-count
+// span itself has to come from `InspectorRailMark` rather than a private copy, or a
+// fix to the shared tooltip silently misses the rail.
+test("the rail's inspector mark is the shared InspectorRailMark", () => {
+  const cases: Partial<Session>[] = [
+    { inspector: insp({ open: 3, round: 2 }) },
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const rail = renderToStaticMarkup(
+      createElement(RailRow, { session, selected: false, gateNeedsYou: false, onSelect: () => {} }),
+    );
+    assert.ok(
+      rail.includes(bit(InspectorRailMark, { session })),
+      `rail should render the shared InspectorRailMark for ${JSON.stringify(over.inspector)}`,
+    );
+  }
+});
+
+// The board tile draws the Inspector as a `.tile-flag`, but that link has to come from
+// `InspectorTileFlag` rather than a private copy - including the queued and clean states
+// the rail suppresses, since the tile shows every state the card does.
+test("the board tile's inspector flag is the shared InspectorTileFlag", () => {
+  const cases: Partial<Session>[] = [
+    { inspector: insp({ open: 3, round: 2 }) },
+    { inspector: insp({ open: 0, round: 1 }) },
+    { inspector: insp({ open: 0, round: 0 }) },
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const tile = renderToStaticMarkup(
+      createElement(SessionTile, {
+        session,
+        gateNeedsYou: false,
+        onOpen: () => {},
+        draggingRepo: null,
+        onDropped: () => {},
+        onDropError: () => {},
+        onDropConfirm: () => {},
+      }),
+    );
+    assert.ok(
+      tile.includes(bit(InspectorTileFlag, { session })),
+      `tile should render the shared InspectorTileFlag for ${JSON.stringify(over.inspector)}`,
+    );
+  }
+});
+
+// All four surfaces must show the IDENTICAL tooltip copy for the same state - the whole
+// point of routing them through one `inspectorChipView` and one `Tooltip`. This is the
+// regression a per-surface native `title` would reintroduce: each surface free to word
+// (or forget) its own explanation of what the glyph and the number mean. Rather than
+// hand-duplicating `inspectorChipView`'s wording here (a second copy of the copy), this
+// pulls the expected text out of the card's own rendering - the same source-of-truth
+// approach the rest of this file uses - and checks the other three surfaces match it.
+test("all four inspector surfaces carry the same tooltip text", () => {
+  const cases: Partial<Session>[] = [
+    { inspector: insp({ open: 3, round: 2 }) },
+    { inspector: insp({ open: 0, round: 1 }) },
+    { inspector: insp({ open: 0, round: 0 }) },
+    { inspector: insp({ open: 2, round: 1, mode: "dry-run" }) },
+    { inspector: insp({ open: 1, round: 1, failed: true }) },
+  ];
+  for (const over of cases) {
+    const session = mkSession(over);
+    const chip = bit(InspectorChip, { session });
+    const [, title] = chip.match(/aria-label="([^"]+)"/) ?? [];
+    assert.ok(title, `card chip should have an aria-label for ${JSON.stringify(over.inspector)}`);
+    const pattern = new RegExp(`aria-label="${title!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`);
+
+    assert.match(bit(InspectorTileFlag, { session }), pattern, `tile flag for "${title}"`);
+    // The rail suppresses the clean/queued states entirely, so only assert there when
+    // it actually renders something.
+    const railMark = bit(InspectorRailMark, { session });
+    if (railMark) assert.match(railMark, pattern, `rail mark for "${title}"`);
+  }
 });
 
 test("the card's state badge is the shared StateBadge", () => {

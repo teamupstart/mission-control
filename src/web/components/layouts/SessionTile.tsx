@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
-import { AgentDot, CostChip, inspectorChipView, RuntimeMetaRow } from "../session-bits.tsx";
+import { AgentDot, CostChip, InspectorTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
@@ -209,26 +209,10 @@ export function SessionTile({
               <span className={`tile-flag ${tone}`}>{label}</span>
             );
           })()}
-        {/* The Inspector, in the tile's own flag vocabulary. The DECISION of what to say
-            is shared (`inspectorChipView`); only the presentation differs, so the three
-            surfaces can't drift on what a state means. */}
-        {(() => {
-          const insp = inspectorChipView(session.inspector);
-          if (!insp || !session.inspector) return null;
-          return (
-            <a
-              className={`tile-flag tile-flag-link ${insp.tone}${insp.dry ? " insp-dry" : ""}`}
-              href={session.inspector.url}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              title={insp.title}
-              aria-label={insp.title}
-            >
-              ⌕{insp.mark && ` ${insp.mark}`}
-            </a>
-          );
-        })()}
+        {/* The Inspector, in the tile's own flag vocabulary. The DECISION and the tooltip
+            are shared (`InspectorTileFlag`); only the presentation differs, so the three
+            surfaces can't drift on what a state means or how it's explained on hover. */}
+        <InspectorTileFlag session={session} />
       </span>
 
       {/* Only rendered while a compatible card is in the air, so it costs the tile

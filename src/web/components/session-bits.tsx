@@ -189,6 +189,54 @@ export function InspectorChip({ session }: { session: Session }): React.JSX.Elem
   );
 }
 
+/**
+ * The rail's own terse vocabulary for the Inspector - glyph and count, no pill - shown
+ * only once there's something to flag (a live rail row has one line of room and a name
+ * to fit in it). Shares `inspectorChipView` and the same instant `Tooltip` as the card's
+ * `InspectorChip` so the wording and the hover behavior can't drift between surfaces -
+ * only the markup is terser here.
+ */
+export function InspectorRailMark({ session }: { session: Session }): React.JSX.Element | null {
+  const view = inspectorChipView(session.inspector);
+  if (!view || !session.inspector) return null;
+  if (view.tone === "insp-clean" || view.tone === "insp-queued") return null;
+  return (
+    <Tooltip label={view.title}>
+      <span
+        className={`rail-insp ${view.tone}${view.dry ? " insp-dry" : ""}`}
+        aria-label={view.title}
+      >
+        ⌕{view.mark}
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * The board tile's own vocabulary for the Inspector - a `.tile-flag` link, matching the
+ * tile's other flags - but the same shared decision and the same instant `Tooltip` as
+ * `InspectorChip` and `InspectorRailMark`. Unlike the rail, the tile shows every state
+ * (including queued and clean), matching what `InspectorChip` shows on the card.
+ */
+export function InspectorTileFlag({ session }: { session: Session }): React.JSX.Element | null {
+  const view = inspectorChipView(session.inspector);
+  if (!view || !session.inspector) return null;
+  return (
+    <Tooltip label={view.title}>
+      <a
+        className={`tile-flag tile-flag-link ${view.tone}${view.dry ? " insp-dry" : ""}`}
+        href={session.inspector.url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={view.title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        ⌕{view.mark && ` ${view.mark}`}
+      </a>
+    </Tooltip>
+  );
+}
+
 /** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   if (!session.prUrl) return null;

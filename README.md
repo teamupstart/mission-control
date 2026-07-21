@@ -1,7 +1,7 @@
 # Mission Control
 
 A local, auto-refreshing dashboard for the Claude Code / Codex sessions running
-across your **wezterm tabs** and **tmux sessions**. See every agent at a glance,
+across your **terminal panes**. See every agent at a glance,
 act on any of them, and let an agent push a **diff or plan** to you for review -
 and get your decision back.
 

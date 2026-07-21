@@ -88,3 +88,11 @@ test("a sent reply is shown in place of the bare action line", () => {
   assert.ok(html.includes("Yes, run it during the maintenance window."), html);
   assert.equal(occurrences(html, "answered by Foreman"), 0, html);
 });
+
+test("the episode records pane delivery capability without exposing its internal terminal token", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(ForemanEpisodeCard, { episode: ep({ question: "Can I continue?" }), detail: true }),
+  );
+  assert.ok(html.includes("pane available"), html);
+  assert.ok(!html.includes("terminal-pane"), html);
+});

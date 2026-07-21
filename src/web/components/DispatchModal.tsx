@@ -66,6 +66,7 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
   );
 }
 
+
 /**
  * Which task the modal is over, when it is over one. `new` writes a task that does
  * not exist yet; `edit` rewrites one that is waiting in the backlog.
@@ -284,7 +285,7 @@ export function DispatchLayer({
 
 /**
  * Launch (or shelve) a new agent: pick a repo, describe the task, and dispatch.
- * The daemon provisions an isolated worktree, opens a detached tmux session, and
+ * The daemon provisions an isolated worktree, opens a detached terminal session, and
  * injects the intent - the new session then appears on the grid on the next poll.
  *
  * Also the EDITOR for a task already in the backlog (`mode.kind === "edit"`), which
@@ -606,7 +607,7 @@ function DispatchModal({
               {/* "optional" is a promise about a field you are yet to fill in. On a task
                   that already has a title, the useful half of that sentence is what the
                   title will go on to name. */}
-              {editing ? "names the tmux session / card" : "optional - names the tmux session / card"}
+              {editing ? "names the session / card" : "optional - names the session / card"}
             </span>
           </span>
           <input
@@ -686,4 +687,3 @@ function DispatchModal({
     </Overlay>
   );
 }
-

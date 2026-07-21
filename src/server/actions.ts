@@ -1275,6 +1275,7 @@ export function validateSessionNameAgainstTasks(
   session: PaneHandles & Pick<Session, "cwd">,
   name: string,
   tasks: readonly Pick<Task, "tmuxSession" | "worktreePath">[],
+  deps: TerminalDeps = defaultTerminalDeps,
 ): { ok: true } | { ok: false; error: string } {
   // Only a multiplexer rename moves a name teardown targets - an emulator tab title is
   // free-form and no task binds to it.
@@ -1282,9 +1283,12 @@ export function validateSessionNameAgainstTasks(
   const collides = tasks.some(
     (t) => t.worktreePath !== null && t.tmuxSession === name && t.worktreePath !== session.cwd,
   );
-  return collides
-    ? { ok: false, error: `another task still holds the tmux session name '${name}'` }
-    : { ok: true };
+  if (!collides) return { ok: true };
+  const handle = muxHandle(session)!;
+  return {
+    ok: false,
+    error: `another task still holds the ${deps.multiplexers[handle.backend].label} session name '${name}'`,
+  };
 }
 
 /** One emulator tab that hosts a multiplexer client, with the backend that can act on it. */

@@ -779,8 +779,8 @@ export function App(): React.JSX.Element {
                 agent this build can discover but this sentence never mentioned would
                 read it as "that one isn't supported" and stop looking. */}
             <p className="empty-sub">
-              Start a {agentList(AGENT_TYPES)} session in a wezterm tab or tmux session and it
-              will appear here.
+              Start a {agentList(AGENT_TYPES)} session in a terminal pane and it will appear
+              here.
             </p>
           </div>
         )}

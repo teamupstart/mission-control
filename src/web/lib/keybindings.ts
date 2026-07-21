@@ -111,7 +111,7 @@ export const ACTIONS: readonly ActionDef[] = [
   {
     id: "rename",
     label: "Rename session",
-    description: "Rename the selected session's tmux session or wezterm tab (Shift+O).",
+    description: "Rename the selected session's terminal home (Shift+O).",
     defaultBinding: "shift+o",
     group: "selection",
   },

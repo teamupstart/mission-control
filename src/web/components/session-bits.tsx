@@ -189,6 +189,56 @@ export function InspectorChip({ session }: { session: Session }): React.JSX.Elem
   );
 }
 
+/**
+ * The rail's own terse vocabulary for the Inspector - glyph and count, no pill - shown
+ * only once there's something to flag (a live rail row has one line of room and a name
+ * to fit in it). Shares `inspectorChipView` and the same instant `Tooltip` as the card's
+ * `InspectorChip` so the wording and the hover behavior can't drift between surfaces -
+ * only the markup is terser here.
+ */
+export function InspectorRailMark({ session }: { session: Session }): React.JSX.Element | null {
+  const view = inspectorChipView(session.inspector);
+  // Unlike InspectorChip/InspectorTileFlag, this mark never dereferences
+  // `session.inspector` itself - `view` being non-null already implies it was non-null.
+  if (!view) return null;
+  if (view.tone === "insp-clean" || view.tone === "insp-queued") return null;
+  return (
+    <Tooltip label={view.title}>
+      <span
+        className={`rail-insp ${view.tone}${view.dry ? " insp-dry" : ""}`}
+        aria-label={view.title}
+      >
+        ⌕{view.mark}
+      </span>
+    </Tooltip>
+  );
+}
+
+/**
+ * The board tile's own vocabulary for the Inspector - a `.tile-flag` link, matching the
+ * tile's other flags - but the same shared decision and the same instant `Tooltip` as
+ * `InspectorChip` and `InspectorRailMark`. Unlike the rail, the tile shows every state
+ * (including queued and clean), matching what `InspectorChip` shows on the card.
+ */
+export function InspectorTileFlag({ session }: { session: Session }): React.JSX.Element | null {
+  const view = inspectorChipView(session.inspector);
+  if (!view || !session.inspector) return null;
+  return (
+    <Tooltip label={view.title}>
+      <a
+        className={`tile-flag tile-flag-link ${view.tone}${view.dry ? " insp-dry" : ""}`}
+        href={session.inspector.url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={view.title}
+        onClick={(e) => e.stopPropagation()}
+      >
+        ⌕{view.mark && ` ${view.mark}`}
+      </a>
+    </Tooltip>
+  );
+}
+
 /** The PR chip, plus the "a CI check failed" alert beside it when checks are failing. */
 export function PrChip({ session }: { session: Session }): React.JSX.Element | null {
   if (!session.prUrl) return null;
@@ -227,6 +277,46 @@ export function PrChip({ session }: { session: Session }): React.JSX.Element | n
         </Tooltip>
       )}
     </>
+  );
+}
+
+/**
+ * The board tile's own vocabulary for the PR - a `.tile-flag` link, folding the failing-
+ * checks state into the same chip with a `⚠` suffix rather than `PrChip`'s separate alert
+ * icon, since the tile has no room for a second element. Given the same instant `Tooltip`
+ * as `InspectorTileFlag` rather than a native `title`, so two adjacent flags on the same
+ * tile don't behave differently on hover. Renders nothing without a PR number, and a plain
+ * unlinked flag (the tile's own long-standing escape hatch) when there's a number but no
+ * URL yet - neither state has anything to hover for.
+ */
+export function PrTileFlag({ session }: { session: Session }): React.JSX.Element | null {
+  if (!session.prNumber) return null;
+  const tone = `pr-${session.prState ?? "open"}`;
+  const label = (
+    <>
+      #{session.prNumber}
+      {session.prChecks === "failing" && " ⚠"}
+    </>
+  );
+  if (!session.prUrl) return <span className={`tile-flag ${tone}`}>{label}</span>;
+  const title =
+    session.prChecks === "failing"
+      ? "A CI check failed on this pull request - open on GitHub"
+      : `Pull request #${session.prNumber} - open on GitHub`;
+  return (
+    <Tooltip label={title}>
+      <a
+        className={`tile-flag tile-flag-link ${tone}`}
+        href={session.prUrl}
+        target="_blank"
+        rel="noreferrer"
+        // Without this the click also reaches the tile's own onClick and opens the
+        // console behind the new tab. stopPropagation only: the link still has to navigate.
+        onClick={(e) => e.stopPropagation()}
+      >
+        {label}
+      </a>
+    </Tooltip>
   );
 }
 

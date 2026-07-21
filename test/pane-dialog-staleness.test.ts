@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { PaneDialog } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // How long a dialog nobody can read any more goes on being offered.
 //
@@ -58,8 +59,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
     startedAt: 0,
     ...over,
   } as DiscoveredSession;
@@ -110,7 +110,7 @@ test("a pane that vanishes takes its strikes with it, rather than willing them t
 
   // A sweep in which that pane is not among the ones we can see. No handles here, so
   // nothing is captured - this is the prune alone.
-  await annotatePaneState([mkDiscovered({ syntheticId: "handle-less", tmux: null, wezterm: null })]);
+  await annotatePaneState([mkDiscovered({ syntheticId: "handle-less", terminals: [] })]);
   assert.equal(paneMissCount("tmux:%81"), 0, "the count went with the pane");
 });
 
@@ -122,6 +122,6 @@ test("a menu does not outlive the pane it was read from", () => {
   registry.applyDiscovery([mkDiscovered({ syntheticId: "unmoored-1", paneDialog: DIALOG })]);
   assert.deepEqual(registry.getSession("unmoored-1")?.paneDialog, DIALOG);
 
-  registry.applyDiscovery([mkDiscovered({ syntheticId: "unmoored-1", tmux: null, wezterm: null })]);
+  registry.applyDiscovery([mkDiscovered({ syntheticId: "unmoored-1", terminals: [] })]);
   assert.equal(registry.getSession("unmoored-1")?.paneDialog, null);
 });

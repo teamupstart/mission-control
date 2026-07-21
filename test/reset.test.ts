@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetPreview, resetToOrigin } from "../src/server/actions.ts";
 import { stubRun } from "../src/server/util/exec.ts";
-import { bindSession } from "../src/server/terminal/handles.ts";
+import { bindSession } from "../src/server/terminal/registry.ts";
 import type { PaneHandles } from "../src/shared/pane.ts";
 import { gitIn, mkCloneOnBranch, mkOriginAndClone as mkFixture } from "./helpers/git-fixture.ts";
 import type { Session } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 const mkOriginAndClone = (): { origin: string; clone: string } => mkFixture("harness-reset-");
 
@@ -17,7 +18,7 @@ function sess(cwd: string | null, branch: string | null = "main"): Session {
   return {
     id: "s1", agent: "claude", name: "work", nameSource: "process", state: "idle",
     cwd, gitBranch: branch, gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null,
-    permissionMode: null, wezterm: null, tmux: null, agentSessionId: null, transcriptPath: null,
+    permissionMode: null, terminals: [], agentSessionId: null, transcriptPath: null,
     instrumented: false, hooksSeen: false, activity: null, startedAt: null, firstSeen: 0, lastSeen: 0,
     lastActivity: null, pendingReviews: 0, nomistakes: null, nomistakesFixes: [], task: null,
     nomistakesNarration: null, prUrl: null, prNumber: null, prState: null, prChecks: null, inspector: null,
@@ -166,7 +167,7 @@ test("resetToOrigin reports an already-detached checkout as detached", async () 
 
 test("resetToOrigin with clear:true reports cleared:false when the session has no pane", async () => {
   const { clone } = mkOriginAndClone();
-  // No tmux/wezterm handle -> sendText can't deliver /clear, but the git reset
+  // No terminal handle -> sendText can't deliver /clear, but the git reset
   // has already landed, so the whole op still succeeds (cleared just stays false).
   const r = await resetToOrigin(sess(clone), true);
   assert.equal(r.ok, true);
@@ -183,7 +184,7 @@ test("resetToOrigin with clear:true reports cleared:false when the session has n
 function withFakePane(clone: string, screens: (string | null)[]) {
   const session = {
     ...sess(clone),
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle()],
   };
   const deps = {
     // Exit 0 with empty output: the terminal took the keystrokes, and the pane is in no

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { classifyPending } from "../src/server/foreman/pending.ts";
 import { planFromVerdict, VerdictSchema } from "../src/server/foreman/verdict.ts";
 import type { ReviewItem, Session, SessionState } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -19,8 +20,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: null,
     permissionMode: null,
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
@@ -99,7 +99,7 @@ test("awaiting_input with a tmux pane is answerable by typing", () => {
     mkSession({
       state: "awaiting_input",
       activity: "Approve? (y/n)",
-      tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" },
+      terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })],
       lastActivity: 500,
     }),
     [],
@@ -113,7 +113,7 @@ test("awaiting_input with a tmux pane is answerable by typing", () => {
 
 test("awaiting_input with no pane has a question but no delivery channel", () => {
   const p = classifyPending(
-    mkSession({ state: "awaiting_input", activity: "Approve?", tmux: null, wezterm: null, lastActivity: 7 }),
+    mkSession({ state: "awaiting_input", activity: "Approve?", terminals: [], lastActivity: 7 }),
     [],
   );
   assert.equal(p.situation, "terminal-no-pane");
@@ -133,7 +133,7 @@ function mkGateParked(over: Partial<Session> = {}): Session {
     // `gateParked` requires the driving agent to have STOPPED, so the state is `idle`:
     // the run is parked, but nothing is blocked on an MCP call and no Notification fired.
     state: "idle" as SessionState,
-    tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })],
     nomistakes: {
       id: "run-01",
       status: "running",
@@ -218,7 +218,7 @@ test("re-parking with the SAME findings keeps the marker, so a gate stays handle
 });
 
 test("a gate-parked run with no pane is seen but has no delivery channel", () => {
-  const p = classifyPending(mkGateParked({ tmux: null, wezterm: null }), []);
+  const p = classifyPending(mkGateParked({ terminals: [] }), []);
   assert.equal(p.situation, "gate-parked");
   assert.equal(p.canSend, false);
 });
@@ -262,7 +262,7 @@ test("an answered gate decision is delivered by typing into the pane", () => {
 });
 
 test("a gate decision with no pane is drafted for you, never dropped", () => {
-  const p = classifyPending(mkGateParked({ tmux: null, wezterm: null }), []);
+  const p = classifyPending(mkGateParked({ terminals: [] }), []);
   const plan = planFromVerdict(
     VerdictSchema.parse({
       purpose: "Adding a --force flag for CI.",
@@ -367,7 +367,7 @@ function mkDialogSession(over: Partial<Session> = {}): Session {
     // The window itself: the menu is up, and the hook still says `working`.
     state: "working" as SessionState,
     activity: "running AskUserQuestion",
-    tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%437" },
+    terminals: [mkMuxHandle({ session: "m", windowIndex: 1, paneId: "%437" })],
     paneDialog: MENU,
     lastActivity: 1784601688632,
     ...over,
@@ -405,7 +405,7 @@ test("the dialog window no longer forces an escalation with nowhere to send it",
 test("a menu with no pane keeps its honest no-channel answer", () => {
   // Fail-closed is unchanged: the dialog says a question exists, the pane fields say nothing
   // can deliver to it, and `canSend` still answers the second question and not the first.
-  const p = classifyPending(mkDialogSession({ tmux: null, wezterm: null }), []);
+  const p = classifyPending(mkDialogSession({ terminals: [] }), []);
   assert.equal(p.situation, "terminal-no-pane");
   assert.equal(p.canSend, false);
 });
@@ -444,7 +444,7 @@ test("awaiting_input with no menu keeps its await: marker", () => {
   // The pre-existing path is untouched: a permission prompt the parser did not read still
   // classifies off the hook, so nothing depends on the pane being legible.
   const p = classifyPending(
-    mkSession({ state: "awaiting_input" as SessionState, activity: "Approve?", tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" }, lastActivity: 42 }),
+    mkSession({ state: "awaiting_input" as SessionState, activity: "Approve?", terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })], lastActivity: 42 }),
     [],
   );
   assert.equal(p.marker, "await:42");

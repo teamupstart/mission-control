@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SessionCard } from "../src/web/components/SessionCard.tsx";
 import { GOAL_UNSUPPORTED } from "../src/shared/goal.ts";
 import type { Session, SessionGoalSummary } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The Goal's whole premise is that it is readable WITHOUT clicking - Foreman's Purpose
 // already failed at this job by living behind the expand gate. So the thing worth testing is
@@ -30,8 +31,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys1",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,

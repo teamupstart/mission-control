@@ -129,7 +129,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
   return {
     syntheticId: "s", agent: "claude", name: "n", nameSource: "process",
     cwd: "/repo", gitBranch: "main", gitRoot: null, nomistakesGated: true,
-    pid: 1, tty: null, wezterm: null, tmux: null, startedAt: 0, ...over,
+    pid: 1, tty: null, terminals: [], startedAt: 0, ...over,
   } as DiscoveredSession;
 }
 

@@ -5,6 +5,7 @@ import { claudeHooks, isIdleNudge } from "../src/server/harness/claude/hooks.ts"
 import { reportBucket } from "../src/shared/session.ts";
 import type { HookIngest } from "../src/shared/protocol.ts";
 import type { Session } from "../src/shared/types.ts";
+import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 function evt(p: Partial<HookIngest> & Pick<HookIngest, "event">): HookIngest {
   return { agent: "claude", sessionId: null, cwd: null, transcriptPath: null, env: {}, ...p };
@@ -25,8 +26,7 @@ function sessionFixture(p: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys1",
     permissionMode: null,
-    wezterm: { paneId: 7, tabId: 1, windowId: 0, tabTitle: "t", isActive: false },
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%3" },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%3" }), mkEmuHandle({ paneId: "7", tabId: "1", windowId: "0", tabTitle: "t", isActive: false })],
     agentSessionId: null,
     transcriptPath: null,
     instrumented: false,
@@ -133,14 +133,14 @@ test("overlayKeyFromEnv prefers the tmux pane over the outer wezterm pane", () =
 test("sessionKey matches a session's own pane, tmux preferred", () => {
   const base = sessionFixture();
   assert.equal(sessionKey(base), "tmux:%3");
-  assert.equal(sessionKey({ ...base, tmux: null }), "wezterm:7");
-  assert.equal(sessionKey({ ...base, tmux: null, wezterm: null }), null);
+  assert.equal(sessionKey({ ...base, terminals: base.terminals.filter((h) => h.kind === "emulator") }), "wezterm:7");
+  assert.equal(sessionKey({ ...base, terminals: [] }), null);
 });
 
 test("the hook overlay key and session key agree, so binding works", () => {
   // A hook fired inside tmux carries the tmux pane; the discovered session
   // carries the same tmux pane -> the keys must match.
   const hookKey = overlayKeyFromEnv({ tmuxPane: "%3", weztermPane: "7" });
-  const sess = { tmux: { paneId: "%3" }, wezterm: { paneId: 7 } } as unknown as Session;
+  const sess = { terminals: [mkMuxHandle({ paneId: "%3" }), mkEmuHandle({ paneId: "7" })] } as Session;
   assert.equal(hookKey, sessionKey(sess));
 });

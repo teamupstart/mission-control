@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { VERIFY_FAILURE_CAP } from "../src/server/foreman/queue-machine.ts";
 import type { Session, SessionQueue } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // The `prompted` wrap-up trigger, driven END TO END: the real worker binary, a stub
 // daemon, and a fake `claude`.
@@ -166,8 +167,7 @@ function mkSession(cwd: string, over: Partial<Session> = {}): Session {
     pid: 1,
     tty: "ttys001",
     permissionMode: null,
-    wezterm: null,
-    tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%1" },
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%1" })],
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,

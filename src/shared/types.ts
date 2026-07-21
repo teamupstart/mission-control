@@ -6,7 +6,7 @@ import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts
 import type { ResolvedModel } from "./model-choice.ts";
 import type { SkillEnforcement } from "./skills.ts";
 import type { TaskSourceRef } from "./task-source.ts";
-import type { TerminalBackendId } from "./terminal.ts";
+import type { TerminalBackendId, TerminalHandle } from "./terminal.ts";
 
 /**
  * Every agent harness Mission Control can drive. THE source of the union - the
@@ -179,21 +179,6 @@ export interface FleetCost {
   updatedAt: number;
 }
 
-export interface WeztermInfo {
-  paneId: number;
-  tabId: number;
-  windowId: number;
-  tabTitle: string;
-  isActive: boolean;
-}
-
-export interface TmuxInfo {
-  session: string;
-  window: string;
-  windowIndex: number;
-  paneId: string; // e.g. "%3"
-}
-
 export interface Session {
   /**
    * Stable identity for the life of the process: the synthetic discovery id
@@ -203,7 +188,16 @@ export interface Session {
    */
   id: string;
   agent: AgentType;
-  /** Display name: tmux session name, else wezterm tab title, else a process fallback. */
+  /**
+   * Display name, offered by the highest-priority terminal backend holding a pane on this
+   * session's tty - a multiplexer's session name, else an emulator's tab title, else (with
+   * no pane at all) a `<agent> <pid>` process fallback. `nameSource` says which answered.
+   *
+   * The priority is the registries' declared order (`MULTIPLEXER_IDS` then `EMULATOR_IDS`,
+   * `@shared/terminal.ts`), not a tmux-then-wezterm branch: a multiplexer pane lives inside
+   * an emulator pane and is the inner, more specific answer to "where does this session
+   * live?".
+   */
   name: string;
   nameSource: NameSource;
   state: SessionState;
@@ -238,8 +232,17 @@ export interface Session {
    * the next hook event after a Shift+Tab, not the instant the mode changes.
    */
   permissionMode: PermissionMode | null;
-  wezterm: WeztermInfo | null;
-  tmux: TmuxInfo | null;
+  /**
+   * Every terminal pane this session is reachable through, in naming-priority order and at
+   * most one per backend. Empty for an agent in a terminal we do not integrate with.
+   *
+   * A LIST, replacing the `wezterm` / `tmux` pair of named nullable siblings that made "how
+   * many backends are there" a fact of this type. Read it through the shared helpers rather
+   * than by hand: `canWriteTo` for "is there a composer to type into", `innermostPane` /
+   * `paneToken` for which pane that is (`@shared/pane.ts`). Which handle a given action
+   * wants is a rule (writes go innermost, focus walks outward), and it has one statement.
+   */
+  terminals: TerminalHandle[];
   /** Claude Code session id, present once the session is hook-instrumented. */
   agentSessionId: string | null;
   /**

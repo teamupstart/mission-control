@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "@shared/protocol.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 /** The mode-line spec the registry holds, so the parser is pinned to the shipped wording. */
 const CLAUDE_MODE_LINE = claudeTui.modeLine!;
@@ -16,7 +17,7 @@ process.env.HARNESS_HOME = mkdtempSync(join(tmpdir(), "harness-mode-"));
 const { Registry, normalizePermissionMode } = await import("../src/server/registry.ts");
 const { parsePaneModeLine } = await import("../src/server/discovery/pane-mode.ts");
 
-const PANE = { session: "w", window: "w", windowIndex: 0, paneId: "%3" };
+const PANE = mkMuxHandle({ session: "w", windowName: "w", paneId: "%3" });
 
 function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
@@ -31,8 +32,7 @@ function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: PANE,
+    terminals: [PANE],
     startedAt: 0,
     ...over,
   };

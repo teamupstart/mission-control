@@ -12,6 +12,7 @@ import type {
 import type { UpdateTask } from "@shared/protocol.ts";
 import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import type { Registry } from "./registry.ts";
 import {
   Dispatcher,
@@ -564,7 +565,7 @@ export class TaskManager {
       queuedItems: s.queue?.openCount ?? 0,
       // A pane is what `/clear` needs, and `assign` has already refused a session
       // without one by the time this is asked.
-      clearsContext: Boolean(s.tmux || s.wezterm),
+      clearsContext: canWriteTo(s),
       branch: await branchReleasedByReset(s),
     };
   }

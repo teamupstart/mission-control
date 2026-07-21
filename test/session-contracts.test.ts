@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { sessionEqual } from "../src/server/registry.ts";
-import { meta, mkSession } from "./helpers/session-fixture.ts";
+import { meta, mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 import { AGENT_TYPES } from "../src/shared/types.ts";
 import { AGENT_IDENTITY } from "../src/shared/agent.ts";
 import { DispatchSchema, UpdateTaskSchema } from "../src/shared/protocol.ts";
@@ -101,25 +101,49 @@ test("orphanedQueue emits - the bug the comparator record documents", () => {
   assert.equal(sessionEqual(mkSession(), mkSession({ orphanedQueue: ORPHAN })), false);
 });
 
-test("wezterm and tmux compare only what the card renders", () => {
-  const wez = { paneId: 1, tabId: 1, windowId: 1, tabTitle: "t", isActive: true };
-  // Focus flips are visible; the pane geometry around them churns and isn't.
+test("the handle list compares only what the card renders", () => {
+  const mux = mkMuxHandle();
+  const emu = mkEmuHandle();
+
+  // Gaining or losing a pane is the difference between a card that can Send and one that
+  // cannot, so a length change alone is a change.
+  assert.equal(sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [] })), false);
   assert.equal(
-    sessionEqual(mkSession({ wezterm: wez }), mkSession({ wezterm: { ...wez, isActive: false } })),
+    sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [mux, emu] })),
     false,
-  );
-  assert.equal(
-    sessionEqual(mkSession({ wezterm: wez }), mkSession({ wezterm: { ...wez, paneId: 99 } })),
-    true,
   );
 
-  const tmux = { session: "s", window: "w", windowIndex: 0, paneId: "%1" };
+  // Focus flips are visible; so is the window name, which is what the two comparators this
+  // replaced compared and all they compared.
   assert.equal(
-    sessionEqual(mkSession({ tmux }), mkSession({ tmux: { ...tmux, window: "w2" } })),
+    sessionEqual(mkSession({ terminals: [emu] }), mkSession({ terminals: [{ ...emu, isActive: false }] })),
     false,
   );
   assert.equal(
-    sessionEqual(mkSession({ tmux }), mkSession({ tmux: { ...tmux, paneId: "%9" } })),
+    sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [{ ...mux, windowName: "w2" }] })),
+    false,
+  );
+
+  // The two the old pair MISSED, and the reason this is not a straight port. The pane id
+  // reaches the card's subtitle and the multiplexer session name reaches Kill's confirm
+  // tooltip, so a pane that moved under an otherwise-still card used to keep displaying the
+  // old one until something unrelated shook it loose.
+  assert.equal(
+    sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [{ ...mux, paneId: "%9" }] })),
+    false,
+  );
+  assert.equal(
+    sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [{ ...mux, session: "other" }] })),
+    false,
+  );
+
+  // The geometry around them churns and is rendered nowhere.
+  assert.equal(
+    sessionEqual(mkSession({ terminals: [mux] }), mkSession({ terminals: [{ ...mux, windowIndex: 4 }] })),
+    true,
+  );
+  assert.equal(
+    sessionEqual(mkSession({ terminals: [emu] }), mkSession({ terminals: [{ ...emu, windowId: "9" }] })),
     true,
   );
 });

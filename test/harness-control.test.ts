@@ -38,13 +38,14 @@ const { stubRun } = await import("../src/server/util/exec.ts");
 
 import type { ControlSpec } from "../src/server/harness/types.ts";
 import type { InjectDeps } from "../src/server/actions.ts";
-import { bindSession } from "../src/server/terminal/handles.ts";
+import { bindSession } from "../src/server/terminal/registry.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
-const TMUX = { session: "s", window: "w", windowIndex: 0, paneId: "%1" };
+const TMUX = mkMuxHandle();
 const session = (over: Partial<Session>): Session =>
-  ({ id: "s1", agent: "claude", tmux: TMUX, wezterm: null, ...over }) as Session;
+  ({ id: "s1", agent: "claude", terminals: [TMUX], ...over }) as Session;
 
 const PENDING = "❯ [Pasted text #1 +3 lines]\n⏵⏵ auto mode on";
 const CLEAR = "❯\n⏵⏵ auto mode on";
@@ -287,7 +288,7 @@ test("a paste that never landed is unverified too, and stays retryable", async (
 
 test("a session with no pane is refused without claiming a verified submit", async () => {
   const { deps } = harness(null);
-  const r = await injectPrompt(session({ agent: "claude", tmux: null, wezterm: null }), "a\nb", deps);
+  const r = await injectPrompt(session({ agent: "claude", terminals: [] }), "a\nb", deps);
   assert.equal(r.ok, false);
   assert.equal(r.pasted, false);
   assert.equal(r.submitVerified, false);

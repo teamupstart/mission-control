@@ -57,8 +57,7 @@ function mkDisco(
     nomistakesGated: true,
     pid: 4242,
     tty: "ttys003",
-    wezterm: null,
-    tmux: null, // no pane -> the reset's best-effort `/clear` is a no-op
+    terminals: [],
     startedAt: 0,
     ...extra,
   };

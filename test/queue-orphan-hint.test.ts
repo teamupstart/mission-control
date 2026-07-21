@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { ServerEvent, Session, WorkItem } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Whether a stranded queue ever REACHES a card. The hint is computed correctly by
 // `orphanedQueueFor` - the failures here are all about emission: a queue orphans
@@ -33,8 +34,7 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     startedAt: 0,
     ...over,
   } as DiscoveredSession;
@@ -188,7 +188,7 @@ test("a session the SessionEnd hook marked exited stops holding its key", async 
   const ending = mkDiscovered({
     syntheticId: "ctrl-d-1",
     cwd: "/zombie",
-    tmux: { session: "z", window: "w", windowIndex: 0, paneId: "%9" },
+    terminals: [mkMuxHandle({ session: "z", paneId: "%9" })],
   });
   const sibling = mkDiscovered({ syntheticId: "zsib-1", cwd: "/zombie", pid: 2, tty: "ttys2" });
   registry.applyDiscovery([ending, sibling]);

@@ -1985,6 +1985,11 @@ sufficient - **dry run means dry for the merge too**. The Shipping panel names w
 of the three is in the way while YOLO mode is armed, and each reason appears per pull
 request under *Where each pull request stands*.
 
+Switching from dry run to live does not promote the review that already ran. The reviewed
+head records the Inspector posture that produced it; once live, the Inspector reviews that
+same head again, and only the new live result can authorize a later merge. Rows created by
+an older build have no recorded posture and fail closed through the same re-review path.
+
 The two allowlists stay separate: letting the Inspector comment on a repo is a smaller
 grant than letting it merge there, so a repo has to be on both. Shipping's list does not
 stand in for the Inspector's.

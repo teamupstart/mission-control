@@ -36,6 +36,7 @@ function ready(over: Partial<MergeInput> = {}): MergeInput {
     },
     inspector: "live",
     reviewedSha: "abc",
+    reviewPosture: "live",
     rounds: 1,
     openFindings: 0,
     now: NOW,
@@ -75,15 +76,25 @@ test("a worktree of a trusted repo is trusted", () => {
 
 // ---- The Inspector's posture ----
 //
-// These four are the regression. A review the Inspector never PUBLISHED used to satisfy
-// every gate: `reviewRound` runs whether or not it may post - it records findings as
-// `drafted` instead - so it advances the reviewed head in dry run exactly as it does
-// live. A clean dry-run review therefore arrived here with a matching head and zero open
-// findings and merged to the default branch, having been seen by nobody. `not-reviewed`
-// cannot catch that: a review DID happen. Only the posture distinguishes them.
+// These are the two posture dimensions the merge must not collapse. Current posture
+// vetoes acting while dry-run is still selected. Stored review posture prevents changing
+// the setting later from retroactively promoting the already-reviewed head. A clean
+// dry-run review has a matching head and zero findings, so `not-reviewed` cannot catch
+// either case: a review DID happen, but it was not live.
 
 test("a review the Inspector never published does not merge - dry run", () => {
   assert.equal(blockOf(ready({ inspector: "dry-run" })), "inspector-dry-run");
+});
+
+test("switching live cannot promote a review completed in dry run", () => {
+  assert.equal(
+    blockOf(ready({ inspector: "live", reviewPosture: "dry-run" })),
+    "review-unpublished",
+  );
+});
+
+test("a legacy review with unknown posture must be repeated live", () => {
+  assert.equal(blockOf(ready({ inspector: "live", reviewPosture: null })), "review-unpublished");
 });
 
 test("a review the Inspector never published does not merge - untrusted repo", () => {
@@ -209,6 +220,7 @@ test("every block code the gate can return has a sentence for the panel", () => 
     "inspector-off",
     "inspector-dry-run",
     "inspector-not-allowlisted",
+    "review-unpublished",
     "not-open",
     "draft",
     "not-reviewed",

@@ -399,6 +399,7 @@ export function openDb(): DatabaseSync {
       source           TEXT NOT NULL,     -- hook | no-mistakes (how we know it's ours)
       state            TEXT NOT NULL,     -- open | closed
       head_sha         TEXT,              -- head as of the last completed review
+      review_posture   TEXT,              -- consent posture that produced head_sha
       round            INTEGER NOT NULL DEFAULT 0,
       last_reviewed_at INTEGER,
       last_error       TEXT,
@@ -578,6 +579,10 @@ function migrate(d: DatabaseSync): void {
   // so the migration is not optional: the adoption INSERT names both columns.
   addColumn(d, "inspector_prs", "merged_at", "INTEGER");
   addColumn(d, "inspector_prs", "merge_block", "TEXT");
+  // A current live setting must not retroactively promote a dry-run review. Nullable is
+  // fail-closed for rows written by older builds: their reviewed head must be run again
+  // before it can authorize a merge.
+  addColumn(d, "inspector_prs", "review_posture", "TEXT");
 
   // `inspector_comments(pr_key)` is the leftmost prefix of the unique index on
   // (pr_key, fingerprint), so it can serve no query that one cannot. Dropped rather
@@ -2263,6 +2268,7 @@ interface InspectorPrRow {
   source: string;
   state: string;
   head_sha: string | null;
+  review_posture: string | null;
   round: number;
   last_reviewed_at: number | null;
   last_error: string | null;
@@ -2289,6 +2295,7 @@ function rowToInspectorPr(r: InspectorPrRow): InspectorPr {
     source: r.source as InspectorSource,
     state: r.state as InspectorPrState,
     headSha: r.head_sha,
+    reviewPosture: (r.review_posture as InspectorPr["reviewPosture"]) ?? null,
     round: r.round,
     lastReviewedAt: r.last_reviewed_at,
     lastError: r.last_error,
@@ -2317,9 +2324,9 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
     .prepare(
       `INSERT INTO inspector_prs
          (key, url, owner, repo, number, repo_root, cwd, session_id, source, state,
-          head_sha, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
+          head_sha, review_posture, round, last_reviewed_at, last_error, fail_count, last_fail_kind,
           next_attempt_at, last_attempt_sha, merged_at, merge_block, adopted_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(key) DO NOTHING`,
     )
     .run(
@@ -2334,6 +2341,7 @@ export function adoptInspectorPr(pr: InspectorPr): boolean {
       pr.source,
       pr.state,
       pr.headSha,
+      pr.reviewPosture,
       pr.round,
       pr.lastReviewedAt,
       pr.lastError,
@@ -2365,6 +2373,7 @@ export function updateInspectorPr(
   patch: {
     state?: InspectorPrState;
     headSha?: string | null;
+    reviewPosture?: InspectorPr["reviewPosture"];
     round?: number;
     lastReviewedAt?: number | null;
     lastError?: string | null;
@@ -2383,7 +2392,7 @@ export function updateInspectorPr(
   openDb()
     .prepare(
       `UPDATE inspector_prs
-          SET state = ?, head_sha = ?, round = ?,
+          SET state = ?, head_sha = ?, review_posture = ?, round = ?,
               last_reviewed_at = ?, last_error = ?, fail_count = ?, last_fail_kind = ?,
               next_attempt_at = ?, last_attempt_sha = ?,
               merged_at = ?, merge_block = ?, updated_at = ?
@@ -2392,6 +2401,7 @@ export function updateInspectorPr(
     .run(
       next.state,
       next.headSha,
+      next.reviewPosture,
       next.round,
       next.lastReviewedAt,
       next.lastError,

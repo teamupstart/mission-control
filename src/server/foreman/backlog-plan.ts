@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
-import { parseModelJson, runStructured } from "../claude-cli.ts";
+import { runClaudeText } from "../claude-cli.ts";
+import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 
@@ -270,10 +271,10 @@ export async function planBacklog(
   }
 
   const result = await runStructured(
+    (p) => runClaudeText(p, { model, timeoutMs: backlogTimeoutMs(backlog.length) }),
     buildBacklogPrompt(backlog),
     (raw) => parseModelJson(raw, BacklogReportSchema),
     "The backlog planner",
-    { model, timeoutMs: backlogTimeoutMs(backlog.length) },
   );
   if (result.kind === "failed") return result;
   return { kind: "ok", plan: sanitizePlan(result.value, backlog) };

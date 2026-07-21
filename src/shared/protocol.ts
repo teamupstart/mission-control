@@ -2,6 +2,8 @@ import { z } from "zod";
 import { WRAPUP_MODES, WRAPUP_TRIGGERS } from "./queue.ts";
 import { MAX_LABELS, TASK_PRIORITIES, normalizeLabels } from "./task.ts";
 import { TaskSourcesConfigSchema } from "./task-source.ts";
+import { LLM_JOB_IDS } from "./llm-jobs.ts";
+import { LLM_RUNNER_IDS } from "./llm.ts";
 import { AGENT_TYPES } from "./types.ts";
 
 /**
@@ -1196,6 +1198,67 @@ export const CostConfigPatchSchema = CostConfigSchema.partial().refine(
   { message: "empty config update" },
 );
 export type CostConfigPatch = z.infer<typeof CostConfigPatchSchema>;
+
+// ---- LLM (which provider does the app's own offline work, and on which model) ----
+
+/** A model id, or the empty string meaning "clear my override" - see `InspectorConfig.model`. */
+const ModelOverrideSchema = z.union([ModelIdSchema, z.literal("")]);
+
+/**
+ * Which provider the app's own offline calls spawn through, and which model each of the
+ * daemon's background jobs uses. A schema-validated blob over the `app_config` KV, so a
+ * new key needs no migration.
+ *
+ * Both defaults are the shipped behaviour exactly: an operator who never opens this panel
+ * gets the same runner and the same model ids the hardcoded constants produced.
+ */
+export const LlmConfigSchema = z.object({
+  /**
+   * The runner every offline call goes through, or empty for "whatever the ladder says".
+   *
+   * `.catch()` rather than a bare enum, and that is load-bearing: this value is PERSISTED,
+   * so a downgrade - or a runner withdrawn - leaves a stored id this build cannot resolve.
+   * A schema that threw would make `getLlmConfig()` throw, which takes down the settings
+   * route, the titler, the goal refiner and the digest at once, over a preference. Falling
+   * back is the honest degradation, and `resolveLlmRunner` reports what it dropped so the
+   * panel can say so rather than presenting the fallback as the operator's own choice.
+   */
+  runner: z
+    .union([z.enum(LLM_RUNNER_IDS), z.literal("")])
+    .catch("")
+    .default(""),
+  /**
+   * Per-job model overrides, keyed by `LlmJobId`. Empty or absent means the ladder decides.
+   *
+   * Keys are NOT validated on read for the reason above - a blob from a newer build must
+   * still parse here, and `resolveLlmJobModels` simply never asks for a job it does not
+   * declare. The PATCH below does validate them, so a typo from the dashboard is a 400
+   * rather than a key that sits in the config forever doing nothing.
+   */
+  models: z.record(z.string(), ModelOverrideSchema).catch({}).default({}),
+});
+export type LlmConfig = z.infer<typeof LlmConfigSchema>;
+
+/**
+ * Partial update of the LLM config from the dashboard.
+ *
+ * Declared rather than derived from `LlmConfigSchema.partial()`, because the config's
+ * tolerance is exactly wrong for a write: `.catch()` would turn an unknown runner id from
+ * the panel into a silent no-op - the box reverts on the next poll and nothing says why -
+ * where a 400 is a refusal the operator can read.
+ */
+export const LlmConfigPatchSchema = z
+  .object({
+    runner: z.union([z.enum(LLM_RUNNER_IDS), z.literal("")]),
+    models: z
+      .record(z.string(), ModelOverrideSchema)
+      .refine((m) => Object.keys(m).every((k) => (LLM_JOB_IDS as readonly string[]).includes(k)), {
+        message: "unknown job id",
+      }),
+  })
+  .partial()
+  .refine((o) => Object.keys(o).length > 0, { message: "empty config update" });
+export type LlmConfigPatch = z.infer<typeof LlmConfigPatchSchema>;
 
 /**
  * What the daemon reports back about the telemetry wiring, beyond the stored config.

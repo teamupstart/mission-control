@@ -13,12 +13,14 @@
 // web bundle imports this.
 //
 // WHICH MODEL a given call runs as is deliberately NOT decided here.
-// `@shared/foreman-models.ts` already owns that ladder (config key -> env var -> shipped
-// fallback, reporting which of the three won) for Foreman's four roles, and the remaining
-// callers - `task-title.ts`, `away/digest.ts`, `goal/refiner.ts`, `inspector/worker.ts` -
-// are migrated onto THAT shape rather than onto a second list started here. A runner
-// answers "how is a model called"; a role answers "which model". Two questions, and only
-// the first one is this file's.
+// `@shared/model-choice.ts` owns that ladder (config key -> env var -> shipped fallback,
+// reporting which of the three won) and the ROLES stay with their subsystem:
+// `@shared/foreman-models.ts` holds Foreman's four, `@shared/inspector.ts` its one, and
+// `@shared/llm-jobs.ts` the daemon's own background jobs. A runner answers "how is a model
+// called"; a role answers "which model". Two questions, and only the first one is this
+// file's.
+
+import type { ModelSource } from "./model-choice.ts";
 
 /**
  * Every provider that can do the app's offline work.
@@ -31,6 +33,82 @@
 export const LLM_RUNNER_IDS = ["claude"] as const;
 
 export type LlmRunnerId = (typeof LLM_RUNNER_IDS)[number];
+
+/**
+ * The runner used when nothing says otherwise.
+ *
+ * `claude` because that is what every offline call is today, and because the CLI is
+ * already installed and authenticated on any machine running this app - the operator does
+ * not have to hold an API key for the app's own bookkeeping.
+ *
+ * In `shared` rather than beside `LLM_RUNNERS` because the RESOLVER below is shared: the
+ * daemon reads the config from the DB, the Foreman worker reads it off a route, and the
+ * settings panel renders what both of them will do. Three readers, one fallback.
+ */
+export const DEFAULT_LLM_RUNNER_ID: LlmRunnerId = "claude";
+
+/**
+ * The `envVar()` suffix naming the runner, so an operator can pin one without the
+ * dashboard - the same escape hatch every model id already has.
+ *
+ * Split from the printed spelling below for the reason `INSPECTOR_MODEL_ENV` is: the
+ * daemon looks it up through the `MISSION_` / `FLEET_` / `HARNESS_` chain while the panel
+ * prints one name a human can actually export, and two literals would let the printed one
+ * drift off the one that works.
+ */
+export const LLM_RUNNER_ENV = "LLM_RUNNER";
+
+/** The env var as the operator would type it. Shown in the settings panel. */
+export const LLM_RUNNER_ENV_VAR = `MISSION_${LLM_RUNNER_ENV}`;
+
+/** A runner id, and which of the three layers chose it. */
+export interface ResolvedLlmRunner {
+  id: LlmRunnerId;
+  source: ModelSource;
+  /**
+   * The value that was asked for and could not be honoured, or null when nothing was
+   * dropped.
+   *
+   * Reported rather than swallowed: a config naming a runner this build does not have is
+   * indistinguishable from an unset one once it has been silently replaced, and the
+   * operator would read the panel's "Claude Code" as their own choice rather than as a
+   * fallback from the id they typed.
+   */
+  unknown: string | null;
+}
+
+/**
+ * Rank the three layers for the RUNNER, the same order `resolveModelChoice` ranks a model
+ * id: config, then env, then the shipped default.
+ *
+ * Separate from `resolveModelChoice` because the two validate differently and must. A
+ * model id is free text - the `claude` CLI accepts ids this repo has no business knowing
+ * about - while a runner id has to name something in `LLM_RUNNERS` or there is nothing to
+ * spawn. An unrecognised one therefore falls back rather than being handed on, which
+ * matters in exactly one direction: the config is PERSISTED, so a downgrade (or a runner
+ * withdrawn) leaves a stored id this build cannot resolve, and the app has to keep working
+ * rather than fail to do its own bookkeeping.
+ */
+export function resolveLlmRunner(
+  configValue: string | null | undefined,
+  envValue: string | null | undefined,
+): ResolvedLlmRunner {
+  for (const [value, source] of [
+    [configValue, "config"],
+    [envValue, "env"],
+  ] as const) {
+    const asked = value?.trim();
+    if (!asked) continue;
+    if (isLlmRunnerId(asked)) return { id: asked, source, unknown: null };
+    return { id: DEFAULT_LLM_RUNNER_ID, source: "default", unknown: asked };
+  }
+  return { id: DEFAULT_LLM_RUNNER_ID, source: "default", unknown: null };
+}
+
+/** Whether a string names a runner this build actually has. */
+export function isLlmRunnerId(value: string): value is LlmRunnerId {
+  return (LLM_RUNNER_IDS as readonly string[]).includes(value);
+}
 
 /**
  * A grant of tools to one run, and the two things that have to come with it.

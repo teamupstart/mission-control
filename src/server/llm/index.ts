@@ -1,4 +1,4 @@
-import { LLM_RUNNER_IDS } from "@shared/llm.ts";
+import { DEFAULT_LLM_RUNNER_ID, LLM_RUNNER_IDS } from "@shared/llm.ts";
 import type { LlmRunner, LlmRunnerId } from "@shared/llm.ts";
 import { claudeRunner } from "./claude.ts";
 
@@ -19,13 +19,14 @@ export const LLM_RUNNERS: Record<LlmRunnerId, LlmRunner> = {
 };
 
 /**
- * The runner used when nothing says otherwise.
+ * The default runner id is `@shared/llm.ts`'s, not this module's, and re-exported here so
+ * a server call site holding the registry still reads it off one import.
  *
- * `claude` because that is what every offline call is today, and because the CLI is
- * already installed and authenticated on any machine running this app - the caller does
- * not have to hold an API key for the app's own bookkeeping.
+ * It had to move: the ladder that ranks config over env over default (`resolveLlmRunner`)
+ * is read by the browser too, which cannot import a runner whose implementation spawns
+ * processes.
  */
-export const DEFAULT_LLM_RUNNER_ID: LlmRunnerId = "claude";
+export { DEFAULT_LLM_RUNNER_ID };
 
 /** The runner for an id. Total by construction - the Record cannot have a hole. */
 export function llmRunner(id: LlmRunnerId = DEFAULT_LLM_RUNNER_ID): LlmRunner {
@@ -35,4 +36,18 @@ export function llmRunner(id: LlmRunnerId = DEFAULT_LLM_RUNNER_ID): LlmRunner {
 /** Every runner, in declaration order. For anything enumerating providers. */
 export function allLlmRunners(): LlmRunner[] {
   return LLM_RUNNER_IDS.map((id) => LLM_RUNNERS[id]);
+}
+
+/**
+ * Kill every live run, across every runner.
+ *
+ * Through the registry rather than one provider's own kill, because the daemon's background
+ * jobs spawn through whichever runner is configured: a shutdown that knew only how to kill
+ * `claude -p` would leave a second provider's children running. `killLiveRuns` is required
+ * on `LlmRunner` (never optional) for exactly this call - these children are deliberately
+ * detached, so they OUTLIVE the process that started them and go on burning tokens to
+ * nowhere. A runner that leaves nothing behind implements it as a no-op and says so.
+ */
+export function killLiveLlmRuns(): void {
+  for (const id of LLM_RUNNER_IDS) LLM_RUNNERS[id].killLiveRuns();
 }

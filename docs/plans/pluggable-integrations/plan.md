@@ -289,6 +289,15 @@ inline, and that is the same argument `PaneDeps.pane` makes: BOTH shipped harnes
 a dialog, so a policy that asked `dialogSpecFor` inline would have its no-menu branch first
 exercised by whichever harness declares `tui: null` - which is to say, in production.
 
+Splicing a 6KB prompt is the kind of change whose diff is unreadable, so it was checked
+rather than argued: `policyFor(promptHarness("claude"))` was diffed against the `POLICY`
+constant as it stood at `c73a521`, and **exactly one line differs** - the sentence that now
+names the harness. Every clause, the whole reply shape, the menu block and the phrasing line
+are byte-for-byte what a Claude session was already being judged against. The no-menu branch
+is not pinned that way and should not be: a 6KB literal in a test fights every legitimate
+policy edit, so `foreman-prompt-harness.test.ts` pins the invariant CLAUSES and the two
+branches' menu content instead.
+
 ### Terminal is two interfaces, because tmux and wezterm are not peers
 
 A tmux pane lives *inside* a wezterm pane. `wezterm.ts:117-140` exists solely to join them

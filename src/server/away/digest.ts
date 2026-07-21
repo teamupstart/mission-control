@@ -24,7 +24,12 @@ function minutes(ms: number): number {
 }
 
 /**
- * Ask Haiku to turn the event lines into a couple of sentences.
+ * Ask the `away-digest` job's model to turn the event lines into a couple of sentences.
+ *
+ * Named by JOB rather than by model, unlike the budget above: that number is a measurement
+ * against Haiku and stays true of the measurement whatever the field is set to, while this
+ * is a description of what the call does and would simply be false the moment someone
+ * changes the model.
  *
  * The buffer's contents are UNTRUSTED - session names and activity strings come
  * from repo paths and agent output - so the prompt fences them and says plainly

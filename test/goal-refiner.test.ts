@@ -244,14 +244,15 @@ test("a burst of prompts costs one refinement, not one per prompt", async () => 
   }
 });
 
-test("a Codex session is never sent to the model", async () => {
-  // It has no hooks, so it has no goal to refine; the card explains itself instead.
+test("a Codex session goal is refined through the configured background provider", async () => {
+  // Goal refinement is provider-independent: once the Codex hook/transcript path supplies
+  // a Tier 1 goal, the configured background provider should refine it like any other session.
   const { r, s } = withSession("r5", "%35", "codex");
   r.upsertGoal(s.id, { prompt: "somehow", text: "somehow", source: "heuristic" });
   const stop = startGoalRefiner(r);
   try {
-    await new Promise((res) => setTimeout(res, 200));
-    assert.equal(r.getGoal(s.id)?.source, "heuristic", "a Codex goal was sent to the model");
+    await until(() => r.getGoal(s.id)?.source === "model", "the Codex goal to be refined");
+    assert.equal(r.getGoal(s.id)?.text, "Ship the Goal feature end to end");
   } finally {
     stop();
   }

@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Integrating Codex properly</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1c1d1f;
+    --muted: #63676d;
+    --faint: #8b9096;
+    --rule: #e3e4e6;
+    --accent: #10a37f;
+    --accent-soft: #10a37f1a;
+    --warn: #b4530a;
+    --warn-soft: #b4530a14;
+    --bad: #b3261e;
+    --code-bg: #f4f4f2;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181a;
+      --panel: #1c1f22;
+      --ink: #e7e9ea;
+      --muted: #a3aab1;
+      --faint: #7e858c;
+      --rule: #2c3034;
+      --accent: #3ecf9a;
+      --accent-soft: #3ecf9a1f;
+      --warn: #e0964a;
+      --warn-soft: #e0964a1a;
+      --bad: #f08a80;
+      --code-bg: #141618;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    overflow-x: hidden;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
+
+  header.hero { border-bottom: 1px solid var(--rule); padding-bottom: 2rem; margin-bottom: 2.5rem; }
+  .eyebrow {
+    font: 600 0.7rem/1 var(--mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  h1 { font-size: clamp(1.9rem, 4.5vw, 2.7rem); line-height: 1.15; margin: 0 0 1rem; letter-spacing: -0.02em; }
+  .standfirst { font-size: 1.1rem; color: var(--muted); margin: 0; max-width: 46rem; }
+  .meta { margin-top: 1.4rem; font: 0.8rem/1.5 var(--mono); color: var(--faint); }
+
+  h2 {
+    font-size: 1.45rem;
+    letter-spacing: -0.01em;
+    margin: 3.2rem 0 1rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--rule);
+  }
+  h2:first-of-type { border-top: 0; padding-top: 0; }
+  h3 { font-size: 1.12rem; margin: 2.2rem 0 0.7rem; letter-spacing: -0.005em; }
+  h4 { font-size: 0.98rem; margin: 1.6rem 0 0.6rem; color: var(--muted); }
+  p { margin: 0 0 1rem; }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.35rem; }
+  li { margin: 0.35rem 0; }
+  li > ul, li > ol { margin-top: 0.35rem; }
+  strong { font-weight: 650; }
+  a { color: var(--accent); }
+
+  code {
+    font: 0.855em/1.5 var(--mono);
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 0.08em 0.34em;
+    word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+    margin: 0 0 1.2rem;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 0.82rem; line-height: 1.6; }
+
+  .tablewrap { overflow-x: auto; margin: 0 0 1.4rem; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.62rem 0.85rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 640; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); background: var(--code-bg); }
+  tr:last-child td { border-bottom: 0; }
+  td code { font-size: 0.8em; }
+
+  blockquote { margin: 0 0 1.2rem; padding: 0.1rem 0 0.1rem 1rem; border-left: 3px solid var(--rule); color: var(--muted); }
+
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 6px;
+    padding: 0.95rem 1.1rem;
+    margin: 0 0 1.4rem;
+  }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    display: block;
+    font: 650 0.7rem/1 var(--mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 0.5rem;
+  }
+  .callout.warn .label { color: var(--warn); }
+
+  .phase {
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 1.3rem 1.4rem 0.5rem;
+    margin: 0 0 1.2rem;
+  }
+  .phase > h3 { margin-top: 0; display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; }
+  .tag {
+    display: inline-block;
+    font: 650 0.68rem/1 var(--mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    padding: 0.3em 0.65em;
+    white-space: nowrap;
+  }
+
+  .verdict { font: 650 0.78rem/1 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap; }
+  .v-false { color: var(--bad); }
+  .v-soft { color: var(--warn); }
+  .v-ok { color: var(--accent); }
+
+  figure { margin: 0 0 1.6rem; }
+  .figscroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 8px; background: var(--panel); padding: 1rem; }
+  figure svg { display: block; min-width: 30rem; max-width: 100%; height: auto; }
+  figcaption { font-size: 0.83rem; color: var(--faint); margin-top: 0.6rem; }
+
+  .diag-box { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; }
+  .diag-box-dead { fill: none; stroke: var(--rule); stroke-width: 1.5; stroke-dasharray: 5 4; }
+  .diag-box-live { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+  .diag-t { fill: var(--ink); font: 12px var(--mono); }
+  .diag-t-sm { fill: var(--muted); font: 10.5px var(--mono); }
+  .diag-t-dead { fill: var(--faint); font: 12px var(--mono); }
+  .diag-arrow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  .diag-arrow-dead { stroke: var(--faint); stroke-width: 1.4; fill: none; stroke-dasharray: 4 4; }
+  .diag-arrow-live { stroke: var(--accent); stroke-width: 1.6; fill: none; }
+
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); font-size: 0.85rem; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <p class="eyebrow">docs/plans/codex</p>
+  <h1>Integrating Codex properly</h1>
+  <p class="standfirst">
+    Codex is a registered harness with a card, a dispatch path and a model picker. Everything
+    past that is declared absent. This plan is about the fact that <strong>most of those
+    declarations are false</strong>, and about the order in which to make them true without
+    shipping a lie.
+  </p>
+  <p class="meta">Verified against codex-cli 0.144.1 &middot; 2026-07-21</p>
+</header>
+
+<h2>The finding, in one sentence</h2>
+
+<p>
+  Of the eight capabilities <code>HARNESSES.codex</code> and
+  <code>HARNESS_CAPABILITIES.codex</code> declare <code>null</code>, <strong>five are
+  refutable against codex-cli 0.144.1 on this machine right now</strong>, and the two records
+  exist precisely to stop a harness from silently doing nothing &mdash; so the nulls are not a
+  gap in the design, they are wrong data inside a design that works.
+</p>
+
+<div class="callout">
+  <span class="label">Precedent</span>
+  <p>
+    This is the same defect, in the same file, as the one the <code>tui</code> capability
+    already fixed. The guard that became <code>HARNESSES.codex.tui</code> said
+    <code>agent !== "claude"</code> under a comment asserting Codex "doesn't render these
+    dialogs" &mdash; and because the guard skipped the parse, nothing ever tested the claim.
+    It was false.
+  </p>
+  <p>
+    Every remaining <code>null</code> below was written under the same condition:
+    <strong>no rollout file and no logged-in Codex had ever existed on the dev machine</strong>,
+    so each was reasoned from the absence of evidence and then frozen by a passing test. That
+    condition no longer holds. <code>~/.codex/</code> now has an <code>auth.json</code>, three
+    rollout files, and a <code>codex</code> binary carrying the JSON Schema for every one of
+    its hook events.
+  </p>
+</div>
+
+<h2>Evidence</h2>
+
+<p>
+  All captured on this machine, 2026-07-21, against <code>codex-cli 0.144.1</code>
+  (<code>/opt/homebrew/bin/codex</code>).
+</p>
+
+<h3>A rollout carries turns</h3>
+
+<p>
+  <code>src/server/harness/codex/transcript.ts:5-16</code> states a rollout carries runtime
+  metadata "and nothing that can be rendered as conversation".
+  <code>src/shared/goal.ts:15-16</code> adds "No rollout file has ever existed on this
+  machine, so the extraction is unverified".
+</p>
+
+<p>Record histogram over <code>~/.codex/sessions/2026/07/20/rollout-*.jsonl</code> (three files):</p>
+
+<pre><code>response_item / message               response_item / reasoning
+response_item / custom_tool_call      response_item / custom_tool_call_output
+event_msg / user_message              event_msg / agent_message
+event_msg / task_started              event_msg / task_complete
+event_msg / turn_aborted              event_msg / token_count
+event_msg / thread_settings_applied   event_msg / thread_rolled_back
+session_meta   turn_context   world_state</code></pre>
+
+<p>
+  <code>parseRolloutMeta</code> (<code>rollout.ts:157-186</code>) reads <strong>two</strong> of
+  those fifteen types and <code>continue</code>s past the rest. The rollout is not
+  metadata-only. The parser is.
+</p>
+
+<p>Conversation is present in two parallel lanes, both complete:</p>
+<ul>
+  <li><code>event_msg/user_message</code> &rarr; <code>payload.message</code>, plus <code>images</code>, <code>local_images</code>, <code>text_elements</code></li>
+  <li><code>event_msg/agent_message</code> &rarr; <code>payload.message</code>, <code>payload.phase</code> &isin; <code>commentary</code> | <code>final_answer</code></li>
+  <li><code>response_item/message</code> &rarr; <code>payload.role</code> &isin; <code>developer</code> | <code>user</code> | <code>assistant</code>, <code>payload.content[].type</code> &isin; <code>input_text</code> | <code>output_text</code> with <code>.text</code>, and a stable <code>payload.id</code> on assistant turns</li>
+  <li>tool calls: <code>response_item/custom_tool_call</code> (<code>name</code>, <code>input</code>, <code>call_id</code>, <code>status</code>) and <code>custom_tool_call_output</code> (<code>call_id</code>, <code>output</code>)</li>
+</ul>
+
+<h3>A rollout carries an explicit turn lifecycle</h3>
+
+<p>
+  <code>transcript.ts:63-64</code> says "a rollout's records aren't turns, so there is nothing
+  to read an idle/working state off". In fact it carries a lifecycle that is <strong>strictly
+  better than Claude's</strong>, which <code>harness/types.ts:45-56</code> documents as a
+  heuristic biased toward <code>working</code>:
+</p>
+
+<div class="tablewrap">
+<table>
+  <thead><tr><th>record</th><th>fields</th></tr></thead>
+  <tbody>
+    <tr><td><code>event_msg/task_started</code></td><td><code>turn_id</code>, <code>started_at</code>, <code>model_context_window</code>, <code>collaboration_mode_kind</code></td></tr>
+    <tr><td><code>event_msg/task_complete</code></td><td><code>turn_id</code>, <code>completed_at</code>, <code>duration_ms</code>, <code>time_to_first_token_ms</code>, <code>last_agent_message</code></td></tr>
+    <tr><td><code>event_msg/turn_aborted</code></td><td><code>turn_id</code>, <code>reason</code>, <code>completed_at</code>, <code>duration_ms</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  The newest of the three answers <code>SessionActivityRead</code> outright. No inference, no
+  tail heuristic.
+</p>
+
+<h3>A rollout carries a full token tier split and the rate limits</h3>
+
+<p>
+  <code>src/shared/cost.ts:52-56</code> justifies <code>COST_UNSUPPORTED.codex</code> with
+  "Codex keeps a single <code>tokens_used</code> scalar in <code>~/.codex/state_5.sqlite</code>:
+  no tier split, no cost, no per-model breakdown." Verbatim from
+  <code>event_msg/token_count.payload.info</code>:
+</p>
+
+<pre><code>{"total_token_usage":{"input_tokens":27994,"cached_input_tokens":19968,
+                      "output_tokens":316,"reasoning_output_tokens":20,"total_tokens":28310},
+ "last_token_usage": {"input_tokens":14103,"cached_input_tokens":9984,
+                      "output_tokens":176,"reasoning_output_tokens":0,"total_tokens":14279},
+ "model_context_window":258400}</code></pre>
+
+<p>
+  That is a tier split, per-turn <em>and</em> cumulative, and the per-model breakdown is
+  <code>turn_context.payload.model</code> which <code>rollout.ts:176</code> already parses.
+  <code>rollout.ts:180-183</code> reads <code>total_tokens</code> and
+  <code>model_context_window</code> and discards the rest.
+</p>
+
+<p>The same record carries a <code>rate_limits</code> block nobody reads:</p>
+
+<pre><code>{"limit_id":"codex","primary":{"used_percent":2.0,"window_minutes":43200,
+ "resets_at":1787160308},"secondary":null,"credits":{...},"plan_type":"free"}</code></pre>
+
+<p>
+  <code>used_percent</code> + <code>resets_at</code> (epoch seconds) is exactly
+  <code>RateLimitWindow</code> (<code>shared/types.ts:134-139</code>), and
+  <code>window_minutes</code> makes <code>projectRunway</code> computable without the
+  hardcoded <code>FIVE_HOUR_MS</code> / <code>SEVEN_DAY_MS</code>.
+  <code>shared/types.ts:141-151</code> calls rate limits "the one fact OpenTelemetry cannot
+  supply &hellip; the entire reason the statusLine wrapper is still in the design".
+  <strong>Codex writes them to disk.</strong>
+</p>
+
+<p>
+  Separately: <code>COST_UNSUPPORTED</code> is imported nowhere.
+  <code>grep -rn "COST_UNSUPPORTED" src/</code> returns only its own declaration. The sentence
+  it holds has never been shown to anybody.
+</p>
+
+<h3>Codex has a first-class hook system, and it is Claude-shaped</h3>
+
+<p>
+  <code>harness/index.ts:61-65</code> says "<code>hooks: null</code> is a statement, not a gap:
+  Codex pushes nothing at us." <code>todo/codex-instrumentation.md:63</code> records the hook
+  config format as "not found in CLI help", blocked at <code>:66-67</code> on Codex being
+  logged out.
+</p>
+
+<p>
+  Extracted from the native binary
+  (<code>@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex</code>):
+</p>
+
+<ul>
+  <li><strong>Event vocabulary</strong>: <code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse</code>, <code>PostToolUse</code>, <code>PermissionRequest</code>, <code>PreCompact</code>, <code>PostCompact</code>, <code>SubagentStart</code>, <code>SubagentStop</code>, <code>Stop</code>.</li>
+  <li><strong>Twenty embedded JSON Schemas</strong>: <code>{event}.command.input</code> and <code>.output</code> for each.</li>
+  <li><strong><code>session-start.command.input</code>, verbatim, all seven <code>required</code></strong>: <code>cwd</code>, <code>hook_event_name</code>, <code>model</code>, <code>permission_mode</code>, <code>session_id</code>, <code>source</code> (<code>startup|resume|clear|compact</code>), <code>transcript_path</code>. Other events add <code>turn_id</code>, <code>agent_id</code>, <code>agent_type</code>, <code>tool_name</code>, <code>tool_input</code>, <code>tool_response</code>, <code>tool_use_id</code>, <code>prompt</code>, <code>last_assistant_message</code>, <code>stop_hook_active</code>.</li>
+  <li><strong>Output contract is Claude's</strong>: <code>continue</code>, <code>stopReason</code>, <code>suppressOutput</code>, <code>systemMessage</code>, <code>hookSpecificOutput</code>/<code>hookEventName</code>/<code>permissionDecision</code>/<code>additionalContext</code>; decisions <code>approve|block|allow|deny|ask</code>.</li>
+  <li><strong>Config</strong>: a <code>[hooks]</code> table in <code>config.toml</code> keyed by snake_case event name (<code>session_start</code>, <code>user_prompt_submit</code>, <code>pre_tool_use</code>, &hellip;), each a list of matcher groups (<code>matcher</code>, <code>hooks</code>, <code>enabled</code>, <code>trusted_hash</code>), each handler internally tagged <code>type</code> &isin; <code>command</code> | <code>prompt</code> | <code>agent</code> with <code>command</code>, <code>commandWindows</code>, <code>timeout</code>, <code>async</code>, <code>statusMessage</code>, <code>description</code>. Plugins ship the same as <code>hooks.json</code>.</li>
+  <li><strong><code>codex features list</code> reports <code>hooks&nbsp;&nbsp;stable&nbsp;&nbsp;true</code>.</strong></li>
+  <li>Codex's own migrator translates <code>~/.claude/settings.json</code> hooks into <code>config.toml</code>. OpenAI treats the two formats as equivalent.</li>
+</ul>
+
+<p>
+  This clears the decision criterion in <code>todo/codex-instrumentation.md:104-107</code>
+  outright &mdash; <em>"hook reports session id + rollout path + cwd + lifecycle &rarr; build a
+  Codex hook"</em> &mdash; with room to spare. <code>PermissionRequest</code> is a
+  <strong>cleaner</strong> signal than the one Claude gives us: it needs none of the
+  <code>isIdleNudge</code> heuristic that <code>claude/hooks.ts:44-84</code> spends forty lines
+  justifying.
+</p>
+
+<h3>Codex has an MCP registration CLI</h3>
+
+<p>
+  <code>harness-capabilities.ts:208-211</code> declares <code>mcp: null</code> because
+  "registering with it is a different CLI and a different config file, and nothing has been
+  verified against one". The CLI is
+  <code>codex mcp add &lt;NAME&gt; [--env KEY=VALUE] -- &lt;COMMAND&gt;...</code>, with
+  <code>list</code> / <code>get</code> / <code>remove</code> beside it. That is the same shape
+  as <code>claude mcp add</code>, minus the <code>-s &lt;scope&gt;</code> flag.
+</p>
+
+<h3>The permission-mode claim is too strong</h3>
+
+<p>
+  <code>harness-capabilities.ts:198-200</code> says Codex has "no permission-mode concept". Its
+  hook payload carries <code>permission_mode</code> with <strong>exactly Claude's five-value
+  enum</strong> &mdash; <code>default</code>, <code>acceptEdits</code>, <code>plan</code>,
+  <code>dontAsk</code>, <code>bypassPermissions</code> &mdash; and the CLI takes
+  <code>-a/--ask-for-approval</code> and <code>-s/--sandbox</code> at launch.
+</p>
+
+<p>
+  What is genuinely true is narrower and is what <code>codex/tui.ts:40-43</code> already says:
+  there is no footer mode line to read and no Shift+Tab cycle to walk. "Cannot read or drive it
+  from the pane" is correct. "Has no such concept" is not, and the difference decides whether
+  auto-mode on dispatch can ever reach Codex.
+</p>
+
+<h3>One thing did not reproduce, and it matters</h3>
+
+<p>
+  A hook configured through
+  <code>-c hooks.session_start=[{hooks=[{type="command",command="&hellip;"}]}]</code>
+  <strong>parsed but never fired</strong>. The config was accepted (a malformed shape errors
+  loudly with <code>invalid type: string &hellip;, expected struct HooksToml</code>), the turn
+  ran to completion, and the hook script was never executed.
+</p>
+
+<p>
+  The cause is almost certainly the trust store: <code>MatcherGroup</code> carries a
+  <code>trusted_hash</code> field, the binary holds the strings <code>"&hellip; hooks need
+  review before they can run"</code> and <code>"Continue without trusting (hooks won't run)"</code>,
+  and there is a <code>--dangerously-bypass-hook-trust</code> flag whose help text is <em>"Run
+  enabled hooks without requiring persisted hook trust"</em>. Confirming that requires running
+  with the bypass flag, which was declined in this environment.
+</p>
+
+<div class="callout warn">
+  <span class="label">Operational fact that shapes Phase 4</span>
+  <p>
+    <strong>Untrusted hooks fail silent.</strong> An installer that writes a correct
+    <code>[hooks]</code> block and stops there produces a Codex session that looks instrumented
+    and reports nothing &mdash; which is worse than today's honest <code>null</code>.
+  </p>
+</div>
+
+<h2>Capability audit</h2>
+
+<div class="tablewrap">
+<table>
+  <thead>
+    <tr><th>Capability</th><th>Declared</th><th>Reality</th><th>Verdict</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>transcript.messages</code></td><td><code>null</code></td><td>two complete conversation lanes</td><td class="verdict v-false">false</td></tr>
+    <tr><td><code>transcript.passiveRead.activity</code></td><td><code>null</code></td><td>explicit <code>task_started</code>/<code>task_complete</code>/<code>turn_aborted</code></td><td class="verdict v-false">false</td></tr>
+    <tr><td><code>hooks</code></td><td><code>null</code></td><td>10 events, Claude-shaped payload and output contract</td><td class="verdict v-false">false</td></tr>
+    <tr><td><code>mcp</code></td><td><code>null</code></td><td><code>codex mcp add &hellip; -- &lt;cmd&gt;</code></td><td class="verdict v-false">false</td></tr>
+    <tr><td><code>COST_UNSUPPORTED.codex</code></td><td>a sentence</td><td>full tier split + rate limits on disk</td><td class="verdict v-false">false &middot; dead code</td></tr>
+    <tr><td><code>permissionModes</code></td><td><code>null</code></td><td>no pane affordance, but the concept and the enum exist</td><td class="verdict v-soft">too strong</td></tr>
+    <tr><td><code>skills</code></td><td><code>null</code></td><td><code>~/.codex/skills</code>, a plugin skills system, a <code>skills_watcher</code></td><td class="verdict v-soft">unmeasured</td></tr>
+    <tr><td><code>clearContext</code></td><td><code>null</code></td><td>not measured against Codex's slash vocabulary</td><td class="verdict v-soft">unmeasured</td></tr>
+    <tr><td><code>workQueue</code></td><td><code>null</code></td><td>composite of hooks + transcript, both refuted</td><td class="verdict v-soft">consequential</td></tr>
+    <tr><td><code>GOAL_UNSUPPORTED.codex</code></td><td>a sentence</td><td>downstream of <code>transcript.messages</code></td><td class="verdict v-soft">consequential</td></tr>
+    <tr><td><code>tui</code></td><td><strong>not</strong> <code>null</code></td><td>correct</td><td class="verdict v-ok">already fixed</td></tr>
+    <tr><td><code>detect</code>, <code>bin</code>, <code>control</code></td><td>present</td><td>correct</td><td class="verdict v-ok">fine</td></tr>
+    <tr><td><code>control.pastePlaceholder</code></td><td><code>null</code></td><td>Codex renders no collapsed-paste placeholder</td><td class="verdict v-ok">correct</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2>What a Codex card actually is today</h2>
+
+<p>Three states, of which one is meaningless:</p>
+<ol>
+  <li><code>working</code> &mdash; the hardcoded seed in <code>mergeDiscovered</code> (<code>registry.ts:498</code>, <code>:539</code>), never revised, because the hook overlay is refused (<code>registry.ts:638-639</code>) and the passive path opts out (<code>codex/transcript.ts:65</code>).</li>
+  <li><code>needs an answer</code> &mdash; from <code>activePaneDialog</code>. The one signal Codex can prove today, and it works.</li>
+  <li><code>exited</code> &mdash; process disappearance. Agent-agnostic.</li>
+</ol>
+
+<p>And a set of downstream consequences, in rough order of how much they cost:</p>
+
+<ul>
+  <li><strong>Foreman never sees a Codex session at all.</strong> <code>tickTargets</code> (<code>queue-machine.ts:216-224</code>) filters <strong>both</strong> halves on <code>capabilitiesFor(s.agent).workQueue</code>. So <code>promptHarness</code>'s Codex branch (<code>foreman/prompt.ts:170-171</code>), the Codex-glyph menu parse at <code>worker.ts:1310</code>, and <code>classifyPending</code>'s <code>terminal-pane</code> branch &mdash; all written for exactly this case &mdash; are <strong>unreachable in production</strong>.</li>
+  <li><strong><code>src/shared/session.ts:175-178</code> states something false.</strong> It claims reading the dialog widens <code>tickTargets</code> "to sessions parked on a dialog it has not been told about by a hook". For Codex it does not: <code>tickTargets</code> filters it out one line before the bucket is consulted. The claim holds only for an uninstrumented <em>Claude</em> session.</li>
+  <li><strong>The needs-you badge disagrees with the card.</strong> <code>foreman/config.ts:156-163</code> gates <code>countNeedsYou</code> on the same capability, so a Codex card visibly parked on an approval prompt contributes 0 to the badge.</li>
+  <li><strong><code>test/backlog-machine.test.ts:358-363</code> pins a path that cannot occur.</strong> It asserts "a codex task IS handed to a free codex agent"; <code>agentIsFree</code> requires <code>s.hooksSeen</code> (<code>backlog-machine.ts:196</code>), which only hook ingest sets, which Codex never produces. The test passes only because <code>mkSession</code> hard-codes <code>hooksSeen: true</code> (<code>:73</code>).</li>
+  <li><strong>Inspector adoption is unreachable.</strong> The <code>"hook"</code> route runs inside <code>applyHook</code> (<code>registry.ts:723-733</code>), which returns early for a hookless harness. The <code>"no-mistakes"</code> route is driven by a skill Codex cannot load. Meanwhile <code>pr.ts:8-10</code> exists specifically to find "PRs the hook never saw (<strong>Codex sessions</strong>&hellip;)" and feeds only the chip, never <code>adoptPr</code> &mdash; so a Codex card shows a PR chip with no inspector chip, a combination <code>inspector/worker.ts:921-923</code> says means "we didn't open this one". For Codex that reading is wrong.</li>
+  <li><strong>Dispatch is typed at blind, three times over.</strong> No boot-ready signal (<code>hooksFor</code> null &rarr; 2s <code>sleep</code>, <code>dispatcher.ts:188-198</code>), no paste-landed signal (<code>pastePlaceholder: null</code>), no prompt-ingested signal (<code>instrumented: false</code> &rarr; no <code>waitForPromptAcceptedAtCwd</code>). A Codex dispatch is marked <code>running</code> with zero evidence the agent read its intent.</li>
+  <li><strong>No ask channel.</strong> <code>ask-channel.ts:215-216</code> is a hard <code>if (agent !== "claude") return []</code>. The arm-B failure the file documents at <code>:22-30</code> &mdash; "the agent asked IN PROSE AND STOPPED" &mdash; is Codex's permanent state.</li>
+  <li><strong>The dispatch modal discloses none of it.</strong> Every refusal above is stated somewhere &mdash; Settings badges, card empty states, the work-queue panel &mdash; i.e. <em>after</em> the task launched. The one surface where the choice is made says nothing (<code>DispatchModal.tsx:502-523</code>).</li>
+</ul>
+
+<h2>Where a Codex card's state comes from</h2>
+
+<p>Today two of the three channels are closed by declaration, so the only live signal is the pane:</p>
+
+<figure>
+<div class="figscroll">
+<svg viewBox="0 0 760 260" role="img" aria-label="Today: hook channel refused, passive channel a no-op, only the pane and process signals reach session state">
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="var(--muted)"/>
+    </marker>
+    <marker id="ahd" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="var(--faint)"/>
+    </marker>
+  </defs>
+
+  <rect class="diag-box-dead" x="8" y="14" width="150" height="40" rx="6"/>
+  <text class="diag-t-dead" x="83" y="39" text-anchor="middle">Codex hook</text>
+
+  <rect class="diag-box-dead" x="8" y="70" width="150" height="40" rx="6"/>
+  <text class="diag-t-dead" x="83" y="95" text-anchor="middle">rollout file</text>
+
+  <rect class="diag-box" x="8" y="126" width="150" height="40" rx="6"/>
+  <text class="diag-t" x="83" y="151" text-anchor="middle">pane capture</text>
+
+  <rect class="diag-box" x="8" y="182" width="150" height="40" rx="6"/>
+  <text class="diag-t" x="83" y="200" text-anchor="middle">mergeDiscovered</text>
+  <text class="diag-t-sm" x="83" y="214" text-anchor="middle">/ process gone</text>
+
+  <path class="diag-arrow-dead" d="M158,34 L318,34" marker-end="url(#ahd)"/>
+  <text class="diag-t-sm" x="238" y="27" text-anchor="middle">hooksFor null</text>
+
+  <path class="diag-arrow-dead" d="M158,90 L318,90" marker-end="url(#ahd)"/>
+  <text class="diag-t-sm" x="238" y="83" text-anchor="middle">activity: null</text>
+
+  <path class="diag-arrow" d="M158,146 L318,146" marker-end="url(#ah)"/>
+  <text class="diag-t-sm" x="238" y="139" text-anchor="middle">activePaneDialog</text>
+
+  <path class="diag-arrow" d="M158,202 L318,202" marker-end="url(#ah)"/>
+
+  <rect class="diag-box-dead" x="322" y="14" width="190" height="40" rx="6"/>
+  <text class="diag-t-dead" x="417" y="32" text-anchor="middle">applyHook</text>
+  <text class="diag-t-sm" x="417" y="46" text-anchor="middle">refused</text>
+
+  <rect class="diag-box-dead" x="322" y="70" width="190" height="40" rx="6"/>
+  <text class="diag-t-dead" x="417" y="88" text-anchor="middle">applyPassiveActivity</text>
+  <text class="diag-t-sm" x="417" y="102" text-anchor="middle">no-op</text>
+
+  <rect class="diag-box" x="322" y="126" width="190" height="40" rx="6"/>
+  <text class="diag-t" x="417" y="151" text-anchor="middle">needs-you</text>
+
+  <rect class="diag-box" x="322" y="182" width="190" height="40" rx="6"/>
+  <text class="diag-t" x="417" y="200" text-anchor="middle">working (meaningless)</text>
+  <text class="diag-t-sm" x="417" y="214" text-anchor="middle">/ exited</text>
+
+  <path class="diag-arrow" d="M512,146 L616,132" marker-end="url(#ah)"/>
+  <path class="diag-arrow" d="M512,202 L616,152" marker-end="url(#ah)"/>
+
+  <rect class="diag-box" x="620" y="106" width="132" height="48" rx="6"/>
+  <text class="diag-t" x="686" y="135" text-anchor="middle">session state</text>
+</svg>
+</div>
+<figcaption>Today. Two of three channels are closed by declaration, not by absence of data.</figcaption>
+</figure>
+
+<p>
+  After Phases 2 and 4 both closed channels open, and they cross-check rather than each being
+  trusted alone:
+</p>
+
+<figure>
+<div class="figscroll">
+<svg viewBox="0 0 760 260" role="img" aria-label="After: hook bridge and rollout tail both reach session state alongside the pane capture">
+  <defs>
+    <marker id="ah2" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="var(--muted)"/>
+    </marker>
+    <marker id="ahl" markerWidth="9" markerHeight="9" refX="8" refY="3.2" orient="auto">
+      <path d="M0,0 L8,3.2 L0,6.4 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+
+  <rect class="diag-box-live" x="8" y="14" width="150" height="40" rx="6"/>
+  <text class="diag-t" x="83" y="32" text-anchor="middle">Codex hook</text>
+  <text class="diag-t-sm" x="83" y="46" text-anchor="middle">bridge (Phase 4)</text>
+
+  <rect class="diag-box-live" x="8" y="70" width="150" height="40" rx="6"/>
+  <text class="diag-t" x="83" y="88" text-anchor="middle">rollout tail</text>
+  <text class="diag-t-sm" x="83" y="102" text-anchor="middle">(Phase 2)</text>
+
+  <rect class="diag-box" x="8" y="126" width="150" height="40" rx="6"/>
+  <text class="diag-t" x="83" y="151" text-anchor="middle">pane capture</text>
+
+  <rect class="diag-box" x="8" y="182" width="150" height="40" rx="6"/>
+  <text class="diag-t" x="83" y="207" text-anchor="middle">process gone</text>
+
+  <path class="diag-arrow-live" d="M158,34 L318,34" marker-end="url(#ahl)"/>
+  <text class="diag-t-sm" x="238" y="27" text-anchor="middle">SessionStart / Stop /</text>
+  <text class="diag-t-sm" x="238" y="50" text-anchor="middle">PermissionRequest</text>
+
+  <path class="diag-arrow-live" d="M158,90 L318,90" marker-end="url(#ahl)"/>
+  <text class="diag-t-sm" x="238" y="83" text-anchor="middle">task_started /</text>
+  <text class="diag-t-sm" x="238" y="106" text-anchor="middle">task_complete</text>
+
+  <path class="diag-arrow" d="M158,146 L318,146" marker-end="url(#ah2)"/>
+  <path class="diag-arrow" d="M158,202 L318,202" marker-end="url(#ah2)"/>
+
+  <rect class="diag-box-live" x="322" y="14" width="190" height="40" rx="6"/>
+  <text class="diag-t" x="417" y="32" text-anchor="middle">hook overlay</text>
+  <text class="diag-t-sm" x="417" y="46" text-anchor="middle">live, 30-min TTL</text>
+
+  <rect class="diag-box-live" x="322" y="70" width="190" height="40" rx="6"/>
+  <text class="diag-t" x="417" y="88" text-anchor="middle">passive activity</text>
+  <text class="diag-t-sm" x="417" y="102" text-anchor="middle">durable</text>
+
+  <rect class="diag-box" x="322" y="126" width="190" height="40" rx="6"/>
+  <text class="diag-t" x="417" y="151" text-anchor="middle">needs-you</text>
+
+  <rect class="diag-box" x="322" y="182" width="190" height="40" rx="6"/>
+  <text class="diag-t" x="417" y="207" text-anchor="middle">exited</text>
+
+  <path class="diag-arrow-live" d="M512,34 L616,112" marker-end="url(#ahl)"/>
+  <path class="diag-arrow-live" d="M512,90 L616,124" marker-end="url(#ahl)"/>
+  <path class="diag-arrow" d="M512,146 L616,136" marker-end="url(#ah2)"/>
+  <path class="diag-arrow" d="M512,202 L616,150" marker-end="url(#ah2)"/>
+
+  <rect class="diag-box" x="620" y="98" width="132" height="60" rx="6"/>
+  <text class="diag-t" x="686" y="124" text-anchor="middle">session state</text>
+  <text class="diag-t-sm" x="686" y="140" text-anchor="middle">cross-checked</text>
+</svg>
+</div>
+<figcaption>After Phases 2 and 4. The overlay is live but neither durable nor guaranteed; the passive read is durable and works on sessions Mission Control never launched.</figcaption>
+</figure>
+
+<h2>Design</h2>
+
+<h3>The ordering constraint that drives everything</h3>
+
+<p>
+  Today the rollout&harr;session binding is <code>cwd</code> + nearest start time, and
+  <code>rollout.ts:84-85</code> admits "two Codex sessions in the same cwd can't be told apart
+  more precisely than this".
+</p>
+
+<div class="callout warn">
+  <span class="label">Why identity comes first</span>
+  <p>
+    <strong>A mis-binding today costs a wrong model chip. After Phase 3 it shows one session's
+    conversation on another session's card</strong>, and <code>transcript-stream.ts:80-92</code>
+    tails the wrong file live. That is the class of silent lie this whole capability system
+    exists to prevent.
+  </p>
+</div>
+
+<p>
+  There is a deterministic mechanism available that needs no cooperation from Codex: the running
+  <code>codex</code> process holds its rollout file <strong>open</strong>, so <code>lsof</code>
+  names it exactly. The daemon already batches <code>lsof</code> for exactly this kind of
+  question &mdash; <code>discovery/proc-cwd.ts:20</code> runs
+  <code>lsof -a -d cwd -p &lt;pids&gt; -Fpn</code> on every tick &mdash; so this is one more
+  field selector on an existing call pattern, not a new subsystem.
+</p>
+
+<h3>Phases</h3>
+
+<p>
+  Each phase is independently shippable and independently useful. They are ordered by
+  (evidence quality &times; operator value) &divide; consent cost &mdash; which is why hooks,
+  despite being the headline finding, are <strong>not</strong> first: the passive path needs no
+  install, no trust dance and no operator decision, and it works on sessions Mission Control did
+  not launch.
+</p>
+
+<div class="phase">
+  <h3><span class="tag">Phase 0</span> Fixtures from real captures</h3>
+  <p>
+    Nothing below is written against a hand-authored record. Per CLAUDE.md: <em>"A capability is
+    null only after you point it at a real capture &hellip; and those fixtures are verbatim,
+    never hand-written."</em> The same rule binds the reverse direction.
+  </p>
+  <ul>
+    <li><code>test/fixtures/codex-rollouts.ts</code> &mdash; verbatim lines from the three real rollouts, covering every record type in the histogram above, redacted only for paths and content.</li>
+    <li><code>test/codex-rollout.test.ts</code> currently builds three synthetic types by hand (<code>:14-23</code>). Replace with the fixtures.</li>
+    <li>Capture the <code>session-start.command.input</code> / <code>stop.command.input</code> schemas as fixtures too, for Phase 4.</li>
+  </ul>
+  <p><strong>Done when</strong>: no test in the Codex path asserts against a record shape nobody has observed.</p>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 1</span> Bind the session to its rollout deterministically</h3>
+  <ul>
+    <li>Add an open-file probe beside <code>discovery/proc-cwd.ts</code> (same batched-<code>lsof</code> shape) returning each Codex pid's open <code>&hellip;/sessions/**/rollout-*.jsonl</code>.</li>
+    <li><code>findRolloutForSession</code> prefers that answer; the cwd + start-time scan stays as the fallback for a session whose pid we cannot probe.</li>
+    <li>Record the rollout's own <code>session_meta.payload.session_id</code> on the Session. It is the same UUID as the filename, and it is what Phase 4's hook will independently report &mdash; so the two paths can be cross-checked rather than trusted separately.</li>
+  </ul>
+  <p><strong>Why first</strong>: it is the precondition for Phase 3 being safe, and it also silently fixes the model chip and context-% that are already wrong whenever two Codex sessions share a cwd.</p>
+  <p><strong>Test</strong>: <code>codex-rollout-binding.test.ts</code> &mdash; two sessions in one cwd, distinct rollouts, correct binding; and the fallback path when the probe returns nothing.</p>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 2</span> Passive activity: make <code>working</code> mean something</h3>
+  <p>The cheapest change on the list and the highest leverage per line.</p>
+  <ul>
+    <li><code>codex/transcript.ts:65</code> &mdash; <code>passiveRead</code> already reads the tail via <code>readRolloutMeta</code> &rarr; <code>readTailLines(path, 128KB)</code>. Scan the same buffer for the newest of <code>task_started</code> / <code>task_complete</code> / <code>turn_aborted</code> and return a real <code>SessionActivityRead</code>. <strong>Zero additional I/O</strong> &mdash; same read, same loop as <code>parseRolloutMeta:165-186</code>.</li>
+    <li>Mapping: <code>task_started</code> &rarr; <code>working</code>; <code>task_complete</code> / <code>turn_aborted</code> &rarr; <code>idle</code>; <code>lastActivity</code> from <code>completed_at</code> / <code>started_at</code>, else the record's <code>timestamp</code>.</li>
+  </ul>
+  <p>
+    This is precisely the channel <code>docs/plans/queue-hook-free-idle/plan.md</code> built
+    &mdash; <em>"session <code>state</code> has exactly one source (live hooks), and that source
+    is neither durable nor guaranteed"</em> &mdash; and the machinery is already agent-agnostic.
+    Codex opts out by declaring <code>activity: null</code>, not because anything is missing.
+  </p>
+  <p><strong>Effect</strong>: a quiet Codex card reads <code>idle</code> truthfully, survives daemon restarts, needs no install and no consent. <code>settledIdle</code> starts working for Codex.</p>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 3</span> Transcript messages, and the goal that follows</h3>
+  <ul>
+    <li><code>codex/transcript.ts:66</code> &mdash; <code>messages: jsonlMessages({ parse: codexToMessage, narration })</code>. The generic byte-windowing in <code>src/server/transcript.ts:96-195</code> is format-agnostic and needs nothing: rollouts are one JSON object per line and append-only, so <code>window</code>, <code>since</code>, <code>initial</code> and <code>appended</code> all work unchanged.</li>
+    <li><code>src/shared/goal.ts:20</code> &rarr; <code>null</code>, in the <strong>same commit</strong>; <code>harness-transcript.test.ts:60-70</code> pins that those two agree, by design.</li>
+    <li>Delete the stale "No rollout file has ever existed on this machine" claim at <code>goal.ts:15-16</code>.</li>
+  </ul>
+  <p>Three decisions the parser must make, all of which have a precedent in <code>claude/transcript.ts</code>:</p>
+  <ol>
+    <li><strong>Pick one lane, not both.</strong> The same user text appears as <code>event_msg/user_message.message</code> <em>and</em> as a <code>response_item</code> with <code>role:"user"</code>. Parsing both doubles every turn.</li>
+    <li><strong>Filter scaffolding.</strong> <code>role:"developer"</code> records carry <code>&lt;permissions instructions&gt;</code>, the <code>/root</code> multi-agent preamble, <code>&lt;multi_agent_mode&gt;</code> and <code>&lt;turn_aborted&gt;</code>; <code>role:"user"</code> carries an <code>&lt;environment_context&gt;</code> block. This is what <code>claude/scaffolding.ts</code> <code>conversationText</code> already does at <code>claude/transcript.ts:126</code>.</li>
+    <li><strong>Ids.</strong> Assistant <code>response_item</code>s have <code>payload.id</code>; user turns and every <code>event_msg</code> have none. Needs Claude's fallback (<code>${role}-${ts}-${text.length}</code>, <code>claude/transcript.ts:132</code>) or <code>mergeById</code> (<code>TranscriptPanel.tsx:408-413</code>) and the head/tail de-dupe (<code>transcript.ts:123</code>) misbehave.</li>
+  </ol>
+  <p><strong>Narration</strong>: <code>task_complete.payload.last_agent_message</code> and <code>agent_message</code> with <code>phase:"commentary"</code>. There is no TodoWrite equivalent.</p>
+  <p>
+    <strong>Unlocks for free</strong>: <code>GET /api/sessions/:id/transcript</code>, the
+    transcript size anchor (<code>routes.ts:365</code>), no-mistakes narration
+    (<code>nomistakes.ts:250</code>), the goal refiner's Tier 2 window, and Foreman's Tier 1
+    evidence. Tier 1 stays degraded &mdash; <code>goal/prompt.ts:64</code> takes the prompt from
+    a hook &mdash; but <code>goal/prompt.ts:104</code> already handles <code>prompt: null</code>
+    with "none captured - infer the goal from the conversation below".
+  </p>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 4</span> The hook bridge</h3>
+  <p>
+    The payload exceeds the bar <code>todo/codex-instrumentation.md:104-107</code> set. Because
+    <code>HookIngestSchema</code> already carries <code>agent</code> (<code>protocol.ts:45</code>)
+    and <code>applyHook</code> already dispatches through <code>hooksFor</code>
+    (<code>registry.ts:638</code>), <strong>the pipeline needs zero changes</strong>. The work is
+    a spec, a bridge and an installer.
+  </p>
+  <p><code>src/server/harness/codex/hooks.ts</code> &mdash; a <code>HookSpec</code> beside <code>claude/hooks.ts</code>, declaring the event list and a <code>toState</code>:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Codex event</th><th>state</th></tr></thead>
+    <tbody>
+      <tr><td><code>SessionStart</code></td><td><code>idle</code></td></tr>
+      <tr><td><code>UserPromptSubmit</code></td><td><code>working</code> (+ prompt text &rarr; Tier 1 goals)</td></tr>
+      <tr><td><code>PreToolUse</code> / <code>PostToolUse</code></td><td><code>working</code></td></tr>
+      <tr><td><code>PermissionRequest</code></td><td><code>awaiting_input</code></td></tr>
+      <tr><td><code>PreCompact</code> / <code>PostCompact</code></td><td><code>working</code></td></tr>
+      <tr><td><code>SubagentStart</code> / <code>SubagentStop</code></td><td><code>working</code></td></tr>
+      <tr><td><code>Stop</code></td><td><code>idle</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>
+    Note <strong>there is no <code>SessionEnd</code></strong> and no <code>Notification</code>.
+    <code>exited</code> stays discovery-driven, which already works; and
+    <code>PermissionRequest</code> replaces the <code>isIdleNudge</code> heuristic with an
+    unambiguous signal.
+  </p>
+  <ul>
+    <li>A Codex bridge beside <code>hooks/harness-hook.mjs</code>. Payload field names are Claude's (<code>session_id</code>, <code>cwd</code>, <code>transcript_path</code>, <code>hook_event_name</code>), so most of it is the shared transport in <code>@shared/hook-bridge.mjs</code> already.</li>
+    <li><strong>The installer is the hard part, and the trust store is why.</strong> Writing a <code>[hooks]</code> block into <code>config.toml</code> is not sufficient. The installer must either persist a <code>trusted_hash</code>, or drive the app-server's <code>hooks/list</code> + <code>config/batchWrite</code> pair (which is how the TUI does it), and it must <strong>verify a hook actually fired</strong> before reporting success.</li>
+    <li><code>~/.codex/config.toml</code> becomes a third file in the "settings writers" contract in CLAUDE.md, alongside the three <code>~/.claude/settings.json</code> writers. The event list is declared <strong>once</strong>, on the harness, and both installers import it &mdash; the rule <code>harness-hooks.test.ts</code> already enforces for Claude.</li>
+  </ul>
+  <p><strong>Consent</strong>: this writes to the operator's <code>~/.codex/config.toml</code> and grants a hook execution trust. That is a real consent boundary and should be an explicit opt-in in the integrations installer, not a side effect of upgrading.</p>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 5</span> Cost and rate limits</h3>
+  <ul>
+    <li>Correct the reason at <code>cost.ts:52-56</code>. It is factually wrong and should not be the reason anything stays off.</li>
+    <li>Extend <code>parseRolloutMeta</code> to keep <code>input_tokens</code>, <code>cached_input_tokens</code>, <code>output_tokens</code>, <code>reasoning_output_tokens</code> and <code>last_token_usage</code>. Maps onto <code>SessionCost</code> 1:1 except <code>cacheWrite</code>, which has no counterpart and stays null.</li>
+    <li>Parse <code>rate_limits</code> into <code>RateLimitWindow</code>. <code>window_minutes</code> makes the runway projectable without <code>FIVE_HOUR_MS</code> / <code>SEVEN_DAY_MS</code>.</li>
+    <li><strong><code>COST_UNSUPPORTED</code> is dead code &mdash; decide it.</strong> Either wire it to a surface or delete it. A constant documenting a decision that nothing enforces is the thing the two-record design exists to prevent.</li>
+  </ul>
+  <div class="callout">
+    <span class="label">The part of the original argument that survives</span>
+    <p>
+      Turning tokens into dollars still needs a price table for <code>gpt-5*</code> ids, and
+      <code>plan_type:"free"</code> / subscription accounts have notional dollars. So
+      <strong><code>costUsd</code> may legitimately stay null</strong> &mdash; but token counts
+      and rate-limit windows are reportable at Claude's fidelity today, and the
+      <code>costTone</code> / <code>costIsNotable</code> thresholds should not be fed a number
+      with a different error bar. <strong>Recommendation</strong>: report tokens and rate limits;
+      leave <code>costUsd</code> null with a <em>narrower</em> sentence.
+    </p>
+  </div>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 6</span> MCP registration and the ask channel</h3>
+  <ul>
+    <li><code>HARNESS_CAPABILITIES.codex.mcp</code> = <code>{ cli: "codex", serverName: "mission-control", &hellip; }</code>. <code>McpSpec.scope</code> is Claude's <code>-s &lt;scope&gt;</code> flag and Codex has no equivalent, so the spec needs a shape that admits both &mdash; the natural move is to make <code>scope</code> nullable rather than invent a Codex scope.</li>
+    <li><code>ask-channel.ts:215-216</code> &mdash; replace <code>if (agent !== "claude")</code> with the capability question. The flags themselves are Claude's (<code>--mcp-config</code>, <code>--append-system-prompt</code>); Codex's equivalents are <code>codex mcp add</code> (persistent) and <code>-c</code> overrides (per-invocation), so this is a real design decision, not a rename. <strong>This is the biggest quality-of-life win for a dispatched Codex session</strong> and should not be folded into Phase 4 silently.</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 7</span> Re-measure the three unmeasured nulls</h3>
+  <p>The lesson of <code>tui</code> is that a null written from absence of evidence is worth re-testing against a real capture. Three qualify:</p>
+  <ul>
+    <li><strong><code>permissionModes</code></strong> &mdash; narrow the claim. The hook payload's <code>permission_mode</code> and the CLI's <code>-a</code> / <code>-s</code> flags mean Codex <em>has</em> modes; what it lacks is a pane affordance to read or drive them. If <code>onDispatch</code> can be set at launch via <code>-a</code>, then auto-mode-on-dispatch reaches Codex and <code>autoModeUnsupportedWhy</code> needs a third sentence, not one of the two it has.</li>
+    <li><strong><code>skills</code></strong> &mdash; <code>~/.codex/skills/</code> exists, the binary has <code>SkillsListResponse</code>, a <code>skills_watcher</code> and <code>SkillsChangedNotification</code>. A watcher would mean Codex needs no reload command at all, which <code>SkillsSpec</code> currently cannot express (<code>reloadCommand</code> is required). Measure before declaring.</li>
+    <li><strong><code>clearContext</code></strong> &mdash; never measured against Codex's slash vocabulary.</li>
+  </ul>
+  <p>Each is a spike with a capture, not a code change on spec.</p>
+</div>
+
+<div class="phase">
+  <h3><span class="tag">Phase 8</span> The consequential unlocks</h3>
+  <p>Only reachable once the phases above land. Each is a <code>null</code> &rarr; value flip plus the surfaces that were gated on it.</p>
+  <ul>
+    <li><strong><code>workQueue</code></strong> &mdash; its null is justified as "no hooks AND no readable transcript" (<code>harness-capabilities.ts:98-107</code>). Both halves fall. Note: after Phase 3 alone the sentence at <code>:237</code> becomes half-true and should be narrowed to the hook half rather than left standing.</li>
+    <li><strong>Foreman</strong> &mdash; <code>tickTargets</code> starts selecting Codex, which makes <code>promptHarness</code>'s Codex branch, the Codex-glyph menu parse and <code>classifyPending</code>'s <code>terminal-pane</code> branch reachable for the first time. All three are already written and already tested; nothing new is needed beyond the capability flip.</li>
+    <li><strong>Backlog assign</strong> &mdash; <code>agentIsFree</code>'s <code>hooksSeen</code> requirement is satisfiable after Phase 4. Fix <code>test/backlog-machine.test.ts:73</code> so the fixture stops asserting an impossible state.</li>
+    <li><strong>Inspector adoption</strong> &mdash; the <code>"hook"</code> route opens once <code>applyHook</code> accepts Codex ingest. Provenance rules do <strong>not</strong> loosen: <code>prCreated</code> (the hook matching the <code>gh pr create</code> command) is still the only hook-side proof, exactly as <code>inspector-adoption.test.ts</code> pins. This is the one place where "make Codex work like Claude" must not become "adopt more PRs".</li>
+  </ul>
+</div>
+
+<h2>Bugs found on the way, worth fixing regardless</h2>
+
+<p>These are independent of every phase above and none needs a Codex decision.</p>
+
+<ol>
+  <li><strong><code>src/shared/session.ts:175-178</code> documents a behaviour that does not happen</strong> for Codex. Correct the comment or fix <code>tickTargets</code>; today they contradict each other.</li>
+  <li><strong><code>test/backlog-machine.test.ts:358-363</code></strong> asserts a Codex assign path made unreachable by <code>hooksSeen</code>, passing only via an impossible fixture.</li>
+  <li><strong><code>HarnessesPanel.tsx:135</code></strong> renders the raw <code>AgentType</code> id &mdash; "claude only" &mdash; beside <code>AUTO_LABEL</code>'s "Claude Code" on the same row. Two spellings of one harness; the id leaks into UI where everything else goes through <code>AGENT_IDENTITY</code>.</li>
+  <li><strong><code>COST_UNSUPPORTED</code> is imported nowhere</strong> (Phase 5).</li>
+  <li><strong><code>codex/control.ts:24</code></strong> (<code>SETTLE_MS = 400</code>) and <strong><code>codex/tui.ts:36</code></strong> (<code>repaintTimeoutMs = 900</code>) are Claude measurements applied to Codex, self-documented as unverified. Measure them against 0.144.1.</li>
+  <li><strong><code>shared/model.ts:113-118</code></strong> hand-maintains four <code>gpt-*</code> ids and nothing can detect them going stale &mdash; the only test checks they contain no shell metacharacters. A bad id is a <em>failed launch</em>, not a slower one. Consider validating against <code>~/.codex/models_cache.json</code>, which exists on disk.</li>
+  <li><strong>Reasoning effort is read but never set.</strong> <code>rollout.ts:133-142</code> maps <code>effort</code> to a <code>ThinkingLevel</code> for the card; dispatch passes only <code>--model</code>. Codex's primary quality knob is unreachable from the dispatch modal.</li>
+  <li><strong><code>DispatchModal.tsx:502-523</code> discloses nothing.</strong> Whatever set of capabilities Codex ends up with, the modal is where the operator chooses, and it should say what changes.</li>
+</ol>
+
+<h2>What this does not change</h2>
+
+<ul>
+  <li><strong>The SQLite veto stands.</strong> <code>state_5.sqlite</code> remains off limits (<code>todo/codex-instrumentation.md:23-26</code>); the <code>state_5</code> / <code>logs_2</code> / <code>goals_1</code> suffixes are a migrating internal schema. Everything in this plan comes from rollout files, the hook contract, or the CLI. Nothing needs the DB.</li>
+  <li><strong><code>LLM_RUNNER_IDS</code> stays a separate axis.</strong> Foreman, the Inspector and every background job still run on <code>claude</code> (<code>shared/llm.ts:33</code>). A Codex-only install has no Foreman regardless of harness capability. That is the runner axis and it is deliberately orthogonal &mdash; keep it out of this work.</li>
+  <li><strong><code>codex exec --json</code>, <code>app-server</code> and <code>mcp-server</code> stay unused as state channels.</strong> They are full-fidelity, but only for sessions we spawn, and they change what the session <em>is</em> &mdash; headless or app-server-hosted rather than a TUI in a pane the operator can focus. Also <code>detect.ts:22-24</code> deliberately does not exclude <code>codex mcp-server</code> from discovery, so spawning one today puts a phantom card on the board.</li>
+  <li><strong><code>control.pastePlaceholder: null</code> stays null.</strong> Codex renders no collapsed-paste placeholder. That one is correct.</li>
+</ul>
+
+<h2>Open decisions</h2>
+
+<p>These need an answer before the phases they gate are built.</p>
+
+<ol>
+  <li><strong>Hook install consent.</strong> Writing <code>~/.codex/config.toml</code> and persisting a hook trust hash is a heavier consent than symlinking a skills directory. Opt-in toggle in the integrations installer, or on by default with a disclosure?</li>
+  <li><strong><code>costUsd</code> for Codex.</strong> Report tokens and rate limits but leave dollars null (recommended), or price <code>gpt-5*</code> from a table and accept a different error bar beside Claude's figure?</li>
+  <li><strong><code>McpSpec.scope</code>.</strong> Make it nullable for harnesses without a scope concept, or give Codex a synthetic one?</li>
+  <li><strong>Phase 2 vs Phase 4 shipping order.</strong> Phase 2 is free and unblocks <code>settledIdle</code>; Phase 4 is authoritative but needs consent. Ship Phase 2 alone first (recommended), or hold both until the hook lands so the state semantics change once?</li>
+  <li><strong>What Phase 8 turns on by default.</strong> Foreman auto-responding to Codex sessions is a behaviour change for existing installs, not just a new capability.</li>
+</ol>
+
+<h2>Done means</h2>
+
+<p>Per CLAUDE.md, and none of these is a follow-up:</p>
+
+<ul>
+  <li><strong>README</strong> &mdash; Codex's capabilities are described in prose in several places that will become wrong phase by phase. Each phase updates it in the same change.</li>
+  <li><strong>CLAUDE.md</strong> &mdash; the "Harnesses (the agent axis)" section is currently the best written explanation of <em>why</em> Codex declares each null, and most of those paragraphs become false. In particular the sentences beginning "<code>HARNESSES.codex.transcript.messages</code> is null because a rollout carries metadata and no turns" and "<code>HARNESSES.codex.hooks</code> is null &hellip; Codex pushes nothing at us" must be rewritten, not deleted &mdash; the <em>reasoning pattern</em> they teach is correct and is what found this. Add <code>~/.codex/config.toml</code> to the settings-writers contract.</li>
+  <li><strong>Tests</strong> &mdash; named per phase above. <code>session-contracts.test.ts</code> and <code>harness-capabilities.test.ts</code> pin the records and will fail on each flip, which is the point.</li>
+  <li><strong><code>todo/codex-instrumentation.md</code></strong> &mdash; resolve and delete it. Its blocker is gone, its decision criteria are met, its front-runner option is chosen, and parts of it are already stale (it describes a <code>resolveTranscriptPath</code> that no longer exists and a rollout reader that was since built).</li>
+</ul>
+
+<h2>Provenance</h2>
+
+<p>
+  Every claim above was captured on 2026-07-21 against <code>codex-cli 0.144.1</code> on this
+  machine: three rollout files under <code>~/.codex/sessions/2026/07/20/</code>, the JSON Schemas
+  embedded in the <code>codex-darwin-arm64</code> native binary, <code>codex --help</code> /
+  <code>codex exec --help</code> / <code>codex mcp --help</code>, and one
+  <code>codex exec --json</code> run that completed a turn and did <strong>not</strong> fire a
+  configured hook.
+</p>
+
+<div class="callout warn">
+  <span class="label">The one inferred claim</span>
+  <p>
+    That hook trust is what suppressed that hook is <strong>inferred rather than
+    observed</strong>. It is well-supported &mdash; <code>trusted_hash</code> on the matcher
+    group, the review strings in the binary, the existence of
+    <code>--dangerously-bypass-hook-trust</code> &mdash; but confirming it needs one run with
+    that flag, which was declined in this environment. <strong>Phase 4 should begin by
+    confirming it</strong>, because if the cause is instead the TOML nesting, the installer's
+    shape changes.
+  </p>
+</div>
+
+<footer>
+  <p>
+    Source of truth: <code>docs/plans/codex/plan.md</code>. This page is a rendering of it,
+    never a fork.
+  </p>
+</footer>
+
+</div>
+</body>
+</html>

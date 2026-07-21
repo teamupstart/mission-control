@@ -1,5 +1,5 @@
 import { test } from "node:test";
-import { mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { mkEmuHandle, mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +13,8 @@ import {
 } from "./helpers/terminal-fakes.ts";
 import type { TerminalDeps } from "../src/server/terminal/registry.ts";
 import type { EmulatorPane, MuxClient, TerminalResult } from "../src/server/terminal/types.ts";
-import type { Session, SessionState, Task, TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
+import { emulatorHandle, muxHandle } from "../src/shared/pane.ts";
+import type { Session, SessionState, Task } from "../src/shared/types.ts";
 
 // Isolate the daemon's SQLite DB before ANY value import that can resolve it loads. A
 // static import of actions.ts here once sat above this line; hoisting evaluated it first,
@@ -24,8 +25,13 @@ const { rename, validateSessionName, validateSessionNameAgainstTasks } = await i
 );
 const { Registry } = await import("../src/server/registry.ts");
 
-const tmux: TmuxInfo = { session: "work", window: "0", windowIndex: 0, paneId: "%3" };
-const wezterm: WeztermInfo = { paneId: 12, tabId: 4, windowId: 1, tabTitle: "old", isActive: true };
+const PANE = mkMuxHandle({ session: "work", windowName: "0", paneId: "%3" });
+const TAB = mkEmuHandle({ paneId: "12", tabId: "4", windowId: "1", tabTitle: "old" });
+
+/** A session on a multiplexer, on an emulator, and on both - the three shapes a rename sees. */
+const onMux = { terminals: [PANE] };
+const onEmu = { terminals: [TAB] };
+const onBoth = { terminals: [PANE, TAB] };
 
 function mkSession(over: Partial<Session> = {}): Session {
   return {
@@ -42,8 +48,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 4242,
     tty: null,
     permissionMode: null,
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
@@ -75,26 +80,26 @@ function mkSession(over: Partial<Session> = {}): Session {
 // ---- validateSessionName (pure) ----
 
 test("validateSessionName trims and accepts a plain tmux name", () => {
-  const r = validateSessionName({ tmux, wezterm: null }, "  my session  ");
+  const r = validateSessionName(onMux, "  my session  ");
   assert.deepEqual(r, { ok: true, name: "my session" });
 });
 
 test("validateSessionName rejects an empty / whitespace-only name", () => {
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "   ").ok, false);
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "").ok, false);
+  assert.equal(validateSessionName(onMux, "   ").ok, false);
+  assert.equal(validateSessionName(onMux, "").ok, false);
 });
 
 test("validateSessionName rejects control characters for either handle", () => {
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "a\nb").ok, false);
-  assert.equal(validateSessionName({ tmux: null, wezterm }, "a\tb").ok, false);
+  assert.equal(validateSessionName(onMux, "a\nb").ok, false);
+  assert.equal(validateSessionName(onEmu, "a\tb").ok, false);
 });
 
 test("validateSessionName rejects '.' and ':' only for a tmux session", () => {
   // tmux target specs use these as separators, so rename-session refuses them.
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "a.b").ok, false);
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "a:b").ok, false);
+  assert.equal(validateSessionName(onMux, "a.b").ok, false);
+  assert.equal(validateSessionName(onMux, "a:b").ok, false);
   // A wezterm tab title is free-form, so the same characters are fine there.
-  assert.deepEqual(validateSessionName({ tmux: null, wezterm }, "a.b:c"), {
+  assert.deepEqual(validateSessionName(onEmu, "a.b:c"), {
     ok: true,
     name: "a.b:c",
   });
@@ -104,22 +109,22 @@ test("validateSessionName rejects a leading '$' only for a tmux session", () => 
   // '$' is tmux's session-ID sigil: `-t '$0'` resolves by ID and never falls back
   // to a name, so a session named `$0` would make focus/kill hit whichever session
   // owns ID 0. tmux itself allows the rename, so we have to refuse it here.
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "$0").ok, false);
-  assert.equal(validateSessionName({ tmux, wezterm: null }, "$work").ok, false);
+  assert.equal(validateSessionName(onMux, "$0").ok, false);
+  assert.equal(validateSessionName(onMux, "$work").ok, false);
   // Only a leading '$' aliases an id - one inside the name is just a character.
-  assert.deepEqual(validateSessionName({ tmux, wezterm: null }, "cost$$"), {
+  assert.deepEqual(validateSessionName(onMux, "cost$$"), {
     ok: true,
     name: "cost$$",
   });
   // A wezterm tab title is free-form, so a leading '$' is fine there.
-  assert.deepEqual(validateSessionName({ tmux: null, wezterm }, "$0"), {
+  assert.deepEqual(validateSessionName(onEmu, "$0"), {
     ok: true,
     name: "$0",
   });
 });
 
 test("validateSessionName rejects a session with no renameable handle", () => {
-  const r = validateSessionName({ tmux: null, wezterm: null }, "whatever");
+  const r = validateSessionName({ terminals: [] }, "whatever");
   assert.equal(r.ok, false);
 });
 
@@ -131,7 +136,7 @@ test("validateSessionName rejects a session with no renameable handle", () => {
 const staleTask = { tmuxSession: "fix-login", worktreePath: "/wt/old" };
 
 test("validateSessionNameAgainstTasks refuses a name a worktree-holding task still records", () => {
-  assert.deepEqual(validateSessionNameAgainstTasks({ tmux, cwd: "/wt/live" }, "fix-login", [staleTask]), {
+  assert.deepEqual(validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/live" }, "fix-login", [staleTask]), {
     ok: false,
     error: "another task still holds the tmux session name 'fix-login'",
   });
@@ -141,7 +146,7 @@ test("validateSessionNameAgainstTasks allows a name whose task was reclaimed", (
   // Reclaim clears worktreePath and tmuxSession together: the task can no longer
   // tear anything down, so it no longer speaks for the name.
   const evicted = { tmuxSession: null, worktreePath: null };
-  assert.deepEqual(validateSessionNameAgainstTasks({ tmux, cwd: "/wt/live" }, "fix-login", [evicted]), {
+  assert.deepEqual(validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/live" }, "fix-login", [evicted]), {
     ok: true,
   });
 });
@@ -150,13 +155,13 @@ test("validateSessionNameAgainstTasks allows a session onto its own task's recor
   // The task holding this session's worktree is its own binding, not a collision -
   // it follows the rename in renameSession rather than being left aimed elsewhere.
   assert.deepEqual(
-    validateSessionNameAgainstTasks({ tmux, cwd: "/wt/old" }, "fix-login", [staleTask]),
+    validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/old" }, "fix-login", [staleTask]),
     { ok: true },
   );
 });
 
 test("validateSessionNameAgainstTasks allows a name no task records", () => {
-  assert.deepEqual(validateSessionNameAgainstTasks({ tmux, cwd: "/wt/live" }, "auth", [staleTask]), {
+  assert.deepEqual(validateSessionNameAgainstTasks({ ...onMux, cwd: "/wt/live" }, "auth", [staleTask]), {
     ok: true,
   });
 });
@@ -165,7 +170,7 @@ test("validateSessionNameAgainstTasks ignores task bindings for a wezterm-only s
   // Renaming a wezterm tab sets a free-form title and moves no tmux name, so no
   // task's teardown can be re-aimed by it.
   assert.deepEqual(
-    validateSessionNameAgainstTasks({ tmux: null, cwd: "/wt/live" }, "fix-login", [staleTask]),
+    validateSessionNameAgainstTasks({ ...onEmu, cwd: "/wt/live" }, "fix-login", [staleTask]),
     { ok: true },
   );
 });
@@ -248,7 +253,7 @@ function spyDeps(
 
 test("rename: a multiplexer session renames by its current name", async () => {
   const { deps, muxCalls, retitled } = spyDeps();
-  const r = await rename(mkSession({ tmux }), "renamed", deps);
+  const r = await rename(mkSession(onMux), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(muxCalls, [["work", "renamed"]]);
@@ -261,7 +266,7 @@ test("rename: a multiplexer session also retitles the tab hosting its client", a
   // showing it is only reachable via its client - and renames used to skip it, leaving the
   // tab on its spawn-time title forever.
   const { deps, muxCalls, retitled } = spyDeps({ hosts: [hostPane(1)] });
-  const r = await rename(mkSession({ tmux }), "renamed", deps);
+  const r = await rename(mkSession(onMux), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(muxCalls, [["work", "renamed"]]);
@@ -272,7 +277,7 @@ test("rename: a multiplexer session retitles every tab attached to it", async ()
   // One session can be attached from several tabs; a tab left on the old title is the same
   // staleness bug, just in a second window.
   const { deps, retitled } = spyDeps({ hosts: [hostPane(1), hostPane(2)] });
-  await rename(mkSession({ tmux }), "renamed", deps);
+  await rename(mkSession(onMux), "renamed", deps);
 
   assert.deepEqual(retitled, [
     ["1", "renamed"],
@@ -302,7 +307,7 @@ test("rename: host tabs are resolved by the OLD name, before the rename lands", 
     },
   });
   const emu = fakeEmulator({ list: async () => hosts, retitle: async () => OK });
-  await rename(mkSession({ tmux }), "renamed", fakeTerminals(mux, emu));
+  await rename(mkSession(onMux), "renamed", fakeTerminals(mux, emu));
 
   assert.deepEqual(order, ["clients", "rename"]);
 });
@@ -314,7 +319,7 @@ test("rename: a session rename still succeeds when the tab retitle fails", async
     hosts: [hostPane(1)],
     retitleResult: { ok: false, error: "no wezterm mux", outcomeUnknown: false },
   });
-  const r = await rename(mkSession({ tmux }), "renamed", deps);
+  const r = await rename(mkSession(onMux), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(muxCalls, [["work", "renamed"]]);
@@ -326,7 +331,7 @@ test("rename: a failed session rename leaves the tab title alone", async () => {
     hosts: [hostPane(1)],
     renameResult: { ok: false, error: "duplicate session: renamed", outcomeUnknown: false },
   });
-  const r = await rename(mkSession({ tmux }), "renamed", deps);
+  const r = await rename(mkSession(onMux), "renamed", deps);
 
   assert.equal(r.ok, false);
   assert.deepEqual(retitled, [], "no rename landed, so no title should move");
@@ -334,7 +339,7 @@ test("rename: a failed session rename leaves the tab title alone", async () => {
 
 test("rename: an emulator-only session sets the tab title on its own pane", async () => {
   const { deps, muxCalls, retitled } = spyDeps();
-  const r = await rename(mkSession({ tmux: null, wezterm, nameSource: "wezterm" }), "renamed", deps);
+  const r = await rename(mkSession({ ...onEmu, nameSource: "wezterm" }), "renamed", deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(retitled, [["12", "renamed"]]);
@@ -346,7 +351,7 @@ test("rename: the multiplexer wins when a session has both handles", async () =>
   // maps to, not the tab hosting the client - renaming through it would title the wrong tab.
   // The tab is found through the client join instead.
   const { deps, muxCalls, retitled } = spyDeps();
-  await rename(mkSession({ tmux, wezterm }), "renamed", deps);
+  await rename(mkSession(onBoth), "renamed", deps);
 
   assert.deepEqual(muxCalls, [["work", "renamed"]]);
   assert.deepEqual(retitled, [], "pane 12 (session.wezterm) is never titled");
@@ -356,7 +361,7 @@ test("rename: a failed session rename surfaces the backend's own words", async (
   const { deps } = spyDeps({
     renameResult: { ok: false, error: "duplicate session: renamed", outcomeUnknown: false },
   });
-  const r = await rename(mkSession({ tmux }), "renamed", deps);
+  const r = await rename(mkSession(onMux), "renamed", deps);
 
   assert.equal(r.ok, false);
   assert.equal(r.error, "duplicate session: renamed");
@@ -366,7 +371,7 @@ test("rename: an emulator that can't retitle refuses by name instead of silently
   // The capability null. Ghostty can be launched into and raised and can rename nothing, and
   // the honest answer names the backend rather than reporting a rename that never happened.
   const { deps } = spyDeps({ retitle: false });
-  const r = await rename(mkSession({ tmux: null, wezterm }), "renamed", deps);
+  const r = await rename(mkSession(onEmu), "renamed", deps);
 
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /WezTerm/);
@@ -383,8 +388,6 @@ test("rename: a handle-less session is an error, not a crash", async () => {
 
 // ---- Registry.renameSession (optimistic echo) ----
 
-const PANE = { session: "work", window: "0", windowIndex: 0, paneId: "%3" };
-
 function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
   return {
     syntheticId: "s1",
@@ -398,8 +401,7 @@ function disco(over: Partial<DiscoveredSession> = {}): DiscoveredSession {
     nomistakesGated: false,
     pid: 1,
     tty: "ttys1",
-    wezterm: null,
-    tmux: PANE,
+    terminals: [PANE],
     startedAt: 0,
     ...over,
   };
@@ -422,18 +424,18 @@ test("renameSession echoes the new name onto the card and its tmux handle", () =
   const s = sessionOf(r)!;
   assert.equal(s.name, "renamed");
   // Focus/Kill target tmux.session by name, so it must move with the display name.
-  assert.equal(s.tmux?.session, "renamed");
+  assert.equal(muxHandle(s)?.session, "renamed");
   assert.equal(emitted, 1, "the card re-renders immediately");
 });
 
 test("renameSession updates a wezterm tab title in step", () => {
   const r = new Registry();
   r.applyDiscovery([
-    disco({ tmux: null, nameSource: "wezterm", wezterm: { paneId: 12, tabId: 4, windowId: 1, tabTitle: "work", isActive: true } }),
+    disco({ nameSource: "wezterm", terminals: [mkEmuHandle({ tabTitle: "work" })] }),
   ]);
 
   r.renameSession("s1", "renamed");
-  assert.equal(sessionOf(r)?.wezterm?.tabTitle, "renamed");
+  assert.equal(emulatorHandle(sessionOf(r)!)?.tabTitle, "renamed");
 });
 
 test("renameSession is a no-op when the name is unchanged", () => {
@@ -457,7 +459,7 @@ test("a discovery sweep that has caught up doesn't spuriously re-emit after a re
     if (e.type === "session_upsert" && e.session.id === "s1") emitted++;
   });
   // The terminal really was renamed, so the next sweep reports the new name.
-  r.applyDiscovery([disco({ name: "renamed", tmux: { ...PANE, session: "renamed" } })]);
+  r.applyDiscovery([disco({ name: "renamed", terminals: [{ ...PANE, session: "renamed" }] })]);
   assert.equal(emitted, 0, "the optimistic value already matches - nothing changed");
   assert.equal(sessionOf(r)?.name, "renamed");
 });
@@ -535,12 +537,7 @@ test("renameSession follows the rename for a worktree-holding task that already 
 test("renameSession touches no task binding when the session has no tmux handle", () => {
   const r = new Registry();
   r.applyDiscovery([
-    disco({
-      cwd: "/wt/work",
-      tmux: null,
-      nameSource: "wezterm",
-      wezterm: { paneId: 12, tabId: 4, windowId: 1, tabTitle: "work", isActive: true },
-    }),
+    disco({ cwd: "/wt/work", nameSource: "wezterm", terminals: [mkEmuHandle({ tabTitle: "work" })] }),
   ]);
   r.upsertTask(mkTask());
 
@@ -557,7 +554,7 @@ test("renameSession re-points every card hosted on the renamed tmux session", ()
   // they are two cards sharing a tmux.session.
   r.applyDiscovery([
     disco(),
-    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, tmux: { ...PANE, window: "1", windowIndex: 1, paneId: "%9" } }),
+    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, terminals: [{ ...PANE, windowName: "1", windowIndex: 1, paneId: "%9" }] }),
   ]);
 
   const emitted: string[] = [];
@@ -569,7 +566,7 @@ test("renameSession re-points every card hosted on the renamed tmux session", ()
 
   // Focus/Kill target tmux.session by name, so a sibling left on the old name
   // would attach to a session that no longer resolves.
-  assert.equal(sessionOf(r, "s2")?.tmux?.session, "renamed");
+  assert.equal(muxHandle(sessionOf(r, "s2")!)?.session, "renamed");
   // Its title IS the tmux session name (nameSource: tmux), so it moves too.
   assert.equal(sessionOf(r, "s2")?.name, "renamed");
   assert.deepEqual(emitted, ["s1", "s2"], "both cards re-render immediately");
@@ -579,11 +576,11 @@ test("renameSession leaves a card on an unrelated tmux session alone", () => {
   const r = new Registry();
   r.applyDiscovery([
     disco(),
-    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, name: "other", tmux: { ...PANE, session: "other" } }),
+    disco({ syntheticId: "s2", tty: "ttys2", pid: 2, name: "other", terminals: [{ ...PANE, session: "other" }] }),
   ]);
 
   r.renameSession("s1", "renamed");
 
-  assert.equal(sessionOf(r, "s2")?.tmux?.session, "other");
+  assert.equal(muxHandle(sessionOf(r, "s2")!)?.session, "other");
   assert.equal(sessionOf(r, "s2")?.name, "other");
 });

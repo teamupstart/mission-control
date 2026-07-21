@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueueSummary } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import { canRenameSession, relativeTime, shortenCwd, stateDisplay, uptime } from "../lib/format.ts";
 import { queueChipVisible, queueChipView } from "../lib/queue.ts";
 import { ActionBar, type ActionBarHandle } from "./ActionBar.tsx";
@@ -139,7 +140,7 @@ export function SessionCard({
 }): React.JSX.Element {
   const st = stateDisplay(session);
   const attention = st.tone === "attention";
-  const canSend = Boolean(session.tmux || session.wezterm);
+  const canSend = canWriteTo(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
   // The work queue is a drawer, not part of the card: it opens on Queue / the shortcut

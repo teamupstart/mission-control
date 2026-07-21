@@ -20,6 +20,7 @@ import { planFromVerdict } from "../src/server/foreman/verdict.ts";
 import type { ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
 import type { ForemanConfig } from "../src/shared/protocol.ts";
 import type { Session, SessionState } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 function pend(over: Partial<Pending> = {}): Pending {
   return {
@@ -557,7 +558,7 @@ function mkSession(over: Partial<Session> = {}): Session {
   return {
     id: "s1", agent: "claude", name: "sess", nameSource: "process", state: "awaiting_input" as SessionState,
     cwd: "/repo", gitBranch: null, gitRoot: null, repoRoot: null, nomistakesGated: false, pid: 1, tty: null, permissionMode: null,
-    wezterm: null, tmux: { session: "m", window: "w", windowIndex: 1, paneId: "%1" }, agentSessionId: null,
+    terminals: [mkMuxHandle({ session: "m", windowIndex: 1 })], agentSessionId: null,
     transcriptPath: null, instrumented: true, hooksSeen: true, activity: "Approve?",
     startedAt: null, firstSeen: 0, lastSeen: 0, lastActivity: 1, pendingReviews: 0, nomistakes: null,
     nomistakesFixes: [],

@@ -177,8 +177,7 @@ export function pendingReloads(sessions: Session[], acks: Map<string, number>, c
 
 /**
  * The side effects a reload performs, injectable so the ordering below can be
- * asserted without a tmux pane. Mirrors `RenameDeps` / `KillDeps` in actions.ts, and
- * for the same reason: the ORDER of these three calls is the safety argument, and an
+ * asserted without a tmux pane. Mirrors `KillDeps` in actions.ts, and for the same reason: the ORDER of these three calls is the safety argument, and an
  * argument no test can see is one that quietly stops being true.
  */
 export interface ReloadDeps {

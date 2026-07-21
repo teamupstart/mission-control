@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ForemanEpisode, Session } from "@shared/types.ts";
 import { foremanAllowlisted } from "@shared/foreman.ts";
 import { activePaneDialog } from "@shared/session.ts";
+import { canWriteTo } from "@shared/pane.ts";
 import { shortenCwd, stateDisplay, uptime, relativeTime } from "../../lib/format.ts";
 import { ActionBar } from "../ActionBar.tsx";
 import { ModePicker } from "../ModePicker.tsx";
@@ -113,7 +114,7 @@ export function ConsoleDetail({
 
   const st = stateDisplay(session);
   const live = session.state !== "exited";
-  const canSend = Boolean(session.tmux || session.wezterm);
+  const canSend = canWriteTo(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
   const gateNeedsYou = view.gateAlerts.has(session.id);

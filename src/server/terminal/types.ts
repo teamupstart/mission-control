@@ -45,24 +45,30 @@
  *   - client tty: tmux reports `/dev/ttys028`, wezterm reports `ttys012`. Both normalized
  *     through `normTty`, so the composition join is an equality test rather than a strip.
  *
- * The backend IDS are already shared (`@shared/terminal.ts`), because `NameSource` derives
- * from them. The handle TYPES stay server-side until phase 3 promotes them, which is when
- * `Session.tmux` / `Session.wezterm` become one list.
+ * The backend IDS and the TARGET/HANDLE types are shared (`@shared/terminal.ts`): a
+ * `Session` carries its handles and the dashboard reasons about them. What stays here is
+ * everything that can only run in the daemon - enumeration, writes, captures, spawns.
  */
 
 /**
- * The backend ids live in `@shared/terminal.ts`, not here, and re-exporting them keeps every
- * server call site reaching them where it always has.
+ * The ids and the address types live in `@shared/terminal.ts`, not here, and re-exporting
+ * them keeps every server call site reaching them where it always has.
  *
- * They moved because `NameSource` - a `Session` field the dashboard renders - is now derived
- * from them, and the web bundle cannot import this module: `list` spawns a subprocess.
- * Adding an id there still fails typecheck HERE, in `Record<MultiplexerId, Multiplexer>`,
- * until a complete adapter exists, which is the enforcement that matters: "I forgot
- * copy-mode exists" stops being a possible outcome.
+ * They moved for the same purity reason twice over: `NameSource` and `Session.terminals` are
+ * fields the dashboard renders, and the web bundle cannot import this module, whose `list`
+ * spawns a subprocess. Adding an id there still fails typecheck HERE, in
+ * `Record<MultiplexerId, Multiplexer>`, until a complete adapter exists, which is the
+ * enforcement that matters: "I forgot copy-mode exists" stops being a possible outcome.
  */
-export type { EmulatorId, MultiplexerId, TerminalBackendId } from "@shared/terminal.ts";
+export type {
+  EmulatorId,
+  EmulatorTarget,
+  MultiplexerId,
+  MuxTarget,
+  TerminalBackendId,
+} from "@shared/terminal.ts";
 
-import type { EmulatorId, MultiplexerId } from "@shared/terminal.ts";
+import type { EmulatorId, EmulatorTarget, MultiplexerId, MuxTarget } from "@shared/terminal.ts";
 
 /**
  * The outcome of one terminal operation.
@@ -104,20 +110,6 @@ export type Key = keyof typeof KEYS;
 
 /** Every `Key`, for callers that must iterate the vocabulary (and for its tests). */
 export const ALL_KEYS = Object.keys(KEYS) as readonly Key[];
-
-/** What a multiplexer operation addresses. A pane, plus the session/window that reach it. */
-export interface MuxTarget {
-  session: string;
-  windowIndex: number;
-  /** Normalized to a string; tmux's own form is already one (`"%3"`). */
-  paneId: string;
-}
-
-/** What an emulator operation addresses. The tab is needed because raising is tab-level. */
-export interface EmulatorTarget {
-  paneId: string;
-  tabId: string;
-}
 
 /** One pane, as a multiplexer enumerates it. */
 export interface MuxPane extends MuxTarget {
@@ -320,7 +312,7 @@ export type EmulatorFocus =
  *   - `target` - can we address what opened?
  *
  * They are not the same question, and collapsing them into a nullable id (which is what
- * `spawnWeztermTab` returns today, and what the focus fallback reads as failure) makes an
+ * `spawnWeztermTab` used to return, and what the focus fallback read as failure) makes an
  * emulator that opens tabs perfectly well but cannot say what it made - Ghostty - look
  * broken. Null `target` with `ok: true` is a complete, honest answer: the human got their
  * window, and nothing may be typed into it.

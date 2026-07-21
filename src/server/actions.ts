@@ -16,12 +16,13 @@ import {
 } from "./discovery/pane-dialog.ts";
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
-import { paneToken, type PaneHandles } from "@shared/pane.ts";
-import { harnessFor } from "./harness/index.ts";
+import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/pane.ts";
 import { EMULATOR_IDS } from "@shared/terminal.ts";
-import { bindSession, handlesOf } from "./terminal/handles.ts";
+import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
+import { harnessFor } from "./harness/index.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
+  bindSession,
   defaultTerminalDeps,
   hostPanesFor,
   type BoundPane,
@@ -60,7 +61,7 @@ export interface ActionResult {
 }
 
 /** Shared error when a session has no pane handle we can drive. */
-const NO_HANDLE = "session has no tmux or wezterm handle to send to";
+const NO_HANDLE = "session has no terminal pane to send to";
 
 /** Shared error when another write already owns this pane. */
 const PANE_BUSY = "another write is already in flight for this session's pane";
@@ -103,7 +104,7 @@ const driving = new Set<string>();
  * only be asserted here.
  */
 export async function withPaneLock<T>(
-  session: Pick<Session, "tmux" | "wezterm">,
+  session: PaneHandles,
   busy: () => T,
   write: () => Promise<T>,
 ): Promise<T> {
@@ -116,11 +117,6 @@ export async function withPaneLock<T>(
   } finally {
     driving.delete(key);
   }
-}
-
-/** Reduce a finished command to an ActionResult, using stderr (or a fallback) as the error. */
-function check(r: RunResult, failMsg: string): ActionResult {
-  return r.code !== 0 ? { ok: false, error: r.stderr.trim() || failMsg } : { ok: true };
 }
 
 /**
@@ -1208,6 +1204,11 @@ function notInCycle(target: PermissionMode): string {
  * name has to survive and its hosting tab merely follows. A session with only an emulator
  * handle is renamed by retitling a tab, which is display text.
  *
+ * The rules belong to the BACKEND. tmux's ban on `.`, `:` and a leading `$` comes from its
+ * target grammar (`session:window.pane`, `$0` as a session id) and no other multiplexer need
+ * share it, so a second one with looser rules would otherwise be refused names it accepts,
+ * in tmux's words.
+ *
  * `PLAIN_NAMES` for a handleless session, so this stays total; its caller refuses that
  * session for having nothing to rename, which is a better sentence than any name rule would
  * produce.
@@ -1216,11 +1217,10 @@ export function nameRulesFor(
   session: PaneHandles,
   deps: TerminalDeps = defaultTerminalDeps,
 ): NameRules {
-  const handles = handlesOf(session);
-  if (handles.multiplexer) {
-    return deps.multiplexers[handles.multiplexer.backend].sessions?.names ?? PLAIN_NAMES;
-  }
-  if (handles.emulator) return deps.emulators[handles.emulator.backend].names;
+  const mux = muxHandle(session);
+  if (mux) return deps.multiplexers[mux.backend].sessions?.names ?? PLAIN_NAMES;
+  const emu = emulatorHandle(session);
+  if (emu) return deps.emulators[emu.backend].names;
   return PLAIN_NAMES;
 }
 
@@ -1233,18 +1233,19 @@ export function nameRulesFor(
  * session has to have somewhere for a name to live. The GRAMMAR belongs to the adapter
  * (`NameRules`), beside the `sanitize` that has to agree with it - these rules and
  * `sessionLabel`'s coercion were two half-copies of tmux's target spec in two files, and they
- * had already drifted by one character class.
+ * had already drifted by one character class. What no display name can hold - a newline
+ * submits, splits or truncates depending on which surface reads it first - is the shared
+ * half every backend's rules are built on (`plainValidate`), not a check restated here.
  */
 export function validateSessionName(
-  session: Pick<Session, "tmux" | "wezterm">,
+  session: PaneHandles,
   rawName: string,
   deps: TerminalDeps = defaultTerminalDeps,
 ): { ok: true; name: string } | { ok: false; error: string } {
   const name = rawName.trim();
   if (!name) return { ok: false, error: "name can't be empty" };
-  const handles = handlesOf(session);
-  if (!handles.multiplexer && !handles.emulator) {
-    return { ok: false, error: "this session has no tmux or wezterm pane to rename" };
+  if (!muxHandle(session) && !emulatorHandle(session)) {
+    return { ok: false, error: "this session has no terminal pane to rename" };
   }
   const why = nameRulesFor(session, deps).validate(name);
   return why ? { ok: false, error: why } : { ok: true, name };
@@ -1271,13 +1272,13 @@ export function validateSessionName(
  * `Registry.renameSession`.
  */
 export function validateSessionNameAgainstTasks(
-  session: Pick<Session, "tmux" | "cwd">,
+  session: PaneHandles & Pick<Session, "cwd">,
   name: string,
   tasks: readonly Pick<Task, "tmuxSession" | "worktreePath">[],
 ): { ok: true } | { ok: false; error: string } {
-  // Only a tmux rename moves a name teardown targets - a wezterm tab title is
+  // Only a multiplexer rename moves a name teardown targets - an emulator tab title is
   // free-form and no task binds to it.
-  if (!session.tmux) return { ok: true };
+  if (!muxHandle(session)) return { ok: true };
   const collides = tasks.some(
     (t) => t.worktreePath !== null && t.tmuxSession === name && t.worktreePath !== session.cwd,
   );
@@ -1356,11 +1357,11 @@ export async function rename(
   name: string,
   deps: TerminalDeps = defaultTerminalDeps,
 ): Promise<ActionResult> {
-  const handles = handlesOf(session);
-  if (handles.multiplexer) {
-    const mux = deps.multiplexers[handles.multiplexer.backend];
+  const inside = muxHandle(session);
+  if (inside) {
+    const mux = deps.multiplexers[inside.backend];
     if (!mux.sessions) return { ok: false, error: `${mux.label} has no session to rename` };
-    const from = handles.multiplexer.session;
+    const from = inside.session;
     // Resolve the tabs BEFORE the rename, while they still answer to `from` - after it, this
     // lookup would have to guess which name the backend now reports.
     const { tabs } = await hostTabs(mux, from, deps);
@@ -1372,11 +1373,12 @@ export async function rename(
     for (const tab of tabs) await tab.emulator.retitle?.(tab.pane, name);
     return { ok: true };
   }
-  if (handles.emulator) {
-    const emulator = deps.emulators[handles.emulator.backend];
+  const tab = emulatorHandle(session);
+  if (tab) {
+    const emulator = deps.emulators[tab.backend];
     if (!emulator.retitle) return { ok: false, error: `${emulator.label} can't retitle a tab` };
     return fromTerminal(
-      await emulator.retitle(handles.emulator, name),
+      await emulator.retitle(tab, name),
       `${emulator.label} could not retitle that tab`,
     );
   }
@@ -1406,14 +1408,14 @@ export async function focus(
   session: Session,
   deps: TerminalDeps = defaultTerminalDeps,
 ): Promise<ActionResult> {
-  const handles = handlesOf(session);
-  const mux = handles.multiplexer ? deps.multiplexers[handles.multiplexer.backend] : null;
+  const inside = muxHandle(session);
+  const mux = inside ? deps.multiplexers[inside.backend] : null;
 
-  if (mux?.select && handles.multiplexer) {
-    const selected = await mux.select(handles.multiplexer);
+  if (mux?.select && inside) {
+    const selected = await mux.select(inside);
     if (!selected.ok) return fromTerminal(selected, `${mux.label} could not select that pane`);
   }
-  return raiseOutward(handles, mux, deps);
+  return raiseOutward(session, mux, deps);
 }
 
 /**
@@ -1425,11 +1427,11 @@ export async function focus(
  * ever raises a tab that is ALREADY showing this session, or opens a new one.
  */
 async function raiseOutward(
-  handles: ReturnType<typeof handlesOf>,
+  session: PaneHandles,
   mux: Multiplexer | null,
   deps: TerminalDeps,
 ): Promise<ActionResult> {
-  const inside = handles.multiplexer;
+  const inside = muxHandle(session);
   let attached = false;
 
   // 1. A tab already hosting a client for this session. For a multiplexer-hosted session
@@ -1449,11 +1451,12 @@ async function raiseOutward(
   // 2. The session's own emulator handle. For a session with BOTH handles this is the pane
   //    the agent's tty maps to, which is worth raising once step 1 found no client tab; for
   //    an emulator-only session it is the whole answer.
-  if (handles.emulator) {
-    const emulator = deps.emulators[handles.emulator.backend];
+  const own = emulatorHandle(session);
+  if (own) {
+    const emulator = deps.emulators[own.backend];
     if (!emulator.focus) return { ok: false, error: `${emulator.label} can't raise a window` };
     return fromTerminal(
-      await raiseThrough(emulator.focus, handles.emulator),
+      await raiseThrough(emulator.focus, own),
       `${emulator.label} could not raise that tab`,
     );
   }
@@ -1530,7 +1533,7 @@ const defaultKillDeps: KillDeps = { signal: signalProcess, terminals: defaultTer
 export async function kill(session: Session, deps: KillDeps = defaultKillDeps): Promise<ActionResult> {
   const signalled = deps.signal(session.pid);
 
-  const inside = handlesOf(session).multiplexer;
+  const inside = muxHandle(session);
   const mux = inside ? deps.terminals.multiplexers[inside.backend] : null;
   const killGroup = mux?.sessions?.kill;
   if (!inside || !mux || !killGroup) return signalled;

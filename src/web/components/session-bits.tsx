@@ -33,11 +33,19 @@ import { Tooltip } from "./Tooltip.tsx";
  * soon as it drifts.
  */
 
-/** Where this session was found, phrased for the small grey subtitle. */
+/**
+ * Where this session was found, phrased for the small grey subtitle.
+ *
+ * The pane id rides along only for a MULTIPLEXER, and that asymmetry is about the axis
+ * rather than about tmux: a multiplexer names a SESSION that may hold many panes, so which
+ * pane this card is only answerable by saying it, while an emulator names the tab itself
+ * and has nothing left to disambiguate. Both shipped backends read exactly as they always
+ * did; a third one inherits whichever rule its axis already states.
+ */
 export function subtitle(session: Session): string {
-  if (session.nameSource === "tmux" && session.tmux) return `tmux · ${session.tmux.paneId}`;
-  if (session.nameSource === "wezterm") return "wezterm";
-  return "process";
+  const namer = session.terminals.find((h) => h.backend === session.nameSource);
+  if (namer?.kind === "multiplexer") return `${namer.backend} · ${namer.paneId}`;
+  return session.nameSource;
 }
 
 /**

@@ -4,6 +4,7 @@ import { correlate, type DiscoveryInput } from "../src/server/discovery/correlat
 import type { Proc } from "../src/server/discovery/processes.ts";
 import type { TerminalEnumeration } from "../src/server/terminal/enumerate.ts";
 import type { EmulatorPane, MultiplexerId, MuxPane } from "../src/server/terminal/types.ts";
+import { emulatorHandle, muxHandle } from "../src/shared/pane.ts";
 
 // What is at stake: that discovery names sessions by asking the terminal REGISTRIES what
 // they can see, in the order they declare, rather than by an `if (tmux) … else if (wezterm)
@@ -64,7 +65,7 @@ test("names a tmux session by its session name", () => {
   const [s] = correlate(input);
   assert.equal(s?.name, "work");
   assert.equal(s?.nameSource, "tmux");
-  assert.equal(s?.tmux?.paneId, "%1");
+  assert.equal(muxHandle(s!)?.paneId, "%1");
 });
 
 test("names a wezterm pane by its tab title", () => {
@@ -171,8 +172,16 @@ test("a session on one tty keeps a handle from EACH axis, not just the namer's",
     ),
   };
   const [s] = correlate(input);
-  assert.equal(s?.tmux?.paneId, "%7");
-  assert.deepEqual(s?.wezterm, { paneId: 12, tabId: 4, windowId: 1, tabTitle: "Outer", isActive: true });
+  assert.equal(muxHandle(s!)?.paneId, "%7");
+  assert.deepEqual(emulatorHandle(s!), {
+    kind: "emulator",
+    backend: "wezterm",
+    paneId: "12",
+    tabId: "4",
+    windowId: "1",
+    tabTitle: "Outer",
+    isActive: true,
+  });
 });
 
 test("one backend reporting a tty twice yields one handle, the last reported", () => {
@@ -180,7 +189,7 @@ test("one backend reporting a tty twice yields one handle, the last reported", (
   // (`new-session -t existing`, `link-window`) reports the SAME pane once per session with a
   // different session_name each time. The map this replaced was keyed by tty and last-write
   // wins; a list that appended both would let a duplicate's arrival order decide the card's
-  // name and - through `TmuxInfo.session` - which session Rename and Kill target.
+  // name and - through `MuxHandle.session` - which session Rename and Kill target.
   const input: DiscoveryInput = {
     procs: [proc({ pid: 840, ppid: 50, tty: "ttysD" })],
     terminals: terminals(
@@ -193,7 +202,7 @@ test("one backend reporting a tty twice yields one handle, the last reported", (
   };
   const [s] = correlate(input);
   assert.equal(s?.name, "grouped-b");
-  assert.equal(s?.tmux?.session, "grouped-b");
+  assert.equal(muxHandle(s!)?.session, "grouped-b");
 });
 
 test("naming priority is the registries' order, not a branch in this file", () => {
@@ -213,14 +222,15 @@ test("naming priority is the registries' order, not a branch in this file", () =
   assert.equal(s?.nameSource, "wezterm");
   // Both handles are still recorded: which backend NAMED the session and which handles it
   // holds are different questions, and only the first one is about order.
-  assert.equal(s?.tmux?.paneId, "%9");
+  assert.equal(muxHandle(s!)?.paneId, "%9");
 });
 
-test("a backend with no Session field of its own still names and correlates", () => {
+test("a backend this file has never heard of correlates, names AND keeps its handle", () => {
   // The acceptance test for this item, and the reason the cast is here rather than a real id:
   // correlation must not be able to recognise a vendor. A third multiplexer names its
-  // sessions and stamps its own `nameSource` with no code change - it simply has no legacy
-  // handle to land in until phase 3 replaces `Session.tmux` / `Session.wezterm` with a list.
+  // sessions, stamps its own `nameSource` and lands a handle on the card with no code
+  // change. Before phase 3 the last of those was missing - `Session` had a field per vendor,
+  // so this session was discovered, named, drawn, and then unreachable by every write.
   const input: DiscoveryInput = {
     procs: [proc({ pid: 820, ppid: 50, tty: "ttysQ" })],
     terminals: [
@@ -235,8 +245,14 @@ test("a backend with no Session field of its own still names and correlates", ()
   assert.equal(s?.name, "sprint");
   assert.equal(s?.nameSource, "zellij");
   assert.equal(s?.cwd, "/w/sprint");
-  assert.equal(s?.tmux, null, "no field to land in is not a crash");
-  assert.equal(s?.wezterm, null);
+  assert.deepEqual(muxHandle(s!), {
+    kind: "multiplexer",
+    backend: "zellij",
+    session: "sprint",
+    windowIndex: 0,
+    windowName: "w",
+    paneId: "0",
+  });
 });
 
 test("a session with no pane at all is named by pid, never by its directory", () => {

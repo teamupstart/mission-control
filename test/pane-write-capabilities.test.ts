@@ -8,11 +8,12 @@ import {
   type PaneDeps,
 } from "../src/server/actions.ts";
 import { capturePaneText } from "../src/server/discovery/pane-capture.ts";
-import { bindSession } from "../src/server/terminal/handles.ts";
+import { bindSession } from "../src/server/terminal/registry.ts";
 import type { BoundPane } from "../src/server/terminal/registry.ts";
 import type { Key, TerminalResult } from "../src/server/terminal/types.ts";
 import { stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session } from "@shared/types.ts";
+import { mkEmuHandle, mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What is at stake: that a terminal backend which CANNOT do something refuses by
 // declaration, rather than doing nothing quietly or typing into the wrong pane.
@@ -31,22 +32,20 @@ import type { Session } from "@shared/types.ts";
 // path that ships broken, so it is driven here first.
 
 const noHandles = (over: Partial<Session> = {}): Session =>
-  ({ id: "s1", agent: "claude", tmux: null, wezterm: null, ...over }) as Session;
+  ({ id: "s1", agent: "claude", terminals: [], ...over }) as Session;
 
 const tmuxSession = (): Session =>
   ({
     id: "s1",
     agent: "claude",
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
-    wezterm: null,
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
   }) as Session;
 
 const weztermSession = (): Session =>
   ({
     id: "s2",
     agent: "claude",
-    tmux: null,
-    wezterm: { paneId: 7, tabId: 3, windowId: 0, tabTitle: "", isActive: true },
+    terminals: [mkEmuHandle({ paneId: "7", tabId: "3", windowId: "0", tabTitle: "", isActive: true })],
   }) as Session;
 
 /** A session hosted by BOTH: a tmux pane living inside a wezterm pane, the ordinary case. */
@@ -54,8 +53,7 @@ const nestedSession = (): Session =>
   ({
     id: "s3",
     agent: "claude",
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
-    wezterm: { paneId: 7, tabId: 3, windowId: 0, tabTitle: "", isActive: true },
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" }), mkEmuHandle({ paneId: "7", tabId: "3", windowId: "0", tabTitle: "", isActive: true })],
   }) as Session;
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
@@ -280,5 +278,5 @@ test("a pane nobody can read is no evidence, and never a blank screen", async ()
   // `annotatePaneState` rides the last dialog forward, `awaitPasteSubmitted` refuses to
   // read it as a cleared composer. An empty string would tell all of them the opposite,
   // in the affirmative.
-  assert.equal(await capturePaneText({ tmux: null, wezterm: null }), null);
+  assert.equal(await capturePaneText({ terminals: [] }), null);
 });

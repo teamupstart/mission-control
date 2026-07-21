@@ -9,7 +9,8 @@ import {
   fakeTerminals,
 } from "./helpers/terminal-fakes.ts";
 import type { MuxSessions, TerminalResult } from "../src/server/terminal/types.ts";
-import type { Session, SessionState, TmuxInfo } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import type { Session, SessionState } from "../src/shared/types.ts";
 
 // What is at stake: that "this terminal home is a killable group" is a capability a backend
 // DECLARES, and not the else-branch of a vendor check.
@@ -36,8 +37,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     pid: 4242,
     tty: null,
     permissionMode: null,
-    wezterm: null,
-    tmux: null,
+    terminals: [],
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
@@ -66,7 +66,8 @@ function mkSession(over: Partial<Session> = {}): Session {
   };
 }
 
-const tmux: TmuxInfo = { session: "work", window: "0", windowIndex: 0, paneId: "%3" };
+/** A session hosted on a named multiplexer session - the handle Kill tears down. */
+const onMux = { terminals: [mkMuxHandle({ session: "work", windowName: "0", paneId: "%3" })] };
 
 /** The named-session half of a multiplexer, with only `kill` varying between tests. */
 function sessions(kill: ((name: string) => Promise<TerminalResult>) | null): MuxSessions {
@@ -128,7 +129,7 @@ test("kill: a handleless session surfaces a failed signal", async () => {
 
 test("kill: a multiplexer-hosted session signals the pid AND kills the whole group", async () => {
   const { deps, signalled, killedGroups } = spyDeps();
-  const r = await kill(mkSession({ pid: 99, tmux }), deps);
+  const r = await kill(mkSession({ pid: 99, ...onMux }), deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(signalled, [99]);
@@ -141,7 +142,7 @@ test("kill: a multiplexer that declares no killable group leaves the signal to s
   // other panes still running, and nothing anywhere saying so. Now it is a declaration, and
   // the signal is the complete answer rather than half of a missing one.
   const { deps, signalled, killedGroups } = spyDeps({ killGroup: null });
-  const r = await kill(mkSession({ pid: 7, tmux }), deps);
+  const r = await kill(mkSession({ pid: 7, ...onMux }), deps);
 
   assert.deepEqual(r, { ok: true });
   assert.deepEqual(signalled, [7]);
@@ -151,7 +152,7 @@ test("kill: a multiplexer that declares no killable group leaves the signal to s
 test("kill: succeeds when the process is already gone but the group kill lands", async () => {
   // Race: the pid was already reaped, but the home is still standing.
   const { deps } = spyDeps({ signal: () => ({ ok: false, error: "kill ESRCH" }) });
-  const r = await kill(mkSession({ tmux }), deps);
+  const r = await kill(mkSession(onMux), deps);
 
   assert.deepEqual(r, { ok: true }, "killing the group is enough");
 });
@@ -159,7 +160,7 @@ test("kill: succeeds when the process is already gone but the group kill lands",
 test("kill: succeeds when the group is already gone but the signal lands", async () => {
   // Race the other way: the agent's exit already collapsed its session.
   const { deps } = spyDeps({ killGroup: async () => FAIL("can't find session: work") });
-  const r = await kill(mkSession({ tmux }), deps);
+  const r = await kill(mkSession(onMux), deps);
 
   assert.deepEqual(r, { ok: true }, "signalling the process is enough");
 });
@@ -169,7 +170,7 @@ test("kill: fails only when BOTH the signal and the group kill fail", async () =
     signal: () => ({ ok: false, error: "kill EPERM" }),
     killGroup: async () => FAIL("can't find session: work"),
   });
-  const r = await kill(mkSession({ tmux }), deps);
+  const r = await kill(mkSession(onMux), deps);
 
   assert.equal(r.ok, false);
   // The backend's own words, not ours: it is the half that knows what went wrong.

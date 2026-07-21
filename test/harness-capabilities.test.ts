@@ -9,6 +9,7 @@ import type { Session } from "../src/shared/types.ts";
 // Type-only, so it is erased rather than resolved: a static import of `actions.ts` here
 // would reach the db before the HARNESS_HOME preamble below has run.
 import type { InjectDeps } from "../src/server/actions.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // What is at stake: a harness that declares a capability `null` must land on the SAME
 // path the daemon already takes when that capability is unavailable for any other reason
@@ -43,7 +44,7 @@ const { reloadOwed, pendingReloads } = await import("../src/server/skills/reload
 const { tickTargets } = await import("../src/server/foreman/queue-machine.ts");
 const { decidePromptedWrapup } = await import("../src/server/foreman/prompted-wrapup.ts");
 const { resetToOrigin } = await import("../src/server/actions.ts");
-const { bindSession } = await import("../src/server/terminal/handles.ts");
+const { bindSession } = await import("../src/server/terminal/registry.ts");
 const { stubRun } = await import("../src/server/util/exec.ts");
 const { mkSession } = await import("./helpers/session-fixture.ts");
 const { mkOriginAndClone } = await import("./helpers/git-fixture.ts");
@@ -222,8 +223,7 @@ function withCountedPane(clone: string, agent: Session["agent"], screens: (strin
     agent,
     cwd: clone,
     gitBranch: "main",
-    tmux: { session: "s", window: "w", windowIndex: 0, paneId: "%1" },
-    wezterm: null,
+    terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 0, paneId: "%1" })],
   });
   const deps: InjectDeps = {
     pane: (s) =>

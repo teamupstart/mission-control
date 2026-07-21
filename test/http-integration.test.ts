@@ -23,6 +23,7 @@ const { buildApp } = await import("../src/server/routes.ts");
 const { normTty } = await import("../src/server/discovery/tty.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { Session, Task } from "../src/shared/types.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 openDb();
 const TOKEN = ensureToken();
@@ -51,8 +52,7 @@ function seedSession(): void {
     nomistakesGated: false,
     pid: 4242,
     tty: "ttys003",
-    wezterm: null,
-    tmux: { session: "work", window: "w", windowIndex: 0, paneId: "%3" },
+    terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 0, paneId: "%3" })],
     startedAt: 0,
   };
   registry.applyDiscovery([d]);
@@ -244,8 +244,7 @@ test("cycling the permission mode is rejected for a harness that has none", asyn
       nomistakesGated: false,
       pid: 9191,
       tty: "ttys009",
-      wezterm: null,
-      tmux: { session: "cx", window: "w", windowIndex: 0, paneId: "%9" },
+      terminals: [mkMuxHandle({ session: "cx", windowName: "w", windowIndex: 0, paneId: "%9" })],
       startedAt: 0,
     },
   ]);
@@ -315,8 +314,7 @@ test("rename: 404 unknown session, 400 invalid name, and it's wired to the actio
       nomistakesGated: false,
       pid: 5252,
       tty: "ttys055",
-      wezterm: null,
-      tmux: { session: "harness-rename-src-xyzzy", window: "w", windowIndex: 0, paneId: "%55" },
+      terminals: [mkMuxHandle({ session: "harness-rename-src-xyzzy", windowName: "w", windowIndex: 0, paneId: "%55" })],
       startedAt: 0,
     },
   ]);
@@ -1040,8 +1038,7 @@ test("adding to a NON-claude session is refused, with a reason that isn't a lie"
     nomistakesGated: false,
     pid: 4243,
     tty: "ttys004",
-    wezterm: null,
-    tmux: { session: "other", window: "w", windowIndex: 0, paneId: "%4" },
+    terminals: [mkMuxHandle({ session: "other", windowName: "w", windowIndex: 0, paneId: "%4" })],
     startedAt: 0,
   };
   registry.applyDiscovery([codex]);
@@ -1240,8 +1237,7 @@ test("the standards route reads the repo's contract from the git TOPLEVEL, not t
       nomistakesGated: false,
       pid: 4343,
       tty: "ttys009",
-      wezterm: null,
-      tmux: { session: "work", window: "w", windowIndex: 1, paneId: "%9" },
+      terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 1, paneId: "%9" })],
       startedAt: 0,
     },
   ]);
@@ -1283,8 +1279,7 @@ test("the standards request carries its paths in a BODY, so a big refactor still
       nomistakesGated: false,
       pid: 4444,
       tty: "ttys010",
-      wezterm: null,
-      tmux: { session: "work", window: "w", windowIndex: 2, paneId: "%10" },
+      terminals: [mkMuxHandle({ session: "work", windowName: "w", windowIndex: 2, paneId: "%10" })],
       startedAt: 0,
     },
   ]);

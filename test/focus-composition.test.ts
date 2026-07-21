@@ -18,9 +18,8 @@ import {
   fakeTerminals,
   muxClient,
 } from "./helpers/terminal-fakes.ts";
-import { mkSession } from "./helpers/session-fixture.ts";
+import { mkEmuHandle, mkMuxHandle, mkSession } from "./helpers/session-fixture.ts";
 import type { MuxSessions } from "../src/server/terminal/types.ts";
-import type { TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
 
 // What is at stake: that Focus is a COMPOSITION of two axes and not a tmux special case.
 //
@@ -37,8 +36,13 @@ import type { TmuxInfo, WeztermInfo } from "../src/shared/types.ts";
 // multiplexer with no `clients` cannot be walked outward from at all. Neither describes a
 // shipped backend, so neither would ever be exercised by a test against the real two.
 
-const tmux: TmuxInfo = { session: "work", window: "0", windowIndex: 0, paneId: "%3" };
-const wezterm: WeztermInfo = { paneId: 12, tabId: 4, windowId: 1, tabTitle: "old", isActive: true };
+const PANE = mkMuxHandle({ session: "work", windowName: "0", paneId: "%3" });
+const TAB = mkEmuHandle({ paneId: "12", tabId: "4", windowId: "1", tabTitle: "old" });
+
+/** The three shapes focus sees: inside a multiplexer, in a bare tab, and in both at once. */
+const onMux = { terminals: [PANE] };
+const onEmu = { terminals: [TAB] };
+const onBoth = { terminals: [PANE, TAB] };
 
 /** The named-session half a focus fallback needs, recording the attach argv it hands out. */
 function sessions(): MuxSessions {
@@ -73,7 +77,7 @@ test("a multiplexer-hosted session is selected INSIDE, then its host tab is rais
     },
   });
 
-  const r = await focus(mkSession({ tmux }), fakeTerminals(mux, emu));
+  const r = await focus(mkSession(onMux), fakeTerminals(mux, emu));
 
   assert.deepEqual(r, { ok: true });
   // Inward first, then outward. Selecting decides WHAT the session shows and raises nothing;
@@ -105,7 +109,7 @@ test("the tab raised is the one hosting a CLIENT, never the session's own emulat
     },
   });
 
-  await focus(mkSession({ tmux, wezterm }), fakeTerminals(mux, emu));
+  await focus(mkSession(onBoth), fakeTerminals(mux, emu));
 
   assert.deepEqual(raised, ["5"], "pane 12 (session.wezterm) is never raised");
 });
@@ -128,7 +132,7 @@ test("no tab hosts it: a fresh one is opened running the multiplexer's own attac
     },
   });
 
-  const r = await focus(mkSession({ tmux }), fakeTerminals(mux, emu));
+  const r = await focus(mkSession(onMux), fakeTerminals(mux, emu));
 
   assert.deepEqual(r, { ok: true });
   // The argv comes from the multiplexer, not from a literal here: a `tmux attach` typed at
@@ -146,7 +150,7 @@ test("attached in a terminal we cannot raise is a success, not a failure", async
   });
   const emu = fakeEmulator({ list: async () => [], spawn: null });
 
-  assert.deepEqual(await focus(mkSession({ tmux }), fakeTerminals(mux, emu)), { ok: true });
+  assert.deepEqual(await focus(mkSession(onMux), fakeTerminals(mux, emu)), { ok: true });
 });
 
 test("a multiplexer with no emulator anywhere degrades to the refusal it always had", async () => {
@@ -156,7 +160,7 @@ test("a multiplexer with no emulator anywhere degrades to the refusal it always 
   const mux = fakeMultiplexer({ sessions: sessions(), clients: async () => [], select: async () => OK });
   const emu = fakeEmulator();
 
-  const r = await focus(mkSession({ tmux }), fakeTerminals(mux, emu));
+  const r = await focus(mkSession(onMux), fakeTerminals(mux, emu));
 
   assert.equal(r.ok, false);
   assert.equal(r.error, "no terminal tab hosts this tmux session and none could be opened");
@@ -182,7 +186,7 @@ test("a failed select never goes on to raise a window", async () => {
     },
   });
 
-  const r = await focus(mkSession({ tmux }), fakeTerminals(mux, emu));
+  const r = await focus(mkSession(onMux), fakeTerminals(mux, emu));
 
   assert.equal(r.ok, false);
   assert.equal(r.error, "can't find pane: %3");
@@ -202,7 +206,7 @@ test("an emulator-only session raises its own tab and selects nothing", async ()
   });
 
   const r = await focus(
-    mkSession({ tmux: null, wezterm, nameSource: "wezterm" }),
+    mkSession({ ...onEmu, nameSource: "wezterm" }),
     fakeTerminals(fakeMultiplexer(), emu),
   );
 
@@ -227,7 +231,7 @@ test("an emulator that can only be aimed at the whole app is aimed at the whole 
   });
 
   const r = await focus(
-    mkSession({ tmux: null, wezterm, nameSource: "wezterm" }),
+    mkSession({ ...onEmu, nameSource: "wezterm" }),
     fakeTerminals(fakeMultiplexer(), emu),
   );
 
@@ -237,7 +241,7 @@ test("an emulator that can only be aimed at the whole app is aimed at the whole 
 
 test("an emulator that cannot raise at all says so by name", async () => {
   const r = await focus(
-    mkSession({ tmux: null, wezterm, nameSource: "wezterm" }),
+    mkSession({ ...onEmu, nameSource: "wezterm" }),
     fakeTerminals(fakeMultiplexer(), fakeEmulator({ focus: null })),
   );
 
@@ -261,7 +265,7 @@ test("a multiplexer that cannot report its clients still selects, then falls bac
     },
   });
 
-  const r = await focus(mkSession({ tmux }), fakeTerminals(mux, emu));
+  const r = await focus(mkSession(onMux), fakeTerminals(mux, emu));
 
   assert.deepEqual(r, { ok: true });
   assert.equal(opened, 1);
@@ -269,7 +273,7 @@ test("a multiplexer that cannot report its clients still selects, then falls bac
 
 test("a session with no terminal handle at all is refused, not crashed", async () => {
   const r = await focus(
-    mkSession({ tmux: null, wezterm: null }),
+    mkSession({ terminals: [] }),
     fakeTerminals(fakeMultiplexer(), fakeEmulator()),
   );
 

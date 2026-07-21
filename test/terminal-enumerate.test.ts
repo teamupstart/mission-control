@@ -72,6 +72,33 @@ test("a backend that is not installed costs no subprocess", () => {
   }
 });
 
+test("a backend whose GUI is not running is never asked anything", async () => {
+  // The third skip condition, and the only one that is a CORRECTNESS guard rather than a
+  // cost one. An adapter driven by Apple Events launches its terminal by asking it anything,
+  // so an unguarded sweep would open a window on the operator's desktop every 1500ms.
+  //
+  // Note this is the exact inverse of the rule above, and both are right: "installed but not
+  // running" must still be swept for a backend whose CLI can answer, and must NOT be for one
+  // whose only way of answering is to start the app.
+  const hosted = EMULATOR_IDS.filter((id) => EMULATORS[id].hostProcess);
+  assert.ok(hosted.length > 0, "at least one shipped emulator declares a host process");
+
+  // An empty process table is a machine where nothing is running. Every host-declaring
+  // backend must be absent from the sweep.
+  const swept = (await enumerateTerminals([])).map((e) => e.backend);
+  for (const id of hosted) {
+    assert.equal(swept.includes(id), false, `${id} must not be swept with its GUI down`);
+  }
+
+  // And the declaration travels with the results, so `correlate.ts` can pair against it
+  // without reaching back into the registry and naming a backend.
+  for (const e of await enumerateTerminals([])) {
+    if (e.kind === "emulator") {
+      assert.equal(e.hostProcess, EMULATORS[e.backend].hostProcess);
+    }
+  }
+});
+
 test("presence is about the binary, not about the backend running", () => {
   // The distinction the gate must not blur. wezterm installed with no GUI up still gets
   // swept, and still degrades to [] - fast, via `--no-auto-start`. Skipping it because it

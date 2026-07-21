@@ -11,12 +11,15 @@ and get your decision back.
 
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
-- **Names** each session by its **tmux session name**, else its **wezterm tab
-  title**, else the repo folder. Click a card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to
-  rename it - it renames the underlying tmux session / wezterm tab, which the next
-  sweep reads straight back onto the card. Only a live session with a terminal pane can
-  be renamed - a session found in no backend at all, or one that has exited, has
-  nothing to rename, so its title isn't clickable.
+- **Names** each session by its **tmux session name**, else its terminal tab title
+  (**wezterm**, or **Ghostty** on macOS), else the repo folder. Click a card's title (or
+  press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying tmux session /
+  wezterm tab, which the next sweep reads straight back onto the card. Only a live session
+  with a terminal pane can be renamed - a session found in no backend at all, or one that
+  has exited, has nothing to rename, so its title isn't clickable. A Ghostty tab is named
+  and still cannot be renamed, for a different reason: its titles are read-only, so that
+  backend declares no retitle at all. See
+  [Which terminal you use is declared](#which-terminal-you-use-is-declared-not-assumed).
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
@@ -154,9 +157,10 @@ Three layers, most-to-least automatic:
 
 One long-lived **daemon** (`src/server`) serves the React SPA (`src/web`) plus a
 JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps `ps` plus
-every terminal backend it knows about (today `tmux list-panes`, `cmux tree` and
-`wezterm cli list`) and reconciles an in-memory registry that broadcasts changes
-over SSE. Reviews and dispatched tasks are persisted in SQLite (`node:sqlite`).
+every terminal backend it knows about (today `tmux list-panes`, `cmux tree`,
+`wezterm cli list`, and Ghostty through AppleScript) and reconciles an in-memory registry
+that broadcasts changes over SSE. Reviews and dispatched tasks are persisted in SQLite
+(`node:sqlite`).
 
 ### Which terminal you use is declared, not assumed
 
@@ -236,6 +240,33 @@ the only thing joining a process to a pane. Rather than pass that on and bind a 
 pane its agent is not in, the adapter reports no tty for those workspaces: the session still
 appears, named `<agent> <pid>`. For the same reason a session **dispatched** into cmux gets
 no companion shell pane, since opening one is what would trigger it.
+
+**Ghostty**, on macOS, is one of those backends. It has no CLI worth the name -
+`ghostty +new-window` answers "not supported on this platform" - so it is driven through
+its AppleScript dictionary, which lists windows, tabs and surfaces. The first time the
+daemon asks it anything, macOS raises an Automation prompt ("Mission Control wants to
+control Ghostty"); allow it once. **Deny it and enumeration returns nothing, silently.**
+Your terminal keeps working and its sessions fall back to `claude <pid>` names, so a
+Ghostty tab that never gets named is the symptom to take to *System Settings → Privacy &
+Security → Automation*. Nothing is asked of Ghostty at all while it is not running -
+asking would launch it, and a terminal window opening on your desktop every 1.5 seconds is
+not a poll.
+
+Ghostty puts no tty on a surface, and the tty is the join everything else is built on, so a
+Ghostty tab is matched to a session through the ttys its own GUI process hosts - and only
+where exactly one match is possible. Two Ghostty tabs open on the same directory with an
+agent in each are ambiguous, and **neither is named** rather than one being guessed: a
+wrong match would raise someone else's tab and type your next prompt into it.
+
+A matched Ghostty session is discovered, named, **typed into** and **focused** - replies,
+queued prompts, the send chord and Focus all reach the surface. Two things it cannot do, and
+both are Ghostty's own limits rather than missing plumbing. **Rename** refuses, saying so
+("Ghostty can't retitle a tab"): its titles are read-only on every window, tab and surface,
+so a tab it opens carries whatever the shell reports. And its **screen cannot be read**, so
+anything built on reading a pane back is unavailable on a Ghostty session rather than quietly
+wrong: the permission-mode chip, dialog detection, and the read-back that confirms a pasted
+prompt was actually submitted. Run the agent under tmux, inside a Ghostty window or anywhere
+else, if you want those too.
 
 ### What each agent can do is declared, not assumed
 
@@ -2047,6 +2078,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
+| `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |
 | `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |

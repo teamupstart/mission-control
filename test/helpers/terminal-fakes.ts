@@ -59,6 +59,10 @@ export function fakeEmulator(over: Partial<TerminalEmulator> = {}): TerminalEmul
     label: "WezTerm",
     bin: EMU_BIN,
     list: null,
+    // Null by default for the reason every other capability here is: these fakes exist to
+    // isolate ONE backend's behaviour, and a default second correlation key would be a
+    // variable no test asked for. `terminal-host-join.test.ts` supplies its own.
+    hostProcess: null,
     write: null,
     capture: null,
     focus: null,
@@ -72,18 +76,22 @@ export function fakeEmulator(over: Partial<TerminalEmulator> = {}): TerminalEmul
 /**
  * The two records, from one multiplexer and one emulator - what `TerminalDeps` wants.
  *
- * The second multiplexer is the SAME fake under the other id unless a test hands one in.
- * `Record<MultiplexerId, Multiplexer>` will not let it be omitted, and filling it with a
- * second copy of a backend that declares nothing is the honest default: every test here is
- * about one backend's capabilities, and a registry entry that answered differently would be
- * a second variable nobody asked for.
+ * The second entry on each axis is the SAME fake under the other id unless a test hands one
+ * in. `Record<MultiplexerId, Multiplexer>` will not let either be omitted, and filling it
+ * with a second copy of a backend that declares nothing is the honest default: every test
+ * here is about one backend's capabilities, and a registry entry that answered differently
+ * would be a second variable nobody asked for.
  */
 export function fakeTerminals(
   mux: Multiplexer,
   emu: TerminalEmulator,
   second: Multiplexer = fakeMultiplexer({ id: "cmux", label: "cmux" }),
+  secondEmu: TerminalEmulator = fakeEmulator({ id: "ghostty", label: "Ghostty" }),
 ): TerminalDeps {
-  return { multiplexers: { tmux: mux, cmux: second }, emulators: { wezterm: emu } };
+  return {
+    multiplexers: { tmux: mux, cmux: second },
+    emulators: { wezterm: emu, ghostty: secondEmu },
+  };
 }
 
 /** One multiplexer pane, for a `list` that has to answer with something. */

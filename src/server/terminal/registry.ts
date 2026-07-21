@@ -2,6 +2,7 @@ import { backendPaneToken, innermostPane, type PaneHandles } from "@shared/pane.
 import type { TerminalHandle } from "@shared/terminal.ts";
 import { cmuxMultiplexer } from "./cmux.ts";
 import { defaultExec, type TerminalExec } from "./exec.ts";
+import { ghosttyEmulator } from "./ghostty.ts";
 import { tmuxMultiplexer } from "./tmux.ts";
 import { weztermEmulator } from "./wezterm.ts";
 import type {
@@ -74,7 +75,7 @@ export function multiplexers(exec: TerminalExec = defaultExec): Record<Multiplex
 }
 
 export function emulators(exec: TerminalExec = defaultExec): Record<EmulatorId, TerminalEmulator> {
-  return { wezterm: weztermEmulator(exec) };
+  return { wezterm: weztermEmulator(exec), ghostty: ghosttyEmulator(exec) };
 }
 
 export const MULTIPLEXERS: Record<MultiplexerId, Multiplexer> = multiplexers();

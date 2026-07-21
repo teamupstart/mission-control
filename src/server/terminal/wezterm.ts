@@ -161,6 +161,12 @@ export function weztermEmulator(exec: TerminalExec = defaultExec): TerminalEmula
 
     list,
 
+    // Null because `cli list --format json` reports `tty_name` on every pane, so the strong
+    // correlation key is always available and a process-ancestry fallback would only be a
+    // second, weaker way to reach an answer we already have. Not "wezterm has no GUI
+    // process" - `wezterm-gui` is right there in the process table.
+    hostProcess: null,
+
     write: {
       text: (t, text) => sendText(t, text, true, "wezterm send-text failed"),
       keys: (t, keys) =>

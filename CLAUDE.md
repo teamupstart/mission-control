@@ -299,8 +299,22 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   names it. **They are two axes, not one**: a tmux pane lives *inside* a wezterm pane, so a
   `Multiplexer` has named sessions and a copy-mode probe and cannot raise a window, while a
   `TerminalEmulator` raises windows and has no persistence. Optional capabilities are
-  `T | null` and null is a declaration - Ghostty has no scripting CLI, so `list` / `write` /
-  `capture` are all legitimately null. Writes bind to the innermost handle (`bindPane`);
+  `T | null` and null is a declaration - Ghostty cannot read its own screen or retitle a tab,
+  so `capture` and `retitle` are legitimately null. **Declare a null only after pointing the
+  capability at a real install.** This line used to say Ghostty "has no scripting CLI, so
+  `list` / `write` / `capture` are all legitimately null", which was three wrong claims read
+  off release notes: the CLI is useless, and the AppleScript dictionary enumerates, focuses,
+  spawns and types. `todo/ghostty-emulator.md` is what checking costs. **`hostProcess` is the
+  second correlation key**, and the field Ghostty had to add to this interface: `tty` was the
+  only join, and an emulator can answer every other `EmulatorPane` field and still not know
+  which tty a pane is on. It declares argv0 basenames of the GUI process - DATA, matched at
+  argv0 only, for the `DetectSpec` reason - and `terminal/host.ts` walks ancestry generically.
+  Null means "my panes carry their own ttys", which both other backends declare. It also
+  gates the sweep: an Apple Events backend LAUNCHES its terminal by being asked anything, so
+  a non-running host is skipped rather than started every 1500ms. Correlation pairs a
+  tty-less pane only where exactly one pairing is possible (cwd agreement, then last one
+  standing) and DECLINES otherwise, because a wrong pairing does not degrade, it types into a
+  stranger's tab. Writes bind to the innermost handle (`bindPane`);
   focus walks outward via `clients` -> `hostPanesFor` -> `spawn(attachArgv)`. Adding a `Key`
   fails typecheck in every adapter's `Record<Key, string>` until it says what that key looks
   like in its own convention (tmux `BTab`, wezterm `\x1b[Z`). **A `BinSpec` is how a
@@ -322,7 +336,8 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   subprocess (real argv) or a hand-built pane (capability nulls no shipped backend declares
   yet). Tests:
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
-  `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`.
+  `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`,
+  `terminal-host-join.test.ts`, `terminal-ghostty.test.ts`.
   **Lifecycle is composition, and it is the reason there are two interfaces.** Focus is
   `Multiplexer.select` (decides what the session SHOWS, raises nothing) then an emulator
   raise - host tab via the `hostPanesFor` client-tty join, else the session's own emulator

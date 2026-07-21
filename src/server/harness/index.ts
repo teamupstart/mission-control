@@ -2,14 +2,22 @@ import { AGENT_TYPES } from "@shared/types.ts";
 import type { AgentType, Session } from "@shared/types.ts";
 import { HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
-import type { Harness, HookSpec, TranscriptMessages, TranscriptSpec } from "./types.ts";
+import type {
+  ControlSpec,
+  Harness,
+  HookSpec,
+  TranscriptMessages,
+  TranscriptSpec,
+} from "./types.ts";
 import { claudeHooks } from "./claude/hooks.ts";
 import { claudeTranscript } from "./claude/transcript.ts";
 import { claudeDetect } from "./claude/detect.ts";
 import { claudeBin } from "./claude/bin.ts";
+import { claudeControl } from "./claude/control.ts";
 import { codexTranscript } from "./codex/transcript.ts";
 import { codexDetect } from "./codex/detect.ts";
 import { codexBin } from "./codex/bin.ts";
+import { codexControl } from "./codex/control.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -42,6 +50,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: claudeHooks,
     detect: claudeDetect,
     bin: claudeBin,
+    control: claudeControl,
   },
   // `hooks: null` is a statement, not a gap: Codex pushes nothing at us, so a Codex card
   // is read passively (discovery, and whatever the rollout says) and the dispatcher does
@@ -54,6 +63,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
     hooks: null,
     detect: codexDetect,
     bin: codexBin,
+    control: codexControl,
   },
 };
 
@@ -107,6 +117,17 @@ export function transcriptFor(session: Session): TranscriptSpec | null {
  */
 export function hooksFor(agent: AgentType): HookSpec | null {
   return HARNESSES[agent].hooks;
+}
+
+/**
+ * How a turn reaches this session's agent. Never null - every harness declares a delivery.
+ *
+ * A function rather than a field read at each call site so that the delivery path asks the
+ * SESSION how to talk to it, not the other way around: `injectPrompt` is generic over
+ * harnesses and must not grow a branch naming one.
+ */
+export function controlFor(session: Session): ControlSpec {
+  return HARNESSES[session.agent].control;
 }
 
 /** A located file and the capability that can read its CONVERSATION. */

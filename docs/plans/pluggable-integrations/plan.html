@@ -414,7 +414,7 @@
 <thead><tr><th>Phase</th><th>Items</th></tr></thead>
 <tbody>
 <tr><td>0 &mdash; Seams <strong>(landed)</strong></td><td><code>AGENT_TYPES</code> + <code>AGENT_NAMES</code> as the one agent-union source (<code>shared/types.ts</code>, <code>shared/agent.ts</code>); one pane token (<code>shared/pane.ts</code>); the already-neutral helpers lifted out of the Claude modules into <code>server/util/file-tail.ts</code> (<code>readTailLines</code>) and <code>server/discovery/capture-tolerance.ts</code> (capture-miss tolerance)</td></tr>
-<tr><td>1 &mdash; Harness</td><td>Interface + registry (<strong>landed</strong>); transcript (<strong>landed</strong>); hooks (<strong>landed</strong>); detection/bin (<strong>landed</strong>); capability guards &mdash; skills, permission modes, work queue, context clearing, MCP (<strong>landed</strong>); then TUI, UI</td></tr>
+<tr><td>1 &mdash; Harness</td><td>Interface + registry (<strong>landed</strong>); transcript (<strong>landed</strong>); hooks (<strong>landed</strong>); detection/bin (<strong>landed</strong>); capability guards &mdash; skills, permission modes, work queue, context clearing, MCP (<strong>landed</strong>); control (<strong>landed</strong>); then TUI, UI</td></tr>
 <tr><td>2 &mdash; Terminal</td><td><code>Multiplexer</code> + <code>TerminalEmulator</code> interfaces; enumeration, pane I/O, focus/spawn/kill</td></tr>
 <tr><td>3 &mdash; Structural</td><td><code>Session</code> handle list; <code>Task.tmuxSession</code> migration; de-tmux user-visible strings</td></tr>
 <tr><td>4 &mdash; LLM runner</td><td><code>LlmRunner</code> interface + registry (<strong>landed</strong>); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest</td></tr>

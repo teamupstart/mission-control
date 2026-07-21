@@ -40,7 +40,7 @@ function spy(over: Partial<ReloadDeps> = {}): { deps: ReloadDeps; log: string[] 
     },
     inject: async () => {
       log.push("inject");
-      return { ok: true, pasted: true };
+      return { ok: true, pasted: true, submitVerified: true };
     },
     ack: (_key, generation) => log.push(`ack:${generation}`),
     ...over,
@@ -87,7 +87,7 @@ test("a paste that never landed rolls the ack back, so the next tick retries", a
   // /reload-skills does not push, does not commit, and re-reading a directory twice
   // reaches the same answer - so a silent miss (the panel claiming a skill is live in
   // a session that never heard) is the worse failure, not the duplicate.
-  const { deps, log } = spy({ inject: injecting({ ok: false, error: "busy", pasted: false }) });
+  const { deps, log } = spy({ inject: injecting({ ok: false, error: "busy", pasted: false, submitVerified: false }) });
   assert.equal(await reloadOne(mkSession(), GEN, PRIOR, deps), false);
   assert.deepEqual(log.filter((e) => e.startsWith("ack")), [`ack:${GEN}`, `ack:${PRIOR}`]);
 });
@@ -95,7 +95,7 @@ test("a paste that never landed rolls the ack back, so the next tick retries", a
 test("a paste that LANDED but failed to submit keeps its ack - a retry would mangle the prompt", async () => {
   // The text is sitting in the pane unsubmitted. Re-delivering pastes a second copy
   // after the first. Absence of evidence is not evidence.
-  const { deps, log } = spy({ inject: injecting({ ok: false, error: "enter failed", pasted: true }) });
+  const { deps, log } = spy({ inject: injecting({ ok: false, error: "enter failed", pasted: true, submitVerified: false }) });
   assert.equal(await reloadOne(mkSession(), GEN, PRIOR, deps), false);
   assert.deepEqual(log.filter((e) => e.startsWith("ack")), [`ack:${GEN}`]);
 });
@@ -103,7 +103,7 @@ test("a paste that LANDED but failed to submit keeps its ack - a retry would man
 test("the rollback restores the PRIOR generation, not zero", async () => {
   // Rolling back to 0 would re-offer every generation this session already acked, and
   // the pane read plus a keystroke would happen again for changes it already has.
-  const { deps, log } = spy({ inject: injecting({ ok: false, pasted: false }) });
+  const { deps, log } = spy({ inject: injecting({ ok: false, pasted: false, submitVerified: false }) });
   await reloadOne(mkSession(), 9, 7, deps);
   assert.deepEqual(log.filter((e) => e.startsWith("ack")), ["ack:9", "ack:7"]);
 });
@@ -116,7 +116,7 @@ test("exactly one command is typed, and it is the literal /reload-skills", async
   const { deps } = spy({
     inject: async (_s, text) => {
       typed.push(text);
-      return { ok: true, pasted: true };
+      return { ok: true, pasted: true, submitVerified: true };
     },
   });
   await reloadOne(mkSession(), GEN, PRIOR, deps);

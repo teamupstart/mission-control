@@ -1,8 +1,8 @@
 /**
- * Spot a paste that is sitting in Claude's composer unsubmitted.
+ * Spot a paste that is sitting in an agent's composer unsubmitted.
  *
- * Claude collapses a MULTI-LINE paste into a placeholder instead of echoing the
- * body, and prints it where the prompt text would be:
+ * A TUI that collapses a MULTI-LINE paste prints a placeholder instead of echoing the
+ * body, where the prompt text would be:
  *
  *     ❯ [Pasted text #1 +3 lines]
  *
@@ -21,31 +21,36 @@
  * and it is also never affected by the coalescing window this guards against.
  * "No placeholder" therefore reads as "nothing pending", which is correct for
  * both cases.
+ *
+ * The placeholder itself is the HARNESS's, passed in rather than owned here: it was one
+ * module-level Claude regex applied to every agent, which for a harness that renders no
+ * placeholder is not a check that fails but a check that can never fire. It now lives on
+ * `harness.control` (`ControlSpec.pastePlaceholder`), where its absence is declarable.
  */
 
 /**
  * How many trailing non-empty lines may hold the composer. The placeholder sits
- * just above Claude's footer; the margin covers the mode line and a notice or
+ * just above the agent's footer; the margin covers the mode line and a notice or
  * two without opening the window wide enough for transcript prose to match.
  */
 const COMPOSER_SCAN_LINES = 8;
 
 /**
- * Claude's collapsed-paste placeholder. The number is the paste's index within
- * the turn, so it climbs as pastes accumulate and cannot be pinned to 1.
- */
-const PASTED_PLACEHOLDER = /\[Pasted text #\d+/;
-
-/**
  * Whether a pane capture shows a collapsed paste still waiting in the composer.
  *
- * Null (a capture that failed, or a session with no pane) reads as false: with
- * nothing on screen there is no evidence, and this gates a keystroke that must
- * fire only on evidence.
+ * Null `paneText` (a capture that failed, or a session with no pane) reads as false: with
+ * nothing on screen there is no evidence, and this gates a keystroke that must fire only
+ * on evidence.
+ *
+ * A null `placeholder` is a DIFFERENT claim - this harness renders none, so no capture
+ * could ever show one - and callers must not reach here with one expecting a meaningful
+ * answer. `false` is the only sound return, and it means "no evidence exists" rather than
+ * "the composer is clear"; deciding what to do about that is the caller's, because only
+ * the caller knows whether it was about to spend a keystroke on the difference.
  */
-export function hasPendingPaste(paneText: string | null): boolean {
-  if (!paneText) return false;
-  return composerLines(paneText).some((l) => PASTED_PLACEHOLDER.test(l));
+export function hasPendingPaste(paneText: string | null, placeholder: RegExp | null): boolean {
+  if (!paneText || !placeholder) return false;
+  return composerLines(paneText).some((l) => placeholder.test(l));
 }
 
 /**

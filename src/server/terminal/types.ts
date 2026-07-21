@@ -23,10 +23,15 @@
  * Every optional capability is `T | null`, and null is a DECLARATION rather than a gap.
  * The candidate backends genuinely differ: tmux has a copy-mode probe and wezterm has no
  * such concept; wezterm can raise a window and tmux cannot; wezterm has no session to
- * kill; Ghostty has no scripting CLI at all, so it can be launched into but never
- * enumerated or captured. A flat interface with fifteen required methods would make every
+ * kill; Ghostty scripts through AppleScript rather than a CLI and can neither read its own
+ * screen nor retitle a tab. A flat interface with fifteen required methods would make every
  * one of those a stub, and a stub that returns a plausible empty value is how a new
  * backend degrades silently instead of visibly.
+ *
+ * The discipline that keeps a null honest: declare one only after pointing the capability
+ * at a real backend. Every null below has been. Ghostty is why the sentence above no longer
+ * reads "has no scripting CLI at all, so it can be launched into but never enumerated or
+ * captured" - that was written from release notes, and three of its four claims were false.
  *
  * The payoff is mechanical: `if (session.tmux) … else if (session.wezterm) …` becomes
  * `if (!pane.mode) …`, which states WHY it is skipping rather than which vendor it
@@ -151,10 +156,57 @@ export interface EmulatorPane extends EmulatorTarget {
   tabTitle: string;
   windowTitle: string;
   isActive: boolean;
-  /** Controlling tty without the `/dev/` prefix, or null. */
+  /**
+   * Controlling tty without the `/dev/` prefix, or null.
+   *
+   * The STRONGEST correlation key, and for a long time the only one - see `HostProcessSpec`
+   * for why null here is a real state and not a broken adapter. When set it is exact and
+   * nothing else is consulted.
+   */
   tty: string | null;
-  /** A plain filesystem path - wezterm's `file://` URL is resolved by its adapter. */
+  /**
+   * A plain filesystem path - wezterm's `file://` URL is resolved by its adapter.
+   *
+   * Also the WEAK correlation key, consulted only for a pane whose `tty` is null. It is weak
+   * because two tabs open on one directory are indistinguishable by it, which is why the
+   * matcher requires uniqueness rather than taking a first hit (`discovery/correlate.ts`).
+   */
   cwd: string | null;
+}
+
+/**
+ * How to recognise this emulator's GUI process in the process table.
+ *
+ * The second correlation key, and it exists because an emulator can be fully capable and
+ * still be unable to say which tty a pane is on. Ghostty is the case that forced it,
+ * measured rather than assumed (`todo/ghostty-emulator.md`): its AppleScript dictionary
+ * enumerates surfaces, focuses them, spawns them and types into them, and
+ * `get properties of terminal` returns exactly `id`, `name` and `working directory`. No tty.
+ * No pid. So every field of `EmulatorPane` is answerable except the one that makes a pane
+ * findable, and an adapter with `list` implemented enumerated into a void.
+ *
+ * Declaring `list: null` instead would record a false REASON ("cannot enumerate") for a true
+ * OUTCOME ("cannot correlate") - the same conflation `HARNESSES.codex.transcript.messages`
+ * is null rather than `[]` to avoid.
+ *
+ * DATA rather than a predicate, for the reason `DetectSpec` is: a rule hidden inside a
+ * callback cannot be audited, and the audit is the point. `correlate.ts` owns the ancestry
+ * walk and names no vendor; an adapter only says what its GUI is called.
+ *
+ * Null is the other real answer, and it is what both shipped backends declare: a pane whose
+ * tty the backend already reports needs no fallback. Note a multiplexer has no slot for this
+ * at all - it owns its ptys, so its panes always carry a tty, and its server is reparented
+ * away from its clients so ancestry would say nothing anyway. That last fact is load-bearing
+ * in the other direction too: a tmux session hosted inside a Ghostty window does NOT walk up
+ * to Ghostty, so the multiplexer keeps the pane and the two axes cannot fight over it.
+ */
+export interface HostProcessSpec {
+  /**
+   * argv0 basenames of the GUI process, matched exactly. Not substrings: a command line
+   * carrying an operator's paths must never be read as a terminal (the lesson
+   * `DetectSpec.background` learned the expensive way).
+   */
+  commands: readonly string[];
 }
 
 /**
@@ -302,10 +354,26 @@ export interface EmulatorSpawn {
  * closing.
  *
  * EVERY capability is nullable, including enumeration and writing, and that is the design
- * under test. Ghostty has no scripting CLI: it can be launched into and brought forward,
- * and it can be neither listed nor captured nor typed into. If that adapter needs a field
- * added to this interface, the interface was shaped around `wezterm cli` rather than around
- * terminal emulators.
+ * under test.
+ *
+ * Ghostty was the test, and it corrected this doc rather than confirming it. The claim here
+ * used to be that Ghostty "has no scripting CLI: it can be launched into and brought
+ * forward, and it can be neither listed nor captured nor typed into". The first clause is
+ * true - `+new-window` answers "not supported on this platform" and the bundled binary is
+ * built `app runtime: .none`. Everything after it was wrong, and wrong in the way this
+ * codebase has been burned by before (`HARNESSES.codex.tui`): a capability asserted absent
+ * by a comment that guaranteed nobody would ever check. Ghostty 1.3.1 ships an AppleScript
+ * dictionary that lists windows/tabs/surfaces, focuses ONE surface (so the
+ * `granularity: "app"` variant below was the interface guessing low), spawns with a command
+ * and a cwd, and types. Measured live in `todo/ghostty-emulator.md`.
+ *
+ * What it genuinely cannot do is `capture` and `retitle` - no property or command returns
+ * screen text, and `name` is read-only on every class - and, the finding that actually
+ * shaped this interface, it cannot put a tty on a pane. See `HostProcessSpec`.
+ *
+ * The rule the acceptance test was for still stands: if an adapter needs a field added
+ * here, the interface was shaped around `wezterm cli` rather than around terminal
+ * emulators. `hostProcess` is that field, added for that reason, and said out loud.
  */
 export interface TerminalEmulator {
   id: EmulatorId;
@@ -313,6 +381,11 @@ export interface TerminalEmulator {
   label: string;
   bin: BinSpec;
   list: (() => Promise<EmulatorPane[]>) | null;
+  /**
+   * How to find this emulator's GUI in the process table, for panes it cannot put a tty on.
+   * Null when its panes carry their own - see `HostProcessSpec`.
+   */
+  hostProcess: HostProcessSpec | null;
   write: PaneWrite<EmulatorTarget> | null;
   capture: ((target: EmulatorTarget) => Promise<string | null>) | null;
   focus: EmulatorFocus | null;

@@ -11,12 +11,14 @@ and get your decision back.
 
 - **Discovers** every running `claude` / `codex` session by walking process →
   controlling TTY → terminal pane. No per-session setup required.
-- **Names** each session by its **tmux session name**, else its **wezterm tab
-  title**, else the repo folder. Click a card's title (or press <kbd>⇧</kbd><kbd>O</kbd>) to
-  rename it - it renames the underlying tmux session / wezterm tab, which the next
-  sweep reads straight back onto the card. Only a live session with a tmux or wezterm
-  pane can be renamed - a session found in neither, or one that has exited, has
-  nothing to rename, so its title isn't clickable.
+- **Names** each session by its **tmux session name**, else its terminal tab title
+  (**wezterm**, or **Ghostty** on macOS), else the repo folder. Click a card's title (or
+  press <kbd>⇧</kbd><kbd>O</kbd>) to rename it - it renames the underlying tmux session /
+  wezterm tab, which the next sweep reads straight back onto the card. Only a live session
+  with a tmux or wezterm pane can be renamed - a session found in neither, or one that has
+  exited, has nothing to rename, so its title isn't clickable. (A Ghostty tab is named and
+  cannot be renamed: Ghostty's tab titles are read-only. See
+  [Which terminal you use is declared](#which-terminal-you-use-is-declared-not-assumed).)
 - **Live** via Server-Sent Events - the grid updates as sessions start, work,
   go idle, need input, or exit. No polling from the browser.
 - **Acts** on a session: send it a message, rename it, focus its tab, kill it, or
@@ -154,9 +156,9 @@ Three layers, most-to-least automatic:
 
 One long-lived **daemon** (`src/server`) serves the React SPA (`src/web`) plus a
 JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps `ps` plus
-every terminal backend it knows about (today `tmux list-panes` and
-`wezterm cli list`) and reconciles an in-memory registry that broadcasts changes
-over SSE. Reviews and dispatched tasks are persisted in SQLite (`node:sqlite`).
+every terminal backend it knows about (today `tmux list-panes`, `wezterm cli list`,
+and Ghostty through AppleScript) and reconciles an in-memory registry that broadcasts
+changes over SSE. Reviews and dispatched tasks are persisted in SQLite (`node:sqlite`).
 
 ### Which terminal you use is declared, not assumed
 
@@ -189,6 +191,29 @@ socket pinned to that GUI, and when the GUI restarts the socket goes stale and e
 would otherwise fall back to a `claude <pid>` name that Focus cannot raise. tmux declares
 nothing to drop - its `TMUX` names a server that is alive by definition, and it is the same
 server the app types into.
+
+**Ghostty**, on macOS, is one of those backends. It has no CLI worth the name -
+`ghostty +new-window` answers "not supported on this platform" - so it is driven through
+its AppleScript dictionary, which lists windows, tabs and surfaces. The first time the
+daemon asks it anything, macOS raises an Automation prompt ("Mission Control wants to
+control Ghostty"); allow it once. **Deny it and enumeration returns nothing, silently.**
+Your terminal keeps working and its sessions fall back to `claude <pid>` names, so a
+Ghostty tab that never gets named is the symptom to take to *System Settings → Privacy &
+Security → Automation*. Nothing is asked of Ghostty at all while it is not running -
+asking would launch it, and a terminal window opening on your desktop every 1.5 seconds is
+not a poll.
+
+Ghostty puts no tty on a surface, and the tty is the join everything else is built on, so a
+Ghostty tab is matched to a session through the ttys its own GUI process hosts - and only
+where exactly one match is possible. Two Ghostty tabs open on the same directory with an
+agent in each are ambiguous, and **neither is named** rather than one being guessed: a
+wrong match would raise someone else's tab and type your next prompt into it.
+
+That naming is all you get today. A Ghostty session is discovered, named and shown, and
+**cannot yet be typed into or focused from the dashboard** - its Send is disabled and Focus
+refuses, exactly as for a session with no terminal handle at all. Ghostty also cannot have
+its tab retitled or its screen read, which it genuinely does not offer. Run the agent under
+tmux, inside a Ghostty window or anywhere else, if you want the full set now.
 
 ### What each agent can do is declared, not assumed
 
@@ -1955,6 +1980,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
+| `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |

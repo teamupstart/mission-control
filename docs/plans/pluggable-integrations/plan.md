@@ -253,10 +253,13 @@ Three refinements the sketch above did not have, each forced by the existing cod
   backend rather than being typed as literal text into someone's session.
 - **`SpawnResult` splits "a tab opened" from "we can address it".** `spawnWeztermTab`
   returns a nullable pane id today and the focus fallback reads null as failure, which would
-  make Ghostty - which opens tabs perfectly well and cannot say what it made - look broken.
-  The adapter reads `spawnWeztermTabResult` instead, which reports the spawn's own
-  `RunResult` beside the id, so a spawn that was killed rather than answering is not
-  reported as proof that no tab exists.
+  make Ghostty - written here as the emulator that opens tabs perfectly well and cannot say
+  what it made - look broken. The adapter reads `spawnWeztermTabResult` instead, which
+  reports the spawn's own `RunResult` beside the id, so a spawn that was killed rather than
+  answering is not reported as proof that no tab exists. (Ghostty as landed *can* name the
+  surface it opened; the split still earns its place, because that read can fail and the
+  adapter then returns `ok: true` with a null target rather than a failure. See "Ghostty,
+  as landed".)
 - **`TerminalResult.outcomeUnknown` is required**, for the reason `RunResult` carries it: a
   `paste-buffer` that died rather than answering may be sitting in the composer, and
   `injectPrompt` re-pastes only on positive evidence of non-delivery.
@@ -405,6 +408,133 @@ flowchart LR
   M -. "focus: walks outward" .-> E
 ```
 
+#### Ghostty, as landed - and the premise it overturned
+
+This was queued as the emulator axis's acceptance test rather than as a feature: WezTerm is
+the capable pole and the wrong thing to shape an interface around, and Ghostty was the
+opposite pole - "no scripting CLI at all, so it can be launched into but never enumerated or
+captured", the adapter that would prove the capability-null path is real and not decorative.
+**The premise was wrong, and finding out is most of what the adapter is worth.**
+
+The CLI half holds. `ghostty +new-window` answers "+new-window is not supported on this
+platform", `--help` says launching the emulator from the CLI is unsupported on macOS, and
+the binary in the bundle is built `app runtime: .none`. The conclusion drawn from it does
+not. Ghostty 1.3.1 ships an AppleScript dictionary (`Contents/Resources/Ghostty.sdef`,
+`NSAppleScriptEnabled`), and against a live 1.3.1 on macOS it enumerates windows, tabs and
+surfaces with their ids, names and working directories; focuses **one surface**; spawns with
+a command, a cwd and an environment; and types. What is genuinely absent is `capture` - no
+property or command returns screen text - and `retitle`, where `name` is `access="r"` on
+every class. That is the `HARNESSES.codex.tui` mistake in the same shape: a capability
+declared absent by a comment, and a guard that guaranteed nobody would ever point it at a
+real install. Note `EmulatorFocus.granularity: "app"` was added to this interface **for**
+Ghostty, on the assumption it could only be brought forward wholesale. The interface guessed
+low; the adapter declares `"pane"`, and the `"app"` variant stays because it is still the
+honest answer for some emulator.
+
+**The interface was wrong, and only a real adapter could have shown how.** No Ghostty class
+exposes a tty or a pid - `get properties of terminal` returns exactly `id`, `name` and
+`working directory`. `EmulatorPane.tty` was documented as "the join key to everything else"
+and `correlate.ts` indexed panes by tty alone, so Ghostty could fill every field of
+`EmulatorPane` except the one that makes a pane findable: an adapter that enumerated
+perfectly enumerated into a void. The alternatives were ruled out by measurement rather than
+assumption. An injected env var is unreadable, because `ps -E` is SIP-restricted even for a
+process the operator owns. A surface spawned with a raw `command` reports an **empty**
+working directory, because shell integration never runs to emit OSC 7 - so cwd alone fails
+for precisely the surfaces this app creates. Declaring `list: null` would have recorded a
+false REASON ("cannot enumerate") for a true OUTCOME ("cannot correlate"), which is the
+conflation `HARNESSES.codex.transcript.messages` is null rather than `[]` to avoid.
+
+Six deltas, each forced by something real:
+
+- **`HostProcessSpec` is a new nullable slot on `TerminalEmulator`**, and the rule the
+  acceptance test was written for is what admitted it: an adapter needing a field added here
+  means the interface was shaped around `wezterm cli`. It is DATA - argv0 basenames of the
+  GUI process - for the reason `DetectSpec` is data rather than a predicate: a rule inside a
+  callback cannot be audited. Matched at **argv0 only**, never as a substring, which is the
+  lesson `DetectSpec.background` learned the expensive way once a dispatched session's
+  command line grew an operator's paths and a 1.2KB prompt. `terminal/host.ts` owns the
+  ancestry walk and names no vendor, exactly as `discovery/pane-dialog.ts` holds the menu
+  grammar while a harness supplies its cursor glyph. Both shipped backends declare
+  `hostProcess: null`, and that is a declaration rather than a gap - their panes carry their
+  own ttys.
+- **A multiplexer has no such slot, deliberately.** It owns its ptys, so its panes always
+  carry a tty, and its server is reparented away from its clients so ancestry would say
+  nothing anyway. That second fact is load-bearing in the other direction too: a tmux session
+  running inside a Ghostty window does **not** walk up to Ghostty, so the multiplexer keeps
+  that pane - the inner, more specific handle - and the two axes cannot fight over one tty.
+- **`correlate.ts` correlates over two keys.** Pass 1 is the pane's own tty, unchanged, and
+  it always wins - a tty claimed by a pane that knows its own name is never reassigned by a
+  guess. Pass 2 runs only afterwards, and only for tty-less panes, pairing them against the
+  ttys hosted by that backend's GUI where **exactly one** pairing is possible: cwd agreement
+  where one tty and one pane are alone in sharing a directory, then "last one standing",
+  where a single unplaced tty faces a single unplaced pane and there is no choice to make.
+  The second rule is what carries a surface spawned with a raw command, which has no cwd to
+  agree with.
+- **Declining is the important half, because a wrong pairing does not degrade - it
+  MISDIRECTS.** Two tabs on one worktree, the ordinary case of an agent tab beside a shell
+  tab, make both sides ambiguous and neither is paired. Guessing there would raise a
+  stranger's tab on Focus and type the next queued prompt into it. An unpaired session is the
+  already-tested handleless one: named `<agent> <pid>`, Send disabled, Focus refusing. That
+  is a visible absence, and it is what "degrades correctly" means here.
+- **`enumerateTerminals` takes the process table and skips an emulator whose declared
+  `hostProcess` is not running.** Not an optimisation: a `tell application` against an app
+  that is *not* running LAUNCHES it, so an unguarded sweep would open a terminal window on
+  the operator's desktop every 1500ms. `gatherDiscoveryInput` is sequential now (ps, then the
+  sweep) rather than a `Promise.all`, so the one reading of `ps` serves both the gate and the
+  correlation instead of an adapter growing a private second way to ask whether its app is
+  up. The alternative guard, asking System Events, measured ~160ms per tick.
+- **Ghostty's key vocabulary is a THIRD convention, which is the case `Key` exists for**, and
+  every value was verified by recording raw bytes off a real surface's pty. `send key` takes
+  a small table of NAMED special keys (`enter`, `escape`, `home`, `end`, `backspace`);
+  `up`, `arrow_up` and `page_up` are all rejected with "Unknown key name", and a plain
+  character is accepted and then silently does nothing, which is the trap. Arrows and
+  Shift+Tab go through `perform action "csi:A|B|C|D|Z"`, which emits exactly `ESC [ X`.
+
+Writing is assembled rather than issued, because neither primitive implements
+`PaneWrite.text` alone and picking either would have been a silent correctness bug.
+`input text` is a real **bracketed paste** - measured arriving wrapped in
+`ESC[200~ … ESC[201~` - so it is the right implementation of `paste` and the wrong one of
+`text`. `perform action "text:…"` types literally and **interprets backslash escapes**:
+`text:a\nb` arrives as `a<LF>b`, so a reply containing a literal `\n` would submit itself
+halfway through. So the body goes through the byte-exact path in single-line chunks and each
+newline becomes a real Enter, which is byte-for-byte what typing produces.
+
+Two smaller things the adapter settled:
+
+- **`GHOSTTY_BIN` answers "is it installed" and is never run** - the first backend where
+  "which binary proves it is here" and "what do we execute" have different answers, and worth
+  saying out loud because `BinSpec` reads like the latter. There is no bare `ghostty` PATH
+  candidate, deliberately: it is normally absent from PATH on macOS and normally *present* on
+  Linux, where this adapter cannot work at all, so a bare candidate would answer "installed"
+  on exactly the platform where every call must fail. `dropEnv` is empty and, unlike tmux's,
+  that is not a deferred decision - there is no CLI holding a socket to be pinned to.
+- **`subtitle()` (`session-bits.tsx`) was a hand-kept per-vendor list** that fell through to
+  "process" for anything it did not recognise, so a Ghostty-named session would have been
+  labelled as having no terminal at all - about a session a terminal had just named. It is
+  derived from `nameSource` now, with tmux's pane id the one special case left, because it
+  carries EXTRA information rather than a different spelling of its own name.
+
+**What is still not reachable, plainly.** `legacyHandles` can only land a tmux or a wezterm
+handle, and `WeztermInfo` holds NUMERIC ids where Ghostty's are UUIDs, so a Ghostty session
+correlates and is NAMED (`nameSource: "ghostty"`) and records no handle: its Send is disabled
+and its Focus refuses. That is the existing, already-tested handleless degradation rather
+than a new failure, and it is exactly the shape structural blocker #2 has - typing into and
+focusing a Ghostty surface needs phase 3's `Session` handle list. The adapter's `write`,
+`focus` and `spawn` are complete and tested; nothing in production calls them yet, in the
+same way wezterm's own focus and spawn still bypass this interface.
+
+Verified live end to end rather than from the diff: a real agent-shaped process in a real
+Ghostty window correlated with `nameSource: "ghostty"`, the right tty and the right cwd, and
+a multi-line `write.text` arrived with each line submitted. `list()` costs ~150ms, the price
+of one Apple Event, which is why the host-process gate keeps it off the tick when Ghostty is
+not running. The measurement transcript is `todo/ghostty-emulator.md`. Tests:
+`terminal-host-join.test.ts` (the second key, in both directions - what pairs, and every
+ambiguous case asserting that NOTHING was recorded), `terminal-ghostty.test.ts` (the nulls
+that survived a real install, and the AppleScript the adapter emits - each script verified
+once against the live app by recording pty bytes, so what the assertions protect is that
+nobody edits them into something that was never measured), `terminal-enumerate.test.ts`
+(the launch-by-asking guard), `terminal-registry.test.ts`, `correlate.test.ts`.
+
 ### How the call graph changes
 
 `correlate.ts` and `actions.ts` both imported the two backend modules directly, so every
@@ -438,8 +568,12 @@ flowchart TB
 This is the load-bearing decision. The candidate backends have genuinely different
 capabilities:
 
-- Ghostty has no scripting CLI at all - it can be *launched into*, but not enumerated or
-  captured.
+- ~~Ghostty has no scripting CLI at all - it can be *launched into*, but not enumerated or
+  captured.~~ **Half true, and the half that was false was the conclusion.** The CLI is
+  useless (`+new-window` answers "not supported on this platform"; the bundled binary is
+  built `app runtime: .none`), but Ghostty 1.3.1 ships an AppleScript dictionary and
+  enumerates, focuses, spawns and types through it. Only `capture` and `retitle` are
+  genuinely absent. Measured, not read off release notes - see "Ghostty, as landed".
 - iTerm2 scripts via AppleScript/Python, not a flag-parsing CLI.
 - tmux has copy-mode; wezterm has no equivalent.
 - wezterm can raise a window; tmux cannot.
@@ -840,7 +974,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
 | 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
-| 5 - Proof | A third adapter on each axis, written *only* against the interface |
+| 5 - Proof | A third adapter on each axis, written *only* against the interface: Ghostty **(landed)** - and it was not written only against the interface, because the interface was missing a field (see "Ghostty, as landed"); then cmux, iTerm2, pi |
 
 ### Decisions taken
 
@@ -848,6 +982,12 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
   Ghostty and iTerm2 together are the real test of the emulator boundary: one has no
   scripting CLI, the other scripts via AppleScript/Python rather than a flag-parsing binary.
   If the interface only fits things shaped like `wezterm cli`, both will expose it.
+  **The contrast was wrong and the conclusion held anyway.** Ghostty scripts through
+  AppleScript too, so the two poles were one pole and the "no scripting CLI" end of the
+  emulator axis is currently unrepresented by anything shipped. It exposed the interface
+  regardless, through a defect nobody had listed: an emulator that answers everything except
+  which tty a pane is on. Whatever fills that end will not be picked from release notes
+  again.
 - **The headless-runner axis is in scope** (Phase 4). Foreman should be able to triage a Pi
   session with Pi, or run titling on a cheaper local model. It stays a *separate* interface
   from `Harness` - the observed agent and the evaluating model are independent choices.
@@ -863,13 +1003,27 @@ be added without touching shared code. Phase 5 is the test:
 - A **`pi` harness** that discovers, names, focuses, and accepts typed input - and whose
   unsupported capabilities are visibly disabled in the UI rather than silently absent.
   Spike first, as `todo/codex-instrumentation.md` did for Codex.
-- A **Ghostty** emulator adapter, which supports spawn and focus but **not** enumeration or
-  capture - proving the capability-null path is real and not decorative.
+- ~~A **Ghostty** emulator adapter, which supports spawn and focus but **not** enumeration or
+  capture - proving the capability-null path is real and not decorative.~~ **Landed, and it
+  proved something better.** The clause was written from release notes and three of its four
+  claims were false: Ghostty enumerates, focuses one surface and types, all through an
+  AppleScript dictionary, and only `capture` and `retitle` are null. What it did prove is the
+  thing the clause below is actually for - **the interface was wrong**, and wrong in a way
+  only a real adapter could show. It answers every field of `EmulatorPane` except `tty`, the
+  key correlation was built on, so `HostProcessSpec` and a second correlation key had to be
+  added outside the adapter. Read as a pass/fail this is a fail; read as what it was queued
+  for, it is the only kind of finding worth writing an acceptance test to get. Its remaining
+  gap is not a capability but structural blocker #2: no `Session` field can hold a Ghostty
+  handle, so the session is named and cannot yet be typed into or focused. See "Ghostty, as
+  landed".
 - An **iTerm2** emulator adapter, driven by AppleScript/Python rather than a CLI - proving
-  the boundary is not accidentally shaped like "a binary we pass flags to".
+  the boundary is not accidentally shaped like "a binary we pass flags to". Now also the
+  second Apple Events backend, so it tests whether `HostProcessSpec` and the
+  launch-by-asking guard generalise or were shaped around one app.
 - A **cmux** multiplexer adapter - the same exercise on the multiplexer axis.
 
 If any of the four requires editing a file outside its own adapter, the interface is wrong.
+Ghostty did, and it was.
 
 ## Fixes found along the way
 

@@ -52,7 +52,7 @@ function emuPane(p: Partial<EmulatorPane> & Pick<EmulatorPane, "tty" | "tabTitle
 function terminals(mux: MuxPane[], emu: EmulatorPane[]): TerminalEnumeration[] {
   return [
     { kind: "multiplexer", backend: "tmux", panes: mux },
-    { kind: "emulator", backend: "wezterm", panes: emu },
+    { kind: "emulator", backend: "wezterm", panes: emu, hostProcess: null },
   ];
 }
 
@@ -204,7 +204,7 @@ test("naming priority is the registries' order, not a branch in this file", () =
   const input: DiscoveryInput = {
     procs: [proc({ pid: 810, ppid: 50, tty: "ttysY" })],
     terminals: [
-      { kind: "emulator", backend: "wezterm", panes: [emuPane({ tty: "ttysY", tabTitle: "Outer" })] },
+      { kind: "emulator", backend: "wezterm", panes: [emuPane({ tty: "ttysY", tabTitle: "Outer" })], hostProcess: null },
       { kind: "multiplexer", backend: "tmux", panes: [muxPane({ session: "inner", tty: "ttysY", paneId: "%9" })] },
     ],
   };

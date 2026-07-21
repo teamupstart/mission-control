@@ -33,11 +33,20 @@ import { Tooltip } from "./Tooltip.tsx";
  * soon as it drifts.
  */
 
-/** Where this session was found, phrased for the small grey subtitle. */
+/**
+ * Where this session was found, phrased for the small grey subtitle.
+ *
+ * Derived from `nameSource` rather than matched against a list of vendors, because that list
+ * was already wrong the moment a third backend named a session: `nameSource` is
+ * `TerminalBackendId | "process"`, so an id with no arm here fell through to "process" and
+ * the subtitle said the session had no terminal at all - about a session a terminal had just
+ * named. The only special case left is the one carrying EXTRA information (tmux's pane id),
+ * not the one carrying a different spelling of its own name.
+ */
 export function subtitle(session: Session): string {
+  if (session.nameSource === "process") return "process";
   if (session.nameSource === "tmux" && session.tmux) return `tmux · ${session.tmux.paneId}`;
-  if (session.nameSource === "wezterm") return "wezterm";
-  return "process";
+  return session.nameSource;
 }
 
 /**

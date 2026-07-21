@@ -8,6 +8,7 @@ import type {
 } from "@shared/types.ts";
 import { listProcesses, type Proc } from "./processes.ts";
 import { enumerateTerminals, type TerminalEnumeration } from "../terminal/enumerate.ts";
+import { ttysHostedBy } from "../terminal/host.ts";
 import type {
   EmulatorId,
   EmulatorPane,
@@ -93,9 +94,18 @@ export interface DiscoveryInput {
   terminals: TerminalEnumeration[];
 }
 
-/** Gather the raw sources. Exposed separately so tests can inject input. */
+/**
+ * Gather the raw sources. Exposed separately so tests can inject input.
+ *
+ * Sequential, where this used to be a `Promise.all`: the sweep now takes the process table,
+ * because a backend that declares a `hostProcess` must not be asked anything when its GUI is
+ * not running (see `enumerateTerminals`). The lost overlap is one `ps` read; what it buys is
+ * that the same reading answers both the gate and the correlation, instead of an adapter
+ * growing a private second way to ask whether its app is up.
+ */
 export async function gatherDiscoveryInput(): Promise<DiscoveryInput> {
-  const [procs, terminals] = await Promise.all([listProcesses(), enumerateTerminals()]);
+  const procs = await listProcesses();
+  const terminals = await enumerateTerminals(procs);
   return { procs, terminals };
 }
 
@@ -117,12 +127,38 @@ type TerminalCandidate =
   | { kind: "emulator"; backend: EmulatorId; name: string; pane: EmulatorPane };
 
 /**
- * Index every enumerated pane by its controlling tty, keeping backend order within each tty.
+ * A tty we are about to build a session on, and the cwd we already know for it.
  *
- * The tty is the reliable join between a process and a pane, and the only one: a session's
- * handles are whatever backends hold a pane on the tty its agent process sits on.
+ * The cwd comes from the agent process itself (`readProcCwds`), which makes it the
+ * trustworthy side of the weak join below - a pane's self-reported directory is compared
+ * against it, never the other way round.
  */
-function panesByTty(terminals: readonly TerminalEnumeration[]): Map<string, TerminalCandidate[]> {
+interface AgentTty {
+  tty: string;
+  cwd: string | null;
+}
+
+/**
+ * Index every enumerated pane by the tty it is on, over TWO keys.
+ *
+ * The tty a backend reports itself is the strong key and always wins. It was also the only
+ * key, which quietly made "can this backend name a tty?" a precondition for existing at all -
+ * and Ghostty is a backend that enumerates real, focusable, typeable surfaces and cannot name
+ * one (see `HostProcessSpec`). So a pane with no tty gets a second chance through its
+ * backend's GUI process, and the rule for spending it is uniqueness: pair when exactly one
+ * answer is possible, decline otherwise.
+ *
+ * Declining is the important half. A wrong pairing does not degrade, it MISDIRECTS - the
+ * card would focus someone else's tab and type a prompt into it, which is the failure mode
+ * every write path in this codebase is arranged to avoid. An unpaired session is the
+ * already-tested handleless one: it is named `<agent> <pid>`, its Send is disabled and its
+ * Focus refuses. That is a visible absence, and it is what "degrades correctly" means here.
+ */
+function panesByTty(
+  terminals: readonly TerminalEnumeration[],
+  procs: readonly Proc[],
+  agentTtys: readonly AgentTty[],
+): Map<string, TerminalCandidate[]> {
   const byTty = new Map<string, TerminalCandidate[]>();
   const add = (tty: string | null, c: TerminalCandidate): void => {
     if (!tty) return;
@@ -151,7 +187,71 @@ function panesByTty(terminals: readonly TerminalEnumeration[]): Map<string, Term
       for (const p of e.panes) add(p.tty, { kind: "emulator", backend: e.backend, name: p.tabTitle, pane: p });
     }
   }
+
+  // Second key, and only for panes the first one could not place. Runs after the whole first
+  // pass so a backend never competes with itself, and so a tty already claimed by a pane that
+  // knows its own name is never reassigned by a guess.
+  for (const e of terminals) {
+    if (e.kind !== "emulator" || !e.hostProcess) continue;
+    const hosted = ttysHostedBy(e.hostProcess, procs);
+    const openTtys = agentTtys.filter(
+      (a) => hosted.has(a.tty) && !(byTty.get(a.tty) ?? []).some((c) => c.backend === e.backend),
+    );
+    const openPanes = e.panes.filter((p) => !p.tty);
+    for (const { tty, pane } of pairUniquely(openTtys, openPanes)) {
+      add(tty, { kind: "emulator", backend: e.backend, name: pane.tabTitle, pane });
+    }
+  }
   return byTty;
+}
+
+/**
+ * Pair ttys with panes only where exactly one pairing is possible.
+ *
+ * Two rules, both of which are "there is no choice to make" rather than a best guess:
+ *
+ *   - **cwd agreement.** A pane reports the directory its shell is in; the tty's agent
+ *     process reports its own. Where one tty and one pane are alone in sharing a directory,
+ *     they are the same terminal. Two tabs open on the same worktree - the ordinary case of
+ *     an agent tab beside a shell tab - make both sides ambiguous and neither is paired.
+ *   - **last one standing.** With a single unplaced tty and a single unplaced pane there is
+ *     only one pairing available, and it needs no directory at all. This is the rule that
+ *     carries a surface spawned with a raw command, which reports an EMPTY cwd because shell
+ *     integration never ran to emit OSC 7 - measured, and the reason the cwd rule cannot be
+ *     the only one.
+ *
+ * Anything else is left unpaired on purpose. Note the counts are rarely equal and that is
+ * expected: a terminal's plain shell tabs are panes with no agent tty to match, so most
+ * enumerations end here having paired nothing, which is correct.
+ */
+function pairUniquely(
+  ttys: readonly AgentTty[],
+  panes: readonly EmulatorPane[],
+): { tty: string; pane: EmulatorPane }[] {
+  const pairs: { tty: string; pane: EmulatorPane }[] = [];
+  const takenTty = new Set<string>();
+  const takenPane = new Set<string>();
+
+  for (const a of ttys) {
+    if (!a.cwd) continue;
+    // Both sides must be alone in claiming this directory, or there is a real choice here
+    // and we are not entitled to make it.
+    if (ttys.filter((x) => x.cwd === a.cwd).length !== 1) continue;
+    const matches = panes.filter((p) => p.cwd && p.cwd === a.cwd);
+    if (matches.length !== 1) continue;
+    const pane = matches[0]!;
+    if (takenPane.has(pane.paneId)) continue;
+    takenTty.add(a.tty);
+    takenPane.add(pane.paneId);
+    pairs.push({ tty: a.tty, pane });
+  }
+
+  const restTtys = ttys.filter((a) => !takenTty.has(a.tty));
+  const restPanes = panes.filter((p) => !takenPane.has(p.paneId));
+  if (restTtys.length === 1 && restPanes.length === 1) {
+    pairs.push({ tty: restTtys[0]!.tty, pane: restPanes[0]! });
+  }
+  return pairs;
 }
 
 /**
@@ -251,11 +351,24 @@ export function correlate(
   input: DiscoveryInput,
   procCwds: Map<number, string> = new Map(),
 ): DiscoveredSession[] {
-  const byTty = panesByTty(input.terminals);
+  // The tty groups are built first because the second correlation key needs them: pairing a
+  // pane that could not name its own tty is only possible against the ttys we are actually
+  // building sessions on, with the cwds we resolved for them.
+  const groups = [...groupAgentsByTty(input.procs)];
+  const roots = new Map<string, Proc>();
+  const agentTtys: AgentTty[] = [];
+  for (const [tty, group] of groups) {
+    const root = chooseAgentRoot(group);
+    if (!root) continue;
+    roots.set(tty, root);
+    agentTtys.push({ tty, cwd: procCwds.get(root.pid) ?? null });
+  }
+
+  const byTty = panesByTty(input.terminals, input.procs, agentTtys);
   const sessions: DiscoveredSession[] = [];
 
-  for (const [tty, group] of groupAgentsByTty(input.procs)) {
-    const root = chooseAgentRoot(group);
+  for (const [tty] of groups) {
+    const root = roots.get(tty);
     if (!root) continue;
     const agent = root.agent!;
 

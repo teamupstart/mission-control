@@ -124,3 +124,30 @@ export const WEZTERM_BIN: BinSpec = {
   candidates: ["/Applications/WezTerm.app/Contents/MacOS/wezterm", "wezterm"],
   dropEnv: ["WEZTERM_UNIX_SOCKET"],
 };
+
+/**
+ * Ghostty, where this spec answers ONLY "is it installed" - the resolved binary is not what
+ * the adapter runs.
+ *
+ * That split is real and worth stating rather than hiding, because it is the first backend
+ * where the two questions have different answers. `binPresent` needs a filesystem path to
+ * test, and the app bundle is the honest one. But the bundled binary is built
+ * `app runtime: .none` and refuses the only action that would matter
+ * (`+new-window is not supported on this platform`), so the adapter drives the GUI through
+ * `osascript` instead. See `ghostty.ts`.
+ *
+ * No bare `ghostty` candidate, deliberately. It is normally absent from PATH on macOS, and
+ * on Linux it is normally PRESENT - where this adapter cannot work at all, because the
+ * AppleScript dictionary it depends on is a macOS thing. A bare candidate would make
+ * `binPresent` answer "installed" on exactly the platform where every call must fail. The
+ * env override stays for a non-standard install location.
+ *
+ * `dropEnv` is empty, and unlike tmux's that is not a deferred decision: nothing Ghostty
+ * reads pins the adapter to one instance, because there is no CLI holding a socket to be
+ * pinned to. Apple Events address the running app by bundle id.
+ */
+export const GHOSTTY_BIN: BinSpec = {
+  env: "GHOSTTY_BIN",
+  candidates: ["/Applications/Ghostty.app/Contents/MacOS/ghostty"],
+  dropEnv: [],
+};

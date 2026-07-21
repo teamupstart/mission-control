@@ -48,14 +48,19 @@ test("capability nulls are declarations, and the two axes differ in what they de
 });
 
 test("the interface admits an emulator that can only be launched into", () => {
-  // Ghostty, the acceptance test for the emulator boundary: no scripting CLI, so it can be
-  // spawned into and brought forward, and can be neither enumerated, captured nor typed
-  // into. This has to typecheck with no field left over - if a real Ghostty adapter needs
-  // the interface widened, the interface was shaped around `wezterm cli`.
-  const ghostty: Omit<TerminalEmulator, "id"> = {
-    label: "Ghostty",
-    bin: { env: "GHOSTTY_BIN", candidates: ["ghostty"], dropEnv: [] },
+  // The launch-only pole of the emulator axis: something that opens a window and answers
+  // nothing else. This was written as "Ghostty" on the belief that Ghostty was that shape.
+  // It is not - the real adapter lists, writes, focuses and spawns (`ghostty.ts`) - so the
+  // case is kept as the hypothetical it always really was. It still earns its place: no
+  // shipped backend exercises these nulls, and a path first exercised by a new adapter is a
+  // path that ships broken.
+  const launchOnly: Omit<TerminalEmulator, "id"> = {
+    label: "Launch-only",
+    bin: { env: null, candidates: ["someterm"], dropEnv: [] },
     list: null,
+    // Null because it cannot enumerate at all - there is nothing to correlate, so the
+    // second join key would have nothing to pair. Not the same declaration Ghostty makes.
+    hostProcess: null,
     write: null,
     capture: null,
     // It brings the application forward with no idea which tab that lands on, and says so
@@ -69,8 +74,8 @@ test("the interface admits an emulator that can only be launched into", () => {
     retitle: null,
   };
 
-  assert.equal(ghostty.list, null);
-  assert.equal(ghostty.focus?.granularity, "app");
+  assert.equal(launchOnly.list, null);
+  assert.equal(launchOnly.focus?.granularity, "app");
 });
 
 const MUX_HANDLE = { backend: "tmux" as const, session: "api", windowIndex: 0, paneId: "%3" };

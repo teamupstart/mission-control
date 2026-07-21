@@ -200,13 +200,94 @@ Deliberately NOT in `@shared/llm.ts`, because a third spelling of this is the ac
   settings panel cannot display a default the worker does not spawn with. Pure and in
   `shared` for the same reason `cost.ts` is: the worker spawns with the answer and the
   panel renders it.
-- `task-title.ts:20`, `away/digest.ts:17`, `goal/refiner.ts:39` are bare
-  `envVar(…) ?? "claude-haiku-4-5"` - no config key, nothing surfacing them in the UI.
-- `inspector/worker.ts:92` is `cfg.model ?? envVar("INSPECTOR_MODEL")`, a third spelling.
+- ~~`task-title.ts:20`, `away/digest.ts:17`, `goal/refiner.ts:39` are bare
+  `envVar(…) ?? "claude-haiku-4-5"` - no config key, nothing surfacing them in the UI.~~
+  **Closed**: `LLM_JOB_SPECS` (`@shared/llm-jobs.ts`), rendered by Settings → Models.
+- ~~`inspector/worker.ts:92` is `cfg.model ?? envVar("INSPECTOR_MODEL")`, a third
+  spelling.~~ **Closed** by `INSPECTOR_MODEL_SPEC` before this item; it is now the same
+  ladder, filed with its own subsystem.
 
-The next item generalises `foreman-models.ts` to hold every role and moves those four onto
-it. It does not start a second list under `llm.ts`; a runner answers "how is a model
-called", a role answers "which model", and only the first one is the runner's.
+The next item puts those callers on the same ladder. It does not start a second list under
+`llm.ts`; a runner answers "how is a model called", a role answers "which model", and only
+the first one is the runner's.
+
+#### The model-role ladder and the call sites, as landed
+
+`@shared/llm-jobs.ts` holds `LLM_JOB_IDS` + `LLM_JOB_SPECS`, `src/server/llm/config.ts` the
+`llm` blob over `app_config`, `src/server/llm/jobs.ts` the one call a background job makes,
+and **Settings → Models** renders both axes. Four deltas from the sketch above, each forced
+by something real:
+
+- **`foreman-models.ts` was NOT generalised to hold every role.** The sketch said it should
+  be, and that is the one instruction here worth disobeying: the ladder is already shared
+  (`resolveModelChoice`), so what "generalise" would move is the ROLES - and a role is
+  edited by the panel that owns its blob. Foreman's four live in the `foreman` blob and are
+  written by the Foreman panel; the Inspector's one in `inspector`; these three had no
+  owner, which is why they had no config key. Putting all eight in one module would put two
+  writers on blobs whose whole concurrency story is a per-key merge with a single writer.
+  So it is a THIRD set of roles on one ladder, filed the way the other two are, and
+  `model-choice.ts` stays the only resolver. CLAUDE.md's "the roles stay with their
+  subsystem" is the rule that decided it.
+- **The runner ladder VALIDATES where the model ladder does not**, so it is
+  `resolveLlmRunner` and not a fourth call to `resolveModelChoice`. A model id is free text
+  the CLI resolves - a fixed list would strand an operator the day a model ships - while a
+  runner id has to name something in `LLM_RUNNERS` or there is nothing to spawn. It
+  therefore falls back on an unresolvable one, and REPORTS what it dropped: the config is
+  persisted, so a downgrade leaves a stored id this build cannot resolve, and a silent
+  replacement is indistinguishable from an unset field once the panel has drawn it. Same
+  reason `LlmConfigSchema` `.catch()`es rather than throwing - `getLlmConfig` is on the path
+  of every titling, goal refresh and digest, and a schema that rejected a preference would
+  take all three down. The PATCH schema is strict, because a typo from the panel should be a
+  400 the operator can read rather than a key that sits in the blob doing nothing.
+- **`runStructured`, `createLimiter` and `parseModelJson` left `claude-cli.ts`**, as this
+  item was always going to make them. They are a retry ladder, a concurrency gate and a JSON
+  extractor - none of them about a provider - and `llm/structured.ts` takes a bound `run`
+  function rather than a runner, which keeps it free of both `LlmRunner` and `runClaudeText`
+  and lets the not-yet-migrated callers pass `(p) => runClaudeText(p, opts)` unchanged.
+  `parseModelJson` still tolerates a `{result: …}` envelope, and that tolerance is dated:
+  `LlmRunner.run` strips its own, so a migrated caller's text arrives bare and the branch
+  does nothing. It goes with the last caller holding `runClaudeText`.
+- **Triage's runner reaches the Foreman worker over a route, not the DB.** The worker is a
+  separate process and never touches it, so `GET /api/llm/status` is where it reads the
+  resolved runner - and it is the DAEMON's resolution, not the worker re-deriving one from
+  its own environment, because a worker that answered differently from the panel that
+  printed it is exactly the bug `ForemanStatus.models` exists to rule out. Refreshed once per
+  outer pass and kept on the last known answer when the daemon cannot say: a blip must not
+  move the cheap tier onto a provider nobody picked.
+
+The Inspector and Foreman's review / verify / backlog are deliberately NOT migrated. The
+Inspector is the one caller holding TOOLS, and rendering its `cwd` + deny list as an
+`LlmToolGrant` is its own item - `llm-runner-contract.test.ts` already pins
+`claudeGrantSettings` byte-for-byte against its live constants so that migration can be
+provably a no-op rather than hopefully one.
+
+Verified as byte-identical for anyone who changes nothing: `llm-config.test.ts` asserts that
+an unconfigured daemon resolves the same three model ids the hardcoded constants produced,
+from the same env var names, with `default` as the reported source. `llm-jobs.test.ts` pins
+those ids as LITERALS rather than reading them back off the specs they came from. Tests:
+`llm-jobs.test.ts`, `llm-config.test.ts`, `llm-panel.test.ts`,
+`foreman-prompt-harness.test.ts`, `settings-sidebar-render.test.ts`.
+
+#### Where the two axes meet, and the only place they should
+
+Foreman's reviewer and router prompts describe the child's SCREEN - "you MUST fill
+answer.option", "the child's UI is not a text box, it discards typed characters" - and that
+is a claim about a harness's TUI sitting inside a call whose model is the runner's question.
+It was written against Claude's chrome and handed to every agent's session.
+
+`ReviewInput.session.agent` is now required, and `promptHarness(agent)` projects the two
+facts the prompts need: what to call the child (`AGENT_IDENTITY`) and whether it renders
+dialogs we can read and select rows in (`dialogSpecFor`). The failure it closes is
+asymmetric, which is why the capability is asked rather than assumed - told a menu exists
+where none is drawn, the model fills `answer.option` against nothing and `menuMismatch`
+cancels the answer, which is safe but silently dead; told nothing where one IS drawn, the
+model writes prose for a screen that discards typed characters, and that reply is delivered
+as keystrokes. Only the second direction acts.
+
+`promptHarness` returns a small pure shape rather than the prompt reading the registry
+inline, and that is the same argument `PaneDeps.pane` makes: BOTH shipped harnesses declare
+a dialog, so a policy that asked `dialogSpecFor` inline would have its no-menu branch first
+exercised by whichever harness declares `tui: null` - which is to say, in production.
 
 ### Terminal is two interfaces, because tmux and wezterm are not peers
 
@@ -839,7 +920,7 @@ Phase 3 is deliberately last: it is the only phase that can lose someone's workt
 | 1 - Harness | Interface + registry **(landed)**; transcript **(landed)**; hooks **(landed)**; detection/bin **(landed)**; capability guards - skills, permission modes, work queue, context clearing, MCP **(landed)**; TUI **(landed)**; control **(landed)**; UI **(landed)** |
 | 2 - Terminal | `Multiplexer` + `TerminalEmulator` interfaces **(landed)**; enumeration and correlation **(landed)**; pane I/O **(landed)**; then focus/spawn/kill |
 | 3 - Structural | `Session` handle list; `Task.tmuxSession` migration; de-tmux user-visible strings |
-| 4 - LLM runner | `LlmRunner` interface + registry (**landed**); then the model-role ladder, then the call sites: Foreman's four, the Inspector, goal refiner, task titling, away digest |
+| 4 - LLM runner | `LlmRunner` interface + registry **(landed)**; model-role ladder + settings surface **(landed)**; call sites: goal refiner, task titling, away digest, Foreman's Tier 1 router **(landed)** - the Inspector and Foreman's review / verify / backlog still hold `runClaudeText` directly, and go with the tool-grant item |
 | 5 - Proof | A third adapter on each axis, written *only* against the interface |
 
 ### Decisions taken

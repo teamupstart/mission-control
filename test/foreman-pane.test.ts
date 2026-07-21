@@ -47,6 +47,7 @@ function msg(text: string, id = "m1"): TranscriptMessage {
 function input(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
     session: {
+      agent: "claude",
       name: "worktree cleanup",
       cwd: "/repo",
       gitBranch: "mancej/reap-leaked-worktree-leases",

@@ -3,7 +3,7 @@ import type { Session, TranscriptMessage } from "@shared/types.ts";
 import type { ForemanConfig } from "@shared/protocol.ts";
 import { buildTriagePrompt } from "./triage-prompt.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
-import { parseModelJson } from "../claude-cli.ts";
+import { parseModelJson } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import { textlessAnswer, VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
@@ -582,6 +582,8 @@ export async function triageSession(
 
   const input: ReviewInput = {
     session: {
+      // Which harness this is, so the prompt describes ITS screen - see `ReviewInput.session.agent`.
+      agent: session.agent,
       name: session.name,
       cwd: session.cwd,
       gitBranch: session.gitBranch,

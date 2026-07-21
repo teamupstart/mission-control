@@ -24,6 +24,7 @@ const PREFS = "Never merge a change that adds a public API without a test.";
 function reviewInput(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
     session: {
+      agent: "claude",
       name: "s1",
       cwd: "/repo",
       gitBranch: "main",

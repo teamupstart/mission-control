@@ -3,9 +3,11 @@ import { KeyboardPanel } from "./KeyboardPanel.tsx";
 import { SkillsPanel } from "./SkillsPanel.tsx";
 import { useSkills } from "../useSkills.ts";
 import { useInspector } from "../useInspector.ts";
+import { useLlm } from "../useLlm.ts";
 import { ForemanSettingsPanel } from "./ForemanSettingsPanel.tsx";
 import { CostSettingsPanel } from "./CostSettingsPanel.tsx";
 import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
+import { LlmSettingsPanel } from "./LlmSettingsPanel.tsx";
 import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
@@ -32,6 +34,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "harnesses", label: "Harnesses", icon: "⚙" },
   { id: "task-sources", label: "Task sources", icon: "⇊" },
+  { id: "models", label: "Models", icon: "◈" },
   { id: "foreman", label: "Foreman", icon: "●" },
   { id: "cost", label: "Cost", icon: "$" },
   { id: "inspector", label: "Inspector", icon: "⌕" },
@@ -101,6 +104,9 @@ export function SettingsModal({
   // Owned here rather than by App, like `skills` and `harnesses`: nothing outside this
   // modal reads the Inspector config, so it polls only while the modal is open.
   const inspector = useInspector();
+  // Owned here for the same reason as `inspector`: nothing outside this modal reads which
+  // provider the app's offline work runs on, so it polls only while the modal is open.
+  const llm = useLlm();
   // Owned here for the same reason as `inspector`: nothing outside this modal reads the
   // Shipping config, so it polls only while the modal is open.
   const shipping = useShipping();
@@ -166,6 +172,8 @@ export function SettingsModal({
         return <HarnessesPanel state={harnesses} />;
       case "task-sources":
         return <TaskSourcesPanel state={taskSources} />;
+      case "models":
+        return <LlmSettingsPanel state={llm} />;
       case "foreman":
         return <ForemanSettingsPanel state={foreman} />;
       case "cost":

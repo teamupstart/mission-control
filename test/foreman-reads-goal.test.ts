@@ -14,6 +14,7 @@ import type { ReviewInput } from "../src/server/foreman/prompt.ts";
 function mkInput(over: Partial<ReviewInput> = {}): ReviewInput {
   return {
     session: {
+      agent: "claude",
       name: "goal-feature",
       cwd: "/wt/goal",
       gitBranch: "harness/goal",

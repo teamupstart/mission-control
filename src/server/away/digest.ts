@@ -1,5 +1,5 @@
 import { envVar } from "../config.ts";
-import { resultText, runClaudeText } from "../claude-cli.ts";
+import { runJob } from "../llm/jobs.ts";
 import { digestLines, eventLines, hasAnything, rollupLine } from "@shared/away-buffer.ts";
 import type { AwayBuffer, AwayDigest } from "@shared/away-buffer.ts";
 
@@ -7,14 +7,15 @@ import type { AwayBuffer, AwayDigest } from "@shared/away-buffer.ts";
 //
 // Two tiers, and the order matters. The deterministic rollup is built first and is
 // ALWAYS present; the model-written narrative is layered on top and is allowed to
-// fail. That follows goal/refiner.ts's precedent - a missing `claude`, a logged-out
+// fail. That follows goal/refiner.ts's precedent - a missing provider, a logged-out
 // CLI, or a slow call degrades silently to the tier below rather than surfacing an
 // error, because a digest that fails to render is worse than a terse one.
+//
+// Which provider and which model are the `away-digest` job's (`@shared/llm-jobs.ts`),
+// resolved per call so a change in Settings lands on the next digest.
 
 /** Sized for Haiku writing three sentences over a short list. Not the reviewer's budget. */
 const DIGEST_TIMEOUT_MS = Number(envVar("AWAY_DIGEST_TIMEOUT_MS") ?? 20_000);
-/** Named explicitly: omitting --model inherits the CLI default, the priciest choice. */
-const DIGEST_MODEL = envVar("AWAY_DIGEST_MODEL") ?? "claude-haiku-4-5";
 /** How many event lines the model is shown. Beyond this it is summarising noise. */
 const PROMPT_LINE_CAP = 40;
 
@@ -27,8 +28,9 @@ function minutes(ms: number): number {
  *
  * The buffer's contents are UNTRUSTED - session names and activity strings come
  * from repo paths and agent output - so the prompt fences them and says plainly
- * that they are data. `runClaudeText` already spawns with `--tools ""`, so the
- * worst a crafted session name can do is skew the wording of a summary.
+ * that they are data. A runner grants NO tools unless a caller argued for one
+ * (`LlmRunOptions.grant`) and this one does not, so the worst a crafted session
+ * name can do is skew the wording of a summary.
  */
 async function narrate(buf: AwayBuffer, awayMs: number): Promise<string | null> {
   const lines = eventLines(buf, PROMPT_LINE_CAP);
@@ -67,14 +69,12 @@ async function narrate(buf: AwayBuffer, awayMs: number): Promise<string | null> 
   ].join("\n");
 
   try {
-    const raw = await runClaudeText(prompt, {
-      model: DIGEST_MODEL,
-      timeoutMs: DIGEST_TIMEOUT_MS,
-    });
-    const text = resultText(raw).trim();
+    // The runner has already taken its own envelope off, so what comes back is the
+    // model's text - a caller that unwrapped it would be undoing its runner's flag.
+    const text = (await runJob("away-digest", prompt, { timeoutMs: DIGEST_TIMEOUT_MS })).trim();
     return text.length > 0 ? text : null;
   } catch {
-    // Missing/logged-out/slow claude - the rollup below already says what happened.
+    // Missing/logged-out/slow provider - the rollup below already says what happened.
     return null;
   }
 }

@@ -227,11 +227,28 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   because `/clear` is Claude's slash command, and reset degrades to the byte-identical
   `cleared: false` a pane-less session produces. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
+  `HARNESSES.codex.tui` is the counter-example, and the one to read before declaring any
+  capability `null`: it is NOT null. The guard it replaced said `agent !== "claude"`, with a
+  comment above it asserting Codex "doesn't render these dialogs" - and because the guard
+  skipped the parse, nothing ever tested that claim. It is false. Codex renders the same
+  numbered, single-cursor menus and differs by ONE token, the cursor glyph (U+203A against
+  U+276F), so `DialogSpec` carries the glyph and `discovery/pane-dialog.ts` stays
+  harness-neutral machinery - the same split `transcript.ts` makes. Note the restatement
+  that came before it, `capabilitiesFor(s.agent).permissionModes`, was not a fix: Codex has
+  no permission modes, so gating the DIALOG on them skipped exactly the sessions whose
+  dialogs are the only signal they can produce. **A capability is null only after you point
+  it at a real capture**; `test/fixtures/codex-panes.ts` is what that costs, and those
+  fixtures are verbatim, never hand-written. Getting it wrong is expensive in one specific
+  way here: Codex sends no hooks, so `activePaneDialog` is the ONLY "needs you" evidence it
+  can ever produce, and a Codex session parked on a command-approval prompt read as merely
+  unconfirmed.
   refusing surface. Reach a capability through a registry (`capabilitiesFor`,
-  `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`), never by testing
+  `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` /
+  `dialogSpecFor` / `modeLineSpecFor`), never by testing
   `s.agent`; each phase of `docs/plans/pluggable-integrations/plan.md` adds a slot. Test:
   `harness-capabilities.test.ts`, `harness-transcript.test.ts`, `harness-hooks.test.ts`,
-  `detection.test.ts`, `harness-bin.test.ts`, `process-background-filter.test.ts`,
+  `harness-tui.test.ts`, `detection.test.ts`, `harness-bin.test.ts`,
+  `process-background-filter.test.ts`,
   `session-contracts.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the

@@ -154,7 +154,7 @@ Three layers, most-to-least automatic:
 
 One long-lived **daemon** (`src/server`) serves the React SPA (`src/web`) plus a
 JSON API and an SSE stream on `127.0.0.1:7317`. A ~1.5s poller sweeps `ps` plus
-every terminal backend it knows about (today `tmux list-panes` and
+every terminal backend it knows about (today `tmux list-panes`, `cmux tree` and
 `wezterm cli list`) and reconciles an in-memory registry that broadcasts changes
 over SSE. Reviews and dispatched tasks are persisted in SQLite (`node:sqlite`).
 
@@ -162,10 +162,17 @@ over SSE. Reviews and dispatched tasks are persisted in SQLite (`node:sqlite`).
 
 Discovery names no terminal. It asks each registered backend what panes it can see and
 joins them to agent processes by controlling tty, so a session is named by the
-**innermost** backend holding its pane: a multiplexer session name (tmux) if there is
-one, else a terminal tab title (WezTerm), else `<agent> <pid>`. A session can hold a
+**innermost** backend holding its pane: a multiplexer session name (tmux, cmux) if there
+is one, else a terminal tab title (WezTerm), else `<agent> <pid>`. A session can hold a
 handle from each - a tmux pane lives *inside* a WezTerm pane - and both are kept, because
 writes go to the innermost while raising a window is the outer one's job.
+
+**Supported today**: tmux and [cmux](https://cmux.com) on the multiplexer axis, WezTerm on
+the emulator axis. cmux needs one setting before the daemon can see it - it ships refusing
+socket connections from processes it did not start itself, so set
+`"automation": { "socketControlMode": "allowAll" }` in `~/.config/cmux/cmux.json` and
+restart cmux. Without it your cmux sessions still appear, named `<agent> <pid>` like any
+other unrecognised terminal.
 
 The two axes are separate for that reason. A **multiplexer** has named sessions that
 outlive any window and a copy-mode that can swallow keystrokes; a **terminal emulator**
@@ -216,9 +223,19 @@ skipped from the filesystem, without a process being spawned for it on any tick.
 Each backend also declares which inherited environment variables to drop before its CLI
 runs. WezTerm drops `WEZTERM_UNIX_SOCKET`: a daemon started from a WezTerm pane inherits a
 socket pinned to that GUI, and when the GUI restarts the socket goes stale and every tab
-would otherwise fall back to a `claude <pid>` name that Focus cannot raise. tmux declares
-nothing to drop - its `TMUX` names a server that is alive by definition, and it is the same
-server the app types into.
+would otherwise fall back to a `claude <pid>` name that Focus cannot raise. cmux drops
+`CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID` / `CMUX_TAB_ID`, which are not a socket pin but a
+default *target*: a daemon started inside a cmux terminal would aim anything untargeted at
+that one workspace. tmux declares nothing to drop - its `TMUX` names a server that is alive
+by definition, and it is the same server the app types into.
+
+A backend can also declare that it cannot be trusted about something, which is not the same
+as lacking it. cmux 0.64.20 mis-reports the controlling tty of a workspace holding more than
+one terminal split - it hands the newer split's tty to the older surface - and the tty is
+the only thing joining a process to a pane. Rather than pass that on and bind a card to a
+pane its agent is not in, the adapter reports no tty for those workspaces: the session still
+appears, named `<agent> <pid>`. For the same reason a session **dispatched** into cmux gets
+no companion shell pane, since opening one is what would trigger it.
 
 ### What each agent can do is declared, not assumed
 
@@ -2030,6 +2047,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
 | `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
+| `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |
 | `NOMISTAKES_BIN` | auto | no-mistakes CLI path override |
 | `FOREMAN_CLAUDE_BIN` | `claude` | legacy alias for `MISSION_CLAUDE_BIN`, still honored so existing setups keep working - and honored for the same things, dispatched agents included, since both now resolve through one chain; `MISSION_CLAUDE_BIN` wins when both are set |
 | `FOREMAN_REVIEW_TIMEOUT_MS` | `120000` | Foreman: hard cap on one session review before it's abandoned - and the legacy alias for `MISSION_CLAUDE_TIMEOUT_MS`, which wins when both are set |

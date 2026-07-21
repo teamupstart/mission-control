@@ -137,7 +137,11 @@ function panesByTty(terminals: readonly TerminalEnumeration[]): Map<string, Term
   for (const e of terminals) {
     if (e.kind === "multiplexer") {
       // A multiplexer session always has a name, so this never falls through to the cwd.
-      for (const p of e.panes) add(p.tty, { kind: "multiplexer", backend: e.backend, name: p.session, pane: p });
+      //
+      // `sessionName`, NOT `session`: the second is the target spec, and the two are one
+      // string only in tmux. Naming a card by the address would title every cmux session
+      // with a UUID.
+      for (const p of e.panes) add(p.tty, { kind: "multiplexer", backend: e.backend, name: p.sessionName, pane: p });
     } else {
       // The explicit tab title, and NOT the OS window title, which agents overwrite with a
       // noisy status/spinner. An untitled tab falls back to the cwd basename below - it

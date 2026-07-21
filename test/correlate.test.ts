@@ -34,6 +34,9 @@ function muxPane(p: Partial<MuxPane> & Pick<MuxPane, "session" | "tty" | "paneId
     windowName: "w",
     panePid: 10,
     cwd: "/repo",
+    // Defaulted to the address, which is what tmux reports and what every case below but
+    // one assumes. A backend whose title differs from its target spec passes both.
+    sessionName: p.session,
     ...p,
   };
 }

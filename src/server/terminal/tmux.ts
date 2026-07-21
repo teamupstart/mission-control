@@ -109,6 +109,11 @@ export function parsePanes(stdout: string): MuxPane[] {
     if (!f) continue;
     panes.push({
       session: f[0] ?? "",
+      // The same string, and that is the whole reason `sessionName` had to become its own
+      // field: in tmux a session's name IS its target spec, so nothing here had ever needed
+      // to tell "what a human calls it" apart from "what `-t` resolves". A backend whose
+      // sessions carry an id and a mutable title cannot set both from one value.
+      sessionName: f[0] ?? "",
       windowIndex: Number(f[1] ?? 0),
       windowName: f[2] ?? "",
       paneId: f[3] ?? "",

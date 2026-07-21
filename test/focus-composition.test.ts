@@ -271,6 +271,34 @@ test("a multiplexer that cannot report its clients still selects, then falls bac
   assert.equal(opened, 1);
 });
 
+test("a self-hosting multiplexer ends the walk at select, and claims nothing more", async () => {
+  // cmux's shape: `attachArgv: null` says a workspace is drawn by the app from the moment it
+  // exists, so there is no session sitting invisible waiting to be attached to. The walk ends
+  // rather than failing - step 1 selected the workspace, so it IS what that app displays.
+  //
+  // What is deliberately NOT done is opening a tab: handing another emulator a "select this
+  // workspace" command leaves a stray empty tab beside a window that was already on screen.
+  let opened = 0;
+  const mux = fakeMultiplexer({
+    select: async () => OK,
+    clients: null,
+    sessions: { ...sessions(), attachArgv: null },
+  });
+  const emu = fakeEmulator({
+    spawn: {
+      tab: async () => {
+        opened++;
+        return { ...OK, target: null };
+      },
+    },
+  });
+
+  const r = await focus(mkSession(onMux), fakeTerminals(mux, emu));
+
+  assert.deepEqual(r, { ok: true });
+  assert.equal(opened, 0, "no tab is opened for a multiplexer that draws its own window");
+});
+
 test("a session with no terminal handle at all is refused, not crashed", async () => {
   const r = await focus(
     mkSession({ terminals: [] }),

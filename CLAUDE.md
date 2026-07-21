@@ -343,9 +343,12 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   two had already drifted by one character class - `terminal-name-rules.test.ts` pins that
   whatever a backend sanitizes, the same backend accepts. Tests: `focus-composition.test.ts`,
   `terminal-home.test.ts`, `terminal-name-rules.test.ts`, `rename.test.ts`, `kill.test.ts`.
-  **Migration complete for this axis** - discovery, pane I/O, the `Session` model and the
-  lifecycle operations all go through the registries, and nothing outside
-  `src/server/terminal/` names a backend. `tmuxOnly` / `weztermOnly` and their
+  **A name is not an address**: `MuxPane.sessionName` is what a human sees, `MuxTarget.session`
+  is what `kill` / `rename` resolve, and they are the same string only on tmux - so
+  `killHome` maps one to the other through `held` rather than passing the recorded name to a
+  backend addressed by UUID. **Migration complete for this axis** - discovery, pane I/O, the
+  `Session` model and the lifecycle operations all go through the registries, and nothing
+  outside `src/server/terminal/` names a backend. `tmuxOnly` / `weztermOnly` and their
   `noDriver(backend: never)` default are gone with the shelling-out they guarded. What is
   left is `Task.tmuxSession`, a persisted column; see
   `docs/plans/pluggable-integrations/plan.md` phase 3.

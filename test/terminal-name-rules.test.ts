@@ -2,6 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PLAIN_NAMES, plainName } from "../src/server/terminal/names.ts";
 import { TMUX_NAMES } from "../src/server/terminal/tmux.ts";
+import { MULTIPLEXERS } from "../src/server/terminal/registry.ts";
+
+/** Every multiplexer that has named sessions, so the round trip covers each real backend. */
+const BACKEND_NAMES = Object.values(MULTIPLEXERS)
+  .map((m) => m.sessions?.names)
+  .filter((n) => n !== undefined);
 
 // What is at stake: that the two halves of a naming rule cannot drift apart again.
 //
@@ -37,7 +43,7 @@ test("what a backend sanitizes, the same backend accepts", () => {
   // The round trip, over every rule set that exists. This is the property the split into
   // one object buys: a `sanitize` that stopped stripping something its own `validate` bars
   // fails here rather than in a 500 from a rename nobody could have typed.
-  for (const rules of [PLAIN_NAMES, TMUX_NAMES]) {
+  for (const rules of [PLAIN_NAMES, TMUX_NAMES, ...BACKEND_NAMES]) {
     for (const title of TITLES) {
       const name = rules.sanitize(title);
       assert.equal(
@@ -68,6 +74,19 @@ test("plainName collapses rather than deletes, and stays bounded", () => {
   assert.equal(plainName(""), "task");
   assert.equal(plainName("\t\n"), "task");
   assert.ok(plainName("word ".repeat(40)).length <= 60);
+});
+
+test("a backend whose titles are never parsed as targets refuses only the blank one", () => {
+  // cmux, and the contrast is the point: everything tmux MUST refuse is legal there, because
+  // a cmux workspace is addressed by UUID and a title is only ever a title. A shared
+  // validator would have imposed tmux's target grammar on a backend that has none.
+  const cmux = MULTIPLEXERS.cmux.sessions!.names;
+  for (const name of ["a.b", "a:b", "$0", "-wip", "workspace:1", "0"]) {
+    assert.equal(cmux.validate(name), null, `cmux accepts ${name}`);
+  }
+  assert.ok(cmux.validate("   "), "but not a blank title");
+  // The shared half still applies - it is every backend's rules ON TOP OF this, not instead.
+  assert.ok(cmux.validate("a\nb"));
 });
 
 test("tmux rejects only what its own target grammar cannot express", () => {

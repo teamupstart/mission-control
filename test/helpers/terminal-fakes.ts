@@ -69,15 +69,28 @@ export function fakeEmulator(over: Partial<TerminalEmulator> = {}): TerminalEmul
   };
 }
 
-/** The two records, from one multiplexer and one emulator - what `TerminalDeps` wants. */
-export function fakeTerminals(mux: Multiplexer, emu: TerminalEmulator): TerminalDeps {
-  return { multiplexers: { tmux: mux }, emulators: { wezterm: emu } };
+/**
+ * The two records, from one multiplexer and one emulator - what `TerminalDeps` wants.
+ *
+ * The second multiplexer is the SAME fake under the other id unless a test hands one in.
+ * `Record<MultiplexerId, Multiplexer>` will not let it be omitted, and filling it with a
+ * second copy of a backend that declares nothing is the honest default: every test here is
+ * about one backend's capabilities, and a registry entry that answered differently would be
+ * a second variable nobody asked for.
+ */
+export function fakeTerminals(
+  mux: Multiplexer,
+  emu: TerminalEmulator,
+  second: Multiplexer = fakeMultiplexer({ id: "cmux", label: "cmux" }),
+): TerminalDeps {
+  return { multiplexers: { tmux: mux, cmux: second }, emulators: { wezterm: emu } };
 }
 
 /** One multiplexer pane, for a `list` that has to answer with something. */
 export function muxPane(over: Partial<MuxPane> = {}): MuxPane {
   return {
     session: "api",
+    sessionName: "api",
     windowIndex: 0,
     windowName: "agent",
     paneId: "%3",

@@ -143,14 +143,65 @@ test("held names come from the pane list, matched exactly", async () => {
     deps(
       fakeMultiplexer({
         sessions: sessions(),
-        list: async () => [muxPane({ session: "api-2" }), muxPane({ session: "other" })],
+        list: async () => [
+          muxPane({ session: "api-2", sessionName: "api-2" }),
+          muxPane({ session: "other", sessionName: "other" }),
+        ],
       }),
       fakeEmulator(),
     ),
   );
 
-  assert.deepEqual([...held!].sort(), ["api-2", "other"]);
+  assert.deepEqual([...held!.keys()].sort(), ["api-2", "other"]);
   assert.equal(held!.has("api"), false);
+});
+
+test("a home is killed by its ADDRESS, resolved from the name a task recorded", async () => {
+  // The distinction cmux forced: a tmux session's name IS its target spec, so nothing needed
+  // to tell them apart until a backend arrived whose workspaces carry a UUID and a separate,
+  // renameable title. A teardown that passed the recorded NAME to `close-workspace` would
+  // resolve nothing, tear down nothing, and hand a live agent's worktree back to the pool.
+  const killed: string[] = [];
+  const byUuid = deps(
+    fakeMultiplexer({
+      list: async () => [muxPane({ session: "9f3c-uuid", sessionName: "Fix the login bug" })],
+      sessions: sessions({
+        kill: async (address) => {
+          killed.push(address);
+          return OK;
+        },
+      }),
+    }),
+    fakeEmulator(),
+  );
+
+  assert.deepEqual(await killHome("Fix the login bug", byUuid), { ok: true, asked: true });
+  assert.deepEqual(killed, ["9f3c-uuid"], "the address, never the title");
+});
+
+test("a name no backend holds is passed through, so the backend's own refusal is the error", async () => {
+  // Not our lookup miss wearing the backend's clothes: on tmux the two strings are one, and
+  // a name that resolves to nothing has to reach `kill-session` to produce the "can't find
+  // session" a human acts on.
+  const tried: string[] = [];
+  const r = await killHome(
+    "never-existed",
+    deps(
+      fakeMultiplexer({
+        list: async () => [muxPane({ session: "api", sessionName: "api" })],
+        sessions: sessions({
+          kill: async (address) => {
+            tried.push(address);
+            return FAIL("can't find session: never-existed");
+          },
+        }),
+      }),
+      fakeEmulator(),
+    ),
+  );
+
+  assert.deepEqual(tried, ["never-existed"]);
+  assert.deepEqual(r, { ok: false, asked: true, error: "can't find session: never-existed" });
 });
 
 test("an emulator home is named by its TAB TITLE, which is what discovery reads back", async () => {

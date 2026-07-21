@@ -1463,11 +1463,28 @@ async function raiseOutward(
 
   if (!mux || !inside) return { ok: false, error: "session has no focusable pane" };
 
-  // 3. Nothing hosts it yet: open it in a fresh tab, titled with the session name, running
+  // 3. This backend's sessions are never without a window, so there is nothing to attach and
+  //    the walk ENDS here rather than failing. `attachArgv: null` is cmux's declaration: a
+  //    workspace is drawn by the cmux app from the moment it exists, and step 1 already
+  //    selected it there, so the session is showing what it should be showing. That is the
+  //    same claim `attached` makes below for a terminal we cannot raise, arrived at by
+  //    declaration instead of by observation.
+  //
+  //    What is NOT claimed is that anything was brought to the FRONT. Raising a
+  //    self-hosting multiplexer's own window is a capability this interface still does not
+  //    have; cmux can do it (`focus-window`) and the adapter deliberately did not invent a
+  //    slot for it. It stays uninvented HERE too, because the rule that kept it out of the
+  //    adapter is the same one that governs this file - a capability gets designed against a
+  //    live backend, and there is no cmux on the machine this was written on to point one at.
+  //    Recorded as an open gap on the plan rather than guessed at.
+  const attachArgv = mux.sessions?.attachArgv;
+  if (mux.sessions && !attachArgv) return { ok: true };
+
+  // 4. Nothing hosts it yet: open it in a fresh tab, titled with the session name, running
   //    the multiplexer's own attach argv. A backend that cannot say what it opened still
   //    counts - `SpawnResult.ok` is "a tab opened", and the human has their window.
-  if (mux.sessions) {
-    const argv = mux.sessions.attachArgv(inside.session);
+  if (attachArgv) {
+    const argv = attachArgv(inside.session);
     for (const id of EMULATOR_IDS) {
       const spawn = deps.emulators[id].spawn;
       if (!spawn) continue;
@@ -1476,7 +1493,7 @@ async function raiseOutward(
     }
   }
 
-  // 4. No tab could be opened. If the session is attached somewhere anyway (a terminal we do
+  // 5. No tab could be opened. If the session is attached somewhere anyway (a terminal we do
   //    not integrate with), step 1 already selected the right pane inside it - report success
   //    rather than switching some client's session.
   if (attached) return { ok: true };

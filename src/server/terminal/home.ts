@@ -78,6 +78,17 @@ export interface HomeSpec {
  * unanswerable HERE rather than answerable as "no". A null `kill` is "these homes are not a
  * group anything can kill at once" - true of every emulator tab, where closing the window is
  * the human's to do and the agent process is reached by its pid instead.
+ *
+ * ## A name is not an address
+ *
+ * `held` answers with a MAP from the name a human sees to the string this backend is
+ * addressed by, and the two are only the same string on tmux - where a session's name IS its
+ * target spec, which is why nothing here needed the distinction until cmux. A cmux workspace
+ * has a UUID stable for its lifetime and a title someone can rename; `close-workspace
+ * --workspace <title>` does not resolve, so a teardown that passed the recorded NAME to
+ * `kill` would quietly tear down nothing and hand a live agent's worktree back to the pool.
+ * Which is the failure this whole file is written against, arriving through the one door it
+ * had left open.
  */
 export interface HomeBackend {
   id: TerminalBackendId;
@@ -85,8 +96,11 @@ export interface HomeBackend {
   axis: "multiplexer" | "emulator";
   /** How this backend spells a name - see `NameRules`. */
   names: NameRules;
-  /** The names homes currently hold here, or null when this backend cannot be enumerated. */
-  held: (() => Promise<Set<string>>) | null;
+  /**
+   * The homes this backend currently holds, as name -> the address `kill` takes, or null
+   * when it cannot be enumerated. See "A name is not an address" above.
+   */
+  held: (() => Promise<Map<string, string>>) | null;
   open(spec: HomeSpec): Promise<TerminalResult>;
   kill: ((name: string) => Promise<TerminalResult>) | null;
 }
@@ -117,7 +131,11 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
       // `has-session -t api` answers yes for a session called `api-2`. A dispatch that read
       // that as "the name is taken" would rename for no reason; a teardown that read it as
       // "alive" would leave a tree standing forever.
-      held: async () => new Set((await backend.list()).map((p) => p.session)),
+      //
+      // `sessionName` keyed, `session` valued - the two halves of "a name is not an address".
+      // On tmux they are the same string; on cmux the first is a title and the second a UUID.
+      held: async () =>
+        new Map((await backend.list()).map((p) => [p.sessionName, p.session] as const)),
       open: (spec) =>
         sessions.spawnDetached({
           name: spec.name,
@@ -142,8 +160,15 @@ export function homeBackends(deps: HomeDeps = defaultHomeDeps): HomeBackend[] {
       axis: "emulator",
       names: backend.names,
       // A tab's TITLE is its name here: it is what `spawn` stamps and what discovery reads
-      // back as the card name, so it is the same string a multiplexer's session name is.
-      held: list ? async () => new Set((await list()).map((p) => p.tabTitle).filter(Boolean)) : null,
+      // back as the card name, so it is the same string a multiplexer's session name is. Its
+      // address is the pane id - unused today, since no emulator declares a `kill`, and
+      // carried anyway so the shape does not have to change when one does.
+      held: list
+        ? async () =>
+            new Map(
+              (await list()).filter((p) => p.tabTitle).map((p) => [p.tabTitle, p.paneId] as const),
+            )
+        : null,
       open: (spec) => spawn.tab({ argv: spec.argv, title: spec.name, cwd: spec.cwd }),
       // Declared, not forgotten: a tab is not a group, and this is the null that says the
       // agent's pid is the only handle its teardown has.
@@ -169,11 +194,11 @@ export function homeNameRules(deps: HomeDeps = defaultHomeDeps): NameRules {
  * caller must fall back to a name that is unique by construction rather than assume it is
  * free.
  */
-export async function heldHomeNames(deps: HomeDeps = defaultHomeDeps): Promise<Set<string> | null> {
+export async function heldHomeNames(deps: HomeDeps = defaultHomeDeps): Promise<Map<string, string> | null> {
   const backends = homeBackends(deps).filter((b) => b.held);
   if (!backends.length) return null;
-  const sets = await Promise.all(backends.map((b) => b.held!()));
-  return new Set(sets.flatMap((s) => [...s]));
+  const maps = await Promise.all(backends.map((b) => b.held!()));
+  return new Map(maps.flatMap((m) => [...m]));
 }
 
 /** What opening a home produced. `where` names the backend, for the error a human reads. */
@@ -257,7 +282,13 @@ export async function killHome(
   let error: string | undefined;
   let ok = false;
   for (const backend of killers) {
-    const r = await backend.kill!(name);
+    // Resolve the recorded NAME to the address this backend is killed by - see "A name is
+    // not an address". A backend that cannot be enumerated, or one that has no home under
+    // this name, gets the name passed through unchanged: that is exactly right for tmux,
+    // where the two are one string, and it is what keeps a backend's own "no such session"
+    // the reported error rather than a lookup miss of ours wearing its clothes.
+    const address = (await backend.held?.())?.get(name) ?? name;
+    const r = await backend.kill!(address);
     if (r.ok) ok = true;
     else error ??= r.error;
   }

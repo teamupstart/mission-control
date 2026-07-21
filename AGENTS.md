@@ -18,7 +18,7 @@ how to run it, read `README.md`.
 | `src/server/foreman` | `worker.ts` | Auto-responder. Separate process, HTTP only. |
 | `src/server/inspector` | `worker.ts` | Reviews the PRs we opened. In the daemon, not the Foreman. |
 | `src/server/terminal` | `registry.ts` | tmux/wezterm behind two interfaces. Mechanism only; the write policy stays in `actions.ts`. |
-| `hooks/` | `harness-hook.mjs` | Bare node per Claude hook event. POSTs to the daemon. |
+| `hooks/` | `harness-hook.mjs`, `codex-hook.mjs` | One bare node per hook event, one bridge per harness. POSTs to the daemon. |
 
 - The Foreman is a separate process and **never touches the DB**. If it needs state, add a
   route.
@@ -141,14 +141,47 @@ overlay still needs the "session disappeared" reconciliation effect in `App.tsx`
 in the browser build). Push-direction channels also need `webContents.send` plus a
 subscribe/unsubscribe pair in preload.
 
-**Claude hook events are declared ONCE**, on the harness: `claudeHooks.events` /
-`.matcherEvents` (`src/server/harness/claude/hooks.ts`). Both installers - `hooks/install.mjs`
-and `src/main/integrations.ts` - import it, and `harness-hooks.test.ts` fails if either
+**A harness's hook events are declared ONCE**, on the harness: `claudeHooks.events` /
+`.matcherEvents` (`src/server/harness/claude/hooks.ts`), `CODEX_HOOK_EVENTS`
+(`src/server/harness/codex/hooks.ts`), which is both that spec's `events` and what
+`prepareCodexLaunch` writes overrides for. Claude's two installers - `hooks/install.mjs` and
+`src/main/integrations.ts` - import its spec, and `harness-hooks.test.ts` fails if either
 names an event itself again. A new event is that list plus a `toState` case beside it, plus
-whatever `hooks/harness-hook.mjs` has to lift out of its payload. Keep that file importing
-only types and pure functions: the Electron main bundle reaches it, and must not pull the
-daemon (and `node:sqlite`) in behind nine strings, which is why both installers import the
-spec's module directly rather than `harness/index.ts`.
+whatever that harness's bridge in `hooks/` has to lift out of its payload. Keep those
+bridges importing only types and pure functions: the Electron main bundle reaches them, and
+must not pull the daemon (and `node:sqlite`) in behind nine strings, which is why both
+installers import the spec's module directly rather than `harness/index.ts`.
+
+**Codex's hooks are LAUNCH-scoped, and the asymmetry with Claude's is the design.** Claude's
+are installed once into `~/.claude/settings.json` and reach every session on the machine.
+Codex's are `-c hooks.<Event>=[...]` overrides that `prepareCodexLaunch`
+(`src/server/harness/codex/launch.ts`) injects into the argv of a session WE dispatch, so a
+Codex session an operator started themselves still pushes nothing and is still read
+passively. The `--dangerously-bypass-hook-trust` riding with them is why it has to stay that
+way: it is process-wide for that launch, so it also clears whatever hooks the checkout's own
+Codex config declares, and it is spent only on a dispatch into an allowlisted repo. The
+function returns the overrides and the flag together or neither - never a lone trust bypass -
+and reports `instrumented` so the dispatcher knows whether a later silence is evidence of
+anything.
+
+**The Codex hook bridge path is resolved by `codexHookPath()` in `src/server/config.ts`**,
+and it lives THERE for exactly the reason `mcpServerPath()` documents: esbuild collapses the
+daemon into `dist/server/index.mjs`, so only a module already two levels down in the source
+tree resolves `../../dist/satellites/codex-hook.mjs` the same before and after bundling.
+Written from `harness/codex/launch.ts` it pointed four levels above the bundle, `existsSync`
+failed, and every packaged build silently launched Codex uninstrumented - the designed
+fallback firing for a reason that is not the designed one.
+
+**`applyHook`'s attribution guard compares against `discoveredIdentity`, and nothing else.**
+That map (`src/server/registry.ts`) holds what PASSIVE DISCOVERY read off the live process -
+the rollout an exact pid holds open - which a hook cannot contradict. `Session.agentSessionId`
+is a different claim: it is the last binding we LEARNED, from a hook or from
+`lastAgentBinding` after a restart, and a `/clear` mints a new agent session id on the same
+pane. Guard on the session field and the event that is supposed to REBIND the card is the one
+refused, leaving its note, queue and goal on a dead key no later hook can move either. A
+sweep that could not read the rollout this tick says nothing rather than retracting last
+tick's reading, so one failed `lsof` does not briefly disarm the guard. Test:
+`queue-orphan-sweep.test.ts`.
 
 **MCP tool args are validated twice** - hand-written zod in `src/mcp/server.ts` duplicating
 `src/shared/protocol.ts`. Change both. Hand-kept; nothing catches drift.
@@ -184,14 +217,15 @@ retry. `usage_ledger.model_id` / `query_source` are `NOT NULL DEFAULT ''` for th
 
 **New build entry point** → the `package.json` script, the `build` chain, the
 `--alias:@shared` flag, the `files:` allowlist in `electron-builder.yml`, and the hard-coded
-`dist/` paths in `src/main/index.ts`, `src/main/integrations.ts` and `mcpServerPath()` in
-`src/server/config.ts` (the MCP bundle the ask channel points a dispatch at). The `@shared`
+`dist/` paths in `src/main/index.ts`, `src/main/integrations.ts` and the two resolvers in
+`src/server/config.ts` - `mcpServerPath()` (the MCP bundle the ask channel points a dispatch
+at) and `codexHookPath()` (the bridge a dispatched Codex session is told to run). The `@shared`
 alias is declared in four places that must agree: `tsconfig.json`, `vite.config.ts`, and the
 esbuild flags.
 
-**Never enable asar**, and never move `skills/` into `dist` - Claude launches
-`dist/satellites/hook.mjs` and `dist/mcp/server.mjs` with an external node, and `skills/` is
-reached through a symlink.
+**Never enable asar**, and never move `skills/` into `dist` - the agents launch
+`dist/satellites/hook.mjs`, `dist/satellites/codex-hook.mjs` and `dist/mcp/server.mjs` with
+an external node, and `skills/` is reached through a symlink.
 
 **Append-only**, since old values persist on users' machines: skill directory prefixes in
 `src/shared/skills.ts`, the task source kind ids in `TASK_SOURCE_KINDS`
@@ -225,14 +259,45 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `Record<AgentType, …>`s are the enforcement - a new agent id that declares nothing does
   not compile - and they ask disjoint questions, so neither is a copy of the other. Do not
   put a pure capability in the server record or a filesystem-reading one in shared.
-  **`null` is a first-class answer, never a stub**: `HARNESSES.codex.transcript.messages`
-  is null because a rollout carries metadata and no turns, and every reader then takes the
-  one already-tested "unavailable" path instead of an empty window that reads as "this
-  session said nothing". `HARNESSES.codex.hooks` is null for the same kind of reason -
-  Codex pushes nothing at us - and a null there is load-bearing in three places: the
-  ingest is refused rather than read by Claude's event vocabulary, the pane-keyed hook
-  overlay is agent-scoped so the card Codex started in a vacated pane does not inherit
-  Claude's last state, and `awaitReady` skips its 20s wait. **`detect`, `bin` and `control`
+  **`null` is a first-class answer, never a stub - and it is an answer that has to be
+  MEASURED.** Five of Codex's were not, and all five were wrong. `transcript.messages`,
+  `hooks`, `clearContext`, `skills` and `mcp` are non-null now: a rollout's `event_msg`
+  records carry `user_message` / `agent_message` verbatim (`parseCodexMessages`), Codex
+  fires ten PascalCase events once a launch asks it to, `/clear` is Codex's own slash
+  command as well as Claude's (measured against 0.144.x), it reads `~/.agents/skills`, and
+  `codex mcp add <name> --env K=V --` registers our server - `scope: null` being the real
+  difference there, since Codex writes one registration and has no `-s user|project` to
+  choose between. `GOAL_UNSUPPORTED.codex` (`@shared/goal.ts`) went null with the first of
+  those: an entry there and its harness's `messages` capability are ONE fact in two files,
+  and `harness-transcript.test.ts` fails until they agree. Codex is down to two nulls,
+  `permissionModes` and `workQueue`.
+  The nulls on this axis that ARE still true are the ones someone pointed at a real install:
+  `control.pastePlaceholder` (below), and `skills.reloadCommand`, which is the whole
+  difference between "this harness has no skills" and "this harness needs no nudge" - Codex
+  watches its own skills directory. What each of them buys is that every reader takes the
+  one already-tested "unavailable" path instead of, say, an empty transcript window that
+  reads as "this session said nothing".
+  `src/server/transcript.ts`'s `JsonlMessagesSpec` is where that landed for the second
+  reader: a UNION, exactly one of `parse` or `parseBatch`, because a harness whose turns are
+  independent lines supplies the first while one whose tool records extend the turn before
+  them (Codex's rollout) needs the whole window and supplies the second. Two optional fields
+  instead let a harness pass a `parse: () => null` stub beside the real batch parser to
+  satisfy the type - dead code that reads like a live contract, with nothing in the
+  interface saying which of the two would have won.
+  **The three degradations Codex's `hooks: null` used to drive are still the contract; they
+  are just no longer reached by either shipped harness.** `applyHook` refuses an ingest whose
+  harness declares no hooks rather than reading it in Claude's vocabulary; the pane-keyed
+  overlay is agent-scoped; `awaitReady` skips its 20s wait. The middle one got MORE
+  load-bearing, not less - both harnesses write overlays now, so `overlayFor` scoping on
+  `HookOverlay.agent` is the only thing stopping the card Codex started in a vacated pane
+  from inheriting Claude's last state. The third is now gated on `prepareCodexLaunch`'s
+  `instrumented` as well as on the capability, because an uninstrumented Codex launch will
+  never produce that signal either.
+  `HARNESS_CAPABILITIES.codex.workQueue` is the second of those two, still deliberate and on
+  a different argument than it used to carry: not "no hooks and no readable transcript",
+  both of which now exist, but that Foreman's DELIVERY half - `tickTargets` driving a Codex
+  pane - has never been run against one. That is the unlock `docs/plans/codex/plan.md` phase
+  8 describes, not a line to flip on its own. **`detect`, `bin` and `control`
   are the three that are NOT nullable**: a harness nothing can find on the process table has
   no card at all, one that names no binary cannot be dispatched, and one we cannot talk to
   is not one we can dispatch to. Inside `control`, though, `pastePlaceholder: null` is
@@ -244,12 +309,15 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   matched at argv[1]/argv[2] and never substrings of a command line carrying an operator's
   paths and a 1.2KB prompt. `resolveAgentBin` (`harness/index.ts`) is the ONE bin resolver,
   for dispatched sessions and headless runs alike; it lived in `config.ts` while
-  `claude-cli.ts` kept a second chain, and the two disagreed. `codex.clearContext` is null
-  because `/clear` is Claude's slash command, and reset degrades to the byte-identical
-  `cleared: false` a pane-less session produces. An absence a HUMAN sees needs its
+  `claude-cli.ts` kept a second chain, and the two disagreed. A `clearContext: null` still
+  degrades reset to the byte-identical `cleared: false` a pane-less session produces, but no
+  shipped harness declares one any more: `codex.clearContext` was null on the assertion that
+  `/clear` was Claude's alone and would land in Codex's prompt as text, and it is Codex's own
+  command. An absence a HUMAN sees needs its
   sentence composed from the capability (`workQueueUnsupportedWhy`), not typed at each
-  refusing surface. `HARNESSES.codex.tui` is the counter-example, and the one to read
-  before declaring any capability `null`: it is NOT null. The guard it replaced said
+  refusing surface. `HARNESSES.codex.tui` was the FIRST counter-example, and is still the
+  one to read before declaring any capability `null` - the five corrections above are what
+  taking it seriously cost. It is NOT null. The guard it replaced said
   `agent !== "claude"`, with a comment above it asserting Codex "doesn't render these
   dialogs" - and because the guard
   skipped the parse, nothing ever tested that claim. It is false. Codex renders the same
@@ -261,8 +329,9 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   dialogs are the only signal they can produce. **A capability is null only after you point
   it at a real capture**; `test/fixtures/codex-panes.ts` is what that costs, and those
   fixtures are verbatim, never hand-written. Getting it wrong is expensive in one specific
-  way here: Codex sends no hooks, so `activePaneDialog` is the ONLY "needs you" evidence it
-  can ever produce, and a Codex session parked on a command-approval prompt read as merely
+  way here, and hooks narrowed that rather than removing it: Codex's hooks are launch-scoped,
+  so for a Codex session an OPERATOR started `activePaneDialog` is still the only "needs you"
+  evidence there is, and one parked on a command-approval prompt read as merely
   unconfirmed. Reach a capability through a registry (`capabilitiesFor`,
   `harnessFor`, `sessionMessages`, `transcriptFor`, `hooksFor`, `tuiFor` / `dialogSpecFor` /
   `modeLineSpecFor`, `controlFor`), never by testing `s.agent`; each phase of
@@ -270,6 +339,22 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   `harness-capabilities.test.ts`, `harness-transcript.test.ts`, `harness-hooks.test.ts`,
   `harness-tui.test.ts`, `harness-control.test.ts`, `detection.test.ts`,
   `harness-bin.test.ts`, `process-background-filter.test.ts`, `session-contracts.test.ts`.
+- **A fold over a harness capability iterates `AGENT_TYPES`, and chooses its filter
+  deliberately.** `skillsDirs()` (`src/server/skills/reconcile.ts`) is every harness
+  declaring a `skills` capability, de-duplicated - the loop the single-directory version
+  said would be needed when a second harness declared one, and Codex is that harness
+  (`~/.agents/skills`). Until the fold existed the declaration was inert: `skillsDirFor`
+  had one caller, `claudeSkillsDir`, so every reconcile, blocker, drift and uninstall pass
+  walked Claude's directory alone, the panel showed the skill on, and one of the two
+  harnesses on the machine silently never had it. It is deliberately **NOT**
+  `skillsAgents()`, which filters on `reloadCommand` because it answers a different
+  question - who the pane reload BROADCAST is about - and Codex needs no nudge. Installing
+  a skill and making a running session notice are two capabilities, and one selector
+  serving both is how a harness gets the nudge it does not need and none of the skills it
+  does. `applyMcp` (`src/main/integrations.ts`) is the same shape and used to be the other
+  half of the defect: a hand-written `["claude", "codex"]` tuple, which a third harness
+  would have been left out of with nothing failing. Test: `skills-multi-harness.test.ts`
+  (the fold), `skills-reconcile.test.ts` (the walk), `skills-config.test.ts`.
 - **Offline model providers**: `LLM_RUNNER_IDS` (`@shared/llm.ts`) + an entry in
   `LLM_RUNNERS` (`src/server/llm/index.ts`). The `Record<LlmRunnerId, LlmRunner>` is the
   enforcement - a new id that is not implemented does not compile, and every capability is
@@ -284,8 +369,17 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   swallowed, a stored id from a newer build is indistinguishable from an unset one and the
   panel renders the fallback as the operator's own choice. The config schema `.catch()`es for
   the same reason - `getLlmConfig` is on the path of every titling, goal refresh and digest,
-  and a throw there takes all of them down over a preference. The Foreman worker reads its
-  runner off `/api/llm/status`, never the DB. Test: `llm-runner-contract.test.ts`,
+  and a throw there takes all of them down over a preference. The Foreman worker still never
+  touches the DB, and its runner is a TWO-step ladder: Foreman's own `cfg.runner` when the
+  operator chose one there, else `client.llmRunner()` - that is `/api/llm/status`, the
+  app-wide config-then-env-then-default resolution only the daemon can see. It fell back to
+  a literal `"claude"`, which silently dropped the env layer for the one subsystem that runs
+  in its own process; and when the daemon cannot answer it holds the last known runner
+  rather than resetting to the default, because a blip must not move the cheap tier onto a
+  provider nobody picked. `foremanStatus` (`src/server/foreman/config.ts`) resolves the same
+  ladder server-side and reports it as `ForemanStatus.runner`, so the panel prints the
+  provider actually in force instead of re-deriving `config.runner ?? "claude"`. Test:
+  `llm-runner-contract.test.ts`,
   `llm-jobs.test.ts`, `llm-config.test.ts`. WHICH model a given call uses is a different
   question - see the model ladder below.
 - **Terminal backends**: the ids are `MULTIPLEXER_IDS` / `EMULATOR_IDS`

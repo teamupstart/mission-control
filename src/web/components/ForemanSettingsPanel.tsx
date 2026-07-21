@@ -26,6 +26,10 @@ export function candidateRepos(repos: string[], allowlist: string[]): string[] {
 
 export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.JSX.Element {
   const { config, status, update, error } = state;
+  // The provider actually in force, not `config.runner ?? "claude"`. An unset `runner`
+  // falls to the app-wide ladder, whose env layer the browser cannot see - so the daemon
+  // reports the resolution and this renders it. See `ForemanStatus.runner`.
+  const runner = config?.runner ?? status?.runner ?? "claude";
   const [repos, setRepos] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
@@ -113,7 +117,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
           <select
             id="foreman-provider"
             className="field-input foreman-model-input"
-            value={config?.runner ?? "claude"}
+            value={runner}
             disabled={!config}
             onChange={(e) => {
               const runner = e.target.value as (typeof LLM_RUNNER_IDS)[number];
@@ -137,7 +141,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
           use the provider-compatible value shown. Review and Verify are the expensive
           calls; Triage and Backlog are deliberately cheaper.
         </p>
-        <ModelSuggestions runner={config?.runner ?? "claude"} />
+        <ModelSuggestions runner={runner} />
         {FOREMAN_MODEL_ROLES.map((role) => (
           <ModelField
             key={role}
@@ -145,7 +149,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
             spec={FOREMAN_MODEL_SPECS[role]}
             value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
             resolved={status?.models?.[role]}
-            runner={config?.runner ?? "claude"}
+            runner={runner}
             disabled={!config}
             onCommit={(next) =>
               // An empty box is a cleared override, and must be STORED as empty so the

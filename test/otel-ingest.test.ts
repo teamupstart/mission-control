@@ -348,3 +348,56 @@ test("an ingest reaches a card that was already on screen", () => {
   registry.applyOtelMetrics(exportBody({ sessionId: "sess-live", costUsd: 0.75 }));
   assert.equal(registry.getSession("sess-live")?.cost?.costUsd, 0.75);
 });
+
+test("a hook does not blank an unpriced token count the ledger has never heard of", () => {
+  // Two writers reach `Session.cost`, and only one of them is the ledger. A harness that
+  // reports no dollars still reports TOKENS, which `applyPassiveUsage` puts straight onto
+  // the session with `costUsd: null` - there is no ledger row to read it back out of.
+  //
+  // So a hook that re-derives the figure from the ledger on every event answers null for
+  // exactly those sessions and wipes the chip, several times a turn, with the poller
+  // putting it back a tick later. The rule is the one `applyRuntimeMeta` and
+  // `mergeDiscovered` already hold: re-read on a note-key ROTATION, carry it otherwise.
+  const registry = new Registry();
+  registry.applyDiscovery([
+    {
+      syntheticId: "sess-passive",
+      agent: "codex",
+      name: "work",
+      nameSource: "process",
+      cwd: "/repo",
+      gitBranch: "feature",
+      nomistakesGated: false,
+      pid: 3,
+      tty: "ttys3",
+      terminals: [mkMuxHandle({ session: "s", windowName: "w", windowIndex: 2, paneId: "%3" })],
+      startedAt: 0,
+    } as never,
+  ]);
+  registry.applyPassiveUsage("sess-passive", {
+    costUsd: null,
+    input: 1200,
+    output: 340,
+    cacheRead: 0,
+    cacheWrite: 0,
+    reasoningOutput: 0,
+    updatedAt: 1,
+  } as never);
+  assert.equal(registry.getSession("sess-passive")?.cost?.input, 1200);
+
+  registry.applyHook({
+    agent: "codex",
+    event: "PostToolUse",
+    sessionId: null,
+    cwd: "/repo",
+    transcriptPath: null,
+    toolName: "shell",
+    env: { tmuxPane: "%3" },
+  } as never);
+
+  assert.equal(
+    registry.getSession("sess-passive")?.cost?.input,
+    1200,
+    "the passively-read token count survived an ordinary mid-turn hook",
+  );
+});

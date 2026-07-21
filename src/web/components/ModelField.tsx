@@ -1,6 +1,7 @@
 import type { ModelChoiceSpec, ResolvedModel } from "@shared/model-choice.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
 import { modelChoicesFor } from "@shared/model.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 // The one input in this app for "which model does this call spawn with?".
 //
@@ -93,16 +94,21 @@ export function ModelField({
 }
 
 /**
- * The "common ids" line that sits above a group of fields.
+ * The line that sits above a group of fields, saying whose catalog the pickers below are
+ * drawn from.
  *
- * Named in prose rather than offered in a picker: a native `<datalist>` is browser chrome
- * this theme can't touch (which is why `RepoCombobox` exists), and a combobox is a lot of
- * widget for three ids. Any id the CLI accepts works.
+ * It used to name three ids in prose because the fields were free text and a `<datalist>`
+ * is browser chrome this theme can't touch. `ModelField` is a `<select>` over
+ * `modelChoicesFor(runner, …)` now, so the ids are IN the picker and repeating them here
+ * would be the same list twice - what is left to say is which provider's list it is.
+ *
+ * Named through `AGENT_IDENTITY` rather than a ternary over the runner id: a third
+ * provider must not silently read as "Claude Code" here.
  */
 export function ModelSuggestions({ runner = "claude" }: { runner?: LlmRunnerId }): React.JSX.Element {
   return (
     <p className="settings-hint foreman-models-hint">
-      Choose from the models supported by the selected {runner === "codex" ? "Codex" : "Claude Code"} provider.
+      Choose from the models supported by the selected {AGENT_IDENTITY[runner].label} provider.
     </p>
   );
 }

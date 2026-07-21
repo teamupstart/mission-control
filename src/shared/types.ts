@@ -913,6 +913,16 @@ export interface ForemanStatus {
    * one case this readout cannot see.
    */
   models: Record<ForemanModelRole, ResolvedForemanModel>;
+  /**
+   * The provider every Foreman role actually spawns through, resolved the same way and
+   * for the same reason as `models` above.
+   *
+   * Foreman's own `runner` when it has one; otherwise the app-wide ladder (`llm` config,
+   * then `MISSION_LLM_RUNNER`, then the default), which the browser cannot see. The panel
+   * renders this rather than `config.runner ?? "claude"`, which would print a provider the
+   * operator neither chose nor is running on.
+   */
+  runner: LlmRunnerId;
 }
 
 // ---- Custom skills ----

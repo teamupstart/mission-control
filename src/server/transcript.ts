@@ -80,14 +80,23 @@ export function transcriptSize(path: string): number | null {
   }
 }
 
-/** What a JSONL harness has to supply to get the whole `TranscriptMessages` capability. */
-export interface JsonlMessagesSpec {
-  parse: TranscriptLineParser;
-  /** Optional stateful parser for formats whose tool records extend an earlier turn. */
-  parseBatch?: (records: unknown[]) => TranscriptMessage[];
+/**
+ * What a JSONL harness has to supply to get the whole `TranscriptMessages` capability.
+ *
+ * Exactly ONE of the two parsers, and the union is what says so. A record shape whose
+ * turns are independent supplies `parse`; one whose tool records extend an earlier turn
+ * (Codex's rollout) needs the whole batch and supplies `parseBatch`. Spelling it as two
+ * optional fields let a harness pass a `parse: () => null` stub beside the real batch
+ * parser to satisfy the type - dead code that reads like a live contract, and no way to
+ * tell from the interface which of the two would have won.
+ */
+export type JsonlMessagesSpec = {
   /** See `TranscriptMessages.narration`. */
   narration(path: string): string | null;
-}
+} & (
+  | { parse: TranscriptLineParser; parseBatch?: undefined }
+  | { parseBatch: (records: unknown[]) => TranscriptMessage[]; parse?: undefined }
+);
 
 /**
  * Build the `TranscriptMessages` capability over a one-record-per-line file.
@@ -96,9 +105,9 @@ export interface JsonlMessagesSpec {
  * path, because these run on a poll tick and behind an SSE stream.
  */
 export function jsonlMessages(spec: JsonlMessagesSpec): TranscriptMessages {
-  const { parse, narration } = spec;
+  const { narration } = spec;
   const parseMany = (lines: string[], limit?: number): TranscriptMessage[] => {
-    if (!spec.parseBatch) return parseLines(lines, parse, limit);
+    if (spec.parse) return parseLines(lines, spec.parse, limit);
     const records: unknown[] = [];
     for (const line of lines) {
       try {

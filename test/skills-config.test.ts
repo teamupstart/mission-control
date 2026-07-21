@@ -10,10 +10,16 @@ import { join } from "node:path";
 
 const home = mkdtempSync(join(tmpdir(), "mission-skills-cfg-"));
 const claudeSkills = join(home, "claude-skills");
+// Every harness that declares a skills directory gets reconciled, so every one of them
+// has to be pinned somewhere disposable. Left unset, Codex's would resolve under the
+// state dir and survive `beforeEach` - stale links there make the NEXT apply unlink them,
+// which reads as a spurious generation bump with nothing on screen to explain it.
+const codexSkills = join(home, "codex-skills");
 const catalogDir = join(home, "catalog");
 // Set before importing anything that resolves the state dir / catalog dir.
 process.env.HARNESS_HOME = join(home, "state");
 process.env.CLAUDE_SKILLS_DIR = claudeSkills;
+process.env.CODEX_SKILLS_DIR = codexSkills;
 process.env.FLEET_SKILLS_DIR = catalogDir;
 
 const { openDb, setAppConfig } = await import("../src/server/db.ts");
@@ -38,6 +44,7 @@ function writeSkill(id: string): void {
 beforeEach(() => {
   openDb().exec("DELETE FROM app_config");
   rmSync(claudeSkills, { recursive: true, force: true });
+  rmSync(codexSkills, { recursive: true, force: true });
   rmSync(catalogDir, { recursive: true, force: true });
   writeSkill("alpha");
   writeSkill("beta");
@@ -297,17 +304,26 @@ test("a config blob from a future build doesn't crash the panel", () => {
 test("an unwritable skills dir is reported, never thrown", () => {
   // The reconciler touches the operator's home directory; a daemon that died over it
   // would be worse than one running without a skill.
+  // BOTH harnesses' directories, because the generation is a fact about the fleet: one
+  // writable directory taking the link is a real change and would - correctly - move the
+  // watermark. Locking one and asserting nothing moved would be asserting that the other
+  // harness is never reconciled, which is the bug this fold exists to fix.
   const locked = join(home, "locked");
-  mkdirSync(locked, { recursive: true });
-  chmodSync(locked, 0o500);
-  after(() => chmodSync(locked, 0o700));
+  const lockedCodex = join(home, "locked-codex");
+  for (const dir of [locked, lockedCodex]) {
+    mkdirSync(dir, { recursive: true });
+    chmodSync(dir, 0o500);
+    after(() => chmodSync(dir, 0o700));
+  }
   process.env.CLAUDE_SKILLS_DIR = locked;
+  process.env.CODEX_SKILLS_DIR = lockedCodex;
   try {
     const r = applySkillsConfig({ enabled: true, skills: { alpha: true } }, NOW);
-    assert.equal(r.problems.length, 1);
-    assert.match(r.problems[0] ?? "", /couldn't enable alpha/);
+    assert.equal(r.problems.length, 2, "one sentence per directory - each is its own thing to fix");
+    for (const p of r.problems) assert.match(p, /couldn't enable alpha/);
     assert.equal(getSkillsConfig().generation, 0);
   } finally {
     process.env.CLAUDE_SKILLS_DIR = claudeSkills;
+    process.env.CODEX_SKILLS_DIR = codexSkills;
   }
 });

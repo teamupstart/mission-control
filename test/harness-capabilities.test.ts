@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Session } from "../src/shared/types.ts";
+import type { AgentType, Session } from "../src/shared/types.ts";
 // Type-only, so it is erased rather than resolved: a static import of `actions.ts` here
 // would reach the db before the HARNESS_HOME preamble below has run.
 import type { InjectDeps } from "../src/server/actions.ts";
@@ -51,11 +51,41 @@ const { mkOriginAndClone } = await import("./helpers/git-fixture.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
+type SplitCap = "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp";
+
 /** An agent whose harness declares the capability, and one that declares it null. */
-function split<K extends "permissionModes" | "skills" | "workQueue" | "clearContext" | "mcp">(cap: K) {
+function split<K extends SplitCap>(cap: K) {
   const has = AGENT_TYPES.filter((a) => capabilitiesFor(a)[cap] !== null);
   const hasnt = AGENT_TYPES.filter((a) => capabilitiesFor(a)[cap] === null);
   return { has, hasnt };
+}
+
+/**
+ * Run `fn` with one agent's capability forced to null, then put it back.
+ *
+ * The "deliberate fixture" the null-coverage test below asks for. Codex used to declare
+ * `skills`, `clearContext` and `mcp` null and so exercised those degradation paths for
+ * free; it declares all three now, and a `hasnt` list that has quietly gone empty makes
+ * every loop over it pass by iterating nothing. The paths are still live - they are what
+ * a third harness that fills in less than these two would land on - so they get a fixture
+ * rather than being dropped.
+ *
+ * Both records, because `HARNESSES` SPREADS `HARNESS_CAPABILITIES` at module load: a
+ * server-side reader (`harnessFor`) would otherwise still see the real value.
+ */
+async function withCapabilityNull<T>(agent: AgentType, cap: SplitCap, fn: () => Promise<T> | T): Promise<T> {
+  const caps = HARNESS_CAPABILITIES[agent];
+  const harness = HARNESSES[agent] as unknown as Record<string, unknown>;
+  const priorCap = caps[cap];
+  const priorHarness = harness[cap];
+  (caps as unknown as Record<string, unknown>)[cap] = null;
+  harness[cap] = null;
+  try {
+    return await fn();
+  } finally {
+    (caps as unknown as Record<string, unknown>)[cap] = priorCap;
+    harness[cap] = priorHarness;
+  }
 }
 
 // ---- the record itself ----
@@ -83,12 +113,24 @@ test("the server harness registry IS the shared record, plus what needs a filesy
   }
 });
 
-test("at least one harness declares each capability null - these paths are live, not theoretical", () => {
-  // A guard nothing exercises rots. Codex is the live proof for all five today; if a
-  // future harness fills them all in, this fails and the degradation tests below need a
-  // deliberate fixture rather than quietly asserting nothing.
+test("every capability's null path is exercised, by a real harness or a named fixture", () => {
+  // A guard nothing exercises rots. Codex used to be the live proof for all five; it now
+  // declares `skills`, `clearContext` and `mcp`, so those three moved to `withCapabilityNull`
+  // fixtures rather than being dropped - the paths are what a harness filling in less than
+  // these two would land on, and they are still reachable code.
+  //
+  // The point of naming them HERE is that the two lists cannot drift apart silently. A
+  // capability that gains a null declarer must leave `BY_FIXTURE`, and one that loses its
+  // last declarer must join it - either way this fails first, rather than a loop over an
+  // empty `hasnt` quietly asserting nothing.
+  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "mcp"];
   for (const cap of ["permissionModes", "skills", "workQueue", "clearContext", "mcp"] as const) {
-    assert.ok(split(cap).hasnt.length > 0, `nothing declares ${cap} null - the null path is untested`);
+    const declared = split(cap).hasnt.length > 0;
+    if (BY_FIXTURE.includes(cap)) {
+      assert.equal(declared, false, `${cap} has a real null declarer again - drop it from BY_FIXTURE`);
+    } else {
+      assert.ok(declared, `nothing declares ${cap} null - give it a withCapabilityNull fixture`);
+    }
   }
 });
 
@@ -143,17 +185,33 @@ test("a harness with no permission modes offers none to pick, so the picker draw
 
 // ---- skills ----
 
-test("a harness with no skills is never owed a reload, however healthy the session", () => {
-  const { hasnt } = split("skills");
+test("a harness with no skills is never owed a reload, however healthy the session", async () => {
   const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
-  for (const agent of hasnt) {
+  await withCapabilityNull("codex", "skills", () => {
     // Everything else about this session is perfect: a pane, hooks seen, idle, started
     // before the generation. The only reason it is excluded is the capability - which is
     // the same `false` a pane-less session gets, and the same one that keeps the panel's
     // counter able to reach zero.
-    const s = mkSession({ id: `sk-${agent}`, agent, state: "idle", hooksSeen: true, startedAt: null });
+    const s = mkSession({ id: "sk-none", agent: "codex", state: "idle", hooksSeen: true, startedAt: null });
     assert.equal(reloadOwed(s, new Map(), cfg), false);
     assert.equal(pendingReloads([s], new Map(), cfg), 0, "a session nothing can reload must not be counted");
+  });
+});
+
+test("a harness with skills but NO reload command is owed nothing either", () => {
+  // Codex, which is the reason `reloadCommand` is nullable at all: it watches its skills
+  // directory itself, so the skill arrives (`skillsDirs()` links it there) and no
+  // keystroke is owed. The two halves are separate capabilities, and conflating them
+  // would either type a made-up slash command into a Codex prompt or leave the panel's
+  // counter above zero for a session nothing will ever reload.
+  const cfg = { enabled: true, skills: {}, generation: 3, generationAt: 0 };
+  const owed = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills && !capabilitiesFor(a).skills!.reloadCommand);
+  assert.ok(owed.length > 0, "codex is the live proof - if it goes, this needs a fixture");
+  for (const agent of owed) {
+    const s = mkSession({ id: `sk-${agent}`, agent, state: "idle", hooksSeen: true, startedAt: null });
+    assert.equal(reloadOwed(s, new Map(), cfg), false);
+    assert.equal(pendingReloads([s], new Map(), cfg), 0);
+    assert.equal(skillsAgents().includes(agent as never), false, "not a broadcast target");
   }
 });
 
@@ -238,32 +296,30 @@ function withCountedPane(clone: string, agent: Session["agent"], screens: (strin
 }
 
 test("a harness with no clear command has NOTHING typed at it, and reports cleared:false", async () => {
-  const { hasnt } = split("clearContext");
-  for (const agent of hasnt) {
+  await withCapabilityNull("codex", "clearContext", async () => {
     const { clone } = mkOriginAndClone("harness-caps-clear-");
     // A pane, a live session, and `clear: true` - every precondition the old code needed
     // to send Claude's `/clear`. The capability is the only thing stopping it.
-    const { session, deps, writes } = withCountedPane(clone, agent, ["> ", "> ", "cleared"]);
+    const { session, deps, writes } = withCountedPane(clone, "codex", ["> ", "> ", "cleared"]);
     const r = await resetToOrigin(session, true, deps);
     assert.equal(r.ok, true, "the git half still lands - this is a degradation, not a failure");
     assert.equal(r.cleared, false);
-    assert.equal(writes(), 0, `${agent} must not be sent a slash command it does not speak`);
-  }
+    assert.equal(writes(), 0, "a harness must not be sent a slash command it does not speak");
+  });
 });
 
 test("that degradation is byte-identical to asking for no clear at all", async () => {
   // The point of the whole exercise: the null capability lands on a path the callers
   // (`resetSession`, `TaskManager.assign`, the ResetModal) were already tested against,
   // rather than on a new shape they each have to learn.
-  const { hasnt } = split("clearContext");
-  for (const agent of hasnt) {
+  await withCapabilityNull("codex", "clearContext", async () => {
     const { clone } = mkOriginAndClone("harness-caps-clear-eq-");
-    const a = withCountedPane(clone, agent, ["> ", "> ", "cleared"]);
+    const a = withCountedPane(clone, "codex", ["> ", "> ", "cleared"]);
     const asked = await resetToOrigin(a.session, true, a.deps);
-    const b = withCountedPane(clone, agent, ["> ", "> ", "cleared"]);
+    const b = withCountedPane(clone, "codex", ["> ", "> ", "cleared"]);
     const notAsked = await resetToOrigin(b.session, false, b.deps);
     assert.deepEqual(asked, notAsked);
-  }
+  });
 });
 
 test("a harness that DOES declare a clear command still clears - the other half of the pin", async () => {

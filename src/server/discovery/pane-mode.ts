@@ -106,9 +106,11 @@ export async function readPaneModeLine(
  *
  * Which of the two a given session gets is the HARNESS's answer, not an agent check. It
  * used to be `s.agent !== "claude"`, and that guard was wrong in the most expensive
- * direction: Codex renders the same numbered menus and pushes no hooks at all, so the one
- * signal that could ever have shown a Codex session as blocked was the one the guard
- * skipped - and because it skipped it, nobody found out for the life of the parser. A
+ * direction: Codex renders the same numbered menus and, at the time, pushed no hooks at
+ * all - so the one signal that could ever have shown a Codex session as blocked was the
+ * one the guard skipped, and because it skipped it, nobody found out for the life of the
+ * parser. Codex reports hooks now, but only on a launch the dashboard instrumented, so
+ * for an operator-started Codex session the read below is still the whole story. A
  * harness that genuinely draws nothing readable declares `dialog: null` and takes the same
  * path, but it has to SAY so.
  *

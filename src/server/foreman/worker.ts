@@ -220,7 +220,16 @@ async function main(): Promise<void> {
       continue;
     }
 
-    triageRunnerId = cfg.runner ?? "claude";
+    // Foreman's own pick wins, and only when it HAS one. An unset `runner` is not
+    // "claude" - it means the operator never chose here, so the answer is the app-wide
+    // ladder (config, then `MISSION_LLM_RUNNER`, then the default), which only the daemon
+    // can resolve because only it can see the config layer. Defaulting to a literal here
+    // silently drops the env layer for the one subsystem that runs in its own process.
+    //
+    // Kept on the last known answer when the daemon can't say, rather than reset to the
+    // default: a blip must not silently move the cheap tier onto a provider the operator
+    // did not pick, and the next pass asks again anyway.
+    triageRunnerId = cfg.runner ?? (await client.llmRunner().catch(() => triageRunnerId));
 
     // A non-leader IDLES, it does not exit - so it takes over cleanly when the
     // leader's lease expires (a crash, a Ctrl-C), which is the whole point of an

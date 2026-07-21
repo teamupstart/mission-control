@@ -230,15 +230,16 @@ export async function reloadOne(
   // Re-asked here rather than assumed from the selector, because this is the boundary the
   // KEYSTROKE crosses: `reloadOwed` runs against a snapshot, and the command about to be
   // typed has to come from the harness of the session actually in hand.
+  //
+  // The same clause `reloadOwed` opens with, restated rather than trusted, and it is
+  // one clause and not two: a harness with a skills directory but no reload command
+  // (Codex, which watches its own) is owed NOTHING here. Its skills are installed by
+  // `reconcileSkillLinks`, which walks every harness's directory, and it notices them
+  // by itself. Acking a generation for it instead would record a reload that never
+  // happened - and since `reloadOwed` refuses these sessions upstream, an ack branch
+  // here is unreachable code that reads like a live one.
   const skills = harnessFor(session.agent).skills;
-  if (!skills) return false;
-
-  // Codex watches ~/.agents/skills itself. A generation acknowledgement is the only
-  // action required; typing a made-up reload command would become a user prompt.
-  if (!skills.reloadCommand) {
-    deps.ack(noteKeyFor(session), generation);
-    return true;
-  }
+  if (!skills?.reloadCommand) return false;
 
   const line = await deps.readModeLine(session);
   if (!line) return false;

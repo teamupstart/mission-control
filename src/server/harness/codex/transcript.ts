@@ -4,20 +4,22 @@ import type { ToolCall, TranscriptMessage } from "@shared/types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { readTailLines } from "../../util/file-tail.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
-import { findRolloutForSession, readRolloutPassive } from "./rollout.ts";
+import { findRolloutForSession, readRolloutPassive, retainRolloutMeta } from "./rollout.ts";
 
-// Codex's transcript capability: runtime metadata, and no messages.
+// Codex's transcript capability: runtime metadata, AND messages.
 //
-// `messages: null` is the whole point of this file. A rollout carries the model, the
-// reasoning effort and a cumulative token count - enough for the card's runtime row -
-// and nothing that can be rendered as conversation. Answering a window read with `[]`
-// would say "this session has said nothing", which no caller can distinguish from the
-// truth, so the capability declines instead: the transcript pane, the Foreman's Tier 1
-// window and the goal refiner all take their existing "no transcript" path.
+// This file used to say `messages: null` was its whole point - that a rollout carried the
+// model, the reasoning effort and a token count and nothing renderable as conversation.
+// That was a claim about the format, and it was wrong: a rollout's `event_msg` records
+// carry `user_message` / `agent_message` verbatim, and its tool calls arrive as separate
+// records that extend the turn before them. Hence `parseBatch` rather than `parse` - the
+// grouping needs the whole window, not a line at a time - and hence
+// `GOAL_UNSUPPORTED.codex` (`@shared/goal.ts`) is null, which `harness-transcript.test.ts`
+// pins against this capability.
 //
-// When a rollout message reader is written it lands here, as `messages`, and
-// `GOAL_UNSUPPORTED.codex` (`@shared/goal.ts`) drops to null in the same change -
-// `harness-transcript.test.ts` pins that those two agree.
+// The reason the null mattered is still live for any harness that DOES lack a reader:
+// answering a window read with `[]` says "this session has said nothing", which no caller
+// can tell from the truth, so a capability with nothing to read declines instead.
 
 /**
  * How long to wait before re-scanning the filesystem for a session that hasn't matched
@@ -69,17 +71,31 @@ function cappedInput(value: unknown): string | undefined {
   return text.length > TOOL_INPUT_CAP ? `${text.slice(0, TOOL_INPUT_CAP)}…` : text;
 }
 
+/**
+ * Distinguishes one parse from the next in the ids synthesized below.
+ *
+ * A window read parses head and tail as two separate batches and then de-dupes the
+ * merged result BY ID. Most rollout records carry no id of their own, so theirs is
+ * synthesized - and a per-batch counter restarting at 0 made a tail record collide with
+ * an unrelated head record that happened to share a timestamp, silently dropping a real
+ * message from the transcript. Head and tail byte ranges cannot overlap (the split path
+ * runs only when the file exceeds both windows), so nothing is lost by making synthesized
+ * ids batch-unique: only records carrying their OWN id are de-dupable, which is the truth.
+ */
+let parseSeq = 0;
+
 /** Parse Codex rollout records into clean user/assistant segments, grouping tool calls. */
 export function parseCodexMessages(records: unknown[]): TranscriptMessage[] {
   const out: TranscriptMessage[] = [];
   let currentAssistant: TranscriptMessage | null = null;
+  const batch = parseSeq++;
   let seq = 0;
   for (const value of records) {
     if (!value || typeof value !== "object") continue;
     const rec = value as Record<string, unknown>;
     const p = (rec.payload ?? {}) as Record<string, unknown>;
     const ts = typeof rec.timestamp === "string" ? Date.parse(rec.timestamp) || 0 : 0;
-    const id = String(p.id ?? p.call_id ?? `${rec.timestamp ?? "codex"}:${seq++}`);
+    const id = String(p.id ?? p.call_id ?? `${rec.timestamp ?? "codex"}:b${batch}:${seq++}`);
     if (rec.type === "event_msg" && (p.type === "user_message" || p.type === "agent_message")) {
       const text = typeof p.message === "string" ? p.message : typeof p.text === "string" ? p.text : "";
       const role = p.type === "user_message" ? "user" : "assistant";
@@ -126,11 +142,15 @@ export const codexTranscript: TranscriptSpec = {
   // idle/working state off. Codex sessions fall back to the pane, as they do today.
   passiveRead: readRolloutPassive,
   messages: jsonlMessages({
-    parse: () => null,
     parseBatch: parseCodexMessages,
     narration: (path) => latestCodexNarration(readTailLines(path, 128 * 1024)),
   }),
   retain: (live) => {
     for (const id of bindings.keys()) if (!live.has(id)) bindings.delete(id);
+    // The path-keyed half of the same cache. Dropping only the session bindings would
+    // leave `rolloutTurnMeta` growing one entry per rollout for the life of the daemon.
+    const held = new Set<string>();
+    for (const b of bindings.values()) if (b.path) held.add(b.path);
+    retainRolloutMeta(held);
   },
 };

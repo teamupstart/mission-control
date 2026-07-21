@@ -36,6 +36,18 @@ const FALLBACK_START_SLOP_MS = 30 * 1000;
  */
 const rolloutTurnMeta = new Map<string, Pick<RuntimeMetaRead, "modelId" | "thinkingLevel">>();
 
+/**
+ * Forget the retained model/effort for every rollout not in `keep`.
+ *
+ * Keyed by PATH, and a `/clear` mints a new rollout file, so without this the map gains
+ * an entry for every conversation the daemon has ever polled and gives none back.
+ * `codexTranscript.retain` is the caller - it is already the tick that knows which
+ * rollouts are still bound to a live session.
+ */
+export function retainRolloutMeta(keep: Set<string>): void {
+  for (const path of rolloutTurnMeta.keys()) if (!keep.has(path)) rolloutTurnMeta.delete(path);
+}
+
 /** Numeric-name dir entries (YYYY / MM / DD), newest-first. */
 function numericDirsDesc(dir: string, re: RegExp): string[] {
   let names: string[];

@@ -103,12 +103,15 @@ export interface SkillsSpec {
 /**
  * Running a Foreman work queue against this harness.
  *
- * Null is a composite claim, and all of it has to be true to queue work: hooks report
- * when the agent picks an item up and finishes it, and the transcript can be read back to
- * check that it did. Codex has neither, so a queue on a Codex session would be a one-way
- * trip to nowhere - every tick would skip it, and because the session is LIVE its key is
- * live, so neither the cwd re-attach hint nor the orphan sweep would ever offer the batch
- * to anyone.
+ * Two things have to be true to queue work: the agent must report when it picks an item
+ * up and finishes it (hooks), and its transcript must be readable back to check that it
+ * did. Both shipped harnesses can do both now - Codex's null is about the DELIVERY half
+ * instead, `tickTargets` never having been run against a Codex pane.
+ *
+ * Whatever the reason, the consequence of a null is the same and is why it is not a
+ * detail: a queue on a session the worker skips is a one-way trip to nowhere. Because the
+ * session is LIVE its key is live, so neither the cwd re-attach hint nor the orphan sweep
+ * would ever offer the batch to anyone.
  */
 export interface WorkQueueSpec {
   /**
@@ -166,9 +169,13 @@ export interface HarnessCapabilities {
 
 /**
  * Claude Code's skills capability, named so `claudeSkillsDir` can reach it without a
- * null check. The reconciler manages ONE directory today because exactly one harness
- * declares skills; when a second does, that function becomes a loop over
- * `skillsAgents()` and its callers take a list.
+ * null check.
+ *
+ * The reconciler folds over EVERY declaring harness now (`skillsDirs()`), which is what
+ * this comment used to predict - except that it named `skillsAgents()` as the selector,
+ * and that turned out to be the wrong one: it filters on `reloadCommand`, so a harness
+ * that loads skills without needing a nudge (Codex) would have been left out of the very
+ * loop that installs them. Install and nudge are two capabilities.
  */
 export const CLAUDE_SKILLS: SkillsSpec & { reloadCommand: string } = {
   reloadCommand: "/reload-skills",
@@ -200,21 +207,29 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // No permission-mode concept: no footer mode line to read, and no Shift+Tab cycle to
     // walk. `annotatePaneState` therefore has nothing to capture for it either.
     permissionModes: null,
-    // No `/reload-skills` and no skills directory of its own.
+    // A skills directory of its own (`~/.agents/skills`), and no reload command: Codex
+    // watches that directory itself, so the set it offers changes without anything being
+    // typed at a running session. `reloadCommand: null` is what says so - it is the whole
+    // difference between "this harness has no skills" and "this harness needs no nudge",
+    // and `skillsAgents()` reads it to decide who the pane broadcast is even about.
     skills: {
       reloadCommand: null,
       dirEnvVar: "CODEX_SKILLS_DIR",
       homeDir: [".agents", "skills"],
       isolatedDirName: "codex-skills",
     },
-    // No hooks and no readable turns - see `GOAL_UNSUPPORTED`, which is the same fact
-    // stated for the card.
+    // Not for want of evidence any more - Codex reports hooks and its rollout parses into
+    // turns. What is missing is the DELIVERY half: `tickTargets` would have Foreman drive
+    // a Codex pane, and that path has never been run against one. Flipping this is the
+    // unlock `docs/plans/codex/plan.md` phase 8 describes, not a line to change on its own.
     workQueue: null,
-    // Its slash vocabulary is its own; `/clear` here would be typed as a prompt.
+    // Measured against 0.144.x, where `/clear` is Codex's own slash command and not, as
+    // this said while the value was null, a line that would land in the prompt as text.
     clearContext: { command: "/clear" },
-    // Codex ships an MCP client, but registering with it is a different CLI and a
-    // different config file, and nothing has been verified against one. Declared absent
-    // rather than guessed at: the installer says what it did not do.
+    // `codex mcp add <name> --env K=V -- <cmd>`: a different CLI and a different config
+    // file from Claude's, which is what `cli` and `envFlag` carry. `scope: null` is the
+    // real difference - Codex writes one registration and has no `-s user|project` to
+    // choose between.
     mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
   },
 };
@@ -243,13 +258,30 @@ export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
  */
 export function workQueueUnsupportedWhy(agent: AgentType): string | null {
   if (HARNESS_CAPABILITIES[agent].workQueue) return null;
-  return `Work queues need hook reporting and a readable transcript, which ${AGENT_IDENTITY[agent].label} sessions don't have.`;
+  return `Foreman doesn't drive ${AGENT_IDENTITY[agent].label} sessions, so anything queued here would never be picked up.`;
 }
 
-/** The agents whose harness can load skills - who a skills surface is actually about. */
+/**
+ * The agents a switched-on skill actually REACHES - who a skills surface is about.
+ *
+ * Everything the panel says about scope is this list: which directories the links go
+ * into, whose sessions are affected, whose are not. `skillsDirs()` (`server/skills/
+ * reconcile.ts`) is the same question asked of the filesystem.
+ */
+export function skillLoadingAgents(): AgentType[] {
+  return AGENT_TYPES.filter((a) => HARNESS_CAPABILITIES[a].skills !== null);
+}
+
+/**
+ * The agents a skills change has to be TYPED at - the pane-reload broadcast.
+ *
+ * A strict subset of `skillLoadingAgents()`, and the two must not be conflated: Codex
+ * loads skills and watches its directory itself, so it is reached by every skill and owed
+ * no keystroke. Using this list to answer "who does this switch affect" understates the
+ * panel by a whole harness; using the other to answer "who do we type at" invents a slash
+ * command for a session that would render it as a prompt.
+ */
 export function skillsAgents(): "claude"[] {
-  // This list is specifically the pane-reload broadcast. Codex has skills but relies on
-  // automatic filesystem watching, so it deliberately has no live reload target.
   return AGENT_TYPES.filter((a): a is "claude" => !!HARNESS_CAPABILITIES[a].skills?.reloadCommand);
 }
 
@@ -267,18 +299,26 @@ export function autoModeAgents(): AgentType[] {
 }
 
 /**
- * Why "auto mode on dispatch" leaves this harness alone, or null when it doesn't.
+ * Why "auto mode on dispatch" does not drive this harness through a mode CYCLE, or null
+ * when it does.
  *
  * Two different absences, said differently, because they are different facts: a harness
  * with no permission modes at all has nothing to switch, while one that HAS modes but
  * names no `onDispatch` has nothing that would mean "proceed without asking". Rolling
  * both into one sentence would make the second read as the first.
+ *
+ * Neither sentence may say the dispatch is UNAFFECTED, which is what both used to say and
+ * is no longer true: `prepareCodexLaunch` takes this same switch and turns it into
+ * `--sandbox workspace-write --ask-for-approval on-request` at launch. The switch reaches
+ * Codex; what it does not reach is `applyAutoMode`, because there is no Shift+Tab cycle to
+ * walk. A panel promising "unaffected" over a session launched with a widened sandbox is a
+ * consent failure, not a copy nit.
  */
 export function autoModeUnsupportedWhy(agent: AgentType): string | null {
   const modes = HARNESS_CAPABILITIES[agent].permissionModes;
   const who = AGENT_IDENTITY[agent].label;
-  if (!modes) return `${who} has no permission modes, so its dispatches are unaffected.`;
+  if (!modes) return `${who} has no permission modes to switch, so nothing is typed at it after launch.`;
   if (!modes.onDispatch)
-    return `${who} has permission modes but none that mean "proceed without asking", so its dispatches are unaffected.`;
+    return `${who} has permission modes but none that mean "proceed without asking", so nothing is typed at it after launch.`;
   return null;
 }

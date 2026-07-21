@@ -5,15 +5,13 @@ import type { AgentType } from "./types.ts";
  *
  * Shared because two layers need the same answer and must not drift: the card renders it as
  * the empty state, and the daemon's refiner uses it to skip sessions it could never
- * summarise. When Codex gains a reader, set its entry to null and give that harness a
- * `transcript.messages` capability (`server/harness/codex/transcript.ts`) - those two edits
- * are the whole seam, and `harness-transcript.test.ts` fails until both are made.
+ * summarise. An entry and its harness's `transcript.messages` capability are one fact in two
+ * files - `harness-transcript.test.ts` fails until they agree.
  *
- * Codex is honest rather than hopeful. It has no hooks, so no prompt ever reaches the
- * daemon; `harness/codex/rollout.ts` parses only model / effort / token metadata - no
- * messages - and
- * a rollout's session association is fuzzy (cwd + closest start time). No rollout file has
- * ever existed on this machine, so the extraction is unverified and must not be promised.
+ * Both shipped harnesses now read messages, so both are null. Codex's entry was a sentence
+ * for as long as its rollout parsed only model / effort / token metadata; it reads turns
+ * now (`server/harness/codex/transcript.ts`) and reports the prompt itself over a hook, so
+ * there is nothing left for that sentence to be true about.
  */
 export const GOAL_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,

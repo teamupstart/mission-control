@@ -1,6 +1,6 @@
 import { ENFORCEMENT_LABEL, enforcementHint } from "@shared/skills.ts";
-import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { capabilitiesFor, skillsAgents } from "@shared/harness-capabilities.ts";
+import { agentList } from "@shared/agent.ts";
+import { capabilitiesFor, skillLoadingAgents, skillsAgents } from "@shared/harness-capabilities.ts";
 import { AGENT_TYPES } from "@shared/types.ts";
 import type { SkillRow } from "@shared/types.ts";
 import type { SkillsState } from "../useSkills.ts";
@@ -20,11 +20,21 @@ import type { SkillsState } from "../useSkills.ts";
  * that is no longer only Claude - which is the same "a toggle that lies about what it
  * does" failure the panel is otherwise careful about.
  */
-const SKILLED = skillsAgents();
-const SKILLED_LABEL = SKILLED.map((a) => AGENT_IDENTITY[a].label).join(" / ");
-const UNSKILLED_LABEL = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills)
-  .map((a) => AGENT_IDENTITY[a].label)
-  .join(" / ");
+const SKILLED = skillLoadingAgents();
+const SKILLED_LABEL = agentList(SKILLED);
+const UNSKILLED = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills);
+/**
+ * The agents a change still has to be TYPED at, which is a different list from `SKILLED`
+ * and is why the pending count below names its own.
+ *
+ * Codex loads the same skills and watches its directory for them, so it is in `SKILLED`
+ * and not here. Counting it as pending would leave the panel promising a pick-up that no
+ * keystroke is coming for; leaving it out of `SKILLED` would say the switch does not
+ * reach it, which is the "toggle that lies about what it does" failure the rest of this
+ * panel is careful about.
+ */
+const RELOADED = skillsAgents();
+const SELF_RELOADING = SKILLED.filter((a) => !RELOADED.includes(a as never));
 /**
  * Where the links actually go, read off the same `homeDir` the reconciler symlinks
  * into. Spelled out rather than said in prose because the operator may want to look:
@@ -71,13 +81,19 @@ function SkillRowView({
             directory, so the loop filters it out entirely. A toggle that silently
             no-ops on half the grid is the same failure that disqualified launch flags -
             saying so on the row is what keeps it from being one.
+
+            And rendered only while there IS someone it leaves out. With every shipped
+            harness reached, "claude only" is false and the title composes to a sentence
+            that opens with a blank - a caveat about nobody, which is worse than silence.
           */}
-          <span
-            className="skill-badge skill-badge-agent"
-            title={`${UNSKILLED_LABEL} sessions are unaffected - they have no skills directory.`}
-          >
-            {SKILLED.join(" / ")} only
-          </span>
+          {UNSKILLED.length > 0 && (
+            <span
+              className="skill-badge skill-badge-agent"
+              title={`${agentList(UNSKILLED)} sessions are unaffected - they have no skills directory.`}
+            >
+              {agentList(SKILLED)} only
+            </span>
+          )}
         </span>
         <span className="kb-row-desc">{row.description}</span>
       </div>
@@ -116,6 +132,14 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
         , so they reach <strong>every</strong> {SKILLED_LABEL} session on this machine - including
         ones this app never launched. Running sessions pick them up at their next idle moment,
         without restarting.
+        {/*
+          How they pick them up differs by harness, and the difference is worth one clause:
+          a session the dashboard has to type `/reload-skills` into waits for its next idle
+          moment, while one watching its own directory has the skill already. Without this
+          the count below - which only ever names the first kind - reads as though the
+          second is being left out.
+        */}
+        {SELF_RELOADING.length > 0 && ` ${agentList(SELF_RELOADING)} sessions watch that directory themselves.`}
       </p>
 
       {error && <p className="settings-error">{error}</p>}
@@ -161,16 +185,18 @@ export function SkillsPanel({ state }: { state: SkillsState }): React.JSX.Elemen
       )}
 
       {/*
-        Counts only harnesses that declare `skills`, or the number lies on a mixed set of
-        sessions. Phrased as a promise about WHEN, not whether: the daemon waits for a
-        session to be genuinely at its prompt before typing, so a busy session is behind
-        rather than missed.
+        Counts only harnesses a reload has to be TYPED at (`RELOADED`), not everyone the
+        skill reaches, or the number lies on a mixed set of sessions in the other
+        direction: a Codex session that already has the skill would be counted as still
+        waiting for it, and the figure would never reach zero. Phrased as a promise about
+        WHEN, not whether: the daemon waits for a session to be genuinely at its prompt
+        before typing, so a busy session is behind rather than missed.
       */}
       {view && view.pending > 0 && (
         <p className="settings-hint">
           {view.pending === 1
-            ? `1 ${SKILLED_LABEL} session will pick this up when it next goes idle.`
-            : `${view.pending} ${SKILLED_LABEL} sessions will pick this up when they next go idle.`}
+            ? `1 ${agentList(RELOADED)} session will pick this up when it next goes idle.`
+            : `${view.pending} ${agentList(RELOADED)} sessions will pick this up when they next go idle.`}
         </p>
       )}
     </section>

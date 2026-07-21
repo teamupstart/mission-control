@@ -35,6 +35,7 @@ import { writeOtelEnv } from "@shared/claude-settings.ts";
 // imports nothing but types and pure functions, and is kept that way for this reason.
 import { claudeHooks } from "../server/harness/claude/hooks.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
 
@@ -230,7 +231,7 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
  * harness with no MCP client would report a clean install that did half the work.
  */
 function applyMcp(add: boolean, runtime: Runtime, mcp: string): string {
-  return (["claude", "codex"] as const).map((agent) => {
+  return AGENT_TYPES.map((agent) => {
     const spec = capabilitiesFor(agent).mcp;
     const label = AGENT_IDENTITY[agent].label;
     if (!spec) return `${label}: no MCP client to register with.`;

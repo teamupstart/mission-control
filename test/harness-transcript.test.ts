@@ -48,10 +48,17 @@ test("every agent has a harness, and each one knows its own id", () => {
   assert.deepEqual(Object.keys(HARNESSES).sort(), [...AGENT_TYPES].sort());
 });
 
-test("a metadata-only harness declares no messages, rather than reading empty ones", () => {
-  // Codex is the live case the capability exists for: a rollout carries model / effort /
-  // token counts and no turns. `null` is that fact stated once, where every reader sees it.
-  assert.equal(HARNESSES.codex.transcript?.messages, null);
+test("both shipped harnesses read messages, and each names its own metadata source", () => {
+  // Codex was the live case for `messages: null` - "a rollout carries model / effort /
+  // token counts and no turns". That was a claim about the format and it was wrong: its
+  // `event_msg` records carry `user_message` / `agent_message` verbatim. The capability
+  // is still nullable, and the paths that null feeds are pinned by the fixtures below;
+  // what changed is that no shipped harness declares it.
+  //
+  // `metaSource` is the axis that genuinely still differs, and it is why the two are not
+  // the same reader: Claude's turns and its runtime figures come from one transcript,
+  // Codex's from a rollout it locates by walking a dated directory tree.
+  assert.ok(HARNESSES.codex.transcript?.messages, "Codex reads its rollout as messages");
   assert.equal(HARNESSES.codex.transcript?.metaSource, "codex-rollout");
   assert.ok(HARNESSES.claude.transcript?.messages, "Claude reads its transcript as messages");
   assert.equal(HARNESSES.claude.transcript?.metaSource, "transcript");
@@ -151,13 +158,34 @@ test("the goal reader takes the same answer from the same capability", () => {
 test("sessionMessages checks the capability before it goes looking for a file", () => {
   // Order matters for more than tidiness: locating a Codex rollout is a dated directory
   // walk, and doing it to then discard the result is a filesystem sweep per request.
+  //
+  // `messages: null` on the spy rather than on a shipped harness: both read messages now,
+  // and the guard is what a third harness with metadata and no turns lands on. Codex's
+  // own `locate` is kept as the body so the walk being counted is the real one.
   let located = 0;
-  const spy = { ...codexTranscript, locate: (s: Session) => (located++, codexTranscript.locate(s)) };
+  const spy = {
+    ...codexTranscript,
+    messages: null,
+    locate: (s: Session) => (located++, codexTranscript.locate(s)),
+  };
   const restore = HARNESSES.codex.transcript;
   HARNESSES.codex.transcript = spy;
   try {
     assert.equal(sessionMessages(session({ id: "cx", agent: "codex" })), null);
     assert.equal(located, 0, "a harness with no message reader must not be asked to locate");
+  } finally {
+    HARNESSES.codex.transcript = restore;
+  }
+});
+
+test("a harness that DOES read messages is asked to locate - the other half", () => {
+  let located = 0;
+  const spy = { ...codexTranscript, locate: (s: Session) => (located++, codexTranscript.locate(s)) };
+  const restore = HARNESSES.codex.transcript;
+  HARNESSES.codex.transcript = spy;
+  try {
+    sessionMessages(session({ id: "cx-live", agent: "codex", cwd: "/repo/app" }));
+    assert.equal(located, 1, "the capability exists, so the file is looked for");
   } finally {
     HARNESSES.codex.transcript = restore;
   }

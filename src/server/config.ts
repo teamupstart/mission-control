@@ -82,6 +82,20 @@ export function mcpServerPath(): string {
   return envVar("MCP_SERVER") ?? fileURLToPath(new URL("../../dist/mcp/server.mjs", import.meta.url));
 }
 
+/**
+ * The bundled Codex hook bridge (`dist/satellites/codex-hook.mjs`) - the command a
+ * dispatched Codex session's `-c hooks.*` overrides invoke.
+ *
+ * Lives HERE, beside `mcpServerPath()`, for the reason that function documents: esbuild
+ * collapses the whole server into `dist/server/index.mjs`, so a specifier written from
+ * `harness/codex/launch.ts` resolves four levels above the bundle instead of the repo
+ * root, `existsSync` fails, and the launch silently degrades to an uninstrumented Codex
+ * session - the designed fallback firing for a reason that is not the designed one.
+ */
+export function codexHookPath(): string {
+  return envVar("CODEX_HOOK") ?? fileURLToPath(new URL("../../dist/satellites/codex-hook.mjs", import.meta.url));
+}
+
 // Which binary each harness launches moved to the harness registry as `BinSpec`
 // (`harness/types.ts`), with `resolveAgentBin` in `harness/index.ts`. It was a
 // `Record<AgentType, AgentBin>` here, which forced the decision but left the resolution

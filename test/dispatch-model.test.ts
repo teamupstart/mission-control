@@ -52,9 +52,15 @@ test("effort defaults merge per harness and resolve behind a task override", () 
 
 test("effort accepts only launchable levels at every write door", () => {
   assert.equal(DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", effort: "xhigh" }).success, true);
+  assert.equal(
+    DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", agent: "codex", effort: "max" }).success,
+    false,
+  );
   assert.equal(DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", effort: "extreme" }).success, false);
   assert.equal(HarnessesConfigPatchSchema.safeParse({ defaultEffort: { claude: "max" } }).success, true);
+  assert.equal(HarnessesConfigPatchSchema.safeParse({ defaultEffort: { codex: "max" } }).success, false);
   assert.equal(HarnessesConfigPatchSchema.safeParse({ defaultEffort: { codex: "extreme" } }).success, false);
+  assert.equal(UpdateTaskSchema.safeParse({ agent: "codex", effort: "max" }).success, false);
   assert.equal(UpdateTaskSchema.parse({ effort: null }).effort, null);
 });
 

@@ -97,6 +97,34 @@ test("a null model clears the override, where an absent one leaves it standing",
   assert.equal(r.getTask("t1")!.model, null);
 });
 
+test("switching agents clears omitted model and effort overrides", async () => {
+  const { r, tasks } = setup({ model: "claude-opus-4-8", effort: "max" });
+  const res = await tasks.update("t1", { agent: "codex" });
+  assert.equal(res.ok, true);
+  assert.equal(r.getTask("t1")!.agent, "codex");
+  assert.equal(r.getTask("t1")!.model, null);
+  assert.equal(r.getTask("t1")!.effort, null);
+});
+
+test("switching agents accepts explicit compatible overrides", async () => {
+  const { r, tasks } = setup({ model: "claude-opus-4-8", effort: "max" });
+  const res = await tasks.update("t1", {
+    agent: "codex",
+    model: "gpt-5.6-sol",
+    effort: "xhigh",
+  });
+  assert.equal(res.ok, true);
+  assert.equal(r.getTask("t1")!.model, "gpt-5.6-sol");
+  assert.equal(r.getTask("t1")!.effort, "xhigh");
+});
+
+test("task persistence rejects an effort unsupported by the effective agent", async () => {
+  const { r, tasks } = setup({ agent: "codex" });
+  const res = await tasks.update("t1", { effort: "max" });
+  assert.equal(res.ok, false);
+  assert.equal(r.getTask("t1")!.effort, null);
+});
+
 test("emptying the title re-derives one from the intent as it NOW reads", async () => {
   // The create form's bargain, kept on the way back in: a blank title means "name it
   // for me". Naming it from the OLD intent would be the one answer that is never

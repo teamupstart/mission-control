@@ -178,6 +178,8 @@ export interface HarnessCapabilities {
   effort: EffortSpec | null;
 }
 
+const CODEX_EFFORT_LEVELS = THINKING_LEVELS.filter((level) => level !== "max");
+
 /**
  * Claude Code's skills capability, named so `claudeSkillsDir` can reach it without a
  * null check.
@@ -247,7 +249,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     // choose between.
     mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
     effort: {
-      levels: THINKING_LEVELS,
+      levels: CODEX_EFFORT_LEVELS,
       // `-c` parses its value as TOML, falling back to a raw string. The level is a
       // closed enum, so it is both valid here and safe on tmux's shell command line.
       launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
@@ -266,6 +268,10 @@ export function capabilitiesFor(agent: "claude"): HarnessCapabilities & { skills
 export function capabilitiesFor(agent: AgentType): HarnessCapabilities;
 export function capabilitiesFor(agent: AgentType): HarnessCapabilities {
   return HARNESS_CAPABILITIES[agent];
+}
+
+export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean {
+  return HARNESS_CAPABILITIES[agent].effort?.levels.includes(level) ?? false;
 }
 
 /**

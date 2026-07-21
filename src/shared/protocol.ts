@@ -5,6 +5,13 @@ import { TaskSourcesConfigSchema } from "./task-source.ts";
 import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
+import { supportsEffort } from "./harness-capabilities.ts";
+
+const EffortLevelSchema = z.enum(THINKING_LEVELS);
+const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
+  EffortLevelSchema.refine((level) => supportsEffort(agent, level), {
+    message: "reasoning effort is not supported by this harness",
+  });
 
 /**
  * `normalizeLabels`, but absent stays absent.
@@ -353,24 +360,29 @@ export const ModelIdSchema = z
  * `repoRoot` with `intent` as its first prompt. `backlog: true` only adds it to
  * the backlog (no worktree/session yet); dispatch it later.
  */
-export const DispatchSchema = z.object({
-  repoRoot: z.string().min(1),
-  intent: z.string().min(1),
-  title: z.string().optional(),
-  kind: z.enum(["ship", "scout"]).default("ship"),
-  agent: z.enum(AGENT_TYPES).default("claude"),
-  /**
-   * Run this agent on a specific model instead of the harness default. Omitted
-   * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
-   * not the same as pinning today's default, and is what lets a backlogged task
-   * pick up a default changed after it was shelved.
-   */
-  model: ModelIdSchema.optional(),
-  /** Reasoning-effort override; omitted follows the harness default at launch time. */
-  effort: z.enum(THINKING_LEVELS).optional(),
-  backlog: z.boolean().optional().default(false),
-  ...TASK_TRIAGE_FIELDS,
-});
+export const DispatchSchema = z
+  .object({
+    repoRoot: z.string().min(1),
+    intent: z.string().min(1),
+    title: z.string().optional(),
+    kind: z.enum(["ship", "scout"]).default("ship"),
+    agent: z.enum(AGENT_TYPES).default("claude"),
+    /**
+     * Run this agent on a specific model instead of the harness default. Omitted
+     * means "whatever `harnesses.defaultModel` says at dispatch time" - which is
+     * not the same as pinning today's default, and is what lets a backlogged task
+     * pick up a default changed after it was shelved.
+     */
+    model: ModelIdSchema.optional(),
+    /** Reasoning-effort override; omitted follows the harness default at launch time. */
+    effort: EffortLevelSchema.optional(),
+    backlog: z.boolean().optional().default(false),
+    ...TASK_TRIAGE_FIELDS,
+  })
+  .refine((o) => o.effort === undefined || supportsEffort(o.agent, o.effort), {
+    path: ["effort"],
+    message: "reasoning effort is not supported by this harness",
+  });
 export type Dispatch = z.infer<typeof DispatchSchema>;
 
 /**
@@ -443,9 +455,13 @@ export const UpdateTaskSchema = z
     priority: z.enum(TASK_PRIORITIES).nullable().optional(),
     labels: z.array(z.string()).max(MAX_LABELS).optional().transform(normalizeLabelsOrUndefined),
     model: ModelIdSchema.nullable().optional(),
-    effort: z.enum(THINKING_LEVELS).nullable().optional(),
+    effort: EffortLevelSchema.nullable().optional(),
   })
-  .refine((o) => Object.keys(o).length > 0, { message: "empty task update" });
+  .refine((o) => Object.keys(o).length > 0, { message: "empty task update" })
+  .refine(
+    (o) => o.agent === undefined || o.effort == null || supportsEffort(o.agent, o.effort),
+    { path: ["effort"], message: "reasoning effort is not supported by this harness" },
+  );
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 
 /** True when this patch only re-describes a task, so no status guard applies. */
@@ -1022,8 +1038,8 @@ export const HarnessesConfigSchema = z.object({
   /** Launch-time reasoning effort per harness; null leaves the harness in control. */
   defaultEffort: z
     .object({
-      claude: z.enum(THINKING_LEVELS).nullable().default(null),
-      codex: z.enum(THINKING_LEVELS).nullable().default(null),
+      claude: harnessEffortSchema("claude").nullable().default(null),
+      codex: harnessEffortSchema("codex").nullable().default(null),
     })
     .default({ claude: null, codex: null }),
 });
@@ -1049,8 +1065,8 @@ export const HarnessesConfigPatchSchema = z
       .optional(),
     defaultEffort: z
       .object({
-        claude: z.enum(THINKING_LEVELS).nullable().optional(),
-        codex: z.enum(THINKING_LEVELS).nullable().optional(),
+        claude: harnessEffortSchema("claude").nullable().optional(),
+        codex: harnessEffortSchema("codex").nullable().optional(),
       })
       .optional(),
   })

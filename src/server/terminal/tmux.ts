@@ -25,9 +25,11 @@ import type {
  * format strings came with their comments, which carry hard-won detail about what does and
  * does not survive a non-UTF-8 locale.
  *
- * The remaining inline `run("tmux", …)` calls - ~19 of them across `actions.ts`,
- * `dispatcher.ts` and `pane-capture.ts` - are the following migration items, and they are
- * what this file's `bin()` and `env()` exist to end: none of them resolves a binary or
+ * Pane I/O came next: every keystroke, paste and capture aimed at a session now arrives
+ * through `write` and `capture` below rather than being open-coded at a call site. The
+ * remaining inline `run("tmux", …)` calls - focus, rename and kill in `actions.ts`, spawn
+ * and teardown in `dispatcher.ts` - are the following migration item, and they are what
+ * this file's `bin()` and `env()` exist to end: none of them resolves a binary or
  * sanitizes the environment, so they can address a different tmux server than the one the
  * pane ids they are given were enumerated on.
  */
@@ -152,9 +154,10 @@ export function parseClients(stdout: string): MuxClient[] {
  * "blocked" would refuse every write on such a system - a far worse failure than the
  * swallowed keystroke this exists to catch. Only an explicit `1` blocks.
  *
- * Exported standing alone, and not only reachable as `Multiplexer.paneMode`, because
- * `actions.ts` still holds a bare pane id and threads its own `exec` to keep the refusal
- * reachable from a fake. It moves behind the interface with the rest of that file.
+ * `actions.ts` reaches this only as `Multiplexer.paneMode` now. It stays exported for its
+ * own tests, which drive the PARSE - what tmux's probe prints back, including the versions
+ * that print nothing useful - against verbatim output rather than against a live server,
+ * and which assert against a real pane on a machine that has one.
  */
 export async function readTmuxPaneMode(
   paneId: string,

@@ -286,14 +286,25 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   inherited vars to drop, applied by `binEnv` to EVERY command that adapter runs. An empty
   `dropEnv` is a declaration, not a gap: wezterm drops `WEZTERM_UNIX_SOCKET` because that pin
   goes stale when a GUI restarts, and tmux drops nothing because `TMUX` names a live server
-  and the ~19 un-migrated inline `run("tmux", …)` writes still inherit it - enumerate on one
-  socket and write on another and the pane ids do not mean the same thing. `binPresent`
+  and the eleven un-migrated inline `run("tmux", …)` calls still inherit it - enumerate on
+  one socket and act on another and the pane ids do not mean the same thing. `binPresent`
   answers "installed?" from the filesystem so a registered-but-absent adapter costs no spawn
-  on the 1500ms tick. Tests:
+  on the 1500ms tick. **Pane I/O goes through `bindPane`** (`registry.ts`), which applies the
+  composition rule once and hands back a `BoundPane` a caller cannot ask the vendor of - so
+  `actions.ts` branches on CAPABILITY (`!pane.write`, `!pane.write.paste`, `!pane.mode`) and
+  never on an id, and a refusal names the backend from `pane.label`. `pane.mode` is the
+  copy-mode probe, and its two nulls are different claims: null CAPABILITY means the backend
+  has no such state (every emulator), null ANSWER means we asked and the pane is in none -
+  read the first as the second and a new multiplexer's keystrokes are swallowed silently.
+  The seam for all of it is `PaneDeps.pane`, so a test drives the real adapter on a fake
+  subprocess (real argv) or a hand-built pane (capability nulls no shipped backend declares
+  yet). Tests:
   `terminal-registry.test.ts`, `terminal-adapters.test.ts`, `terminal-enumerate.test.ts`,
-  `correlate.test.ts`. **Migration in progress** - discovery is through the registries, but
-  most WRITE call sites still branch on `session.tmux` / `session.wezterm` directly, and
-  `legacyHandles` (`correlate.ts`) is the one place still projecting onto those two fields;
+  `correlate.test.ts`, `pane-write-capabilities.test.ts`, `pane-copy-mode.test.ts`.
+  **Migration in progress** - discovery and pane I/O are through the registries; focus,
+  rename, kill and spawn still branch on `session.tmux` / `session.wezterm` directly, and
+  `legacyHandles` (`correlate.ts`) plus its mirror `handlesOf` (`terminal/handles.ts`) are
+  the only places projecting onto those two fields;
   see `docs/plans/pluggable-integrations/plan.md` phase 2.
 - **Tones**: `TONE_ORDER` / `TONE_GROUPS` in `lib/tone.ts` drive grid sort, rail sections,
   board columns and board arrow-nav. Also needs a `--<tone>` token and `.tone-*` / `.badge-*`

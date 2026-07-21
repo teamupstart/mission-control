@@ -38,6 +38,7 @@ const { stubRun } = await import("../src/server/util/exec.ts");
 
 import type { ControlSpec } from "../src/server/harness/types.ts";
 import type { InjectDeps } from "../src/server/actions.ts";
+import { bindSession } from "../src/server/terminal/handles.ts";
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -64,10 +65,11 @@ function harness(reads: (string | null)[] | string | null): {
   const calls: string[][] = [];
   let read = 0;
   const deps: InjectDeps = {
-    exec: async (bin, args) => {
-      calls.push([bin, ...args]);
-      return stubRun({ stdout: "", stderr: "", code: 0 });
-    },
+    pane: (session) =>
+      bindSession(session, async (bin, args) => {
+        calls.push([bin, ...args]);
+        return stubRun({ stdout: "", stderr: "", code: 0 });
+      }),
     capture: async () => queue[Math.min(read++, queue.length - 1)] ?? null,
     sleep: async () => {},
   };
@@ -272,7 +274,8 @@ test("a paste that never landed is unverified too, and stays retryable", async (
   // `pasted: false` is the only state a caller may retry from, and a failure before any
   // Enter cannot have verified anything. The two flags must not disagree.
   const deps: InjectDeps = {
-    exec: async () => stubRun({ stdout: "", stderr: "no such pane", code: 1 }),
+    pane: (session) =>
+      bindSession(session, async () => stubRun({ stdout: "", stderr: "no such pane", code: 1 })),
     capture: async () => null,
     sleep: async () => {},
   };

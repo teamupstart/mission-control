@@ -8,6 +8,8 @@ import {
   type InjectDeps,
   type PaneDeps,
 } from "../src/server/actions.ts";
+import { bindSession } from "../src/server/terminal/handles.ts";
+import type { TerminalExec } from "../src/server/terminal/exec.ts";
 import { readTmuxPaneMode } from "../src/server/terminal/tmux.ts";
 import { run, stubRun, type RunResult } from "../src/server/util/exec.ts";
 import type { Session, TmuxInfo } from "@shared/types.ts";
@@ -43,15 +45,20 @@ const ok = (stdout: string): RunResult => stubRun({ stdout, stderr: "", code: 0 
  */
 function harness(inMode: string, mode = "copy-mode", screen = ""): { deps: InjectDeps; argv: string[] } {
   const argv: string[] = [];
+  // The REAL tmux adapter, built on a fake subprocess. Faking the pane itself would assert
+  // that the policy asks its questions in the right order and nothing about the argv those
+  // questions turn into - and the argv is half the claim here, since "nothing was written"
+  // is only a fact about commands that were never run.
+  const exec: TerminalExec = async (bin, args) => {
+    const line = [bin, ...args].join(" ");
+    if (args.includes("display-message")) return ok(`${inMode} ${mode}`);
+    argv.push(line);
+    return ok("");
+  };
   return {
     argv,
     deps: {
-      exec: async (bin, args) => {
-        const line = [bin, ...args].join(" ");
-        if (args.includes("display-message")) return ok(`${inMode} ${mode}`);
-        argv.push(line);
-        return ok("");
-      },
+      pane: (session) => bindSession(session, exec),
       capture: async () => screen,
       sleep: async () => {},
     },
@@ -59,7 +66,7 @@ function harness(inMode: string, mode = "copy-mode", screen = ""): { deps: Injec
 }
 
 /** The `PaneDeps` half, for the writers that need no clock. */
-const paneDeps = (h: { deps: InjectDeps }): PaneDeps => ({ exec: h.deps.exec, capture: h.deps.capture });
+const paneDeps = (h: { deps: InjectDeps }): PaneDeps => ({ pane: h.deps.pane, capture: h.deps.capture });
 
 /** A menu on screen, in the shape `parsePaneDialog` reads, with the cursor on `cursor`. */
 const menu = (cursor: number): string =>
@@ -122,11 +129,11 @@ test("a pane in no mode is written to exactly as before", async () => {
   assert.ok(argv.some((a) => a.includes("paste-buffer")), "the paste still happens");
 });
 
-// Every writer below reaches tmux through the same `tmuxSendKeys` choke point, and each is
+// Every writer below reaches the pane through the same `sendKeys` choke point, and each is
 // asserted through the injected exec rather than a live tmux. The real-tmux case at the
 // bottom is what proves the PREMISE (tmux really does swallow these), but it is skipped on
 // a runner without tmux - so if these were left to it, a change that dropped the probe from
-// `tmuxSendKeys` would go green on exactly the machines nobody is watching.
+// `sendKeys` would go green on exactly the machines nobody is watching.
 
 test("sendText is refused, and types nothing, when the pane is in a mode", async () => {
   const h = harness("1");
@@ -171,7 +178,9 @@ test("a menu on a pane in no mode is still answered normally", async () => {
   const r = await selectPaneOption(tmuxSession(), { number: 1, label: "Ship it" }, paneDeps(h));
 
   assert.equal(r.ok, true);
-  assert.ok(h.argv.some((a) => a.includes("send-keys -t %1 Enter")), "the Enter still goes through");
+  // `--` ends tmux's flag parsing and arrived with the adapter: the key name after it is
+  // still resolved as a key, so this is the same keystroke it always was.
+  assert.ok(h.argv.some((a) => a.includes("send-keys -t %1 -- Enter")), "the Enter still goes through");
 });
 
 test("an Enter swallowed AFTER the paste says so, and does not claim nothing happened", async () => {
@@ -181,13 +190,14 @@ test("an Enter swallowed AFTER the paste says so, and does not claim nothing hap
   // top of it. `pasted: true` is what routes it to a human instead.
   let pasted = false;
   const argv: string[] = [];
+  const exec: TerminalExec = async (bin, args) => {
+    if (args.includes("display-message")) return ok(pasted ? "1 copy-mode" : "0 ");
+    if (args.includes("paste-buffer")) pasted = true;
+    argv.push([bin, ...args].join(" "));
+    return ok("");
+  };
   const deps: InjectDeps = {
-    exec: async (bin, args) => {
-      if (args.includes("display-message")) return ok(pasted ? "1 copy-mode" : "0 ");
-      if (args.includes("paste-buffer")) pasted = true;
-      argv.push([bin, ...args].join(" "));
-      return ok("");
-    },
+    pane: (session) => bindSession(session, exec),
     capture: async () => "",
     sleep: async () => {},
   };

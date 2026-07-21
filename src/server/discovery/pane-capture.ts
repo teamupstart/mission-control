@@ -1,6 +1,5 @@
 import type { PaneHandles } from "@shared/pane.ts";
-import { resolveWeztermBin } from "../config.ts";
-import { run } from "../util/exec.ts";
+import { bindSession } from "../terminal/handles.ts";
 
 /**
  * Reading a terminal pane's visible text - the one primitive every "what is this session
@@ -21,26 +20,25 @@ import { run } from "../util/exec.ts";
  */
 export type { PaneHandles } from "@shared/pane.ts";
 
-/** Capturing a pane is on the poll path - keep it well under the tick interval. */
-const CAPTURE_TIMEOUT_MS = 1000;
-
-/** Capture a pane's visible text, or null when it has no handle / the capture fails. */
+/**
+ * Capture a pane's visible text, or null when there is none to be had.
+ *
+ * Null covers three different situations, and collapsing them further would be the bug:
+ * the session has no pane, the backend holding it cannot screen-scrape at all (Ghostty has
+ * no scripting CLI, so `capture` is a declared null), or the read was attempted and failed.
+ * What they share is that nothing was SEEN, and every caller here already treats that as
+ * evidence in neither direction rather than as a blank screen: `annotatePaneState` rides
+ * the last dialog forward for a few ticks and then admits it has lost the pane,
+ * `awaitPasteSubmitted` refuses to read a null as a cleared composer, and the pane route
+ * hands the dashboard a null. Returning `""` instead - which is what a stubbed-out capture
+ * would naturally produce - would tell all three that the screen is empty, which reads as
+ * "no dialog", "the paste was submitted" and "this session is showing nothing".
+ *
+ * Which backend answers is `bindPane`'s decision, not this function's: the multiplexer pane
+ * is the agent's real one, and the emulator handle addresses the client displaying it.
+ */
 export async function capturePaneText(session: PaneHandles): Promise<string | null> {
-  // tmux wins when both exist: the agent's real pane is the tmux pane, and the
-  // wezterm handle would be the outer client showing it. Mirrors `sendText`.
-  if (session.tmux) {
-    const r = await run("tmux", ["capture-pane", "-p", "-t", session.tmux.paneId], {
-      timeoutMs: CAPTURE_TIMEOUT_MS,
-    });
-    return r.code === 0 ? r.stdout : null;
-  }
-  if (session.wezterm) {
-    const r = await run(
-      resolveWeztermBin(),
-      ["cli", "get-text", "--pane-id", String(session.wezterm.paneId)],
-      { timeoutMs: CAPTURE_TIMEOUT_MS },
-    );
-    return r.code === 0 ? r.stdout : null;
-  }
-  return null;
+  const pane = bindSession(session);
+  if (!pane?.capture) return null;
+  return pane.capture();
 }

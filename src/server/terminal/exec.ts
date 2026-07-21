@@ -17,6 +17,10 @@ import type { TerminalResult } from "./types.ts";
  * `paneMode` (threaded on into `readTmuxPaneMode`), and wezterm's `list`, `write` and
  * `capture`.
  *
+ * It reaches the policy layer through `bindPane(handles, exec)`, which is how a test of
+ * `actions.ts` drives the REAL adapter on a fake subprocess and asserts the argv that
+ * comes out - the mode probe, the paste and the Enter in order, without a tmux installed.
+ *
  * What is left delegating to `discovery/wezterm.ts` - `focus`, `spawn` and `retitle` - calls
  * `run` directly and ignores this parameter entirely, so `weztermEmulator(fake).spawn.tab(…)`
  * opens a real tab on the developer's desktop. Drive those through a fake BINARY instead

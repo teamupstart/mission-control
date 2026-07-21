@@ -1,6 +1,5 @@
 import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
-import { resolveWeztermBin } from "./config.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
 import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
@@ -17,11 +16,12 @@ import {
 } from "./discovery/pane-dialog.ts";
 import { dialogSpecFor, modeLineSpecFor, tuiFor } from "./harness/index.ts";
 import { dialogIdentity } from "@shared/session.ts";
-import { paneToken } from "@shared/pane.ts";
+import { paneToken, type PaneHandles } from "@shared/pane.ts";
 import { harnessFor } from "./harness/index.ts";
-import { readTmuxPaneMode } from "./terminal/tmux.ts";
-import { EMULATORS, MULTIPLEXERS, hostPanesFor } from "./terminal/registry.ts";
-import type { EmulatorPane } from "./terminal/types.ts";
+import { bindSession } from "./terminal/handles.ts";
+import type { TerminalExec } from "./terminal/exec.ts";
+import { EMULATORS, MULTIPLEXERS, hostPanesFor, type BoundPane } from "./terminal/registry.ts";
+import type { EmulatorPane, Key, TerminalResult } from "./terminal/types.ts";
 import {
   activateWeztermPane,
   setWeztermTabTitle,
@@ -34,8 +34,8 @@ export interface ActionResult {
   ok: boolean;
   error?: string;
   /**
-   * True when the write was refused because the pane is in a tmux mode that would have
-   * swallowed it - see `tmuxWriteBlock`.
+   * True when the write was refused because the pane is in a multiplexer mode that would
+   * have swallowed it - see `paneWriteBlock`.
    *
    * Distinct from every other failure here because its CAUSE is a person, not a fault:
    * it clears when they leave the mode and it says nothing about the item, the session,
@@ -81,6 +81,13 @@ const driving = new Set<string>();
  * NO_HANDLE, which is the honest error, and a null key must not collide with
  * another handleless session's.
  *
+ * Keyed with `paneToken` rather than with the `BoundPane.token` the write itself
+ * addresses, because this must be answerable without a subprocess seam - and the two
+ * are pinned equal (`terminal-registry.test.ts`), which is what makes the lock guard
+ * the pane the write lands on rather than some other one. Both resolve the innermost
+ * handle; if they ever disagreed, a session with both handles would lock its emulator
+ * pane while typing into its multiplexer pane, and the exclusion would be nil.
+ *
  * Exported for its tests. Every writer below is a real subprocess, so the guard's own
  * semantics - who wins, who is refused, and whether the key is ever left held - can
  * only be asserted here.
@@ -107,15 +114,22 @@ function check(r: RunResult, failMsg: string): ActionResult {
 }
 
 /**
- * The subprocess seam every write below runs through.
+ * The subprocess seam of what is left shelling out here - focus and rename, the next
+ * migration item.
  *
- * Named because it is now threaded rather than defaulted: the copy-mode guard is a
- * PROBE plus a write, and a guard whose probe can only shell out to a real tmux is one
- * whose tests are skipped on any machine without one. See `PaneDeps`.
+ * No pane WRITE runs through it any more: a write's seam is the PANE (`PaneDeps.pane`),
+ * because the adapters are what run the commands now. `TerminalExec` itself rather than a
+ * narrower alias, so a fake built for one is a fake for the other.
  */
-export type Exec = (bin: string, args: string[]) => Promise<RunResult>;
+export type Exec = TerminalExec;
 
-/** Run a command and reduce it to an ActionResult in one step. */
+/**
+ * Run a command and reduce it to an ActionResult in one step.
+ *
+ * What is left of the hand-rolled shelling out: the focus and rename paths below, which
+ * the next migration item moves behind `Multiplexer.select` / `EmulatorFocus.raise`. No
+ * pane WRITE reaches it any more - those go through `writeText` / `sendKeys`.
+ */
 async function step(
   bin: string,
   args: string[],
@@ -126,24 +140,46 @@ async function step(
 }
 
 /**
- * The seams a pane WRITE needs: the command runner, and the pane read that verifies
- * what it did.
+ * The seams a pane WRITE needs: the pane itself, and the read that verifies what it did.
  *
  * They travel together because every non-trivial write here is a read-write-read - the
  * mode probe, the keystroke, the confirmation - and a caller that can fake only one
  * half can drive none of them. `InjectDeps` is this plus a clock.
+ *
+ * The first seam is the PANE and no longer a command runner, which is what routing the
+ * writes through the adapters bought. Two things it can now express that an `Exec` could
+ * not:
+ *
+ *   - A test wanting real argv still gets it: `bindSession(session, fakeExec)` builds the
+ *     genuine adapter on a fake subprocess, so `-- Enter` versus `\x1b[Z` is asserted
+ *     against the code that emits it.
+ *   - A test wanting a backend nobody has written yet supplies a `BoundPane` literal. The
+ *     capability nulls - no `write`, no `paste`, no `mode` - are where a new backend
+ *     degrades, and every one of them is now reachable before that backend exists rather
+ *     than after it ships broken.
  */
 export interface PaneDeps {
-  exec: Exec;
+  pane: (session: PaneHandles) => BoundPane | null;
   capture: (session: Session) => Promise<string | null>;
 }
 
-const defaultPaneDeps: PaneDeps = { exec: run, capture: capturePaneText };
+const defaultPaneDeps: PaneDeps = {
+  pane: (session) => bindSession(session),
+  capture: capturePaneText,
+};
 
-/** Say a pane is in a tmux mode, in the terms the person who has to clear it needs. */
-function inModeError(mode: string): string {
-  return `this pane is in tmux ${mode}, which swallows keystrokes before Claude sees them - nothing was sent. Leave ${mode} (q, or scroll to the bottom) and it will go through.`;
-}
+/**
+ * Say a pane is in a mode that swallows keystrokes, in the terms the person who has to
+ * clear it needs.
+ *
+ * The backend NAMES itself (`BoundPane.label`) rather than being spelled "tmux" here: this
+ * sentence is read by someone who has to go and leave that mode, and a refusal telling them
+ * about a multiplexer they are not running is worse than no sentence at all.
+ */
+type DescribeMode = (backend: string, mode: string) => string;
+
+const inModeError: DescribeMode = (backend, mode) =>
+  `this pane is in ${backend} ${mode}, which swallows keystrokes before the agent sees them - nothing was sent. Leave ${mode} (q, or scroll to the bottom) and it will go through.`;
 
 /**
  * The same, for the one keystroke whose refusal is NOT a clean no-op: the Enter that
@@ -152,15 +188,38 @@ function inModeError(mode: string): string {
  * Every other refusal here means "nothing happened, try again later". This one means
  * "half of it happened", and saying so is the whole point - a human who reads the
  * generic wording would go looking for a prompt that never arrived, when in fact it is
- * on their screen waiting for the Enter tmux took. The caller is told the same thing
- * structurally, via `pasted: true`, which is what stops it re-pasting a second copy.
+ * on their screen waiting for the Enter the multiplexer took. The caller is told the same
+ * thing structurally, via `pasted: true`, which is what stops it re-pasting a second copy.
  */
-function inModeAfterPasteError(mode: string): string {
-  return `this pane entered tmux ${mode} after the prompt was pasted, so the Enter that submits it was swallowed - the text is sitting in the composer, unsubmitted. Leave ${mode} (q, or scroll to the bottom) and press Enter to send it.`;
+const inModeAfterPasteError: DescribeMode = (backend, mode) =>
+  `this pane entered ${backend} ${mode} after the prompt was pasted, so the Enter that submits it was swallowed - the text is sitting in the composer, unsubmitted. Leave ${mode} (q, or scroll to the bottom) and press Enter to send it.`;
+
+/** Reduce a finished terminal operation to an `ActionResult`. */
+function fromTerminal(r: TerminalResult): ActionResult {
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 /**
- * Refuse a write when tmux would eat it, naming the mode. Null means go ahead.
+ * Refused by declaration: this backend has no way to put keystrokes in a pane at all.
+ *
+ * Not a fault and not transient, so deliberately NOT `paneBlocked` - a caller that
+ * rations attempts should spend one and give up rather than retry forever. Ghostty is
+ * the case: a session can be discovered in it and brought forward, and never typed into.
+ */
+const cannotType = (pane: BoundPane): string =>
+  `${pane.label} cannot type into a pane, so this session can only be read`;
+
+/**
+ * The same for a whole prompt: a backend with no bracketed paste has no way to deliver a
+ * multi-line body as ONE submission, and typing it would submit at every newline - so the
+ * delivery is refused rather than shredded into a dozen half-prompts.
+ */
+const cannotPaste = (pane: BoundPane): string =>
+  `${pane.label} cannot paste, so a multi-line prompt would submit a line at a time`;
+
+/**
+ * Refuse a write when the pane's own multiplexer would eat it, naming the mode. Null means
+ * go ahead - and so does a backend with no such concept, which is the important half.
  *
  * A pane in copy-mode routes every key to tmux's own key table: `send-keys` and
  * `paste-buffer` BOTH still exit 0, and the child receives nothing. Reporting that as
@@ -171,6 +230,13 @@ function inModeAfterPasteError(mode: string): string {
  * retry it, and the session waits on a human forever underneath a note claiming it was
  * already answered. That is not hypothetical - it is how a session sat in "Needs You"
  * with `answered: option 1` written above the menu it never actually answered.
+ *
+ * `BoundPane.mode` is the capability, and the two nulls it separates are not the same
+ * claim. A null CAPABILITY means the backend has no input mode to be stuck in - true of
+ * every emulator, and the reason the wezterm path never probed - so a write may go. A null
+ * ANSWER means we asked and the pane is in none. Reading the first as the second is how a
+ * multiplexer that grows a copy-mode gets its keystrokes swallowed silently; reading the
+ * second as "cannot tell" would refuse every write on the machine.
  *
  * This deliberately does NOT cancel the mode to push the keys through. A pane in
  * copy-mode is a PERSON reading their own scrollback, and yanking them out of it for a
@@ -186,45 +252,51 @@ function inModeAfterPasteError(mode: string): string {
  * milliseconds between them still gets a keystroke swallowed and reported as sent. The
  * window shrinks from "the whole time the pane is in a mode", which is minutes whenever
  * a person is reading scrollback, to a sub-frame race. That is the trade being made
- * here; it is not a proof the case is gone.
+ * here; it is not a proof the case is gone. Moving the probe behind the interface did
+ * not shrink it further and must not be read as having done so.
  */
-async function tmuxWriteBlock(
-  paneId: string,
-  exec?: Exec,
-  describe: (mode: string) => string = inModeError,
+async function paneWriteBlock(
+  pane: BoundPane,
+  describe: DescribeMode = inModeError,
 ): Promise<ActionResult | null> {
-  const mode = await readTmuxPaneMode(paneId, exec);
-  return mode === null ? null : { ok: false, error: describe(mode), paneBlocked: true };
+  if (!pane.mode) return null;
+  const mode = await pane.mode();
+  return mode === null ? null : { ok: false, error: describe(pane.label, mode), paneBlocked: true };
 }
 
 /**
- * Send keystrokes to a tmux pane, refusing when the pane is in a mode that would
- * swallow them. Every tmux keystroke in this module goes through here, so no path can
- * forget the check - see `tmuxWriteBlock` for why a swallowed key is worse than a
- * refused one.
+ * The two guarded write verbs, and the only ones anything below may call.
  *
- * `exec` is threaded rather than defaulted so the refusal is reachable from a fake.
- * The guard is only as good as the coverage proving it still runs, and a probe hard-
- * wired to a real tmux leaves every writer but `injectPrompt` testable ONLY on a
- * machine that has one - so a regression removing this check would go green on any CI
- * runner without tmux, which is exactly where it would go unnoticed.
+ * Every keystroke in this module goes through one of them, so no path can forget the mode
+ * check - see `paneWriteBlock` for why a swallowed key is worse than a refused one. The
+ * verbs are not interchangeable: `text` types literally (a newline in it SUBMITS), `keys`
+ * presses named keys, and which convention those keys are rendered in - tmux's `BTab`,
+ * wezterm's `\x1b[Z` - is the adapter's business and never this file's.
  */
-async function tmuxSendKeys(
-  paneId: string,
-  keys: string[],
-  failMsg: string,
-  exec: Exec = run,
-): Promise<ActionResult> {
-  const blocked = await tmuxWriteBlock(paneId, exec);
+async function writeText(pane: BoundPane, text: string): Promise<ActionResult> {
+  if (!pane.write) return { ok: false, error: cannotType(pane) };
+  const blocked = await paneWriteBlock(pane);
   if (blocked) return blocked;
-  return step("tmux", ["send-keys", "-t", paneId, ...keys], failMsg, exec);
+  return fromTerminal(await pane.write.text(text));
+}
+
+async function sendKeys(
+  pane: BoundPane,
+  keys: readonly Key[],
+  describe?: DescribeMode,
+): Promise<ActionResult> {
+  if (!pane.write) return { ok: false, error: cannotType(pane) };
+  const blocked = await paneWriteBlock(pane, describe);
+  if (blocked) return blocked;
+  return fromTerminal(await pane.write.keys(keys));
 }
 
 /**
- * Type text into a session's prompt, optionally submitting with Enter. Routes
- * through tmux `send-keys` or wezterm `cli send-text` depending on which handle
- * the session has. tmux wins when both exist (the agent's real pane is the tmux
- * pane; the wezterm handle would be the outer client).
+ * Type text into a session's prompt, optionally submitting with Enter.
+ *
+ * The pane it lands on is `bindSession`'s decision: the innermost handle wins, because the
+ * agent's real pane is the multiplexer pane and the emulator handle addresses the client
+ * showing it. Nothing here knows which backend answered.
  */
 export async function sendText(
   session: Session,
@@ -241,30 +313,14 @@ async function sendTextLocked(
   submit: boolean,
   deps: PaneDeps,
 ): Promise<ActionResult> {
-  if (session.tmux) {
-    const target = session.tmux.paneId;
-    const typed = await tmuxSendKeys(target, ["-l", text], "tmux send-keys failed", deps.exec);
-    if (!typed.ok) return typed;
-    if (submit) {
-      const entered = await tmuxSendKeys(target, ["Enter"], "tmux Enter failed", deps.exec);
-      if (!entered.ok) return entered;
-    }
-    return { ok: true };
-  }
-  if (session.wezterm) {
-    const bin = resolveWeztermBin();
-    const id = String(session.wezterm.paneId);
-    const args = ["cli", "send-text", "--pane-id", id, "--no-paste", text];
-    const typed = await step(bin, args, "wezterm send-text failed", deps.exec);
-    if (!typed.ok) return typed;
-    if (submit) {
-      const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
-      const entered = await step(bin, enterArgs, "wezterm Enter failed", deps.exec);
-      if (!entered.ok) return entered;
-    }
-    return { ok: true };
-  }
-  return { ok: false, error: NO_HANDLE };
+  const pane = deps.pane(session);
+  if (!pane) return { ok: false, error: NO_HANDLE };
+  const typed = await writeText(pane, text);
+  if (!typed.ok || !submit) return typed;
+  // Re-probed rather than covered by the check above, exactly as the two `send-keys` calls
+  // this replaced were: the mode can be entered between them, and the Enter is the half
+  // that commits.
+  return sendKeys(pane, ["enter"]);
 }
 
 /**
@@ -477,12 +533,14 @@ const PASTE_NOT_SUBMITTED =
  *
  * The point is the caller that has something destructive to do first. `TaskManager.assign`
  * resets the agent's checkout - detaching it, wiping its work queue, clearing its context
- * - and then types. Discovering only afterwards that the pane has no handle, or is in
- * copy-mode with a human reading their scrollback, leaves an agent stripped for a task
- * that went straight back to the backlog. Asking first costs one `display-message`.
+ * - and then types. Discovering only afterwards that the pane has no handle, that its
+ * terminal cannot be typed into at all, or that it is in copy-mode with a human reading
+ * their scrollback, leaves an agent stripped for a task that went straight back to the
+ * backlog. Asking first costs one mode probe, and nothing at all on a backend with no
+ * mode to probe for.
  *
  * It is a PROBE, not a lock: the pane can be entered a millisecond later, which is the
- * same sub-frame race `tmuxWriteBlock` documents and the same one `injectPrompt` re-runs
+ * same sub-frame race `paneWriteBlock` documents and the same one `injectPrompt` re-runs
  * the check for. This shrinks a minutes-long window to that race; it does not close it.
  */
 export async function paneAcceptsPrompt(
@@ -494,17 +552,20 @@ export async function paneAcceptsPrompt(
   // `ok` on the strength of one is how the destructive step runs anyway and the refusal
   // arrives afterwards, on a stripped agent whose task went back to the backlog.
   if (controlFor(session).kind !== "keystroke") return { ok: false, error: NO_KEYSTROKE_DELIVERY };
-  if (session.tmux) return (await tmuxWriteBlock(session.tmux.paneId, deps.exec)) ?? { ok: true };
-  if (session.wezterm) return { ok: true };
-  return { ok: false, error: NO_HANDLE };
+  const pane = deps.pane(session);
+  if (!pane) return { ok: false, error: NO_HANDLE };
+  // Asked in the order a write would hit them: a backend that cannot type is a permanent
+  // refusal, a pane in a mode a transient one.
+  if (!pane.write) return { ok: false, error: cannotType(pane) };
+  return (await paneWriteBlock(pane)) ?? { ok: true };
 }
 
 /**
  * Deliver a whole prompt (possibly multi-line) into a session's input as a single
  * submission. Unlike `sendText`, newlines here must NOT each submit - so we send
- * the body via bracketed paste (tmux `paste-buffer -p` / wezterm's default paste),
- * which agent TUIs treat as one pasted block, then submit it with Enter. Used by
- * dispatch to seed an agent's first task, and by the work queue to deliver an item.
+ * the body via the backend's bracketed paste (`PaneWrite.paste`), which agent TUIs treat
+ * as one pasted block, then submit it with Enter. Used by dispatch to seed an agent's
+ * first task, and by the work queue to deliver an item.
  *
  * The Enter is NOT sent on the paste's heels, and that is load-bearing: an agent that
  * coalesces input for a window afterwards absorbs an Enter that arrives inside it, which
@@ -542,84 +603,65 @@ async function injectPromptLocked(
   text: string,
   deps: InjectDeps,
 ): Promise<InjectResult> {
-  const cmd = async (bin: string, args: string[], failMsg: string): Promise<ActionResult> =>
-    check(await deps.exec(bin, args), failMsg);
-
   // How this agent takes a turn. Read once, up front, rather than branched on per step:
   // the delivery below is generic over harnesses and must never name one.
   const control = controlFor(session);
   // The only delivery implemented today. A `stream-json` harness does not go through a
-  // pane at all, so it cannot fall through to the tmux/wezterm paths below and quietly
-  // type at nothing - it is refused here, by declaration, until that path exists.
+  // pane at all, so it cannot fall through to the pane path below and quietly type at
+  // nothing - it is refused here, by declaration, until that path exists.
   if (control.kind !== "keystroke") {
     return undelivered({ ok: false, error: NO_KEYSTROKE_DELIVERY });
   }
   const { settleMs, pastePlaceholder } = control;
 
-  if (session.tmux) {
-    const target = session.tmux.paneId;
-    // Before anything else: `paste-buffer` is swallowed by copy-mode exactly like
-    // `send-keys` is, and just as silently, so the "the text IS in the pane" invariant
-    // below is only true once this has cleared.
-    const blocked = await tmuxWriteBlock(target, deps.exec);
-    if (blocked) return undelivered(blocked);
-    const buf = `harness-${target.replace(/[^a-zA-Z0-9]/g, "")}`;
-    const set = await cmd("tmux", ["set-buffer", "-b", buf, "--", text], "tmux set-buffer failed");
-    if (!set.ok) return undelivered(set);
-    // -p: bracketed paste (so embedded newlines don't submit); -d: drop the buffer after.
-    // A non-zero exit here means tmux couldn't resolve the buffer or the pane, both
-    // of which it checks BEFORE writing: nothing reached the pane.
-    const paste = await cmd(
-      "tmux",
-      ["paste-buffer", "-p", "-d", "-b", buf, "-t", target],
-      "tmux paste-buffer failed",
-    );
-    if (!paste.ok) return undelivered(paste);
-    // Past this point the text IS in the pane, submitted or not.
-    await deps.sleep(settleMs);
-    const wasPending = await pasteIsCollapsed(session, text, control, deps);
-    // Re-probed per Enter rather than trusting the pre-paste check: the settle window
-    // and the submit polls are ~1.6s of wall clock during which a human can start
-    // scrolling, and this Enter is a tmux keystroke like any other. Routing it through
-    // the choke point is what makes the invariant on `tmuxSendKeys` true instead of
-    // nearly true - and it upgrades the failure a caller sees from the generic "Claude
-    // never took the Enter", reached only after three swallowed presses and ~3.6s of
-    // pane captures, to one that names the mode a person can actually clear.
-    const submitted = await awaitPasteSubmitted(
-      session,
-      async () => {
-        const eaten = await tmuxWriteBlock(target, deps.exec, inModeAfterPasteError);
-        return eaten ?? (await cmd("tmux", ["send-keys", "-t", target, "Enter"], "tmux Enter failed"));
-      },
-      pastePlaceholder,
-      wasPending,
-      deps,
-    );
-    // `pasted: true` regardless of how the submit failed, and that is the contract
-    // holding: the text IS in the composer. A refusal here is the one blocked write
-    // that must NOT be retried from the top - re-pasting onto it would append a second
-    // copy - so the caller is told "may have landed" and hands it to a human.
-    return { ...submitted, pasted: true };
+  const pane = deps.pane(session);
+  if (!pane) return undelivered({ ok: false, error: NO_HANDLE });
+  if (!pane.write) return undelivered({ ok: false, error: cannotType(pane) });
+  // Refused BEFORE the mode probe and before a byte is written: a backend with no
+  // bracketed paste cannot deliver this as one submission at all, and "type it anyway"
+  // would submit the first line as a whole prompt.
+  const paste = pane.write.paste;
+  if (!paste) return undelivered({ ok: false, error: cannotPaste(pane) });
+
+  // Before anything else: a paste is swallowed by a pane in a mode exactly like a
+  // keystroke is, and just as silently, so the "the text IS in the pane" invariant below
+  // is only true once this has cleared.
+  const blocked = await paneWriteBlock(pane);
+  if (blocked) return undelivered(blocked);
+
+  const pasted = await paste(text);
+  if (!pasted.ok) {
+    // The one place `TerminalResult.outcomeUnknown` decides something, and the reason the
+    // interface makes it required. A paste that REPORTED failure resolved its target
+    // before writing, so nothing reached the pane and the caller may retry; a paste that
+    // was killed rather than answering may be sitting in the composer right now, and a
+    // caller told `pasted: false` would paste a second copy on top of it and mangle the
+    // prompt. Erring toward "it may have landed" costs a prompt a human has to re-send;
+    // erring the other way corrupts one they already sent.
+    return { ...fromTerminal(pasted), pasted: pasted.outcomeUnknown, submitVerified: false };
   }
-  if (session.wezterm) {
-    const bin = resolveWeztermBin();
-    const id = String(session.wezterm.paneId);
-    // Omitting --no-paste makes wezterm send the text as a bracketed paste.
-    const pasted = await cmd(bin, ["cli", "send-text", "--pane-id", id, text], "wezterm send-text failed");
-    if (!pasted.ok) return undelivered(pasted);
-    await deps.sleep(settleMs);
-    const wasPending = await pasteIsCollapsed(session, text, control, deps);
-    const enterArgs = ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"];
-    const submitted = await awaitPasteSubmitted(
-      session,
-      () => cmd(bin, enterArgs, "wezterm Enter failed"),
-      pastePlaceholder,
-      wasPending,
-      deps,
-    );
-    return { ...submitted, pasted: true };
-  }
-  return undelivered({ ok: false, error: NO_HANDLE });
+  // Past this point the text IS in the pane, submitted or not.
+  await deps.sleep(settleMs);
+  const wasPending = await pasteIsCollapsed(session, text, control, deps);
+  // Re-probed per Enter rather than trusting the pre-paste check: the settle window and
+  // the submit polls are ~1.6s of wall clock during which a human can start scrolling,
+  // and this Enter is an ordinary keystroke like any other. Routing it through `sendKeys`
+  // is what makes that guard's invariant true instead of nearly true - and it upgrades
+  // the failure a caller sees from the generic "the agent never took the Enter", reached
+  // only after three swallowed presses and ~3.6s of pane captures, to one that names the
+  // mode a person can actually clear.
+  const submitted = await awaitPasteSubmitted(
+    session,
+    () => sendKeys(pane, ["enter"], inModeAfterPasteError),
+    pastePlaceholder,
+    wasPending,
+    deps,
+  );
+  // `pasted: true` regardless of how the submit failed, and that is the contract
+  // holding: the text IS in the composer. A refusal here is the one blocked write
+  // that must NOT be retried from the top - re-pasting onto it would append a second
+  // copy - so the caller is told "may have landed" and hands it to a human.
+  return { ...submitted, pasted: true };
 }
 
 /**
@@ -633,21 +675,14 @@ async function injectPromptLocked(
  * slash-command menu) Claude binds Tab itself and swallows this. Callers must read
  * the pane back to learn where the mode actually landed - see `readPaneModeLine`.
  *
- * tmux resolves the `BTab` key name to the terminal's back-tab sequence; wezterm
- * takes the raw sequence, so we send CSI Z (ESC [ Z) - the standard Shift+Tab code.
+ * The key is NAMED, never written: tmux resolves `BTab` to the terminal's back-tab
+ * sequence while wezterm takes the raw CSI Z, and a third backend will spell it a third
+ * way. Each adapter renders the `Key` in its own convention.
  */
 async function injectShiftTab(session: Session): Promise<ActionResult> {
-  if (session.tmux) {
-    // No -l here: we want tmux to interpret `BTab` as a key name, not literal text.
-    return tmuxSendKeys(session.tmux.paneId, ["BTab"], "tmux send-keys BTab failed");
-  }
-  if (session.wezterm) {
-    const bin = resolveWeztermBin();
-    const id = String(session.wezterm.paneId);
-    const args = ["cli", "send-text", "--pane-id", id, "--no-paste", "\x1b[Z"];
-    return step(bin, args, "wezterm send-text (Shift+Tab) failed");
-  }
-  return { ok: false, error: NO_HANDLE };
+  const pane = bindSession(session);
+  if (!pane) return { ok: false, error: NO_HANDLE };
+  return sendKeys(pane, ["shift-tab"]);
 }
 
 /** Result of a mode change: the mode the pane was actually in when we stopped. */
@@ -758,7 +793,7 @@ async function cycleLocked(session: Session): Promise<ModeResult> {
  *     fully has landed us back where we started. Nothing to undo.
  */
 export async function setPermissionMode(session: Session, target: PermissionMode): Promise<ModeResult> {
-  if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  if (!bindSession(session)) return { ok: false, error: NO_HANDLE };
   if (!modeLineSpecFor(session.agent)) return { ok: false, error: NO_MODES, mode: null };
   return withPaneLock<ModeResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => walkToMode(session, target));
 }
@@ -805,32 +840,14 @@ export interface OptionTarget {
 /** How many arrow presses one selection may spend. A menu's rows are few; this is a backstop. */
 const MAX_ARROW_STEPS = 12;
 
-/** The CSI sequence each arrow sends, for the wezterm path (tmux takes the key name). */
-const ARROW_SEQ = { Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D" } as const;
+/** The four arrows, as a subset of the key vocabulary the adapters render. */
+type Arrow = Extract<Key, "up" | "down" | "left" | "right">;
 
-/** Send one arrow key to a pane. tmux takes the key name; wezterm takes the raw CSI sequence. */
-async function injectArrow(
-  session: Session,
-  dir: keyof typeof ARROW_SEQ,
-  deps: PaneDeps,
-): Promise<ActionResult> {
-  if (session.tmux) {
-    // No -l: `Up`/`Down` are tmux key names, not literal text to type.
-    return tmuxSendKeys(session.tmux.paneId, [dir], `tmux send-keys ${dir} failed`, deps.exec);
-  }
-  if (session.wezterm) {
-    const bin = resolveWeztermBin();
-    const args = [
-      "cli",
-      "send-text",
-      "--pane-id",
-      String(session.wezterm.paneId),
-      "--no-paste",
-      ARROW_SEQ[dir],
-    ];
-    return step(bin, args, `wezterm send-text (${dir}) failed`, deps.exec);
-  }
-  return { ok: false, error: NO_HANDLE };
+/** Send one arrow key to a pane. Which bytes that is, is the backend's business. */
+async function injectArrow(session: Session, dir: Arrow, deps: PaneDeps): Promise<ActionResult> {
+  const pane = deps.pane(session);
+  if (!pane) return { ok: false, error: NO_HANDLE };
+  return sendKeys(pane, [dir]);
 }
 
 /** Wait for the menu's cursor to leave `from`, or null if it never does. */
@@ -866,7 +883,7 @@ export async function selectPaneOption(
   target: OptionTarget,
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<ActionResult> {
-  if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
   // Shares the mode-walk's lock: both drive the same pane with bare keystrokes, and
   // interleaving them would land arrows in a dialog the other opened. It has to be the
   // SAME lock, keyed the same way (on the pane, not the session), or the exclusion is
@@ -945,7 +962,7 @@ async function walkCursorTo(
   let dialog = from;
   for (let i = 0; dialog.highlighted !== number; i++) {
     if (i >= MAX_ARROW_STEPS) return { ok: false, error: "could not walk the cursor onto that option" };
-    const dir = number > dialog.highlighted ? "Down" : "Up";
+    const dir = number > dialog.highlighted ? "down" : "up";
     const sent = await injectArrow(session, dir, deps);
     if (!sent.ok) return { ...sent, ok: false, error: sent.error ?? "could not send an arrow key" };
     const moved = await awaitCursorMove(session, dialog.highlighted, deps);
@@ -1003,7 +1020,7 @@ export async function submitPaneForm(
   targets: FormTarget[],
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<FormResult> {
-  if (!session.tmux && !session.wezterm) return { ok: false, error: NO_HANDLE };
+  if (!deps.pane(session)) return { ok: false, error: NO_HANDLE };
   if (targets.length === 0) return { ok: false, error: "no rows to submit" };
   return withPaneLock<FormResult>(
     session,
@@ -1053,7 +1070,7 @@ async function submitFormLocked(
   if (!parked.ok) return parked;
 
   const before = dialogIdentity(parked.dialog);
-  const stepped = await injectArrow(session, "Right", deps);
+  const stepped = await injectArrow(session, "right", deps);
   if (!stepped.ok) return stepped;
   const next = await awaitDialogChange(session, before, deps);
   if (!next) return { ok: false, error: "the agent did not move on from this question" };
@@ -1106,7 +1123,7 @@ async function stepBackFromReview(
   review: PaneDialog,
   deps: PaneDeps,
 ): Promise<FormResult> {
-  const back = await injectArrow(session, "Left", deps);
+  const back = await injectArrow(session, "left", deps);
   const returned = back.ok && (await awaitDialogChange(session, dialogIdentity(review), deps));
   return returned
     ? { ok: true, outcome: "unanswered" }
@@ -1170,12 +1187,9 @@ const NO_MENU = "no option menu is on this session's screen";
 
 /** Press Enter, with no text before it - the confirm half of a menu selection. */
 async function injectEnter(session: Session, deps: PaneDeps): Promise<ActionResult> {
-  if (session.tmux) {
-    return tmuxSendKeys(session.tmux.paneId, ["Enter"], "tmux Enter failed", deps.exec);
-  }
-  const bin = resolveWeztermBin();
-  const id = String(session.wezterm!.paneId);
-  return step(bin, ["cli", "send-text", "--pane-id", id, "--no-paste", "\r"], "wezterm Enter failed", deps.exec);
+  const pane = deps.pane(session);
+  if (!pane) return { ok: false, error: NO_HANDLE };
+  return sendKeys(pane, ["enter"]);
 }
 
 /** Explain an unreachable target, naming the flag that would put it in the cycle. */
@@ -1618,7 +1632,10 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
     // Two conditions, both permanent-ish: somewhere to type, and a command worth
     // typing. Without the second the modal offered a "clear the agent's context"
     // checkbox that submitted `/clear` as a prompt on any harness that doesn't speak it.
-    canClear: Boolean((session.tmux || session.wezterm) && harnessFor(session.agent).clearContext),
+    // "Somewhere to type" is the pane's WRITE capability, not merely a handle: an
+    // emulator with no scripting CLI holds a pane nothing can be typed into, and the
+    // checkbox would promise a keystroke that could never be sent.
+    canClear: Boolean(bindSession(session)?.write && harnessFor(session.agent).clearContext),
   };
   if (!session.cwd) return { ...base, error: "session has no working directory" };
   // Anchor every git op at the worktree top, not the pane's (possibly nested)
@@ -1678,8 +1695,8 @@ export async function resetPreview(session: Session): Promise<ResetPreview> {
  * rather than either failing the whole operation and telling the caller a reset that DID
  * happen did not.
  *
- * `cleared` means the agent ACTED on the command, not that tmux took the keystrokes -
- * see `awaitClearProcessed`. The caller that depends on the difference is
+ * `cleared` means the agent ACTED on the command, not that the terminal took the
+ * keystrokes - see `awaitClearProcessed`. The caller that depends on the difference is
  * `TaskManager.assign`, which types a task's intent immediately afterwards.
  */
 export async function resetToOrigin(
@@ -1752,8 +1769,8 @@ const CLEAR_POLLS = Math.ceil(CLEAR_TIMEOUT_MS / CLEAR_POLL_MS);
 /**
  * Wait until the pane shows the clear command was actually acted on.
  *
- * `sendText` resolves when tmux has taken the keystrokes, which is not the same event:
- * the agent processes the command whenever it gets round to it. The caller that cannot
+ * `sendText` resolves when the terminal has taken the keystrokes, which is not the same
+ * event: the agent processes the command whenever it gets round to it. The caller that cannot
  * live with the difference is `TaskManager.assign`, which pastes a task's intent behind
  * this - a clear processed after that paste wipes the composer, `awaitPasteSubmitted`
  * then sees no pending paste and reports success, and the task is marked running with

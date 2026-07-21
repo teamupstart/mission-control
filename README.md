@@ -167,6 +167,14 @@ outlive any window and a copy-mode that can swallow keystrokes; a **terminal emu
 raises windows and has no persistence. Neither is a subset of the other, and a backend
 declares what it genuinely cannot do rather than stubbing it.
 
+The same declaration decides how a session is **typed into and read**. A reply, a queued
+prompt, a menu keystroke, a <kbd>⇧</kbd><kbd>Tab</kbd> and a pane read are all handed to
+the backend holding the innermost pane, which renders them in its own convention - tmux
+takes key names, WezTerm takes escape sequences - so nothing above that layer knows which
+terminal it is talking to. Everything you send arrives as written, including a message
+that begins with a dash. A backend that cannot be typed into at all refuses and names
+itself, rather than reporting that the session has no terminal.
+
 You pay nothing for backends you do not use: a terminal whose binary is not installed is
 skipped from the filesystem, without a process being spawned for it on any tick.
 

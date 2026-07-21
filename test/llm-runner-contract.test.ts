@@ -49,12 +49,28 @@ chmodSync(fakeBin, 0o755);
 // Before the import: `claude-cli.ts` resolves the binary at module load.
 process.env.MISSION_CLAUDE_BIN = fakeBin;
 
+const fakeCodexBin = join(home, "fake-codex.sh");
+writeFileSync(
+  fakeCodexBin,
+  `#!/bin/sh
+cat > /dev/null
+: > "$RUN_ARGS"
+for a in "$@"; do printf '%s\\n' "$a" >> "$RUN_ARGS"; done
+pwd > "$RUN_CWD"
+printf '%s\\n%s\\n%s\\n' "$TMUX_PANE" "$WEZTERM_PANE" "$MISSION_HEADLESS" > "$RUN_ENV"
+printf 'the codex text'
+`,
+);
+chmodSync(fakeCodexBin, 0o755);
+process.env.MISSION_CODEX_BIN = fakeCodexBin;
+
 const { LLM_RUNNERS, DEFAULT_LLM_RUNNER_ID, allLlmRunners, llmRunner } = await import(
   "../src/server/llm/index.ts"
 );
 const { CLAUDE_GRANTABLE_TOOLS, claudeGrantSettings, claudeRunner } = await import(
   "../src/server/llm/claude.ts"
 );
+const { codexRunner } = await import("../src/server/llm/codex.ts");
 const { HEADLESS_CWD } = await import("../src/server/claude-cli.ts");
 const { LLM_RUNNER_IDS, grantRefusal } = await import("../src/shared/llm.ts");
 // The one caller that holds tools, and therefore the one that decides whether the grant
@@ -125,6 +141,38 @@ test("the provider's envelope never reaches the caller", async () => {
   // break outright against a provider whose envelope looks different.
   const text = await claudeRunner.run("summarise this session", { timeoutMs: 5000 });
   assert.equal(text, "the model text");
+});
+
+test("Codex runs ephemerally with command tools disabled and returns its final text", async () => {
+  const text = await codexRunner.run("summarise this session", {
+    model: "gpt-5.6-sol",
+    timeoutMs: 5000,
+  });
+  const args = argv();
+  assert.equal(text, "the codex text");
+  assert.ok(args.includes("exec"));
+  assert.ok(args.includes("--ephemeral"));
+  assert.ok(args.includes("--ignore-user-config"));
+  assert.ok(args.includes("--ignore-rules"));
+  assert.equal(flag("--sandbox"), "read-only");
+  assert.equal(flag("--model"), "gpt-5.6-sol");
+  assert.ok(args.includes("features.shell_tool=false"));
+  assert.ok(args.includes("features.unified_exec=false"));
+  for (const forbidden of ["resume", "--dangerously-bypass-approvals-and-sandbox"]) {
+    assert.equal(args.includes(forbidden), false);
+  }
+  assert.equal(lines(RUN_ENV)[2], "1");
+});
+
+test("Codex refuses Inspector-style tool grants instead of weakening their deny rules", async () => {
+  clearRecording();
+  await assert.rejects(
+    codexRunner.run("review", {
+      grant: { tools: ["Read"], cwd: "/tmp/checkout", denyPaths: ["**/.env"] },
+    }),
+    /refused the tool grant/,
+  );
+  assert.equal(existsSync(RUN_ARGS), false);
 });
 
 test("a run cannot be attributed to the card the daemon was launched from", async () => {

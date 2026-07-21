@@ -220,10 +220,16 @@ async function main(): Promise<void> {
       continue;
     }
 
+    // Foreman's own pick wins, and only when it HAS one. An unset `runner` is not
+    // "claude" - it means the operator never chose here, so the answer is the app-wide
+    // ladder (config, then `MISSION_LLM_RUNNER`, then the default), which only the daemon
+    // can resolve because only it can see the config layer. Defaulting to a literal here
+    // silently drops the env layer for the one subsystem that runs in its own process.
+    //
     // Kept on the last known answer when the daemon can't say, rather than reset to the
     // default: a blip must not silently move the cheap tier onto a provider the operator
     // did not pick, and the next pass asks again anyway.
-    triageRunnerId = await client.llmRunner().catch(() => triageRunnerId);
+    triageRunnerId = cfg.runner ?? (await client.llmRunner().catch(() => triageRunnerId));
 
     // A non-leader IDLES, it does not exit - so it takes over cleanly when the
     // leader's lease expires (a crash, a Ctrl-C), which is the whole point of an
@@ -529,7 +535,7 @@ async function runBacklogAutopilot(client: ForemanClient, cfg: ForemanConfig): P
       noteBacklog("waiting to retry the plan - the daemon refused the last write");
       return false;
     }
-    const result = await planBacklog(action.tasks, backlogModel(cfg));
+    const result = await planBacklog(action.tasks, backlogModel(cfg), triageRunnerId);
     if (result.kind === "failed") {
       backlogPlanFailures++;
       backlogPlanFailedAt = now;
@@ -908,7 +914,7 @@ async function processPromptedWrapup(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: [],
-  }, verifyModel(cfg));
+  }, verifyModel(cfg), triageRunnerId);
   if (result.kind === "failed") {
     // Unlike the queue there is no item to escalate, but the failure is bounded the
     // same way and for the same reason - see `PromptedFailureTracker`. Under the cap
@@ -1132,7 +1138,7 @@ async function runVerify(
     standardsTruncated: standards.truncated,
     instructions,
     priorGaps: item.gaps,
-  }, verifyModel(cfg));
+  }, verifyModel(cfg), triageRunnerId);
 
   if (result.kind === "failed") {
     return void (await failVerify(client, session, item, qcfg, result.reason));
@@ -1564,7 +1570,7 @@ async function fullReview(
     ...captured,
   };
 
-  const result = await reviewSession(input, reviewModel(cfg));
+  const result = await reviewSession(input, reviewModel(cfg), triageRunnerId);
   if (result.kind === "failed") {
     // A transient reviewer failure (spawn/timeout/parse-miss) must NOT stamp the
     // marker, or the idempotency check would abandon this prompt forever after a

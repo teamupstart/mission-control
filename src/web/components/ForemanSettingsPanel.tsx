@@ -5,6 +5,8 @@ import { RepoCombobox } from "./RepoCombobox.tsx";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
 import { FOREMAN_MODEL_ROLES, FOREMAN_MODEL_SPECS } from "@shared/foreman-models.ts";
 import type { ForemanConfigPatch } from "@shared/protocol.ts";
+import { LLM_RUNNER_IDS } from "@shared/llm.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 // Foreman's set-once configuration, as a settings category. The topbar popover keeps the
 // in-the-moment knobs (enable, mode, work queues, on-drain); the durable posture lives
@@ -24,6 +26,10 @@ export function candidateRepos(repos: string[], allowlist: string[]): string[] {
 
 export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.JSX.Element {
   const { config, status, update, error } = state;
+  // The provider actually in force, not `config.runner ?? "claude"`. An unset `runner`
+  // falls to the app-wide ladder, whose env layer the browser cannot see - so the daemon
+  // reports the resolution and this renders it. See `ForemanStatus.runner`.
+  const runner = config?.runner ?? status?.runner ?? "claude";
   const [repos, setRepos] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [adding, setAdding] = useState(false);
@@ -106,12 +112,36 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
 
       <div className="foreman-models">
         <p className="settings-group-label">Models</p>
+        <label className="foreman-model-row" htmlFor="foreman-provider">
+          <span className="foreman-model-label">Provider</span>
+          <select
+            id="foreman-provider"
+            className="field-input foreman-model-input"
+            value={runner}
+            disabled={!config}
+            onChange={(e) => {
+              const runner = e.target.value as (typeof LLM_RUNNER_IDS)[number];
+              void update({
+                runner,
+                reviewModel: "",
+                verifyModel: "",
+                triageModel: "",
+                backlogModel: "",
+              });
+            }}
+          >
+            {LLM_RUNNER_IDS.map((runner) => (
+              <option key={runner} value={runner}>{AGENT_IDENTITY[runner].label}</option>
+            ))}
+          </select>
+          <span className="settings-hint foreman-model-blurb">Runs every Foreman model role through this provider.</span>
+        </label>
         <p className="settings-hint foreman-models-hint">
-          Foreman spawns a fresh, tool-less <code>claude -p</code> for each of these. Leave a
-          field empty to accept the value shown in it. Review and Verify are the expensive
+          Foreman spawns a fresh, isolated model call for each of these. Choose Default to
+          use the provider-compatible value shown. Review and Verify are the expensive
           calls; Triage and Backlog are deliberately cheaper.
         </p>
-        <ModelSuggestions />
+        <ModelSuggestions runner={runner} />
         {FOREMAN_MODEL_ROLES.map((role) => (
           <ModelField
             key={role}
@@ -119,6 +149,7 @@ export function ForemanSettingsPanel({ state }: { state: ForemanState }): React.
             spec={FOREMAN_MODEL_SPECS[role]}
             value={config?.[FOREMAN_MODEL_SPECS[role].configKey] ?? ""}
             resolved={status?.models?.[role]}
+            runner={runner}
             disabled={!config}
             onCommit={(next) =>
               // An empty box is a cleared override, and must be STORED as empty so the

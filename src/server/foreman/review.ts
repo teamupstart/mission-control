@@ -1,6 +1,7 @@
 import { buildReviewPrompt } from "./prompt.ts";
 import type { ReviewInput } from "./prompt.ts";
-import { runClaudeText } from "../claude-cli.ts";
+import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { VerdictSchema } from "./verdict.ts";
 import type { Verdict } from "./verdict.ts";
@@ -27,8 +28,8 @@ export type ReviewResult =
 export const DEFAULT_REVIEW_MODEL = FOREMAN_MODEL_SPECS.review.fallback;
 
 /** The reviewer's model from config, then env, then the Opus default. */
-export function reviewModel(cfg: { reviewModel?: string }): string {
-  return resolveForemanModel("review", cfg, process.env).id;
+export function reviewModel(cfg: { reviewModel?: string; runner?: LlmRunnerId }): string {
+  return resolveForemanModel("review", cfg, process.env, cfg.runner ?? "claude").id;
 }
 
 /**
@@ -41,9 +42,13 @@ export function reviewModel(cfg: { reviewModel?: string }): string {
  * was logged in as - the behaviour `reviewModel` exists to replace. Making it a required
  * parameter is what stops a future call site quietly re-acquiring that default.
  */
-export async function reviewSession(input: ReviewInput, model: string): Promise<ReviewResult> {
+export async function reviewSession(
+  input: ReviewInput,
+  model: string,
+  runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
+): Promise<ReviewResult> {
   const r = await runStructured<typeof VerdictSchema>(
-    (p) => runClaudeText(p, { model }),
+    (p) => llmRunner(runnerId).run(p, { model }),
     buildReviewPrompt(input),
     extractVerdict,
     "Foreman review",

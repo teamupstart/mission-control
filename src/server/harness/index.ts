@@ -23,6 +23,7 @@ import { codexTui } from "./codex/tui.ts";
 import { codexDetect } from "./codex/detect.ts";
 import { codexBin } from "./codex/bin.ts";
 import { codexControl } from "./codex/control.ts";
+import { codexHooks } from "./codex/hooks.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -58,22 +59,27 @@ export const HARNESSES: Record<AgentType, Harness> = {
     tui: claudeTui,
     control: claudeControl,
   },
-  // `hooks: null` is a statement, not a gap: Codex pushes nothing at us, so a Codex card
-  // is read passively (discovery, and whatever the rollout says) and the dispatcher does
-  // not spend 20s waiting for a first hook. `todo/codex-instrumentation.md` has the spike
-  // that would change this answer - a Codex-native hook reporting session id, rollout
-  // path, cwd and lifecycle - and it lands here, as a spec, not as a second pipeline.
+  // `hooks` was null here, as a statement rather than a gap - "Codex pushes nothing at
+  // us". The spike that was supposed to test that claim did, and refuted it: Codex takes
+  // per-launch `-c hooks.<Event>=[...]` overrides, so `codexHooks` lands here as a spec,
+  // not as a second pipeline. That is the shape the null was holding open.
   //
-  // `tui` is NOT null, and that is this registry earning its keep. Because Codex pushes no
-  // hooks, reading its screen is the only evidence of "parked and waiting" it can produce
-  // at all - and the guard this capability replaced meant nobody had ever pointed the
-  // parser at a Codex pane to find out whether it could. It can; see `codex/tui.ts`. Note
-  // this is NOT `permissionModes`, which Codex genuinely lacks: gating the dialog on that
-  // was the same skip wearing a capability's name.
+  // What it did NOT buy is a Codex card that is always instrumented. The overrides are
+  // spent at launch (`codex/launch.ts`), so a session an operator started themselves
+  // still pushes nothing and is still read passively - discovery, the rollout, and the
+  // pane. Every "hookless session" path below is therefore live for Codex too; what
+  // changed is that it is a property of the LAUNCH rather than of the harness.
+  //
+  // Which is why `tui` being NOT null is still this registry earning its keep. For an
+  // uninstrumented Codex session, reading its screen remains the only evidence of "parked
+  // and waiting" it can produce at all - and the guard this capability replaced meant
+  // nobody had ever pointed the parser at a Codex pane to find out whether it could. It
+  // can; see `codex/tui.ts`. Note this is NOT `permissionModes`, which Codex genuinely
+  // lacks: gating the dialog on that was the same skip wearing a capability's name.
   codex: {
     ...HARNESS_CAPABILITIES.codex,
     transcript: codexTranscript,
-    hooks: null,
+    hooks: codexHooks,
     detect: codexDetect,
     bin: codexBin,
     tui: codexTui,

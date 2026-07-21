@@ -14,6 +14,7 @@ import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from ".
 import type { Registry } from "./registry.ts";
 import { run } from "./util/exec.ts";
 import { sleep } from "./util/timers.ts";
+import { prepareCodexLaunch } from "./harness/codex/launch.ts";
 
 /** How long to wait for the dispatched agent's pane to be discovered before failing. */
 const READY_TIMEOUT_MS = Number(envVar("DISPATCH_READY_MS") ?? 30000);
@@ -85,9 +86,13 @@ export class Dispatcher {
       // started and we merely discovered. It returns nothing rather than half its flags on
       // ANY failure - a missing bundle, an unwritable state dir - and never throws, so it
       // cannot sink a dispatch that is otherwise fine; see `askChannelArgs`.
+      const codexLaunch = task.agent === "codex"
+        ? prepareCodexLaunch(getHarnessesConfig().autoModeOnDispatch)
+        : { args: [] as string[], instrumented: true };
       const agentArgs = [
         ...(model ? ["--model", model] : []),
         ...(await askChannelArgs(task.agent)),
+        ...codexLaunch.args,
       ];
 
       const tmuxSession = await spawnUniquely(label, shortId, wt.path, agentBin, agentArgs);
@@ -102,7 +107,7 @@ export class Dispatcher {
 
       // Discovery only proves the process exists. Wait for the agent to prove it can
       // READ before typing at it - see `awaitReady`.
-      const { session, instrumented } = await this.awaitReady(wt.path, discovered);
+      const { session, instrumented } = await this.awaitReady(wt.path, discovered, codexLaunch.instrumented);
       if (await this.abortIfSettled(taskId)) return;
 
       // Set the mode BEFORE the first prompt, so the task runs in it from the start -
@@ -184,8 +189,9 @@ export class Dispatcher {
   private async awaitReady(
     cwd: string,
     discovered: Session,
+    hooksPrepared = true,
   ): Promise<{ session: Session; instrumented: boolean }> {
-    if (hooksFor(discovered.agent)) {
+    if (hooksPrepared && hooksFor(discovered.agent)) {
       const ready = await this.registry.waitForReadySessionAtCwd(cwd, HOOK_READY_MS);
       if (ready) return { session: ready, instrumented: true };
     }
@@ -614,4 +620,3 @@ async function resolveBinPath(bin: string): Promise<string | null> {
 async function hasBin(bin: string): Promise<boolean> {
   return (await resolveBinPath(bin)) !== null;
 }
-

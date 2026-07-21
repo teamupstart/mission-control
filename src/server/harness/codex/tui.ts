@@ -15,9 +15,14 @@ import type { DialogSpec, TuiSpec } from "../types.ts";
 //
 // The consequence of the old answer was the most user-visible defect in the migration
 // investigation. `activePaneDialog` is the ONLY "needs you" evidence that requires no hook
-// instrumentation, and Codex pushes no hooks at all - so a Codex session parked on the
-// approval prompt above, which is the most definitively blocked thing on a board, showed as
+// instrumentation, and Codex had none at all - so a Codex session parked on the approval
+// prompt above, which is the most definitively blocked thing on a board, showed as
 // "unconfirmed" and was never once surfaced as needing anyone.
+//
+// Codex reports hooks now, but only where the dashboard launched it: the events are
+// per-launch `-c hooks.*` overrides (`codex/launch.ts`), not a global install. So for a
+// Codex session an operator started themselves this is still the only evidence there is,
+// and the argument above is unchanged for exactly those sessions.
 
 /**
  * U+203A, where Claude uses U+276F. The one token that differs, and the reason a

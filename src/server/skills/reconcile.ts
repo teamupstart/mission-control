@@ -3,8 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SkillsConfig } from "@shared/protocol.ts";
 import { envVar } from "@shared/harness-runtime.mjs";
-import { CLAUDE_SKILLS } from "@shared/harness-capabilities.ts";
+import { CLAUDE_SKILLS, HARNESS_CAPABILITIES } from "@shared/harness-capabilities.ts";
 import type { SkillsSpec } from "@shared/harness-capabilities.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
 import { SKILL_DIR_PREFIXES, missionSkillDirName, skillIdFromDirName } from "@shared/skills.ts";
 import { skillSourceDir } from "./catalog.ts";
 import type { Catalog } from "./catalog.ts";
@@ -58,18 +59,40 @@ export function skillsDirFor(spec: SkillsSpec): string {
 /**
  * The skills directory THIS daemon owns.
  *
- * Skills are a harness capability and exactly one harness declares one, so this reads
- * that spec instead of spelling `~/.claude/skills` again. It stays a SINGLE directory
- * because everything below is single-directory: `reconcileSkillLinks` walks one `dir` and
- * removes anything of ours it does not want in it. When a second harness declares
- * `skills`, this becomes a loop over `skillsAgents()` and every caller takes a list -
- * which is a real change, not a rename, so it is not pre-empted here.
- *
  * Named directly rather than reached through `capabilitiesFor("claude")` so the path
  * needs no null check on a capability that is, by construction, present.
  */
 export function claudeSkillsDir(): string {
   return skillsDirFor(CLAUDE_SKILLS);
+}
+
+/**
+ * EVERY skills directory this daemon owns - one per harness that declares a `skills`
+ * capability, de-duplicated.
+ *
+ * This is the loop the single-directory version said would be needed "when a second
+ * harness declares `skills`". Codex is that second harness, and it declares
+ * `~/.agents/skills`. Until this existed the declaration was inert: `skillsDirFor` had one
+ * caller, `claudeSkillsDir`, so every reconcile, blocker, drift and uninstall path walked
+ * Claude's directory alone and no skill was ever linked where Codex would read it.
+ *
+ * NOT `skillsAgents()`, which is a different question. That one asks who the pane reload
+ * broadcast is about and so filters on `reloadCommand`, which Codex has no need of - it
+ * watches its directory itself. Installing a skill and nudging a running session to notice
+ * are two capabilities, and reusing one selector for both is how Codex ends up with the
+ * nudge it does not need and none of the skills it does.
+ *
+ * De-duplicated because `dirEnvVar` is per-harness but nothing stops two of them being
+ * pointed at one path: reconciling the same directory twice would have the second pass
+ * re-decide the first's writes, and report every link a second time.
+ */
+export function skillsDirs(): string[] {
+  const seen = new Set<string>();
+  for (const agent of AGENT_TYPES) {
+    const spec = HARNESS_CAPABILITIES[agent].skills;
+    if (spec) seen.add(skillsDirFor(spec));
+  }
+  return [...seen];
 }
 
 /** What one pass changed, and anything it refused to. */
@@ -139,17 +162,39 @@ function classify(path: string): Entry {
 }
 
 /**
- * Make `~/.claude/skills` match the enabled set, touching nothing else.
+ * Make every harness's skills directory match the enabled set, touching nothing else.
  *
- * Idempotent: re-running against an already-correct directory writes nothing and
- * reports `changed: false`. That is what lets the daemon call it on every startup
- * (to heal a hand-deleted link, or an app that moved on disk) without reloading every
- * session for no reason.
+ * The fold over `skillsDirs()`; `reconcileOneDir` below is the walk over one of them.
+ * Split that way because the walk is where all the care lives (what is ours, what is
+ * foreign, what an unreadable directory means) and none of it should be written twice
+ * per harness. `changed` is the OR - one directory moving is enough to owe a reload -
+ * and the reported ids are unioned, because "linked alpha" is one fact about the fleet
+ * however many directories it took.
  */
 export function reconcileSkillLinks(
   cfg: SkillsConfig,
   catalog: Catalog,
-  dir = claudeSkillsDir(),
+  dirs: string[] = skillsDirs(),
+): ReconcileResult {
+  const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
+  for (const dir of dirs) {
+    const one = reconcileOneDir(cfg, catalog, dir);
+    out.changed ||= one.changed;
+    for (const id of one.linked) if (!out.linked.includes(id)) out.linked.push(id);
+    for (const id of one.unlinked) if (!out.unlinked.includes(id)) out.unlinked.push(id);
+    for (const id of one.blocked) if (!out.blocked.includes(id)) out.blocked.push(id);
+    // Problems are NOT de-duplicated by id: they name a path, so two harnesses failing
+    // for the same reason are two things the operator has to go and fix.
+    for (const p of one.problems) if (!out.problems.includes(p)) out.problems.push(p);
+  }
+  return out;
+}
+
+/** One directory's walk. See `reconcileSkillLinks`, which folds this over every harness. */
+function reconcileOneDir(
+  cfg: SkillsConfig,
+  catalog: Catalog,
+  dir: string,
 ): ReconcileResult {
   const out: ReconcileResult = { changed: false, linked: [], unlinked: [], problems: [], blocked: [] };
 
@@ -346,7 +391,7 @@ function msg(err: unknown): string {
  * config records the operator's intent and `skillDrift` says loudly that the disk doesn't
  * have it yet.
  */
-export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkillsDir()): Map<string, string> {
+export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dirs: string[] = skillsDirs()): Map<string, string> {
   const out = new Map<string, string>();
   const enabledIds = Object.keys(cfg.skills).filter((id) => cfg.skills[id] === true);
 
@@ -358,17 +403,24 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
     return out;
   }
 
-  for (const id of enabledIds) {
-    if (!catalog.present.has(id)) continue;
-    const path = skillPath(dir, id);
-    try {
-      // Ours, or absent, are both fine - we can write either. Only somebody else's
-      // directory is a refusal, and only they can clear it.
-      if (!lstatSync(path).isSymbolicLink()) {
-        out.set(id, `${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
+  // Across EVERY harness's directory, and the first blocker found wins. A skill that
+  // cannot be installed for one harness is refused outright rather than half-installed:
+  // a toggle that reported success while one of the two agents never got the skill is
+  // exactly the "claims a skill is live in a session that never heard about it" lie the
+  // rest of this feature is built to avoid.
+  for (const dir of dirs) {
+    for (const id of enabledIds) {
+      if (!catalog.present.has(id) || out.has(id)) continue;
+      const path = skillPath(dir, id);
+      try {
+        // Ours, or absent, are both fine - we can write either. Only somebody else's
+        // directory is a refusal, and only they can clear it.
+        if (!lstatSync(path).isSymbolicLink()) {
+          out.set(id, `${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
+        }
+      } catch {
+        // Absent. Nothing in the way.
       }
-    } catch {
-      // Absent. Nothing in the way.
     }
   }
   return out;
@@ -388,26 +440,36 @@ export function skillBlockers(cfg: SkillsConfig, catalog: Catalog, dir = claudeS
  * One lstat per enabled skill, next to a `readCatalog` that already reads every
  * SKILL.md on the same request.
  */
-export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkillsDir()): string[] {
+export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dirs: string[] = skillsDirs()): string[] {
   if (!cfg.enabled || !catalog.readable) return [];
   const out: string[] = [];
   for (const id of desiredSkillIds(cfg, catalog.present)) {
-    const path = skillPath(dir, id);
-    // Its own lstat rather than `classify`, which folds "missing" into "foreign" - a
-    // conflation that is right where it's used (both mean "do not touch this") and
-    // wrong here, where the two need opposite sentences. A missing link is ours to
-    // repair; a foreign one is the operator's to move.
-    let link: string | null = null;
-    try {
-      link = lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null;
-    } catch {
-      out.push(`${id} is switched on but isn't installed - restart the daemon to repair it`);
-      continue;
-    }
-    if (link === null) {
-      out.push(`${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
-    } else if (link !== skillSourceDir(id)) {
-      out.push(`${id} is switched on but its link points somewhere else - restart the daemon to repair it`);
+    // Once per skill, not once per skill per harness: "alpha is switched on but isn't
+    // installed" is the same sentence whichever directory is missing it, and the panel
+    // rendering it twice reads as two separate faults.
+    let said = false;
+    for (const dir of dirs) {
+      if (said) break;
+      const path = skillPath(dir, id);
+      // Its own lstat rather than `classify`, which folds "missing" into "foreign" - a
+      // conflation that is right where it's used (both mean "do not touch this") and
+      // wrong here, where the two need opposite sentences. A missing link is ours to
+      // repair; a foreign one is the operator's to move.
+      let link: string | null = null;
+      try {
+        link = lstatSync(path).isSymbolicLink() ? readlinkSync(path) : null;
+      } catch {
+        out.push(`${id} is switched on but isn't installed - restart the daemon to repair it`);
+        said = true;
+        continue;
+      }
+      if (link === null) {
+        out.push(`${path} exists and isn't ours to replace - remove it by hand to enable ${id}`);
+        said = true;
+      } else if (link !== skillSourceDir(id)) {
+        out.push(`${id} is switched on but its link points somewhere else - restart the daemon to repair it`);
+        said = true;
+      }
     }
   }
   // An id the config wants that the catalog no longer has. Its row won't render at all
@@ -439,10 +501,10 @@ export function skillDrift(cfg: SkillsConfig, catalog: Catalog, dir = claudeSkil
  * So the honest use is teardown of an install that is going away with no panel left to
  * click: `hooks/install.mjs --uninstall`, walking out of a checkout.
  */
-export function uninstallSkillLinks(dir = claudeSkillsDir()): ReconcileResult {
+export function uninstallSkillLinks(dirs: string[] = skillsDirs()): ReconcileResult {
   return reconcileSkillLinks(
     { enabled: false, skills: {}, generation: 0, generationAt: 0 },
     { readable: true, skills: [], present: new Set(), problems: [] },
-    dir,
+    dirs,
   );
 }

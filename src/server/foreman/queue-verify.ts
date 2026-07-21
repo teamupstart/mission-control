@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { buildVerifyPrompt } from "./queue-prompt.ts";
 import type { VerifyInput } from "./queue-prompt.ts";
-import { runClaudeText } from "../claude-cli.ts";
+import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
 import type { QueueVerdict } from "./queue-machine.ts";
@@ -157,8 +158,8 @@ export type QueueVerifyResult =
 export const DEFAULT_VERIFY_MODEL = FOREMAN_MODEL_SPECS.verify.fallback;
 
 /** The verifier's model from config, then env, then the Opus default. */
-export function verifyModel(cfg: { verifyModel?: string }): string {
-  return resolveForemanModel("verify", cfg, process.env).id;
+export function verifyModel(cfg: { verifyModel?: string; runner?: LlmRunnerId }): string {
+  return resolveForemanModel("verify", cfg, process.env, cfg.runner ?? "claude").id;
 }
 
 /**
@@ -170,9 +171,10 @@ export function verifyModel(cfg: { verifyModel?: string }): string {
 export async function verifyItem(
   input: VerifyInput,
   model: string,
+  runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
 ): Promise<QueueVerifyResult> {
   const r = await runStructured<typeof QueueVerdictSchema>(
-    (p) => runClaudeText(p, { model }),
+    (p) => llmRunner(runnerId).run(p, { model }),
     buildVerifyPrompt(input),
     extractQueueVerdict,
     "Foreman verify",

@@ -120,12 +120,14 @@ export interface SessionMeta {
  */
 export interface SessionCost {
   /** SUM(cost_usd) over every ledger window for this session's note key. */
-  costUsd: number;
+  costUsd: number | null;
   /** Token totals by tier. `cacheRead`/`cacheWrite` are billed at different rates. */
   input: number;
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Reasoning tokens included in output, when the harness reports the split. */
+  reasoningOutput?: number;
   /** epoch ms of the newest window counted, so a card can say how fresh this is. */
   updatedAt: number;
 }
@@ -136,6 +138,15 @@ export interface RateLimitWindow {
   usedPercentage: number;
   /** When the window rolls over, in epoch SECONDS - the unit Claude sends. */
   resetsAt: number;
+  id?: string;
+  label?: string;
+  durationMinutes?: number;
+}
+
+export interface RateLimitSource {
+  source: AgentType;
+  windows: RateLimitWindow[];
+  updatedAt: number;
 }
 
 /**
@@ -178,6 +189,8 @@ export interface FleetCost {
    */
   prsToday: number;
   rateLimits: RateLimits | null;
+  /** Quota windows grouped by provider, so account updates remain independent. */
+  rateLimitSources?: RateLimitSource[];
   updatedAt: number;
 }
 
@@ -900,6 +913,16 @@ export interface ForemanStatus {
    * one case this readout cannot see.
    */
   models: Record<ForemanModelRole, ResolvedForemanModel>;
+  /**
+   * The provider every Foreman role actually spawns through, resolved the same way and
+   * for the same reason as `models` above.
+   *
+   * Foreman's own `runner` when it has one; otherwise the app-wide ladder (`llm` config,
+   * then `MISSION_LLM_RUNNER`, then the default), which the browser cannot see. The panel
+   * renders this rather than `config.runner ?? "claude"`, which would print a provider the
+   * operator neither chose nor is running on.
+   */
+  runner: LlmRunnerId;
 }
 
 // ---- Custom skills ----

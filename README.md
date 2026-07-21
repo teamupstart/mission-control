@@ -63,9 +63,10 @@ and get your decision back.
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
-- **Equips** every session with [skills](#skills-every-session-no-restarts): switch a Claude
-  Code skill on in Settings and it applies to **every** Claude session on the machine -
-  including ones this app never launched - without restarting any of them. Claude only.
+- **Equips** every session with [skills](#skills-every-session-no-restarts): switch a skill
+  on in Settings and it is linked into each harness's own skills directory, so it applies
+  to **every** Claude Code and Codex session on the machine - including ones this app never
+  launched - without restarting any of them.
 - **Lands the clean ones**, if you let it: [YOLO mode](#shipping-yolo-mode) merges a pull
   request Mission Control opened once the Inspector has reviewed and **published** on the
   current push with nothing outstanding, CI is green, no thread is unresolved, and it has
@@ -276,11 +277,22 @@ every agent **declares** what it has: permission modes, skills, work queues, a c
 that clears its context, an MCP client. Absent is a first-class answer.
 
 That is why the differences you see are consistent rather than piecemeal. A Codex card
-draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it; its
-work-queue drawer explains why instead of offering a box that would never drain; the
-skills panel says on every row which agents a skill actually reaches; and a **reset**
-of a Codex checkout does the git half and leaves the context alone, because Codex does
-not speak `/clear` - it would have been typed in as a prompt.
+draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it, because
+Codex has no mode cycle to walk; its work-queue drawer explains why instead of offering a
+box that would never drain, because [Foreman](#foreman-auto-responder) does not drive
+Codex sessions; and the [skills](#skills-every-session-no-restarts) catalog links a skill
+into each harness's own directory while nudging only the one that needs telling. Where the
+capability *is* there the branch disappears entirely: a **reset** of a Codex checkout
+clears its context with the same `/clear` a Claude one gets, because Codex declares that
+command too.
+
+The declarations move as the harness does, and a capability is filled in only after it has
+been pointed at a real install. Several of Codex's were `null` on the strength of a
+plausible-sounding claim and turned out to be wrong when someone checked - it draws
+readable option menus, its session file parses into conversation turns, it speaks
+`/clear`, and it has a skills directory of its own. Each of those was one entry in a
+record, and correcting it lit the feature up everywhere at once with no component and no
+stylesheet touched.
 
 The dashboard is declaration-driven too, down to the paint. An agent states its own
 name, transcript byline and brand colour (`AGENT_IDENTITY`, `src/shared/agent.ts`), and
@@ -329,8 +341,8 @@ than to the installer: both live on `HARNESSES.claude.hooks`
 **Install Claude integrations…** both read. Only the payload mapping - Claude's hook JSON
 keys - is in the bridge itself; the transport under it
 (`src/shared/hook-bridge.mjs`) names no agent. An agent that reports nothing declares
-`hooks: null` instead - Codex does - and its cards are read passively, off discovery and
-whatever its own session file says.
+`hooks: null` instead, and its cards are read passively, off discovery and whatever its
+own session file says. Both shipped harnesses report - Codex by a different route, [below](#precise-status-for-codex-hooks-that-ride-on-the-dispatch).
 
 **2. Start a new Claude Code session.** Claude reads hook config when a session
 starts, so **sessions already running when you install won't report until you
@@ -395,6 +407,35 @@ event is only ever applied to a card running the harness that sent it. It defaul
 
 </details>
 
+### Precise status for Codex (hooks that ride on the dispatch)
+
+Codex reports too, and its ten events are declared on its own harness
+(`src/server/harness/codex/hooks.ts`): `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, `PermissionRequest`, `Stop`, `PreCompact`, `PostCompact`, `SubagentStart`
+and `SubagentStop`. `PermissionRequest` is the one worth naming: it is Claude's
+`Notification` by another name, the single event that means *a human has to answer this*,
+so it maps straight to amber **needs input** rather than being swept into the working
+fallback. Nothing else fires while a session is parked on it, which is exactly when a card
+must not read as busy.
+
+**There is nothing to install, and that cuts both ways.** Claude's hooks are written once
+into `~/.claude/settings.json` and every session on the machine reports from then on.
+Codex's are **launch-scoped**: the dispatcher builds one `-c hooks.<Event>=[…]` override
+per event, pointing at the bundled bridge (`dist/satellites/codex-hook.mjs`, overridable
+with `MISSION_CODEX_HOOK`), and passes them on the command line. So a **dispatched** Codex
+session is instrumented from its first breath, and a Codex session **you** started
+yourself sends nothing and is read passively, off discovery and its rollout file. If the
+bridge bundle is missing - `npm run build` never ran - the launch drops the overrides and
+runs uninstrumented rather than failing.
+
+Those overrides ride with `--dangerously-bypass-hook-trust`, and never without them.
+Codex would otherwise stop at a trust prompt for hooks the dashboard itself just injected,
+and a dispatched session has no human at the keyboard to answer it. The flag is
+process-wide for that one launch, so it also clears hook trust for anything the dispatched
+checkout's *own* Codex config declares - which is why it is spent only on a **dispatch**,
+a launch you asked for into a repo you picked, and never on a session you started
+yourself or on one the app merely discovered.
+
 ### Status line (optional)
 
 Claude Code runs your `statusLine` command on every render and pipes it a payload the
@@ -429,7 +470,9 @@ Each card's status badge and its left edge stripe encode the session's state:
 | ⚪ grey | **running** | alive, but precise state unknown - hooks aren't reporting |
 | ⚫ dim | **exited** | the process is gone |
 
-Blue / green and **needs input / needs review** require the **Claude hooks** above.
+Blue / green and **needs input / needs review** require **hooks** - the [Claude
+ones](#precise-status-claude-hooks) you install once, or the [Codex
+ones](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) that ride on a dispatch.
 Without them (or before you restart a session) a card shows grey **running** - with one
 exception: **needs an answer** is read off the terminal itself, so a session sitting on a
 menu goes amber whether or not it's instrumented. That exception is the point: an
@@ -459,13 +502,14 @@ Claude's own submit path. If Claude has further questions, the next one takes th
 place and you answer it the same way; if its review tab reports a question still unanswered,
 the form is left up rather than sent half-filled.
 
-This works for **Codex sessions too**, and that matters more there than anywhere else:
-Codex sends no hooks at all, so a menu read off its pane is the *only* evidence Mission
-Control can have that a Codex session has stopped and is waiting for someone. Its
-command-approval prompt, its directory-trust check and its update prompt all render as
-buttons exactly like Claude's. Each agent declares how its own screen reads
-(`harness.tui`), which is what lets one grammar serve both - they differ, it turns out, by
-a single cursor glyph.
+This works for **Codex sessions too**, and that matters most for the ones nothing
+instruments: Codex's hooks [ride on a
+dispatch](#precise-status-for-codex-hooks-that-ride-on-the-dispatch), so for a Codex
+session you started yourself a menu read off the pane is the *only* evidence Mission
+Control can have that it has stopped and is waiting for someone. Its command-approval
+prompt, its directory-trust check and its update prompt all render as buttons exactly like
+Claude's. Each agent declares how its own screen reads (`harness.tui`), which is what lets
+one grammar serve both - they differ, it turns out, by a single cursor glyph.
 
 The menu is read straight off the pane on the same ~1.5s sweep that reads the permission
 mode, so it needs **no hooks** and costs no extra work - and it clears the moment the menu
@@ -568,8 +612,14 @@ What it deliberately isn't:
 - `/clear` starts a new session, so it wipes the goal; `/compact` keeps the same session
   and leaves it alone.
 
-Codex sessions say so instead of showing one: they carry no hooks, so there's no prompt
-to read.
+**Codex cards carry a Goal too**, and both tiers reach them: a Codex session reports your
+prompt over its own `UserPromptSubmit`, and the refiner reads the same rollout file the
+transcript does, so there is a conversation window to summarise from. Tier 1 is what
+starts the whole thing, so this needs the hooks - an uninstrumented Codex session (one you
+started yourself) has no prompt to show and stays blank, the same way an uninstrumented
+Claude session does. What is gone is the *permanent* refusal: `GOAL_UNSUPPORTED` is null
+for both harnesses now, and a card only ever prints a sentence there for an agent whose
+harness can never read a prompt at all.
 
 ### Cost telemetry
 
@@ -592,7 +642,7 @@ and the topbar grows a foldable **Usage** row carrying the fleet strip:
 | **Burn rate** | the last hour's spend - what the fleet is costing *now*, not a projection |
 | **Tokens today** | input, output and cache, every tier summed |
 | **Cost / PR** | today's spend over the pull requests your agents opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review), so it is a unit price for shipped work rather than for branch activity. Absent until the first one lands |
-| **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection |
+| **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
 extrapolated forward - which is why it is written `~41 min`, and why a window the current
@@ -605,15 +655,17 @@ sessions reads as calm for a while.
 Folding the row away keeps today's spend visible beside the toggle, and the choice
 persists per machine like the layout.
 
-Two sources, each used for the one thing only it can do:
+Three sources, each used for the one thing only it can do:
 
 | Source | Provides |
 |---|---|
 | **OpenTelemetry** | `claude_code.cost.usage` (USD) and `claude_code.token.usage` by tier, per session, model, and `query_source` (so subagent spend is separated natively) |
-| **statusLine payload** | your subscription's `five_hour` / `seven_day` rate-limit windows - the only local source of real limits, since OTel has no quota metric |
+| **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows - the only local source of those, since OTel has no quota metric |
+| **Codex rollout file** | Codex's own quota windows and its cumulative token count. Grouped per provider, so the two accounts' meters update independently and one being stale never ages the other |
 
-The plan meters need the [opt-in statusLine wrapper](#status-line-optional)
-(`npm run install-statusline`); the spend figures don't. They are two separate opt-ins
+The Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
+(`npm run install-statusline`); the spend figures don't, and Codex's windows need neither -
+they ride in a file the daemon is already reading for the model and context figures. They are two separate opt-ins
 because they are two different asks of your config - one adds an `env` block, the other
 rewrites the command that draws your terminal line. Only `--telemetry` adds the block and
 only `--uninstall` removes it: re-running `npm run setup` or any other installer leaves an
@@ -636,22 +688,32 @@ has to be a settings-level `env` rather than a per-spawn variable because Missio
 sees sessions it didn't start.
 
 Ledger rows are kept for **180 days** and pruned by age alone - a finished session's cost
-is exactly when the record starts being interesting. Codex sessions show no figure: their
-`tokens_used` scalar carries no tier split and no cost, so it can't be priced to the same
-confidence, and a number with a different error bar beside a Claude one is worse than
-none.
+is exactly when the record starts being interesting.
+
+**A Codex card shows tokens, never dollars.** Its rollout file carries a cumulative token
+count and no price, so the daemon records exactly that - the count, with the cost left
+explicitly unset - and the chip reads `48k tok` with "Pricing unavailable" on hover rather
+than a dollar figure. That is deliberate: pricing a count we cannot break down by tier
+would put a number with a different error bar next to Claude's own, and the two would be
+read as the same kind of fact. It also means Codex spend contributes to no fleet total and
+no **Cost / PR** - those figures are the ledger's, and nothing unpriced enters it.
 
 ### Review channel (MCP)
 
 ```sh
 npm run build                    # builds the MCP server bundle
 claude mcp add -s user mission-control -- node /ABSOLUTE/PATH/dist/mcp/server.mjs
+codex mcp add mission-control -- node /ABSOLUTE/PATH/dist/mcp/server.mjs
 ```
 
-(`npm run install-hooks` prints the exact command with your paths.)
+(`npm run install-hooks` prints the exact `claude` command with your paths. The desktop
+app's **Install Claude integrations…** does both at once, because each harness declares its
+own CLI, its own env flag and whether it even has a scope to register under - Codex has one
+registration and no `-s user|project` to choose between. A harness with no MCP client at all
+would be reported as such rather than silently skipped.)
 
-This registers a stdio MCP server (`src/mcp/server.ts`) that each Claude session
-launches. It exposes five tools:
+This registers a stdio MCP server (`src/mcp/server.ts`) that each session launches. It
+exposes five tools:
 
 - `share_plan(title, plan)` - show a markdown plan (non-blocking)
 - `request_plan_decisions(title, plan, decisions)` - show a plan with selectable
@@ -1021,12 +1083,12 @@ say which provider does that work and which model each job uses.
 
 Two separate choices, deliberately.
 
-**The provider** is app-wide - it answers *how* a model is called, not which one. Today one ships
-(the local `claude` CLI, which is why there is no API key anywhere in this path: it bills through
-whatever that CLI is logged in as). The picker exists anyway, because "what is this running as?"
-should be answerable from inside the app rather than by reading the source. It is entirely
+**The provider** is app-wide - it answers *how* a model is called, not which one. Two ship: the
+local `claude` CLI (the default) and `codex exec`. Either way there is no API key anywhere in this
+path - each bills through whatever its own CLI is logged in as. It is entirely
 independent of which harness a card runs, which is the point - you can review a Codex session with
-Claude, or run the cheap jobs somewhere cheaper.
+Claude, or run the cheap jobs on the account that has quota left. Picking a provider clears the
+model boxes below it, because a `claude` model id is not something `codex` can resolve.
 
 **The model** is per job:
 
@@ -1042,7 +1104,8 @@ shipped default**. Clearing a field means "fall back", never "run with no model"
 `--model` inherits whatever the CLI happens to default to, which is the priciest tier available
 and is not recorded anywhere. The panel prints which of the three won, because an environment
 variable set in the daemon's shell outranks the box and would otherwise be invisible from the
-browser. Any id your `claude` CLI accepts works; the fields are free text, not a fixed list.
+browser. Any id the selected provider's CLI accepts works; the fields are free text, not a fixed
+list, with suggestions offered for whichever provider is in force.
 
 All three are cheap calls with a deterministic tier standing behind them, so a missing or
 logged-out provider costs you a rougher title, your own words instead of a refined goal, or a
@@ -1215,8 +1278,14 @@ changes only that block, leaving the rest of every prompt byte-for-byte identica
 
 ### Which model Foreman runs as
 
-Foreman spawns a fresh, tool-less `claude -p` for four different jobs, and each one picks its
+Foreman spawns a fresh, tool-less headless call for four different jobs, and each one picks its
 own model. **Settings → Foreman → Models** shows what each is running as and lets you change it.
+One **Provider** row above the four says which CLI they all spawn through - `claude -p` or
+`codex exec` - and changing it clears all four boxes, since a model id does not carry across.
+Left unchosen it follows the app-wide
+[Models](#models-what-the-apps-own-model-work-runs-on) provider rather than a hardcoded
+`claude`, so an environment variable set in the daemon's shell is not silently dropped
+here.
 
 | Call | Default | Config key | What it does |
 |---|---|---|---|
@@ -1232,7 +1301,7 @@ without a `--model`. The panel prints which of the three is in force, because an
 variable set in the daemon's shell outranks the box and would otherwise be invisible from the
 browser.
 
-Any id your `claude` CLI accepts works - the fields are free text, not a fixed list.
+Any id the selected provider's CLI accepts works - the fields are free text, not a fixed list.
 
 > Before this existed, Review and Verify passed no `--model` at all and silently inherited
 > whatever the CLI happened to be logged in as. If you relied on that, set the two fields to
@@ -1278,6 +1347,13 @@ Foreman above is *reactive* - it answers what a blocked session is asking. A **w
 is the proactive half: queue a batch of work for one specific session, and Foreman feeds it
 in one item at a time, in the order you authored, checking each one before releasing the
 next.
+
+**Claude sessions only, and the reason is delivery rather than evidence.** Codex reports
+hooks and its rollout reads back as conversation, so the observation half is there - what
+has never been run is Foreman typing into a Codex pane, and a queue whose drain has not
+been exercised is a batch that silently never moves. So the capability stays declared
+absent, the drawer says so instead of offering a box, and the daemon refuses the write
+rather than accepting work it would not deliver.
 
 The **Work queue** panel is a drawer, kept out of the way until you ask for it: press
 **Queue** on the card (next to **Send** / **Focus** / **Reset**) or <kbd>q</kbd> on the
@@ -1533,36 +1609,44 @@ Two things worth knowing:
 ## Skills (every session, no restarts)
 
 Settings (the topbar gear, or ⌘,) has a **Skills** catalog: read what a skill does,
-switch it on, and it applies to **every** Claude session on this machine - including
-sessions this app never launched - without terminating or recreating any of them.
+switch it on, and it applies to **every** session on this machine whose harness has a
+skills directory - including sessions this app never launched - without terminating or
+recreating any of them.
 
 Skills are ordinary Claude Code skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
-`~/.claude/skills/mission-<id>`, which is Claude's own loading path - the harness never
-reimplements it. Running sessions pick the change up when they next go quiet: the
-daemon types `/reload-skills` into their pane, which is the only thing that makes a
-live session re-read that directory (nothing watches it).
+`mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
+Claude, `~/.agents/skills` for Codex - which is that agent's own loading path; the harness
+never reimplements it.
+
+**Being loaded and being noticed are two capabilities, and only the second differs.** A
+Claude session re-reads its directory only when told, so the daemon types `/reload-skills`
+into its pane when it next goes quiet. Codex declares no reload command, because it
+watches its own directory - which means a Codex session picks the change up with nothing
+typed at it at all, and is deliberately excluded from the pane broadcast rather than sent a
+slash command that would land in its composer as text.
 
 Three things worth knowing before you switch one on:
 
-- **The blast radius is the point, and it's global.** `~/.claude/skills` is your own
-  directory, shared by every Claude on the machine. The harness only ever creates or
+- **The blast radius is the point, and it's global.** These are your own directories,
+  shared by every agent of that kind on the machine. The harness only ever creates or
   removes entries under its own `mission-` prefix (and the `fleet-` one it used
   before the rename), and only ones that are symlinks - your
   `no-mistakes`, `implement-plan` and friends are untouchable by construction, not by
   care. **Turning the master switch off is the real uninstall**: it's the only control
   that both removes every link and records that you wanted them gone, so nothing brings
   them back. Removing the links any other way is temporary - the daemon reconciles
-  `~/.claude/skills` against this config on every start, so a config still saying "on"
-  re-creates them. (The tray's "Remove Claude integrations" is hooks and the MCP server
-  only; it does not touch skills.)
-- **Enabling a skill loads it; it does not oblige Claude to use it.** Native skills
+  every declared directory against this config on every start, so a config still saying
+  "on" re-creates them. (The tray's "Remove Claude integrations" is hooks and the MCP
+  server only; it does not touch skills.)
+- **Enabling a skill loads it; it does not oblige the agent to use it.** Native skills
   are model-invoked, so each row carries an **enforcement badge** saying which rung it
   sits on. "When relevant" means exactly that.
-- **Claude only.** Codex declares no skills capability - no `/reload-skills`, no skills
-  directory - so a toggle does nothing to codex sessions. Every row names who a skill
-  reaches and who is unaffected, and the "N sessions will pick this up" count excludes
-  them. Both come from the same declaration, so they cannot drift apart.
+- **The "N sessions will pick this up" count is about the reload nudge, not about
+  reach.** It counts the sessions the daemon will type at, which is the ones whose harness
+  declares a reload command - so it excludes Codex sessions even though the skill is
+  linked where they will read it. Reach is the `skills` capability; the count is the
+  `reloadCommand` one, and they are deliberately different questions.
 
 ### The daemon is no longer strictly reactive
 
@@ -1748,9 +1832,9 @@ and never answered.
 
 ### What it can read, and why that is a trade
 
-The reviewer runs `claude -p` with **`Read`, `Grep`, `Glob`** in the reviewed worktree.
-Reviewing a diff without being able to open a file misses most of what matters - whether
-a change breaks a caller three files away, whether there is a test - so the grant is
+On Claude, the reviewer runs `claude -p` with **`Read`, `Grep`, `Glob`** in the reviewed
+worktree. Reviewing a diff without being able to open a file misses most of what matters -
+whether a change breaks a caller three files away, whether there is a test - so the grant is
 deliberate. It also means a pull request diff (which anyone can author) reaches a model
 that can read the filesystem, whose output is published publicly.
 
@@ -1766,6 +1850,14 @@ Five things stand in the way of that:
    "read a secret and repeat it" produces a comment with nowhere to land.
 5. **A secret scrubber** on every outbound string, including the review summary, which is
    the one output rule 4 does not constrain.
+
+**On Codex there is no grant at all, and the Inspector says so rather than pretending.**
+The five constraints above are enforced by the provider, not asked for in the prompt, and
+`codex exec` cannot express this exact per-tool deny list. Rather than accept a weaker
+grant under the same name, the runner declares it can sandbox none, and the Inspector hands
+it no tools: a Codex review reads the diff in the prompt and nothing else. That is a
+narrower review - it cannot go and check the caller three files away - and it is the
+honest version of the trade, which is why the panel prints it beside the provider picker.
 
 It never approves or requests changes; it comments. It does not chase comments to
 resolution - it surfaces issues and resolves what later pushes fix.
@@ -1799,10 +1891,13 @@ than read.
 
 ### The review model
 
-**Settings → Inspector → Model** names what the review and the follow-up replies spawn as.
-It ships as `claude-sonnet-5`, and the field's own line tells you where the value in force
-came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's environment, or the
-shipped default. Leave it empty to accept whichever of the other two applies.
+**Settings → Inspector → Model** names what the review and the follow-up replies spawn as,
+and the **Provider** row above it names the CLI they spawn through. It ships as
+`claude-sonnet-5` on the `claude` provider, and the field's own line tells you where the
+value in force came from - your config, `MISSION_INSPECTOR_MODEL` in the daemon's
+environment, or the shipped default. Leave it empty to accept whichever of the other two
+applies. The Inspector keeps its own provider choice rather than following the app-wide
+one, because [what it can read](#what-it-can-read-and-why-that-is-a-trade) changes with it.
 
 Naming a default at all is the point. An unset `--model` inherits whatever the local
 `claude` CLI happens to default to - on one machine that resolved to the 1M-context Opus
@@ -2058,7 +2153,7 @@ that looks perfectly healthy would help nobody.
 | `MISSION_POOL_REAP_MS` | `300000` | how often to sweep treehouse pools for leaked leases. `0` (or any non-positive value) turns the background sweep off; an unparseable value falls back to the default; anything under `30000` is clamped up to it, and anything over `604800000` (7d) clamped down to it, since past ~24.8d `setTimeout` overflows into a hot loop |
 | `MISSION_DISPATCH_READY_MS` | `30000` | dispatch: how long to wait for the agent's pane to be discovered before failing |
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt. The fallback, reached only when the wait below finds nothing |
-| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the agent's first hook - the only honest "I can read input" signal - before falling back to the settle above. Skipped outright for an agent that reports no hooks at all (Codex), which would otherwise spend it in certain silence on every dispatch |
+| `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the agent's first hook - the only honest "I can read input" signal - before falling back to the settle above. Skipped when this particular launch could never produce one: a harness that declares no hooks, or a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing, so the wait is never spent in certain silence |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
@@ -2068,7 +2163,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_TASK_SOURCE_TICK_MS` | `30000` | [Task sources](#task-sources-pulling-work-into-the-backlog): how often the sweeper wakes to ask which sources are due. Not the sweep interval - that is per source, and clamped to 1 minute - 24 hours. Floored at `5000` |
 | `MISSION_TASK_SOURCE_TIMEOUT_MS` | `60000` | Task sources: hard cap on one sweep, so a hung source cannot wedge its own schedule. Floored at `5000` |
 | `MISSION_SKILLS_SETTLE_MS` | `10000` | skills: how long a session must sit idle before the daemon types `/reload-skills` into it |
-| `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where the symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
+| `CLAUDE_SKILLS_DIR` | `~/.claude/skills` | skills: where Claude's symlinks are written; set, it wins outright. Overridable so tests never touch your real one. Left unset, a daemon on an explicit `MISSION_HOME` writes to `<MISSION_HOME>/claude-skills` instead - it doesn't own the machine's shared dir, and reconciling that dir against an isolated daemon's own (empty) skills config would unlink the real install's links |
+| `CODEX_SKILLS_DIR` | `~/.agents/skills` | the same override for Codex's skills directory; on an explicit `MISSION_HOME` it falls back to `<MISSION_HOME>/codex-skills`, for the same reason. Point both at one path and the reconciler still walks it once |
 | `MISSION_CLAUDE_BIN` | `claude` | Claude CLI path override - both for dispatched agents and for every headless `claude -p` the app runs (Foreman's review and Tier 1 router, the [Goal](#goal) refiner, the untitled-[dispatch](#dispatch-an-agent) titler, the [Inspector](#inspector-automated-pr-review)'s review and reply) |
 | `MISSION_CLAUDE_TIMEOUT_MS` | `120000` | default hard cap on a single headless `claude -p`; callers that set their own budget (the Tier 1 router, the Goal refiner, the dispatch titler, the Inspector - see `MISSION_INSPECTOR_TIMEOUT_MS`) pass it instead |
 | `MISSION_INSPECTOR_POLL_MS` | `90000` | [Inspector](#inspector-automated-pr-review): how often to look at the adopted PRs. Slow by design - a review is expensive and a push isn't frequent. Also the base of the retry backoff: a PR that keeps failing is retried at twice the previous delay, up to six hours. A new push cuts that wait short for the first few failures, after which it waits like any other attempt - unless the failure is one only a push can fix (a diff too large to buffer), where the next push always cuts it short. The tick does nothing at all while the Inspector is off |
@@ -2076,7 +2172,9 @@ that looks perfectly healthy would help nobody.
 | `MISSION_INSPECTOR_TIMEOUT_MS` | `600000` | Inspector: hard cap on one review. Far larger than the Foreman reviewer's 120s because this one has tool round-trips inside it: a 10KB five-file diff measured 225s on Opus and 272s on Sonnet, so a wire near either is a guaranteed failure rather than a safety net - the run is killed, the head never advances, and the PR climbs the retry backoff having produced nothing |
 | `MISSION_INSPECTOR_REPLY_TIMEOUT_MS` | `300000` | Inspector: hard cap on one follow-up reply - a smaller job than a review, but the same shape (the diff in the prompt, the same read-only tools), so it moves with the review's ceiling rather than sitting at a fraction of it |
 | `MISSION_INSPECTOR_MAX_DIFF_BYTES` | `400000` | Inspector: cap on the diff put in a prompt. A refactor past this isn't reviewable in one pass anyway; the prompt says it was truncated so the model never concludes anything from the absence. Separately, a diff too large to hold in memory at all (16MB) is declined rather than reviewed - the PR is parked, and a later push that shrinks it below the ceiling gets reviewed |
-| `MISSION_CODEX_BIN` | `codex` | dispatched Codex CLI path override |
+| `MISSION_CODEX_BIN` | `codex` | Codex CLI path override - both for dispatched agents and for every headless `codex exec` the app runs when Codex is the selected [provider](#models-what-the-apps-own-model-work-runs-on) |
+| `MISSION_CODEX_TIMEOUT_MS` | `120000` | hard cap on a single headless `codex exec`, the mirror of `MISSION_CLAUDE_TIMEOUT_MS`. A caller that sets its own budget (the Inspector, the Goal refiner, the dispatch titler) passes it instead |
+| `MISSION_CODEX_HOOK` | app's `dist/satellites/codex-hook.mjs` | path to the bundled [Codex hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) the dispatcher points a Codex launch at. If the path doesn't exist the hook overrides are dropped entirely and the session runs uninstrumented rather than failing to launch |
 | `WEZTERM_BIN` | auto | wezterm CLI path override |
 | `GHOSTTY_BIN` | `/Applications/Ghostty.app/Contents/MacOS/ghostty` | [Ghostty](#which-terminal-you-use-is-declared-not-assumed) path override, for a non-standard install location. It answers *is Ghostty installed* and is never executed - the app drives the GUI through AppleScript, not this binary. There is deliberately no bare `ghostty` on `PATH` fallback: on Linux that binary is normally present and this integration cannot work there at all, so it would report "installed" on the one platform where every call must fail |
 | `CMUX_BIN` | auto | cmux CLI path override. The default looks inside the app bundle (`/Applications/cmux.app/Contents/Resources/bin/cmux`) before PATH, because the cask does not symlink it |

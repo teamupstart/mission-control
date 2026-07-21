@@ -13,6 +13,7 @@ import { gitInfo } from "../util/git.ts";
 import { readProcCwds } from "./proc-cwd.ts";
 import { annotateNomistakesLaunches } from "./nomistakes-launch.ts";
 import { annotatePaneState } from "./pane-mode.ts";
+import { annotateCodexRollouts } from "./codex-rollouts.ts";
 
 /** basename of a path, or "" for null/root - used for name fallbacks. */
 function basename(p: string | null): string {
@@ -45,6 +46,9 @@ export interface DiscoveredSession {
   terminals: TerminalHandle[];
   /** Agent process start time (epoch ms), 0 when unparseable. */
   startedAt: number;
+  /** Exact passive identity evidence, when the agent process holds its rollout open. */
+  agentSessionId?: string | null;
+  transcriptPath?: string | null;
   /**
    * Claude's live permission mode, read off the pane by `annotatePaneState`.
    * Undefined when we couldn't read it (a Codex session, no pane handle, or a
@@ -423,6 +427,7 @@ export async function discover(): Promise<DiscoveredSession[]> {
   const procCwds = await readProcCwds(representativeAgentPids(input.procs));
   const sessions = correlate(input, procCwds);
   await Promise.all([
+    annotateCodexRollouts(sessions),
     annotateNomistakesLaunches(sessions, input.procs),
     annotatePaneState(sessions),
   ]);

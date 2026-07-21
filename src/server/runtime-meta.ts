@@ -37,6 +37,8 @@ export function startRuntimeMetaPoller(registry: Registry): () => void {
         // (Codex: metadata, no turns) needs no branch here.
         registry.applyRuntimeMeta(s.id, read.meta, spec.metaSource);
         registry.applyPassiveActivity(s, read.activity);
+        registry.applyPassiveUsage(s.id, read.usage ?? null);
+        registry.applyPassiveRateLimits(read.rateLimits ?? null);
       }
       // Let each harness drop whatever it cached for sessions that have gone away.
       const liveIds = new Set(live.map((s) => s.id));

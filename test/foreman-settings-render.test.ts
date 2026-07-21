@@ -85,6 +85,17 @@ test("the add row renders the repo picker and an Add button", () => {
   assert.match(html, /<button[^>]*>Add<\/button>/);
 });
 
+test("Foreman provider and every model are catalog-backed dropdowns", () => {
+  const html = renderPanel(mkState({ runner: "codex" }));
+  assert.match(html, /id="foreman-provider"/);
+  assert.match(html, /<option value="codex" selected="">Codex<\/option>/);
+  for (const id of ["foreman-model-review", "foreman-model-verify", "foreman-model-triage", "foreman-model-backlog"]) {
+    assert.match(html, new RegExp(`<select[^>]*id="${id}"`));
+  }
+  assert.match(html, /GPT-5\.6 Sol/);
+  assert.doesNotMatch(html, /Claude Code provider/);
+});
+
 // ---- candidate filtering ----
 
 test("candidateRepos offers known repos that aren't trusted yet, and omits ones that are", () => {

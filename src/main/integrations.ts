@@ -35,8 +35,8 @@ import { writeOtelEnv } from "@shared/claude-settings.ts";
 // imports nothing but types and pure functions, and is kept that way for this reason.
 import { claudeHooks } from "../server/harness/claude/hooks.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { AGENT_TYPES } from "@shared/types.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
-import type { AgentType } from "@shared/types.ts";
 import type { McpSpec } from "@shared/harness-capabilities.ts";
 
 /**
@@ -49,8 +49,6 @@ import type { McpSpec } from "@shared/harness-capabilities.ts";
  * imports it, and must not pull `node:sqlite` in transitively. Same rule as
  * `@shared/claude-settings.ts` and `harness/claude/hooks.ts` above.
  */
-const INTEGRATION_AGENT: AgentType = "claude";
-
 const MARKER = "harness-hook";
 const EVENTS = claudeHooks.events;
 const MATCHER_EVENTS = new Set(claudeHooks.matcherEvents);
@@ -204,7 +202,7 @@ function editHooks(uninstall: boolean, hookCommand: (script: string, event: stri
 function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string): string {
   try {
     if (!add) {
-      execFileSync(spec.cli, ["mcp", "remove", "-s", spec.scope, spec.serverName], {
+      execFileSync(spec.cli, ["mcp", "remove", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName], {
         stdio: "ignore",
         timeout: 15000,
         env: { ...process.env, PATH: process.env.PATH },
@@ -212,10 +210,10 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
       return "MCP server removed.";
     }
     const { env, argv } = runtime.mcpArgs(mcp);
-    const envFlags = env.flatMap((e) => ["-e", e]);
+    const envFlags = env.flatMap((e) => [spec.envFlag, e]);
     execFileSync(
       spec.cli,
-      ["mcp", "add", "-s", spec.scope, spec.serverName, ...envFlags, "--", ...argv],
+      ["mcp", "add", ...(spec.scope ? ["-s", spec.scope] : []), spec.serverName, ...envFlags, "--", ...argv],
       { stdio: "ignore", timeout: 15000 },
     );
     return "MCP review server registered.";
@@ -233,9 +231,12 @@ function registerMcp(spec: McpSpec, add: boolean, runtime: Runtime, mcp: string)
  * harness with no MCP client would report a clean install that did half the work.
  */
 function applyMcp(add: boolean, runtime: Runtime, mcp: string): string {
-  const spec = capabilitiesFor(INTEGRATION_AGENT).mcp;
-  if (!spec) return `${AGENT_IDENTITY[INTEGRATION_AGENT].label} has no MCP client to register with.`;
-  return registerMcp(spec, add, runtime, mcp);
+  return AGENT_TYPES.map((agent) => {
+    const spec = capabilitiesFor(agent).mcp;
+    const label = AGENT_IDENTITY[agent].label;
+    if (!spec) return `${label}: no MCP client to register with.`;
+    return `${label}: ${registerMcp(spec, add, runtime, mcp)}`;
+  }).join(" ");
 }
 
 /** Wire hooks + MCP for Claude Code. */

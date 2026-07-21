@@ -7,6 +7,7 @@ import { readyBacklog } from "@shared/backlog.ts";
 import { resolveForemanModels } from "@shared/foreman-models.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
 import { getBacklogPlan } from "../backlog.ts";
+import { llmRunnerChoice } from "../llm/config.ts";
 import { activeAgentCount } from "./backlog-machine.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
@@ -124,6 +125,12 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
   const backlog = backlogTasks(tasks);
   const ready = readyBacklog(tasks, getBacklogPlan()).length;
 
+  // The same ladder the worker applies (`worker.ts`), resolved once here so the panel and
+  // the process that spawns the calls cannot print different providers. An unset
+  // `cfg.runner` is "the operator never chose HERE", which hands the question to the
+  // app-wide resolution - not to a literal "claude", which would drop the env layer.
+  const runner = cfg.runner ?? llmRunnerChoice().id;
+
   return {
     enabled: cfg.enabled,
     mode: cfg.mode,
@@ -142,7 +149,8 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
     },
     // Resolved here, from the daemon's own env, because the browser has no `process`
     // and so cannot see the env layer at all - see `ForemanStatus.models`.
-    models: resolveForemanModels(cfg, process.env),
+    models: resolveForemanModels(cfg, process.env, runner),
+    runner,
   };
 }
 

@@ -119,6 +119,19 @@ test("rate limits alone are enough to draw the strip, with no dollar figures on 
   assert.ok(!html.includes("spend today"));
 });
 
+test("Claude and Codex quota windows render independently with their own durations", () => {
+  const f = fleet({
+    rateLimits: { fiveHour: win(40, 3 * HOUR), sevenDay: null, updatedAt: NOW },
+    rateLimitSources: [{
+      source: "codex", updatedAt: NOW,
+      windows: [{ ...win(9, 6 * 24 * HOUR), id: "primary", label: "1-week", durationMinutes: 10080 }],
+    }],
+  });
+  const html = render(f);
+  assert.ok(html.includes("Claude · 5-hr limit runway"));
+  assert.ok(html.includes("Codex · 1-week limit runway"));
+});
+
 test("no PRs opened today means no cost-per-PR, rather than a division by zero", () => {
   const html = render(fleet({ prsToday: 0 }));
   assert.ok(!html.includes("cost / PR"));

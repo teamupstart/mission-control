@@ -6,6 +6,8 @@ import { RepoCombobox } from "./RepoCombobox.tsx";
 import { candidateRepos } from "./ForemanSettingsPanel.tsx";
 import { ModelField, ModelSuggestions } from "./ModelField.tsx";
 import { INSPECTOR_MODEL_SPEC } from "@shared/inspector.ts";
+import { LLM_RUNNER_IDS } from "@shared/llm.ts";
+import { AGENT_IDENTITY } from "@shared/agent.ts";
 
 // The Inspector's settings category.
 //
@@ -164,16 +166,37 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
           class vocabulary would be two selectors to keep in step for one widget. */}
       <div className="foreman-models">
         <p className="settings-group-label">Model</p>
+        <label className="foreman-model-row" htmlFor="inspector-provider">
+          <span className="foreman-model-label">Provider</span>
+          <select
+            id="inspector-provider"
+            className="field-input foreman-model-input"
+            value={config?.runner ?? "claude"}
+            disabled={!config}
+            onChange={(e) =>
+              void update({
+                runner: e.target.value as (typeof LLM_RUNNER_IDS)[number],
+                model: "",
+              })
+            }
+          >
+            {LLM_RUNNER_IDS.map((runner) => (
+              <option key={runner} value={runner}>{AGENT_IDENTITY[runner].label}</option>
+            ))}
+          </select>
+          <span className="settings-hint foreman-model-blurb">Runs reviews and follow-up replies through this provider.</span>
+        </label>
         <p className="settings-hint foreman-models-hint">
-          The Inspector spawns a <code>claude -p</code> per review, with read-only tools scoped
-          to the reviewed worktree. Leave the field empty to accept the value shown in it.
+          The Inspector starts an isolated call per review. Claude receives read-only tools
+          scoped to the worktree; Codex reviews the supplied diff without repository tools.
         </p>
-        <ModelSuggestions />
+        <ModelSuggestions runner={config?.runner ?? "claude"} />
         <ModelField
           id="inspector-model"
           spec={INSPECTOR_MODEL_SPEC}
           value={config?.model ?? ""}
           resolved={model ?? undefined}
+          runner={config?.runner ?? "claude"}
           disabled={!config}
           onCommit={(next) =>
             // Empty is STORED as empty, same rule as Foreman's fields: it means "clear my

@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { BacklogPlanInput } from "@shared/protocol.ts";
 import type { Task } from "@shared/types.ts";
-import { runClaudeText } from "../claude-cli.ts";
+import { llmRunner, DEFAULT_LLM_RUNNER_ID } from "../llm/index.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
 import { parseModelJson, runStructured } from "../llm/structured.ts";
 import { buildBacklogPrompt } from "./backlog-prompt.ts";
 import { FOREMAN_MODEL_SPECS, resolveForemanModel } from "@shared/foreman-models.ts";
@@ -86,8 +87,8 @@ export function backlogTimeoutMs(count: number): number {
  * The empty-string-is-a-cleared-box rule this function used to state is now enforced for
  * all four roles at once inside `resolveForemanModel`.
  */
-export function backlogModel(cfg: { backlogModel?: string }): string {
-  return resolveForemanModel("backlog", cfg, process.env).id;
+export function backlogModel(cfg: { backlogModel?: string; runner?: LlmRunnerId }): string {
+  return resolveForemanModel("backlog", cfg, process.env, cfg.runner ?? "claude").id;
 }
 
 /** What the model returns, before any of it is believed. See `sanitizePlan`. */
@@ -255,6 +256,7 @@ function topoOrder(order: string[], deps: Map<string, string[]>): string[] {
 export async function planBacklog(
   backlog: Task[],
   model = process.env.FOREMAN_BACKLOG_MODEL || DEFAULT_BACKLOG_MODEL,
+  runnerId: LlmRunnerId = DEFAULT_LLM_RUNNER_ID,
 ): Promise<BacklogPlanResult> {
   // A single-item backlog has nothing to relate it to, so the answer is knowable
   // without a model: it depends on nothing. Worth the branch - a human who queues one
@@ -271,7 +273,7 @@ export async function planBacklog(
   }
 
   const result = await runStructured(
-    (p) => runClaudeText(p, { model, timeoutMs: backlogTimeoutMs(backlog.length) }),
+    (p) => llmRunner(runnerId).run(p, { model, timeoutMs: backlogTimeoutMs(backlog.length) }),
     buildBacklogPrompt(backlog),
     (raw) => parseModelJson(raw, BacklogReportSchema),
     "The backlog planner",

@@ -10,11 +10,13 @@ import type {
   PermissionMode,
   RateLimits,
   RateLimitWindow,
+  RateLimitSource,
   PrChecks,
   PrState,
   ReviewItem,
   ServerEvent,
   Session,
+  SessionCost,
   SessionMeta,
   SessionGoal,
   SessionGoalSummary,
@@ -264,6 +266,19 @@ export class Registry extends EventEmitter {
    *  session has no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
   private passiveStates = new Map<string, PassiveState>();
   /**
+   * What DISCOVERY said this session's conversation is, keyed by synthetic id - the
+   * subset of `Session.agentSessionId` / `transcriptPath` that was read off the live
+   * process itself (the rollout an exact pid holds open, via `annotateCodexRollouts`).
+   *
+   * Kept apart from the session because the field on the session is not the same claim.
+   * There it is the last binding we LEARNED, from a hook or from `lastAgentBinding` after
+   * a restart, and a `/clear` is supposed to replace it. Here it is evidence from the
+   * process table, which a hook cannot contradict - so this, and only this, is what
+   * `applyHook` refuses a mismatching event against. Reading the session's own field
+   * instead makes the guard reject the rebinding it exists to protect.
+   */
+  private discoveredIdentity = new Map<string, { agentSessionId: string | null; transcriptPath: string | null }>();
+  /**
    * No-mistakes launcher bindings: sessionId -> worktree cwd -> {branch, seen}.
    * Records which worktree(s) a session is driving a run in, so a run dispatched
    * off `main` is attributed to its launcher and not to idle same-checkout
@@ -310,6 +325,7 @@ export class Registry extends EventEmitter {
    * after it stopped being true.
    */
   private latestRateLimits: RateLimits | null = null;
+  private latestRateLimitSources = new Map<AgentType, RateLimitSource>();
   /** Last fleet figures emitted, so an unchanged recompute doesn't wake every browser. */
   private lastFleetCost: FleetCost | null = null;
   private lastFleetCostAt = 0;
@@ -489,7 +505,17 @@ export class Registry extends EventEmitter {
     // Read the stored binding ONCE, on first sight. After that the in-memory value
     // is the freshest truth - every rebinding goes through this process first - so
     // re-reading each sweep could only ever return what we already have.
-    const known = prev ? prev.agentSessionId : lastAgentBinding(d.syntheticId);
+    const known = d.agentSessionId ?? (prev ? prev.agentSessionId : lastAgentBinding(d.syntheticId));
+    // Record the passive half separately - see `discoveredIdentity`. A sweep that could
+    // not read the rollout this tick says nothing rather than retracting what it read
+    // last tick, so one failed `lsof` does not briefly disarm the attribution guard.
+    if (d.agentSessionId || d.transcriptPath) {
+      const held = this.discoveredIdentity.get(d.syntheticId);
+      this.discoveredIdentity.set(d.syntheticId, {
+        agentSessionId: d.agentSessionId ?? held?.agentSessionId ?? null,
+        transcriptPath: d.transcriptPath ?? held?.transcriptPath ?? null,
+      });
+    }
     const base: Session = {
       id: d.syntheticId,
       agent: d.agent,
@@ -535,7 +561,7 @@ export class Registry extends EventEmitter {
       // note and its WORK QUEUE to the synthetic id instead, making every stored
       // queue across the sessions look orphaned. See `recordAgentBinding`.
       agentSessionId: known,
-      transcriptPath: prev?.transcriptPath ?? null,
+      transcriptPath: d.transcriptPath ?? prev?.transcriptPath ?? null,
       instrumented: false,
       // Sticky, and seeded from the DB the first time we see a session so it
       // survives a daemon restart. `instrumented` above is rebuilt as false every
@@ -641,6 +667,21 @@ export class Registry extends EventEmitter {
     const ts = evt.ts ?? now;
     const key = overlayKeyFromEnv(evt.env);
     const { state, activity } = spec.toState(evt);
+    const target = this.findSessionForHook(evt, key);
+
+    // Passive PID/open-file identity is exact. A conflicting hook belongs to another
+    // process/pane and must not move this card or poison its pane overlay.
+    //
+    // Only against what DISCOVERY read off the process (`discoveredIdentity`), never
+    // against `target.agentSessionId`. That field is also where a REMEMBERED binding
+    // lives, and a `/clear` mints a new agent session id on the same pane - so guarding
+    // on it refuses the very event that is supposed to rebind the card, leaving its
+    // note, queue and goal on a dead key that no later hook can move either.
+    const witnessed = target ? this.discoveredIdentity.get(target.id) : undefined;
+    if (witnessed && (
+      (evt.sessionId && witnessed.agentSessionId && evt.sessionId !== witnessed.agentSessionId) ||
+      (evt.transcriptPath && witnessed.transcriptPath && evt.transcriptPath !== witnessed.transcriptPath)
+    )) return;
 
     // Permission mode is sticky: events that omit it keep the last known value
     // (from this pane's prior overlay) rather than clearing the card's chip. Only from
@@ -664,7 +705,6 @@ export class Registry extends EventEmitter {
     if (key) this.overlays.set(key, overlay);
 
     // Apply immediately to a matching live session for instant feedback.
-    const target = this.findSessionForHook(evt, key);
     if (target) {
       // A PR link sniffed from `gh pr create` decorates the card at once as an
       // open PR; the poller confirms it and later flips it to merged.
@@ -698,7 +738,14 @@ export class Registry extends EventEmitter {
       // is looking, since a /clear is something they just did.
       next.note = this.noteSummaryFor(next);
       next.goal = this.goalSummaryFor(next);
-      next.cost = sessionCostFor(noteKeyFor(next));
+      // On a key ROTATION only, exactly as `applyRuntimeMeta` and `mergeDiscovered`
+      // decide it. The ledger is not the only writer of this field - `applyPassiveUsage`
+      // puts an unpriced token count straight onto the session for a harness that reports
+      // no cost - so re-reading it on every event answers null for those and blanks the
+      // chip until the next poll tick restores it, several times a turn. Nothing but a
+      // rotation can move the figure here anyway: the ledger's own writer re-denormalizes
+      // through `syncSessionsForCost`.
+      if (noteKeyFor(next) !== noteKeyFor(target)) next.cost = sessionCostFor(noteKeyFor(next));
       next.queue = this.queueSummaryFor(next);
       next.orphanedQueue = this.orphanedQueueFor(next);
       // A hook is how a PR url first reaches a card, and the summary is keyed on it -
@@ -1355,6 +1402,9 @@ export class Registry extends EventEmitter {
       // Expired at READ, not on a timer: nothing then depends on a tick having fired,
       // and a snapshot served between recomputes is as honest as an emitted one.
       rateLimits: unexpiredRateLimits(this.latestRateLimits, now),
+      rateLimitSources: [...this.latestRateLimitSources.values()]
+        .map((source) => ({ ...source, windows: source.windows.filter((w) => w.resetsAt * 1000 > now) }))
+        .filter((source) => source.windows.length > 0),
       updatedAt: now,
     };
   }
@@ -1377,7 +1427,8 @@ export class Registry extends EventEmitter {
       this.lastFleetCost.burnPerHour === fleet.burnPerHour &&
       this.lastFleetCost.tokensToday === fleet.tokensToday &&
       this.lastFleetCost.prsToday === fleet.prsToday &&
-      rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits);
+      rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
+      rateLimitSourcesEqual(this.lastFleetCost.rateLimitSources, fleet.rateLimitSources);
     this.lastFleetCost = fleet;
     if (same) return;
     this.emitEvent({ type: "cost_fleet", fleet });
@@ -1428,6 +1479,27 @@ export class Registry extends EventEmitter {
     });
   }
 
+  /** Apply cumulative unpriced usage from a passive harness source without touching the daily ledger. */
+  applyPassiveUsage(sessionId: string, cost: SessionCost | null): void {
+    if (!cost) return;
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const prev = session.cost;
+    if (prev && prev.costUsd === null && prev.input === cost.input && prev.output === cost.output &&
+        prev.cacheRead === cost.cacheRead && prev.reasoningOutput === cost.reasoningOutput) return;
+    const next = { ...session, cost };
+    this.sessions.set(sessionId, next);
+    this.emitSession(next);
+  }
+
+  applyPassiveRateLimits(read: RateLimitSource | null): void {
+    if (!read) return;
+    const prev = this.latestRateLimitSources.get(read.source);
+    if (prev && rateLimitSourceEqual(prev, read)) return;
+    this.latestRateLimitSources.set(read.source, read);
+    this.recomputeFleetCost();
+  }
+
   /**
    * The hook overlay speaking for this session, if any.
    *
@@ -1463,6 +1535,7 @@ export class Registry extends EventEmitter {
   private remove(id: string): void {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
+    this.discoveredIdentity.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
@@ -2626,6 +2699,20 @@ export function startOfLocalDay(now: number): number {
 export function rateLimitsDisplayEqual(a: RateLimits | null, b: RateLimits | null): boolean {
   if (!a || !b) return a === b;
   return rateWindowEqual(a.fiveHour, b.fiveHour) && rateWindowEqual(a.sevenDay, b.sevenDay);
+}
+
+function rateLimitSourceEqual(a: RateLimitSource, b: RateLimitSource): boolean {
+  return a.source === b.source && a.windows.length === b.windows.length && a.windows.every((w, i) => {
+    const other = b.windows[i];
+    return !!other && w.id === other.id && w.label === other.label &&
+      w.durationMinutes === other.durationMinutes && rateWindowEqual(w, other);
+  });
+}
+
+function rateLimitSourcesEqual(a: RateLimitSource[] | undefined, b: RateLimitSource[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((source, i) => !!right[i] && rateLimitSourceEqual(source, right[i]!));
 }
 
 /** Two rate-limit windows compared on what a human can see, ignoring when we read them. */

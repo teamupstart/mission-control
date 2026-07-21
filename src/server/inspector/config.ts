@@ -35,5 +35,5 @@ export function setInspectorConfig(patch: InspectorConfigPatch): InspectorConfig
  * `PUT /api/inspector/config`, and a value read at module load would need a restart.
  */
 export function inspectorModel(cfg: InspectorConfig = getInspectorConfig()): ResolvedModel {
-  return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV));
+  return resolveInspectorModel(cfg, envVar(INSPECTOR_MODEL_ENV), cfg.runner ?? "claude");
 }

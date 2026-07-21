@@ -103,11 +103,31 @@ test("a session with no goal yet renders no goal line at all", () => {
   assert.doesNotMatch(html, /class="goal/);
 });
 
-test("a Codex card explains why it has no goal instead of looking broken", () => {
+test("a harness that can never carry a goal explains itself instead of looking broken", () => {
+  // Codex used to be the live case; it reads its rollout as turns now and reports its
+  // prompt over a hook, so `GOAL_UNSUPPORTED.codex` is null and a goal-less Codex card is
+  // an ordinary pre-first-prompt card. The empty state is still reachable - it is what a
+  // harness with no message reader renders - so it is driven by a fixture rather than
+  // deleted along with the last agent that needed it.
+  const why = "Test Harness sessions report no prompts.";
+  const prior = GOAL_UNSUPPORTED.codex;
+  GOAL_UNSUPPORTED.codex = why;
+  try {
+    const html = render(mkSession({ agent: "codex", goal: null }));
+    assert.match(html, /class="goal goal-none"/);
+    assert.match(html, /No goal/);
+    assert.match(html, new RegExp(why.replace(/'/g, "&#x27;")));
+  } finally {
+    GOAL_UNSUPPORTED.codex = prior;
+  }
+});
+
+test("a Codex card with no goal yet renders no goal line - it CAN carry one", () => {
+  // The regression that fixture could hide: leave `GOAL_UNSUPPORTED.codex` as a sentence
+  // and every Codex card permanently reads "No goal", however many prompts it has taken.
+  assert.equal(GOAL_UNSUPPORTED.codex, null);
   const html = render(mkSession({ agent: "codex", goal: null }));
-  assert.match(html, /class="goal goal-none"/);
-  assert.match(html, /No goal/);
-  assert.match(html, new RegExp(GOAL_UNSUPPORTED.codex!.replace(/'/g, "&#x27;")));
+  assert.doesNotMatch(html, /class="goal/);
 });
 
 test("goal text is escaped, not injected", () => {

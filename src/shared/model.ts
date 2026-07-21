@@ -136,6 +136,17 @@ export function modelChoicesFor(
   return [...known, { id: extra, label: modelLabel(extra) ?? extra, hint: "not in this build" }];
 }
 
+/** Provider-compatible shipped defaults for Mission Control's own model calls. */
+export function providerModelDefault(
+  provider: AgentType,
+  tier: "deep" | "balanced" | "cheap",
+): string {
+  if (provider === "codex") {
+    return tier === "deep" ? "gpt-5.6-sol" : tier === "balanced" ? "gpt-5.6-terra" : "gpt-5.6-luna";
+  }
+  return tier === "deep" ? "claude-opus-4-8" : tier === "balanced" ? "claude-sonnet-5" : "claude-haiku-4-5";
+}
+
 /**
  * Infer a model's context-window size from its id. Prefer an explicit size that
  * a caller already has (e.g. Claude's statusLine payload or Codex's rollout);

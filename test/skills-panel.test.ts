@@ -5,9 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { SkillsPanel } from "../src/web/components/SkillsPanel.tsx";
 import type { SkillsState } from "../src/web/useSkills.ts";
 import type { SkillRow, SkillsView } from "../src/shared/types.ts";
-import { AGENT_IDENTITY } from "../src/shared/agent.ts";
+import { AGENT_IDENTITY, agentList } from "../src/shared/agent.ts";
 import { AGENT_TYPES } from "../src/shared/types.ts";
-import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
+import { capabilitiesFor, skillsAgents } from "../src/shared/harness-capabilities.ts";
 
 /**
  * Who the panel is entitled to name, read off the `skills` capability - the same source
@@ -20,14 +20,18 @@ import { capabilitiesFor } from "../src/shared/harness-capabilities.ts";
  */
 const SKILLED = AGENT_TYPES.filter((a) => capabilitiesFor(a).skills);
 const UNSKILLED = AGENT_TYPES.filter((a) => !capabilitiesFor(a).skills);
+/** Who a change has to be TYPED at - a strict subset of SKILLED. See `skillsAgents`. */
+const RELOADED = skillsAgents();
 
 // The skills panel, rendered. Static markup rather than a driven browser: this
 // dashboard's pages don't take script injection from the automation extension, and
 // these are questions about words and structure.
 //
-// What's at stake is that the panel never over-promises. Enabling a skill loads it;
-// it does not oblige Claude to use it, and it does nothing whatsoever to a codex
-// session. A row that says only "on" is claiming both.
+// What's at stake is that the panel never over-promises, and - since Codex gained a
+// skills directory - never UNDER-promises either. Enabling a skill loads it; it does not
+// oblige the agent to use it. A row that says only "on" claims the first; a row still
+// saying "claude only" over a reconciler that writes into two directories denies the
+// second. Both sentences are computed from the capability rather than typed.
 
 function mkRow(over: Partial<SkillRow> = {}): SkillRow {
   return {
@@ -71,13 +75,20 @@ test("every row carries its enforcement rung", () => {
   );
 });
 
-test("every row names exactly the harnesses a skill actually reaches", () => {
+test("a row names who a skill LEAVES OUT, and says nothing when nobody is left out", () => {
   // A harness with no skills capability has no reload command and no skills directory,
   // so the loop skips it entirely. A toggle that silently no-ops on half the grid is the
   // failure that disqualified launch flags - and a row that NAMED such a harness would be
   // the same lie with the words the other way round.
+  //
+  // Every shipped harness declares `skills` now, so the badge renders for nobody. Left
+  // unconditional it printed "claude only" - false - over a title that composed to
+  // " sessions are unaffected", a caveat with a blank where the subject should be.
   const html = render();
-  for (const a of SKILLED) assert.match(html, new RegExp(`${a} only`, "i"));
+  if (UNSKILLED.length === 0) {
+    assert.doesNotMatch(html, /skill-badge-agent/, "no caveat when there is nobody to caveat about");
+    assert.doesNotMatch(html, / only</, "and no 'X only' claim that is not true");
+  }
   for (const a of UNSKILLED) {
     assert.match(html, new RegExp(`${AGENT_IDENTITY[a].label} sessions are unaffected`));
   }
@@ -85,10 +96,14 @@ test("every row names exactly the harnesses a skill actually reaches", () => {
 
 test("the panel says the change is global before you click anything", () => {
   const html = render();
-  assert.match(html, /~\/\.claude\/skills/);
+  // Every declaring harness's directory, read off its own `homeDir` - not `~/.claude`
+  // spelled out here, which is how the panel comes to name one install while the
+  // reconciler writes into two.
   for (const a of SKILLED) {
-    assert.match(html, new RegExp(`every</strong> ${AGENT_IDENTITY[a].label} session`));
+    assert.match(html, new RegExp(`~/${capabilitiesFor(a).skills!.homeDir.join("/")}`));
+    assert.match(html, new RegExp(AGENT_IDENTITY[a].label));
   }
+  assert.match(html, /every<\/strong>/);
 });
 
 test("the rows are disabled while the master switch is off", () => {
@@ -115,17 +130,22 @@ test("a catalog problem renders, rather than a row silently vanishing", () => {
 });
 
 test("the pending count is a promise about WHEN, and names who it is about", () => {
-  const who = SKILLED.map((a) => AGENT_IDENTITY[a].label).join(" / ");
   const html = render({ view: mkView({ pending: 3 }) });
-  assert.match(html, new RegExp(`3 ${who} sessions will pick this up when they next go idle`));
-  // The count excludes harnesses that cannot load a skill, so naming one here would be
-  // a number that can never reach zero attached to a session it never described.
-  for (const a of UNSKILLED) assert.doesNotMatch(html, new RegExp(`${AGENT_IDENTITY[a].label} sessions will`));
+  assert.match(html, new RegExp(`3 ${agentList(RELOADED)} sessions will pick this up when they next go idle`));
+  // The count is `pendingReloads`, which counts only sessions something has to be TYPED
+  // at. Naming a harness that loads skills by watching its own directory (Codex) would
+  // attach a number that can never reach zero to a session already holding the skill -
+  // the same failure as naming one that cannot load a skill at all, one door along.
+  for (const a of AGENT_TYPES.filter((x) => !RELOADED.includes(x as never))) {
+    assert.doesNotMatch(html, new RegExp(`${AGENT_IDENTITY[a].label} sessions will`));
+  }
 });
 
 test("one pending session is not '1 sessions'", () => {
-  const who = SKILLED.map((a) => AGENT_IDENTITY[a].label).join(" / ");
-  assert.match(render({ view: mkView({ pending: 1 }) }), new RegExp(`1 ${who} session will pick this up`));
+  assert.match(
+    render({ view: mkView({ pending: 1 }) }),
+    new RegExp(`1 ${agentList(RELOADED)} session will pick this up`),
+  );
 });
 
 test("no pending sessions says nothing at all", () => {

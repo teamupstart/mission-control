@@ -28,6 +28,11 @@ import type { SkillsConfig } from "../src/shared/protocol.ts";
 
 const home = mkdtempSync(join(tmpdir(), "mission-skills-rec-"));
 const claudeSkills = join(home, "claude-skills");
+// The reconciler folds over EVERY harness's skills directory (`skillsDirs()`). These
+// cases are about the walk over one, so they name one explicitly - which also keeps the
+// assertions about "what is in the directory" answerable by a single readdir.
+// `skills-multi-harness.test.ts` is where the fold itself is pinned.
+const onlyClaude = [claudeSkills];
 const catalogDir = join(home, "catalog");
 process.env.CLAUDE_SKILLS_DIR = claudeSkills;
 process.env.FLEET_SKILLS_DIR = catalogDir;
@@ -74,7 +79,7 @@ function entries(): string[] {
 }
 
 test("enabling a skill symlinks it in under the mission- prefix", () => {
-  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.linked, ["alpha"]);
@@ -93,22 +98,22 @@ test("THE rename regression: a link under the OLD fleet- prefix is still ours", 
   const cfg = mkCfg({ skills: { alpha: true } });
   symlinkSync(join(catalogDir, "alpha"), join(claudeSkills, "fleet-alpha"), "dir");
 
-  const r = reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(cfg, CATALOG, onlyClaude);
 
   assert.equal(r.changed, false, "it already points at the right skill - nothing to do");
   assert.deepEqual(entries(), ["fleet-alpha"], "left where it lies, with no duplicate beside it");
   // The read-only views have to look where it actually IS, or the panel calls a healthy
   // pre-rename install missing and tells the operator to restart to "repair" it.
-  assert.deepEqual(skillDrift(cfg, CATALOG, claudeSkills), []);
-  assert.deepEqual([...skillBlockers(cfg, CATALOG, claudeSkills)], []);
+  assert.deepEqual(skillDrift(cfg, CATALOG, onlyClaude), []);
+  assert.deepEqual([...skillBlockers(cfg, CATALOG, onlyClaude)], []);
 
   // Switching it off has to reach the disk it's really on.
-  const off = reconcileSkillLinks(mkCfg({ skills: { alpha: false } }), CATALOG, claudeSkills);
+  const off = reconcileSkillLinks(mkCfg({ skills: { alpha: false } }), CATALOG, onlyClaude);
   assert.deepEqual(off.unlinked, ["alpha"]);
   assert.deepEqual(entries(), []);
 
   // ...and what we WRITE is always the current name.
-  reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  reconcileSkillLinks(cfg, CATALOG, onlyClaude);
   assert.deepEqual(entries(), ["mission-alpha"]);
 });
 
@@ -118,7 +123,7 @@ test("a stale link under the old prefix is repaired onto the current one", () =>
   // yesterday's - the old prefix is recognised, not perpetuated.
   symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "fleet-alpha"), "dir");
 
-  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.linked, ["alpha"]);
@@ -127,9 +132,9 @@ test("a stale link under the old prefix is repaired onto the current one", () =>
 
 test("re-running against a correct directory writes nothing and reports unchanged", () => {
   const cfg = mkCfg({ skills: { alpha: true } });
-  reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  reconcileSkillLinks(cfg, CATALOG, onlyClaude);
 
-  const again = reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  const again = reconcileSkillLinks(cfg, CATALOG, onlyClaude);
 
   // This is what lets the daemon reconcile on every startup without reloading every
   // session: `changed: false` is what withholds the generation bump.
@@ -140,9 +145,9 @@ test("re-running against a correct directory writes nothing and reports unchange
 });
 
 test("disabling a skill removes only its link", () => {
-  reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: true } }), CATALOG, claudeSkills);
+  reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: true } }), CATALOG, onlyClaude);
 
-  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: false } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: false } }), CATALOG, onlyClaude);
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.unlinked, ["beta"]);
@@ -158,9 +163,9 @@ test("THE test: a user's own skills are untouched, whatever we do", () => {
   mkdirSync(theirLink, { recursive: true });
   symlinkSync(theirLink, join(claudeSkills, "implement-plan"), "dir");
 
-  reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: true } }), CATALOG, claudeSkills);
-  reconcileSkillLinks(mkCfg({ skills: {} }), CATALOG, claudeSkills);
-  uninstallSkillLinks(claudeSkills);
+  reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: true } }), CATALOG, onlyClaude);
+  reconcileSkillLinks(mkCfg({ skills: {} }), CATALOG, onlyClaude);
+  uninstallSkillLinks(onlyClaude);
 
   // Not "we tried not to" - after linking, unlinking, and a full uninstall, both are
   // still exactly as they were. A symlink of theirs is no more ours than a directory.
@@ -177,7 +182,7 @@ test("a REAL directory wearing our prefix is refused, not deleted", () => {
   mkdirSync(theirs, { recursive: true });
   writeFileSync(join(theirs, "SKILL.md"), "hand-written\n");
 
-  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
   assert.equal(r.changed, false);
   assert.equal(r.problems.length, 1);
@@ -190,7 +195,7 @@ test("a DANGLING link is re-pointed, and that IS a change every session needs", 
   // what every session has.
   symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "mission-alpha"), "dir");
 
-  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
   assert.equal(r.changed, true);
   assert.deepEqual(r.linked, ["alpha"]);
@@ -207,7 +212,7 @@ test("a RESOLVING link re-pointed at the same skill is not a change - no reload"
   writeFileSync(join(otherCopy, "SKILL.md"), "---\nname: alpha\n---\n");
   symlinkSync(otherCopy, join(claudeSkills, "mission-alpha"), "dir");
 
-  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
   assert.equal(r.changed, false, "the skill was loaded before and is loaded now");
   assert.equal(readlinkSync(join(claudeSkills, "mission-alpha")), join(catalogDir, "alpha"), "still re-pointed");
@@ -220,7 +225,7 @@ test("a link that can't be created is blocked, not silently counted as done", ()
   const r = reconcileSkillLinks(
     mkCfg({ skills: { "nested/id": true } }),
     mkCatalog({ present: new Set(["nested/id"]) }),
-    claudeSkills,
+    onlyClaude,
   );
 
   assert.deepEqual(r.linked, []);
@@ -236,7 +241,7 @@ test("a re-point we cannot even start is blocked, and nothing claims to have cha
   symlinkSync(join(home, "old-app", "skills", "alpha"), join(claudeSkills, "mission-alpha"), "dir");
   chmodSync(claudeSkills, 0o500);
   try {
-    const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+    const r = reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
 
     assert.equal(r.changed, false);
     assert.deepEqual(r.blocked, ["alpha"]);
@@ -247,9 +252,9 @@ test("a re-point we cannot even start is blocked, and nothing claims to have cha
 });
 
 test("the master switch off unlinks everything, whatever the rows say", () => {
-  reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: true } }), CATALOG, claudeSkills);
+  reconcileSkillLinks(mkCfg({ skills: { alpha: true, beta: true } }), CATALOG, onlyClaude);
 
-  const r = reconcileSkillLinks(mkCfg({ enabled: false, skills: { alpha: true, beta: true } }), CATALOG, claudeSkills);
+  const r = reconcileSkillLinks(mkCfg({ enabled: false, skills: { alpha: true, beta: true } }), CATALOG, onlyClaude);
 
   // Off has to reach the DISK. A master switch that only stopped new links would leave
   // every session running skills the panel says are off.
@@ -280,8 +285,8 @@ test("THE regression: a skill we can't PARSE is still desired, and stays linked"
   const cfg = mkCfg({ skills: { alpha: true } });
   assert.deepEqual([...desiredSkillIds(cfg, unparsed.present)], ["alpha"]);
 
-  reconcileSkillLinks(cfg, CATALOG, claudeSkills);
-  const r = reconcileSkillLinks(cfg, unparsed, claudeSkills);
+  reconcileSkillLinks(cfg, CATALOG, onlyClaude);
+  const r = reconcileSkillLinks(cfg, unparsed, onlyClaude);
   assert.equal(r.changed, false, "a parse failure must not move the disk");
   assert.deepEqual(entries(), ["mission-alpha"], "the skill is still installed");
 });
@@ -292,9 +297,9 @@ test("THE regression: an UNREADABLE catalog changes nothing at all", () => {
   // worktree without skills/, or one permissions hiccup, would uninstall every skill on
   // the machine and broadcast a reload telling every session to drop them.
   const cfg = mkCfg({ skills: { alpha: true, beta: true } });
-  reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  reconcileSkillLinks(cfg, CATALOG, onlyClaude);
 
-  const blind = reconcileSkillLinks(cfg, mkCatalog({ readable: false, skills: [], present: new Set(), problems: ["couldn't read the skills catalog at /nope: ENOENT"] }), claudeSkills);
+  const blind = reconcileSkillLinks(cfg, mkCatalog({ readable: false, skills: [], present: new Set(), problems: ["couldn't read the skills catalog at /nope: ENOENT"] }), onlyClaude);
 
   assert.equal(blind.changed, false, "we know nothing, so we change nothing");
   assert.deepEqual(entries(), ["mission-alpha", "mission-beta"], "both skills survive");
@@ -304,10 +309,10 @@ test("THE regression: an UNREADABLE catalog changes nothing at all", () => {
 
 test("an enabled skill that really IS gone is unlinked, and the panel is told", () => {
   const cfg = mkCfg({ skills: { alpha: true } });
-  reconcileSkillLinks(cfg, CATALOG, claudeSkills);
+  reconcileSkillLinks(cfg, CATALOG, onlyClaude);
 
   // Readable catalog, alpha genuinely deleted from the repo.
-  const r = reconcileSkillLinks(cfg, mkCatalog({ skills: [mkSkill("beta")], present: new Set(["beta"]) }), claudeSkills);
+  const r = reconcileSkillLinks(cfg, mkCatalog({ skills: [mkSkill("beta")], present: new Set(["beta"]) }), onlyClaude);
 
   assert.deepEqual(r.unlinked, ["alpha"]);
   assert.equal(r.changed, true);
@@ -319,10 +324,10 @@ test("a skills dir we CAN'T READ is not an empty one - nothing is reported as do
   // ENOENT and "we aren't allowed to look" must not give the same answer. Read as
   // "empty, so nothing to unlink", switching a skill off would report a clean success
   // while the symlink sat there and every session kept using it.
-  reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
   chmodSync(claudeSkills, 0o200); // write-only: readdir fails with EACCES
   try {
-    const r = reconcileSkillLinks(mkCfg({ skills: { alpha: false } }), CATALOG, claudeSkills);
+    const r = reconcileSkillLinks(mkCfg({ skills: { alpha: false } }), CATALOG, onlyClaude);
 
     assert.equal(r.changed, false, "we know nothing, so we changed nothing");
     assert.match(r.problems[0] ?? "", /couldn't read/);
@@ -335,10 +340,10 @@ test("a skills dir we CAN'T READ is not an empty one - nothing is reported as do
 test("an absent ~/.claude/skills is created only when there's something to put in it", () => {
   rmSync(claudeSkills, { recursive: true, force: true });
 
-  reconcileSkillLinks(mkCfg({ skills: {} }), CATALOG, claudeSkills);
+  reconcileSkillLinks(mkCfg({ skills: {} }), CATALOG, onlyClaude);
   assert.equal(existsSync(claudeSkills), false, "an empty dir we invented is litter");
 
-  reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, claudeSkills);
+  reconcileSkillLinks(mkCfg({ skills: { alpha: true } }), CATALOG, onlyClaude);
   assert.deepEqual(entries(), ["mission-alpha"]);
 });
 

@@ -62,16 +62,7 @@ export function resolveModelChoice(
   return { id: spec.fallback, source: "default" };
 }
 
-/**
- * Model ids offered as autocomplete in the settings panels.
- *
- * A CONVENIENCE LIST, never a validation set: the fields stay free text, because the
- * `claude` CLI accepts ids and aliases this repo has no business knowing about, and a
- * dropdown would strand an operator the day a new model ships. Being slightly stale here
- * costs a suggestion; refusing an unlisted id would cost the feature.
- */
-export const MODEL_SUGGESTIONS = [
-  "claude-opus-4-8",
-  "claude-sonnet-5",
-  "claude-haiku-4-5",
-] as const;
+// The claude-only `MODEL_SUGGESTIONS` list that used to sit here is gone with its last
+// reader. Which ids a field offers is a question about a PROVIDER, so it is answered by
+// `modelChoicesFor(runner, …)` (`@shared/model.ts`) - a hardcoded list here could only
+// ever have been Claude's, and `ModelField` renders it for whichever runner is selected.

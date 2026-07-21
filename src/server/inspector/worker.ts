@@ -9,8 +9,8 @@ import {
   updateInspectorPr,
   upsertInspectorComment,
 } from "../db.ts";
-import { resultText, runClaudeText } from "../claude-cli.ts";
 import { createLimiter, parseModelJson, runStructured } from "../llm/structured.ts";
+import { llmRunner } from "../llm/index.ts";
 import { readStandards } from "../standards.ts";
 import { unref } from "../util/timers.ts";
 import { inspectorPosture } from "@shared/inspector.ts";
@@ -114,6 +114,23 @@ const MAX_ROUNDS = 100;
  */
 function reviewModel(cfg: InspectorConfig): string {
   return inspectorModel(cfg).id;
+}
+
+function inspectorRunOptions(cfg: InspectorConfig, timeoutMs: number, cwd: string) {
+  const runner = llmRunner(cfg.runner ?? "claude");
+  return {
+    runner,
+    options: {
+      model: reviewModel(cfg),
+      timeoutMs,
+      // Claude can enforce Inspector's exact read-tool deny list. Codex currently
+      // cannot, so it reviews the supplied diff without repository tools instead of
+      // silently accepting a weaker grant.
+      ...(runner.sandbox
+        ? { grant: { tools: REVIEW_TOOLS.split(","), cwd, denyPaths: DENY_PATHS } }
+        : {}),
+    },
+  } as const;
 }
 
 /**
@@ -602,18 +619,13 @@ async function answerFollowUp(
 
   let text: string;
   try {
-    text = await runClaudeText(prompt, {
-      model: reviewModel(cfg),
-      timeoutMs: REPLY_TIMEOUT_MS,
-      tools: REVIEW_TOOLS,
-      cwd: dir,
-      settings: DENY_SETTINGS,
-    });
+    const run = inspectorRunOptions(cfg, REPLY_TIMEOUT_MS, dir);
+    text = await run.runner.run(prompt, run.options);
   } catch (err) {
     return noteFailure(pr, `reply failed: ${String(err)}`, now, tick);
   }
 
-  const reply = scrubSecrets(resultText(text).trim());
+  const reply = scrubSecrets(text.trim());
   if (!reply) return false;
 
   // Same marker fingerprint as the thread it belongs to, so a reply of ours is
@@ -702,18 +714,9 @@ async function reviewRound(
     round: pr.round + 1,
   });
 
-  // Still `runClaudeText` directly rather than a runner: this is the one caller that
-  // holds TOOLS, and the grant's `cwd` + deny-list shape (`LlmToolGrant`) is a migration
-  // of its own - see the LLM-runner phase of docs/plans/pluggable-integrations/plan.md.
+  const run = inspectorRunOptions(cfg, TIMEOUT_MS, dir);
   const result = await runStructured<typeof InspectorVerdictSchema>(
-    (p) =>
-      runClaudeText(p, {
-        model: reviewModel(cfg),
-        timeoutMs: TIMEOUT_MS,
-        tools: REVIEW_TOOLS,
-        cwd: dir,
-        settings: DENY_SETTINGS,
-      }),
+    (p) => run.runner.run(p, run.options),
     prompt,
     (raw) => parseModelJson(raw, InspectorVerdictSchema),
     "The inspector",

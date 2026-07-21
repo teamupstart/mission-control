@@ -2,6 +2,8 @@ import { repoAllowlisted } from "./allowlist.ts";
 import { resolveModelChoice } from "./model-choice.ts";
 import type { ModelChoiceSpec, ResolvedModel } from "./model-choice.ts";
 import type { InspectorConfig } from "./protocol.ts";
+import { providerModelDefault } from "./model.ts";
+import type { LlmRunnerId } from "./llm.ts";
 
 // "Would the Inspector actually act on this pull request?" - asked once, here.
 //
@@ -94,6 +96,14 @@ export const INSPECTOR_MODEL_SPEC: ModelChoiceSpec = {
 export function resolveInspectorModel(
   cfg: Pick<InspectorConfig, "model"> | null | undefined,
   envValue: string | null | undefined,
+  runner: LlmRunnerId = "claude",
 ): ResolvedModel {
-  return resolveModelChoice(INSPECTOR_MODEL_SPEC, cfg?.model, envValue);
+  return resolveModelChoice(
+    {
+      ...INSPECTOR_MODEL_SPEC,
+      fallback: runner === "claude" ? INSPECTOR_MODEL_SPEC.fallback : providerModelDefault(runner, "deep"),
+    },
+    cfg?.model,
+    envValue,
+  );
 }

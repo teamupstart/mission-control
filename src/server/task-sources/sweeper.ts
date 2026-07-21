@@ -1,0 +1,186 @@
+import type { SweepReport, TaskSourceInstance, TaskSourceStatus } from "@shared/task-source.ts";
+import { countTaskSourceSeen } from "../db.ts";
+import { envVar } from "../config.ts";
+import { unref } from "../util/timers.ts";
+import type { TaskManager } from "../tasks.ts";
+import { getTaskSourcesConfig } from "./config.ts";
+import { ingestSweep } from "./ingest.ts";
+import { preflightSource, sweepSource } from "./index.ts";
+
+// Drives the configured task sources on their own schedules, and hands what they return
+// to ingest.
+//
+// It runs IN THE DAEMON rather than in the Foreman worker, for the reason the Inspector
+// does: ingest writes to the DB, and the daemon is the only writer. The port bind is the
+// mutex - two daemons cannot both hold :7317 - so there is exactly one sweeper.
+//
+// It does not need the gate the skills reload loop needs (`settledIdle` + a pane read +
+// `withPaneLock`; see "The daemon is no longer strictly reactive" in the README) because
+// it never types. It writes backlog rows and nothing else: no worktree is cut, no
+// keystroke is sent, and the worst a broken source can do is file junk into a list a
+// human then reads and deletes. The moment a source can type, that whole argument has to
+// be redone.
+
+/** How often the loop wakes to ask which sources are due. Not the sweep interval. */
+const TICK_MS = Math.max(5_000, Number(envVar("TASK_SOURCE_TICK_MS") ?? 30_000));
+
+/** Hard cap on one sweep, so a hung source cannot wedge its own schedule forever. */
+const SWEEP_TIMEOUT_MS = Math.max(5_000, Number(envVar("TASK_SOURCE_TIMEOUT_MS") ?? 60_000));
+
+/**
+ * What each source's last sweep did, in memory.
+ *
+ * Not persisted, on purpose: a restart simply sweeps everything once more, and ingest
+ * de-duplicates that pass down to nothing. Persisting it would buy a marginally prettier
+ * panel and a schema to migrate.
+ */
+interface Entry {
+  lastSweepAt: number | null;
+  lastError: string | null;
+  lastFiled: number;
+  /** In flight, so the tick and a "Sweep now" click cannot double-file. */
+  sweeping: boolean;
+}
+const entries = new Map<string, Entry>();
+
+function entryFor(id: string): Entry {
+  let e = entries.get(id);
+  if (!e) {
+    e = { lastSweepAt: null, lastError: null, lastFiled: 0, sweeping: false };
+    entries.set(id, e);
+  }
+  return e;
+}
+
+/** Status for every configured source, for the settings panel. */
+export function taskSourceStatuses(sources: TaskSourceInstance[]): TaskSourceStatus[] {
+  return sources.map((s) => {
+    const e = entryFor(s.id);
+    return {
+      sourceId: s.id,
+      lastSweepAt: e.lastSweepAt,
+      lastError: e.lastError,
+      lastFiled: e.lastFiled,
+      seenCount: countTaskSourceSeen(s.id),
+      sweeping: e.sweeping,
+    };
+  });
+}
+
+/** The context one sweep is lent: no registry, no DB, and a signal it can be cut off by. */
+function contextFor(inst: TaskSourceInstance, signal: AbortSignal): {
+  sourceId: string;
+  repoRoot: string;
+  signal: AbortSignal;
+} {
+  return { sourceId: inst.id, repoRoot: inst.repoRoot, signal };
+}
+
+/**
+ * Sweep one source now and file what it returns.
+ *
+ * Shared by the loop and by the panel's "Sweep now", so a manual sweep is the identical
+ * operation - including the in-flight guard, without which the two could file the same
+ * item twice from two concurrent reads of the seen set.
+ */
+export async function sweepOnce(
+  inst: TaskSourceInstance,
+  tasks: TaskManager,
+): Promise<SweepReport> {
+  const entry = entryFor(inst.id);
+  if (entry.sweeping) {
+    return {
+      sourceId: inst.id,
+      filed: 0,
+      alreadySeen: 0,
+      overCap: 0,
+      refused: [],
+      error: "a sweep of this source is already running",
+    };
+  }
+  entry.sweeping = true;
+  const controller = new AbortController();
+  const timer = unref(setTimeout(() => controller.abort(), SWEEP_TIMEOUT_MS));
+  try {
+    const result = await sweepSource(inst, contextFor(inst, controller.signal));
+    const report = await ingestSweep(inst, result, tasks);
+    entry.lastSweepAt = Date.now();
+    entry.lastFiled = report.filed;
+    // A per-candidate refusal is worth surfacing too: with `error` null and rows refused,
+    // the panel would otherwise report a clean sweep that filed nothing.
+    entry.lastError =
+      report.error ?? (report.refused.length > 0 ? report.refused.join("; ") : null);
+    return report;
+  } finally {
+    clearTimeout(timer);
+    entry.sweeping = false;
+  }
+}
+
+/** Ask a source whether it could run at all, without filing anything. */
+export async function preflightOnce(inst: TaskSourceInstance): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = unref(setTimeout(() => controller.abort(), SWEEP_TIMEOUT_MS));
+  try {
+    return await preflightSource(inst, contextFor(inst, controller.signal));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Whether this source is due, given when it last swept. A never-swept source is due. */
+function due(inst: TaskSourceInstance, now: number): boolean {
+  const last = entryFor(inst.id).lastSweepAt;
+  return last === null || now - last >= inst.intervalMs;
+}
+
+/**
+ * Drive the configured sources on an interval.
+ *
+ * The canonical loop shape (`discovery/poller.ts`): a self-rescheduling `setTimeout`
+ * rather than `setInterval`, so ticks cannot overlap; `unref()` so a pending tick never
+ * holds the process open; try/catch INSIDE the tick so one bad sweep cannot kill the
+ * loop; and a returned stop closure the daemon's `shutdown()` calls.
+ *
+ * Sources are swept one at a time rather than in parallel. Each spends a subprocess and
+ * a network round trip on somebody else's API, and nothing here is latency-sensitive -
+ * the whole feature is measured in fifteen-minute intervals.
+ */
+export function startTaskSourceSweeper(tasks: TaskManager): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const tick = async (): Promise<void> => {
+    if (stopped) return;
+    try {
+      const now = Date.now();
+      // Re-read every tick rather than at construction, so enabling a source or changing
+      // its interval takes effect without a restart - the same discipline the dispatcher
+      // holds for `harnesses.ts`.
+      for (const inst of getTaskSourcesConfig().sources) {
+        if (stopped) break;
+        if (!inst.enabled || !due(inst, now)) continue;
+        try {
+          await sweepOnce(inst, tasks);
+        } catch (err) {
+          // `sweepOnce` already reports a failing source through its status; this is the
+          // backstop for a failure in the machinery around it, and it must not cost the
+          // other sources their turn.
+          entryFor(inst.id).lastError = err instanceof Error ? err.message : String(err);
+          console.error(`[task-source] ${inst.id} sweep failed:`, err);
+        }
+      }
+    } catch (err) {
+      console.error("[task-source] sweep tick failed:", err);
+    }
+    if (stopped) return;
+    timer = unref(setTimeout(tick, TICK_MS));
+  };
+
+  void tick();
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+  };
+}

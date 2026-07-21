@@ -32,8 +32,10 @@ import type {
   SkillsConfigPatch,
   UiConfigPatch,
   UiConfigView,
+  TaskSourcesConfigPatch,
   UpdateTask,
 } from "@shared/protocol.ts";
+import type { SweepReport, TaskSourcesView } from "@shared/task-source.ts";
 import type { Attachment } from "@shared/attachments.ts";
 import type { AwayDigest } from "@shared/away-buffer.ts";
 import type { Stall } from "@shared/stall.ts";
@@ -94,6 +96,13 @@ export const fetchInspectorConfig = () => fetchJson<InspectorConfig>("/api/inspe
 export const fetchInspectorPrs = () => fetchJson<InspectorInspection[]>("/api/inspector/prs");
 /** YOLO mode: whether adopted PRs may merge themselves, and how long they must soak. */
 export const fetchShippingConfig = () => fetchJson<ShippingConfig>("/api/shipping/config");
+/**
+ * The Task sources panel in one read: what is configured, how each is doing, and which
+ * kinds this build offers. One route rather than a config/status pair, for the reason
+ * `/api/skills` is one: nothing else reads any half of it, and the halves are only ever
+ * rendered together.
+ */
+export const fetchTaskSources = () => fetchJson<TaskSourcesView>("/api/task-sources/config");
 /** Away mode: whether you're away, since when, and the stall thresholds. */
 export const fetchAwayConfig = () => fetchJson<AwayConfig>("/api/away");
 /**
@@ -374,6 +383,20 @@ export const api = {
 
   // --- Shipping (YOLO mode: merging the clean ones) ---
   setShippingConfig: (cfg: ShippingConfigPatch) => put(`/api/shipping/config`, cfg),
+
+  // --- Task sources (pulling work into the backlog) ---
+  setTaskSources: (cfg: TaskSourcesConfigPatch) => put(`/api/task-sources/config`, cfg),
+  /** Sweep one source now. The report says what it filed, skipped and dropped. */
+  sweepTaskSource: (id: string) =>
+    post<ActionResult & SweepReport>(`/api/task-sources/${encodeURIComponent(id)}/sweep`),
+  /** "Is this actually going to work?" - the question an empty sweep cannot answer. */
+  preflightTaskSource: (id: string) =>
+    post<ActionResult & { problem: string | null }>(
+      `/api/task-sources/${encodeURIComponent(id)}/preflight`,
+    ),
+  /** Forget what this source has filed, so it can file it again. */
+  forgetTaskSourceSeen: (id: string) =>
+    del(`/api/task-sources/${encodeURIComponent(id)}/seen`),
 
   // --- Dashboard UI preferences (layout, keybindings, alerts, rich text) ---
   setUiConfig: (cfg: UiConfigPatch) => put(`/api/ui/config`, cfg),

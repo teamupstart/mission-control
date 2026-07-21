@@ -10,6 +10,7 @@ import type {
   TaskPriority,
 } from "@shared/types.ts";
 import type { UpdateTask } from "@shared/protocol.ts";
+import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import type { Registry } from "./registry.ts";
 import {
@@ -45,6 +46,12 @@ export interface CreateTaskInput {
   labels?: string[];
   /** Launch this agent on a specific model; omitted follows the harness default. */
   model?: string;
+  /**
+   * Where a task source swept this from. Omitted by every human-facing caller, which is
+   * nearly all of them. Provenance only (see `Task.source`) - it is never consulted to
+   * decide whether an item has been filed before.
+   */
+  source?: TaskSourceRef;
   /** Only add to the backlog (no worktree/session) - dispatch it later. */
   backlog: boolean;
 }
@@ -167,6 +174,7 @@ export class TaskManager {
       // the harness config at launch time, so shelving a task doesn't freeze the
       // default it happened to see (see `resolveDispatchModel`).
       model: input.model ?? null,
+      source: input.source ?? null,
       repoRoot: input.repoRoot,
       worktreePath: null,
       branch: null,

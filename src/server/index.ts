@@ -30,6 +30,7 @@ import { buildApp } from "./routes.ts";
 import { warnIfSessionAttributionDisabled } from "./cost.ts";
 import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
+import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
 import { sweepUploads } from "./uploads.ts";
 
 openDb();
@@ -69,6 +70,10 @@ const away = startAwayWatcher(registry);
 const stopHeadlessPruner = startHeadlessPruner();
 const stopPoolReaper = startPoolReaper(registry);
 const stopSkillsReloader = startSkillsReloader(registry);
+// Pulls work INTO the backlog from systems that already hold it. In the daemon because
+// ingest writes to the DB and the daemon is the only writer; needs none of the reload
+// loop's pane gate because it never types (see src/shared/task-source.ts).
+const stopTaskSources = startTaskSourceSweeper(tasks);
 
 const app = buildApp(registry, reviews, tasks, queues, away);
 
@@ -112,6 +117,7 @@ function shutdown(): void {
   killLiveClaudeRuns();
   stopPoolReaper();
   stopSkillsReloader();
+  stopTaskSources();
   server.close();
   process.exit(0);
 }

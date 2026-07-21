@@ -9,9 +9,11 @@ import { InspectorSettingsPanel } from "./InspectorSettingsPanel.tsx";
 import { ShippingSettingsPanel } from "./ShippingSettingsPanel.tsx";
 import { useShipping } from "../useShipping.ts";
 import { HarnessesPanel } from "./HarnessesPanel.tsx";
+import { TaskSourcesPanel } from "./TaskSourcesPanel.tsx";
 import { LayoutPanel } from "./LayoutPanel.tsx";
 import { AppearancePanel } from "./AppearancePanel.tsx";
 import { useHarnesses } from "../useHarnesses.ts";
+import { useTaskSources } from "../useTaskSources.ts";
 import type { LayoutMode } from "../lib/layout.ts";
 import type { ForemanState } from "../useForeman.ts";
 import type { CostState } from "../useCost.ts";
@@ -29,6 +31,7 @@ export const SETTINGS_CATEGORIES = [
   { id: "keyboard", label: "Keyboard", icon: "⌨" },
   { id: "skills", label: "Skills", icon: "✦" },
   { id: "harnesses", label: "Harnesses", icon: "⚙" },
+  { id: "task-sources", label: "Task sources", icon: "⇊" },
   { id: "foreman", label: "Foreman", icon: "●" },
   { id: "cost", label: "Cost", icon: "$" },
   { id: "inspector", label: "Inspector", icon: "⌕" },
@@ -101,6 +104,10 @@ export function SettingsModal({
   // Owned here for the same reason as `inspector`: nothing outside this modal reads the
   // Shipping config, so it polls only while the modal is open.
   const shipping = useShipping();
+  // Owned here for the same reason again - and this one's poll is load-bearing rather
+  // than merely tidy: it is what keeps each source's last-swept line and its error moving
+  // while you watch the panel, including for a sweep the background loop ran.
+  const taskSources = useTaskSources();
   const tabRefs = useRef(new Map<SettingsCategoryId, HTMLButtonElement>());
 
   // Escape is Overlay's, and stays a plain BUBBLE-phase listener there with no "is a
@@ -157,6 +164,8 @@ export function SettingsModal({
         return <SkillsPanel state={skills} />;
       case "harnesses":
         return <HarnessesPanel state={harnesses} />;
+      case "task-sources":
+        return <TaskSourcesPanel state={taskSources} />;
       case "foreman":
         return <ForemanSettingsPanel state={foreman} />;
       case "cost":

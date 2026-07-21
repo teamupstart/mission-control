@@ -42,6 +42,7 @@ import {
   PromptedWrapupSchema,
   WrapupAskedSchema,
   SkillsConfigPatchSchema,
+  TaskSourcesConfigPatchSchema,
   StandardsRequestSchema,
   StatusLineIngestSchema,
   StatusSchema,
@@ -73,6 +74,10 @@ import { getAwayConfig, setAwayConfig } from "./away/config.ts";
 import { buildDigest } from "./away/digest.ts";
 import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
+import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
+import { taskSourceKinds } from "./task-sources/index.ts";
+import { preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
+import type { TaskSourcesView } from "@shared/task-source.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
 import { getInspectorConfig, setInspectorConfig } from "./inspector/config.ts";
@@ -91,7 +96,13 @@ import {
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail } from "./nomistakes-fixes.ts";
 import { checkToken } from "./auth.ts";
-import { dropGateReply, getSkillsAcks, loadInspectorInspections, logGateReply } from "./db.ts";
+import {
+  dropGateReply,
+  forgetTaskSourceSeen,
+  getSkillsAcks,
+  loadInspectorInspections,
+  logGateReply,
+} from "./db.ts";
 import {
   cyclePermissionMode,
   focus,
@@ -109,10 +120,9 @@ import {
 import { resetSession } from "./reset.ts";
 import { respond as nomistakesRespond } from "./nomistakes.ts";
 import { buildReport, renderReportMarkdown } from "./report.ts";
-import { listRepos } from "./repos.ts";
+import { listRepos, resolveRepoRoot } from "./repos.ts";
 import { MAX_UPLOAD_BYTES, saveImageUpload } from "./uploads.ts";
-import { run } from "./util/exec.ts";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
@@ -1196,6 +1206,73 @@ export function buildApp(
     return c.json(setHarnessesConfig(parsed.data));
   });
 
+  // --- Task sources: pulling work INTO the backlog from systems that already hold it ---
+  //
+  // Every route here files into the backlog and nothing else. Nothing dispatches, nothing
+  // provisions, and nothing types into a pane - see `src/shared/task-source.ts`.
+
+  /** The whole panel in one read: what is configured, how it is doing, what is on offer. */
+  const taskSourcesView = (): TaskSourcesView => {
+    const cfg = getTaskSourcesConfig();
+    return {
+      sources: cfg.sources,
+      status: taskSourceStatuses(cfg.sources),
+      kinds: taskSourceKinds(),
+    };
+  };
+
+  app.get("/api/task-sources/config", (c) => c.json(taskSourcesView()));
+
+  /**
+   * Replace the configured set.
+   *
+   * Each source's repo is resolved to a git root here, the same way `POST /api/tasks`
+   * resolves one, so a typo cannot enter a config that then files tasks against a path
+   * that is not a checkout - which the dispatcher would only discover much later, with a
+   * worktree half cut and nobody watching.
+   */
+  app.put("/api/task-sources/config", async (c) => {
+    const parsed = await parseBody(c, TaskSourcesConfigPatchSchema);
+    if (!parsed.ok) return parsed.res;
+    const sources = [];
+    for (const s of parsed.data.sources) {
+      const repoRoot = await resolveRepoRoot(s.repoRoot);
+      if (!repoRoot) return c.json({ error: `not a git repository: ${s.repoRoot}` }, 400);
+      sources.push({ ...s, repoRoot });
+    }
+    setTaskSourcesConfig({ sources });
+    return c.json(taskSourcesView());
+  });
+
+  /**
+   * Sweep now, and say what it filed.
+   *
+   * Runs whether or not the source is ENABLED: the switch governs the background loop,
+   * and being able to sweep a source once by hand before turning it loose is the whole
+   * way to find out what it would do.
+   */
+  app.post("/api/task-sources/:id/sweep", async (c) => {
+    const inst = taskSourceById(c.req.param("id"));
+    if (!inst) return c.json({ error: "no such task source" }, 404);
+    return c.json(await sweepOnce(inst, tasks));
+  });
+
+  // "Is this actually going to work?" - the question an empty sweep cannot answer.
+  app.post("/api/task-sources/:id/preflight", async (c) => {
+    const inst = taskSourceById(c.req.param("id"));
+    if (!inst) return c.json({ error: "no such task source" }, 404);
+    const problem = await preflightOnce(inst);
+    return c.json({ ok: problem === null, problem });
+  });
+
+  // Forget what this source has filed, so it can file it again. The deliberate act that
+  // answers "a task you deleted stays deleted" - and the only thing that undoes it.
+  app.delete("/api/task-sources/:id/seen", (c) => {
+    const id = c.req.param("id");
+    if (!taskSourceById(id)) return c.json({ error: "no such task source" }, 404);
+    return c.json({ forgotten: forgetTaskSourceSeen(id) });
+  });
+
   // --- Dashboard UI preferences (localhost only) ---
   //
   // Layout, keybindings, alert delivery, rich text. The daemon only stores these; nothing
@@ -1330,15 +1407,3 @@ export function hostIsLoopback(host: string | undefined): boolean {
   return h === "127.0.0.1" || h === "localhost" || h === "::1";
 }
 
-/** Validate a dispatch target is a git repo and return its realpath top-level. */
-async function resolveRepoRoot(p: string): Promise<string | null> {
-  if (!existsSync(p)) return null;
-  const r = await run("git", ["-C", p, "rev-parse", "--show-toplevel"]);
-  const top = r.stdout.trim();
-  if (r.code !== 0 || !top) return null;
-  try {
-    return realpathSync(top);
-  } catch {
-    return top;
-  }
-}

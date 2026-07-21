@@ -4689,6 +4689,140 @@ kbd {
   opacity: 0.55;
 }
 
+/* ---- Task sources (pulling work into the backlog) ----
+   A card per configured source, because a source is several settings that only mean
+   anything together - which repo, which filters, how often - and the other settings
+   panels' flat `.kb-row` list has no way to say "these belong to that one". Everything
+   inside reuses the shared field/badge/button pieces; this section owns only the card
+   frame and the two grids inside it. */
+.ts-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ts-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+  padding: 12px 14px 14px;
+}
+.ts-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+/* The source's own name. Flexes so the badge and the remove button stay put while the
+   field takes whatever is left. */
+.ts-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.ts-head .foreman-repo-remove {
+  margin-left: 0;
+}
+.ts-status {
+  margin: 9px 0 0;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+.ts-status-failed {
+  color: var(--danger);
+}
+.ts-error,
+.ts-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+}
+/* Two columns on a comfortable pane, one when the modal is narrow. `.ts-field-wide`
+   spans both, for the repo picker and the labels field - the two whose values are long
+   enough that a half-width box truncates what you typed. */
+.ts-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+  align-items: end;
+  margin-top: 12px;
+}
+.ts-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.ts-field-wide {
+  grid-column: 1 / -1;
+}
+.ts-field-label {
+  font-size: 11px;
+  color: var(--dim);
+}
+.ts-field .harnesses-select {
+  max-width: none;
+  padding: 7px 8px;
+}
+/* The repo picker and the button that commits it, on one line - the combobox takes the
+   room. Mirrors `.foreman-repo-add`, which is the same pair doing the same job. */
+.ts-repo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ts-repo-row .combobox {
+  flex: 1;
+  min-width: 0;
+}
+.ts-radios,
+.ts-prios {
+  grid-column: 1 / -1;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.ts-radios legend {
+  font-size: 11px;
+  color: var(--dim);
+  padding: 0;
+}
+.ts-check {
+  grid-column: 1 / -1;
+}
+/* One label -> priority mapping. The label field takes the room; the picker and the
+   remove button are sized to their content so a column of these lines up. */
+.ts-prio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.ts-prio-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
+.ts-prio-hint {
+  margin: 0;
+  white-space: nowrap;
+}
+.ts-defaults {
+  margin-top: 14px;
+}
+.ts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.ts-add {
+  margin-top: 18px;
+}
+.ts-empty,
+.ts-unknown {
+  margin-top: 12px;
+}
+
 /* ---- Cost (telemetry + what the fleet spends) ----
    Reuses the skills/harnesses row shape (`.kb-row` + `.skill-switch`); the only thing
    this section owns is the select, which is the first settings panel to need one that

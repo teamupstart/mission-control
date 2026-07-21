@@ -161,7 +161,7 @@ export function stateDisplay(session: Session): StateDisplay {
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
   }
-  // Above the instrumentation split on purpose. A menu on the screen is something we can
+  // Above the state-confidence split on purpose. A menu on the screen is something we can
   // SEE, not something a hook has to tell us, and it means the session has stopped dead -
   // so an uninstrumented session parked on a permission prompt belongs in "needs you"
   // rather than in "unconfirmed", where it read as merely unknown while being the most

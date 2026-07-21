@@ -32,9 +32,10 @@ export function finishedTasks(tasks: Task[]): Task[] {
 /**
  * True while the agent is (or is presumed to be) actively driving its own work,
  * so it will answer a parked no-mistakes gate itself rather than waiting on you.
- * A hook-instrumented session is active in `starting`/`working`; an
- * uninstrumented session only ever reports `working` while alive, so we treat it
- * as an active agent too (same "can't prove it's waiting" stance as reportBucket).
+ * This intentionally reads the raw lifecycle state rather than its confidence: a
+ * confirmed hook or transcript reading may report `starting`/`working`, while the
+ * unconfirmed discovery default also presumes `working` rather than claiming a human
+ * must answer a gate.
  */
 export function agentActive(s: Session): boolean {
   return s.state === "starting" || s.state === "working";
@@ -186,7 +187,7 @@ export function reportBucket(s: Session, sessions: Session[] = [s]): ReportBucke
   // input" still wins over a run churning in the background. A gate that needs
   // YOU already returned above, so this only claims the run is self-driving.
   if (runInFlight(s)) return "working";
-  return "idle"; // instrumented-idle, or uninstrumented (open, not confirmed busy)
+  return "idle"; // confirmed idle, or open without confirmed busy evidence
 }
 
 /** A one-line reason a session needs you, or null when it doesn't. */

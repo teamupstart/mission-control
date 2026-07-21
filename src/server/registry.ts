@@ -806,7 +806,8 @@ export class Registry extends EventEmitter {
    * that omits permission_mode reconciles to the new mode rather than the old one.
    * `updatedAt` is deliberately left alone: that stamp is the overlay's freshness
    * clock, and bumping it here would revive an overlay already past OVERLAY_TTL_MS,
-   * re-applying all of its stale fields (instrumented, state, activity) over the card.
+   * re-applying all of its stale fields (instrumented, stateConfirmed, state, activity)
+   * over the card.
    */
   recordObservedPermissionMode(sessionId: string, mode: PermissionMode | null): void {
     if (!mode) return;

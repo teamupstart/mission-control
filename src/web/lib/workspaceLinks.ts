@@ -15,8 +15,14 @@ function linkScheme(value: string): string | null {
   return /^[a-z][a-z\d+.-]*$/i.test(candidate) ? candidate.toLowerCase() : null;
 }
 
-function isExtensionlessSourceLocation(value: string): boolean {
-  return /^[A-Z][^/:?#]*:\d+(?::\d+)?$/.test(value);
+function isRootSourceLocation(value: string): boolean {
+  const match = value.match(/^([^/:?#]+):\d+(?::\d+)?$/);
+  if (!match) return false;
+  const fileName = match[1]!;
+  // A dot is strong file-name evidence regardless of case (`package.json:12`).
+  // For extensionless roots, retain the conventional-capitalization escape hatch
+  // (`Makefile:9`) so arbitrary numeric URI schemes still stay external.
+  return fileName.includes(".") || /^[A-Z]/.test(fileName);
 }
 
 export function markdownLinkUrl(value: string): string {
@@ -72,7 +78,7 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
   const scheme = linkScheme(decoded);
   if (
     decoded.startsWith("//") ||
-    (scheme && (BLOCKED_LINK_SCHEMES.has(scheme) || !isExtensionlessSourceLocation(decoded)))
+    (scheme && (BLOCKED_LINK_SCHEMES.has(scheme) || !isRootSourceLocation(decoded)))
   ) return null;
 
   let filePath = decoded;

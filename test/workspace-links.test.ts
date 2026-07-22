@@ -26,6 +26,12 @@ test("resolves relative links and source locations", () => {
   assert.deepEqual(workspaceFileTarget("README.md:12", CWD), {
     path: "README.md", line: 12, column: null,
   });
+  assert.deepEqual(workspaceFileTarget("package.json:12", CWD), {
+    path: "package.json", line: 12, column: null,
+  });
+  assert.deepEqual(workspaceFileTarget("readme.md:5:2", CWD), {
+    path: "readme.md", line: 5, column: 2,
+  });
   assert.deepEqual(workspaceFileTarget("Makefile:9:2", CWD), {
     path: "Makefile", line: 9, column: 2,
   });

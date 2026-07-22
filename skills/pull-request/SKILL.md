@@ -1,5 +1,5 @@
 ---
-name: Pull Request
+name: pull-request
 description: Use whenever you are preparing, opening, or reporting a pull request for a Mission Control session. Write a specific, reviewable PR description that explains the goal, design decisions and tradeoffs, and concrete proof the work works.
 metadata:
   mission:

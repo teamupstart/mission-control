@@ -94,6 +94,10 @@ function isEnforcement(v: string): v is SkillEnforcement {
   return (SKILL_ENFORCEMENTS as readonly string[]).includes(v);
 }
 
+function isNativeSkillName(v: string): boolean {
+  return v.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(v);
+}
+
 /**
  * True when a value is YAML's "the real text is on the following lines" marker
  * (`>`, `>-`, `|`, `|+`, `|2-` …) rather than a value.
@@ -166,6 +170,11 @@ export function parseSkill(id: string, text: string): ParsedSkill {
   const name = str(fm, "name");
   const description = str(fm, "description");
   if (!name) return fail(`skills/${id}/SKILL.md has no 'name'`);
+  if (!isNativeSkillName(name)) {
+    return fail(
+      `skills/${id}/SKILL.md has an invalid 'name' - use at most 64 lowercase letters, digits, and single hyphens`,
+    );
+  }
   if (!description) return fail(`skills/${id}/SKILL.md has no 'description'`);
 
   const mission = block(block(fm, "metadata"), "mission");

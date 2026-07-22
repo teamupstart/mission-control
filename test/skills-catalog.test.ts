@@ -102,6 +102,21 @@ test("a missing name is an error - it must not default to the prefixed directory
   assert.match(!r.ok ? r.problem : "", /no 'name'/);
 });
 
+test("a name the native skill loaders reject is an error", () => {
+  for (const name of ["Pull Request", "-pull-request", "pull--request", "pull-request-", "a".repeat(65)]) {
+    const r = parseSkill("pull-request", skillMd(
+      `name: ${name}
+description: d
+metadata:
+  mission:
+    category: c
+    enforcement: triggered`,
+    ));
+    assert.equal(r.ok, false, `${name} should be refused`);
+    assert.match(!r.ok ? r.problem : "", /invalid 'name'/);
+  }
+});
+
 test("a missing description is an error - it's what decides if the model ever reaches for it", () => {
   const r = parseSkill("x", skillMd(`name: x\nmetadata:\n  mission:\n    category: c\n    enforcement: triggered`));
   assert.equal(r.ok, false);
@@ -236,10 +251,10 @@ test("the shipped html-plans skill is a real, loadable Claude skill", () => {
   assert.ok(text.split("---")[2]!.trim().length > 200);
 });
 
-test("the shipped Pull Request skill is a real, triggered Mission Control skill", () => {
+test("the shipped pull-request skill is a real, triggered Mission Control skill", () => {
   const skill = readCatalog().skills.find((s) => s.id === "pull-request");
   assert.ok(skill, "pull-request should be in the catalog");
-  assert.equal(skill.name, "Pull Request");
+  assert.equal(skill.name, "pull-request");
   assert.equal(skill.category, "shipping");
   assert.equal(skill.enforcement, "triggered");
   assert.match(skill.description, /opening.*pull request/i);

@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { lstat, open, realpath, rename, stat, unlink } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type {
   SessionFileDocument,
@@ -32,6 +34,29 @@ function languageFor(filePath: string): string {
 
 function isHtml(filePath: string): boolean {
   return /\.html?$/i.test(filePath);
+}
+
+export async function readFileWithinCap(
+  handle: Pick<FileHandle, "read">,
+  cap: number,
+): Promise<{ bytes: Buffer; exceeded: boolean }> {
+  const buffer = Buffer.allocUnsafe(cap + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+    if (bytesRead === 0) break;
+    length += bytesRead;
+  }
+  return { bytes: buffer.subarray(0, length), exceeded: length > cap };
+}
+
+async function readPathWithinCap(filePath: string, cap: number) {
+  const handle = await open(filePath, constants.O_RDONLY);
+  try {
+    return await readFileWithinCap(handle, cap);
+  } finally {
+    await handle.close();
+  }
 }
 
 async function rootAndTarget(cwd: string, relativePath: string): Promise<{ root: string; target: string }> {
@@ -90,23 +115,32 @@ export async function listSessionFiles(cwd: string): Promise<SessionFileEntry[]>
 
 export async function readSessionFile(cwd: string, relativePath: string): Promise<SessionFileDocument> {
   const { target } = await rootAndTarget(cwd, relativePath);
-  const info = await stat(target);
   const html = isHtml(relativePath);
   const cap = html ? MAX_SESSION_PREVIEW_BYTES : MAX_SESSION_EDITOR_BYTES;
-  if (info.size > cap) {
+  const handle = await open(target, constants.O_RDONLY);
+  let info: Stats;
+  let bounded: Awaited<ReturnType<typeof readFileWithinCap>> | undefined;
+  try {
+    info = await handle.stat();
+    if (info.size <= cap) bounded = await readFileWithinCap(handle, cap);
+  } finally {
+    await handle.close();
+  }
+  if (info.size > cap || bounded?.exceeded) {
+    const observedSize = Math.max(info.size, bounded?.bytes.length ?? 0);
     return {
       path: relativePath,
       kind: "oversized",
       editable: false,
       text: null,
-      size: info.size,
+      size: observedSize,
       mtime: info.mtimeMs,
       language: languageFor(relativePath),
       revision: "",
       error: `File exceeds the ${Math.round(cap / 1024 / 1024)} MiB ${html ? "preview" : "editor"} limit`,
     };
   }
-  const bytes = await readFile(target);
+  const bytes = bounded!.bytes;
   const rev = revision(bytes);
   if (bytes.includes(0)) {
     return {
@@ -159,9 +193,12 @@ export async function saveSessionFile(
     }
     throw error;
   }
-  const current = await readFile(resolved.target);
-  const currentRevision = revision(current);
-  const currentText = decodeConflictText(current);
+  const current = await readPathWithinCap(resolved.target, MAX_SESSION_EDITOR_BYTES);
+  if (current.exceeded) {
+    return { ok: false, status: 409, error: "file changed on disk", currentText: null };
+  }
+  const currentRevision = revision(current.bytes);
+  const currentText = decodeConflictText(current.bytes);
   if (currentRevision !== expectedRevision) {
     return { ok: false, status: 409, error: "file changed on disk", currentRevision, currentText };
   }
@@ -179,14 +216,14 @@ export async function saveSessionFile(
     } finally {
       await handle.close();
     }
-    const latest = await readFile(resolved.target).catch(() => null);
-    if (!latest || revision(latest) !== expectedRevision) {
+    const latest = await readPathWithinCap(resolved.target, MAX_SESSION_EDITOR_BYTES).catch(() => null);
+    if (!latest || latest.exceeded || revision(latest.bytes) !== expectedRevision) {
       return {
         ok: false,
         status: 409,
         error: latest ? "file changed while saving" : "file was deleted while saving",
-        currentRevision: latest ? revision(latest) : undefined,
-        currentText: latest ? decodeConflictText(latest) : null,
+        currentRevision: latest && !latest.exceeded ? revision(latest.bytes) : undefined,
+        currentText: latest && !latest.exceeded ? decodeConflictText(latest.bytes) : null,
         deleted: !latest,
       };
     }

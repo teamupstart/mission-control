@@ -1,16 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
   listSessionFiles,
   MAX_SESSION_EDITOR_BYTES,
+  readFileWithinCap,
   readSessionFile,
   saveSessionFile,
   SessionFileError,
 } from "../src/server/session-files.ts";
+import {
+  updateExistingSession,
+  type SessionFilesState,
+} from "../src/web/lib/sessionFiles.ts";
 
 async function fixture(): Promise<string> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "mission-files-"));
@@ -64,6 +69,35 @@ test("rejects binary, invalid UTF-8, oversized, traversal, and symlink escape ta
   await assert.rejects(() => readSessionFile(dir, path.join(dir, "nul.dat")), SessionFileError);
 });
 
+test("bounded reads stop after one byte beyond the cap", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const target = path.join(dir, "growing.txt");
+  await writeFile(target, Buffer.alloc(32, 65));
+  const handle = await open(target, "r");
+  t.after(() => handle.close());
+  const result = await readFileWithinCap(handle, 8);
+  assert.equal(result.exceeded, true);
+  assert.equal(result.bytes.length, 9);
+});
+
+test("async file results cannot recreate a dropped session", () => {
+  const state: SessionFilesState = {
+    files: [], listState: "ready", listError: null, selectedPath: null,
+    mode: "editor", buffers: {},
+  };
+  const sessions = { active: state };
+  let called = false;
+  const retained = updateExistingSession(sessions, "active", (session) => session);
+  const dropped = updateExistingSession({}, "active", () => {
+    called = true;
+    return state;
+  });
+  assert.equal(retained, sessions);
+  assert.deepEqual(dropped, {});
+  assert.equal(called, false);
+});
+
 test("matching revisions save atomically, preserve mode, and leave no temp file", async (t) => {
   const dir = await fixture();
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -90,4 +124,19 @@ test("a stale revision returns disk text without replacing either version", asyn
   assert.equal(result.status, 409);
   assert.equal(result.currentText, "agent edit");
   assert.equal(await readFile(target, "utf8"), "agent edit");
+});
+
+test("saving refuses a disk version that grew beyond the editor cap", async (t) => {
+  const dir = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const target = path.join(dir, "same.txt");
+  await writeFile(target, "one");
+  const opened = await readSessionFile(dir, "same.txt");
+  await writeFile(target, Buffer.alloc(MAX_SESSION_EDITOR_BYTES + 1, 65));
+  const result = await saveSessionFile(dir, "same.txt", "operator edit", opened.revision);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 409);
+  assert.equal(result.currentText, null);
+  assert.equal(result.currentRevision, undefined);
+  assert.equal((await stat(target)).size, MAX_SESSION_EDITOR_BYTES + 1);
 });

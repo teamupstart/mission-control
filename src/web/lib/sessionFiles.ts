@@ -54,6 +54,17 @@ const EMPTY_SESSION: SessionFilesState = {
   mode: "preview", buffers: {},
 };
 
+export function updateExistingSession(
+  all: Record<string, SessionFilesState>,
+  id: string,
+  fn: (session: SessionFilesState) => SessionFilesState,
+): Record<string, SessionFilesState> {
+  const current = all[id];
+  if (!current) return all;
+  const updated = fn(current);
+  return updated === current ? all : { ...all, [id]: updated };
+}
+
 export function useSessionFilesStore(connected: boolean): SessionFilesController {
   const [sessions, setSessions] = useState<Record<string, SessionFilesState>>({});
   const sessionsRef = useRef(sessions);
@@ -71,16 +82,24 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     });
   }, []);
 
+  const updateExisting = useCallback((id: string, fn: (s: SessionFilesState) => SessionFilesState) => {
+    setSessions((all) => {
+      const next = updateExistingSession(all, id, fn);
+      sessionsRef.current = next;
+      return next;
+    });
+  }, []);
+
   const loadFile = useCallback(async (sessionId: string, filePath: string, force = false) => {
     const existing = sessionsRef.current[sessionId]?.buffers[filePath];
     if (existing && !force) return;
     const result = await api.readFile(sessionId, filePath);
     if (!result.ok) {
-      update(sessionId, (s) => ({ ...s, listError: result.error }));
+      updateExisting(sessionId, (s) => ({ ...s, listError: result.error }));
       return;
     }
     const doc = result.file;
-    update(sessionId, (s) => ({
+    updateExisting(sessionId, (s) => ({
       ...(force && s.buffers[filePath]?.saveState !== "saved"
         ? s
         : {
@@ -99,7 +118,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
             },
           }),
     }));
-  }, [update]);
+  }, [updateExisting]);
 
   const ensure = useCallback((sessionId: string) => {
     const current = sessionsRef.current[sessionId];
@@ -107,20 +126,22 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     update(sessionId, (s) => ({ ...s, listState: "loading", listError: null }));
     void api.listFiles(sessionId).then((result) => {
       if (!result.ok) {
-        update(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
+        updateExisting(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
         return;
       }
-      update(sessionId, (s) => ({
+      const retained = sessionsRef.current[sessionId];
+      if (!retained) return;
+      const selected = retained.selectedPath ?? result.files[0]?.path ?? null;
+      updateExisting(sessionId, (s) => ({
         ...s,
         files: result.files,
         listState: "ready",
         listError: null,
-        selectedPath: s.selectedPath ?? result.files[0]?.path ?? null,
+        selectedPath: selected,
       }));
-      const selected = sessionsRef.current[sessionId]?.selectedPath ?? result.files[0]?.path;
       if (selected) void loadFile(sessionId, selected);
     });
-  }, [loadFile, update]);
+  }, [loadFile, update, updateExisting]);
 
   const save = useCallback(async (sessionId: string, filePath: string, forceRevision?: string) => {
     const key = `${sessionId}\0${filePath}`;
@@ -142,11 +163,13 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     }));
     const result = await api.saveFile(sessionId, filePath, sentText, expected);
     inFlight.current.delete(key);
+    const retained = sessionsRef.current[sessionId]?.buffers[filePath];
+    if (!retained) return;
     if (result.ok && result.revision) {
-      let needsAnother = false;
-      update(sessionId, (s) => {
-        const latest = s.buffers[filePath]!;
-        needsAnother = latest.text !== sentText;
+      updateExisting(sessionId, (s) => {
+        const latest = s.buffers[filePath];
+        if (!latest) return s;
+        const needsAnother = latest.text !== sentText;
         return {
           ...s,
           buffers: {
@@ -162,40 +185,52 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
           },
         };
       });
-      if (needsAnother) setTimeout(() => void save(sessionId, filePath), 0);
+      setTimeout(() => {
+        if (sessionsRef.current[sessionId]?.buffers[filePath]?.saveState === "modified") {
+          void save(sessionId, filePath);
+        }
+      }, 0);
       return;
     }
     if (result.status === 409) {
-      update(sessionId, (s) => ({
+      updateExisting(sessionId, (s) => {
+        const latest = s.buffers[filePath];
+        if (!latest) return s;
+        return {
+          ...s,
+          buffers: {
+            ...s.buffers,
+            [filePath]: {
+              ...latest,
+              saveState: "conflict",
+              error: result.error ?? "File changed on disk",
+              conflict: {
+                revision: result.currentRevision,
+                text: result.currentText ?? null,
+                deleted: result.deleted ?? false,
+              },
+            },
+          },
+        };
+      });
+      return;
+    }
+    updateExisting(sessionId, (s) => {
+      const latest = s.buffers[filePath];
+      if (!latest) return s;
+      return {
         ...s,
         buffers: {
           ...s.buffers,
           [filePath]: {
-            ...s.buffers[filePath]!,
-            saveState: "conflict",
-            error: result.error ?? "File changed on disk",
-            conflict: {
-              revision: result.currentRevision,
-              text: result.currentText ?? null,
-              deleted: result.deleted ?? false,
-            },
+            ...latest,
+            saveState: connectedRef.current ? "failed" : "offline",
+            error: result.error ?? "Save failed",
           },
         },
-      }));
-      return;
-    }
-    update(sessionId, (s) => ({
-      ...s,
-      buffers: {
-        ...s.buffers,
-        [filePath]: {
-          ...s.buffers[filePath]!,
-          saveState: connectedRef.current ? "failed" : "offline",
-          error: result.error ?? "Save failed",
-        },
-      },
-    }));
-  }, [update]);
+      };
+    });
+  }, [update, updateExisting]);
 
   const schedule = useCallback((sessionId: string, filePath: string) => {
     const key = `${sessionId}\0${filePath}`;
@@ -234,13 +269,13 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   const refresh = useCallback((sessionId: string) => {
     update(sessionId, (s) => ({ ...s, listState: "loading", listError: null }));
     void api.listFiles(sessionId).then((result) => {
-      if (!result.ok) return update(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
-      update(sessionId, (s) => ({ ...s, files: result.files, listState: "ready", listError: null }));
+      if (!result.ok) return updateExisting(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
+      updateExisting(sessionId, (s) => ({ ...s, files: result.files, listState: "ready", listError: null }));
       const selected = sessionsRef.current[sessionId]?.selectedPath;
       const buffer = selected ? sessionsRef.current[sessionId]?.buffers[selected] : null;
       if (selected && buffer?.saveState === "saved") void loadFile(sessionId, selected, true);
     });
-  }, [loadFile, update]);
+  }, [loadFile, update, updateExisting]);
 
   const setMode = useCallback((sessionId: string, mode: "preview" | "editor") => {
     update(sessionId, (s) => ({ ...s, mode }));

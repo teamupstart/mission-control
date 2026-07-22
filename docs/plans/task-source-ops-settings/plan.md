@@ -9,11 +9,12 @@ per-source setting and safety action.
 
 ## Scope
 
-1. Add an operations summary (configured, healthy, attention) and compact filterable
-   source rows to `TaskSourcesPanel`.
+1. Add an operations summary (configured, healthy, attention, pending) and compact
+   filterable source rows to `TaskSourcesPanel`.
 2. Keep the existing source editor, but show it only for the selected source so the
    directory is not flooded by expanded forms.
-3. Provide filters for all/enabled/attention/paused, text search, and source-type filtering.
+3. Provide filters for all/healthy/attention/pending/paused, text search, and source-type
+   filtering.
 4. Keep Add a source and all existing operations: enable, sweep, preflight, forget seen,
    edit source configuration and remove.
 5. Extend the panel tests to pin the overview health/count behavior and selected-editor

@@ -23,6 +23,8 @@ export type ActionId =
   | "filter"
   | "expand"
   | "diff"
+  | "files"
+  | "filePicker"
   | "send"
   | "focus"
   | "queue"
@@ -81,6 +83,20 @@ export const ACTIONS: readonly ActionDef[] = [
     group: "selection",
   },
   {
+    id: "files",
+    label: "Open files",
+    description: "Open the file editor for the expanded or console session.",
+    defaultBinding: "f",
+    group: "selection",
+  },
+  {
+    id: "filePicker",
+    label: "Find a file",
+    description: "Search the selected session's checkout and open a file.",
+    defaultBinding: "shift+o",
+    group: "selection",
+  },
+  {
     id: "send",
     label: "Send message",
     description: "Compose and send a message to the selected session.",
@@ -91,7 +107,7 @@ export const ACTIONS: readonly ActionDef[] = [
     id: "focus",
     label: "Focus pane",
     description: "Bring the selected session's terminal pane to the front.",
-    defaultBinding: "f",
+    defaultBinding: "p",
     group: "selection",
   },
   {
@@ -111,8 +127,8 @@ export const ACTIONS: readonly ActionDef[] = [
   {
     id: "rename",
     label: "Rename session",
-    description: "Rename the selected session's terminal home (Shift+O).",
-    defaultBinding: "shift+o",
+    description: "Rename the selected session's terminal home (Shift+R).",
+    defaultBinding: "shift+r",
     group: "selection",
   },
   {

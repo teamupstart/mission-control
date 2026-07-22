@@ -47,6 +47,8 @@ export const OVERLAY_IDS = {
   reset: "reset",
   assignReset: "assign-reset",
   digest: "digest",
+  files: "files",
+  filePicker: "file-picker",
 } as const;
 
 export type OverlayId = (typeof OVERLAY_IDS)[keyof typeof OVERLAY_IDS];

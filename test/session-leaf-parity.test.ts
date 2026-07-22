@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import type { SessionFilesController } from "../src/web/lib/sessionFiles.ts";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -410,6 +411,9 @@ test("card and console detail agree on every shared leaf", () => {
         onToggleExpand: () => {},
         onOpenReviews: () => {},
         onOpenDiff: () => {},
+        onOpenFiles: () => {},
+        fileTabRequest: null,
+        files: {} as SessionFilesController,
         onReset: () => {},
         onKilled: () => {},
         resetNonces: {},

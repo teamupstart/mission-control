@@ -1858,6 +1858,38 @@ export interface AssignResetConfirm {
   branch: string | null;
 }
 
+/** One git-discovered path in a live session checkout. */
+export interface SessionFileEntry {
+  path: string;
+}
+
+export type SessionFileKind = "html" | "text" | "binary" | "oversized";
+
+/** A file opened through the daemon's contained, UTF-8-only reader. */
+export interface SessionFileDocument {
+  path: string;
+  kind: SessionFileKind;
+  editable: boolean;
+  text: string | null;
+  size: number;
+  mtime: number;
+  language: string;
+  revision: string;
+  error: string | null;
+}
+
+export interface SessionFileSaveResult {
+  ok: boolean;
+  error?: string;
+  status?: number;
+  revision?: string;
+  mtime?: number;
+  /** Current disk state on a 409; local editor text is never replaced implicitly. */
+  currentRevision?: string;
+  currentText?: string | null;
+  deleted?: boolean;
+}
+
 /**
  * Who a refused assign is ABOUT, so a caller can tell "this agent is unusable" from
  * "this task is gone".

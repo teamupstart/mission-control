@@ -16,12 +16,15 @@ export function ResetModal({
   session,
   onReset,
   onClose,
+  unsavedFiles = 0,
 }: {
   session: Session;
   /** Fired once the reset succeeds (before the modal closes) so the app can retire
    *  the session's client-side state - its parked send / reply drafts. */
   onReset?: () => void;
   onClose: () => void;
+  /** Local editor buffers that are not safely represented on disk yet. */
+  unsavedFiles?: number;
 }): React.JSX.Element {
   const [preview, setPreview] = useState<ResetPreview | null>(null);
   const [busy, setBusy] = useState(false);
@@ -83,7 +86,7 @@ export function ResetModal({
 
         {!preview && !error && <p className="reset-checking">Checking working tree against origin…</p>}
         {preview && !preview.ok && <p className="reset-error">{preview.error}</p>}
-        {preview?.ok && <ResetPreviewBody preview={preview} />}
+        {preview?.ok && <ResetPreviewBody preview={preview} unsavedFiles={unsavedFiles} />}
         {error && <p className="reset-error">{error}</p>}
       </div>
 
@@ -101,12 +104,12 @@ export function ResetModal({
 }
 
 /** The warning body once the preview is in: what's lost, then what will happen. */
-function ResetPreviewBody({ preview }: { preview: ResetPreview }): React.JSX.Element {
+function ResetPreviewBody({ preview, unsavedFiles }: { preview: ResetPreview; unsavedFiles: number }): React.JSX.Element {
   const { dirtyFiles, untrackedFiles, aheadCommits, aheadSubjects, clean, target, branch, canClear } = preview;
   const branchLabel = branch ?? "this branch";
   return (
     <>
-      {clean ? (
+      {clean && unsavedFiles === 0 ? (
         <p className="reset-clean">
           ✓ Working tree is clean and already at <code>{target}</code>. Nothing will be lost.
         </p>
@@ -116,6 +119,11 @@ function ResetPreviewBody({ preview }: { preview: ResetPreview }): React.JSX.Ele
             This permanently discards - it <strong>cannot be undone</strong>:
           </p>
           <ul className="reset-loss">
+            {unsavedFiles > 0 && (
+              <li>
+                <strong>{unsavedFiles}</strong> unsaved Mission Control editor buffer{unsavedFiles === 1 ? "" : "s"}
+              </li>
+            )}
             {aheadCommits > 0 && (
               <li>
                 <strong>{aheadCommits}</strong> local commit{aheadCommits === 1 ? "" : "s"} on{" "}

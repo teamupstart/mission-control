@@ -11,6 +11,9 @@ import type {
   PermissionMode,
   ResetPreview,
   SessionDiff,
+  SessionFileDocument,
+  SessionFileEntry,
+  SessionFileSaveResult,
   SessionQueue,
   SkillsView,
   TaskPriority,
@@ -248,7 +251,8 @@ async function request<T extends ActionResult = ActionResult>(
 
 const post = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
   request<T>("POST", path, body);
-const put = (path: string, body?: unknown) => request("PUT", path, body);
+const put = <T extends ActionResult = ActionResult>(path: string, body?: unknown) =>
+  request<T>("PUT", path, body);
 const patch = (path: string, body?: unknown) => request("PATCH", path, body);
 const del = (path: string) => request("DELETE", path);
 
@@ -269,6 +273,35 @@ export async function fetchQueue(
     return { ok: true, queue: (await res.json()) as SessionQueue | null };
   } catch {
     return { ok: false };
+  }
+}
+
+export async function fetchSessionFiles(
+  id: string,
+): Promise<{ ok: true; files: SessionFileEntry[] } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/files`);
+    const data = (await res.json().catch(() => ({}))) as { files?: SessionFileEntry[]; error?: string };
+    if (!res.ok || !data.files) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, files: data.files };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function fetchSessionFile(
+  id: string,
+  path: string,
+): Promise<{ ok: true; file: SessionFileDocument } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(
+      `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+    );
+    const data = (await res.json().catch(() => ({}))) as SessionFileDocument & { error?: string };
+    if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };
+    return { ok: true, file: data };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -311,6 +344,14 @@ export interface DispatchInput {
 }
 
 export const api = {
+  listFiles: fetchSessionFiles,
+  readFile: fetchSessionFile,
+  saveFile: (id: string, path: string, text: string, expectedRevision: string) =>
+    put<SessionFileSaveResult>(`/api/sessions/${encodeURIComponent(id)}/file`, {
+      path,
+      text,
+      expectedRevision,
+    }),
   sendText: (id: string, text: string, submit = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/send`, { text, submit }),
   focus: (id: string) => post(`/api/sessions/${encodeURIComponent(id)}/focus`),

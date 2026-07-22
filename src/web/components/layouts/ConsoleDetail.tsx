@@ -28,8 +28,9 @@ import {
 import { canRenameSession } from "../../lib/format.ts";
 import { api } from "../../lib/api.ts";
 import type { SessionViewProps } from "./types.ts";
+import { FileWorkspace } from "../FileWorkspace.tsx";
 
-type Tab = "conversation" | "queue" | "gate" | "diff";
+type Tab = "conversation" | "queue" | "gate" | "diff" | "files";
 
 /**
  * This session's Foreman episodes, refetched whenever its note moves.
@@ -94,6 +95,13 @@ export function ConsoleDetail({
   // not mounted yet, so the focus has to wait for the conversation to come back.
   const focusPending = useRef(false);
 
+  // App owns shortcut routing across layouts. A request aimed at this mounted detail
+  // reveals the same Files tab its tab button does; the nonce makes repeated presses
+  // observable even when the session id has not changed.
+  useEffect(() => {
+    if (view.fileTabRequest?.sessionId === session.id) setTab("files");
+  }, [view.fileTabRequest, session.id]);
+
   /**
    * The console's one compose box lives in the conversation tab, so "I want to type
    * now" means going there - not opening a second, lesser send box in the footer, which
@@ -129,6 +137,7 @@ export function ConsoleDetail({
         { id: "queue" as const, label: "Work queue", pip: queueCount },
         { id: "gate" as const, label: "Gate", pip: gateNeedsYou ? 1 : 0 },
         { id: "diff" as const, label: "Diff", pip: 0 },
+        { id: "files" as const, label: "Files", pip: 0 },
       ],
     [queueCount, gateNeedsYou],
   );
@@ -329,6 +338,19 @@ export function ConsoleDetail({
               </div>
             ) : (
               <p className="detail-empty">No working directory to diff.</p>
+            )}
+          </div>
+        )}
+        {tab === "files" && (
+          <div className="detail-files">
+            {session.cwd ? (
+              <FileWorkspace
+                session={session}
+                controller={view.files}
+                onExtract={() => view.onOpenFiles(session.id)}
+              />
+            ) : (
+              <p className="detail-empty">No working directory to browse.</p>
             )}
           </div>
         )}

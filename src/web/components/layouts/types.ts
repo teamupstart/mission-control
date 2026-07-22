@@ -1,5 +1,6 @@
 import type { BacklogPlan, Session, Task } from "@shared/types.ts";
 import type { ActionBarHandle } from "../ActionBar.tsx";
+import type { SessionFilesController } from "../../lib/sessionFiles.ts";
 
 /**
  * What every layout gets from App, which stays the single owner of session state.
@@ -50,6 +51,10 @@ export interface SessionViewProps {
   onToggleExpand: (id: string) => void;
   onOpenReviews: (id: string) => void;
   onOpenDiff: (id: string, commit?: string) => void;
+  onOpenFiles: (id: string) => void;
+  /** One-shot request from a shortcut/picker to reveal a session's integrated Files tab. */
+  fileTabRequest: { sessionId: string; nonce: number } | null;
+  files: SessionFilesController;
   onReset: (id: string) => void;
   /**
    * A kill landed on this session. The detail it was ordered from is now a dead
@@ -88,6 +93,7 @@ export function cardProps(p: SessionViewProps, s: Session) {
     onToggleExpand: () => p.onToggleExpand(s.id),
     onOpenReviews: () => p.onOpenReviews(s.id),
     onOpenDiff: (commit?: string) => p.onOpenDiff(s.id, commit),
+    onOpenFiles: () => p.onOpenFiles(s.id),
     onReset: () => p.onReset(s.id),
     onKilled: () => p.onKilled(s.id),
     resetNonce: p.resetNonces[s.id] ?? 0,

@@ -39,6 +39,7 @@ export function ActionBar({
   onKilled,
   variant = "card",
   onDiff,
+  onFiles,
 }: {
   session: Session;
   /**
@@ -50,6 +51,8 @@ export function ActionBar({
   variant?: "card" | "foot";
   /** Open the diff viewer. Only drawn by the "foot" variant. */
   onDiff?: () => void;
+  /** Open the checkout's extracted file workspace. */
+  onFiles?: () => void;
   /**
    * Whether the card is currently carrying the transcript's reply box - the live
    * answer to "is there already a compose box here?", reported by the panel itself
@@ -278,6 +281,11 @@ export function ActionBar({
           <button className="btn" onClick={focusPane}>
             Focus
           </button>
+          {session.cwd && onFiles && (
+            <button className="btn" onClick={onFiles} title="Browse and edit checkout files">
+              Files
+            </button>
+          )}
           {onToggleQueue && (
             <button
               className={`btn btn-queue${queueOpen ? " on" : ""}`}

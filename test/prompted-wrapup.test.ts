@@ -251,10 +251,25 @@ test("THE LOOP GUARD holds for wrap-up text we no longer send", () => {
   // that session's goal stops being Foreman's own voice: the trigger re-arms and opens
   // a second PR for work it already shipped. `RETIRED_WRAPUP_PAYLOADS` is append-only
   // for this reason, and this is the test that notices when someone deletes from it.
-  const retired = "Please commit this work, push the branch, and open a PR.";
-  assert.notEqual(retired, WRAPUP_PR, "reword the fixture only by ADDING to the retired list");
-  assert.ok(isWrapupPayload(retired));
-  assert.equal(decide({ goalPrompt: retired }).kind, "skip");
+  const retired = [
+    "Please commit this work, push the branch, and open a PR.",
+    "Please commit this work, push the branch, and open a PR. Then merge the default branch into" +
+      " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
+      " and push again until every check passes and the PR has no merge conflicts.",
+  ];
+  for (const payload of retired) {
+    assert.notEqual(payload, WRAPUP_PR, "reword a fixture only by ADDING to the retired list");
+    assert.ok(isWrapupPayload(payload));
+    assert.equal(decide({ goalPrompt: payload }).kind, "skip");
+  }
+});
+
+test("the direct-PR payload explicitly bypasses the globally triggered no-mistakes skill", () => {
+  // A generic commit/push/PR instruction matches the global no-mistakes skill's shipping
+  // trigger. This negative instruction is what makes the two Foreman radio choices real
+  // policy rather than two spellings that both start the same pipeline.
+  assert.match(WRAPUP_PR, /Do not run \/no-mistakes or any no-mistakes command/);
+  assert.match(WRAPUP_PR, /Use git and gh directly/);
 });
 
 test("both payloads are ONE line - a newline is a premature submit", () => {

@@ -172,7 +172,12 @@ test("a newer passive revision publishes a native return to the prior effort", (
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyRuntimeMeta(
     "s1",
-    { ...transcriptRead, thinkingLevel: "high", effortRevision: "turn-2" },
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "turn-2",
+    },
     "transcript",
   );
   assert.equal(metaOf(r)?.thinkingLevel, "high");
@@ -190,15 +195,47 @@ test("only a timestamped post-change statusLine overrides an observed effort", (
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  const acceptedAt = metaOf(r)!.updatedAt;
   r.recordObservedSessionEffort("s1", "xhigh");
 
+  t.mock.timers.tick(100);
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_500 }));
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.updatedAt, acceptedAt);
+  t.mock.timers.tick(100);
   r.applyStatusLine(statusIngest({ effort: "high", ts: undefined }));
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.updatedAt, acceptedAt);
 
-  r.applyStatusLine(statusIngest({ effort: "high", ts: 2_001 }));
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, thinkingLevel: "high", effortRevision: "turn-2" },
+    "transcript",
+  );
   assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("out-of-order statusLine metadata cannot regress a confirmed effort", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  r.recordObservedSessionEffort("s1", "xhigh");
+
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  const confirmedAt = metaOf(r)!.updatedAt;
+
+  t.mock.timers.tick(100);
+  r.applyStatusLine(
+    statusIngest({
+      effort: "high",
+      model: { id: "claude-sonnet-4-6", displayName: "Sonnet" },
+      ts: 1_500,
+    }),
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.model, "Opus 4.8");
+  assert.equal(metaOf(r)?.updatedAt, confirmedAt);
 });
 
 test("an agent-session rebind clears effort state before new metadata arrives", () => {

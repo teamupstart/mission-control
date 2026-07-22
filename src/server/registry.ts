@@ -1307,12 +1307,11 @@ export class Registry extends EventEmitter {
     const statusLineTimestamp = ingest.ts ?? null;
     if (statusLineTimestamp !== null) {
       const previousTimestamp = this.statusLineTimestamps.get(s.id);
-      if (previousTimestamp === undefined || statusLineTimestamp > previousTimestamp) {
-        this.statusLineTimestamps.set(s.id, statusLineTimestamp);
-      }
+      if (previousTimestamp !== undefined && statusLineTimestamp <= previousTimestamp) return;
+      this.statusLineTimestamps.set(s.id, statusLineTimestamp);
     }
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
-    const meta = this.reconcileObservedEffort(
+    const reconciled = this.reconcileObservedEffort(
       s.id,
       metaFromStatusLine(ingest, Date.now()),
       agentSessionId,
@@ -1321,6 +1320,9 @@ export class Registry extends EventEmitter {
       null,
       statusLineTimestamp,
     );
+    const meta = reconciled.rejectedStatusLineEffort && s.meta
+      ? { ...reconciled.meta, source: s.meta.source, updatedAt: s.meta.updatedAt }
+      : reconciled.meta;
     const next: Session = { ...s, meta, agentSessionId };
     this.clearEffortTrackingOnRebind(s, next);
     // A statusLine can be the first thing to bind an agent session id (it carries one and
@@ -1533,13 +1535,13 @@ export class Registry extends EventEmitter {
       this.runtimeEffortRevisions.set(sessionId, read.effortRevision);
     }
     const now = Date.now();
-    if (
+    const statusLineHasPrecedence =
       s.meta?.source === "statusline" &&
       source !== "statusline" &&
-      now - s.meta.updatedAt < STATUSLINE_TTL_MS
-    )
-      return;
-    const meta = this.reconcileObservedEffort(
+      now - s.meta.updatedAt < STATUSLINE_TTL_MS;
+    const hasObservedEffort = this.observedEfforts.has(sessionId);
+    if (statusLineHasPrecedence && !hasObservedEffort) return;
+    const reconciled = this.reconcileObservedEffort(
       sessionId,
       metaFromRead(read, source, now),
       s.agentSessionId,
@@ -1548,6 +1550,9 @@ export class Registry extends EventEmitter {
       read.effortRevision,
       null,
     );
+    const meta = statusLineHasPrecedence && s.meta
+      ? { ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }
+      : reconciled.meta;
     const changed = !metaDisplayEqual(s.meta, meta);
     const next: Session = { ...s, meta };
     this.sessions.set(sessionId, next);
@@ -1652,6 +1657,7 @@ export class Registry extends EventEmitter {
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);
+    this.statusLineTimestamps.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
@@ -1670,22 +1676,27 @@ export class Registry extends EventEmitter {
     source: MetaSource,
     effortRevision: string | null,
     statusLineTimestamp: number | null,
-  ): SessionMeta {
+  ): { meta: SessionMeta; rejectedStatusLineEffort: boolean } {
     const observed = this.observedEfforts.get(sessionId);
-    if (!observed) return meta;
+    if (!observed) return { meta, rejectedStatusLineEffort: false };
     const identityChanged =
       (observed.agentSessionId !== null && agentSessionId !== null && agentSessionId !== observed.agentSessionId) ||
       (observed.transcriptPath !== null && transcriptPath !== null && transcriptPath !== observed.transcriptPath);
     if (identityChanged) {
       this.observedEfforts.delete(sessionId);
-      return meta;
+      return { meta, rejectedStatusLineEffort: false };
     }
     const freshStatusLine =
       source !== "statusline" ||
       (statusLineTimestamp !== null &&
         statusLineTimestamp > observed.verifiedAt &&
         (observed.statusLineTimestamp === null || statusLineTimestamp > observed.statusLineTimestamp));
-    if (!freshStatusLine) return { ...meta, thinkingLevel: observed.effort };
+    if (!freshStatusLine) {
+      return {
+        meta: { ...meta, thinkingLevel: observed.effort },
+        rejectedStatusLineEffort: source === "statusline",
+      };
+    }
     if (
       meta.modelId !== observed.modelId ||
       meta.thinkingLevel === observed.effort ||
@@ -1697,11 +1708,14 @@ export class Registry extends EventEmitter {
             effortRevision !== observed.effortRevision)))
     ) {
       this.observedEfforts.delete(sessionId);
-      return meta;
+      return { meta, rejectedStatusLineEffort: false };
     }
     observed.agentSessionId ??= agentSessionId;
     observed.transcriptPath ??= transcriptPath;
-    return { ...meta, thinkingLevel: observed.effort };
+    return {
+      meta: { ...meta, thinkingLevel: observed.effort },
+      rejectedStatusLineEffort: false,
+    };
   }
 
   private clearEffortTrackingOnRebind(previous: Session, next: Session): boolean {
@@ -1719,7 +1733,6 @@ export class Registry extends EventEmitter {
   private clearSessionEffortTracking(sessionId: string): void {
     this.observedEfforts.delete(sessionId);
     this.runtimeEffortRevisions.delete(sessionId);
-    this.statusLineTimestamps.delete(sessionId);
   }
 
   // ---- reviews (used by phase 3) ----

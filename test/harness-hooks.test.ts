@@ -290,6 +290,65 @@ test("a hookless session still takes the passive path", () => {
   assert.equal(registry.getSession("cx-4")?.instrumented, false, "passive proof does not impersonate hooks");
 });
 
+test("passive state does not cross a reused pane into a new process", () => {
+  const registry = new Registry();
+  const old = mkDiscovered({
+    syntheticId: "cx-old",
+    agent: "codex",
+    agentSessionId: "rollout-old",
+    transcriptPath: "/rollouts/old.jsonl",
+  } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([old]);
+  registry.applyPassiveActivity(registry.getSession(old.syntheticId) as Session, {
+    state: "idle",
+    lastActivity: Date.now(),
+  });
+  registry.applyDiscovery([old]);
+  assert.equal(registry.getSession(old.syntheticId)?.stateConfirmed, true, "the original occupant owns the read");
+
+  const replacement = mkDiscovered({
+    syntheticId: "cx-new",
+    agent: "codex",
+    pid: 2,
+    startedAt: 2,
+    agentSessionId: "rollout-new",
+    transcriptPath: "/rollouts/new.jsonl",
+  } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([replacement]);
+
+  const live = registry.getSession(replacement.syntheticId);
+  assert.equal(live?.state, "working", "process discovery's unconfirmed default survives");
+  assert.equal(live?.stateConfirmed, false, "the prior pane occupant cannot confirm this card");
+});
+
+test("passive state does not cross a transcript change on the same process", () => {
+  const registry = new Registry();
+  const before = mkDiscovered({
+    syntheticId: "cx-clear",
+    agent: "codex",
+    agentSessionId: "rollout-before",
+    transcriptPath: "/rollouts/before.jsonl",
+  } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([before]);
+  registry.applyPassiveActivity(registry.getSession(before.syntheticId) as Session, {
+    state: "idle",
+    lastActivity: Date.now(),
+  });
+
+  // The process, pane and learned conversation id are unchanged, but discovery has
+  // observed a different exact source. Isolating the path proves it is part of the
+  // attribution check rather than merely metadata carried beside the synthetic id.
+  const after = mkDiscovered({
+    ...before,
+    transcriptPath: "/rollouts/after.jsonl",
+  } as Partial<DiscoveredSession>);
+  registry.applyDiscovery([after]);
+
+  const live = registry.getSession(after.syntheticId);
+  assert.equal(live?.state, "working");
+  assert.equal(live?.stateConfirmed, false, "the previous rollout cannot confirm the cleared conversation");
+});
+
 // ---- attribution: what a hook may be refused FOR --------------------------------
 
 test("a hook whose session id contradicts the OPEN ROLLOUT is refused", () => {

@@ -170,18 +170,33 @@ export interface EffortSpec {
   levelsFor(modelId: string | null): readonly ThinkingLevel[];
   /** Exact argv fragment that applies one level to a newly launched session. */
   launchArgs(level: ThinkingLevel): readonly string[];
-  /** The harness's own session-scoped model picker, or null when it has none. */
-  sessionPicker: {
-    command: string;
-    /** Whether the command can be typed without appending to a draft or acting on a dialog. */
-    composerReady(paneText: string): boolean;
-    /** A conservative confirmation that the native picker has rendered. */
-    visible: RegExp;
-    /** Read the effort on the model row that an arrow or commit would affect. */
-    selected(paneText: string, model: string): ThinkingLevel | null;
-    /** The key that commits the changed selection to this conversation only. */
-    commit: string;
-  } | null;
+  /** The harness's own session-scoped effort control, or null when it has none. */
+  sessionPicker:
+    | {
+        kind: "horizontal";
+        command: string;
+        composerReady(paneText: string): boolean;
+        visible: RegExp;
+        selected(paneText: string, model: string): ThinkingLevel | null;
+        commit: string;
+      }
+    | {
+        kind: "shortcuts";
+        composerReady(paneText: string): boolean;
+        selected(paneText: string, modelId: string): ThinkingLevel | "ultra" | null;
+        lower: "shift-down";
+        raise: "shift-up";
+        advanced: {
+          command: string;
+          modelVisible: RegExp;
+          selectedModel(paneText: string): string | null;
+          reasoningVisible: RegExp;
+          selectedReasoning(paneText: string): ThinkingLevel | "more" | null;
+          advancedVisible: RegExp;
+          selectedAdvanced(paneText: string): "max" | "ultra" | null;
+        } | null;
+      }
+    | null;
 }
 
 const CLAUDE_PICKER_VISIBLE = /◉\s+(?:xhigh|medium|high|max|low)\s+effort[\s\S]*use this session only/i;
@@ -199,6 +214,44 @@ function claudePickerSelection(paneText: string, model: string): ThinkingLevel |
   if (!CLAUDE_PICKER_VISIBLE.test(paneText)) return null;
   const match = /^\s*◉\s+(xhigh|medium|high|max|low)\s+effort\b/im.exec(paneText);
   return match ? (match[1]!.toLowerCase() as ThinkingLevel) : null;
+}
+
+const CODEX_MODEL_PICKER_VISIBLE = /Select Model and Effort[\s\S]*Press enter to confirm/i;
+const CODEX_REASONING_PICKER_VISIBLE = /Select Reasoning Level for\s+\S+[\s\S]*Press enter to confirm/i;
+const CODEX_ADVANCED_PICKER_VISIBLE = /Advanced Reasoning[\s\S]*Consumes usage limits faster/i;
+
+function codexComposerReady(paneText: string): boolean {
+  const prompt = paneText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("›"))
+    .at(-1);
+  return prompt === "›" || prompt === "› Ask Codex to do anything" || prompt === "› Use /skills to list available skills";
+}
+
+function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel | "ultra" | null {
+  const escaped = modelId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^\\s*${escaped}\\s+(low|medium|high|xhigh|max|ultra)(?:\\s|·)`, "im").exec(paneText);
+  return match ? (match[1]!.toLowerCase() as ThinkingLevel | "ultra") : null;
+}
+
+function codexSelectedModel(paneText: string): string | null {
+  if (!CODEX_MODEL_PICKER_VISIBLE.test(paneText)) return null;
+  return /^\s*›\s*\d+\.\s+(\S+)/im.exec(paneText)?.[1]?.toLowerCase() ?? null;
+}
+
+function codexSelectedReasoning(paneText: string): ThinkingLevel | "more" | null {
+  if (!CODEX_REASONING_PICKER_VISIBLE.test(paneText)) return null;
+  const label = /^\s*›\s*\d+\.\s+(Low|Medium|High|Extra high|More reasoning…)/im.exec(paneText)?.[1]?.toLowerCase();
+  if (label === "extra high") return "xhigh";
+  if (label === "more reasoning…") return "more";
+  return label ? (label as ThinkingLevel) : null;
+}
+
+function codexSelectedAdvanced(paneText: string): "max" | "ultra" | null {
+  if (!CODEX_ADVANCED_PICKER_VISIBLE.test(paneText)) return null;
+  const label = /^\s*›\s*\d+\.\s+(Max|Ultra)\b/im.exec(paneText)?.[1];
+  return label ? (label.toLowerCase() as "max" | "ultra") : null;
 }
 
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
@@ -255,6 +308,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--effort", level],
       sessionPicker: {
+        kind: "horizontal",
         command: "/model",
         composerReady: claudeComposerReady,
         visible: CLAUDE_PICKER_VISIBLE,
@@ -297,13 +351,31 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
     mcp: { cli: "codex", scope: null, envFlag: "--env", serverName: "mission-control" },
     effort: {
       levels: CODEX_EFFORT_LEVELS,
-      // GPT-5.6 supports max; the older GPT-5.5 catalog entry predates it. Keep
-      // this model-aware rather than making the live picker promise max everywhere.
-      levelsFor: (modelId) => (modelId?.toLowerCase().startsWith("gpt-5.6") ? THINKING_LEVELS : CODEX_EFFORT_LEVELS),
+      levelsFor: (modelId) => {
+        const id = modelId?.toLowerCase() ?? "";
+        return id.startsWith("gpt-5.6-sol") || id.startsWith("gpt-5.6-terra")
+          ? THINKING_LEVELS
+          : CODEX_EFFORT_LEVELS;
+      },
       // `-c` parses its value as TOML, falling back to a raw string. The level is a
       // closed enum, so it is both valid here and safe on tmux's shell command line.
       launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
-      sessionPicker: null,
+      sessionPicker: {
+        kind: "shortcuts",
+        composerReady: codexComposerReady,
+        selected: codexStatusSelection,
+        lower: "shift-down",
+        raise: "shift-up",
+        advanced: {
+          command: "/model",
+          modelVisible: CODEX_MODEL_PICKER_VISIBLE,
+          selectedModel: codexSelectedModel,
+          reasoningVisible: CODEX_REASONING_PICKER_VISIBLE,
+          selectedReasoning: codexSelectedReasoning,
+          advancedVisible: CODEX_ADVANCED_PICKER_VISIBLE,
+          selectedAdvanced: codexSelectedAdvanced,
+        },
+      },
     },
   },
 };

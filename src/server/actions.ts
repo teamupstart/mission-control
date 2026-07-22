@@ -20,7 +20,7 @@ import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
-import { supportsSessionEffort } from "@shared/harness-capabilities.ts";
+import { supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
   bindSession,
@@ -319,6 +319,7 @@ export async function setSessionEffort(
   const picker = spec.sessionPicker;
   if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control" };
   if (!model) return { ok: false, error: "the selected model is not known yet" };
+  if (!modelId) return { ok: false, error: "the selected model id is not known yet" };
   if (!current) return { ok: false, error: "the selected model's current effort is not known yet" };
   if (!supportsSessionEffort(session.agent, modelId, target)) {
     return { ok: false, error: `${target} effort is not supported by the selected model` };
@@ -335,56 +336,229 @@ export async function setSessionEffort(
     const before = await deps.capture(session);
     if (
       !before ||
-      picker.visible.test(before) ||
       readPaneDialog(session, before) ||
-      !modeLine ||
-      !parsePaneModeLine(before, modeLine) ||
-      !picker.composerReady(before)
+      !picker.composerReady(before) ||
+      (picker.kind === "horizontal" &&
+        (picker.visible.test(before) || !modeLine || !parsePaneModeLine(before, modeLine)))
     ) {
       return { ok: false, error: "the agent's empty composer is not ready; no setting was changed" };
     }
 
-    const opened = await writeText(pane, picker.command);
-    if (!opened.ok) return opened;
-    const pending = await deps.capture(session);
-    if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) {
-      return { ok: false, error: "the model command could not be verified in the composer; no setting was changed" };
-    }
-    const submitted = await sendKeys(pane, ["enter"]);
-    if (!submitted.ok) return submitted;
-    const screen = await awaitEffortPicker(session, picker.visible, deps);
-    if (!screen) {
-      return { ok: false, error: "the agent's effort picker did not open; no setting was changed" };
-    }
-    let selected = picker.selected(screen, model);
-    const seen = new Set<ThinkingLevel>();
-    for (let i = 0; selected !== target; i++) {
-      const selectedIndex = selected ? spec.levelsFor(modelId).indexOf(selected) : -1;
-      if (!selected || selectedIndex < 0 || seen.has(selected) || i >= spec.levelsFor(modelId).length) {
-        return { ok: false, error: "the picker selection could not be verified; no setting was changed" };
+    if (picker.kind === "shortcuts") {
+      if (picker.selected(before, modelId) !== current) {
+        return { ok: false, error: "the agent's visible effort does not match session metadata; no setting was changed" };
       }
-      seen.add(selected);
-      const direction: Key = to > selectedIndex ? "right" : "left";
-      const moved = await sendKeys(pane, [direction]);
-      if (!moved.ok) return moved;
-      const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
-      if (!next) return { ok: false, error: "the agent ignored the effort arrow; no setting was changed" };
-      selected = next.level;
+      return driveShortcutEffort(session, pane, picker, spec, modelId, current, target, deps);
     }
-    const final = await deps.capture(session);
-    if (!final || !picker.visible.test(final) || picker.selected(final, model) !== target) {
-      return { ok: false, error: "the effort selection changed before it could be confirmed" };
-    }
-    const committed = await writeText(pane, picker.commit);
-    if (!committed.ok) return committed;
-    const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
-    return closed
-      ? { ok: true }
-      : { ok: false, error: "the agent did not confirm the session-only effort change" };
+
+    return driveHorizontalEffort(session, pane, picker, spec, modelId, model, current, target, deps);
   });
 }
 
+type HorizontalEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "horizontal" }>;
+type ShortcutEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "shortcuts" }>;
+
+async function driveHorizontalEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: HorizontalEffortPicker,
+  spec: EffortSpec,
+  modelId: string,
+  model: string,
+  current: ThinkingLevel,
+  target: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<ActionResult> {
+  const levels = spec.levelsFor(modelId);
+  const to = levels.indexOf(target);
+
+  const opened = await writeText(pane, picker.command);
+  if (!opened.ok) return opened;
+  const pending = await deps.capture(session);
+  if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) {
+    return { ok: false, error: "the model command could not be verified in the composer; no setting was changed" };
+  }
+  const submitted = await sendKeys(pane, ["enter"]);
+  if (!submitted.ok) return submitted;
+  const screen = await awaitEffortPicker(session, picker.visible, deps);
+  if (!screen) {
+    return { ok: false, error: "the agent's effort picker did not open; no setting was changed" };
+  }
+  let selected = picker.selected(screen, model);
+  const seen = new Set<ThinkingLevel>();
+  for (let i = 0; selected !== target; i++) {
+    const selectedIndex = selected ? levels.indexOf(selected) : -1;
+    if (!selected || selectedIndex < 0 || seen.has(selected) || i >= levels.length) {
+      return { ok: false, error: "the picker selection could not be verified; no setting was changed" };
+    }
+    seen.add(selected);
+    const direction: Key = to > selectedIndex ? "right" : "left";
+    const moved = await sendKeys(pane, [direction]);
+    if (!moved.ok) return moved;
+    const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
+    if (!next) return { ok: false, error: "the agent ignored the effort arrow; no setting was changed" };
+    selected = next.level;
+  }
+  const final = await deps.capture(session);
+  if (!final || !picker.visible.test(final) || picker.selected(final, model) !== target) {
+    return { ok: false, error: "the effort selection changed before it could be confirmed" };
+  }
+  const committed = await writeText(pane, picker.commit);
+  if (!committed.ok) return committed;
+  const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
+  return closed
+    ? { ok: true }
+    : { ok: false, error: "the agent did not confirm the session-only effort change" };
+}
+
+async function driveShortcutEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: ShortcutEffortPicker,
+  spec: EffortSpec,
+  modelId: string,
+  current: ThinkingLevel,
+  target: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<ActionResult> {
+  const levels = spec.levelsFor(modelId);
+  while (current !== target) {
+    const from = levels.indexOf(current);
+    const to = levels.indexOf(target);
+    if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed" };
+    const key: Key = to > from ? picker.raise : picker.lower;
+    const expected = levels[from + (to > from ? 1 : -1)];
+    if (!expected) return { ok: false, error: "the selected model's effort options changed" };
+    const moved = await sendKeys(pane, [key]);
+    if (!moved.ok) return moved;
+    const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
+    if (observed !== expected) {
+      if (target === "max" && expected === "max" && current === "xhigh") {
+        const advanced = await driveAdvancedMax(session, pane, picker, modelId, current, deps);
+        if (!advanced.ok) return advanced;
+        current = "max";
+        continue;
+      }
+      return { ok: false, error: "the agent ignored the session-only effort shortcut" };
+    }
+    current = observed;
+  }
+  return { ok: true };
+}
+
+async function driveAdvancedMax(
+  session: Session,
+  pane: BoundPane,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  current: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<ActionResult> {
+  const advanced = picker.advanced;
+  if (!advanced) return { ok: false, error: "max effort is not session-selectable for this model" };
+
+  const opened = await writeText(pane, advanced.command);
+  if (!opened.ok) return opened;
+  const pending = await deps.capture(session);
+  if (!hasPendingCommand(pending, advanced.command) || readPaneDialog(session, pending)) {
+    return { ok: false, error: "the model command could not be verified in the composer; no setting was changed" };
+  }
+  const submitted = await sendKeys(pane, ["enter"]);
+  if (!submitted.ok) return submitted;
+  const models = await awaitEffortPicker(session, advanced.modelVisible, deps);
+  if (!models || advanced.selectedModel(models) !== modelId.toLowerCase()) {
+    return { ok: false, error: "the active model was not selected in Codex's picker" };
+  }
+  const modelAccepted = await sendKeys(pane, ["enter"]);
+  if (!modelAccepted.ok) return modelAccepted;
+  const reasoning = await awaitEffortPicker(session, advanced.reasoningVisible, deps);
+  if (!reasoning) return { ok: false, error: "Codex's reasoning picker did not open" };
+
+  let selected = advanced.selectedReasoning(reasoning);
+  const seen = new Set<ThinkingLevel | "more">();
+  while (selected !== "more") {
+    if (!selected || seen.has(selected) || seen.size >= 8) {
+      return { ok: false, error: "Codex's advanced reasoning row could not be verified" };
+    }
+    seen.add(selected);
+    const moved = await sendKeys(pane, ["down"]);
+    if (!moved.ok) return moved;
+    selected = await awaitMenuSelection(
+      session,
+      advanced.reasoningVisible,
+      advanced.selectedReasoning,
+      selected,
+      deps,
+    );
+  }
+  const moreAccepted = await sendKeys(pane, ["enter"]);
+  if (!moreAccepted.ok) return moreAccepted;
+  const advancedScreen = await awaitEffortPicker(session, advanced.advancedVisible, deps);
+  if (!advancedScreen) return { ok: false, error: "Codex's advanced reasoning picker did not open" };
+
+  let advancedSelected = advanced.selectedAdvanced(advancedScreen);
+  if (advancedSelected !== "ultra") {
+    if (advancedSelected !== "max") {
+      return { ok: false, error: "Codex's Ultra row could not be verified" };
+    }
+    const moved = await sendKeys(pane, ["down"]);
+    if (!moved.ok) return moved;
+    advancedSelected = await awaitMenuSelection(
+      session,
+      advanced.advancedVisible,
+      advanced.selectedAdvanced,
+      advancedSelected,
+      deps,
+    );
+  }
+  if (advancedSelected !== "ultra") return { ok: false, error: "Codex's Ultra row could not be verified" };
+  const ultraAccepted = await sendKeys(pane, ["enter"]);
+  if (!ultraAccepted.ok) return ultraAccepted;
+  const ultra = await awaitShortcutEffort(session, picker, modelId, current, deps);
+  if (ultra !== "ultra") return { ok: false, error: "Codex did not apply Ultra to this session" };
+  const lowered = await sendKeys(pane, [picker.lower]);
+  if (!lowered.ok) return lowered;
+  const max = await awaitShortcutEffort(session, picker, modelId, "ultra", deps);
+  return max === "max"
+    ? { ok: true }
+    : { ok: false, error: "Codex did not lower Ultra to session-only Max" };
+}
+
 const EFFORT_PICKER_POLL_MS = 50;
+
+async function awaitShortcutEffort(
+  session: Session,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  previous: ThinkingLevel | "ultra" | null,
+  deps: PaneDeps,
+): Promise<ThinkingLevel | "ultra" | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    const selected = screen ? picker.selected(screen, modelId) : null;
+    if (selected && selected !== previous) return selected;
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
+
+async function awaitMenuSelection<T extends string>(
+  session: Session,
+  visible: RegExp,
+  selected: (paneText: string) => T | null,
+  previous: T,
+  deps: PaneDeps,
+): Promise<T | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    const next = screen && visible.test(screen) ? selected(screen) : null;
+    if (next && next !== previous) return next;
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
 
 async function awaitEffortPicker(
   session: Session,

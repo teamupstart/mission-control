@@ -126,15 +126,19 @@ test("each shipped harness declares its launch-time effort syntax", () => {
 
 test("the live effort picker follows the selected model, not the launch default", () => {
   assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-sol").includes("max"), true);
-  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max"), false);
+  assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-luna").includes("max"), false);
+  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max"), true);
   assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
   assert.equal(supportsSessionEffort("claude", "claude-opus-4-8", "max"), true);
-  assert.equal(capabilitiesFor("claude").effort?.sessionPicker?.command, "/model");
+  const claude = capabilitiesFor("claude").effort?.sessionPicker;
+  const codex = capabilitiesFor("codex").effort?.sessionPicker;
+  assert.equal(claude?.kind, "horizontal");
+  assert.equal(codex?.kind, "shortcuts");
+  assert.equal(claude?.kind === "horizontal" ? claude.command : null, "/model");
   assert.equal(
-    capabilitiesFor("claude").effort?.sessionPicker?.selected(MODEL_PICKER_XHIGH, "Opus 4.8"),
+    claude?.selected(MODEL_PICKER_XHIGH, "Opus 4.8"),
     "xhigh",
   );
-  assert.equal(capabilitiesFor("codex").effort?.sessionPicker, null);
 });
 
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {
@@ -207,13 +211,13 @@ test("a harness with no permission modes offers none to pick, so the picker draw
   }
 });
 
-test("only a harness with session-only effort control renders a live picker", () => {
+test("each harness with session-only effort control renders a live picker", () => {
   const sol = renderToStaticMarkup(
     createElement(EffortPicker, {
       session: mkSession({ agent: "codex", meta: meta({ modelId: "gpt-5.6-sol", thinkingLevel: "high" }) }),
     }),
   );
-  assert.doesNotMatch(sol, /Change effort for this session/);
+  assert.match(sol, /Change effort for this session/);
   const claude = renderToStaticMarkup(
     createElement(EffortPicker, {
       session: mkSession({ agent: "claude", meta: meta({ thinkingLevel: "high" }) }),

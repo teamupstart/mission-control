@@ -159,6 +159,76 @@ async function historicalTaskSetup(
   };
 }
 
+async function delayedTaskMergeSetup(suffix: string) {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = `delayed-task-${suffix}`;
+  const prerequisiteId = `delayed-task-prerequisite-${suffix}`;
+  const cwd = `/repo/delayed-task-${suffix}`;
+  const branch = `feat/delayed-task-${suffix}`;
+  const url = `https://github.com/example/repo/pull/${suffix}`;
+  const agentSessionId = `delayed-task-episode-${suffix}`;
+  registry.upsertTask(baseTask({
+    id: prerequisiteId,
+    title: `Delayed task prerequisite ${suffix}`,
+    status: "running",
+    worktreePath: cwd,
+  }));
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: branch })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: agentSessionId,
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask(prerequisiteId)!, sessionId: id });
+  registry.bindTaskToWorkEpisode(prerequisiteId, id);
+  const originalEpisode = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: Number(suffix),
+      branch,
+      agentSessionId,
+      episodeId: originalEpisode.episodeId,
+      createdAt: originalEpisode.startedAt,
+    })]]),
+    new Set(),
+  );
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const promptAt = Date.now();
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: agentSessionId,
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue after the pending merge",
+    ts: promptAt,
+  });
+  const dependent = tasks.create({
+    ...createInput,
+    title: `Wait after delayed task merge ${suffix}`,
+    backlog: true,
+    dependencies: [{ type: "task", taskId: prerequisiteId }],
+  });
+  return {
+    registry,
+    tasks,
+    id,
+    cwd,
+    branch,
+    url,
+    agentSessionId,
+    originalEpisode,
+    promptAt,
+    dependent,
+  };
+}
+
 test("an unmet dependency forces a dispatch-now create into the backlog and blocks later dispatch", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
@@ -867,6 +937,127 @@ test("high-fanout task merge batches provenance cleanup", () => {
   for (const dependent of dependents) {
     assert.ok(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt);
   }
+});
+
+test("reset after delayed merge rollover rebinds pending task provenance", async () => {
+  const setup = await delayedTaskMergeSetup("94");
+  setup.registry.reconcilePrs(
+    new Map([[setup.id, prMatch({
+      url: setup.url,
+      number: 94,
+      state: "merged",
+      branch: setup.branch,
+      agentSessionId: setup.agentSessionId,
+      episodeId: setup.originalEpisode.episodeId,
+      createdAt: setup.originalEpisode.startedAt,
+      mergedAt: setup.promptAt - 1,
+    })]]),
+    new Set(),
+  );
+  const rolledOver = setup.registry.workEpisodeForSession(setup.id)!;
+  assert.notEqual(rolledOver.episodeId, setup.originalEpisode.episodeId);
+  const rolledEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
+  assert.equal(
+    rolledEdge?.type === "task" ? rolledEdge.episodeId : null,
+    rolledOver.episodeId,
+  );
+  assert.equal(rolledEdge?.type === "task" ? rolledEdge.prUrl : null, null);
+
+  const reset = setup.registry.resetWorkEpisode(setup.id)!;
+  assert.notEqual(reset.episodeId, rolledOver.episodeId);
+  const resetEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
+  assert.equal(resetEdge?.type === "task" ? resetEdge.episodeId : null, reset.episodeId);
+  assert.equal(resetEdge?.type === "task" ? resetEdge.prUrl : null, null);
+
+  const branch = `${setup.branch}-after-reset`;
+  setup.registry.applyDiscovery([discovered(setup.id, setup.cwd, { gitBranch: branch })]);
+  const replacement = setup.registry.workEpisodeForSession(setup.id)!;
+  setup.registry.reconcilePrs(
+    new Map([[setup.id, prMatch({
+      url: "https://github.com/example/repo/pull/194",
+      number: 194,
+      state: "merged",
+      branch,
+      agentSessionId: replacement.agentSessionId,
+      episodeId: replacement.episodeId,
+      createdAt: replacement.startedAt,
+    })]]),
+    new Set(),
+  );
+
+  assert.ok(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(
+    setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!),
+    [],
+  );
+});
+
+test("pending reset identity resolution rebinds task edge provenance", async () => {
+  const setup = await delayedTaskMergeSetup("95");
+  const pending = setup.registry.resetWorkEpisode(setup.id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: setup.agentSessionId,
+  })!;
+  assert.equal(pending.awaitingAgentRebind, true);
+
+  await pollAndReconcilePrs(
+    setup.registry,
+    async () => null,
+    async (candidate) =>
+      candidate === setup.url
+        ? { state: "merged", mergedAt: setup.promptAt - 1 }
+        : null,
+  );
+  const pendingEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
+  assert.equal(
+    pendingEdge?.type === "task" ? pendingEdge.episodeId : null,
+    pending.episodeId,
+  );
+  assert.equal(
+    pendingEdge?.type === "task" ? pendingEdge.agentSessionId : null,
+    setup.agentSessionId,
+  );
+  assert.equal(pendingEdge?.type === "task" ? pendingEdge.prUrl : null, null);
+
+  const reboundAgentSessionId = "delayed-task-episode-95-after-reset";
+  setup.registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: reboundAgentSessionId,
+    cwd: setup.cwd,
+    transcriptPath: null,
+    env: {},
+    source: "clear",
+  });
+  const branch = `${setup.branch}-after-reset`;
+  setup.registry.applyDiscovery([discovered(setup.id, setup.cwd, { gitBranch: branch })]);
+  const rebound = setup.registry.workEpisodeForSession(setup.id)!;
+  assert.equal(rebound.episodeId, pending.episodeId);
+  assert.equal(rebound.agentSessionId, reboundAgentSessionId);
+  const reboundEdge = setup.registry.getTask(setup.dependent.id)?.dependencies[0];
+  assert.equal(
+    reboundEdge?.type === "task" ? reboundEdge.agentSessionId : null,
+    reboundAgentSessionId,
+  );
+
+  setup.registry.reconcilePrs(
+    new Map([[setup.id, prMatch({
+      url: "https://github.com/example/repo/pull/195",
+      number: 195,
+      state: "merged",
+      branch,
+      agentSessionId: reboundAgentSessionId,
+      episodeId: rebound.episodeId,
+      createdAt: rebound.startedAt,
+    })]]),
+    new Set(),
+  );
+
+  assert.ok(setup.registry.getTask(setup.dependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(
+    setup.tasks.dependencyBlockers(setup.registry.getTask(setup.dependent.id)!),
+    [],
+  );
 });
 
 test("post-merge episode rollover preserves running task ownership", () => {

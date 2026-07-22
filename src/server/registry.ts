@@ -1396,6 +1396,7 @@ export class Registry extends EventEmitter {
     awaitingAgentRebind = false,
     rebindFromTranscriptPath: string | null = null,
     promptedAt: number | null = null,
+    rebindPendingPrlessDependencies = false,
   ): SessionWorkEpisode | null {
     const previous = sessionWorkEpisodeFor(sessionId);
     if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
@@ -1420,6 +1421,13 @@ export class Registry extends EventEmitter {
       updatedAt: startedAt,
     };
     replaceSessionWorkEpisode(episode);
+    if (
+      rebindPendingPrlessDependencies &&
+      previous !== null &&
+      previous.prUrl === null
+    ) {
+      this.rebindPendingDependencies(previous, episode, startedAt);
+    }
     if (previous?.episodeId !== episode.episodeId) this.cleanupDependencyProvenance();
     return episode;
   }
@@ -1525,8 +1533,11 @@ export class Registry extends EventEmitter {
     }
   }
 
-  private rebindPendingSessionDependencies(
-    previous: Pick<SessionWorkEpisode, "sessionId" | "episodeId" | "agentSessionId">,
+  private rebindPendingDependencies(
+    previous: Pick<
+      SessionWorkEpisode,
+      "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
+    >,
     next: SessionWorkEpisode,
     at: number,
   ): void {
@@ -1534,21 +1545,23 @@ export class Registry extends EventEmitter {
       let changed = false;
       const dependencies = task.dependencies.map((dependency) => {
         if (
-          dependency.type !== "session" ||
           dependency.satisfiedAt !== null ||
           dependency.sessionId !== previous.sessionId ||
           dependency.episodeId !== previous.episodeId ||
-          dependency.agentSessionId !== previous.agentSessionId
+          dependency.agentSessionId !== previous.agentSessionId ||
+          dependency.branch !== previous.branch ||
+          dependency.prUrl !== previous.prUrl
         ) {
           return dependency;
         }
         changed = true;
         return {
           ...dependency,
+          sessionId: next.sessionId,
           episodeId: next.episodeId,
           agentSessionId: next.agentSessionId,
           branch: next.branch,
-          prUrl: null,
+          prUrl: next.prUrl,
         };
       });
       if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at }, true);
@@ -1608,42 +1621,6 @@ export class Registry extends EventEmitter {
     }
   }
 
-  private rebindPendingTaskDependencies(
-    previous: Pick<
-      SessionWorkEpisode,
-      "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
-    > & { prUrl: string },
-    next: SessionWorkEpisode,
-    at: number,
-  ): void {
-    for (const task of [...this.tasks.values()]) {
-      let changed = false;
-      const dependencies = task.dependencies.map((dependency) => {
-        if (
-          dependency.type !== "task" ||
-          dependency.satisfiedAt !== null ||
-          dependency.sessionId !== previous.sessionId ||
-          dependency.episodeId !== previous.episodeId ||
-          dependency.agentSessionId !== previous.agentSessionId ||
-          dependency.branch !== previous.branch ||
-          dependency.prUrl !== previous.prUrl
-        ) {
-          return dependency;
-        }
-        changed = true;
-        return {
-          ...dependency,
-          sessionId: next.sessionId,
-          episodeId: next.episodeId,
-          agentSessionId: next.agentSessionId,
-          branch: next.branch,
-          prUrl: next.prUrl,
-        };
-      });
-      if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at }, true);
-    }
-  }
-
   private rolloverWorkEpisode(
     previous: SessionWorkEpisode,
     startedAt: number,
@@ -1669,14 +1646,7 @@ export class Registry extends EventEmitter {
     );
     if (!next) return null;
     if (taskId) this.bindTaskToWorkEpisode(taskId, previous.sessionId, next, startedAt);
-    this.rebindPendingSessionDependencies(previous, next, startedAt);
-    if (previous.prUrl !== null) {
-      this.rebindPendingTaskDependencies(
-        { ...previous, prUrl: previous.prUrl },
-        next,
-        startedAt,
-      );
-    }
+    this.rebindPendingDependencies(previous, next, startedAt);
     return next;
   }
 
@@ -1760,8 +1730,7 @@ export class Registry extends EventEmitter {
       current &&
       current.episodeId !== target.episodeId
     ) {
-      this.rebindPendingSessionDependencies(target, current, current.startedAt);
-      this.rebindPendingTaskDependencies(target, current, current.startedAt);
+      this.rebindPendingDependencies(target, current, current.startedAt);
     }
     return rolledOver;
   }
@@ -1791,6 +1760,7 @@ export class Registry extends EventEmitter {
       updatedAt: now,
     };
     if (episode.agentSessionId === agentSessionId) replaceSessionWorkEpisode(next);
+    this.rebindPendingDependencies(episode, next, now);
     this.invalidateTaskOwnership(episode.sessionId);
     return next;
   }
@@ -1939,6 +1909,8 @@ export class Registry extends EventEmitter {
       true,
       awaitingAgentRebind,
       session?.transcriptPath ?? null,
+      null,
+      true,
     );
   }
 

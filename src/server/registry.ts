@@ -101,6 +101,7 @@ import {
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
   deleteSessionWorkEpisode,
   invalidateTaskWorkEpisodeBindings,
+  rebindPendingSessionWorkEpisode,
   replaceSessionWorkEpisode,
   sessionWorkEpisodeFor,
   taskWorkEpisodeForSession,
@@ -1376,6 +1377,7 @@ export class Registry extends EventEmitter {
     branch: string | null,
     startedAt: number,
     invalidateOwnership = true,
+    awaitingAgentRebind = false,
   ): SessionWorkEpisode | null {
     if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
     this.prObservations.delete(sessionId);
@@ -1390,6 +1392,7 @@ export class Registry extends EventEmitter {
       branch,
       prUrl: null,
       prHeadSha: null,
+      awaitingAgentRebind,
       startedAt,
       updatedAt: startedAt,
     };
@@ -1399,13 +1402,7 @@ export class Registry extends EventEmitter {
 
   private ensureWorkEpisode(session: Session, now = Date.now()): SessionWorkEpisode | null {
     if (!session.agentSessionId) return null;
-    const existing = sessionWorkEpisodeFor(session.id);
-    const branchChanged =
-      existing !== null &&
-      existing.branch !== null &&
-      session.gitBranch !== null &&
-      !DEFAULT_WORK_BRANCHES.has(existing.branch) &&
-      existing.branch !== session.gitBranch;
+    let existing = sessionWorkEpisodeFor(session.id);
     if (!existing) {
       const episode = this.startWorkEpisode(
         session.id,
@@ -1420,7 +1417,37 @@ export class Registry extends EventEmitter {
       }
       return episode;
     }
-    if (existing.agentSessionId !== session.agentSessionId || branchChanged) {
+    if (existing.agentSessionId !== session.agentSessionId) {
+      if (
+        existing.awaitingAgentRebind &&
+        rebindPendingSessionWorkEpisode(
+          session.id,
+          existing.episodeId,
+          session.agentSessionId,
+          now,
+        )
+      ) {
+        existing = {
+          ...existing,
+          agentSessionId: session.agentSessionId,
+          awaitingAgentRebind: false,
+          updatedAt: now,
+        };
+      } else {
+        return this.startWorkEpisode(
+          session.id,
+          session.agentSessionId,
+          session.gitBranch,
+          now,
+        );
+      }
+    }
+    const branchChanged =
+      existing.branch !== null &&
+      session.gitBranch !== null &&
+      !DEFAULT_WORK_BRANCHES.has(existing.branch) &&
+      existing.branch !== session.gitBranch;
+    if (branchChanged) {
       return this.startWorkEpisode(
         session.id,
         session.agentSessionId,
@@ -1445,9 +1472,28 @@ export class Registry extends EventEmitter {
     return existing;
   }
 
-  resetWorkEpisode(sessionId: string, at = Date.now()): void {
+  resetWorkEpisode(
+    sessionId: string,
+    options: {
+      awaitingAgentRebind?: boolean;
+      previousAgentSessionId?: string | null;
+      at?: number;
+    } = {},
+  ): void {
     const session = this.sessions.get(sessionId);
-    this.startWorkEpisode(sessionId, session?.agentSessionId ?? null, null, at);
+    const at = options.at ?? Date.now();
+    const awaitingAgentRebind = Boolean(
+      options.awaitingAgentRebind &&
+      session?.agentSessionId === options.previousAgentSessionId
+    );
+    this.startWorkEpisode(
+      sessionId,
+      session?.agentSessionId ?? null,
+      null,
+      at,
+      true,
+      awaitingAgentRebind,
+    );
   }
 
   workEpisodeForSession(sessionId: string): SessionWorkEpisode | null {

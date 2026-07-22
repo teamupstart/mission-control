@@ -453,6 +453,92 @@ test("a reused session attributes its merged PR only to the current task after r
   assert.equal(restarted.getTask("wait-previous")?.dependencies[0]?.satisfiedAt, null);
 });
 
+test("a late post-clear identity preserves assigned task ownership", async () => {
+  const { r, tasks, sessionId, clone, agentSessionId } = setupInRepo(
+    "mission-assign-late-clear-",
+    { gitBranch: "main" },
+  );
+  r.upsertTask(mkTask({ repoRoot: clone, title: "Assigned after clear" }));
+
+  const assigned = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(assigned.ok, true, assigned.error);
+  const pendingEpisode = r.workEpisodeForSession(sessionId)!;
+  assert.equal(pendingEpisode.agentSessionId, agentSessionId);
+  assert.equal(pendingEpisode.awaitingAgentRebind, true);
+
+  const restarted = new Registry();
+  restarted.applyDiscovery([
+    mkDiscovered({
+      syntheticId: sessionId,
+      cwd: clone,
+      gitRoot: clone,
+      repoRoot: clone,
+      gitBranch: "main",
+    }),
+  ]);
+  assert.equal(restarted.workEpisodeForSession(sessionId)?.awaitingAgentRebind, true);
+
+  const reboundAgentSessionId = `${agentSessionId}-after-clear`;
+  restarted.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: reboundAgentSessionId,
+    cwd: clone,
+    transcriptPath: null,
+    env: {},
+  });
+  const reboundEpisode = restarted.workEpisodeForSession(sessionId)!;
+  assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
+  assert.equal(reboundEpisode.agentSessionId, reboundAgentSessionId);
+  assert.equal(reboundEpisode.awaitingAgentRebind, false);
+  assert.equal(restarted.getTask("t1")?.sessionId, sessionId);
+
+  restarted.upsertTask(
+    mkTask({
+      id: "wait-late-clear",
+      repoRoot: clone,
+      dependencies: [
+        { type: "task", taskId: "t1", title: "Assigned after clear", satisfiedAt: null },
+      ],
+    }),
+  );
+  restarted.applyDiscovery([
+    mkDiscovered({
+      syntheticId: sessionId,
+      cwd: clone,
+      gitRoot: clone,
+      repoRoot: clone,
+      gitBranch: "feat/late-clear",
+    }),
+  ]);
+  restarted.reconcilePrs(
+    new Map([
+      [
+        sessionId,
+        {
+          url: "https://github.com/example/repo/pull/52",
+          number: 52,
+          state: "merged" as const,
+          checks: "passing" as const,
+          branch: "feat/late-clear",
+          agentSessionId: reboundAgentSessionId,
+          episodeId: reboundEpisode.episodeId,
+          createdAt: reboundEpisode.startedAt,
+          headSha: "late-clear-head",
+          worktreeHeadSha: "late-clear-head",
+        },
+      ],
+    ]),
+    new Set(),
+  );
+
+  assert.ok(restarted.getTask("wait-late-clear")?.dependencies[0]?.satisfiedAt);
+});
+
 test("an agent that went busy between the checks and the reset is not reset anyway", async () => {
   // The idle check happens several git invocations before the reset, and the reset
   // itself spends up to 30s in a fetch. An agent a human woke up inside that window

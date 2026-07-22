@@ -728,7 +728,12 @@ export class TaskManager {
         scope: "session",
       };
     }
-    if (opts.reset) this.registry.resetWorkEpisode(s.id);
+    if (opts.reset) {
+      this.registry.resetWorkEpisode(s.id, {
+        awaitingAgentRebind: true,
+        previousAgentSessionId: s.agentSessionId,
+      });
+    }
 
     const ready = this.registry.getTask(t.id);
     if (!ready || ready.status !== "backlog") {

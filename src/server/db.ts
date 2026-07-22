@@ -183,6 +183,7 @@ export function openDb(): DatabaseSync {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      awaiting_agent_rebind INTEGER NOT NULL DEFAULT 0,
       started_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -725,6 +726,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
+  addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -1705,6 +1707,7 @@ export interface SessionWorkEpisode {
   branch: string | null;
   prUrl: string | null;
   prHeadSha: string | null;
+  awaitingAgentRebind: boolean;
   startedAt: number;
   updatedAt: number;
 }
@@ -1728,6 +1731,7 @@ type SessionWorkEpisodeRow = {
   branch: string | null;
   pr_url: string | null;
   pr_head_sha: string | null;
+  awaiting_agent_rebind: number;
   started_at: number;
   updated_at: number;
 };
@@ -1752,6 +1756,7 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
     branch: row.branch,
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
+    awaitingAgentRebind: Boolean(row.awaiting_agent_rebind),
     startedAt: row.started_at,
     updatedAt: row.updated_at,
   };
@@ -1782,14 +1787,16 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
   openDb()
     .prepare(
       `INSERT INTO session_work_episodes
-         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, started_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha,
+          awaiting_agent_rebind, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          episode_id       = excluded.episode_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         awaiting_agent_rebind = excluded.awaiting_agent_rebind,
          started_at       = excluded.started_at,
          updated_at       = excluded.updated_at`,
     )
@@ -1800,9 +1807,42 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
       episode.branch,
       episode.prUrl,
       episode.prHeadSha,
+      episode.awaitingAgentRebind ? 1 : 0,
       episode.startedAt,
       episode.updatedAt,
     );
+}
+
+export function rebindPendingSessionWorkEpisode(
+  sessionId: string,
+  episodeId: string,
+  agentSessionId: string,
+  now: number,
+): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const result = d
+      .prepare(
+        `UPDATE session_work_episodes
+         SET agent_session_id = ?, awaiting_agent_rebind = 0, updated_at = ?
+         WHERE session_id = ? AND episode_id = ? AND awaiting_agent_rebind = 1`,
+      )
+      .run(agentSessionId, now, sessionId, episodeId);
+    if (Number(result.changes) > 0) {
+      d.prepare(
+        `UPDATE task_work_episode_bindings
+         SET agent_session_id = ?, updated_at = ?
+         WHERE session_id = ? AND episode_id = ?`,
+      ).run(agentSessionId, now, sessionId, episodeId);
+    }
+    if (ownsTransaction) d.exec("COMMIT");
+    return Number(result.changes) > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function deleteSessionWorkEpisode(sessionId: string): void {

@@ -36,6 +36,7 @@ export type MergeBlock =
   | "inspector-off"
   | "inspector-dry-run"
   | "inspector-not-allowlisted"
+  | "review-unpublished"
   | "not-open"
   | "draft"
   | "not-reviewed"
@@ -64,6 +65,8 @@ export const MERGE_BLOCK_LABEL: Record<MergeBlock, string> = {
   "inspector-dry-run": "the Inspector is in dry run, so its review was never published",
   "inspector-not-allowlisted":
     "this repo is not on the Inspector's list, so its review was never published",
+  "review-unpublished":
+    "this push was reviewed without live publishing; the Inspector must review it again live",
   "not-open": "the pull request is closed",
   draft: "still a draft",
   "not-reviewed": "the Inspector has not reviewed this push yet",
@@ -106,8 +109,10 @@ export interface MergeInput {
    * checkout, which is a question about the PR, not about the config.
    */
   inspector: InspectorPosture;
-  /** The head the Inspector last completed a review of, and how many rounds it has run. */
+  /** The head the Inspector last completed a review of, and the posture that produced it. */
   reviewedSha: string | null;
+  reviewPosture: InspectorPosture | null;
+  /** How many completed review rounds it has run. */
   rounds: number;
   /** Findings the Inspector is currently carrying: posted, previewed, or mid-post. */
   openFindings: number;
@@ -184,6 +189,10 @@ export function mergeVerdict(input: MergeInput): MergeVerdict {
   if (input.rounds < 1 || !pr.headSha || input.reviewedSha !== pr.headSha) {
     return blocked("not-reviewed");
   }
+  // Current live consent cannot retroactively publish a review completed while the
+  // Inspector was dry-run or the repo was untrusted. The worker will run this head again
+  // under live posture; until that succeeds, the stored review cannot authorize a merge.
+  if (input.reviewPosture !== "live") return blocked("review-unpublished");
   if (input.openFindings > 0) return blocked("findings");
   if (pr.unresolvedThreads > 0) return blocked("threads");
 

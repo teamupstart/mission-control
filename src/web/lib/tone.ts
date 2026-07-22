@@ -3,7 +3,7 @@ import { stateDisplay, type Tone } from "./format.ts";
 
 /**
  * Sort priority: things needing you first, then busy, then calm, then unconfirmed
- * (uninstrumented "running"), then gone.
+ * (no fresh lifecycle reading), then gone.
  *
  * The grid spends this on a sort you can't see - the cards just come out in an
  * order. The console and the board spend it on structure you can: rail sections

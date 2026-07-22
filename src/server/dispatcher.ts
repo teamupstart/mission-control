@@ -7,7 +7,7 @@ import { resolveAgentBin } from "./harness/index.ts";
 import { askChannelArgs } from "./ask-channel.ts";
 import { injectPrompt, setPermissionMode } from "./actions.ts";
 import { hooksFor } from "./harness/index.ts";
-import { getHarnessesConfig, resolveDispatchModel } from "./harnesses.ts";
+import { getHarnessesConfig, resolveDispatchEffort, resolveDispatchModel } from "./harnesses.ts";
 import { harnessFor } from "./harness/index.ts";
 import { isTreehouseRepo, LEASE_HOLDER, poolPins, reapPool, type PoolPins } from "./pool.ts";
 import { heldHomeNames, homeAlive, homeNameRules, killHome, launchHome } from "./terminal/home.ts";
@@ -74,10 +74,12 @@ export class Dispatcher {
       this.patch(taskId, { worktreePath: wt.path, branch: wt.branch, provider: wt.provider });
       if (await this.abortIfSettled(taskId)) return;
 
-      // Resolved here, not at task creation: a backlogged task launches on the default
-      // in force NOW. Both CLIs spell the flag `--model <id>`; null means pass nothing
-      // and let the harness's own configuration decide.
+      // Resolved here, not at task creation: a backlogged task launches on the defaults
+      // in force NOW. Both CLIs spell the model flag `--model <id>`; effort syntax comes
+      // from the harness registry. Null means let the harness's own configuration decide.
       const model = resolveDispatchModel(task.agent, task.model);
+      const effort = resolveDispatchEffort(task.agent, task.effort);
+      const effortArgs = effort ? (harnessFor(task.agent).effort?.launchArgs(effort) ?? []) : [];
       // The ask channel rides along on every dispatch: it takes Claude's built-in
       // `AskUserQuestion` away and hands the agent our blocking `request_input` instead, so
       // a clarifying question arrives as structured arguments in the dashboard rather than
@@ -91,6 +93,7 @@ export class Dispatcher {
         : { args: [] as string[], instrumented: true };
       const agentArgs = [
         ...(model ? ["--model", model] : []),
+        ...effortArgs,
         ...(await askChannelArgs(task.agent)),
         ...codexLaunch.args,
       ];

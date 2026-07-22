@@ -307,10 +307,12 @@ stylesheet edited to show up.
 
 ### Precise status (Claude hooks)
 
-Passive discovery can tell a session is *alive*, but not whether the agent is
-actively working, sitting idle, or waiting on you. Claude Code **hooks** close
-that gap: a tiny bridge reports each lifecycle event to the daemon so every card
-shows a live, precise state and a one-line activity.
+Passive discovery can tell a session is *alive*, but process discovery alone cannot
+say whether the agent is actively working, sitting idle, or waiting on you. Claude
+Code **hooks** close that gap: a tiny bridge reports each lifecycle event to the daemon
+so every card shows a live, precise state and a one-line activity. Codex can also
+confirm working and idle passively from explicit lifecycle markers in its rollout file;
+its hook-only safeguards remain separate, as described below.
 
 **1. Install** (idempotent - it merges into `settings.json` in place, rewriting
 only the hook arrays it changes, so your other settings, your own hooks, and
@@ -354,7 +356,7 @@ restart), not a code change.
 
 ```sh
 curl -s http://127.0.0.1:7317/api/sessions | grep -o '"instrumented":[a-z]*'
-# "instrumented":true  once a session has reported at least one event
+# "instrumented":true  while the session has fresh hook evidence
 ```
 
 **Uninstall** (removes only our entries, leaves your other hooks intact):
@@ -423,7 +425,10 @@ Codex's are **launch-scoped**: the dispatcher builds one `-c hooks.<Event>=[…]
 per event, pointing at the bundled bridge (`dist/satellites/codex-hook.mjs`, overridable
 with `MISSION_CODEX_HOOK`), and passes them on the command line. So a **dispatched** Codex
 session is instrumented from its first breath, and a Codex session **you** started
-yourself sends nothing and is read passively, off discovery and its rollout file. If the
+yourself sends nothing but still reports confirmed **working** and **idle** states from
+explicit lifecycle markers in its rollout file. That passive evidence is enough to place
+the session in the right board column; it does not enable readiness, prompt delivery,
+task handover, queues, or other safeguards that specifically require live hooks. If the
 bridge bundle is missing - `npm run build` never ran - the launch drops the overrides and
 runs uninstrumented rather than failing.
 
@@ -785,6 +790,12 @@ since a Claude id means nothing to Codex. Leaving it on **Default** stores no mo
 all rather than pinning today's, so a task you shelve now picks up the default in force
 when it's actually dispatched.
 
+**Effort** sits immediately after Model and follows the same rule: it starts on the
+chosen harness's default, can be overridden for one task, and switching Agent resets it.
+Claude launches with `--effort <level>`; Codex receives the corresponding
+`model_reasoning_effort` launch override. Leaving it on **Default** keeps the task tied
+to the effort default in force when it launches.
+
 The repo picker is a **searchable index of your workspace** - the daemon scans
 `~/workspace` (override with `MISSION_WORKSPACE_DIRS`) for git checkouts, so you select the
 repo to base the task on rather than typing a path. Type to filter; arrow/enter to pick.
@@ -819,9 +830,12 @@ your fields intact so you can retry.
 ### Hand a shelved task to an agent that's already running
 
 On the [Board](#layout-cards-console-or-board), **drag a backlog card onto an idle
-agent** in the same repo and it starts there instead of in a new worktree. The task owns
-no checkout of its own - the agent keeps the one it had - which is exactly why cancelling
-it later never runs `git worktree remove` over a directory the harness didn't create.
+agent with live hook instrumentation** in the same repo and it starts there instead of in
+a new worktree. A passively confirmed Codex session can appear in the Idle column without
+lighting up as a drop target: the rollout proves its displayed state, but not that the
+reset and prompt handover can be observed safely. The task owns no checkout of its own -
+the agent keeps the one it had - which is exactly why cancelling it later never runs
+`git worktree remove` over a directory the harness didn't create.
 
 **The drop resets that agent's checkout first**, the same reset the card's **reset**
 control runs: `git reset --hard` onto origin's default branch, `git clean -fd`, release
@@ -861,9 +875,9 @@ is where a stale name is most confusing - nobody watched that handover happen.
 **Click a backlog task and it opens back up in the form that wrote it** - on the
 [Board](#layout-cards-console-or-board)'s backlog column, or by its name in the
 [Roundup](#roundup) panel. Every field is editable: repo, kind, agent, title, and the task
-text itself, plus more screenshots dropped onto it. **Model** included - and putting it
-back on **Default** un-pins it, so the task goes back to following whatever the harness
-default is when it finally launches. **Save** keeps it in the backlog;
+text itself, plus more screenshots dropped onto it. **Model** and **Effort** included - and
+putting either back on **Default** un-pins it, so the task goes back to following the
+corresponding harness default when it finally launches. **Save** keeps it in the backlog;
 **Dispatch now** saves and launches it in one go, so a task you shelved half-written can be
 finished and sent without a second trip. **Revert** puts back the version the daemon still
 holds, and closing the form keeps your edits the same way a half-written dispatch is kept.
@@ -943,6 +957,18 @@ Both model lists are maintained in `src/shared/model.ts`; a model released after
 build isn't in the picker, but a default set elsewhere (a newer build, or a `PUT` to
 `/api/harnesses/config`) still shows and still applies rather than being silently
 dropped.
+
+### Default effort
+
+**Settings → Harnesses → Default effort** sets the reasoning level each harness starts
+with when a dispatch does not name one. Claude Code and Codex have separate rows, and
+Claude Code offers `low`, `medium`, `high`, `xhigh`, and `max`; Codex offers `low`,
+`medium`, `high`, and `xhigh`.
+
+Both ship as **Harness default**, so Mission Control passes no effort override and the
+CLI keeps its own configured choice. Like the model default, this is resolved when the
+task launches: changing it applies to already-shelved tasks unless a task selected its
+own effort in the dispatch form.
 
 ## Task sources (pulling work into the backlog)
 
@@ -1984,6 +2010,11 @@ publishing stops. So "the Inspector reviewed this push" is true in dry run, and 
 sufficient - **dry run means dry for the merge too**. The Shipping panel names whichever
 of the three is in the way while YOLO mode is armed, and each reason appears per pull
 request under *Where each pull request stands*.
+
+Switching from dry run to live does not promote the review that already ran. The reviewed
+head records the Inspector posture that produced it; once live, the Inspector reviews that
+same head again, and only the new live result can authorize a later merge. Rows created by
+an older build have no recorded posture and fail closed through the same re-review path.
 
 The two allowlists stay separate: letting the Inspector comment on a repo is a smaller
 grant than letting it merge there, so a repo has to be on both. Shipping's list does not

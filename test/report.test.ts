@@ -24,6 +24,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: null,
     transcriptPath: null,
     instrumented: true,
+    stateConfirmed: true,
     hooksSeen: true,
     activity: null,
     startedAt: null,
@@ -116,15 +117,17 @@ test("buildReport buckets sessions the same way the shared helper does", () => {
 });
 
 test("reportBucket: working is confirmed-running, idle is everything else that's open", () => {
-  // Working = an agent we can confirm is running (needs hook instrumentation).
+  // Working = an agent we can confirm is running. Hooks are one source.
   assert.equal(reportBucket(mkSession({ state: "working", instrumented: true })), "working");
   assert.equal(reportBucket(mkSession({ state: "starting", instrumented: true })), "working");
+  // An explicit transcript lifecycle marker is another, including for a manual Codex
+  // launch that has no injected hooks.
+  assert.equal(reportBucket(mkSession({ state: "working", instrumented: false, stateConfirmed: true })), "working");
 
-  // Idle = open, not prompting you, not confirmed running: instrumented-idle,
-  // AND every uninstrumented session (no live signal to prove it's busy).
+  // Idle = open, not prompting you, and either confirmed idle or lacking a live signal.
   assert.equal(reportBucket(mkSession({ state: "idle", instrumented: true })), "idle");
-  assert.equal(reportBucket(mkSession({ state: "working", instrumented: false })), "idle");
-  assert.equal(reportBucket(mkSession({ state: "starting", instrumented: false })), "idle");
+  assert.equal(reportBucket(mkSession({ state: "working", instrumented: false, stateConfirmed: false })), "idle");
+  assert.equal(reportBucket(mkSession({ state: "starting", instrumented: false, stateConfirmed: false })), "idle");
 
   // Needs you = prompting you for input (or a review / parked gate).
   assert.equal(reportBucket(mkSession({ state: "awaiting_input", instrumented: true })), "needs-you");
@@ -133,8 +136,8 @@ test("reportBucket: working is confirmed-running, idle is everything else that's
 
   // A set of uninstrumented sessions must produce a non-empty Idle section.
   const sessions = [
-    mkSession({ id: "a", state: "working", instrumented: false }),
-    mkSession({ id: "b", state: "working", instrumented: false }),
+    mkSession({ id: "a", state: "working", instrumented: false, stateConfirmed: false }),
+    mkSession({ id: "b", state: "working", instrumented: false, stateConfirmed: false }),
     mkSession({ id: "c", state: "working", instrumented: true }), // the only confirmed-running one
   ];
   const r = buildReport({ sessions: sessions, tasks: [] }, 0);
@@ -174,6 +177,7 @@ test("a parked gate only needs you once the agent has stopped driving it", () =>
     id: "u",
     state: "working",
     instrumented: false,
+    stateConfirmed: false,
     nomistakes: parkedGate({ branch: "feat/u" }),
   });
   const idle = mkSession({ id: "i", state: "idle", nomistakes: parkedGate({ branch: "feat/i" }) });
@@ -302,7 +306,7 @@ test("a parked run is waiting, not executing", () => {
   // gate is deferred to its presumed-driving agent is the case that catches this:
   // gateParked says don't nag, and there's no confirmed execution behind it, so
   // it must stay idle rather than pad the working count on a technicality.
-  const deferred = mkSession({ state: "working", instrumented: false, nomistakes: parkedGate() });
+  const deferred = mkSession({ state: "working", instrumented: false, stateConfirmed: false, nomistakes: parkedGate() });
   assert.equal(gateParked(deferred), false);
   assert.equal(runInFlight(deferred), false);
   assert.equal(reportBucket(deferred), "idle");

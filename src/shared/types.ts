@@ -3,6 +3,7 @@
 // that crosses the SSE / HTTP boundary.
 
 import type { ForemanModelRole, ResolvedForemanModel } from "./foreman-models.ts";
+import type { InspectorPosture } from "./inspector.ts";
 import type { LlmJobId, ResolvedLlmJobModel } from "./llm-jobs.ts";
 import type { LlmRunnerId, ResolvedLlmRunner } from "./llm.ts";
 import type { ResolvedModel } from "./model-choice.ts";
@@ -52,8 +53,13 @@ export type SessionState =
  */
 export type NameSource = TerminalBackendId | "process";
 
-/** Reasoning effort, shared by Claude (`/effort`) and Codex (rollout `effort`). */
-export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";
+/**
+ * Reasoning effort, shared by Claude (`--effort` / `/effort`) and Codex
+ * (`model_reasoning_effort` / rollout `effort`). A tuple because the settings and
+ * dispatch pickers need the same values as the wire schemas and launch adapters.
+ */
+export const THINKING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
  * Claude's permission mode - the state cycled by Shift+Tab. These are the exact
@@ -275,6 +281,15 @@ export interface Session {
    * session"; for "does this session have hooks at all", read `hooksSeen`.
    */
   instrumented: boolean;
+  /**
+   * True while `state` is backed by a fresh lifecycle reading. Hooks are one source;
+   * a harness transcript that records explicit start/complete markers is another.
+   *
+   * Keep this separate from `instrumented`: prompt-delivery and queue safeguards need
+   * to know that hooks specifically are live, while the dashboard only needs to know
+   * whether `idle` / `working` was observed rather than guessed from process existence.
+   */
+  stateConfirmed: boolean;
   /**
    * True once a hook has EVER been seen from this session - the installation fact,
    * with no freshness window on it.
@@ -1027,6 +1042,12 @@ export interface Task {
    */
   model: string | null;
   /**
+   * Reasoning-effort override for this task, or null to follow the harness default.
+   * Resolved at dispatch time for the same reason as `model`: a shelved task should
+   * follow a default changed while it waited unless somebody explicitly pinned it.
+   */
+  effort: ThinkingLevel | null;
+  /**
    * Where this task was swept from, when a task source filed it, else null.
    *
    * The LINK BACK, and nothing more. De-duplication is decided against the
@@ -1488,6 +1509,8 @@ export interface InspectorPr {
    * force-push backwards still differs, and a no-op tick still costs nothing.
    */
   headSha: string | null;
+  /** The consent posture that produced `headSha`; null for rows from older builds. */
+  reviewPosture: InspectorPosture | null;
   /** Completed review rounds. Also the runaway guard. */
   round: number;
   lastReviewedAt: number | null;

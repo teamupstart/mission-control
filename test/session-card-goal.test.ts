@@ -35,6 +35,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     agentSessionId: "agent-1",
     transcriptPath: null,
     instrumented: true,
+    stateConfirmed: true,
     hooksSeen: true,
     activity: "running Bash",
     startedAt: null,

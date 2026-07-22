@@ -17,7 +17,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-dispatch-model-"));
 process.env.HARNESS_HOME = join(home, "state");
 
 const { openDb } = await import("../src/server/db.ts");
-const { getHarnessesConfig, setHarnessesConfig, resolveDispatchModel } = await import(
+const { getHarnessesConfig, setHarnessesConfig, resolveDispatchModel, resolveDispatchEffort } = await import(
   "../src/server/harnesses.ts"
 );
 const { DispatchSchema, HarnessesConfigPatchSchema, ModelIdSchema, UpdateTaskSchema } =
@@ -39,6 +39,29 @@ test("ships with no default model, so installing this changes nothing about how 
   const cfg = getHarnessesConfig();
   assert.equal(cfg.defaultModel.claude, null);
   assert.equal(cfg.defaultModel.codex, null);
+  assert.deepEqual(cfg.defaultEffort, { claude: null, codex: null });
+});
+
+test("effort defaults merge per harness and resolve behind a task override", () => {
+  setHarnessesConfig({ defaultEffort: { codex: "high" } });
+  const cfg = setHarnessesConfig({ defaultEffort: { claude: "medium" } });
+  assert.deepEqual(cfg.defaultEffort, { claude: "medium", codex: "high" });
+  assert.equal(resolveDispatchEffort("claude", null), "medium");
+  assert.equal(resolveDispatchEffort("codex", "xhigh"), "xhigh");
+});
+
+test("effort accepts only launchable levels at every write door", () => {
+  assert.equal(DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", effort: "xhigh" }).success, true);
+  assert.equal(
+    DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", agent: "codex", effort: "max" }).success,
+    false,
+  );
+  assert.equal(DispatchSchema.safeParse({ repoRoot: "/r", intent: "go", effort: "extreme" }).success, false);
+  assert.equal(HarnessesConfigPatchSchema.safeParse({ defaultEffort: { claude: "max" } }).success, true);
+  assert.equal(HarnessesConfigPatchSchema.safeParse({ defaultEffort: { codex: "max" } }).success, false);
+  assert.equal(HarnessesConfigPatchSchema.safeParse({ defaultEffort: { codex: "extreme" } }).success, false);
+  assert.equal(UpdateTaskSchema.safeParse({ agent: "codex", effort: "max" }).success, false);
+  assert.equal(UpdateTaskSchema.parse({ effort: null }).effort, null);
 });
 
 test("setting one harness's default leaves the other harness's alone", () => {

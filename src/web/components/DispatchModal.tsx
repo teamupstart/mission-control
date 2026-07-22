@@ -5,8 +5,10 @@ import {
   type TaskKind,
   type AgentType,
   type TaskPriority,
+  type ThinkingLevel,
 } from "@shared/types.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
+import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import type { HarnessesConfig } from "@shared/protocol.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { MAX_LABELS, PRIORITY_LABELS, TASK_PRIORITIES } from "@shared/task.ts";
@@ -62,7 +64,8 @@ function isEmptyDispatchDraft(d: DispatchDraft): boolean {
     d.kind === EMPTY_DISPATCH_DRAFT.kind &&
     d.agent === EMPTY_DISPATCH_DRAFT.agent &&
     d.priority === EMPTY_DISPATCH_DRAFT.priority &&
-    d.model === EMPTY_DISPATCH_DRAFT.model
+    d.model === EMPTY_DISPATCH_DRAFT.model &&
+    d.effort === EMPTY_DISPATCH_DRAFT.effort
   );
 }
 
@@ -98,6 +101,15 @@ function defaultModelOptionLabel(
   if (!id) return "Default - whatever the harness is set to";
   const label = modelChoicesFor(agent, id).find((m) => m.id === id)?.label ?? id;
   return `Default - ${label}`;
+}
+
+function defaultEffortOptionLabel(
+  agent: AgentType,
+  defaults: HarnessesConfig["defaultEffort"] | null,
+): string {
+  if (!defaults) return "Default";
+  const level = defaults[agent];
+  return level ? `Default - ${level}` : "Default - whatever the harness is set to";
 }
 
 /**
@@ -318,10 +330,9 @@ function DispatchModal({
   const editing = mode.kind === "edit" ? mode.task : null;
   const [repos, setRepos] = useState<string[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
-  // The configured per-harness default models, so the picker can NAME the model this
-  // dispatch will actually run on instead of an unhelpful bare "Default". Null until
-  // the fetch lands (and if it fails), which the "Default" option's label handles.
-  const [defaults, setDefaults] = useState<HarnessesConfig["defaultModel"] | null>(null);
+  // The configured per-harness defaults, so both pickers can name what "Default"
+  // means. Null until the fetch lands (and if it fails).
+  const [defaults, setDefaults] = useState<HarnessesConfig | null>(null);
   // Which action is in flight, not merely whether one is: both footer buttons submit,
   // and only the one that was pressed should say so.
   const [pending, setPending] = useState<null | "shelve" | "dispatch">(null);
@@ -343,7 +354,7 @@ function DispatchModal({
   }, []);
 
   // Index the workspace's repos so the base can be searched/picked, and read the
-  // harness defaults so the model picker can show which model "Default" means.
+  // harness defaults so the model and effort pickers can show what "Default" means.
   // Re-fetched on every open so a freshly-cloned repo - or a default just changed in
   // Settings - shows up without a full app reload.
   useEffect(() => {
@@ -354,7 +365,7 @@ function DispatchModal({
       setReposLoading(false);
     });
     void fetchHarnessesConfig().then((cfg) => {
-      if (alive && cfg) setDefaults(cfg.defaultModel);
+      if (alive && cfg) setDefaults(cfg);
     });
     return () => {
       alive = false;
@@ -424,6 +435,7 @@ function DispatchModal({
           labels: parseLabelInput(submitted.labels),
           title: submitted.title.trim() || undefined,
           model: submitted.model || undefined,
+          effort: submitted.effort || undefined,
           backlog: !dispatchNow,
         });
     // An edit is a save first and a launch second, so the two are two calls: the save
@@ -504,11 +516,12 @@ function DispatchModal({
             <select
               className="field-input"
               value={draft.agent}
-              // Switching harness drops the model with it: the ids don't cross over,
-              // so keeping one would leave a Claude model selected for Codex - which
-              // the dispatch would then actually try to launch. Back to the default,
-              // which is per-agent and always right for the harness now chosen.
-              onChange={(e) => update({ agent: e.target.value as AgentType, model: "" })}
+              // Switching harness drops model and effort overrides with it: neither
+              // selection is portable across harnesses. Back to the defaults, which are
+              // per-agent and always right for the harness now chosen.
+              onChange={(e) =>
+                update({ agent: e.target.value as AgentType, model: "", effort: "" })
+              }
             >
               {/* Driven off the union, so a harness that exists cannot be one the
                   operator has no way to pick: a hand-written pair of options is a
@@ -539,7 +552,9 @@ function DispatchModal({
             value={draft.model}
             onChange={(e) => update({ model: e.target.value })}
           >
-            <option value="">{defaultModelOptionLabel(draft.agent, defaults)}</option>
+            <option value="">
+              {defaultModelOptionLabel(draft.agent, defaults?.defaultModel ?? null)}
+            </option>
             {/* The draft's own id is folded in, for the same reason the Settings picker
                 folds in the stored default: reopening a shelved task can seed this from a
                 row naming a model this build's catalog doesn't list, and an unlisted value
@@ -548,6 +563,32 @@ function DispatchModal({
             {modelChoicesFor(draft.agent, draft.model).map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label} - {m.hint}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="field">
+          <span className="field-label">
+            Effort{" "}
+            <span className="field-hint">
+              {draft.effort
+                ? "overriding the default for this task"
+                : "set in Settings → Harnesses"}
+            </span>
+          </span>
+          <select
+            className="field-input"
+            value={draft.effort}
+            onChange={(e) => update({ effort: e.target.value as ThinkingLevel | "" })}
+            aria-label={`Effort for dispatched ${AGENT_IDENTITY[draft.agent].label} session`}
+          >
+            <option value="">
+              {defaultEffortOptionLabel(draft.agent, defaults?.defaultEffort ?? null)}
+            </option>
+            {capabilitiesFor(draft.agent).effort?.levels.map((level) => (
+              <option key={level} value={level}>
+                {level}
               </option>
             ))}
           </select>

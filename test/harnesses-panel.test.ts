@@ -30,6 +30,7 @@ function mkConfig(over: Partial<HarnessesConfig>): HarnessesConfig {
   return {
     autoModeOnDispatch: false,
     defaultModel: { claude: null, codex: null },
+    defaultEffort: { claude: null, codex: null },
     ...over,
   };
 }
@@ -137,4 +138,13 @@ test("the model pickers are disabled until the first config read lands", () => {
   // patch a default over a value we never saw.
   const html = render(null);
   assert.match(html, /<select[^>]*disabled/);
+});
+
+test("both harnesses get a configurable default effort", () => {
+  const html = render({ defaultEffort: { claude: "high", codex: "xhigh" } });
+  assert.match(html, /Default effort/);
+  assert.match(html, /aria-label="Default effort for dispatched Claude Code sessions"/);
+  assert.match(html, /aria-label="Default effort for dispatched Codex sessions"/);
+  assert.match(html, /<option value="high" selected/);
+  assert.match(html, /<option value="xhigh" selected/);
 });

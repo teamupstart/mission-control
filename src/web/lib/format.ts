@@ -143,9 +143,10 @@ export interface StateDisplay {
 }
 
 /**
- * Map a session to a badge label + tone. Non-instrumented sessions can't report
- * precise state, so they render as a neutral "running" rather than pretending to
- * know whether the agent is busy or idle.
+ * Map a session to a badge label + tone. Sessions without a fresh lifecycle reading
+ * render as a neutral "running" rather than pretending to know whether the agent is
+ * busy or idle. A reading may come from hooks or from an explicit lifecycle marker in
+ * the harness transcript (Codex rollout files provide the latter).
  *
  * Mirrors reportBucket's precedence (see src/shared/session.ts): a session whose
  * agent backgrounded a no-mistakes run and ended its turn reads "validating"
@@ -160,7 +161,7 @@ export function stateDisplay(session: Session): StateDisplay {
   if (session.pendingReviews > 0) {
     return { label: session.pendingReviews > 1 ? `${session.pendingReviews} to review` : "to review", tone: "attention" };
   }
-  // Above the instrumentation split on purpose. A menu on the screen is something we can
+  // Above the state-confidence split on purpose. A menu on the screen is something we can
   // SEE, not something a hook has to tell us, and it means the session has stopped dead -
   // so an uninstrumented session parked on a permission prompt belongs in "needs you"
   // rather than in "unconfirmed", where it read as merely unknown while being the most
@@ -169,7 +170,7 @@ export function stateDisplay(session: Session): StateDisplay {
     return { label: "needs an answer", tone: "attention" };
   }
   const validating: StateDisplay = { label: "validating", tone: "working" };
-  if (!session.instrumented) {
+  if (!session.stateConfirmed) {
     return runInFlight(session) ? validating : { label: "running", tone: "neutral" };
   }
   const map: Record<SessionState, StateDisplay> = {

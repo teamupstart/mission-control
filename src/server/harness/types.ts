@@ -216,6 +216,8 @@ export interface HookReading {
  *   spending it on a signal that is never coming.
  */
 export interface HookSpec {
+  /** Whether hooks cover every process on the machine or only launches we instrument. */
+  scope: "machine" | "launch";
   /**
    * Every event the bridge registers for, in install order.
    *

@@ -1,6 +1,6 @@
 import { AGENT_TYPES } from "./types.ts";
 import { THINKING_LEVELS } from "./types.ts";
-import type { AgentType, PermissionMode, ThinkingLevel } from "./types.ts";
+import type { AgentType, PermissionMode, Session, ThinkingLevel } from "./types.ts";
 // By value, because `workQueueUnsupportedWhy` composes prose from it. Naming stays
 // `AGENT_IDENTITY`'s job - a second register on a capability object is the exact defect
 // Phase 0 collapsed.
@@ -106,8 +106,9 @@ export interface SkillsSpec {
  *
  * Two things have to be true to queue work: the agent must report when it picks an item
  * up and finishes it (hooks), and its transcript must be readable back to check that it
- * did. Both shipped harnesses can do both now - Codex's null is about the DELIVERY half
- * instead, `tickTargets` never having been run against a Codex pane.
+ * did. Both shipped harnesses can do both now, and both use the harness-neutral pane
+ * delivery path. Codex hooks are attached only to Mission Control launches, so a
+ * discovery-only session still takes the per-session refusal until one reports a hook.
  *
  * Whatever the reason, the consequence of a null is the same and is why it is not a
  * detail: a queue on a session the worker skips is a one-way trip to nowhere. Because the
@@ -289,6 +290,15 @@ export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean 
 export function workQueueUnsupportedWhy(agent: AgentType): string | null {
   if (HARNESS_CAPABILITIES[agent].workQueue) return null;
   return `Foreman doesn't drive ${AGENT_IDENTITY[agent].label} sessions, so anything queued here would never be picked up.`;
+}
+
+/** Why this particular session cannot hold a work queue, or null when it can. */
+export function workQueueBlockedReason(
+  session: Pick<Session, "agent" | "hooksSeen">,
+): string | null {
+  const queue = HARNESS_CAPABILITIES[session.agent].workQueue;
+  if (!queue) return workQueueUnsupportedWhy(session.agent);
+  return session.hooksSeen ? null : queue.uninstrumentedWhy;
 }
 
 /**

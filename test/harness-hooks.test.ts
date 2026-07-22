@@ -87,6 +87,8 @@ test("every harness answers the hooks question, and both shipped ones push", () 
   for (const [id, h] of Object.entries(HARNESSES)) {
     assert.equal(h.hooks, hooksFor(id as keyof typeof HARNESSES), `${id} resolves to its own spec`);
   }
+  assert.equal(claudeHooks.scope, "machine");
+  assert.equal(codexHooks.scope, "launch");
 });
 
 test("Codex's events are all modelled, and PermissionRequest is not 'working'", () => {

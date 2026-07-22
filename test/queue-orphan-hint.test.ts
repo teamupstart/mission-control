@@ -148,12 +148,26 @@ test("evicting a session surfaces its queue on an idle sibling AT ONCE", async (
   assert.equal(hinted.orphanedQueue?.itemCount, 1);
 });
 
-test("re-attach accepts a Codex session now that its queue can run", () => {
+test("re-attach requires hook authorization for a Codex session", () => {
   const registry = new Registry();
-  const codex = mkDiscovered({ syntheticId: "codex-1", agent: "codex", cwd: "/mixed" });
+  const codex = mkDiscovered({
+    syntheticId: "codex-1",
+    agent: "codex",
+    cwd: "/mixed",
+    terminals: [mkMuxHandle({ paneId: "%codex" })],
+  });
   registry.applyDiscovery([codex]);
   seedQueue("stranded-key", "/mixed");
 
+  assert.equal(registry.reattachQueue("stranded-key", "codex-1"), false);
+  registry.applyHook({
+    agent: "codex",
+    event: "Stop",
+    sessionId: "codex-launched",
+    cwd: "/mixed",
+    transcriptPath: null,
+    env: { tmuxPane: "%codex" },
+  });
   assert.equal(registry.reattachQueue("stranded-key", "codex-1"), true);
   assert.equal(registry.getQueue("codex-1")?.items.length, 1);
   assert.equal(registry.getSession("codex-1")?.orphanedQueue, null);
@@ -216,7 +230,7 @@ test("the hint is never computed from a HALF-MERGED session map", () => {
   // every other live session's queue looked orphaned to it.
   //
   // That hint is actionable, and `reattachQueue` trusts it: it checks only that the
-  // target is Claude and holds no open items, never that the source is really
+  // target is queue-eligible and holds no open items, never that the source is really
   // orphaned. So a click inside that window re-keys B's healthy live queue onto A and
   // drops B's row. The hint's correctness is the only guard on that write.
   const registry = new Registry();

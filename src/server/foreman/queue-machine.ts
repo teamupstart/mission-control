@@ -9,6 +9,7 @@ import type {
 import { reportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
+import { foremanCanHandleNeedsYou } from "../harness/index.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
   autoWrapupPayload,
@@ -209,11 +210,11 @@ export function tickTargets(
    */
   triggers: readonly WrapupTrigger[],
 ): Session[] {
-  // Both halves gate on the `workQueue` capability rather than on an agent id: the
-  // capability is the harness's declaration that observation AND pane delivery are
-  // available. Selecting one that lacks either would be a branch that can never advance.
+  // Both halves gate on the `workQueue` capability rather than on an agent id. Needs-you
+  // additionally requires the authorization promised by that harness's hook scope;
+  // queued work still reaches step 3 so an old hookless batch can be escalated.
   const needsYou = sessions
-    .filter((s) => capabilitiesFor(s.agent).workQueue && reportBucket(s, sessions) === "needs-you")
+    .filter((s) => foremanCanHandleNeedsYou(s) && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
   const seen = new Set(needsYou.map((s) => s.id));
   const rest = sessions.filter(

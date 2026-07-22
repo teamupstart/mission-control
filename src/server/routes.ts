@@ -70,7 +70,7 @@ import { sseHandler } from "./sse.ts";
 import { recordInjection } from "./injections.ts";
 import { harnessFor, sessionMessages } from "./harness/index.ts";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { workQueueUnsupportedWhy } from "@shared/harness-capabilities.ts";
+import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { transcriptStreamHandler } from "./transcript-stream.ts";
 import {
   claimForemanLease,
@@ -871,12 +871,12 @@ export function buildApp(
     const parsed = await parseBody(c, AddWorkItemSchema);
     if (!parsed.ok) return parsed.res;
     const item = queues.add(session.id, parsed.data.intent);
-    // The session resolved above, so a refusal is a harness-capability answer rather
-    // than "no such session". Compose it from the same registry the panel reads so a
-    // future harness with no queue support cannot inherit a stale vendor-specific lie.
+    // The session resolved above, so a refusal is a capability or hook-authorization
+    // answer rather than "no such session". Compose it from the same policy the panel
+    // reads so the write boundary cannot drift from its presentation.
     if (!item) {
       return c.json(
-        { error: workQueueUnsupportedWhy(session.agent) ?? "could not create work queue" },
+        { error: workQueueBlockedReason(session) ?? "could not create work queue" },
         409,
       );
     }
@@ -1019,6 +1019,8 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, ReattachQueueSchema);
     if (!parsed.ok) return parsed.res;
+    const blocked = workQueueBlockedReason(session);
+    if (blocked) return c.json({ error: blocked }, 409);
     const r = queues.reattach(parsed.data.noteKey, session.id);
     return c.json(r, r.ok ? 200 : 409);
   });

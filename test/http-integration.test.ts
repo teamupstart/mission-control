@@ -1021,7 +1021,7 @@ test("the queue endpoints 404 for an unknown session", async () => {
   assert.equal(add.status, 404);
 });
 
-test("adding to a Codex session crosses the HTTP write boundary", async () => {
+test("Codex queue writes require launch-scoped hook authorization", async () => {
   const codex: DiscoveredSession = {
     syntheticId: "sess-codex",
     agent: "codex",
@@ -1044,8 +1044,31 @@ test("adding to a Codex session crosses the HTTP write boundary", async () => {
     headers: jsonHeaders,
     body: JSON.stringify({ intent: "run through Foreman" }),
   });
-  assert.equal(res.status, 200);
-  assert.equal(((await res.json()) as { intent: string }).intent, "run through Foreman");
+  assert.equal(res.status, 409);
+  assert.match(((await res.json()) as { error: string }).error, /Start Codex through Mission Control/);
+
+  const empty = await app.request("/api/sessions/sess-codex/queue", { headers: LOOPBACK });
+  assert.equal(await empty.json(), null);
+
+  const hooked = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      agent: "codex",
+      sessionId: "codex-launched",
+      cwd: "/repo/app",
+      env: { tmuxPane: "%4" },
+    }),
+  });
+  assert.equal(hooked.status, 204);
+
+  const accepted = await app.request("/api/sessions/sess-codex/queue", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ intent: "run through Foreman" }),
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(((await accepted.json()) as { intent: string }).intent, "run through Foreman");
 
   const read = await app.request("/api/sessions/sess-codex/queue", { headers: LOOPBACK });
   assert.equal(((await read.json()) as { items: WorkItem[] }).items[0]?.intent, "run through Foreman");

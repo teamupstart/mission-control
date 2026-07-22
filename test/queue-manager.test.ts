@@ -174,10 +174,21 @@ test("a reorder cannot move an in-flight item's recorded send time", () => {
 
 // ---- every declaring harness can be given a queue ----
 
-test("add accepts a Codex session now that Foreman drives its pane", () => {
+test("add accepts only a hook-authorized Codex session", () => {
   const registry = new Registry();
   const queues = new QueueManager(registry);
-  registry.applyDiscovery([mkDiscovered("s-codex", { agent: "codex" })]);
+  const codex = mkDiscovered("s-codex", { agent: "codex" });
+  registry.applyDiscovery([codex]);
+
+  assert.equal(queues.add("s-codex", "too early"), null);
+  registry.applyHook({
+    agent: "codex",
+    event: "Stop",
+    sessionId: "codex-launched",
+    cwd: codex.cwd,
+    transcriptPath: null,
+    env: { tmuxPane: paneOf(codex) },
+  });
 
   const item = queues.add("s-codex", "do the thing");
   assert.ok(item, "the write boundary must agree with tickTargets");

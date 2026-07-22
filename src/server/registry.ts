@@ -47,6 +47,7 @@ import { goalLine } from "@shared/goal.ts";
 import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { canWriteTo, muxHandle, paneToken, tmuxPaneToken, weztermPaneToken } from "@shared/pane.ts";
 import type { EmulatorHandle, MuxHandle, TerminalHandle } from "@shared/terminal.ts";
+import type { PersonaView } from "@shared/workflow.ts";
 import {
   effectiveContextWindow,
   isLongContext,
@@ -275,6 +276,8 @@ export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
   private reviews = new Map<string, ReviewItem>();
   private tasks = new Map<string, Task>();
+  /** Reusable workflow Personas, including archived rows for durable history links. */
+  private personas = new Map<string, PersonaView>();
   /** Foreman notes keyed by note key (agentSessionId ?? synthetic id). */
   private notes = new Map<string, SessionNote>();
   /** Session goals, keyed by the SAME note key - a sibling record, not part of the note. */
@@ -390,12 +393,14 @@ export class Registry extends EventEmitter {
     sessions: Session[];
     reviews: ReviewItem[];
     tasks: Task[];
+    personas: PersonaView[];
     fleetCost: FleetCost | null;
   } {
     return {
       sessions: [...this.sessions.values()],
       reviews: [...this.reviews.values()],
       tasks: [...this.tasks.values()],
+      personas: [...this.personas.values()],
       // Computed on demand rather than served from `lastFleetCost`, which is null until
       // the first ingest: a dashboard opened before any export would otherwise show a
       // blank strip over a ledger that already holds a week of estimated usage.
@@ -434,6 +439,22 @@ export class Registry extends EventEmitter {
   }
   private emitSession(s: Session): void {
     this.emitEvent({ type: "session_upsert", session: s });
+  }
+
+  // ---- workflow Persona catalog ----
+
+  /** Boot-time catalog install. It precedes serving SSE, so no incremental emit is needed. */
+  initializePersonas(personas: PersonaView[]): void {
+    this.personas = new Map(personas.map((persona) => [persona.id, persona]));
+  }
+
+  upsertPersona(persona: PersonaView): void {
+    this.personas.set(persona.id, persona);
+    this.emitEvent({ type: "persona_upsert", persona });
+  }
+
+  removePersona(id: string): void {
+    if (this.personas.delete(id)) this.emitEvent({ type: "persona_remove", id });
   }
 
   // ---- passive discovery ----

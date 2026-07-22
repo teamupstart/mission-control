@@ -41,6 +41,8 @@ import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
 import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
+import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
+import { useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -60,7 +62,9 @@ const BAR_ACTIONS: readonly (readonly [ActionId, keyof ActionBarHandle])[] = [
 ];
 
 export function App(): React.JSX.Element {
-  const { sessions, reviews, tasks, fleetCost, connected, hasSnapshot } = useEventStream();
+  const { sessions, reviews, tasks, personas, fleetCost, connected, hasSnapshot } = useEventStream();
+  const [workflowDirty, setWorkflowDirty] = useState(false);
+  const { route, navigate } = useWorkflowRoute(workflowDirty);
   const [alertSettings, updateAlerts] = useAlertSettings();
   const { away, setAway, digest, dismissDigest } = useAwayMode();
   // Stalls come from the daemon (only it has the clock), but only the browser can
@@ -576,6 +580,10 @@ export function App(): React.JSX.Element {
       // selected tile's own open button, which the arrow keys put the cursor on.
       if (chord === "Enter" && target?.closest("button, a[href]")) return;
 
+      // The Workflows page owns its own editor and navigation keys. Fleet shortcuts must not
+      // dispatch, select, or drive a session merely because its state remains mounted in App.
+      if (route.page === "workflows") return;
+
       // Sitrep toggles whether it's open or closed, so it stands down for every overlay
       // EXCEPT its own - `onlyOpen` is what draws that distinction without naming the
       // others. Asking the registry rather than listing overlays here is the point: a new
@@ -762,7 +770,7 @@ export function App(): React.JSX.Element {
     // longer depends on that re-subscription having happened yet. This dependency array
     // was the third place a new overlay used to have to be remembered, and the one with no
     // visible symptom when it was missed.
-  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab]);
+  }, [visible, selectedId, expandedId, boardOpen, renamingId, toggleExpand, bindings, layout, files.ensure, requestFilesTab, route.page]);
 
   // Run the chord the board's overview had to open a detail for. Deferred for the same
   // reason as the reply focus below - the action bar it drives mounts on the render this
@@ -842,6 +850,20 @@ export function App(): React.JSX.Element {
               from the filter/stats, so they read as one cluster and wrap as a
               unit. `live` stays outside it: that is status, not an action. */}
           <div className="topbar-actions">
+            <button
+              className="ghost-btn workflow-nav-btn"
+              onClick={() =>
+                navigate(
+                  route.page === "fleet"
+                    ? { page: "workflows", tab: "personas" }
+                    : { page: "fleet" },
+                )
+              }
+              aria-label={route.page === "fleet" ? "Open Workflows" : "Return to Fleet"}
+            >
+              <span aria-hidden>{route.page === "fleet" ? "⌘" : "←"}</span>
+              {route.page === "fleet" ? "Workflows" : "Fleet"}
+            </button>
             <ForemanBar
               state={foreman}
               onOpenSettings={() => {
@@ -889,6 +911,16 @@ export function App(): React.JSX.Element {
             onToggleCollapsed={() => setUsageBarCollapsed(!usageBarCollapsed)}
           />
         </header>
+
+        {route.page === "workflows" ? (
+          <WorkflowPage
+            tab={route.tab}
+            personas={personas}
+            onTab={(tab) => navigate({ page: "workflows", tab })}
+            onDirtyChange={setWorkflowDirty}
+          />
+        ) : (
+          <>
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty
@@ -1054,6 +1086,8 @@ export function App(): React.JSX.Element {
             onRename={() => setRenamingId(selected.id)}
             onDeselect={() => setSelectedId(null)}
           />
+        )}
+          </>
         )}
       </div>
     </OverlayHost>

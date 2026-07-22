@@ -6,6 +6,21 @@ import { LLM_JOB_IDS } from "./llm-jobs.ts";
 import { LLM_RUNNER_IDS } from "./llm.ts";
 import { AGENT_TYPES, THINKING_LEVELS } from "./types.ts";
 import { supportsEffort } from "./harness-capabilities.ts";
+import {
+  DEFAULT_WORKFLOW_BINDING_DEFAULTS,
+  INSPECTOR_FINDINGS_POLICIES,
+  WORKFLOW_BINDING_STATES,
+  WORKFLOW_DELIVERY_MODES,
+  WORKFLOW_LIMITS,
+  WORKFLOW_NODE_ATTEMPT_STATES,
+  WORKFLOW_RUN_STATUSES,
+  WORKFLOW_SOURCE_PORTS,
+  WORKFLOW_SUBMISSION_MODES,
+  WORKFLOW_SUBMISSION_STATUSES,
+  WORKFLOW_TARGET_PORTS,
+  WORKFLOW_TRIGGER_MODES,
+} from "./workflow.ts";
+import type { WorkflowJson } from "./workflow.ts";
 
 const EffortLevelSchema = z.enum(THINKING_LEVELS);
 const harnessEffortSchema = (agent: (typeof AGENT_TYPES)[number]) =>
@@ -1702,3 +1717,257 @@ export const SaveSessionFileSchema = z.object({
   expectedRevision: z.string().regex(/^[a-f0-9]{64}$/),
 });
 export type SaveSessionFile = z.infer<typeof SaveSessionFileSchema>;
+
+// ---- Workflows and Personas -------------------------------------------------
+
+const workflowUtf8 = new TextEncoder();
+const utf8AtMost = (value: string, max: number): boolean => workflowUtf8.encode(value).byteLength <= max;
+const jsonAtMost = (value: unknown, max: number): boolean =>
+  utf8AtMost(JSON.stringify(value), max);
+
+const PersonaNameSchema = z.string().trim().min(1).max(WORKFLOW_LIMITS.personaName);
+const PersonaDescriptionSchema = z.string().max(WORKFLOW_LIMITS.personaDescription);
+
+/** Exact Markdown: validation observes it but never transforms it. */
+export const PersonaGuidanceSchema = z
+  .string()
+  .refine((value) => value.trim().length > 0, { message: "Persona guidance cannot be empty" })
+  .refine((value) => utf8AtMost(value, WORKFLOW_LIMITS.personaGuidanceBytes), {
+    message: `Persona guidance exceeds ${WORKFLOW_LIMITS.personaGuidanceBytes} UTF-8 bytes`,
+  });
+
+export const CreatePersonaSchema = z.object({
+  name: PersonaNameSchema,
+  description: PersonaDescriptionSchema.optional().default(""),
+  guidanceMarkdown: PersonaGuidanceSchema,
+  runner: z.enum(LLM_RUNNER_IDS).nullable().optional().default(null),
+  model: ModelIdSchema.nullable().optional().default(null),
+});
+export type CreatePersona = z.infer<typeof CreatePersonaSchema>;
+
+const PERSONA_EDIT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model"] as const;
+
+export const UpdatePersonaSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    name: PersonaNameSchema.optional(),
+    description: PersonaDescriptionSchema.optional(),
+    guidanceMarkdown: PersonaGuidanceSchema.optional(),
+    runner: z.enum(LLM_RUNNER_IDS).nullable().optional(),
+    model: ModelIdSchema.nullable().optional(),
+  })
+  .refine((value) => PERSONA_EDIT_FIELDS.some((field) => field in value), {
+    message: "Persona update has no editable fields",
+  });
+export type UpdatePersona = z.infer<typeof UpdatePersonaSchema>;
+
+export const ArchivePersonaSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+});
+export type ArchivePersona = z.infer<typeof ArchivePersonaSchema>;
+
+const WorkflowIdSchema = z.string().min(1).max(200);
+const WorkflowNodeIdSchema = z.string().min(1).max(200);
+const WorkflowOutcomeSchema = z.string().min(1).max(200);
+const WorkflowNameSchema = z.string().trim().min(1).max(WORKFLOW_LIMITS.workflowName);
+const WorkflowDescriptionSchema = z.string().max(WORKFLOW_LIMITS.personaDescription);
+
+export const WorkflowPointSchema = z.object({
+  x: z.number().finite().min(-WORKFLOW_LIMITS.canvasCoordinateAbs).max(WORKFLOW_LIMITS.canvasCoordinateAbs),
+  y: z.number().finite().min(-WORKFLOW_LIMITS.canvasCoordinateAbs).max(WORKFLOW_LIMITS.canvasCoordinateAbs),
+});
+
+export const PersonaSnapshotSchema = z.object({
+  sourcePersonaId: WorkflowIdSchema,
+  sourceRevision: z.number().int().positive(),
+  name: PersonaNameSchema,
+  description: PersonaDescriptionSchema,
+  guidanceMarkdown: PersonaGuidanceSchema,
+  runner: z.enum(LLM_RUNNER_IDS).nullable(),
+  model: ModelIdSchema.nullable(),
+});
+
+export const WorkflowDraftNodeSchema = z.discriminatedUnion("kind", [
+  z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("persona"),
+    personaId: WorkflowIdSchema,
+    position: WorkflowPointSchema,
+  }),
+  z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("end"),
+    outcome: WorkflowOutcomeSchema,
+    position: WorkflowPointSchema,
+  }),
+]);
+
+export const PublishedWorkflowNodeSchema = z.discriminatedUnion("kind", [
+  z.object({ id: WorkflowNodeIdSchema, kind: z.literal("session"), position: WorkflowPointSchema }),
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("persona"),
+    persona: PersonaSnapshotSchema,
+    position: WorkflowPointSchema,
+  }),
+  z.object({ id: WorkflowNodeIdSchema, kind: z.literal("all_pass"), position: WorkflowPointSchema }),
+  z.object({
+    id: WorkflowNodeIdSchema,
+    kind: z.literal("end"),
+    outcome: WorkflowOutcomeSchema,
+    position: WorkflowPointSchema,
+  }),
+]);
+
+export const WorkflowEdgeSchema = z.object({
+  id: WorkflowIdSchema,
+  source: WorkflowNodeIdSchema,
+  sourcePort: z.enum(WORKFLOW_SOURCE_PORTS),
+  target: WorkflowNodeIdSchema,
+  targetPort: z.enum(WORKFLOW_TARGET_PORTS),
+});
+
+const workflowGraph = <T extends z.ZodTypeAny>(node: T) =>
+  z
+    .object({
+      nodes: z.array(node).max(WORKFLOW_LIMITS.graphNodes),
+      edges: z.array(WorkflowEdgeSchema).max(WORKFLOW_LIMITS.graphEdges),
+    })
+    .refine((value) => jsonAtMost(value, WORKFLOW_LIMITS.graphJsonBytes), {
+      message: `Workflow graph exceeds ${WORKFLOW_LIMITS.graphJsonBytes} UTF-8 bytes`,
+    });
+
+export const WorkflowDraftGraphSchema = workflowGraph(WorkflowDraftNodeSchema);
+export const PublishedWorkflowGraphSchema = workflowGraph(PublishedWorkflowNodeSchema);
+
+export const WorkflowCompletionPolicySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({
+    kind: z.literal("inspector"),
+    onFindings: z.enum(INSPECTOR_FINDINGS_POLICIES),
+    missingPrAction: z.enum(["wait", "offer_prepare_pr"]),
+  }),
+]);
+
+export const WorkflowBindingDefaultsSchema = z.object({
+  triggerMode: z.enum(WORKFLOW_TRIGGER_MODES),
+  deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES),
+  maxRepairRounds: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.repairRoundsMin)
+    .max(WORKFLOW_LIMITS.repairRoundsMax),
+});
+
+/** Recursive, JSON-only durable payload validation for later-phase audit columns. */
+export const WorkflowJsonSchema: z.ZodType<WorkflowJson> = z.lazy(() =>
+  z.union([
+    z.null(),
+    z.boolean(),
+    z.number().finite(),
+    z.string(),
+    z.array(WorkflowJsonSchema),
+    z.record(z.string(), WorkflowJsonSchema),
+  ]),
+);
+
+export const CreateWorkflowSchema = z.object({
+  name: WorkflowNameSchema,
+  description: WorkflowDescriptionSchema.optional().default(""),
+  draft: WorkflowDraftGraphSchema.optional().default({
+    nodes: [
+      { id: "session", kind: "session", position: { x: 0, y: 0 } },
+      { id: "end", kind: "end", outcome: "Complete", position: { x: 360, y: 0 } },
+    ],
+    edges: [],
+  }),
+  completionPolicy: WorkflowCompletionPolicySchema.optional().default({ kind: "none" }),
+  bindingDefaults: WorkflowBindingDefaultsSchema.optional().default(DEFAULT_WORKFLOW_BINDING_DEFAULTS),
+});
+export type CreateWorkflow = z.infer<typeof CreateWorkflowSchema>;
+
+const WORKFLOW_EDIT_FIELDS = [
+  "name",
+  "description",
+  "draft",
+  "completionPolicy",
+  "bindingDefaults",
+] as const;
+
+export const UpdateWorkflowSchema = z
+  .object({
+    expectedDraftRevision: z.number().int().positive(),
+    name: WorkflowNameSchema.optional(),
+    description: WorkflowDescriptionSchema.optional(),
+    draft: WorkflowDraftGraphSchema.optional(),
+    completionPolicy: WorkflowCompletionPolicySchema.optional(),
+    bindingDefaults: WorkflowBindingDefaultsSchema.optional(),
+  })
+  .refine((value) => WORKFLOW_EDIT_FIELDS.some((field) => field in value), {
+    message: "Workflow update has no editable fields",
+  });
+export type UpdateWorkflow = z.infer<typeof UpdateWorkflowSchema>;
+export const UpdateWorkflowDraftSchema = UpdateWorkflowSchema;
+
+export const ValidateWorkflowSchema = z.object({ expectedDraftRevision: z.number().int().positive() });
+export const PublishWorkflowSchema = ValidateWorkflowSchema;
+export const ArchiveWorkflowSchema = ValidateWorkflowSchema;
+
+export const CreateWorkflowBindingSchema = z.object({
+  workflowVersionId: WorkflowIdSchema,
+  sessionId: z.string().min(1).max(500),
+  triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).default("manual"),
+  deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).default("preview"),
+  maxRepairRounds: z
+    .number()
+    .int()
+    .min(WORKFLOW_LIMITS.repairRoundsMin)
+    .max(WORKFLOW_LIMITS.repairRoundsMax)
+    .default(DEFAULT_WORKFLOW_BINDING_DEFAULTS.maxRepairRounds),
+});
+
+export const UpdateWorkflowBindingSchema = z
+  .object({
+    triggerMode: z.enum(WORKFLOW_TRIGGER_MODES).optional(),
+    deliveryMode: z.enum(WORKFLOW_DELIVERY_MODES).optional(),
+    maxRepairRounds: z
+      .number()
+      .int()
+      .min(WORKFLOW_LIMITS.repairRoundsMin)
+      .max(WORKFLOW_LIMITS.repairRoundsMax)
+      .optional(),
+    state: z.enum(WORKFLOW_BINDING_STATES).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: "empty binding update" });
+
+export const ReattachWorkflowBindingSchema = z.object({
+  sessionId: z.string().min(1).max(500),
+});
+
+export const SubmitWorkflowSchema = z.object({
+  requestId: z.string().min(1).max(200),
+});
+export const ManualWorkflowSubmitSchema = SubmitWorkflowSchema;
+
+export const ResubmitWorkflowSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  resubmitUnchanged: z.boolean().optional().default(false),
+});
+
+export const RetryWorkflowRunSchema = z.object({
+  requestId: z.string().min(1).max(200),
+  nodeAttemptId: WorkflowIdSchema.optional(),
+});
+
+export const CancelWorkflowRunSchema = z.object({
+  requestId: z.string().min(1).max(200),
+});
+
+// Exported closed schemas let Phase 1's durable row parsers reject unknown values before
+// later phases start transitioning them.
+export const WorkflowRunStatusSchema = z.enum(WORKFLOW_RUN_STATUSES);
+export const WorkflowSubmissionModeSchema = z.enum(WORKFLOW_SUBMISSION_MODES);
+export const WorkflowSubmissionStatusSchema = z.enum(WORKFLOW_SUBMISSION_STATUSES);
+export const WorkflowNodeAttemptStateSchema = z.enum(WORKFLOW_NODE_ATTEMPT_STATES);

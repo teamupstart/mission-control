@@ -62,6 +62,10 @@ and get your decision back.
   that reads each blocked session's transcript, auto-answers the routine calls, and
   escalates the genuine forks as a decision brief - shipping OFF and drafting its
   answers before it ever sends.
+- **Keeps reusable review Personas**: open **Workflows** in the top bar to author exact
+  Markdown roles, preview them, choose an optional provider and model, and import, copy,
+  download, duplicate, or archive them. Phase 1 is the Persona foundation; workflow graphs
+  and execution are intentionally not active yet.
 - **Equips** every session with [skills](#skills-every-session-no-restarts): switch a skill
   on in Settings and it is linked into each harness's own skills directory, so it applies
   to **every** Claude Code and Codex session on the machine - including ones this app never
@@ -1118,6 +1122,35 @@ it. If the provider is missing or logged out, the narrative is simply absent and
 rollup carries the summary on its own. Which model writes it is
 **Settings → [Models](#models-what-the-apps-own-model-work-runs-on) → Away digest**.
 
+## Workflows and Personas
+
+The **Workflows** button in the top bar changes only the dashboard body. The fleet header,
+live SSE connection, and Cards, Console, or Board selection stay mounted, so returning to
+**Fleet** does not reconnect or discard the fleet view. The page uses bookmarkable hashes:
+`#/workflows` for the future graph list, `#/workflows/personas` for the Phase 1 Persona
+library, `#/workflows/runs` for future run history, and `#/fleet` to return.
+
+A Persona is a reusable Markdown review role, not an agent, terminal session, Foreman rule,
+or Inspector setting. Phase 1 stores Personas in Mission Control's SQLite database. Its
+name, description, optional provider and model overrides, and guidance are revisioned
+together. Saves use compare-and-swap, so a second tab editing an older revision gets an
+explicit conflict and keeps its local text. Archive is soft: archived Personas are
+read-only, remain addressable for future published history, and continue reserving their
+normalized names.
+
+Guidance is exact text. Accepted Markdown is not trimmed or newline-normalized when it is
+created or updated. Copy writes that same text to the browser clipboard, download writes it
+to a local `.md` Blob, and import stores `File.text()` unchanged after deriving a proposed
+name from the first level-one heading or the filename. Download URLs are revoked after the
+click. Duplicate creates a new Persona rather than editing the source.
+
+Each saved Persona shows the provider and model a future review would use. Resolution is:
+the Persona's provider override or the app-wide provider; then the Persona's model override,
+`MISSION_WORKFLOW_PERSONA_MODEL`, or that provider's balanced default. A stored provider id
+unknown to an older build is reported and falls back through the shared provider ladder.
+This phase does not call the model. `workflow-context` is registered now as an append-only
+Models job for later execution phases.
+
 ## Models (what the app's own model work runs on)
 
 Mission Control does a little model work of its own - naming an untitled [dispatch](#dispatch-an-agent),
@@ -1141,6 +1174,7 @@ model boxes below it, because a `claude` model id is not something `codex` can r
 | Task title | `claude-haiku-4-5` | `MISSION_TASK_TITLE_MODEL` | Names a dispatched task whose Title was left blank, for the card and the branch |
 | Goal | `claude-haiku-4-5` | `MISSION_GOAL_MODEL` | Rewrites each session's raw prompt into the sentence its card shows |
 | Away digest | `claude-haiku-4-5` | `MISSION_AWAY_DIGEST_MODEL` | Narrates what the fleet did while you were away, over the deterministic rollup |
+| Workflow context | `claude-haiku-4-5` | `MISSION_WORKFLOW_CONTEXT_MODEL` | Compacts user goals, decisions, and rationale for later Persona review phases |
 
 Each resolves the same way [Foreman's four](#which-model-foreman-runs-as) and the
 [Inspector's one](#the-review-model) do: **your setting, then the environment variable, then the
@@ -2241,6 +2275,8 @@ that looks perfectly healthy would help nobody.
 | `MISSION_DISPATCH_SETTLE_MS` | `2000` | dispatch: settle delay after discovery before injecting the first prompt. The fallback, reached only when the wait below finds nothing |
 | `MISSION_DISPATCH_HOOK_READY_MS` | `20000` | dispatch: how long to wait for the agent's first hook - the only honest "I can read input" signal - before falling back to the settle above. Skipped when this particular launch could never produce one: a harness that declares no hooks, or a Codex launch whose [hook bridge](#precise-status-for-codex-hooks-that-ride-on-the-dispatch) was missing, so the wait is never spent in certain silence |
 | `MISSION_TASK_TITLE_MODEL` | `claude-haiku-4-5` | [dispatch](#dispatch-an-agent): the model that names a task whose Title was left blank. **Settings → Models → Task title** wins where it is set, then this, then the shipped default |
+| `MISSION_WORKFLOW_CONTEXT_MODEL` | provider's cheap model | [Workflows](#workflows-and-personas): the future context-compaction model. **Settings → Models → Workflow context** wins where it is set, then this, then the selected provider's cheap default |
+| `MISSION_WORKFLOW_PERSONA_MODEL` | provider's balanced model | [Personas](#workflows-and-personas): the future Persona review model. A Persona's own model override wins, then this variable, then the selected provider's balanced default |
 | `MISSION_TASK_TITLE_TIMEOUT_MS` | `15000` | dispatch: hard cap on one titling attempt - a timeout isn't retried, so a missing or slow `claude` costs this once and the first-line title stands. Sized above Haiku's measured 7-8s; a successful call returns as soon as the model does, so lowering it only buys a faster failure |
 | `MISSION_LLM_RUNNER` | `claude` | [Models](#models-what-the-apps-own-model-work-runs-on): which provider does the app's own offline work - the background jobs, Foreman's cheap tier. **Settings → Models → Provider** loses to this where it is set, and the panel says so. An id this build does not have falls back to the default rather than failing, and the panel names what it dropped |
 | `MISSION_SKILLS_DIR` | app's `skills/` | [skills](#skills-every-session-no-restarts) catalog dir (the symlinks' target) |

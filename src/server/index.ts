@@ -33,6 +33,7 @@ import { reconcileSkills } from "./skills/config.ts";
 import { startSkillsReloader } from "./skills/reload.ts";
 import { startTaskSourceSweeper } from "./task-sources/sweeper.ts";
 import { sweepUploads } from "./uploads.ts";
+import { PersonaManager } from "./workflows/personas.ts";
 
 openDb();
 ensureToken();
@@ -59,6 +60,7 @@ const registry = new Registry();
 const reviews = new ReviewManager(registry);
 const tasks = new TaskManager(registry);
 const queues = new QueueManager(registry);
+const personas = new PersonaManager(registry);
 const stopPoller = startPoller(registry);
 // Off unless MISSION_AGENTS_SHADOW_MS is set; returns a no-op stopper when disabled.
 const stopAgentsShadow = startAgentsShadow(registry);
@@ -77,7 +79,7 @@ const stopSkillsReloader = startSkillsReloader(registry);
 // loop's pane gate because it never types (see src/shared/task-source.ts).
 const stopTaskSources = startTaskSourceSweeper(tasks);
 
-const app = buildApp(registry, reviews, tasks, queues, away);
+const app = buildApp(registry, reviews, tasks, queues, away, personas);
 
 // In production the daemon serves the built SPA; in dev, Vite serves it and
 // proxies /api + /events here, so the dist may be absent - that's fine.

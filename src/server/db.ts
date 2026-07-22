@@ -266,6 +266,203 @@ export function openDb(): DatabaseSync {
       value TEXT NOT NULL
     );
 
+    -- Reusable workflow judges. guidance_md is exact operator-authored Markdown: no
+    -- normalized copy exists and every write names this column directly.
+    CREATE TABLE IF NOT EXISTS personas (
+      id              TEXT PRIMARY KEY,
+      name            TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      guidance_md     TEXT NOT NULL,
+      runner_id       TEXT,
+      model_id        TEXT,
+      revision        INTEGER NOT NULL DEFAULT 1,
+      archived_at     INTEGER,
+      created_at      INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_normalized_name
+      ON personas(normalized_name);
+
+    -- The complete workflow family is front-loaded in Phase 1 so published definitions,
+    -- executions, delivery identity and later audit data all share one migration boundary.
+    CREATE TABLE IF NOT EXISTS workflow_definitions (
+      id                     TEXT PRIMARY KEY,
+      name                   TEXT NOT NULL,
+      normalized_name        TEXT NOT NULL,
+      description            TEXT NOT NULL DEFAULT '',
+      draft_graph_json       TEXT NOT NULL,
+      completion_policy_json TEXT NOT NULL,
+      binding_defaults_json  TEXT NOT NULL,
+      draft_revision         INTEGER NOT NULL DEFAULT 1,
+      current_version_id     TEXT,
+      archived_at            INTEGER,
+      created_at             INTEGER NOT NULL,
+      updated_at             INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_definitions_normalized_name
+      ON workflow_definitions(normalized_name);
+
+    CREATE TABLE IF NOT EXISTS workflow_versions (
+      id                     TEXT PRIMARY KEY,
+      workflow_id            TEXT NOT NULL,
+      version                INTEGER NOT NULL,
+      source_draft_revision  INTEGER NOT NULL,
+      graph_json             TEXT NOT NULL,
+      completion_policy_json TEXT NOT NULL,
+      binding_defaults_json  TEXT NOT NULL,
+      published_at           INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_number
+      ON workflow_versions(workflow_id, version);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_versions_draft
+      ON workflow_versions(workflow_id, source_draft_revision);
+
+    CREATE TABLE IF NOT EXISTS workflow_bindings (
+      id                  TEXT PRIMARY KEY,
+      workflow_version_id TEXT NOT NULL,
+      note_key            TEXT NOT NULL,
+      session_id          TEXT,
+      trigger_mode        TEXT NOT NULL,
+      delivery_mode       TEXT NOT NULL,
+      state               TEXT NOT NULL,
+      max_repair_rounds   INTEGER NOT NULL,
+      created_at          INTEGER NOT NULL,
+      updated_at          INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_bindings_active_note
+      ON workflow_bindings(note_key) WHERE state = 'active';
+    CREATE INDEX IF NOT EXISTS idx_workflow_bindings_version
+      ON workflow_bindings(workflow_version_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id                    TEXT PRIMARY KEY,
+      binding_id            TEXT NOT NULL,
+      workflow_version_id   TEXT NOT NULL,
+      status                TEXT NOT NULL,
+      current_phase         TEXT NOT NULL,
+      max_repair_rounds     INTEGER NOT NULL,
+      trigger_source        TEXT NOT NULL,
+      trigger_key           TEXT NOT NULL,
+      inspector_pr_key      TEXT,
+      inspector_head_sha    TEXT,
+      gate_state_json       TEXT,
+      started_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      completed_at          INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_trigger
+      ON workflow_runs(trigger_key);
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_binding
+      ON workflow_runs(binding_id, updated_at);
+
+    CREATE TABLE IF NOT EXISTS workflow_submissions (
+      id                   TEXT PRIMARY KEY,
+      run_id               TEXT NOT NULL,
+      round                INTEGER NOT NULL,
+      mode                 TEXT NOT NULL,
+      trigger_source       TEXT NOT NULL,
+      trigger_key          TEXT NOT NULL,
+      evidence_fingerprint TEXT NOT NULL,
+      context_json         TEXT NOT NULL,
+      evidence_json        TEXT NOT NULL,
+      pr_head_sha          TEXT,
+      status               TEXT NOT NULL,
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL,
+      completed_at         INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_round
+      ON workflow_submissions(run_id, round);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_submissions_trigger
+      ON workflow_submissions(trigger_key);
+
+    CREATE TABLE IF NOT EXISTS workflow_node_attempts (
+      id                    TEXT PRIMARY KEY,
+      submission_id         TEXT NOT NULL,
+      node_id               TEXT NOT NULL,
+      attempt               INTEGER NOT NULL,
+      state                 TEXT NOT NULL,
+      persona_snapshot_json TEXT,
+      verdict_json          TEXT,
+      output_json           TEXT,
+      retry_at              INTEGER,
+      input_fingerprint     TEXT NOT NULL,
+      error                 TEXT,
+      created_at            INTEGER NOT NULL,
+      updated_at            INTEGER NOT NULL,
+      started_at            INTEGER,
+      finished_at           INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_node_attempts_identity
+      ON workflow_node_attempts(submission_id, node_id, attempt);
+    CREATE INDEX IF NOT EXISTS idx_workflow_node_attempts_state
+      ON workflow_node_attempts(state, retry_at);
+
+    CREATE TABLE IF NOT EXISTS workflow_edge_receipts (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      submission_id     TEXT NOT NULL,
+      edge_id            TEXT NOT NULL,
+      source_attempt_id  TEXT NOT NULL,
+      payload_json       TEXT NOT NULL,
+      created_at         INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_edge_receipts_identity
+      ON workflow_edge_receipts(submission_id, edge_id, source_attempt_id);
+
+    CREATE TABLE IF NOT EXISTS workflow_deliveries (
+      id             TEXT PRIMARY KEY,
+      run_id         TEXT NOT NULL,
+      submission_id  TEXT NOT NULL,
+      kind           TEXT NOT NULL,
+      session_id     TEXT NOT NULL,
+      note_key       TEXT NOT NULL,
+      payload        TEXT NOT NULL,
+      payload_sha256 TEXT NOT NULL,
+      state          TEXT NOT NULL,
+      error          TEXT,
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL,
+      delivered_at   INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_deliveries_identity
+      ON workflow_deliveries(submission_id, kind, payload_sha256);
+    CREATE INDEX IF NOT EXISTS idx_workflow_deliveries_run
+      ON workflow_deliveries(run_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS workflow_llm_calls (
+      id               TEXT PRIMARY KEY,
+      run_id           TEXT NOT NULL,
+      submission_id    TEXT NOT NULL,
+      node_attempt_id  TEXT,
+      purpose          TEXT NOT NULL,
+      runner_id        TEXT NOT NULL,
+      model_id         TEXT NOT NULL,
+      attempt          INTEGER NOT NULL,
+      state            TEXT NOT NULL,
+      started_at       INTEGER NOT NULL,
+      finished_at      INTEGER,
+      duration_ms      INTEGER,
+      input_bytes      INTEGER NOT NULL DEFAULT 0,
+      output_bytes     INTEGER NOT NULL DEFAULT 0,
+      cost_usd         REAL,
+      error_code       TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_llm_calls_run
+      ON workflow_llm_calls(run_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_workflow_llm_calls_submission
+      ON workflow_llm_calls(submission_id, purpose);
+
+    CREATE TABLE IF NOT EXISTS workflow_events (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id       TEXT NOT NULL,
+      ts           INTEGER NOT NULL,
+      event_kind   TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_events_run
+      ON workflow_events(run_id, id);
+
     -- What each task source has already filed, and will never file again.
     --
     -- Its OWN table rather than de-duplicating against the three columns on tasks, and

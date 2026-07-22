@@ -8,10 +8,11 @@ import type { LlmRunnerId } from "./llm.ts";
 // The third set of ROLES on one ladder, beside `@shared/foreman-models.ts` (Foreman's
 // four) and `@shared/inspector.ts` (the Inspector's one). Not a fourth resolver and not a
 // second list under `llm.ts`: `resolveModelChoice` ranks the layers, a runner answers "how
-// is a model called", and a role answers "which model". These three are the roles nobody
-// owned - `task-title.ts`, `goal/refiner.ts` and `away/digest.ts` each held a bare
+// is a model called", and a role answers "which model". The original three were roles
+// nobody owned: `task-title.ts`, `goal/refiner.ts` and `away/digest.ts` each held a bare
 // `envVar(…) ?? "claude-haiku-4-5"`, with no config key and nothing surfacing them
-// anywhere, so "what is the titler running as?" had no answer short of reading the source.
+// anywhere. Workflow context joined the same registry before its first caller, so its
+// persisted key and operator-visible choice exist from the workflow foundation onward.
 //
 // They are grouped by SUBSYSTEM the same way the other two are - these are the daemon's
 // own housekeeping calls, all of them cheap, all of them degrading silently to a
@@ -33,7 +34,7 @@ import type { LlmRunnerId } from "./llm.ts";
  * orphans it. The stored key stops matching a declared job, the job silently falls back to
  * its shipped default, and that is indistinguishable from never having set it.
  */
-export const LLM_JOB_IDS = ["task-title", "goal", "away-digest"] as const;
+export const LLM_JOB_IDS = ["task-title", "goal", "away-digest", "workflow-context"] as const;
 
 export type LlmJobId = (typeof LLM_JOB_IDS)[number];
 
@@ -55,11 +56,11 @@ export interface LlmJobSpec extends ModelChoiceSpec {
  * Every fallback is Haiku, and every one is NAMED rather than left unset. That is not a
  * cost preference dressed up as a default - an unset `--model` inherits whatever the local
  * CLI happens to be logged in as, which is both the priciest tier available and
- * unanswerable from inside this app. These three are the narrowest things a model does
- * here (name a task, summarise a prompt into one sentence, write three sentences over a
- * list), each with a deterministic tier standing behind it, so the cheap tier is the right
- * one - but the reason they are written down is that "nobody chose this" is not an
- * acceptable answer to what the app spawns with.
+ * unanswerable from inside this app. These are scoped housekeeping calls (name a task,
+ * summarise a prompt, narrate a short digest, compact workflow context), each with a
+ * deterministic tier standing behind it, so the cheap tier is the right one - but the
+ * reason they are written down is that "nobody chose this" is not an acceptable answer to
+ * what the app spawns with.
  */
 export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
   "task-title": {
@@ -82,6 +83,13 @@ export const LLM_JOB_SPECS: Record<LlmJobId, LlmJobSpec> = {
     fallback: "claude-haiku-4-5",
     label: "Away digest",
     blurb: "Narrates what the fleet did while you were away, over the deterministic rollup.",
+  },
+  "workflow-context": {
+    envKey: "WORKFLOW_CONTEXT_MODEL",
+    envVar: "MISSION_WORKFLOW_CONTEXT_MODEL",
+    fallback: "claude-haiku-4-5",
+    label: "Workflow context",
+    blurb: "Compacts user goals, decisions, and rationale for Persona review.",
   },
 };
 

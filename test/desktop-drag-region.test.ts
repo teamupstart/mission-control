@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 const CSS_PATH = fileURLToPath(new URL("../src/web/styles.css", import.meta.url));
 const css = readFileSync(CSS_PATH, "utf8");
+const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
 
 /** Comments carry `position: fixed` in prose, so they go before anything is parsed. */
 const bare = css.replace(/\/\*[\s\S]*?\*\//g, " ");
@@ -127,6 +128,18 @@ test("the desktop shell still makes the topbar the draggable title bar", () => {
     dragRules.flatMap((r) => r.selectors),
     [".is-desktop .topbar"],
     "the drag region moved or multiplied; the covered list below is scoped to the topbar",
+  );
+});
+
+test("the Workflows page control lives in the topbar's explicit no-drag button coverage", () => {
+  assert.match(app, /className="ghost-btn workflow-nav-btn"/);
+  assert.ok(
+    ALL.some(
+      (rule) =>
+        rule.selectors.includes(".is-desktop .topbar button") &&
+        /-webkit-app-region:\s*no-drag/.test(rule.body),
+    ),
+    "the Workflows topbar button would be swallowed by the desktop drag region",
   );
 });
 

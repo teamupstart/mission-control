@@ -261,6 +261,10 @@ const PROBE_AGENT = "probeagent";
 // matches wherever it sits in the union, and the probe is spliced in beside it - an
 // unhandled variant is unhandled whatever its position.
 const SERVER_EVENT_ANCHOR = `  | { type: "task_remove"; id: string }`;
+const PERSONA_UPSERT_HANDLER = `        case "persona_upsert":
+          setPersonas((prev) => new Map(prev).set(msg.persona.id, msg.persona));
+          break;
+`;
 
 /**
  * Matched on error CODES plus the identifiers involved, never on diagnostic
@@ -385,5 +389,16 @@ test("a ServerEvent variant the stream doesn't handle fails typecheck", () => {
     out,
     UNHANDLED_EVENT,
     `an unhandled ServerEvent variant should break the exhaustiveness check, got:\n${out}`,
+  );
+});
+
+test("the Persona upsert cannot fall out of the exhaustive event-stream switch", () => {
+  const out = typecheckWithPatch((dir) =>
+    edit(dir, "src/web/useEventStream.ts", PERSONA_UPSERT_HANDLER, ""),
+  );
+  assert.match(
+    out,
+    UNHANDLED_EVENT,
+    `removing the Persona upsert handler should break the exhaustiveness check, got:\n${out}`,
   );
 });

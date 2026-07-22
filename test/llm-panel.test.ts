@@ -77,6 +77,13 @@ test("every background job gets a field, labelled and explained", () => {
   }
 });
 
+test("workflow context compaction is a visible configurable background job", () => {
+  const html = decoded(render());
+  assert.ok(html.includes("Workflow context"));
+  assert.ok(html.includes("Compacts user goals, decisions, and rationale for Persona review."));
+  assert.ok(html.includes('id="llm-model-workflow-context"'));
+});
+
 test("an empty box advertises the model the daemon RESOLVED, not the shipped fallback", () => {
   // The placeholder is the resolved id on purpose: an empty box under a set env var must not
   // advertise a default that env var is overriding.

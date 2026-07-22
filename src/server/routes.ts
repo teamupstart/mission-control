@@ -8,6 +8,7 @@ import {
   AwayConfigPatchSchema,
   BacklogPlanSchema,
   CompleteTaskSchema,
+  CreatePersonaSchema,
   CostConfigPatchSchema,
   CreateReviewSchema,
   DispatchBacklogTaskSchema,
@@ -52,6 +53,8 @@ import {
   StatusLineIngestSchema,
   StatusSchema,
   UpdateTaskSchema,
+  UpdatePersonaSchema,
+  ArchivePersonaSchema,
   WrapupSchema,
 } from "@shared/protocol.ts";
 import type { NomistakesRespond } from "@shared/protocol.ts";
@@ -148,6 +151,7 @@ import {
 } from "./session-files.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
+import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
@@ -289,6 +293,8 @@ export function buildApp(
   queues: QueueManager,
   /** Optional so tests can build an app without the away poller running. */
   away?: AwayWatcher,
+  /** Optional for existing route-unit stubs; the daemon always supplies it. */
+  personas?: PersonaManager,
 ): Hono {
   const app = new Hono();
 
@@ -309,6 +315,54 @@ export function buildApp(
     c.json({ ok: true, service: "mission-control", version: VERSION, pid: process.pid }),
   );
   app.get("/api/sessions", (c) => c.json(registry.snapshot().sessions));
+
+  // --- Workflow Personas: exact Markdown plus revision/CAS writes ---
+  const personaManager = (): PersonaManager | null => personas ?? null;
+  const personaFailure = (c: Context, result: Exclude<PersonaMutation, { ok: true }>) => {
+    const code = `persona_${result.reason}`;
+    if (result.reason === "not_found") return c.json({ error: "no such Persona", code }, 404);
+    return c.json({ error: result.reason.replaceAll("_", " "), code, current: result.current }, 409);
+  };
+
+  app.get("/api/personas", (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const raw = c.req.query("includeArchived");
+    if (raw !== undefined && raw !== "true" && raw !== "false") {
+      return c.json({ error: "includeArchived must be true or false" }, 400);
+    }
+    return c.json(manager.list(raw === "true"));
+  });
+  app.get("/api/personas/:id", (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const persona = manager.get(c.req.param("id"));
+    return persona ? c.json(persona) : c.json({ error: "no such Persona" }, 404);
+  });
+  app.post("/api/personas", async (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const parsed = await parseBody(c, CreatePersonaSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.create(parsed.data);
+    return result.ok ? c.json(result.persona, 201) : personaFailure(c, result);
+  });
+  app.patch("/api/personas/:id", async (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const parsed = await parseBody(c, UpdatePersonaSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.update(c.req.param("id"), parsed.data);
+    return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
+  app.delete("/api/personas/:id", async (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    const parsed = await parseBody(c, ArchivePersonaSchema);
+    if (!parsed.ok) return parsed.res;
+    const result = manager.archive(c.req.param("id"), parsed.data.expectedRevision);
+    return result.ok ? c.json(result.persona) : personaFailure(c, result);
+  });
   app.get("/api/sessions/:id/files", async (c) => {
     const session = registry.getSession(c.req.param("id"));
     if (!session) return c.json({ error: "no such session" }, 404);
@@ -1330,7 +1384,11 @@ export function buildApp(
   app.put("/api/llm/config", async (c) => {
     const parsed = await parseBody(c, LlmConfigPatchSchema);
     if (!parsed.ok) return parsed.res;
-    return c.json(setLlmConfig(parsed.data));
+    const config = setLlmConfig(parsed.data);
+    // Personas without a provider override follow this setting. Refresh their top-level SSE
+    // projections in the same mutation so the editor never advertises a stale effective model.
+    if ("runner" in parsed.data) personas?.refreshExecution();
+    return c.json(config);
   });
   // Resolved HERE rather than in the panel, for the reason `ForemanStatus.models` documents:
   // the env layer is invisible to the browser, so a panel showing `config || default` would

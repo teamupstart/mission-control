@@ -6,9 +6,10 @@
 // works under Electron's bundled Node (verified on Electron 43 / Node 24), so
 // nothing about the daemon changes.
 //
-// Adopt-or-spawn: if a daemon already answers on the port (a LaunchAgent, `make
-// up`, or the `tsx watch` dev server), we adopt it and never spawn a second one
-// that would fight over the port. We only supervise/stop a daemon we started.
+// Adopt-or-spawn: if a daemon already answers on the port (a LaunchAgent or
+// `make up`), we adopt it and never spawn a second one that would fight over the
+// port. We only supervise/stop a daemon we started. Development does not call
+// this supervisor; `dev:server` owns that daemon lifecycle.
 
 import { utilityProcess } from "electron";
 import type { UtilityProcess } from "electron";

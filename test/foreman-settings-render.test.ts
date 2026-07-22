@@ -182,6 +182,7 @@ test("the wrap-up trigger group is a multi-select, and the action stays a radio 
   );
   assert.doesNotMatch(group, /type="radio"/, "triggers are never mutually exclusive");
   assert.equal((html.match(/name="foreman-wrapup"/g) ?? []).length, 3, "one radio group of 3");
+  assert.match(html, /Straight to PR - skip no-mistakes/);
 });
 
 test("with no trigger armed the action group is disabled and says so", () => {

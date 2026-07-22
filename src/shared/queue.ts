@@ -114,9 +114,10 @@ export const WRAPUP_NO_MISTAKES = "/no-mistakes";
  * newline, so a wrapped string here is several half-instructions typed in sequence.
  */
 export const WRAPUP_PR =
-  "Please commit this work, push the branch, and open a PR. Then merge the default branch into" +
-  " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
-  " and push again until every check passes and the PR has no merge conflicts.";
+  "Do not run /no-mistakes or any no-mistakes command. Use git and gh directly: commit this" +
+  " work, push the branch, and open a PR. Then merge the default branch into yours and resolve" +
+  " any conflicts, and follow the PR's CI to completion - fix whatever fails and push again" +
+  " until every check passes and the PR has no merge conflicts.";
 
 /**
  * Wrap-up payloads we have sent in the past and no longer send. APPEND-ONLY.
@@ -131,6 +132,9 @@ export const WRAPUP_PR =
  */
 const RETIRED_WRAPUP_PAYLOADS: readonly string[] = [
   "Please commit this work, push the branch, and open a PR.",
+  "Please commit this work, push the branch, and open a PR. Then merge the default branch into" +
+    " yours and resolve any conflicts, and follow the PR's CI to completion - fix whatever fails" +
+    " and push again until every check passes and the PR has no merge conflicts.",
 ];
 
 /**

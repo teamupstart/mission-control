@@ -1481,7 +1481,7 @@ The action is the same whichever trigger fired:
 |---|---|
 | **Ask me** (default) | marks the moment; you pick from the **Ship it?** card, and an alert points you at it |
 | **Run /no-mistakes** | types that instruction into the session itself |
-| **Straight to PR** | commit, push, open a PR - then merge the default branch in, resolve conflicts, and follow CI until every check passes |
+| **Straight to PR** | explicitly skip no-mistakes; use git and `gh` directly to commit, push, and open a PR - then merge the default branch in, resolve conflicts, and follow CI until every check passes |
 
 The two automated actions type something that *pushes*, so they only fire in **live** mode
 on an **allowlisted** repo - until then Foreman asks, and the popover says so rather than

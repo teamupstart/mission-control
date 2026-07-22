@@ -15,6 +15,11 @@ interface HeldSource {
   lastSeen: number;
 }
 
+/** A cursor belongs to one proven conversation at one concrete rollout path. */
+export function usageSourceKey(agent: Session["agent"], agentSessionId: string, path: string): string {
+  return JSON.stringify([agent, agentSessionId, path]);
+}
+
 /**
  * Incrementally ingest request-level usage from every harness that declares the capability.
  *
@@ -27,6 +32,10 @@ export function startUsagePoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const held = new Map<string, HeldSource>();
+  // A shortened file is an in-place rewrite, not a new append-only source. Keep that
+  // exact conversation/path quarantined for this daemon lifetime; changing either value
+  // produces a new source key and is the only evidence that makes reading safe again.
+  const rejected = new Set<string>();
 
   const tick = (): void => {
     if (stopped) return;
@@ -39,7 +48,9 @@ export function startUsagePoller(registry: Registry): () => void {
         if (!usage || !transcript || !session.agentSessionId) continue;
         const path = transcript.locate(session);
         if (!path) continue;
-        held.set(`${session.agent}:${session.agentSessionId}`, { session, path, lastSeen: now });
+        const sourceKey = usageSourceKey(session.agent, session.agentSessionId, path);
+        if (rejected.has(sourceKey)) continue;
+        held.set(sourceKey, { session, path, lastSeen: now });
       }
 
       for (const [sourceKey, source] of held) {
@@ -56,6 +67,7 @@ export function startUsagePoller(registry: Registry): () => void {
           // naturally gets a different key; shortening this one is an in-place rewrite and
           // cannot be made safe by guessing where its economic history starts.
           console.warn(`[usage] refusing shortened source ${sourceKey} at ${source.path}`);
+          rejected.add(sourceKey);
           held.delete(sourceKey);
           continue;
         }

@@ -10,7 +10,7 @@ process.env.MISSION_HOME = home;
 process.env.MISSION_USAGE_POLL_MS = "15";
 
 const { Registry } = await import("../src/server/registry.ts");
-const { startUsagePoller } = await import("../src/server/usage.ts");
+const { startUsagePoller, usageSourceKey } = await import("../src/server/usage.ts");
 const { reportedUsageLedgerHasRows, usageCursorFor } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -82,10 +82,82 @@ test("the poller prices a proven Codex rollout once and performs a final exit dr
     registry.applyDiscovery([]);
     appendFileSync(path, `${token("2026-07-22T12:01:00.000Z")}\n`);
     await eventually(() => registry.getSession("codex-live")?.cost?.input === 1_400);
-    assert.equal(usageCursorFor("codex:conversation-42").offset, Buffer.byteLength(
+    assert.equal(usageCursorFor(usageSourceKey("codex", "conversation-42", path)).offset, Buffer.byteLength(
       `${sessionMeta}\n${turn}\n${token("2026-07-22T12:00:00.000Z")}\n${token("2026-07-22T12:01:00.000Z")}\n`,
     ));
   } finally {
+    stop();
+  }
+});
+
+test("a shortened live source stays quarantined until its proven path changes", async () => {
+  const path = join(home, "rollout-reset.jsonl");
+  const sessionMeta = JSON.stringify({
+    timestamp: "2026-07-22T12:59:00.000Z",
+    type: "session_meta",
+    payload: {
+      id: "conversation-reset",
+      timestamp: "2026-07-22T12:59:00.000Z",
+      cwd: "/repo-reset",
+      source: "cli",
+    },
+  });
+  const turn = JSON.stringify({ type: "turn_context", payload: { model: "gpt-5.6-sol" } });
+  writeFileSync(path, `${sessionMeta}\n${turn}\n${token("2026-07-22T13:00:00.000Z")}\n`);
+  const registry = new Registry();
+  const discovered = {
+    syntheticId: "codex-reset",
+    agent: "codex",
+    name: "codex",
+    nameSource: "process",
+    cwd: "/repo-reset",
+    gitBranch: "main",
+    gitRoot: null,
+    repoRoot: null,
+    nomistakesGated: false,
+    pid: 43,
+    tty: "ttys43",
+    terminals: [],
+    startedAt: 0,
+    agentSessionId: "conversation-reset",
+    transcriptPath: path,
+  } satisfies DiscoveredSession;
+  registry.applyDiscovery([discovered]);
+  const stop = startUsagePoller(registry);
+  const originalWarn = console.warn;
+  let rejected = false;
+  console.warn = (...args: unknown[]) => {
+    if (String(args[0]).includes("refusing shortened source")) rejected = true;
+    originalWarn(...args);
+  };
+  try {
+    await eventually(() => registry.getSession("codex-reset")?.cost?.input === 700);
+    const sourceKey = usageSourceKey("codex", "conversation-reset", path);
+    const committedOffset = usageCursorFor(sourceKey).offset;
+
+    // First make the rewrite observably shorter so the poller rejects it. Then grow it
+    // beyond the old cursor with a changed event. A one-tick rejection would ingest that
+    // event; a quarantined source remains fixed at the original summary.
+    writeFileSync(path, `${sessionMeta}\n`);
+    await eventually(() => rejected);
+    const shortBytes = Buffer.byteLength(`${sessionMeta}\n`);
+    appendFileSync(
+      path,
+      `${" ".repeat(committedOffset - shortBytes)}\n${token("2026-07-22T13:01:00.000Z")}\n`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    assert.equal(registry.getSession("codex-reset")?.cost?.input, 700);
+    assert.equal(usageCursorFor(sourceKey).offset, committedOffset);
+
+    // A different concrete path is a new proven source identity. It starts at its own
+    // cursor while the rejected path remains quarantined.
+    const nextPath = join(home, "rollout-reset-next.jsonl");
+    writeFileSync(nextPath, `${sessionMeta}\n${turn}\n${token("2026-07-22T13:02:00.000Z")}\n`);
+    registry.applyDiscovery([{ ...discovered, transcriptPath: nextPath }]);
+    await eventually(() => registry.getSession("codex-reset")?.cost?.input === 1_400);
+    assert.ok(usageCursorFor(usageSourceKey("codex", "conversation-reset", nextPath)).offset > 0);
+  } finally {
+    console.warn = originalWarn;
     stop();
   }
 });

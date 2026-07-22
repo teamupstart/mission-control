@@ -9,8 +9,9 @@ Mission Control. It is not a second Electron `BrowserWindow`, because an in-app 
 keeps browser/Electron parity, reuses `Overlay`, and avoids a new cross-window state channel.
 
 Replace the read-only Source view with a **syntax-highlighted editor for every UTF-8 text
-file**, backed by autosave. HTML files retain Preview / Editor modes; other text files open
-directly in Editor. Binary and oversized files are listed but cannot be opened in V1.
+file**, backed by autosave. HTML and Markdown files have Preview / Editor modes and default
+to Preview; other text files open directly in Editor. Binary and oversized files are listed
+but cannot be opened in V1.
 
 The revised feature is about **5-7 engineering days**. The original HTML-only, read-only
 viewer was 2-3 days; general editing, autosave, atomic writes, and concurrent-edit conflict
@@ -25,6 +26,8 @@ Implemented on 2026-07-21.
 - Added the Console/Board Files tab, Cards ActionBar entry, shared session buffer controller,
   CodeMirror language loading, inert HTML preview, and extracted draggable/maximizable overlay.
 - Added visible autosave/offline/failure/conflict recovery and reset/session-removal cleanup.
+- Added session-aware transcript file links, Markdown preview, checkout-local HTML stylesheet
+  inlining, and explicit failures for invalid or stale file links.
 - Verified with TypeScript, the full production build, and the full 2,563-test suite. The
   implemented dashboard was also opened from the local Vite build in Chrome for review.
 
@@ -49,7 +52,7 @@ Console and Board detail gain a `Files` tab beside Conversation, Work queue, Gat
 Its left rail searches the session checkout's tracked and untracked, non-ignored files. The
 right side is the file workspace:
 
-- HTML: `Preview` and `Editor` modes.
+- HTML and Markdown: `Preview` and `Editor` modes, defaulting to Preview.
 - Any supported text file: `Editor` mode, with syntax chosen from filename/extension and a
   plain-text fallback.
 - Binary, invalid UTF-8, or oversized file: metadata and an honest unavailable message.
@@ -76,6 +79,16 @@ Cards layout cannot host the ConsoleDetail tab. Its shared ActionBar gets a `Fil
 that opens the extracted window directly. This gives Cards, Console, and Board a complete
 file affordance without creating a card-sized editor variant.
 
+Formatted transcript links that resolve inside the emitting session's checkout reuse that
+same workspace. Console and Board select the session and reveal its integrated Files tab;
+Cards open the extracted Files window. Relative paths and absolute paths beneath the session
+`cwd` are accepted, with optional `:line[:column]` or `#LlineCcolumn` locations. The location
+is advisory and does not prevent the file from opening. URL schemes, dashboard routes,
+checkout escapes, and absolute paths from other checkouts are not claimed, so external links
+retain their existing browser behavior. Every read still passes through the daemon's canonical
+containment check. A missing, invalid, or stale target replaces the loading state with its
+read error while any unsaved local buffer is preserved.
+
 ### Syntax-highlighted editor
 
 Use **CodeMirror 6**, not the existing `rehype-highlight` pipeline. That pipeline renders
@@ -95,9 +108,9 @@ V1 editor behavior:
   it does not guess legacy encodings.
 - Browser spellcheck off for code. Tab remains an editor command while focused; global
   Mission Control shortcuts stand down because the target is content-editable.
-- HTML Preview updates from the local buffer after a short render debounce, even before the
-  save finishes. The same inert iframe sandbox and restrictive CSP apply, so editing does not
-  turn preview into code execution.
+- HTML and Markdown Preview update from the local buffer after a short render debounce, even
+  before the save finishes. HTML keeps the same inert iframe sandbox and restrictive CSP, so
+  editing does not turn preview into code execution.
 
 ## Autosave contract
 
@@ -163,8 +176,8 @@ preview, and write operations.
   repo-relative path can reach a known ignored file.
 - List regular files, not only HTML. Classification happens on open: a UTF-8 fatal decode and
   NUL-byte check distinguishes editable text from binary without relying on extensions.
-- Proposed caps: 2,000 discovered entries, 5 MiB read-only HTML preview, and 2 MiB editable
-  text. Caps are constants exported for tests; refusals are explicit, never truncation.
+- Proposed caps: 2,000 discovered entries, 5 MiB read-only HTML or Markdown preview, and 2 MiB
+  editable text. Caps are constants exported for tests; refusals are explicit, never truncation.
 - Reads return repo-relative path, text, byte size, mtime, detected language, kind, and
   SHA-256 revision. Never return an absolute filesystem path.
 
@@ -213,6 +226,7 @@ extracted window are two presentations of that controller, never two independent
 - `FileNavigator` - search, selection, file-kind status, manual relative path.
 - `FileEditor` - CodeMirror lifecycle and language selection.
 - `HtmlPreview` - CSP injection and sandboxed `srcDoc`.
+- Markdown preview - the shared inert Markdown renderer used elsewhere in the dashboard.
 - `FileConflict` - compare/reload/overwrite recovery.
 
 On session removal, App closes the overlay and drops every buffer for that session. Reset also
@@ -223,8 +237,8 @@ no session-scoped editor state survives a reset.
 ### Layout and overlay contracts
 
 - Add `files` to `ConsoleDetail`'s tabs; Console and Board get it together.
-- Add `onOpenFiles` through `SessionViewProps` / `cardProps` and the shared `ActionBar` for
-  Cards and the extract action.
+- Add `onOpenFiles` and session-aware transcript `onOpenFile` routing through
+  `SessionViewProps` / `cardProps`; the shared `ActionBar` owns the Cards and extract action.
 - Register `files` in `OVERLAY_IDS`; the overlay owns Escape and drag/maximize keys while
   App's global shortcuts stand down.
 - App owns `filesSessionId` and the usual "session disappeared" reconciliation.
@@ -249,9 +263,12 @@ Prepend a restrictive CSP meta tag:
 - `form-action 'none'`
 - `navigate-to 'none'` where supported
 
-V1 HTML preview therefore supports self-contained documents: inline CSS and data/blob images.
-Relative assets, scripts, multi-page navigation, and application preview need a separately
-isolated preview origin/process later. Editing support is not a reason to loosen this boundary.
+HTML preview supports inline CSS, data/blob images, and checkout-local stylesheet links.
+Relative stylesheet paths are resolved against the HTML document, read through the existing
+containment-checked session file API, and inlined before the document enters the opaque
+sandbox. Remote stylesheets are neither fetched nor inlined. Other relative assets, scripts,
+multi-page navigation, and application preview need a separately isolated preview
+origin/process later. Editing support is not a reason to loosen this boundary.
 
 ## Failure and lifecycle behavior
 
@@ -285,13 +302,18 @@ isolated preview origin/process later. Editing support is not a reason to loosen
 
 ### Web
 
-- HTML has Preview/Editor; known and unknown text types open Editor with syntax/plain fallback.
+- HTML and Markdown default to Preview and retain Editor; other known and unknown text types
+  open Editor with syntax/plain fallback.
 - CodeMirror language, theme, line numbers, selection, undo, find, and accessibility labels.
 - Autosave debounce, blur/file-switch flush, single-flight ordering, retry, offline, and all
   visible save states.
 - A stale response cannot mark newer text Saved.
 - Conflict compare/reload/overwrite/copy paths preserve the correct buffer and revision.
 - Preview reads the local buffer and retains the empty sandbox plus restrictive CSP.
+- HTML preview inlines checkout-local stylesheets through contained reads without fetching
+  remote CSS or weakening the inline-only CSP.
+- Formatted transcript file links preserve external navigation, enforce checkout containment,
+  route to the correct layout surface, and settle stale targets as visible errors.
 - Extract/restore preserves session, path, mode, buffer, and conflict state.
 - Drag ignores interactive descendants, clamps to viewport, restores geometry, and maximizes
   on narrow screens.
@@ -323,7 +345,7 @@ isolated preview origin/process later. Editing support is not a reason to loosen
 ## Follow-ups, not hidden V1 work
 
 - Create, rename, move, and delete files.
-- Relative asset/application preview on an isolated preview origin.
+- Non-stylesheet relative assets and application preview on an isolated preview origin.
 - Filesystem watch events and collaborative live updates.
 - Language servers, diagnostics, formatting, completions, or multi-file refactors.
 - Native detached Electron windows or moving an editor between OS windows.

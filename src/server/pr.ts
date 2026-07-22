@@ -23,6 +23,7 @@ import { run } from "./util/exec.ts";
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
 type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
+type PrStateLookup = "error" | PrState | null;
 
 /**
  * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
@@ -81,6 +82,16 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
       headSha: headRefOid,
       worktreeHeadSha,
     };
+  } catch {
+    return "error";
+  }
+}
+
+async function queryPrUrl(url: string): Promise<PrStateLookup> {
+  const res = await run("gh", ["pr", "view", url, "--json", "state"], { timeoutMs: 8000 });
+  if (res.code !== 0) return "error";
+  try {
+    return prStateOf(JSON.parse(res.stdout));
   } catch {
     return "error";
   }
@@ -162,13 +173,15 @@ function checksOf(p: unknown): PrChecks | null {
 export async function pollAndReconcilePrs(
   registry: Registry,
   lookup: (cwd: string, branch: string) => Promise<PrLookup> = queryPr,
+  lookupUrl: (url: string) => Promise<PrStateLookup> = queryPrUrl,
 ): Promise<void> {
   const targets = registry.prPollTargets();
+  const dependencyUrls = registry.dependencyPrPollTargets();
   const found = new Map<string, PrMatch>();
   const skip = new Set<string>();
 
   const queryable = targets.filter((t) => t.branch && !DEFAULT_BRANCHES.has(t.branch));
-  if (queryable.length === 0) {
+  if (queryable.length === 0 && dependencyUrls.length === 0) {
     registry.reconcilePrs(found, skip); // clears any lingering link, spawns nothing
     return;
   }
@@ -197,7 +210,17 @@ export async function pollAndReconcilePrs(
     }
     // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
   }
+  const observedUrls = new Set([...found.values()].map((match) => match.url));
+  const mergedUrls = new Set(
+    [...found.values()].filter((match) => match.state === "merged").map((match) => match.url),
+  );
+  await Promise.all(
+    dependencyUrls.filter((url) => !observedUrls.has(url)).map(async (url) => {
+      if (await lookupUrl(url) === "merged") mergedUrls.add(url);
+    }),
+  );
   registry.reconcilePrs(found, skip);
+  registry.reconcileDependencyPrMerges(mergedUrls);
 }
 
 /**

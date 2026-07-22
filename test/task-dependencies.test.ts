@@ -200,6 +200,172 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
   assert.equal(updated.task?.dependencies[0]?.satisfiedAt, satisfiedAt);
 });
 
+test("new work after a merge starts a dependency episode on the same session and branch", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "same-session-new-work";
+  const cwd = "/repo/same-session-new-work";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reused-work" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "same-conversation",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const completedEpisode = registry.workEpisodeForSession(id)!;
+  const completedDependent = tasks.create({
+    ...createInput,
+    title: "Wait for completed work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/80",
+          number: 80,
+          state: "merged",
+          branch: "feat/reused-work",
+          agentSessionId: "same-conversation",
+          episodeId: completedEpisode.episodeId,
+          createdAt: completedEpisode.startedAt,
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+  assert.ok(registry.getTask(completedDependent.id)?.dependencies[0]?.satisfiedAt);
+  const mergedAt = registry.workEpisodeForSession(id)!.mergedAt!;
+
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: "same-conversation",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "start the follow-up implementation",
+    ts: mergedAt,
+  });
+  const nextEpisode = registry.workEpisodeForSession(id)!;
+  assert.notEqual(nextEpisode.episodeId, completedEpisode.episodeId);
+  assert.equal(nextEpisode.mergedAt, null);
+
+  const nextDependent = tasks.create({
+    ...createInput,
+    title: "Wait for follow-up work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  const edge = nextDependent.dependencies[0];
+  assert.equal(edge?.type === "session" ? edge.episodeId : null, nextEpisode.episodeId);
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
+  assert.equal(edge?.satisfiedAt, null);
+  assert.equal(tasks.dependencyBlockers(nextDependent).length, 1);
+});
+
+test("persisted dependency PRs keep merging after their sessions exit", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const standaloneId = "exited-standalone";
+  const standaloneCwd = "/repo/exited-standalone";
+  const assignedId = "exited-assigned";
+  const assignedCwd = "/repo/exited-assigned";
+  registry.upsertTask(
+    baseTask({
+      id: "exited-prerequisite",
+      title: "Exited assigned prerequisite",
+      status: "running",
+      worktreePath: assignedCwd,
+    }),
+  );
+  registry.applyDiscovery([
+    discovered(standaloneId, standaloneCwd, { gitBranch: "feat/exited-standalone" }),
+    discovered(assignedId, assignedCwd, { gitBranch: "feat/exited-assigned" }),
+  ]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "exited-standalone-episode",
+    cwd: standaloneCwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "exited-assigned-episode",
+    cwd: assignedCwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask("exited-prerequisite")!, sessionId: assignedId });
+  registry.bindTaskToWorkEpisode("exited-prerequisite", assignedId);
+  const standaloneEpisode = registry.workEpisodeForSession(standaloneId)!;
+  const assignedEpisode = registry.workEpisodeForSession(assignedId)!;
+  const standaloneDependent = tasks.create({
+    ...createInput,
+    title: "Wait for exited standalone work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: standaloneId }],
+  });
+  const assignedDependent = tasks.create({
+    ...createInput,
+    title: "Wait for exited assigned work",
+    backlog: true,
+    dependencies: [{ type: "task", taskId: "exited-prerequisite" }],
+  });
+  const standaloneUrl = "https://github.com/example/repo/pull/81";
+  const assignedUrl = "https://github.com/example/repo/pull/82";
+  registry.reconcilePrs(
+    new Map([
+      [standaloneId, prMatch({
+        url: standaloneUrl,
+        number: 81,
+        branch: "feat/exited-standalone",
+        agentSessionId: "exited-standalone-episode",
+        episodeId: standaloneEpisode.episodeId,
+        createdAt: standaloneEpisode.startedAt,
+      })],
+      [assignedId, prMatch({
+        url: assignedUrl,
+        number: 82,
+        branch: "feat/exited-assigned",
+        agentSessionId: "exited-assigned-episode",
+        episodeId: assignedEpisode.episodeId,
+        createdAt: assignedEpisode.startedAt,
+      })],
+    ]),
+    new Set(),
+  );
+  registry.applyDiscovery([]);
+
+  let liveLookups = 0;
+  const polledUrls = new Set<string>();
+  await pollAndReconcilePrs(
+    registry,
+    async () => {
+      liveLookups += 1;
+      return null;
+    },
+    async (url) => {
+      polledUrls.add(url);
+      return "merged";
+    },
+  );
+
+  assert.equal(liveLookups, 0);
+  assert.deepEqual(polledUrls, new Set([standaloneUrl, assignedUrl]));
+  assert.ok(registry.getTask(standaloneDependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.ok(registry.getTask(assignedDependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(standaloneDependent.id)!), []);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(assignedDependent.id)!), []);
+});
+
 test("a standalone dependency follows an expected reset identity rebind", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

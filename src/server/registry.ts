@@ -114,6 +114,7 @@ import {
   upsertTask as dbUpsertTask,
   upsertUsageCell,
   loadInspectorInspections,
+  markWorkEpisodeMerged,
 } from "./db.ts";
 import type { SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import { unref } from "./util/timers.ts";
@@ -877,6 +878,8 @@ export class Registry extends EventEmitter {
               }
             : evt.event === "SessionStart" || evt.event === "SessionEnd"
               ? { kind: "hook_identity" }
+              : evt.event === "UserPromptSubmit"
+                ? { kind: "new_work" }
               : { kind: "hook_work" }
           : { kind: "none" },
       );
@@ -1396,6 +1399,7 @@ export class Registry extends EventEmitter {
       branch,
       prUrl: null,
       prHeadSha: null,
+      mergedAt: null,
       awaitingAgentRebind,
       rebindFromTranscriptPath: awaitingAgentRebind ? rebindFromTranscriptPath : null,
       startedAt,
@@ -1438,7 +1442,7 @@ export class Registry extends EventEmitter {
     session: Session,
     now = Date.now(),
     evidence:
-      | { kind: "none" | "hook_identity" | "hook_work" }
+      | { kind: "none" | "hook_identity" | "hook_work" | "new_work" }
       | {
           kind: "clear_start" | "passive_identity";
           agentSessionId: string;
@@ -1493,11 +1497,23 @@ export class Registry extends EventEmitter {
     }
     if (
       existing.awaitingAgentRebind &&
-      evidence.kind === "hook_work" &&
+      (evidence.kind === "hook_work" || evidence.kind === "new_work") &&
       now >= existing.startedAt
     ) {
       const resumed = this.resolvePendingWorkEpisode(existing, existing.agentSessionId, now);
       if (resumed) existing = resumed;
+    }
+    if (
+      evidence.kind === "new_work" &&
+      existing.mergedAt !== null &&
+      now >= existing.mergedAt
+    ) {
+      return this.startWorkEpisode(
+        session.id,
+        session.agentSessionId,
+        session.gitBranch,
+        now,
+      );
     }
     const branchChanged =
       existing.branch !== null &&
@@ -1598,6 +1614,7 @@ export class Registry extends EventEmitter {
       branch: episode.branch,
       prUrl: episode.prUrl,
       prHeadSha: episode.prHeadSha,
+      mergedAt: episode.mergedAt,
       boundAt: at,
       updatedAt: at,
     };
@@ -1749,22 +1766,8 @@ export class Registry extends EventEmitter {
       } else {
         this.prObservations.delete(id);
       }
-      if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
-        continue;
-      const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
-      // `prUrl` is the key the Inspector summary hangs off, so changing it here without
-      // re-resolving leaves the chip answering for the PREVIOUS pull request - or, on the
-      // ordinary startup ordering (this poller runs seconds after the first sweep, which
-      // saw no PR yet), leaves an adopted PR with no chip at all until something unrelated
-      // happens to rebuild the session. Same reason `applyHook` re-resolves.
-      next.inspector = this.inspectorSummaryFor(next);
-      this.sessions.set(id, next);
-      this.emitSession(next);
-      this.reconcileSessionDependencies(next, acceptedEpisode ? match : null, at);
       if (state === "merged" && match && acceptedEpisode) {
-        // Completion is copied onto dependency EDGES while the proof is live. The PR
-        // chip is session-scoped and disappears when the process/branch does; a task
-        // waiting on it must remain unblocked after that.
+        markWorkEpisodeMerged(id, acceptedEpisode.episodeId, match.url, at);
         const binding = taskWorkEpisodeForSession(id);
         if (
           binding &&
@@ -1777,6 +1780,73 @@ export class Registry extends EventEmitter {
           this.satisfyTaskDependencies(binding.taskId, at);
         }
       }
+      this.reconcileSessionDependencies(s, acceptedEpisode ? match : null, at);
+      if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
+        continue;
+      const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
+      // `prUrl` is the key the Inspector summary hangs off, so changing it here without
+      // re-resolving leaves the chip answering for the PREVIOUS pull request - or, on the
+      // ordinary startup ordering (this poller runs seconds after the first sweep, which
+      // saw no PR yet), leaves an adopted PR with no chip at all until something unrelated
+      // happens to rebuild the session. Same reason `applyHook` re-resolves.
+      next.inspector = this.inspectorSummaryFor(next);
+      this.sessions.set(id, next);
+      this.emitSession(next);
+    }
+  }
+
+  dependencyPrPollTargets(): string[] {
+    const urls = new Set<string>();
+    const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
+    for (const task of this.tasks.values()) {
+      for (const dependency of task.dependencies) {
+        if (dependency.satisfiedAt !== null) continue;
+        if (dependency.type === "session") {
+          if (dependency.prUrl) urls.add(dependency.prUrl);
+          continue;
+        }
+        let binding = bindings.get(dependency.taskId);
+        if (binding === undefined) {
+          binding = taskWorkEpisodeForTask(dependency.taskId);
+          bindings.set(dependency.taskId, binding);
+        }
+        if (binding?.prUrl) urls.add(binding.prUrl);
+      }
+    }
+    return [...urls];
+  }
+
+  reconcileDependencyPrMerges(mergedUrls: Set<string>, at = Date.now()): void {
+    if (mergedUrls.size === 0) return;
+    const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
+    for (const task of [...this.tasks.values()]) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.satisfiedAt !== null) return dependency;
+        if (dependency.type === "session") {
+          if (!dependency.prUrl || !mergedUrls.has(dependency.prUrl)) return dependency;
+          if (dependency.episodeId) {
+            markWorkEpisodeMerged(
+              dependency.sessionId,
+              dependency.episodeId,
+              dependency.prUrl,
+              at,
+            );
+          }
+          changed = true;
+          return { ...dependency, satisfiedAt: at };
+        }
+        let binding = bindings.get(dependency.taskId);
+        if (binding === undefined) {
+          binding = taskWorkEpisodeForTask(dependency.taskId);
+          bindings.set(dependency.taskId, binding);
+        }
+        if (!binding?.prUrl || !mergedUrls.has(binding.prUrl)) return dependency;
+        markWorkEpisodeMerged(binding.sessionId, binding.episodeId, binding.prUrl, at);
+        changed = true;
+        return { ...dependency, satisfiedAt: at };
+      });
+      if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at });
     }
   }
 

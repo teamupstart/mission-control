@@ -183,6 +183,7 @@ export function openDb(): DatabaseSync {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      merged_at        INTEGER,
       awaiting_agent_rebind INTEGER NOT NULL DEFAULT 0,
       rebind_from_transcript_path TEXT,
       started_at       INTEGER NOT NULL,
@@ -197,6 +198,7 @@ export function openDb(): DatabaseSync {
       branch           TEXT,
       pr_url           TEXT,
       pr_head_sha      TEXT,
+      merged_at        INTEGER,
       bound_at         INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -729,6 +731,8 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "dependencies", "TEXT");
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
+  addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
+  addColumn(d, "task_work_episode_bindings", "merged_at", "INTEGER");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -1709,6 +1713,7 @@ export interface SessionWorkEpisode {
   branch: string | null;
   prUrl: string | null;
   prHeadSha: string | null;
+  mergedAt: number | null;
   awaitingAgentRebind: boolean;
   rebindFromTranscriptPath: string | null;
   startedAt: number;
@@ -1723,6 +1728,7 @@ export interface TaskWorkEpisodeBinding {
   branch: string | null;
   prUrl: string | null;
   prHeadSha: string | null;
+  mergedAt: number | null;
   boundAt: number;
   updatedAt: number;
 }
@@ -1734,6 +1740,7 @@ type SessionWorkEpisodeRow = {
   branch: string | null;
   pr_url: string | null;
   pr_head_sha: string | null;
+  merged_at: number | null;
   awaiting_agent_rebind: number;
   rebind_from_transcript_path: string | null;
   started_at: number;
@@ -1748,6 +1755,7 @@ type TaskWorkEpisodeRow = {
   branch: string | null;
   pr_url: string | null;
   pr_head_sha: string | null;
+  merged_at: number | null;
   bound_at: number;
   updated_at: number;
 };
@@ -1760,6 +1768,7 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
     branch: row.branch,
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
+    mergedAt: row.merged_at,
     awaitingAgentRebind: Boolean(row.awaiting_agent_rebind),
     rebindFromTranscriptPath: row.rebind_from_transcript_path,
     startedAt: row.started_at,
@@ -1776,6 +1785,7 @@ function taskWorkEpisodeFromRow(row: TaskWorkEpisodeRow): TaskWorkEpisodeBinding
     branch: row.branch,
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
+    mergedAt: row.merged_at,
     boundAt: row.bound_at,
     updatedAt: row.updated_at,
   };
@@ -1792,15 +1802,16 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
   openDb()
     .prepare(
       `INSERT INTO session_work_episodes
-         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha,
+         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at,
           awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          episode_id       = excluded.episode_id,
          agent_session_id = excluded.agent_session_id,
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         merged_at        = excluded.merged_at,
          awaiting_agent_rebind = excluded.awaiting_agent_rebind,
          rebind_from_transcript_path = excluded.rebind_from_transcript_path,
          started_at       = excluded.started_at,
@@ -1813,6 +1824,7 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
       episode.branch,
       episode.prUrl,
       episode.prHeadSha,
+      episode.mergedAt,
       episode.awaitingAgentRebind ? 1 : 0,
       episode.rebindFromTranscriptPath,
       episode.startedAt,
@@ -1868,8 +1880,8 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
     d.prepare(
       `INSERT INTO task_work_episode_bindings
          (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-          bound_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          merged_at, bound_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(task_id) DO UPDATE SET
          episode_id       = excluded.episode_id,
          session_id       = excluded.session_id,
@@ -1877,6 +1889,7 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
          branch           = excluded.branch,
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
+         merged_at        = excluded.merged_at,
          bound_at         = excluded.bound_at,
          updated_at       = excluded.updated_at`,
     ).run(
@@ -1887,6 +1900,7 @@ export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
       binding.branch,
       binding.prUrl,
       binding.prHeadSha,
+      binding.mergedAt,
       binding.boundAt,
       binding.updatedAt,
     );
@@ -1938,6 +1952,38 @@ export function updateWorkEpisodePr(
      WHERE session_id = ? AND episode_id = ? AND (pr_url IS NULL OR pr_url = ?)`,
   ).run(branch, prUrl, prHeadSha, now, sessionId, episodeId, prUrl);
   return true;
+}
+
+export function markWorkEpisodeMerged(
+  sessionId: string,
+  episodeId: string,
+  prUrl: string,
+  now: number,
+): boolean {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const session = d
+      .prepare(
+        `UPDATE session_work_episodes
+         SET merged_at = COALESCE(merged_at, ?), updated_at = ?
+         WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
+      )
+      .run(now, now, sessionId, episodeId, prUrl);
+    const binding = d
+      .prepare(
+        `UPDATE task_work_episode_bindings
+         SET merged_at = COALESCE(merged_at, ?), updated_at = ?
+         WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
+      )
+      .run(now, now, sessionId, episodeId, prUrl);
+    if (ownsTransaction) d.exec("COMMIT");
+    return Number(session.changes) > 0 || Number(binding.changes) > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {

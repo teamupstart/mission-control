@@ -40,14 +40,19 @@ test("global overlays stay mounted on Fleet and Workflows pages", () => {
   }
 });
 
-test("the provider catalog reloads when the event stream reconnects", () => {
+test("Settings and Workflows share config-aware LLM state", () => {
   const workflowPage = readFileSync(
     fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
     "utf8",
   );
-  assert.match(workflowPage, /if \(!connected\) return;/);
-  assert.match(workflowPage, /\}, \[connected\]\);/);
+  assert.match(workflowPage, /providers=\{llm\.status\?\.runners \?\? \[\]\}/);
+  assert.match(workflowPage, /defaults=\{llm\.personaDefaults\}/);
 
   const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
-  assert.match(app, /<WorkflowPage[\s\S]*?connected=\{connected\}/);
+  assert.match(app, /const llm = useLlm\(\)/);
+  assert.match(app, /<WorkflowPage[\s\S]*?llm=\{llm\}/);
+  assert.match(app, /<SettingsModal[\s\S]*?llm=\{llm\}/);
+
+  const hook = readFileSync(fileURLToPath(new URL("../src/web/useLlm.ts", import.meta.url)), "utf8");
+  assert.equal(hook.match(/fetchPersonaDefaults\(\)/g)?.length, 2);
 });

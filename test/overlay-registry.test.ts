@@ -165,6 +165,13 @@ const OVERLAYS: { name: string; el: () => React.JSX.Element }[] = [
         onClose: () => {},
         foreman: { config: null, status: null, loading: false } as never,
         cost: { status: null, update: async () => {}, error: null },
+        llm: {
+          config: null,
+          status: null,
+          personaDefaults: null,
+          update: async () => {},
+          error: null,
+        },
         layout: "grid",
         onLayoutChange: () => {},
       }),

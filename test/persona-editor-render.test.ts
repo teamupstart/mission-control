@@ -8,6 +8,7 @@ import { EditorState } from "@codemirror/state";
 import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
+import type { LlmState } from "../src/web/useLlm.ts";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import {
   PersonaLibrary,
@@ -65,6 +66,13 @@ const DEFAULTS = {
     codex: { id: "persona-env-model", source: "env" },
   },
 } as const;
+const LLM_STATE: LlmState = {
+  config: null,
+  status: null,
+  personaDefaults: DEFAULTS,
+  update: async () => {},
+  error: null,
+};
 
 const callbacks = {
   providers: PROVIDERS,
@@ -139,6 +147,35 @@ test("an explicit unsaved model overrides the server-resolved Persona default", 
   assert.deepEqual(projection, {
     runner: "codex",
     model: { id: "gpt-explicit", source: "config" },
+  });
+});
+
+test("editing an unknown-runner Persona retains its server-resolved provider", () => {
+  const unknown = {
+    ...PERSONA,
+    runner: "future-provider" as never,
+    model: "old-model",
+    execution: {
+      runner: { id: "claude" as const, source: "default" as const, unknown: "future-provider" },
+      model: { id: "old-model", source: "config" as const },
+    },
+  };
+  const projection = projectPersonaDraftExecution(unknown, {
+    name: unknown.name,
+    description: unknown.description,
+    guidanceMarkdown: unknown.guidanceMarkdown,
+    runner: unknown.runner,
+    model: null,
+  }, {
+    runner: CODEX_RUNNER,
+    models: {
+      claude: { id: "claude-resolved", source: "env" },
+      codex: { id: "codex-resolved", source: "env" },
+    },
+  });
+  assert.deepEqual(projection, {
+    runner: "claude",
+    model: { id: "claude-resolved", source: "env" },
   });
 });
 
@@ -272,7 +309,7 @@ test("Workflows and Runs tabs are honest Phase 1 shells", () => {
   const workflows = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "workflows",
     personas: [],
-    connected: true,
+    llm: LLM_STATE,
     isOverlayOpen: () => false,
     onTab: () => {},
     onDirtyChange: () => {},
@@ -283,7 +320,7 @@ test("Workflows and Runs tabs are honest Phase 1 shells", () => {
   const runs = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "runs",
     personas: [],
-    connected: true,
+    llm: LLM_STATE,
     isOverlayOpen: () => false,
     onTab: () => {},
     onDirtyChange: () => {},

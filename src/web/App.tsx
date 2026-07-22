@@ -26,6 +26,7 @@ import { dropMessageDrafts } from "./lib/drafts.ts";
 import { useNotifier } from "./useNotifier.ts";
 import { useForeman } from "./useForeman.ts";
 import { useCost } from "./useCost.ts";
+import { useLlm } from "./useLlm.ts";
 import { useAlertSettings } from "./lib/alertSettings.ts";
 import { useAwayMode } from "./lib/awayMode.ts";
 import { useStalls } from "./lib/stalls.ts";
@@ -82,6 +83,7 @@ export function App(): React.JSX.Element {
   // and the Cost panel read the same `view` setting, so a local copy in the modal would
   // leave the strip showing the old choice until the next reload - and double-poll.
   const cost = useCost();
+  const llm = useLlm();
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // Only one card expands at a time - opening a new one collapses the previous.
@@ -920,7 +922,7 @@ export function App(): React.JSX.Element {
             <WorkflowPage
               tab={route.page === "workflows" ? route.tab : "workflows"}
               personas={personas}
-              connected={connected}
+              llm={llm}
               isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
               onDirtyChange={setWorkflowDirty}
@@ -1092,6 +1094,7 @@ export function App(): React.JSX.Element {
                   onClose={() => setSettingsOpen(false)}
                   foreman={foreman}
                   cost={cost}
+                  llm={llm}
                   initialCategory={settingsCategory}
                   layout={layout}
                   onLayoutChange={setLayout}

@@ -62,6 +62,7 @@ function render(over: Partial<LlmState> = {}): string {
   const state: LlmState = {
     config: CONFIG,
     status: status(),
+    personaDefaults: null,
     update: async () => {},
     error: null,
     ...over,

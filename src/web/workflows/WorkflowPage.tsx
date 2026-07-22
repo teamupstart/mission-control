@@ -1,41 +1,23 @@
-import { useEffect, useState } from "react";
-import type { LlmStatus } from "@shared/types.ts";
-import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
-import { fetchLlmStatus, fetchPersonaDefaults } from "../lib/api.ts";
+import type { PersonaView } from "@shared/workflow.ts";
+import type { LlmState } from "../useLlm.ts";
 import type { WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
 
 export function WorkflowPage({
   tab,
   personas,
-  connected,
+  llm,
   isOverlayOpen,
   onTab,
   onDirtyChange,
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
-  connected: boolean;
+  llm: LlmState;
   isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
-  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
-  const [personaDefaults, setPersonaDefaults] = useState<PersonaDefaultsView | null>(null);
-
-  useEffect(() => {
-    if (!connected) return;
-    let live = true;
-    void Promise.all([fetchLlmStatus(), fetchPersonaDefaults()]).then(([status, defaults]) => {
-      if (!live) return;
-      if (status) setLlmStatus(status);
-      if (defaults) setPersonaDefaults(defaults);
-    });
-    return () => {
-      live = false;
-    };
-  }, [connected]);
-
   return (
     <main className="workflow-page">
       <header className="workflow-page-head">
@@ -60,8 +42,8 @@ export function WorkflowPage({
       {tab === "personas" && (
         <PersonaLibrary
           personas={personas}
-          providers={llmStatus?.runners ?? []}
-          defaults={personaDefaults}
+          providers={llm.status?.runners ?? []}
+          defaults={llm.personaDefaults}
           isOverlayOpen={isOverlayOpen}
           onDirtyChange={onDirtyChange}
         />

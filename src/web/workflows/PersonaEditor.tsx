@@ -109,7 +109,13 @@ export function projectPersonaDraftExecution(
   if (unchanged) {
     return { runner: persona.execution.runner.id, model: persona.execution.model };
   }
-  const runner = selectedRunner ?? defaults?.runner.id ?? persona?.execution.runner.id ?? null;
+  const retainedUnknownRunner = persona !== null &&
+      draft.runner === persona.runner &&
+      persona.execution.runner.unknown !== null
+    ? persona.execution.runner.id
+    : null;
+  const runner = selectedRunner ?? retainedUnknownRunner ?? defaults?.runner.id ??
+    persona?.execution.runner.id ?? null;
   const model = draft.model !== null
     ? { id: draft.model, source: "config" as const }
     : runner === null

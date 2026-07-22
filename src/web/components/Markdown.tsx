@@ -1,8 +1,9 @@
 import { memo } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import rehypeHighlight from "rehype-highlight";
+import { markdownLinkUrl } from "../lib/workspaceLinks.ts";
 
 /**
  * The one markdown renderer in the app - plans, Foreman briefs, and chat turns all
@@ -39,6 +40,7 @@ export const Markdown = memo(function Markdown({
     <ReactMarkdown
       remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]}
       rehypePlugins={[[rehypeHighlight, { detect: false, ignoreMissing: true }]]}
+      urlTransform={(url, key) => key === "href" ? markdownLinkUrl(url) : defaultUrlTransform(url)}
       components={onLinkClick ? {
         a: ({ node: _node, href, onClick: _onClick, ...props }) => (
           <a

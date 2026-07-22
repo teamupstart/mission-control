@@ -6,11 +6,23 @@ export interface WorkspaceFileTarget {
   column: number | null;
 }
 
-// Protocols transcript links can legitimately hand back to the browser. Check these
-// before parsing `:line[:column]`, otherwise numeric payloads such as `tel:123` look
-// like source locations. This is deliberately narrower than URI scheme syntax so
-// extensionless files such as `Makefile:9` remain valid workspace links.
-const EXTERNAL_LINK_SCHEME = /^(?:https?|ircs?|mailto|xmpp|tel|sms|geo|ftps?):/i;
+const BLOCKED_LINK_SCHEMES = new Set(["data", "file", "javascript", "vbscript"]);
+
+function linkScheme(value: string): string | null {
+  const colon = value.indexOf(":");
+  if (colon < 0) return null;
+  const candidate = value.slice(0, colon).replace(/[\u0000-\u0020]/g, "");
+  return /^[a-z][a-z\d+.-]*$/i.test(candidate) ? candidate.toLowerCase() : null;
+}
+
+function isExtensionlessSourceLocation(value: string): boolean {
+  return /^[A-Z][^/:?#]*:\d+(?::\d+)?$/.test(value);
+}
+
+export function markdownLinkUrl(value: string): string {
+  const scheme = linkScheme(value);
+  return scheme && BLOCKED_LINK_SCHEMES.has(scheme) ? "" : value;
+}
 
 /** Decode an href component without letting one malformed escape break the transcript. */
 function decodePath(value: string): string | null {
@@ -57,7 +69,11 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
   const fragment = hashAt >= 0 ? href.slice(hashAt + 1, queryAt > hashAt ? queryAt : undefined) : "";
   const decoded = decodePath(href.slice(0, cutAt));
   if (!decoded || decoded.includes("\0")) return null;
-  if (EXTERNAL_LINK_SCHEME.test(decoded) || decoded.startsWith("//")) return null;
+  const scheme = linkScheme(decoded);
+  if (
+    decoded.startsWith("//") ||
+    (scheme && (BLOCKED_LINK_SCHEMES.has(scheme) || !isExtensionlessSourceLocation(decoded)))
+  ) return null;
 
   let filePath = decoded;
   let line: number | null = null;
@@ -74,7 +90,7 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
       column = location[2] ? Number(location[2]) : null;
     }
   }
-  if (/^[a-z][a-z\d+.-]*:/i.test(filePath)) return null;
+  if (linkScheme(filePath)) return null;
 
   const normalizedCwd = cwd.replaceAll("\\", "/").replace(/\/+$/, "");
   let relative: string;

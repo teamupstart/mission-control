@@ -34,6 +34,15 @@ test("checkout-local stylesheets are inlined without weakening the preview CSP",
   assert.doesNotMatch(preview, /allow-same-origin|allow-scripts/);
 });
 
+test("unquoted local stylesheet attributes are inlined", async () => {
+  const source = "<html><head><link rel=stylesheet href=theme.css></head><body>ok</body></html>";
+  const hydrated = await inlinePreviewStyles(source, "docs/index.html", async (path) => (
+    path === "docs/theme.css" ? "body { color: green; }" : null
+  ));
+  assert.doesNotMatch(hydrated, /<link/);
+  assert.match(hydrated, /body \{ color: green; \}/);
+});
+
 test("remote stylesheets are neither fetched nor inlined", async () => {
   let read = false;
   const source = '<link rel="stylesheet" href="https://example.com/theme.css"><h1>ok</h1>';

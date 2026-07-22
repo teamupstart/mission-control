@@ -26,15 +26,27 @@ interface StylesheetLink {
   path: string;
 }
 
+function htmlAttribute(tag: string, name: string): string | null {
+  const match = tag.match(new RegExp(
+    `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`,
+    "i",
+  ));
+  return match ? (match[1] ?? match[2] ?? match[3] ?? "") : null;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+}
+
 /** Find checkout-local stylesheet links without treating remote CSS as readable workspace data. */
 function localStylesheets(source: string, documentPath: string): StylesheetLink[] {
   const found: StylesheetLink[] = [];
-  for (const match of source.matchAll(/<link\b[^>]*>/gi)) {
+  for (const match of source.matchAll(/<link\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
     if (match.index == null) continue;
     const tag = match[0];
-    const rel = tag.match(/\brel\s*=\s*(["'])(.*?)\1/i)?.[2] ?? "";
+    const rel = htmlAttribute(tag, "rel") ?? "";
     if (!rel.split(/\s+/).some((part) => part.toLowerCase() === "stylesheet")) continue;
-    const href = tag.match(/\bhref\s*=\s*(["'])(.*?)\1/i)?.[2];
+    const href = htmlAttribute(tag, "href");
     const path = href ? workspaceAssetPath(href, documentPath) : null;
     if (path) found.push({ index: match.index, length: tag.length, path });
   }
@@ -65,7 +77,7 @@ export async function inlinePreviewStyles(
     const text = css[i];
     if (text != null) {
       const safe = text.replace(/<\/style/gi, "<\\/style");
-      output += `<style data-mission-source="${link.path}">\n${safe}\n</style>`;
+      output += `<style data-mission-source="${escapeHtmlAttribute(link.path)}">\n${safe}\n</style>`;
     }
     cursor = link.index + link.length;
   }

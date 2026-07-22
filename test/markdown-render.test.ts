@@ -82,3 +82,16 @@ test("raw HTML in a message is escaped, not mounted", () => {
   assert.doesNotMatch(html, /<img/);
   assert.match(html, /&lt;img/);
 });
+
+test("external protocol links keep their browser href", () => {
+  const html = render("[calendar](webcal:123) [call](tel:456) [map](geo:1,2) [file](ftp://example.com/a)");
+  assert.match(html, /href="webcal:123"/);
+  assert.match(html, /href="tel:456"/);
+  assert.match(html, /href="geo:1,2"/);
+  assert.match(html, /href="ftp:\/\/example\.com\/a"/);
+});
+
+test("active-content protocol links receive an inert href", () => {
+  const html = render("[bad](javascript:alert(1)) [data](data:text/html,x)");
+  assert.equal(html, '<p><a href="">bad</a> <a href="">data</a></p>');
+});

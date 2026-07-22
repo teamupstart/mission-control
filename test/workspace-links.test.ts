@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   pathDefaultsToPreview,
+  markdownLinkUrl,
   workspaceAssetPath,
   workspaceFileTarget,
 } from "../src/web/lib/workspaceLinks.ts";
@@ -37,9 +38,20 @@ test("does not claim external URLs, dashboard routes, or checkout escapes", () =
   assert.equal(workspaceFileTarget("mailto:123", CWD), null);
   assert.equal(workspaceFileTarget("tel:123", CWD), null);
   assert.equal(workspaceFileTarget("sms%3A123", CWD), null);
+  assert.equal(workspaceFileTarget("webcal:123", CWD), null);
+  assert.equal(workspaceFileTarget("custom+viewer%3A456", CWD), null);
   assert.equal(workspaceFileTarget("/api/sessions", CWD), null);
   assert.equal(workspaceFileTarget("/Users/jordan/other/page.html", CWD), null);
   assert.equal(workspaceFileTarget("../../secret.txt", CWD), null);
+});
+
+test("allows external protocols through Markdown while blocking active-content URLs", () => {
+  for (const href of ["webcal:123", "tel:123", "sms:456", "geo:1,2", "ftp://example.com/a"]) {
+    assert.equal(markdownLinkUrl(href), href);
+  }
+  for (const href of ["javascript:alert(1)", "java\nscript:alert(1)", "data:text/html,x", "file:///tmp/x"]) {
+    assert.equal(markdownLinkUrl(href), "");
+  }
 });
 
 test("HTML and Markdown default to preview without treating ordinary source as previewable", () => {

@@ -43,6 +43,7 @@ import { useSessionFilesStore } from "./lib/sessionFiles.ts";
 import { workspaceFileTarget } from "./lib/workspaceLinks.ts";
 import { WorkflowPage } from "./workflows/WorkflowPage.tsx";
 import { useWorkflowRoute } from "./workflows/useWorkflowRoute.ts";
+import { AppPageShell } from "./components/AppPageShell.tsx";
 
 /**
  * The chords that act through the selected session's action bar, and the method each
@@ -912,15 +913,18 @@ export function App(): React.JSX.Element {
           />
         </header>
 
-        {route.page === "workflows" ? (
-          <WorkflowPage
-            tab={route.tab}
-            personas={personas}
-            onTab={(tab) => navigate({ page: "workflows", tab })}
-            onDirtyChange={setWorkflowDirty}
-          />
-        ) : (
-          <>
+        <AppPageShell
+          page={route.page}
+          workflows={(
+            <WorkflowPage
+              tab={route.page === "workflows" ? route.tab : "workflows"}
+              personas={personas}
+              onTab={(tab) => navigate({ page: "workflows", tab })}
+              onDirtyChange={setWorkflowDirty}
+            />
+          )}
+          fleet={(
+            <>
 
         {/* Nothing to arrange means no layout: one of the two empty states below says why,
             and every layout would otherwise dress that silence up as furniture - an empty
@@ -937,47 +941,6 @@ export function App(): React.JSX.Element {
             {layout === "console" && <ConsoleView {...viewProps} />}
             {layout === "board" && <BoardView {...viewProps} />}
           </>
-        )}
-
-        {modalSession && modalReviews.length > 0 && (
-          <ReviewModal
-            session={modalSession}
-            reviews={modalReviews}
-            onClose={() => setReviewSessionId(null)}
-          />
-        )}
-
-        <DispatchLayer
-          open={dispatchOpen || editingTask != null}
-          editTask={editingTask}
-          onClose={closeDispatch}
-        />
-
-        {reportOpen && (
-          <ReportPanel
-            sessions={sessions}
-            tasks={tasks}
-            onClose={() => setReportOpen(false)}
-            onOpenReviews={(id) => {
-              setReportOpen(false);
-              setReviewSessionId(id);
-            }}
-            onEditTask={(id) => {
-              setReportOpen(false);
-              openTaskEditor(id);
-            }}
-          />
-        )}
-
-        {digest && (
-          <AwayDigestCard
-            digest={digest}
-            onDismiss={dismissDigest}
-            onOpenReport={() => {
-              dismissDigest();
-              setReportOpen(true);
-            }}
-          />
         )}
 
         {diffSession && (
@@ -1003,17 +966,6 @@ export function App(): React.JSX.Element {
                 requestFilesTab(filePickerSession.id);
               }
             }}
-          />
-        )}
-
-        {settingsOpen && (
-          <SettingsModal
-            onClose={() => setSettingsOpen(false)}
-            foreman={foreman}
-            cost={cost}
-            initialCategory={settingsCategory}
-            layout={layout}
-            onLayoutChange={setLayout}
           />
         )}
 
@@ -1087,8 +1039,64 @@ export function App(): React.JSX.Element {
             onDeselect={() => setSelectedId(null)}
           />
         )}
-          </>
-        )}
+            </>
+          )}
+          overlays={(
+            <>
+              {modalSession && modalReviews.length > 0 && (
+                <ReviewModal
+                  session={modalSession}
+                  reviews={modalReviews}
+                  onClose={() => setReviewSessionId(null)}
+                />
+              )}
+
+              <DispatchLayer
+                open={dispatchOpen || editingTask != null}
+                editTask={editingTask}
+                onClose={closeDispatch}
+              />
+
+              {reportOpen && (
+                <ReportPanel
+                  sessions={sessions}
+                  tasks={tasks}
+                  onClose={() => setReportOpen(false)}
+                  onOpenReviews={(id) => {
+                    setReportOpen(false);
+                    setReviewSessionId(id);
+                  }}
+                  onEditTask={(id) => {
+                    setReportOpen(false);
+                    openTaskEditor(id);
+                  }}
+                />
+              )}
+
+              {digest && (
+                <AwayDigestCard
+                  digest={digest}
+                  onDismiss={dismissDigest}
+                  onOpenReport={() => {
+                    dismissDigest();
+                    setReportOpen(true);
+                  }}
+                />
+              )}
+
+              {settingsOpen && (
+                <SettingsModal
+                  onClose={() => setSettingsOpen(false)}
+                  foreman={foreman}
+                  cost={cost}
+                  initialCategory={settingsCategory}
+                  layout={layout}
+                  onLayoutChange={setLayout}
+                />
+              )}
+            </>
+          )}
+        />
       </div>
     </OverlayHost>
   );

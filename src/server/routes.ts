@@ -152,12 +152,14 @@ import {
 import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
 import type { PersonaManager, PersonaMutation } from "./workflows/personas.ts";
+import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
 
 /** Long-poll window for the agent's review wait (it re-polls if still pending). */
 const WAIT_TIMEOUT_MS = 30000;
 
 /** The upload cap as the refusal states it - both size guards say the same number. */
 const TOO_BIG_MB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
+const PERSONA_BODY_MAX_BYTES = WORKFLOW_LIMITS.personaGuidanceBytes * 6 + 16 * 1024;
 
 /**
  * Parse + validate a JSON request body against a schema. Returns the typed data,
@@ -339,7 +341,10 @@ export function buildApp(
     const persona = manager.get(c.req.param("id"));
     return persona ? c.json(persona) : c.json({ error: "no such Persona" }, 404);
   });
-  app.post("/api/personas", async (c) => {
+  app.post("/api/personas", bodyLimit({
+    maxSize: PERSONA_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Persona request is too large" }, 413),
+  }), async (c) => {
     const manager = personaManager();
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
     const parsed = await parseBody(c, CreatePersonaSchema);
@@ -347,7 +352,10 @@ export function buildApp(
     const result = manager.create(parsed.data);
     return result.ok ? c.json(result.persona, 201) : personaFailure(c, result);
   });
-  app.patch("/api/personas/:id", async (c) => {
+  app.patch("/api/personas/:id", bodyLimit({
+    maxSize: PERSONA_BODY_MAX_BYTES,
+    onError: (c) => c.json({ error: "Persona request is too large" }, 413),
+  }), async (c) => {
     const manager = personaManager();
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
     const parsed = await parseBody(c, UpdatePersonaSchema);

@@ -109,6 +109,22 @@ test("normalized-name conflicts are 409 and malformed patches remain 400", async
   assert.equal(emptyPatch.status, 400);
 });
 
+test("Persona create and update bodies are bounded before schema parsing", async () => {
+  const { request } = fixture();
+  const oversizedGuidance = "\u0000".repeat(110_000);
+  const create = await request("/api/personas", {
+    method: "POST",
+    body: JSON.stringify({ name: "Too large", guidanceMarkdown: oversizedGuidance }),
+  });
+  assert.equal(create.status, 413);
+
+  const update = await request("/api/personas/missing", {
+    method: "PATCH",
+    body: JSON.stringify({ expectedRevision: 1, guidanceMarkdown: oversizedGuidance }),
+  });
+  assert.equal(update.status, 413);
+});
+
 test("DELETE is parsed soft archive: hidden from active list, readable, and immutable", async () => {
   const { request } = fixture();
   const created = await request("/api/personas", {

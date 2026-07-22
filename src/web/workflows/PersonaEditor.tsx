@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { AGENT_IDENTITY } from "@shared/agent.ts";
-import { LLM_RUNNER_IDS } from "@shared/llm.ts";
+import { isLlmRunnerId } from "@shared/llm.ts";
 import type { LlmRunnerId } from "@shared/llm.ts";
+import type { LlmProviderView } from "@shared/types.ts";
 import {
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
@@ -60,9 +60,11 @@ export function personaLineSeparator(markdown: string): "\r\n" | "\r" | "\n" {
 }
 
 function knownRunner(value: string | null): LlmRunnerId | null {
-  return value !== null && (LLM_RUNNER_IDS as readonly string[]).includes(value)
-    ? value as LlmRunnerId
-    : null;
+  return value !== null && isLlmRunnerId(value) ? value : null;
+}
+
+function providerLabel(providers: readonly LlmProviderView[], id: LlmRunnerId): string {
+  return providers.find((provider) => provider.id === id)?.label ?? id;
 }
 
 export function PersonaEditorStatus({
@@ -94,6 +96,7 @@ export function PersonaEditorStatus({
 export function PersonaEditor({
   persona,
   seed,
+  providers,
   onDirtyChange,
   onSaved,
   onDuplicate,
@@ -101,6 +104,7 @@ export function PersonaEditor({
 }: {
   persona: PersonaView | null;
   seed?: PersonaDraftSeed;
+  providers: readonly LlmProviderView[];
   onDirtyChange: (dirty: boolean) => void;
   onSaved: (persona: PersonaView) => void;
   onDuplicate: (seed: PersonaDraftSeed) => void;
@@ -286,17 +290,19 @@ export function PersonaEditor({
             {draft.runner !== null && selectedRunner === null && (
               <option value={draft.runner} disabled>Unavailable: {draft.runner}</option>
             )}
-            {LLM_RUNNER_IDS.map((runner) => <option key={runner} value={runner}>{AGENT_IDENTITY[runner].label}</option>)}
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>{provider.label}</option>
+            ))}
           </select>
         </label>
         <div className="persona-effective" aria-label="Effective Persona model">
           <span>Effective</span>
-          <strong>{effectiveRunner ? AGENT_IDENTITY[effectiveRunner].label : "App default after save"}</strong>
+          <strong>{effectiveRunner ? providerLabel(providers, effectiveRunner) : "App default after save"}</strong>
           <code>{effectiveModel?.id ?? "resolves after save"}</code>
           {persona?.execution.runner.unknown && <small>Unknown stored provider “{persona.execution.runner.unknown}” fell back.</small>}
         </div>
         <div className="persona-model-field">
-          <ModelSuggestions runner={runnerForControls} />
+          <ModelSuggestions providerLabel={providerLabel(providers, runnerForControls)} />
           <ModelField
             id={`persona-model-${persona?.id ?? "new"}`}
             spec={WORKFLOW_PERSONA_MODEL_SPEC}

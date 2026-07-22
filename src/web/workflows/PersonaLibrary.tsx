@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { LlmProviderView } from "@shared/types.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
@@ -14,9 +15,11 @@ const EMPTY_SEED: PersonaDraftSeed = {
 
 export function PersonaLibrary({
   personas,
+  providers,
   onDirtyChange,
 }: {
   personas: PersonaView[];
+  providers: readonly LlmProviderView[];
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
   const ordered = useMemo(
@@ -158,6 +161,7 @@ export function PersonaLibrary({
             key={selected?.id ?? `new:${seed?.name ?? ""}`}
             persona={selected}
             seed={seed ?? undefined}
+            providers={providers}
             onDirtyChange={setDirty}
             onSaved={(persona) => {
               setLocalPersona(persona);

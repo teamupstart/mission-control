@@ -1,4 +1,7 @@
+import { useEffect, useState } from "react";
+import type { LlmProviderView } from "@shared/types.ts";
 import type { PersonaView } from "@shared/workflow.ts";
+import { fetchLlmStatus } from "../lib/api.ts";
 import type { WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
 
@@ -13,6 +16,18 @@ export function WorkflowPage({
   onTab: (tab: WorkflowTab) => void;
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
+  const [providers, setProviders] = useState<LlmProviderView[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    void fetchLlmStatus().then((status) => {
+      if (live && status) setProviders(status.runners);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   return (
     <main className="workflow-page">
       <header className="workflow-page-head">
@@ -34,7 +49,13 @@ export function WorkflowPage({
         </nav>
       </header>
 
-      {tab === "personas" && <PersonaLibrary personas={personas} onDirtyChange={onDirtyChange} />}
+      {tab === "personas" && (
+        <PersonaLibrary
+          personas={personas}
+          providers={providers}
+          onDirtyChange={onDirtyChange}
+        />
+      )}
       {tab === "workflows" && (
         <section className="workflow-empty">
           <span className="workflow-empty-mark" aria-hidden>◇</span>

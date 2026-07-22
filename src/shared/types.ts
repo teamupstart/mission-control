@@ -1652,6 +1652,11 @@ export interface InspectorStatus {
   model: ResolvedModel;
 }
 
+export interface LlmProviderView {
+  id: LlmRunnerId;
+  label: string;
+}
+
 /**
  * What the app's offline work will actually spawn as - the runner and every background
  * job's model, each with the layer that chose it.
@@ -1668,7 +1673,7 @@ export interface LlmStatus {
   runner: ResolvedLlmRunner;
   models: Record<LlmJobId, ResolvedLlmJobModel>;
   /** Every provider this build has, in declaration order. */
-  runners: Array<{ id: LlmRunnerId; label: string }>;
+  runners: LlmProviderView[];
 }
 
 // ---- SSE events (daemon -> UI) ----

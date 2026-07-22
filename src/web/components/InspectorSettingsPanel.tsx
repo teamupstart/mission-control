@@ -190,7 +190,7 @@ export function InspectorSettingsPanel({ state }: { state: InspectorState }): Re
           The Inspector starts an isolated call per review. Claude receives read-only tools
           scoped to the worktree; Codex reviews the supplied diff without repository tools.
         </p>
-        <ModelSuggestions runner={config?.runner ?? "claude"} />
+        <ModelSuggestions providerLabel={AGENT_IDENTITY[config?.runner ?? "claude"].label} />
         <ModelField
           id="inspector-model"
           spec={INSPECTOR_MODEL_SPEC}

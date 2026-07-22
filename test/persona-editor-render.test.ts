@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EditorState } from "@codemirror/state";
 import type { PersonaView } from "../src/shared/workflow.ts";
+import type { LlmProviderView } from "../src/shared/types.ts";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
 import { PersonaLibrary } from "../src/web/workflows/PersonaLibrary.tsx";
 import {
@@ -41,7 +42,13 @@ const PERSONA: PersonaView = {
   },
 };
 
+const PROVIDERS: LlmProviderView[] = [
+  { id: "claude", label: "Claude Code" },
+  { id: "codex", label: "Codex" },
+];
+
 const callbacks = {
+  providers: PROVIDERS,
   onDirtyChange: () => {},
   onSaved: () => {},
   onDuplicate: () => {},
@@ -53,7 +60,11 @@ function text(html: string): string {
 }
 
 test("an empty library offers New and import without pretending workflows already execute", () => {
-  const html = text(renderToStaticMarkup(createElement(PersonaLibrary, { personas: [], onDirtyChange: () => {} })));
+  const html = text(renderToStaticMarkup(createElement(PersonaLibrary, {
+    personas: [],
+    providers: PROVIDERS,
+    onDirtyChange: () => {},
+  })));
   assert.match(html, /No saved Personas yet/);
   assert.match(html, /Import \.md/);
   assert.match(html, /Choose a Persona/);
@@ -71,6 +82,7 @@ test("an unsaved Persona does not invent the app's effective provider", () => {
       runner: null,
       model: null,
     },
+    providers: PROVIDERS,
     onDirtyChange: () => {},
     onSaved: () => {},
     onDuplicate: () => {},
@@ -91,6 +103,21 @@ test("a selected Persona renders metadata, effective values, editor, preview, an
   assert.match(html, /Download \.md/);
   assert.match(html, /Duplicate/);
   assert.match(html, /Archive/);
+});
+
+test("Persona provider labels come from the LLM provider catalog", () => {
+  const providers: LlmProviderView[] = [
+    { id: "claude", label: "Batch Claude" },
+    { id: "codex", label: "Batch Codex" },
+  ];
+  const html = text(renderToStaticMarkup(createElement(PersonaEditor, {
+    persona: PERSONA,
+    ...callbacks,
+    providers,
+  })));
+  assert.match(html, /Batch Claude/);
+  assert.match(html, /Batch Codex/);
+  assert.doesNotMatch(html, /Claude Code/);
 });
 
 test("dirty, conflict, and archived states are explicit and actionable", () => {
@@ -197,6 +224,21 @@ test("the shared editor preserves mixed source line endings outside the changed 
   assert.equal(
     applyExactEditorChanges(markdown, state, transaction.changes, "\r\n"),
     "# Precise\r\n\r\nMixed\nending\r",
+  );
+});
+
+test("the shared editor maps multiple exact changes across mixed line endings", () => {
+  const markdown = "one\r\ntwo\nthree\rfour";
+  const state = EditorState.create({ doc: markdown });
+  const transaction = state.update({
+    changes: [
+      { from: 0, to: 3, insert: "1" },
+      { from: 8, to: 13, insert: "3" },
+    ],
+  });
+  assert.equal(
+    applyExactEditorChanges(markdown, state, transaction.changes),
+    "1\r\ntwo\n3\rfour",
   );
 });
 

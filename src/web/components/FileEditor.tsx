@@ -36,9 +36,9 @@ function exactLineStarts(value: string): number[] {
   return starts;
 }
 
-function exactOffset(value: string, state: EditorState, position: number): number {
+function exactOffset(lineStarts: readonly number[], state: EditorState, position: number): number {
   const line = state.doc.lineAt(position);
-  const start = exactLineStarts(value)[line.number - 1];
+  const start = lineStarts[line.number - 1];
   if (start === undefined) throw new Error("editor source and document line counts diverged");
   return start + position - line.from;
 }
@@ -51,10 +51,11 @@ export function applyExactEditorChanges(
   insertedLineSeparator = "\n",
 ): string {
   const edits: Array<{ from: number; to: number; insert: string }> = [];
+  const lineStarts = exactLineStarts(value);
   changes.iterChanges((from, to, _fromNew, _toNew, inserted) => {
     edits.push({
-      from: exactOffset(value, state, from),
-      to: exactOffset(value, state, to),
+      from: exactOffset(lineStarts, state, from),
+      to: exactOffset(lineStarts, state, to),
       insert: inserted.sliceString(0, undefined, insertedLineSeparator),
     });
   });

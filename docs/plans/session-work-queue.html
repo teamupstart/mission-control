@@ -751,11 +751,8 @@ makes them worth having.</p>
 <p><strong>Not exercised end-to-end:</strong> the actual tmux delivery and a real <code>claude -p</code> verify round - both
 need a live agent, which the project guardrail puts off-limits for an automated check. Steps 6-12 of
 the manual list below remain worth a human pass with a scratch tmux session before trusting live mode.</p>
-<h2>Historical scope update</h2>
-<p>Codex queues were originally listed as future work because Foreman had no Codex transcript
-endpoint. That limitation no longer applies: rollout messages feed the shared transcript path,
-and Mission Control-launched Codex sessions use launch-scoped hooks plus the harness-neutral
-delivery path. Operator-started Codex sessions remain outside Foreman automation.</p>
+<p>Current harness support and its launch-scoped safety boundary are documented in
+<a href="../../README.md#work-queues-load-a-session-up-and-walk-away">Work queues</a>.</p>
 <h2>Out of scope (future)</h2>
 <ul>
 <li>Running tests/lint during verification (evidence-only by decision; no-mistakes is the gate).</li>

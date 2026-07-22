@@ -890,12 +890,8 @@ makes them worth having.
 need a live agent, which the project guardrail puts off-limits for an automated check. Steps 6-12 of
 the manual list below remain worth a human pass with a scratch tmux session before trusting live mode.
 
-## Historical scope update
-
-Codex queues were originally listed as future work because Foreman had no Codex transcript
-endpoint. That limitation no longer applies: rollout messages feed the shared transcript path,
-and Mission Control-launched Codex sessions use launch-scoped hooks plus the harness-neutral
-delivery path. Operator-started Codex sessions remain outside Foreman automation.
+Current harness support and its launch-scoped safety boundary are documented in
+[Work queues](../../README.md#work-queues-load-a-session-up-and-walk-away).
 
 ## Out of scope (future)
 

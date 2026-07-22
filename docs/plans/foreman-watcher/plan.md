@@ -206,8 +206,9 @@ action.
   session per subprocess.
 - No change to delivery, the trust ladder, or the escalation/alert UX — this is purely a gate in
   front of the existing reviewer.
-- Codex support is tracked separately (`todo/foreman-upgrades.md` #5); the tiers are agent-agnostic
-  but depend on a transcript endpoint that Codex doesn't yet expose.
+
+The tiers remain agent-agnostic. Current harness support and authorization boundaries are
+documented in [Foreman](../../../README.md#foreman-auto-responder).
 
 ## Open questions
 

@@ -92,11 +92,9 @@ it through the loop it already runs. Closes the gap from "auto-responder" to fir
 distinction so escalation policy differs by deliverable type (PR/merge vs report).
 
 ### 5. Codex support — shipped within the launch-scoped boundary
-Codex rollout messages now feed the shared transcript path, and Mission Control launches attach
-the hooks Foreman needs for prompt triage and proactive work queues. Delivery remains
-harness-neutral. Operator-started Codex sessions deliberately stay human-operated because those
-launch-scoped hooks are the authorization boundary, so this closes the capability gap without
-turning passive discovery into permission to type.
+See [Foreman](../README.md#foreman-auto-responder) and
+[Work queues](../README.md#work-queues-load-a-session-up-and-walk-away) for the current support
+contract and launch-scoped authorization boundary.
 
 ### 6. Turn-end / wedged-session recovery — reliability
 firstmate refuses to let a session exit blind while work is in flight. Foreman only looks at
@@ -130,5 +128,4 @@ phone without opening the dashboard. (The Slack MCP is already available.)
 2. **#2 (away digest)** - the batching/digest half shipped; the Foreman-autonomy half is open -
    and **#3 (learning loop)** — immediate felt value.
 3. **#4 (dispatch)** — the strategic leap that makes Foreman a real supervisor, not a triager.
-4. **#6 (wedged recovery)** — reliability once the core is richer. **#5 (Codex)** is shipped for
-   Mission Control-launched sessions within its hook boundary.
+4. **#6 (wedged recovery)** — reliability once the core is richer.

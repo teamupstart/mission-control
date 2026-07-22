@@ -258,8 +258,10 @@ server → worker → UI in that order (each independently testable).
 
 ## Out of scope (future)
 
+Current harness support has moved beyond this original v1 scope; see
+[Foreman](../../../README.md#foreman-auto-responder).
+
 - Daemon-managed auto-launch of the worker (v1 is `npm run foreman`).
-- Codex sessions (no transcript endpoint yet) — Foreman targets Claude sessions first.
 - ~~Auto-answering no-mistakes gates (that path already has `nomistakes/respond`; could fold in later).~~
   **Resolved:** folded in. A parked gate whose driving agent has stopped classifies as the
   `gate-parked` situation (see `foreman/pending.ts`) and reaches the full reviewer, which reads the

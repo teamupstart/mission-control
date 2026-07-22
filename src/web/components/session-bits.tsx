@@ -522,10 +522,19 @@ export function RenameEditor({
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
  *
  * A `<span>` (styled `display:flex`), not a `<div>`, so it's phrasing content: the board's
- * tile draws its whole body as spans, and this row has to nest into that flow - and into
- * any button-like container a layout wraps it in - without being invalid HTML.
+ * tile draws its whole body as spans. A layout that needs the effort control outside an
+ * interactive tile flow can suppress it here and render the shared picker beside the row.
  */
-export function RuntimeMetaRow({ meta, session }: { meta: SessionMeta; session?: Session }): React.JSX.Element | null {
+export function RuntimeMetaRow({
+  meta,
+  session,
+  showEffort = true,
+}: {
+  meta: SessionMeta;
+  session?: Session;
+  /** Board renders its interactive effort control as a sibling of this shared row. */
+  showEffort?: boolean;
+}): React.JSX.Element | null {
   const hasCtx = meta.contextPct != null;
   if (!meta.model && !meta.thinkingLevel && !hasCtx) return null;
   const tone = contextTone(meta.contextPct);
@@ -541,7 +550,7 @@ export function RuntimeMetaRow({ meta, session }: { meta: SessionMeta; session?:
           {meta.longContext && <span className="rt-1m">1M</span>}
         </span>
       )}
-      {meta.thinkingLevel &&
+      {showEffort && meta.thinkingLevel &&
         (session ? (
           <EffortPicker session={session} />
         ) : (

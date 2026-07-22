@@ -20,6 +20,7 @@ import {
   StateBadge,
 } from "../src/web/components/session-bits.tsx";
 import { Tooltip } from "../src/web/components/Tooltip.tsx";
+import { EffortPicker } from "../src/web/components/EffortPicker.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
@@ -382,7 +383,11 @@ test("the board tile's agent dot and context meter are the shared ones", () => {
     tile.includes(bit(AgentDot, { agent: session.agent })),
     "tile should render the shared AgentDot",
   );
-  assert.ok(tile.includes(bit(RuntimeMetaRow, { meta: m, session })), "tile should render the shared meter");
+  assert.ok(
+    tile.includes(bit(RuntimeMetaRow, { meta: m, session, showEffort: false })),
+    "tile should render the shared meter without nesting its effort control",
+  );
+  assert.ok(tile.includes(bit(EffortPicker, { session })), "tile should render the shared effort control beside it");
 });
 
 test("the board tile's cost badge is the shared CostChip", () => {

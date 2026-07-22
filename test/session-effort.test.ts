@@ -21,7 +21,10 @@ const picker = (level: string): string => MODEL_PICKER_XHIGH.replace("xHigh", le
 
 const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
 
-function driven(start = NORMAL): { deps: PaneDeps; did: string[]; screen: () => string } {
+function driven(
+  start = NORMAL,
+  options: { failCommit?: boolean } = {},
+): { deps: PaneDeps; did: string[]; screen: () => string } {
   let screen = start;
   const did: string[] = [];
   const pane: BoundPane = {
@@ -36,6 +39,9 @@ function driven(start = NORMAL): { deps: PaneDeps; did: string[]; screen: () => 
         did.push(`text:${text}`);
         if (text === "/model") screen = pending(text);
         if (text === "s") screen = NORMAL;
+        if (text === "s" && options.failCommit) {
+          return { ok: false, error: "commit delivery failed", outcomeUnknown: false };
+        }
         return ok();
       },
       keys: async (keys: readonly Key[]) => {
@@ -68,6 +74,15 @@ test("session effort verifies the composer, each move, and the session-only comm
   const result = await setSessionEffort(session(), "max", h.deps);
 
   assert.equal(result.ok, true);
+  assert.deepEqual(h.did, ["text:/model", "keys:enter", "keys:right", "keys:right", "text:s"]);
+  assert.equal(h.screen(), NORMAL);
+});
+
+test("session effort fails when the commit key is not delivered, even if the picker closes", async () => {
+  const h = driven(NORMAL, { failCommit: true });
+  const result = await setSessionEffort(session(), "max", h.deps);
+
+  assert.deepEqual(result, { ok: false, error: "commit delivery failed", effort: null });
   assert.deepEqual(h.did, ["text:/model", "keys:enter", "keys:right", "keys:right", "text:s"]);
   assert.equal(h.screen(), NORMAL);
 });

@@ -408,12 +408,12 @@ async function driveHorizontalEffort(
     return { ok: false, error: "the effort selection changed before it could be confirmed", effort: null };
   }
   const committed = await writeText(pane, picker.commit);
+  if (!committed.ok) return { ...committed, effort: null };
   const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
   if (closed) return { ok: true, effort: target };
   return {
-    ...(committed.ok ? {} : committed),
     ok: false,
-    error: committed.error ?? "the agent did not confirm the session-only effort change",
+    error: "the agent did not confirm the session-only effort change",
     effort: null,
   };
 }

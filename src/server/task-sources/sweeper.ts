@@ -38,6 +38,8 @@ interface Entry {
   lastSweepAt: number | null;
   lastError: string | null;
   lastFiled: number;
+  /** Last configured state observed by this process; status is process-local too. */
+  enabled: boolean | null;
   /** In flight, so the tick and a "Sweep now" click cannot double-file. */
   sweeping: boolean;
 }
@@ -46,16 +48,28 @@ const entries = new Map<string, Entry>();
 function entryFor(id: string): Entry {
   let e = entries.get(id);
   if (!e) {
-    e = { lastSweepAt: null, lastError: null, lastFiled: 0, sweeping: false };
+    e = { lastSweepAt: null, lastError: null, lastFiled: 0, enabled: null, sweeping: false };
     entries.set(id, e);
   }
+  return e;
+}
+
+/** A newly re-enabled source must earn a healthy status with a new sweep. */
+function observeEnabled(inst: TaskSourceInstance): Entry {
+  const e = entryFor(inst.id);
+  if (e.enabled === false && inst.enabled) {
+    e.lastSweepAt = null;
+    e.lastError = null;
+    e.lastFiled = 0;
+  }
+  e.enabled = inst.enabled;
   return e;
 }
 
 /** Status for every configured source, for the settings panel. */
 export function taskSourceStatuses(sources: TaskSourceInstance[]): TaskSourceStatus[] {
   return sources.map((s) => {
-    const e = entryFor(s.id);
+    const e = observeEnabled(s);
     return {
       sourceId: s.id,
       lastSweepAt: e.lastSweepAt,
@@ -159,6 +173,7 @@ export function startTaskSourceSweeper(tasks: TaskManager): () => void {
       // holds for `harnesses.ts`.
       for (const inst of getTaskSourcesConfig().sources) {
         if (stopped) break;
+        observeEnabled(inst);
         if (!inst.enabled || !due(inst, now)) continue;
         try {
           await sweepOnce(inst, tasks);

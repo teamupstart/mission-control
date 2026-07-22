@@ -586,6 +586,7 @@ function SourceDirectory({
   onAdd: () => void;
 }): React.JSX.Element {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const directoryRef = useRef<HTMLDivElement>(null);
   const byId = new Map(statuses.map((s) => [s.sourceId, s]));
   const counts = sources.reduce(
     (all, src) => {
@@ -608,8 +609,8 @@ function SourceDirectory({
   useEffect(() => {
     if (!restoreFocusId) return;
     const row = rowRefs.current.get(restoreFocusId);
-    if (!row) return;
-    row.focus();
+    if (row) row.focus();
+    else directoryRef.current?.focus();
     onFocusRestored();
   }, [onFocusRestored, restoreFocusId]);
 
@@ -664,7 +665,7 @@ function SourceDirectory({
         ))}
       </div>
 
-      <div className="ts-directory" role="list" aria-label="Configured task sources">
+      <div ref={directoryRef} className="ts-directory" role="list" aria-label="Configured task sources" tabIndex={-1}>
         {visible.map((src) => {
           const status = byId.get(src.id);
           const kindLabel = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;

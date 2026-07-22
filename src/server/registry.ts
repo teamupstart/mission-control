@@ -235,6 +235,12 @@ interface HookOverlay {
  * survives both a daemon restart and a session going silent past the overlay TTL.
  */
 interface PassiveState {
+  /** Synthetic process identity. A pane can outlive the process that produced this read. */
+  sessionId: string;
+  /** Conversation identity at the time of the read; catches /clear on the same process. */
+  agentSessionId: string | null;
+  /** Exact passive source where discovery could name it. */
+  transcriptPath: string | null;
   state: SessionState;
   /** Epoch ms of the newest transcript record (drives `settledIdle`'s settle gap). */
   lastActivity: number;
@@ -262,8 +268,9 @@ export class Registry extends EventEmitter {
   private exitTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** overlay keyed by pane token ("tmux:%12" | "wezterm:12") - see `@shared/pane.ts`. */
   private overlays = new Map<string, HookOverlay>();
-  /** Transcript-derived state keyed by the SAME pane token; consulted only when a
-   *  session has no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
+  /** Transcript-derived state keyed by pane token and attributed inside the value to
+   *  the process + conversation that produced it. Consulted only when a session has
+   *  no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
   private passiveStates = new Map<string, PassiveState>();
   /**
    * What DISCOVERY said this session's conversation is, keyed by synthetic id - the
@@ -1478,7 +1485,11 @@ export class Registry extends EventEmitter {
     if (!read) return;
     const key = sessionKey(session);
     if (!key) return;
+    const discovered = this.discoveredIdentity.get(session.id);
     this.passiveStates.set(key, {
+      sessionId: session.id,
+      agentSessionId: discovered?.agentSessionId ?? session.agentSessionId,
+      transcriptPath: discovered?.transcriptPath ?? session.transcriptPath,
       state: read.state,
       lastActivity: read.lastActivity,
       updatedAt: Date.now(),
@@ -1524,11 +1535,25 @@ export class Registry extends EventEmitter {
     return undefined;
   }
 
-  /** The transcript-derived state for a session, keyed by pane token. Pane-only:
-   *  it's written by pane key and a session with no pane can't be delivered to. */
+  /**
+   * The transcript-derived state for this exact process + conversation.
+   *
+   * The map is pane-keyed so the reading survives ordinary discovery rebuilds, but a
+   * pane is not identity: the terminal can replace its process, and `/clear` can replace
+   * the rollout under the same process. Refuse either mismatch rather than confirming
+   * the new card from the old occupant's lifecycle marker.
+   */
   private passiveStateFor(s: Session): PassiveState | undefined {
     const key = sessionKey(s);
-    return key ? this.passiveStates.get(key) : undefined;
+    const passive = key ? this.passiveStates.get(key) : undefined;
+    if (!passive || passive.sessionId !== s.id) return undefined;
+    const discovered = this.discoveredIdentity.get(s.id);
+    const agentSessionId = discovered?.agentSessionId ?? s.agentSessionId;
+    const transcriptPath = discovered?.transcriptPath ?? s.transcriptPath;
+    if (passive.agentSessionId !== agentSessionId || passive.transcriptPath !== transcriptPath) {
+      return undefined;
+    }
+    return passive;
   }
 
   private pruneOverlays(now: number): void {

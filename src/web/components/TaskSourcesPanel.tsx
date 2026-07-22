@@ -57,9 +57,11 @@ function splitList(raw: string): string[] {
 /**
  * What one source's last sweep says about itself, in one line.
  *
- * "Never swept" and "swept, found nothing" are deliberately different sentences: they are
- * the two states a background feature is most often confused about, and reading the first
- * as the second is how a source that has been broken since setup goes unnoticed.
+ * "No current sweep" and "swept, found nothing" are deliberately different states. A null
+ * timestamp also follows a pause that invalidated older health, so it means the source has
+ * not swept in its current lifecycle, not necessarily that it has never swept in process
+ * history. The concise UI still calls that "Never swept" to distinguish it from an empty
+ * successful result.
  */
 function statusLine(status: TaskSourceStatus | undefined, now: number): string {
   if (!status) return "No status yet.";

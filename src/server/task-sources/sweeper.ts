@@ -40,6 +40,7 @@ interface Entry {
   lastFiled: number;
   /** Last configured state observed by this process; status is process-local too. */
   enabled: boolean | null;
+  /** Invalidates a sweep result that started before the source was paused. */
   healthGeneration: number;
   /** In flight, so the tick and a "Sweep now" click cannot double-file. */
   sweeping: boolean;

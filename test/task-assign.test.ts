@@ -419,8 +419,15 @@ test("a reused session attributes its merged PR only to the current task after r
   const restarted = new Registry();
   assert.equal(restarted.getTask("binding-current"), undefined);
   restarted.applyDiscovery([
-    mkDiscovered({ syntheticId: sessionId, cwd: clone, gitRoot: clone, repoRoot: clone }),
+    mkDiscovered({
+      syntheticId: sessionId,
+      cwd: clone,
+      gitBranch: "feat/current-binding",
+      gitRoot: clone,
+      repoRoot: clone,
+    }),
   ]);
+  const currentEpisode = restarted.workEpisodeForSession(sessionId)!;
   restarted.reconcilePrs(
     new Map([
       [
@@ -430,8 +437,12 @@ test("a reused session attributes its merged PR only to the current task after r
           number: 99,
           state: "merged" as const,
           checks: "passing" as const,
-          branch: null,
+          branch: "feat/current-binding",
           agentSessionId,
+          episodeId: currentEpisode.episodeId,
+          createdAt: currentEpisode.startedAt,
+          headSha: "current-head",
+          worktreeHeadSha: "current-head",
         },
       ],
     ]),

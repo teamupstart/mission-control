@@ -55,6 +55,10 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
     checks: "passing",
     branch: "feat/dependency",
     agentSessionId: null,
+    episodeId: null,
+    createdAt: null,
+    headSha: "current-head",
+    worktreeHeadSha: "current-head",
     ...over,
   };
 }
@@ -105,6 +109,20 @@ test("a merged PR durably satisfies dependencies selected through an active task
     }),
   );
   registry.applyDiscovery([discovered("merge-session", "/wt/merge-pre")]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "merge-episode",
+    cwd: "/wt/merge-pre",
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({
+    ...registry.getTask("merge-pre")!,
+    sessionId: "merge-session",
+  });
+  registry.bindTaskToWorkEpisode("merge-pre", "merge-session");
+  const mergeEpisode = registry.workEpisodeForSession("merge-session")!;
   const dependent = tasks.create({
     ...createInput,
     backlog: true,
@@ -122,6 +140,9 @@ test("a merged PR durably satisfies dependencies selected through an active task
           number: 1,
           state: "merged" as const,
           checks: "passing" as const,
+          agentSessionId: "merge-episode",
+          episodeId: mergeEpisode.episodeId,
+          createdAt: mergeEpisode.startedAt,
         }),
       ],
     ]),
@@ -136,6 +157,15 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   registry.applyDiscovery([discovered("standalone-session", "/repo")]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "standalone-episode",
+    cwd: "/repo",
+    transcriptPath: null,
+    env: {},
+  });
+  const standaloneEpisode = registry.workEpisodeForSession("standalone-session")!;
   const dependent = tasks.create({
     ...createInput,
     backlog: true,
@@ -151,6 +181,9 @@ test("a satisfied standalone-session dependency stays satisfied after its PR chi
           number: 2,
           state: "merged" as const,
           checks: "passing" as const,
+          agentSessionId: "standalone-episode",
+          episodeId: standaloneEpisode.episodeId,
+          createdAt: standaloneEpisode.startedAt,
         }),
       ],
     ]),
@@ -181,6 +214,7 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
     transcriptPath: null,
     env: {},
   });
+  const originalEpisode = registry.workEpisodeForSession("reused-standalone")!;
   const dependent = tasks.create({
     ...createInput,
     backlog: true,
@@ -198,6 +232,8 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
           checks: "passing" as const,
           branch: "feat/original",
           agentSessionId: "episode-original",
+          episodeId: originalEpisode.episodeId,
+          createdAt: originalEpisode.startedAt,
         }),
       ],
     ]),
@@ -219,6 +255,7 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
     transcriptPath: null,
     env: {},
   });
+  const unrelatedEpisode = restarted.workEpisodeForSession("reused-standalone")!;
   restarted.reconcilePrs(
     new Map([
       [
@@ -230,6 +267,8 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
           checks: "passing" as const,
           branch: "feat/unrelated",
           agentSessionId: "episode-unrelated",
+          episodeId: unrelatedEpisode.episodeId,
+          createdAt: unrelatedEpisode.startedAt,
         }),
       ],
     ]),
@@ -258,6 +297,7 @@ test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
       transcriptPath: null,
       env: {},
     });
+    const oldEpisode = registry.workEpisodeForSession(id)!;
     registry.reconcilePrs(
       new Map([
         [
@@ -269,6 +309,8 @@ test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
             checks: "passing" as const,
             branch: `feat/${state}-old`,
             agentSessionId: `${state}-old-episode`,
+            episodeId: oldEpisode.episodeId,
+            createdAt: oldEpisode.startedAt,
           }),
         ],
       ]),
@@ -313,11 +355,15 @@ test("an in-flight PR poll cannot cross work episodes", async () => {
     env: {},
   });
   let queryStarted!: () => void;
-  let finishQuery!: (match: Omit<PrMatch, "branch" | "agentSessionId">) => void;
+  let finishQuery!: (
+    match: Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">,
+  ) => void;
   const started = new Promise<void>((resolve) => {
     queryStarted = resolve;
   });
-  const result = new Promise<Omit<PrMatch, "branch" | "agentSessionId">>((resolve) => {
+  const result = new Promise<
+    Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">
+  >((resolve) => {
     finishQuery = resolve;
   });
   const polling = pollAndReconcilePrs(registry, async () => {
@@ -347,6 +393,9 @@ test("an in-flight PR poll cannot cross work episodes", async () => {
     number: 30,
     state: "merged",
     checks: "passing",
+    createdAt: Date.now(),
+    headSha: "old-head",
+    worktreeHeadSha: "old-head",
   });
   await polling;
 
@@ -355,6 +404,125 @@ test("an in-flight PR poll cannot cross work episodes", async () => {
   assert.equal(edge?.satisfiedAt, null);
   assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+});
+
+test("manual session reuse cannot complete the task from the discarded episode", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "manual-reuse";
+  const cwd = "/repo/manual-reuse";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/task-work" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "task-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask(
+    baseTask({
+      id: "manually-assigned",
+      title: "Original assigned work",
+      status: "running",
+      sessionId: id,
+    }),
+  );
+  registry.bindTaskToWorkEpisode("manually-assigned", id);
+  const dependent = tasks.create({
+    ...createInput,
+    backlog: true,
+    dependencies: [{ type: "task", taskId: "manually-assigned" }],
+  });
+
+  registry.resetWorkEpisode(id);
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/unrelated-work" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "unrelated-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const unrelated = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/40",
+          number: 40,
+          state: "merged",
+          branch: "feat/unrelated-work",
+          agentSessionId: "unrelated-episode",
+          episodeId: unrelated.episodeId,
+          createdAt: unrelated.startedAt,
+          headSha: "unrelated-head",
+          worktreeHeadSha: "unrelated-head",
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  assert.equal(registry.getTask("manually-assigned")?.sessionId, null);
+  assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+});
+
+test("a historical merge on a reused branch cannot satisfy a new episode", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "historical-branch";
+  const cwd = "/repo/historical-branch";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reused-name" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "new-branch-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const episode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+
+  await pollAndReconcilePrs(registry, async () => ({
+    url: "https://github.com/example/repo/pull/41",
+    number: 41,
+    state: "merged",
+    checks: "passing",
+    createdAt: episode.startedAt - 1,
+    headSha: "historical-head",
+    worktreeHeadSha: "new-work-head",
+  }));
+
+  assert.equal(registry.getSession(id)?.prUrl, null);
+  assert.equal(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+});
+
+test("a session without an agent episode cannot become a dependency", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  registry.applyDiscovery([
+    discovered("unknown-episode", "/repo/unknown-episode", { gitBranch: "feat/unknown" }),
+  ]);
+
+  assert.throws(
+    () =>
+      tasks.create({
+        ...createInput,
+        backlog: true,
+        dependencies: [{ type: "session", sessionId: "unknown-episode" }],
+      }),
+    /no stable work identity/,
+  );
 });
 
 test("completing a scout satisfies its dependents, while dependency cycles are refused", async () => {

@@ -1053,6 +1053,7 @@ export type TaskDependency =
       type: "session";
       sessionId: string;
       title: string;
+      episodeId: string | null;
       agentSessionId: string | null;
       branch: string | null;
       prUrl: string | null;

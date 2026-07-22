@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import type {
   AgentType,
   ForemanEpisode,
@@ -97,6 +98,14 @@ import {
   reorderQueueItems,
   sessionCostFor,
   taskIdForSession as dbTaskIdForSession,
+  bindTaskWorkEpisode as dbBindTaskWorkEpisode,
+  deleteSessionWorkEpisode,
+  invalidateTaskWorkEpisodeBindings,
+  replaceSessionWorkEpisode,
+  sessionWorkEpisodeFor,
+  taskWorkEpisodeForSession,
+  taskWorkEpisodeForTask,
+  updateWorkEpisodePr,
   upsertQueue,
   upsertQueueItem,
   upsertSessionGoal,
@@ -105,7 +114,7 @@ import {
   upsertUsageCell,
   loadInspectorInspections,
 } from "./db.ts";
-import type { UsageCol } from "./db.ts";
+import type { SessionWorkEpisode, TaskWorkEpisodeBinding, UsageCol } from "./db.ts";
 import { unref } from "./util/timers.ts";
 import { getInspectorConfig } from "./inspector/config.ts";
 import { parsePrUrl } from "./inspector/github.ts";
@@ -131,16 +140,23 @@ export type PrMatch = {
   checks: PrChecks | null;
   branch: string;
   agentSessionId: string | null;
+  episodeId: string | null;
+  createdAt: number | null;
+  headSha: string | null;
+  worktreeHeadSha: string | null;
 };
 
 export type PrObservation = {
   url: string;
   branch: string | null;
   agentSessionId: string | null;
+  episodeId: string;
+  headSha: string | null;
 };
 
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
+const DEFAULT_WORK_BRANCHES = new Set(["main", "master"]);
 
 /** How long an exited session lingers on the dashboard before removal (ms). */
 const EXIT_LINGER_MS = 8000;
@@ -744,6 +760,8 @@ export class Registry extends EventEmitter {
     if (prev && this.clearEffortTrackingOnRebind(prev, base) && base.meta) {
       base.meta = { ...base.meta, thinkingLevel: null };
     }
+    this.ensureWorkEpisode(base, now);
+    base.task = this.taskSummaryFor(base.id, base.cwd);
     return base;
   }
 
@@ -836,11 +854,27 @@ export class Registry extends EventEmitter {
       if (this.clearEffortTrackingOnRebind(target, next) && next.meta) {
         next.meta = { ...next.meta, thinkingLevel: null };
       }
-      if (evt.prUrl) {
+      const episode = this.ensureWorkEpisode(next, ts);
+      next.task = this.taskSummaryFor(next.id, next.cwd);
+      if (
+        evt.prUrl &&
+        episode &&
+        next.gitBranch &&
+        updateWorkEpisodePr(
+          next.id,
+          episode.episodeId,
+          next.gitBranch,
+          evt.prUrl,
+          null,
+          ts,
+        )
+      ) {
         this.prObservations.set(next.id, {
           url: evt.prUrl,
           branch: next.gitBranch,
           agentSessionId: next.agentSessionId,
+          episodeId: episode.episodeId,
+          headSha: null,
         });
       }
       // Binding the agent session id can change the note key, so re-resolve
@@ -1324,6 +1358,180 @@ export class Registry extends EventEmitter {
     return [...this.sessions.values()].filter((s) => s.nomistakes !== null);
   }
 
+  private invalidateTaskOwnership(sessionId: string): void {
+    const invalidated = invalidateTaskWorkEpisodeBindings(sessionId);
+    for (const taskId of invalidated) {
+      const task = this.tasks.get(taskId);
+      if (!task || task.sessionId !== sessionId) continue;
+      const next = { ...task, sessionId: null };
+      this.tasks.set(taskId, next);
+      this.emitEvent({ type: "task_upsert", task: next });
+    }
+    this.resyncSessionTask(sessionId);
+  }
+
+  private startWorkEpisode(
+    sessionId: string,
+    agentSessionId: string | null,
+    branch: string | null,
+    startedAt: number,
+    invalidateOwnership = true,
+  ): SessionWorkEpisode | null {
+    if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
+    this.prObservations.delete(sessionId);
+    if (!agentSessionId) {
+      deleteSessionWorkEpisode(sessionId);
+      return null;
+    }
+    const episode: SessionWorkEpisode = {
+      episodeId: randomUUID(),
+      sessionId,
+      agentSessionId,
+      branch,
+      prUrl: null,
+      prHeadSha: null,
+      startedAt,
+      updatedAt: startedAt,
+    };
+    replaceSessionWorkEpisode(episode);
+    return episode;
+  }
+
+  private ensureWorkEpisode(session: Session, now = Date.now()): SessionWorkEpisode | null {
+    if (!session.agentSessionId) return null;
+    const existing = sessionWorkEpisodeFor(session.id);
+    const branchChanged =
+      existing !== null &&
+      existing.branch !== null &&
+      !DEFAULT_WORK_BRANCHES.has(existing.branch) &&
+      existing.branch !== session.gitBranch;
+    if (!existing) {
+      const episode = this.startWorkEpisode(
+        session.id,
+        session.agentSessionId,
+        session.gitBranch,
+        session.startedAt ?? now,
+        false,
+      );
+      const taskId = dbTaskIdForSession(session.id);
+      if (episode && taskId && !taskWorkEpisodeForTask(taskId)) {
+        this.bindTaskToWorkEpisode(taskId, session.id, episode, now);
+      }
+      return episode;
+    }
+    if (existing.agentSessionId !== session.agentSessionId || branchChanged) {
+      return this.startWorkEpisode(
+        session.id,
+        session.agentSessionId,
+        session.gitBranch,
+        now,
+      );
+    }
+    if (
+      session.gitBranch !== null &&
+      existing.branch !== session.gitBranch &&
+      session.lastSeen >= existing.startedAt &&
+      (existing.branch === null || DEFAULT_WORK_BRANCHES.has(existing.branch))
+    ) {
+      const next = { ...existing, branch: session.gitBranch, updatedAt: now };
+      replaceSessionWorkEpisode(next);
+      return next;
+    }
+    const taskId = dbTaskIdForSession(session.id);
+    if (taskId && !taskWorkEpisodeForTask(taskId)) {
+      this.bindTaskToWorkEpisode(taskId, session.id, existing, now);
+    }
+    return existing;
+  }
+
+  resetWorkEpisode(sessionId: string, at = Date.now()): void {
+    const session = this.sessions.get(sessionId);
+    this.startWorkEpisode(sessionId, session?.agentSessionId ?? null, null, at);
+  }
+
+  workEpisodeForSession(sessionId: string): SessionWorkEpisode | null {
+    const session = this.sessions.get(sessionId);
+    return session ? this.ensureWorkEpisode(session) : sessionWorkEpisodeFor(sessionId);
+  }
+
+  bindTaskToWorkEpisode(
+    taskId: string,
+    sessionId: string,
+    episode = this.workEpisodeForSession(sessionId),
+    at = Date.now(),
+  ): boolean {
+    if (!episode) return false;
+    const binding: TaskWorkEpisodeBinding = {
+      taskId,
+      episodeId: episode.episodeId,
+      sessionId,
+      agentSessionId: episode.agentSessionId,
+      branch: episode.branch,
+      prUrl: episode.prUrl,
+      prHeadSha: episode.prHeadSha,
+      boundAt: at,
+      updatedAt: at,
+    };
+    dbBindTaskWorkEpisode(binding);
+    return true;
+  }
+
+  taskOwnsWorkEpisode(taskId: string, sessionId: string, prUrl: string): boolean {
+    const binding = taskWorkEpisodeForTask(taskId);
+    const episode = sessionWorkEpisodeFor(sessionId);
+    return Boolean(
+      binding &&
+        episode &&
+        binding.sessionId === sessionId &&
+        binding.episodeId === episode.episodeId &&
+        binding.agentSessionId === episode.agentSessionId &&
+        binding.branch === episode.branch &&
+        binding.prUrl === prUrl &&
+        binding.prHeadSha === episode.prHeadSha,
+    );
+  }
+
+  private acceptPrForEpisode(
+    session: Session,
+    match: PrMatch,
+    at: number,
+  ): SessionWorkEpisode | null {
+    if (!match.episodeId || !session.agentSessionId) return null;
+    const episode = sessionWorkEpisodeFor(session.id);
+    if (
+      !episode ||
+      episode.episodeId !== match.episodeId ||
+      episode.agentSessionId !== match.agentSessionId ||
+      match.branch !== session.gitBranch ||
+      match.headSha === null ||
+      match.worktreeHeadSha === null ||
+      match.headSha !== match.worktreeHeadSha ||
+      (match.createdAt !== null && match.createdAt < episode.startedAt) ||
+      (episode.prUrl !== null && episode.prUrl !== match.url)
+    ) {
+      return null;
+    }
+    if (
+      !updateWorkEpisodePr(
+        session.id,
+        episode.episodeId,
+        match.branch,
+        match.url,
+        match.headSha,
+        at,
+      )
+    ) {
+      return null;
+    }
+    return {
+      ...episode,
+      branch: match.branch,
+      prUrl: match.url,
+      prHeadSha: match.headSha,
+      updatedAt: at,
+    };
+  }
+
   /**
    * Live sessions the PR poller should consider, with the branch and cwd it needs
    * to ask `gh` for an open PR. Sessions with no cwd or that have exited are
@@ -1337,6 +1545,7 @@ export class Registry extends EventEmitter {
     branch: string | null;
     prUrl: string | null;
     agentSessionId: string | null;
+    episodeId: string | null;
   }[] {
     const out: {
       id: string;
@@ -1344,15 +1553,18 @@ export class Registry extends EventEmitter {
       branch: string | null;
       prUrl: string | null;
       agentSessionId: string | null;
+      episodeId: string | null;
     }[] = [];
     for (const s of this.sessions.values()) {
       if (!s.cwd || s.state === "exited") continue;
+      const episode = this.ensureWorkEpisode(s);
       out.push({
         id: s.id,
         cwd: s.cwd,
         branch: s.gitBranch,
         prUrl: s.prUrl,
         agentSessionId: s.agentSessionId,
+        episodeId: episode?.episodeId ?? null,
       });
     }
     return out;
@@ -1376,21 +1588,29 @@ export class Registry extends EventEmitter {
   reconcilePrs(found: Map<string, PrMatch>, skip: Set<string>): void {
     for (const [id, s] of this.sessions) {
       if (skip.has(id)) continue;
-      const match = found.get(id) ?? null;
+      let match = found.get(id) ?? null;
+      const currentEpisode = sessionWorkEpisodeFor(id);
       if (
         match &&
-        (match.branch !== s.gitBranch || match.agentSessionId !== s.agentSessionId)
+        (match.branch !== s.gitBranch ||
+          match.agentSessionId !== s.agentSessionId ||
+          match.episodeId !== (currentEpisode?.episodeId ?? null))
       )
         continue;
+      const at = Date.now();
+      const acceptedEpisode = match?.episodeId ? this.acceptPrForEpisode(s, match, at) : null;
+      if (match?.episodeId && !acceptedEpisode) match = null;
       const url = match?.url ?? null;
       const number = match?.number ?? null;
       const state = match?.state ?? null;
       const checks = match?.checks ?? null;
-      if (match) {
+      if (match && acceptedEpisode) {
         this.prObservations.set(id, {
           url: match.url,
           branch: match.branch,
           agentSessionId: match.agentSessionId,
+          episodeId: acceptedEpisode.episodeId,
+          headSha: match.headSha,
         });
       } else {
         this.prObservations.delete(id);
@@ -1406,14 +1626,22 @@ export class Registry extends EventEmitter {
       next.inspector = this.inspectorSummaryFor(next);
       this.sessions.set(id, next);
       this.emitSession(next);
-      const at = Date.now();
-      this.reconcileSessionDependencies(next, match, at);
-      if (state === "merged") {
+      this.reconcileSessionDependencies(next, acceptedEpisode ? match : null, at);
+      if (state === "merged" && match && acceptedEpisode) {
         // Completion is copied onto dependency EDGES while the proof is live. The PR
         // chip is session-scoped and disappears when the process/branch does; a task
         // waiting on it must remain unblocked after that.
-        const taskId = dbTaskIdForSession(id) ?? this.activeTaskForCwd(next.cwd)?.id;
-        if (taskId) this.satisfyTaskDependencies(taskId, at);
+        const binding = taskWorkEpisodeForSession(id);
+        if (
+          binding &&
+          binding.episodeId === acceptedEpisode.episodeId &&
+          binding.agentSessionId === match.agentSessionId &&
+          binding.branch === match.branch &&
+          binding.prUrl === match.url &&
+          binding.prHeadSha === match.headSha
+        ) {
+          this.satisfyTaskDependencies(binding.taskId, at);
+        }
       }
     }
   }
@@ -2046,19 +2274,19 @@ export class Registry extends EventEmitter {
         ) {
           return dependency;
         }
-        if (dependency.prUrl !== null) {
-          if (match?.url !== dependency.prUrl) return dependency;
-        } else {
-          if (dependency.agentSessionId !== null) {
-            if (dependency.agentSessionId !== session.agentSessionId) return dependency;
-          } else if (dependency.branch === null) {
-            return dependency;
-          }
-          if (dependency.branch !== null && dependency.branch !== session.gitBranch) {
-            return dependency;
-          }
+        if (
+          !match ||
+          dependency.episodeId === null ||
+          dependency.agentSessionId === null ||
+          dependency.episodeId !== match.episodeId ||
+          dependency.agentSessionId !== match.agentSessionId ||
+          dependency.branch !== match.branch
+        ) {
+          return dependency;
         }
-        if (!match) return dependency;
+        if (dependency.prUrl !== null) {
+          if (match.url !== dependency.prUrl) return dependency;
+        }
         const prUrl = dependency.prUrl ?? match.url;
         const satisfiedAt = match.state === "merged" ? at : null;
         if (prUrl === dependency.prUrl && satisfiedAt === dependency.satisfiedAt) return dependency;

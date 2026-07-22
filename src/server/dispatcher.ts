@@ -122,6 +122,7 @@ export class Dispatcher {
 
       if (await this.abortIfSettled(taskId)) return;
       this.patch(taskId, { status: "running", sessionId: session.id });
+      this.registry.bindTaskToWorkEpisode(taskId, session.id);
     } catch (err) {
       const cur = this.registry.getTask(taskId);
       if (!cur) return;

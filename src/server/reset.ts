@@ -49,6 +49,7 @@ export async function resetSession(
   // still names the queue: a /clear only rotates that key once the agent processes it,
   // which is after this returns.
   if (r.ok) {
+    registry.resetWorkEpisode(session.id);
     registry.clearObservedSessionEffort(session.id);
     registry.clearQueue(noteKeyFor(session));
   }

@@ -171,13 +171,17 @@ export class TaskManager {
     return declaredBlockers(task, this.registry.listTasks());
   }
 
-  private observedPrFor(session: Session): string | null {
+  private observedPrFor(session: Session, taskId?: string): string | null {
     const observation = this.registry.prObservationFor(session.id);
+    const episode = this.registry.workEpisodeForSession(session.id);
     if (
       !observation ||
+      !episode ||
       observation.url !== session.prUrl ||
       observation.branch !== session.gitBranch ||
-      observation.agentSessionId !== session.agentSessionId
+      observation.agentSessionId !== session.agentSessionId ||
+      observation.episodeId !== episode.episodeId ||
+      (taskId !== undefined && !this.registry.taskOwnsWorkEpisode(taskId, session.id, observation.url))
     ) {
       return null;
     }
@@ -224,7 +228,7 @@ export class TaskManager {
           throw new TaskDependencyError("dependency session is no longer active");
         } else if (session.task && this.registry.getTask(session.task.id)) {
           const target = this.registry.getTask(session.task.id)!;
-          const observedPr = this.observedPrFor(session);
+          const observedPr = this.observedPrFor(session, target.id);
           const previouslySatisfied =
             existing.get(`task:${target.id}`)?.satisfiedAt ??
             existing.get(`session:${session.id}`)?.satisfiedAt;
@@ -240,7 +244,8 @@ export class TaskManager {
                   : previouslySatisfied ?? null,
           };
         } else {
-          if (!session.agentSessionId && !session.gitBranch) {
+          const episode = this.registry.workEpisodeForSession(session.id);
+          if (!session.agentSessionId || !episode) {
             throw new TaskDependencyError("dependency session has no stable work identity yet");
           }
           const observedPr = this.observedPrFor(session);
@@ -248,6 +253,7 @@ export class TaskManager {
             type: "session",
             sessionId: session.id,
             title: session.name,
+            episodeId: episode.episodeId,
             agentSessionId: session.agentSessionId,
             branch: session.gitBranch,
             prUrl: observedPr,
@@ -264,7 +270,7 @@ export class TaskManager {
           const activeSession = sessions.find(
             (session) => session.state !== "exited" && session.task?.id === target.id,
           );
-          const observedPr = activeSession ? this.observedPrFor(activeSession) : null;
+          const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
           const eligible = target.status === "backlog" || target.status === "dispatching" || target.status === "running" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
@@ -722,6 +728,7 @@ export class TaskManager {
         scope: "session",
       };
     }
+    if (opts.reset) this.registry.resetWorkEpisode(s.id);
 
     const ready = this.registry.getTask(t.id);
     if (!ready || ready.status !== "backlog") {
@@ -762,6 +769,7 @@ export class TaskManager {
       dispatchedAt: now,
       updatedAt: now,
     });
+    this.registry.bindTaskToWorkEpisode(t.id, s.id);
     // The agent now IS this task, so its terminal has to say so - see `renameForTask`.
     // Last, and after the claim: it is the one step here that changes nothing about
     // whether the task is running, so it must not sit in front of anything that does.

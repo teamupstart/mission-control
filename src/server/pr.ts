@@ -22,7 +22,7 @@ import { run } from "./util/exec.ts";
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
-type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId">;
+type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
 
 /**
  * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
@@ -33,23 +33,27 @@ type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId">;
  * treats as "unknown, leave the existing chip alone" rather than a reason to clear.
  */
 async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
-  const res = await run(
-    "gh",
-    [
-      "pr",
-      "list",
-      "--head",
-      branch,
-      "--state",
-      "all",
-      "--json",
-      "url,number,state,statusCheckRollup",
-      "--limit",
-      "20",
-    ],
-    { cwd, timeoutMs: 8000 },
-  );
-  if (res.code !== 0) return "error";
+  const [res, head] = await Promise.all([
+    run(
+      "gh",
+      [
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "all",
+        "--json",
+        "url,number,state,statusCheckRollup,createdAt,headRefOid",
+        "--limit",
+        "20",
+      ],
+      { cwd, timeoutMs: 8000 },
+    ),
+    run("git", ["rev-parse", "HEAD"], { cwd, timeoutMs: 8000 }),
+  ]);
+  const worktreeHeadSha = head.stdout.trim();
+  if (res.code !== 0 || head.code !== 0 || !worktreeHeadSha) return "error";
   try {
     const arr = JSON.parse(res.stdout || "[]") as unknown;
     if (!Array.isArray(arr)) return "error"; // malformed output is an anomaly, not "no PR"
@@ -58,13 +62,24 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
     const open = arr.find((p) => prStateOf(p) === "open");
     const match = open ?? arr.find((p) => prStateOf(p) === "merged");
     if (!match) return null;
-    const { url, number } = match as { url?: unknown; number?: unknown };
-    if (typeof url !== "string") return null;
+    const { url, number, createdAt, headRefOid } = match as {
+      url?: unknown;
+      number?: unknown;
+      createdAt?: unknown;
+      headRefOid?: unknown;
+    };
+    const createdAtMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
+    if (typeof url !== "string" || !Number.isFinite(createdAtMs) || typeof headRefOid !== "string") {
+      return "error";
+    }
     return {
       url,
       number: typeof number === "number" ? number : null,
       state: prStateOf(match) as PrState,
       checks: checksOf(match),
+      createdAt: createdAtMs,
+      headSha: headRefOid,
+      worktreeHeadSha,
     };
   } catch {
     return "error";
@@ -177,6 +192,7 @@ export async function pollAndReconcilePrs(
         ...r,
         branch: t.branch as string,
         agentSessionId: t.agentSessionId,
+        episodeId: t.episodeId,
       });
     }
     // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip

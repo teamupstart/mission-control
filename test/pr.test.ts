@@ -39,6 +39,10 @@ function match(over: Partial<PrMatch> = {}): PrMatch {
     checks: null,
     branch: "feat/x",
     agentSessionId: null,
+    episodeId: null,
+    createdAt: null,
+    headSha: null,
+    worktreeHeadSha: null,
     ...over,
   };
 }

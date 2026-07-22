@@ -1403,6 +1403,7 @@ export class Registry extends EventEmitter {
     const branchChanged =
       existing !== null &&
       existing.branch !== null &&
+      session.gitBranch !== null &&
       !DEFAULT_WORK_BRANCHES.has(existing.branch) &&
       existing.branch !== session.gitBranch;
     if (!existing) {
@@ -1498,14 +1499,15 @@ export class Registry extends EventEmitter {
   ): SessionWorkEpisode | null {
     if (!match.episodeId || !session.agentSessionId) return null;
     const episode = sessionWorkEpisodeFor(session.id);
+    const firstAssociation = episode?.prUrl === null;
     if (
       !episode ||
       episode.episodeId !== match.episodeId ||
       episode.agentSessionId !== match.agentSessionId ||
       match.branch !== session.gitBranch ||
       match.headSha === null ||
-      match.worktreeHeadSha === null ||
-      match.headSha !== match.worktreeHeadSha ||
+      (firstAssociation &&
+        (match.worktreeHeadSha === null || match.headSha !== match.worktreeHeadSha)) ||
       (match.createdAt !== null && match.createdAt < episode.startedAt) ||
       (episode.prUrl !== null && episode.prUrl !== match.url)
     ) {
@@ -2279,19 +2281,25 @@ export class Registry extends EventEmitter {
           dependency.episodeId === null ||
           dependency.agentSessionId === null ||
           dependency.episodeId !== match.episodeId ||
-          dependency.agentSessionId !== match.agentSessionId ||
-          dependency.branch !== match.branch
+          dependency.agentSessionId !== match.agentSessionId
         ) {
           return dependency;
         }
         if (dependency.prUrl !== null) {
           if (match.url !== dependency.prUrl) return dependency;
         }
+        const branch = match.branch;
         const prUrl = dependency.prUrl ?? match.url;
         const satisfiedAt = match.state === "merged" ? at : null;
-        if (prUrl === dependency.prUrl && satisfiedAt === dependency.satisfiedAt) return dependency;
+        if (
+          branch === dependency.branch &&
+          prUrl === dependency.prUrl &&
+          satisfiedAt === dependency.satisfiedAt
+        ) {
+          return dependency;
+        }
         changed = true;
-        return { ...dependency, prUrl, satisfiedAt };
+        return { ...dependency, branch, prUrl, satisfiedAt };
       });
       if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at });
     }
@@ -2490,7 +2498,14 @@ export class Registry extends EventEmitter {
       if (t.status === "backlog" || t.status === "cancelled") continue;
       return t;
     }
-    return this.activeTaskForCwd(cwd);
+    const task = this.activeTaskForCwd(cwd);
+    if (!task) return undefined;
+    const episode = sessionWorkEpisodeFor(sessionId);
+    if (!episode) return task;
+    const binding = taskWorkEpisodeForTask(task.id);
+    return binding?.sessionId === sessionId && binding.episodeId === episode.episodeId
+      ? task
+      : undefined;
   }
 
   /**

@@ -471,6 +471,233 @@ test("manual session reuse cannot complete the task from the discarded episode",
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
 });
 
+test("a dependency follows its work episode from the default branch", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "default-promotion";
+  const cwd = "/repo/default-promotion";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "default-promotion-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const originalEpisode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for promoted work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/promoted-work" })]);
+  const promotedEpisode = registry.workEpisodeForSession(id)!;
+  assert.equal(promotedEpisode.episodeId, originalEpisode.episodeId);
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/42",
+          number: 42,
+          state: "merged",
+          branch: "feat/promoted-work",
+          agentSessionId: "default-promotion-episode",
+          episodeId: promotedEpisode.episodeId,
+          createdAt: promotedEpisode.startedAt,
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.type === "session" ? edge.branch : null, "feat/promoted-work");
+  assert.ok(edge?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
+test("a pinned PR remains attributable after its head advances", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "advanced-pr-head";
+  const cwd = "/repo/advanced-pr-head";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/advanced-head" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "advanced-head-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const episode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for the advanced PR",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  const url = "https://github.com/example/repo/pull/43";
+
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url,
+          number: 43,
+          branch: "feat/advanced-head",
+          agentSessionId: "advanced-head-episode",
+          episodeId: episode.episodeId,
+          createdAt: episode.startedAt,
+          headSha: "initial-head",
+          worktreeHeadSha: "initial-head",
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url,
+          number: 43,
+          state: "merged",
+          branch: "feat/advanced-head",
+          agentSessionId: "advanced-head-episode",
+          episodeId: episode.episodeId,
+          createdAt: episode.startedAt,
+          headSha: "advanced-head",
+          worktreeHeadSha: "initial-head",
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, url);
+  assert.ok(edge?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
+test("reset ownership cannot be reconstructed from a reused cwd", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "reset-cwd";
+  const cwd = "/repo/reset-cwd";
+  registry.upsertTask(
+    baseTask({
+      id: "reset-cwd-task",
+      title: "Discarded assigned work",
+      status: "running",
+      worktreePath: cwd,
+    }),
+  );
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/discarded" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "reset-cwd-old-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask("reset-cwd-task")!, sessionId: id });
+  registry.bindTaskToWorkEpisode("reset-cwd-task", id);
+
+  registry.resetWorkEpisode(id);
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reused-cwd" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "reset-cwd-new-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for reused cwd work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+
+  assert.equal(registry.getSession(id)?.task, null);
+  assert.equal(registry.getTask("reset-cwd-task")?.sessionId, null);
+  assert.equal(dependent.dependencies[0]?.type, "session");
+  assert.equal(
+    dependent.dependencies[0]?.type === "session"
+      ? dependent.dependencies[0].agentSessionId
+      : null,
+    "reset-cwd-new-episode",
+  );
+});
+
+test("a missing branch observation preserves task episode ownership", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "missing-branch";
+  const cwd = "/repo/missing-branch";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/stable-work" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "missing-branch-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask(
+    baseTask({
+      id: "missing-branch-task",
+      title: "Work through transient discovery",
+      status: "running",
+      sessionId: id,
+      worktreePath: cwd,
+    }),
+  );
+  registry.bindTaskToWorkEpisode("missing-branch-task", id);
+  const episode = registry.workEpisodeForSession(id)!;
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait through missing branch",
+    backlog: true,
+    dependencies: [{ type: "task", taskId: "missing-branch-task" }],
+  });
+
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: null })]);
+  assert.equal(registry.workEpisodeForSession(id)?.episodeId, episode.episodeId);
+  assert.equal(registry.getTask("missing-branch-task")?.sessionId, id);
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/stable-work" })]);
+  registry.reconcilePrs(
+    new Map([
+      [
+        id,
+        prMatch({
+          url: "https://github.com/example/repo/pull/44",
+          number: 44,
+          state: "merged",
+          branch: "feat/stable-work",
+          agentSessionId: "missing-branch-episode",
+          episodeId: episode.episodeId,
+          createdAt: episode.startedAt,
+        }),
+      ],
+    ]),
+    new Set(),
+  );
+
+  assert.ok(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
 test("a historical merge on a reused branch cannot satisfy a new episode", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

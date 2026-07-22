@@ -120,12 +120,12 @@ export function ConsoleDetail({
     transcriptRef.current?.focusReply();
   }, [tab]);
 
-  const st = stateDisplay(session);
+  const gateNeedsYou = view.gateAlerts.has(session.id);
+  const st = stateDisplay(session, gateNeedsYou);
   const live = session.state !== "exited";
   const canSend = canWriteTo(session);
   const canRename = canRenameSession(session);
   const dialog = activePaneDialog(session);
-  const gateNeedsYou = view.gateAlerts.has(session.id);
   const allowlisted = foremanAllowlisted(session.cwd, session.repoRoot, view.foremanAllowlist ?? []);
   const queueCount = session.queue?.openCount ?? 0;
   const openCount = openEpisodeCount(episodes);
@@ -160,7 +160,11 @@ export function ConsoleDetail({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
-        <StateBadge session={session} onOpenReviews={() => view.onOpenReviews(session.id)} />
+        <StateBadge
+          session={session}
+          gateNeedsYou={gateNeedsYou}
+          onOpenReviews={() => view.onOpenReviews(session.id)}
+        />
         <span className="detail-head-spacer" />
         {session.meta && <RuntimeMetaRow meta={session.meta} />}
         <CostChip cost={session.cost} />

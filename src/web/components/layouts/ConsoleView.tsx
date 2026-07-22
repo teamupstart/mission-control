@@ -20,7 +20,7 @@ import type { SessionViewProps } from "./types.ts";
  */
 export function ConsoleView(props: SessionViewProps): React.JSX.Element {
   const active = props.sessions.find((s) => s.id === props.selectedId) ?? null;
-  const groups = groupByTone(props.sessions).filter((g) => g.sessions.length > 0);
+  const groups = groupByTone(props.sessions, props.gateAlerts).filter((g) => g.sessions.length > 0);
 
   return (
     <div className="console">

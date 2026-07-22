@@ -14,6 +14,7 @@ import type { TaskSourceRef } from "@shared/task-source.ts";
 import { isAnnotationOnlyUpdate } from "@shared/protocol.ts";
 import { supportsEffort } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
+import { gateParked } from "@shared/session.ts";
 import type { Registry } from "./registry.ts";
 import { Dispatcher, deriveTitle, teardownWorktree } from "./dispatcher.ts";
 import {
@@ -415,6 +416,13 @@ export class TaskManager {
         scope: "session",
       };
     }
+    if (gateParked(s, this.registry.snapshot().sessions)) {
+      return {
+        ok: false,
+        error: "that agent has a no-mistakes gate waiting on you - resolve it first",
+        scope: "session",
+      };
+    }
     // Running a task's intent against the wrong checkout is the one way this gesture
     // does damage you cannot undo from the dashboard, so a mismatch is refused rather
     // than best-efforted. Compared on repoRoot, not cwd: a linked worktree of the
@@ -477,7 +485,13 @@ export class TaskManager {
     // several git invocations old, and the reset itself spends up to 30s in a fetch -
     // an agent a human woke up in that window must not be reset out from under them.
     const fresh = this.registry.getSession(sessionId);
-    if (!fresh || !fresh.instrumented || fresh.state !== "idle" || fresh.pendingReviews > 0) {
+    if (
+      !fresh ||
+      !fresh.instrumented ||
+      fresh.state !== "idle" ||
+      fresh.pendingReviews > 0 ||
+      gateParked(fresh, this.registry.snapshot().sessions)
+    ) {
       return { ok: false, error: "that agent stopped being idle - try again", scope: "session" };
     }
 

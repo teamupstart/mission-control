@@ -284,13 +284,21 @@ export function App(): React.JSX.Element {
     [diffSessionId, resetSessionId, filesSessionId, filePickerSessionId, closeDiff, closeReset, closeFiles, closeFilePicker],
   );
 
+  // Which sessions have a parked no-mistakes gate that actually needs you - a
+  // run being driven by any same-run session is left to that agent (see gateParked).
+  // Computed once and consumed by every display classifier below.
+  const gateAlerts = useMemo(
+    () => new Set(sessions.filter((s) => gateParked(s, sessions)).map((s) => s.id)),
+    [sessions],
+  );
+
   const sorted = useMemo(() => {
     return [...sessions].sort((a, b) => {
-      const ta = TONE_ORDER[stateDisplay(a).tone];
-      const tb = TONE_ORDER[stateDisplay(b).tone];
+      const ta = TONE_ORDER[stateDisplay(a, gateAlerts.has(a.id)).tone];
+      const tb = TONE_ORDER[stateDisplay(b, gateAlerts.has(b.id)).tone];
       return ta - tb || a.name.localeCompare(b.name) || a.pid - b.pid;
     });
-  }, [sessions]);
+  }, [sessions, gateAlerts]);
 
   // Nav-bar filter: live substring match over each card's title, status, and
   // agent. Empty filter shows everything; keyboard nav and the grid both read
@@ -298,8 +306,8 @@ export function App(): React.JSX.Element {
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
     if (!q) return sorted;
-    return sorted.filter((s) => matchesFilter(s, q));
-  }, [sorted, filter]);
+    return sorted.filter((s) => matchesFilter(s, q, gateAlerts.has(s.id)));
+  }, [sorted, filter, gateAlerts]);
 
   // The same filter over the board's Backlog column. A backlog item is a card the
   // operator is looking at, so the one filter box has to narrow it too - it used to
@@ -312,14 +320,7 @@ export function App(): React.JSX.Element {
     return items.filter((t) => matchesTaskFilter(t, q));
   }, [tasks, filter]);
 
-  const counts = useMemo(() => summarize(sessions), [sessions]);
-  // Which sessions have a parked no-mistakes gate that actually needs you - a
-  // run being driven by any same-worktree/branch session is left to that agent
-  // (see gateParked). Computed once so each card just reads a boolean.
-  const gateAlerts = useMemo(
-    () => new Set(sessions.filter((s) => gateParked(s, sessions)).map((s) => s.id)),
-    [sessions],
-  );
+  const counts = useMemo(() => summarize(sessions, gateAlerts), [sessions, gateAlerts]);
   const pendingReviews = reviews.filter((r) => r.status === "pending");
   // First pending `input` review per session, so Foreman's Approve resolves the
   // right one instead of typing a terminal reply the blocked agent won't see.
@@ -349,8 +350,8 @@ export function App(): React.JSX.Element {
   // the same `groupByTone` the board renders, so navigation can't disagree with what's
   // on screen.
   const boardColumns = useMemo(
-    () => groupByTone(visible).map((g) => g.sessions.map((s) => s.id)),
-    [visible],
+    () => groupByTone(visible, gateAlerts).map((g) => g.sessions.map((s) => s.id)),
+    [visible, gateAlerts],
   );
 
   // What "expanded" means depends on the layout, so App resolves it once here rather
@@ -1177,8 +1178,8 @@ function columnCount(grid: HTMLElement | null): number {
  * session's raw state is "working" even though its badge reads "running", so
  * matching raw state would make "working" hit every alive session.
  */
-function matchesFilter(s: Session, q: string): boolean {
-  const haystack = `${s.name} ${stateDisplay(s).label} ${s.agent}`.toLowerCase();
+function matchesFilter(s: Session, q: string, gateNeedsYou: boolean): boolean {
+  const haystack = `${s.name} ${stateDisplay(s, gateNeedsYou).label} ${s.agent}`.toLowerCase();
   return haystack.includes(q);
 }
 
@@ -1260,11 +1261,14 @@ function UsageBar({
   );
 }
 
-function summarize(sessions: Session[]): { attention: number; working: number } {
+function summarize(
+  sessions: Session[],
+  gateAlerts: ReadonlySet<string>,
+): { attention: number; working: number } {
   let attention = 0;
   let working = 0;
   for (const s of sessions) {
-    const tone = stateDisplay(s).tone;
+    const tone = stateDisplay(s, gateAlerts.has(s.id)).tone;
     if (tone === "attention") attention++;
     else if (tone === "working") working++;
   }

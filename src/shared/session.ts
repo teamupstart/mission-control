@@ -111,7 +111,7 @@ function sameRun(a: Session, b: Session): boolean {
  * `sessions` (all live sessions) for that cross-session check; it defaults to `s`
  * alone, which reduces to "parked and this agent has stopped".
  */
-export function gateParked(s: Session, sessions: Session[] = [s]): boolean {
+export function gateParked(s: Session, sessions: readonly Session[] = [s]): boolean {
   if (!gatePending(s)) return false;
   if (agentActive(s)) return false; // this agent is driving its own gate
   for (const o of sessions) {

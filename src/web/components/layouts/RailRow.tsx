@@ -24,7 +24,7 @@ export function RailRow({
   gateNeedsYou: boolean;
   onSelect: () => void;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  const st = stateDisplay(session, gateNeedsYou);
   const ref = useRef<HTMLButtonElement>(null);
 
   // Keep the selected row in view as the arrow keys walk the rail. Local to the row

@@ -16,7 +16,7 @@ import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
-import { FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
+import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
@@ -35,7 +35,7 @@ import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { canRenameSession, fmtUsd, stateDisplay, type Tone } from "./lib/format.ts";
+import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
@@ -1265,6 +1265,7 @@ function UsageBar({
   onToggleCollapsed: () => void;
 }): React.JSX.Element | null {
   if (!fleetStripHasContent(fleet) || !fleet) return null;
+  const compactCost = compactFleetCost(fleet);
   return (
     <div className={`topbar-usage${collapsed ? " collapsed" : ""}`}>
       <button
@@ -1278,10 +1279,8 @@ function UsageBar({
           {collapsed ? "▸" : "▾"}
         </span>
         Usage
-        {collapsed && fleet.estimatedCostToday !== null && fleet.estimatedCostToday > 0 && (
-          <span className="topbar-usage-compact">
-            ≈{fmtUsd(fleet.estimatedCostToday)}
-          </span>
+        {collapsed && compactCost && (
+          <span className="topbar-usage-compact">{compactCost}</span>
         )}
       </button>
       {!collapsed && <FleetStrip fleet={fleet} view={view} />}

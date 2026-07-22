@@ -55,7 +55,8 @@ function parseRecord(
     cacheRead === null ||
     cacheWrite === null ||
     output === null ||
-    reasoningOutput === null
+    reasoningOutput === null ||
+    cacheRead + cacheWrite > fullInput
   ) {
     return { modelId, event: null };
   }
@@ -70,7 +71,7 @@ function parseRecord(
       ts,
       modelId,
       querySource: "main",
-      input: Math.max(0, fullInput - cacheRead - cacheWrite),
+      input: fullInput - cacheRead - cacheWrite,
       cacheRead,
       cacheWrite,
       output,

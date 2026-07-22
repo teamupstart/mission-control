@@ -68,6 +68,17 @@ test("malformed and negative usage records are skipped without aborting the stre
   assert.equal(read.events.length, 1);
 });
 
+test("usage whose cache tiers exceed total input is skipped", () => {
+  const inconsistent = token.replace(
+    '"cached_input_tokens":20,"cache_write_input_tokens":10',
+    '"cached_input_tokens":80,"cache_write_input_tokens":30',
+  );
+  const path = file(`${turn}\n${inconsistent}\n${token}\n`);
+  const read = readCodexUsage(path, { offset: 0, modelId: null, discardPartial: false }, 1024 * 1024);
+  assert.equal(read.events.length, 1);
+  assert.equal(read.events[0]?.input, 70);
+});
+
 test("a shorter file is surfaced as a reset rather than silently replayed", () => {
   const path = file(`${turn}\n`);
   const read = readCodexUsage(path, { offset: 10_000, modelId: "gpt-5.6-sol", discardPartial: false }, 1024);

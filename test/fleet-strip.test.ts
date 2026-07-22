@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FleetStrip, fleetStripHasContent } from "../src/web/components/FleetStrip.tsx";
+import {
+  compactFleetCost,
+  FleetStrip,
+  fleetStripHasContent,
+} from "../src/web/components/FleetStrip.tsx";
 import { FIVE_HOUR_MS, SEVEN_DAY_MS, projectRunway } from "../src/shared/cost.ts";
 import { fmtRunway } from "../src/web/lib/format.ts";
 import type { FleetCost, RateLimitWindow } from "../src/shared/types.ts";
@@ -139,6 +143,30 @@ test("unpriced usage exposes a partial estimate instead of understating the flee
   assert.ok(html.includes("partial"));
   assert.ok(html.includes("tokens today"));
   assert.ok(!html.includes("cost / PR"));
+});
+
+test("daily and recent cost windows report completeness independently", () => {
+  const partialDay = render(fleet({ estimatedCostToday: null, estimatedBurnPerHour: 0.75 }));
+  assert.ok(partialDay.includes("cost estimate"));
+  assert.ok(partialDay.includes("estimated rate"));
+  assert.ok(partialDay.includes("≈$0.75"));
+
+  const partialHour = render(fleet({ estimatedCostToday: 3.25, estimatedBurnPerHour: null }));
+  assert.ok(partialHour.includes("≈$3.25"));
+  assert.ok(partialHour.includes("estimated rate"));
+  assert.ok(partialHour.includes("partial"));
+});
+
+test("recent usage alone is enough to draw the independent rate window", () => {
+  const f = fleet({ estimatedCostToday: 0, estimatedBurnPerHour: 0.75, tokensToday: 0, prsToday: 0 });
+  assert.equal(fleetStripHasContent(f), true);
+  assert.ok(render(f).includes("≈$0.75"));
+});
+
+test("collapsed fleet cost preserves an unpriced daily window", () => {
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: null })), "partial");
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: 3.25 })), "≈$3.25");
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: 0 })), null);
 });
 
 test("Claude and Codex quota windows render independently with their own durations", () => {

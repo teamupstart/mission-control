@@ -411,11 +411,76 @@ async function driveHorizontalEffort(
   if (!committed.ok) return { ...committed, effort: null };
   const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
   if (closed) return { ok: true, effort: target };
+  const recovered = await recoverHorizontalEffort(
+    session,
+    pane,
+    picker,
+    levels,
+    model,
+    current,
+    target,
+    deps,
+  );
+  if (recovered === target) return { ok: true, effort: target };
   return {
     ok: false,
-    error: "the agent did not confirm the session-only effort change",
+    error: recovered === current
+      ? "the agent did not apply the session-only effort change"
+      : "the agent did not confirm or restore the session-only effort change",
     effort: null,
   };
+}
+
+/**
+ * A successful `s` may have changed Claude even when the repaint used to observe the
+ * picker close is lost. Re-open the native picker before reporting failure: either the
+ * target is now confirmed, or the previous value is restored and its close verified.
+ */
+async function recoverHorizontalEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: HorizontalEffortPicker,
+  levels: readonly ThinkingLevel[],
+  model: string,
+  current: ThinkingLevel,
+  target: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<ThinkingLevel | null> {
+  const before = await deps.capture(session);
+  if (!before || readPaneDialog(session, before) || !picker.composerReady(before) || picker.visible.test(before)) {
+    return null;
+  }
+  const opened = await writeText(pane, picker.command);
+  if (!opened.ok) return null;
+  const pending = await deps.capture(session);
+  if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) return null;
+  const submitted = await sendKeys(pane, ["enter"]);
+  if (!submitted.ok) return null;
+  const screen = await awaitEffortPicker(session, picker.visible, deps);
+  let selected = screen ? picker.selected(screen, model) : null;
+  if (!selected) return null;
+  if (selected === target) {
+    // The original commit is now confirmed. Best-effort close this verification picker;
+    // a close delivery failure cannot undo the value we have just read back.
+    await writeText(pane, picker.commit);
+    return target;
+  }
+
+  const restore = levels.indexOf(current);
+  const seen = new Set<ThinkingLevel>();
+  for (let i = 0; selected !== current; i++) {
+    const from = levels.indexOf(selected);
+    if (from < 0 || restore < 0 || seen.has(selected) || i >= levels.length) return null;
+    seen.add(selected);
+    const moved = await sendKeys(pane, [restore > from ? "right" : "left"]);
+    if (!moved.ok) return null;
+    const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
+    if (!next) return null;
+    selected = next.level;
+  }
+  const restored = await writeText(pane, picker.commit);
+  if (!restored.ok || !(await awaitEffortPickerClosed(session, picker.visible, deps))) return null;
+  return current;
 }
 
 async function driveShortcutEffort(

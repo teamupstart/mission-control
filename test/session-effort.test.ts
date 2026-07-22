@@ -23,9 +23,11 @@ const ok = (): TerminalResult => ({ ok: true, outcomeUnknown: false });
 
 function driven(
   start = NORMAL,
-  options: { failCommit?: boolean } = {},
+  options: { failCommit?: boolean; missCloseCaptures?: number } = {},
 ): { deps: PaneDeps; did: string[]; screen: () => string } {
   let screen = start;
+  let selected = "high";
+  let closeCapturesLeft = 0;
   const did: string[] = [];
   const pane: BoundPane = {
     kind: "multiplexer",
@@ -38,7 +40,10 @@ function driven(
       text: async (text) => {
         did.push(`text:${text}`);
         if (text === "/model") screen = pending(text);
-        if (text === "s") screen = NORMAL;
+        if (text === "s") {
+          screen = NORMAL;
+          closeCapturesLeft = options.missCloseCaptures ?? 0;
+        }
         if (text === "s" && options.failCommit) {
           return { ok: false, error: "commit delivery failed", outcomeUnknown: false };
         }
@@ -46,16 +51,30 @@ function driven(
       },
       keys: async (keys: readonly Key[]) => {
         did.push(`keys:${keys.join(",")}`);
-        if (keys[0] === "enter" && screen.includes("/model")) screen = picker("high");
-        else if (keys[0] === "right" && screen.includes("◉ xhigh")) screen = picker("max");
-        else if (keys[0] === "right" && screen.includes("◉ high")) screen = picker("xhigh");
+        if (keys[0] === "enter" && screen.includes("/model")) screen = picker(selected);
+        else if (keys[0] === "right" && screen.includes("◉ xhigh")) {
+          selected = "max";
+          screen = picker(selected);
+        } else if (keys[0] === "right" && screen.includes("◉ high")) {
+          selected = "xhigh";
+          screen = picker(selected);
+        }
         return ok();
       },
       paste: async () => ok(),
     },
   };
   return {
-    deps: { pane: () => pane, capture: async () => screen },
+    deps: {
+      pane: () => pane,
+      capture: async () => {
+        if (closeCapturesLeft > 0) {
+          closeCapturesLeft--;
+          return null;
+        }
+        return screen;
+      },
+    },
     did,
     screen: () => screen,
   };
@@ -84,6 +103,17 @@ test("session effort fails when the commit key is not delivered, even if the pic
 
   assert.deepEqual(result, { ok: false, error: "commit delivery failed", effort: null });
   assert.deepEqual(h.did, ["text:/model", "keys:enter", "keys:right", "keys:right", "text:s"]);
+  assert.equal(h.screen(), NORMAL);
+});
+
+test("session effort confirms a delivered commit after its close repaint is missed", async () => {
+  const h = driven(NORMAL, { missCloseCaptures: 19 });
+  const result = await setSessionEffort(session(), "max", h.deps);
+
+  assert.deepEqual(result, { ok: true, effort: "max" });
+  assert.deepEqual(h.did, [
+    "text:/model", "keys:enter", "keys:right", "keys:right", "text:s", "text:/model", "keys:enter", "text:s",
+  ]);
   assert.equal(h.screen(), NORMAL);
 });
 

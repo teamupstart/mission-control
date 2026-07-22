@@ -109,6 +109,7 @@ import {
 } from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail } from "./nomistakes-fixes.ts";
+import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
 import { checkToken } from "./auth.ts";
 import {
   dropGateReply,
@@ -769,6 +770,15 @@ export function buildApp(
     if (!session) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SetSessionEffortSchema);
     if (!parsed.ok) return parsed.res;
+    const baseline = readRuntimeEffortBaseline(session);
+    if (baseline === undefined) {
+      return c.json({
+        ok: false,
+        error: "the session's passive effort baseline is not ready; no setting was changed",
+        effort: null,
+      }, 409);
+    }
+    registry.recordRuntimeEffortBaseline(session.id, baseline);
     const r = await setSessionEffort(session, parsed.data.effort);
     if (r.ok) registry.recordObservedSessionEffort(session.id, r.effort);
     return c.json(r, r.ok ? 200 : 409);

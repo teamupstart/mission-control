@@ -173,6 +173,25 @@ test("a statusLine reading with a wrong token is rejected", async () => {
   assert.equal(res.status, 401);
 });
 
+test("an effort change waits for a passive freshness baseline", async () => {
+  seedSession();
+  registry.applyStatusLine({
+    env: { tmuxPane: "%3" },
+    sessionId: "baseline-wait",
+    model: { id: "claude-opus-4-8", displayName: "Opus" },
+    effort: "high",
+  });
+  const res = await app.request("/api/sessions/sess-1/effort", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ effort: "xhigh" }),
+  });
+  assert.equal(res.status, 409);
+  const body = (await res.json()) as { error: string };
+  assert.match(body.error, /passive effort baseline is not ready/i);
+  assert.equal(registry.getSession("sess-1")?.meta?.thinkingLevel, "high");
+});
+
 test("parseBody rejects a malformed write body with 400 (and never mutates)", async () => {
   // /api/tasks runs through the shared parseBody helper before any dispatch.
   const res = await app.request("/api/tasks", {

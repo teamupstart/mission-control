@@ -283,7 +283,7 @@ export class Registry extends EventEmitter {
     statusLineTimestamp: number | null;
     verifiedAt: number;
   }>();
-  private runtimeEffortRevisions = new Map<string, string>();
+  private runtimeEffortRevisions = new Map<string, string | null>();
   private statusLineTimestamps = new Map<string, number>();
   private effortFreshnessGuards = new Map<string, {
     agentSessionId: string | null;
@@ -854,15 +854,19 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
-  recordObservedSessionEffort(sessionId: string, effort: ThinkingLevel | null): void {
-    if (!effort) return;
+  recordRuntimeEffortBaseline(sessionId: string, revision: string | null): void {
+    if (this.sessions.has(sessionId)) this.runtimeEffortRevisions.set(sessionId, revision);
+  }
+
+  recordObservedSessionEffort(sessionId: string, effort: ThinkingLevel | null): boolean {
+    if (!effort || !this.runtimeEffortRevisions.has(sessionId)) return false;
     const s = this.sessions.get(sessionId);
-    if (!s?.meta) return;
+    if (!s?.meta) return false;
     const freshness = {
       agentSessionId: s.agentSessionId,
       transcriptPath: s.transcriptPath,
       modelId: s.meta.modelId,
-      effortRevision: this.runtimeEffortRevisions.get(sessionId) ?? null,
+      effortRevision: this.runtimeEffortRevisions.get(sessionId)!,
       statusLineTimestamp: this.statusLineTimestamps.get(sessionId) ?? null,
       verifiedAt: Date.now(),
     };
@@ -872,13 +876,14 @@ export class Registry extends EventEmitter {
       previous: s.meta.thinkingLevel ?? effort,
       effort,
     });
-    if (s.meta.thinkingLevel === effort) return;
+    if (s.meta.thinkingLevel === effort) return true;
     const updated: Session = {
       ...s,
       meta: { ...s.meta, thinkingLevel: effort },
     };
     this.sessions.set(sessionId, updated);
     this.emitSession(updated);
+    return true;
   }
 
   clearObservedSessionEffort(sessionId: string): void {
@@ -1555,9 +1560,7 @@ export class Registry extends EventEmitter {
   applyRuntimeMeta(sessionId: string, read: RuntimeMetaRead | null, source: MetaSource): void {
     const s = this.sessions.get(sessionId);
     if (!s || !read) return;
-    if (read.effortRevision !== null) {
-      this.runtimeEffortRevisions.set(sessionId, read.effortRevision);
-    }
+    this.runtimeEffortRevisions.set(sessionId, read.effortRevision);
     const now = Date.now();
     const statusLineHasPrecedence =
       s.meta?.source === "statusline" &&
@@ -1774,7 +1777,7 @@ export class Registry extends EventEmitter {
       ? statusLineTimestamp !== null &&
         statusLineTimestamp > guard.verifiedAt &&
         (guard.statusLineTimestamp === null || statusLineTimestamp > guard.statusLineTimestamp)
-      : effortRevision !== null && effortRevision !== guard.effortRevision;
+      : effortRevision !== guard.effortRevision;
     if (!fresh) {
       return {
         meta: { ...meta, thinkingLevel: currentEffort },

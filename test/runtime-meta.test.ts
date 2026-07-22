@@ -186,6 +186,7 @@ test("a newer passive revision publishes a native return to the prior effort", (
 test("a new agent session releases the prior session's observed effort", () => {
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high" }));
+  r.recordRuntimeEffortBaseline("s1", null);
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyStatusLine(statusIngest({ sessionId: "new-session", effort: "high" }));
   assert.equal(metaOf(r)?.thinkingLevel, "high");
@@ -195,6 +196,7 @@ test("only a timestamped post-change statusLine overrides an observed effort", (
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  r.recordRuntimeEffortBaseline("s1", null);
   const acceptedAt = metaOf(r)!.updatedAt;
   r.recordObservedSessionEffort("s1", "xhigh");
 
@@ -219,6 +221,7 @@ test("out-of-order statusLine metadata cannot regress a confirmed effort", (t) =
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  r.recordRuntimeEffortBaseline("s1", null);
   r.recordObservedSessionEffort("s1", "xhigh");
 
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
@@ -242,6 +245,7 @@ test("unversioned statusLine effort stays guarded after confirmation", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  r.recordRuntimeEffortBaseline("s1", null);
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
 
@@ -271,6 +275,39 @@ test("unversioned statusLine effort stays guarded after confirmation", (t) => {
   assert.equal(metaOf(r)?.thinkingLevel, "high");
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_100 }));
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+});
+
+test("an observed effort requires a synchronously captured passive baseline", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), false);
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+
+  r.recordRuntimeEffortBaseline("s1", "old-record");
+  assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), true);
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "old-record",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "new-record",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
 test("an agent-session rebind clears effort state before new metadata arrives", () => {

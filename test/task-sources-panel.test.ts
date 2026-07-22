@@ -106,14 +106,16 @@ test("a configured source is a compact overview row with its health", () => {
 
 // "Never swept" and "swept, found nothing" are the two states most easily confused, and
 // the confusion is expensive: the first can mean broken since setup.
-test("the overview counts a never-swept enabled source as running rather than failing", () => {
+test("the overview keeps a never-swept enabled source out of the healthy count", () => {
   const html = render(
     viewOf([mkSource({ enabled: true })], [
       { sourceId: "src-1", lastSweepAt: null, lastError: null, lastFiled: 0, seenCount: 0, sweeping: false },
     ]),
   );
-  assert.match(html, /running normally/);
-  assert.match(html, /Enabled 1/);
+  assert.match(html, />0<\/strong><span>running normally/);
+  assert.match(html, />1<\/strong><span>awaiting first sweep/);
+  assert.match(html, /Never swept/);
+  assert.match(html, /Pending 1/);
 });
 
 test("a sweep that found nothing remains healthy in the overview", () => {
@@ -130,7 +132,7 @@ test("a sweep that found nothing remains healthy in the overview", () => {
     ]),
   );
   assert.match(html, /Healthy/);
-  assert.match(html, /Enabled 1/);
+  assert.match(html, /Healthy 1/);
 });
 
 // A failing source has to be legible as failing. Without this it reads as a source that
@@ -157,4 +159,11 @@ test("the overview exposes filtering and an add-source entry point", () => {
   const html = render(viewOf([]));
   assert.match(html, /\+ Add source/);
   assert.match(html, /No sources yet - nothing is being swept/);
+});
+
+test("health filters expose their pressed state", () => {
+  const html = render(viewOf([mkSource()]));
+  assert.match(html, /class="is-active" aria-pressed="true">All 1<\/button>/);
+  assert.match(html, /aria-pressed="false">Healthy 0<\/button>/);
+  assert.match(html, /aria-pressed="false">Paused 1<\/button>/);
 });

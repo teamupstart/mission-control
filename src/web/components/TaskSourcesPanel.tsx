@@ -548,31 +548,44 @@ function SourceCard({
   );
 }
 
-type SourceFilter = "all" | "enabled" | "attention" | "paused";
+type SourceFilter = "all" | "healthy" | "attention" | "pending" | "paused";
 type SourceHealth = Exclude<SourceFilter, "all">;
 
 function sourceHealth(src: TaskSourceInstance, status: TaskSourceStatus | undefined): SourceHealth {
   if (status?.lastError) return "attention";
   if (!src.enabled) return "paused";
-  return "enabled";
+  if (!status || status.lastSweepAt === null) return "pending";
+  return "healthy";
+}
+
+interface SourceDirectoryFilters {
+  health: SourceFilter;
+  query: string;
+  kind: TaskSourceKind | "all";
 }
 
 function SourceDirectory({
   sources,
   kinds,
   statuses,
+  filters,
+  onFiltersChange,
+  restoreFocusId,
+  onFocusRestored,
   onSelect,
   onAdd,
 }: {
   sources: TaskSourceInstance[];
   kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
   statuses: TaskSourceStatus[];
+  filters: SourceDirectoryFilters;
+  onFiltersChange: (filters: SourceDirectoryFilters) => void;
+  restoreFocusId: string | null;
+  onFocusRestored: () => void;
   onSelect: (id: string) => void;
   onAdd: () => void;
 }): React.JSX.Element {
-  const [filter, setFilter] = useState<SourceFilter>("all");
-  const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<TaskSourceKind | "all">("all");
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const byId = new Map(statuses.map((s) => [s.sourceId, s]));
   const counts = sources.reduce(
     (all, src) => {
@@ -580,17 +593,25 @@ function SourceDirectory({
       all[health] += 1;
       return all;
     },
-    { enabled: 0, attention: 0, paused: 0 },
+    { healthy: 0, attention: 0, pending: 0, paused: 0 },
   );
-  const needle = query.trim().toLowerCase();
+  const needle = filters.query.trim().toLowerCase();
   const visible = sources.filter((src) => {
     const status = byId.get(src.id);
     const label = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;
-    const matchesFilter = filter === "all" || sourceHealth(src, status) === filter;
-    const matchesKind = kind === "all" || src.kind === kind;
+    const matchesFilter = filters.health === "all" || sourceHealth(src, status) === filters.health;
+    const matchesKind = filters.kind === "all" || src.kind === filters.kind;
     const haystack = `${nameOf(src, label)} ${label} ${src.repoRoot}`.toLowerCase();
     return matchesFilter && matchesKind && (!needle || haystack.includes(needle));
   });
+
+  useEffect(() => {
+    if (!restoreFocusId) return;
+    const row = rowRefs.current.get(restoreFocusId);
+    if (!row) return;
+    row.focus();
+    onFocusRestored();
+  }, [onFocusRestored, restoreFocusId]);
 
   return (
     <>
@@ -601,8 +622,9 @@ function SourceDirectory({
 
       <div className="ts-overview" aria-label="Task source overview">
         <div className="ts-metric"><strong>{sources.length}</strong><span>configured sources</span></div>
-        <div className="ts-metric"><strong className="ts-good">{counts.enabled}</strong><span>running normally</span></div>
+        <div className="ts-metric"><strong className="ts-good">{counts.healthy}</strong><span>running normally</span></div>
         <div className="ts-metric"><strong className={counts.attention > 0 ? "ts-attention" : "ts-good"}>{counts.attention}</strong><span>need attention</span></div>
+        <div className="ts-metric"><strong>{counts.pending}</strong><span>awaiting first sweep</span></div>
       </div>
       {counts.attention > 0 && (
         <p className="ts-attention-callout">
@@ -613,12 +635,12 @@ function SourceDirectory({
       <div className="ts-directory-tools">
         <input
           className="field-input"
-          value={query}
+          value={filters.query}
           placeholder="Search sources, repositories or types…"
           aria-label="Search task sources"
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => onFiltersChange({ ...filters, query: e.target.value })}
         />
-        <select className="harnesses-select" value={kind} aria-label="Filter task sources by type" onChange={(e) => setKind(e.target.value as TaskSourceKind | "all")}>
+        <select className="harnesses-select" value={filters.kind} aria-label="Filter task sources by type" onChange={(e) => onFiltersChange({ ...filters, kind: e.target.value as TaskSourceKind | "all" })}>
           <option value="all">All types</option>
           {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
         </select>
@@ -626,11 +648,19 @@ function SourceDirectory({
       <div className="ts-filters" aria-label="Filter task sources by health">
         {([
           ["all", `All ${sources.length}`],
-          ["enabled", `Enabled ${counts.enabled}`],
+          ["healthy", `Healthy ${counts.healthy}`],
           ["attention", `Attention ${counts.attention}`],
+          ["pending", `Pending ${counts.pending}`],
           ["paused", `Paused ${counts.paused}`],
         ] as const).map(([id, label]) => (
-          <button key={id} className={filter === id ? "is-active" : ""} onClick={() => setFilter(id)}>{label}</button>
+          <button
+            key={id}
+            className={filters.health === id ? "is-active" : ""}
+            aria-pressed={filters.health === id}
+            onClick={() => onFiltersChange({ ...filters, health: id })}
+          >
+            {label}
+          </button>
         ))}
       </div>
 
@@ -639,10 +669,17 @@ function SourceDirectory({
           const status = byId.get(src.id);
           const kindLabel = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;
           const health = sourceHealth(src, status);
-          const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : "Healthy";
+          const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : health === "pending" ? status ? "Never swept" : "No status" : "Healthy";
           return (
             <div className="ts-directory-item" role="listitem" key={src.id}>
-              <button className="ts-directory-row" onClick={() => onSelect(src.id)}>
+              <button
+                ref={(node) => {
+                  if (node) rowRefs.current.set(src.id, node);
+                  else rowRefs.current.delete(src.id);
+                }}
+                className="ts-directory-row"
+                onClick={() => onSelect(src.id)}
+              >
                 <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
                 <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
                 <span className="ts-directory-chevron" aria-hidden>›</span>
@@ -665,6 +702,13 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
   const [showAdd, setShowAdd] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null);
+  const [directoryFilters, setDirectoryFilters] = useState<SourceDirectoryFilters>({
+    health: "all",
+    query: "",
+    kind: "all",
+  });
+  const editorRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void fetchRepos().then(setRepos);
@@ -719,10 +763,17 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
   }
 
   useEffect(() => {
-    if (selectedId && !sources.some((s) => s.id === selectedId)) setSelectedId(null);
+    if (selectedId && !sources.some((s) => s.id === selectedId)) {
+      setSelectedId(null);
+      setRestoreFocusId(null);
+    }
   }, [selectedId, sources]);
 
   const selected = selectedId ? sources.find((s) => s.id === selectedId) : undefined;
+
+  useEffect(() => {
+    if (selected) editorRef.current?.focus();
+  }, [selected?.id]);
 
   return (
     <section className="settings-section">
@@ -751,8 +802,8 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       ) : null}
 
       {view && selected && !showAdd && (
-        <>
-          <button className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
+        <div className="ts-editor-view">
+          <button ref={editorRef} className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
           <SourceCard
             src={selected}
             kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
@@ -763,10 +814,11 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
             onRemove={() => {
               remove(selected.id);
               setSelectedId(null);
+              setRestoreFocusId(null);
             }}
             state={state}
           />
-        </>
+        </div>
       )}
 
       {view && !selected && !showAdd && sources.length > 0 && (
@@ -774,7 +826,14 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
           sources={sources}
           kinds={kinds}
           statuses={view.status}
-          onSelect={setSelectedId}
+          filters={directoryFilters}
+          onFiltersChange={setDirectoryFilters}
+          restoreFocusId={restoreFocusId}
+          onFocusRestored={() => setRestoreFocusId(null)}
+          onSelect={(id) => {
+            setRestoreFocusId(id);
+            setSelectedId(id);
+          }}
           onAdd={() => setShowAdd(true)}
         />
       )}

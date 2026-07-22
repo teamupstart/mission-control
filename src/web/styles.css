@@ -4828,7 +4828,7 @@ kbd {
 }
 .ts-overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin: 14px 0 10px;
 }
@@ -4931,6 +4931,8 @@ kbd {
 .ts-health i { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); }
 .ts-health-attention { color: var(--attention); }
 .ts-health-attention i { background: var(--attention); }
+.ts-health-pending { color: var(--muted); }
+.ts-health-pending i { background: var(--muted); }
 .ts-health-paused { color: var(--dim); }
 .ts-health-paused i { background: var(--dim); }
 .ts-directory-chevron { color: var(--dim); font-size: 16px; }

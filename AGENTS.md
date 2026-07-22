@@ -599,8 +599,8 @@ Do not report a UI change as working on the strength of the diff.
 - Be picky. If something looks off next to what you changed, fix it or say so.
 
 CI runs `npm run typecheck`, `npm test`, `npm run build`, and the bundle smoke check on Node 24
-(the supported floor) and Node 26 (the current release). The first three run concurrently;
-there is no linter.
+(the supported floor) and Node 26 (the current release). The test runner uses two concurrent,
+isolated test-file workers; there is no linter.
 
 ## House rules
 

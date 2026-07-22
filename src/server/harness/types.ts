@@ -85,6 +85,8 @@ export interface UsageCursor {
   modelId: string | null;
   /** True while advancing past a record that exceeded the bounded read size. */
   discardPartial: boolean;
+  /** Device/inode generation of the file this byte position belongs to. */
+  fileId: string | null;
 }
 
 /** One billable request observed in a harness-owned local record. */
@@ -103,6 +105,8 @@ export interface HarnessUsageEvent {
 export interface UsageRead {
   events: HarnessUsageEvent[];
   cursor: UsageCursor;
+  /** Proven session id from the source header, or null while the header is unreadable. */
+  sourceId: string | null;
   more: boolean;
   reset: boolean;
 }

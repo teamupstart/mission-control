@@ -1,6 +1,6 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
@@ -127,7 +127,7 @@ test("a shortened live source stays quarantined until its proven path changes", 
   const originalWarn = console.warn;
   let rejected = false;
   console.warn = (...args: unknown[]) => {
-    if (String(args[0]).includes("refusing shortened source")) rejected = true;
+    if (String(args[0]).includes("refusing rewritten source")) rejected = true;
     originalWarn(...args);
   };
   try {
@@ -162,6 +162,71 @@ test("a shortened live source stays quarantined until its proven path changes", 
   }
 });
 
+test("a same-inode truncate-and-regrow cannot cross a rollout session header", async () => {
+  const path = join(home, "rollout-regrown.jsonl");
+  const meta = (id: string) => JSON.stringify({
+    timestamp: "2026-07-22T13:29:00.000Z",
+    type: "session_meta",
+    payload: {
+      id,
+      timestamp: "2026-07-22T13:29:00.000Z",
+      cwd: "/repo-regrown",
+      source: "cli",
+    },
+  });
+  const oldId = "conversation-old";
+  const newId = "conversation-new";
+  const turn = JSON.stringify({ type: "turn_context", payload: { model: "gpt-5.6-sol" } });
+  const initial = `${meta(oldId)}\n${turn}\n${token("2026-07-22T13:30:00.000Z")}\n`;
+  writeFileSync(path, initial);
+  const registry = new Registry();
+  registry.applyDiscovery([{
+    syntheticId: "codex-regrown",
+    agent: "codex",
+    name: "codex",
+    nameSource: "process",
+    cwd: "/repo-regrown",
+    gitBranch: "main",
+    gitRoot: null,
+    repoRoot: null,
+    nomistakesGated: false,
+    pid: 45,
+    tty: "ttys45",
+    terminals: [],
+    startedAt: 0,
+    agentSessionId: oldId,
+    transcriptPath: path,
+  } satisfies DiscoveredSession]);
+  const stop = startUsagePoller(registry);
+  const originalWarn = console.warn;
+  let rejected = false;
+  console.warn = (...args: unknown[]) => {
+    if (String(args[0]).includes("contradictory session")) rejected = true;
+    originalWarn(...args);
+  };
+  try {
+    await eventually(() => registry.getSession("codex-regrown")?.cost?.input === 700);
+    const sourceKey = usageSourceKey("codex", oldId, path);
+    const committed = usageCursorFor(sourceKey);
+    const inode = statSync(path).ino;
+
+    // writeFileSync truncates and regrows this same inode between event-loop turns. The
+    // replacement is the same size, so neither the old size guard nor file identity alone
+    // can distinguish it; only the revalidated session_meta prevents cross-attribution.
+    const replacement = `${meta(newId)}\n${turn}\n${token("2026-07-22T13:31:00.000Z")}\n`;
+    assert.equal(Buffer.byteLength(replacement), Buffer.byteLength(initial));
+    writeFileSync(path, replacement);
+    assert.equal(statSync(path).ino, inode);
+
+    await eventually(() => rejected);
+    assert.equal(registry.getSession("codex-regrown")?.cost?.input, 700);
+    assert.deepEqual(usageCursorFor(sourceKey), committed);
+  } finally {
+    console.warn = originalWarn;
+    stop();
+  }
+});
+
 test("an observed byte-idle source refreshes its cursor retention timestamp", async () => {
   const path = join(home, "rollout-idle.jsonl");
   const sessionMeta = JSON.stringify({
@@ -187,6 +252,7 @@ test("an observed byte-idle source refreshes its cursor retention timestamp", as
       offset: Buffer.byteLength(contents),
       modelId: "gpt-5.6-sol",
       discardPartial: false,
+      fileId: null,
     },
     events: [],
     updatedAt: 1,

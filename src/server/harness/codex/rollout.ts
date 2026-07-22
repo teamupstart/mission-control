@@ -24,7 +24,7 @@ const ROLLOUT_TAIL_BYTES = 128 * 1024;
 /** Bytes to read from a rollout's head to identify its session_meta. */
 // Session metadata can embed the complete base instructions. Real 0.144.6 headers exceed
 // 18 KB, so the old 16 KB cap cut valid JSON in half and made every such rollout invisible.
-const HEAD_BYTES = 256 * 1024;
+export const CODEX_HEAD_BYTES = 256 * 1024;
 /** Cap on rollout files inspected per resolution, so a large history stays cheap. */
 const SCAN_CAP = 400;
 /** A cwd fallback only proves identity near process startup; `/clear` can mint later files. */
@@ -69,7 +69,7 @@ export function readHeadLine(path: string): string | null {
   }
   try {
     const size = statSync(path).size;
-    const len = Math.min(size, HEAD_BYTES);
+    const len = Math.min(size, CODEX_HEAD_BYTES);
     const buf = Buffer.allocUnsafe(len);
     const n = readSync(fd, buf, 0, len, 0);
     const text = buf.subarray(0, n).toString("utf8");
@@ -272,7 +272,7 @@ function readHeadLines(path: string): string[] {
   }
   try {
     const size = statSync(path).size;
-    const len = Math.min(size, HEAD_BYTES);
+    const len = Math.min(size, CODEX_HEAD_BYTES);
     const buf = Buffer.allocUnsafe(len);
     const n = readSync(fd, buf, 0, len, 0);
     const lines = buf.subarray(0, n).toString("utf8").split("\n");

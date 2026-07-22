@@ -114,7 +114,7 @@ test("Codex request rows retain estimator provenance and join fleet cost and tok
     noteKey: "conversation-1",
     sessionId: "live-1",
     agent: "codex",
-    cursor: { offset: 144, modelId: "gpt-5.6-sol", discardPartial: true },
+    cursor: { offset: 144, modelId: "gpt-5.6-sol", discardPartial: true, fileId: "1:2" },
     updatedAt: 25_000,
     events: [{
       identity: "event-1", ts: 25_000, modelId: "gpt-5.6-sol", querySource: "main",
@@ -123,7 +123,7 @@ test("Codex request rows retain estimator provenance and join fleet cost and tok
     }],
   });
   assert.deepEqual(usageCursorFor("codex:conversation-1"), {
-    offset: 144, modelId: "gpt-5.6-sol", discardPartial: true,
+    offset: 144, modelId: "gpt-5.6-sol", discardPartial: true, fileId: "1:2",
   });
   const summary = sessionCostFor("conversation-1");
   assert.equal(summary?.basis, "api-equivalent");
@@ -143,7 +143,7 @@ test("an unknown Codex model preserves tokens but makes the whole summary unpric
     noteKey: "conversation-unknown",
     sessionId: null,
     agent: "codex",
-    cursor: { offset: 88, modelId: "gpt-future", discardPartial: false },
+    cursor: { offset: 88, modelId: "gpt-future", discardPartial: false, fileId: "1:3" },
     updatedAt: 30_000,
     events: [{
       identity: "event-unknown", ts: 30_000, modelId: "gpt-future", querySource: "main",

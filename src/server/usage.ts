@@ -34,9 +34,9 @@ export function startUsagePoller(registry: Registry): () => void {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const held = new Map<string, HeldSource>();
   const lastTouched = new Map<string, number>();
-  // A shortened file is an in-place rewrite, not a new append-only source. Keep that
-  // exact conversation/path quarantined for this daemon lifetime; changing either value
-  // produces a new source key and is the only evidence that makes reading safe again.
+  // A changed file generation, shortened file, or contradictory session header is not an
+  // append-only source. Keep that exact conversation/path quarantined for this daemon
+  // lifetime; changing either value produces a new key and is the only safe reset signal.
   const rejected = new Set<string>();
 
   const tick = (): void => {
@@ -72,10 +72,20 @@ export function startUsagePoller(registry: Registry): () => void {
         const cursor = usageCursorFor(sourceKey);
         const read = usage.read(source.path, cursor, USAGE_READ_BYTES);
         if (read.reset) {
-          // The source key contains the proven conversation id. A different conversation
-          // naturally gets a different key; shortening this one is an in-place rewrite and
-          // cannot be made safe by guessing where its economic history starts.
-          console.warn(`[usage] refusing shortened source ${sourceKey} at ${source.path}`);
+          // The cursor belongs to a different file generation, or the source was shortened
+          // between reads. Neither can be resumed at an old byte position safely.
+          console.warn(`[usage] refusing rewritten source ${sourceKey} at ${source.path}`);
+          rejected.add(sourceKey);
+          held.delete(sourceKey);
+          continue;
+        }
+        // Re-read the immutable rollout header on every pass. This catches a same-inode
+        // truncate-and-regrow that device/inode identity alone cannot distinguish.
+        if (read.sourceId === null) continue;
+        if (read.sourceId !== source.session.agentSessionId) {
+          console.warn(
+            `[usage] refusing source ${sourceKey} with contradictory session ${read.sourceId}`,
+          );
           rejected.add(sourceKey);
           held.delete(sourceKey);
           continue;
@@ -88,7 +98,11 @@ export function startUsagePoller(registry: Registry): () => void {
             pricingVersion: priced?.pricingVersion ?? "",
           };
         });
-        if (read.cursor.offset !== cursor.offset || events.length > 0) {
+        if (
+          read.cursor.offset !== cursor.offset ||
+          read.cursor.fileId !== cursor.fileId ||
+          events.length > 0
+        ) {
           commitUsageRead({
             sourceKey,
             noteKey: source.session.agentSessionId,

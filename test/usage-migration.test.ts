@@ -26,6 +26,13 @@ raw.exec(`
     cache_write INTEGER NOT NULL DEFAULT 0,
     UNIQUE(note_key, model_id, query_source, window_end_ns)
   );
+  CREATE TABLE usage_sources (
+    source_key TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    offset INTEGER NOT NULL,
+    model_id TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  );
   INSERT INTO usage_ledger
     (note_key, agent, model_id, query_source, window_end_ns, ts, cost_usd, input, output)
   VALUES ('legacy-session', 'claude', 'claude-opus', 'main', '1', 1000, 1.25, 10, 2);
@@ -55,5 +62,7 @@ test("the new cursor table is created on an upgraded database", () => {
     .get() as { name: string } | undefined;
   assert.equal(row?.name, "usage_sources");
   const columns = db.prepare(`PRAGMA table_info(usage_sources)`).all() as unknown as Array<{ name: string }>;
-  assert.ok(columns.some((column) => column.name === "discard_partial"));
+  for (const name of ["discard_partial", "file_id"]) {
+    assert.ok(columns.some((column) => column.name === name), `missing migrated ${name}`);
+  }
 });

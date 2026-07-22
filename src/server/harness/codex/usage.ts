@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { statSync } from "node:fs";
-import { readRange } from "../../util/file-tail.ts";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { CODEX_HEAD_BYTES, parseSessionMeta } from "./rollout.ts";
 import type {
   HarnessUsageEvent,
   UsageCursor,
@@ -9,8 +9,8 @@ import type {
 } from "../types.ts";
 import { estimateStandardApiUsage } from "./pricing.ts";
 
-function empty(cursor: UsageCursor, reset = false): UsageRead {
-  return { events: [], cursor, more: false, reset };
+function empty(cursor: UsageCursor, reset = false, sourceId: string | null = null): UsageRead {
+  return { events: [], cursor, sourceId, more: false, reset };
 }
 
 function nonNegativeNumber(value: unknown, optional = false): number | null {
@@ -91,29 +91,49 @@ export function readCodexUsage(
   cursor: UsageCursor,
   maxBytes: number,
 ): UsageRead {
-  let size: number;
+  let fd: number;
   try {
-    size = statSync(path).size;
+    fd = openSync(path, "r");
   } catch {
     return empty(cursor);
   }
-  if (size < cursor.offset) return empty(cursor, true);
-  if (size === cursor.offset || maxBytes <= 0) return empty(cursor);
-
-  const end = Math.min(size, cursor.offset + maxBytes);
+  let size: number;
+  let fileId: string;
+  let sourceId: string | null;
   let buf: Buffer;
   try {
-    buf = readRange(path, cursor.offset, end);
+    const stat = fstatSync(fd, { bigint: true });
+    size = Number(stat.size);
+    fileId = `${stat.dev}:${stat.ino}`;
+    const head = Buffer.allocUnsafe(Math.min(size, CODEX_HEAD_BYTES));
+    const headBytes = readSync(fd, head, 0, head.length, 0);
+    const headText = head.subarray(0, headBytes).toString("utf8");
+    const newline = headText.indexOf("\n");
+    sourceId = parseSessionMeta(newline >= 0 ? headText.slice(0, newline) : headText)?.sessionId ?? null;
+    if (cursor.fileId && cursor.fileId !== fileId) return empty(cursor, true, sourceId);
+    if (size < cursor.offset) return empty(cursor, true, sourceId);
+    const current = { ...cursor, fileId };
+    if (size === cursor.offset || maxBytes <= 0) return empty(current, false, sourceId);
+
+    const end = Math.min(size, cursor.offset + maxBytes);
+    const range = Buffer.allocUnsafe(end - cursor.offset);
+    const bytes = readSync(fd, range, 0, range.length, cursor.offset);
+    buf = range.subarray(0, bytes);
   } catch {
     return empty(cursor);
+  } finally {
+    closeSync(fd);
   }
+  const current = { ...cursor, fileId };
+  const end = cursor.offset + buf.length;
   let from = 0;
   if (cursor.discardPartial) {
     const firstNewline = buf.indexOf(0x0a);
     if (firstNewline < 0) {
       return {
         events: [],
-        cursor: { ...cursor, offset: end },
+        cursor: { ...current, offset: end },
+        sourceId,
         more: end < size,
         reset: false,
       };
@@ -130,7 +150,8 @@ export function readCodexUsage(
       const offset = cursor.offset + from;
       return {
         events: [],
-        cursor: { ...cursor, offset, discardPartial: false },
+        cursor: { ...current, offset, discardPartial: false },
+        sourceId,
         more: offset < size,
         reset: false,
       };
@@ -142,14 +163,16 @@ export function readCodexUsage(
     if (end < size) {
       return {
         events: [],
-        cursor: { ...cursor, offset: end, discardPartial: true },
+        cursor: { ...current, offset: end, discardPartial: true },
+        sourceId,
         more: true,
         reset: false,
       };
     }
     return {
       events: [],
-      cursor,
+      cursor: current,
+      sourceId,
       more: false,
       reset: false,
     };
@@ -168,7 +191,8 @@ export function readCodexUsage(
   const offset = cursor.offset + from + consumed.length;
   return {
     events,
-    cursor: { offset, modelId, discardPartial: false },
+    cursor: { offset, modelId, discardPartial: false, fileId },
+    sourceId,
     more: offset < size,
     reset: false,
   };

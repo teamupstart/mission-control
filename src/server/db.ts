@@ -347,6 +347,7 @@ export function openDb(): DatabaseSync {
       offset       INTEGER NOT NULL,
       model_id     TEXT NOT NULL DEFAULT '',
       discard_partial INTEGER NOT NULL DEFAULT 0,
+      file_id      TEXT NOT NULL DEFAULT '',
       updated_at   INTEGER NOT NULL
     );
 
@@ -508,6 +509,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "usage_ledger", "pricing_version", "TEXT NOT NULL DEFAULT ''");
   addColumn(d, "usage_ledger", "reasoning_output", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
 
   // `proposed_payload`: what a drafted item would actually type. CREATE TABLE IF
   // NOT EXISTS won't add a column to a table that already exists, so an ALTER is
@@ -628,7 +630,7 @@ function migrate(d: DatabaseSync): void {
   // separate table over columns on `session_notes`: no ALTER, and no row written before
   // this build that has to be reasoned about.)
   //
-  // `usage_sources` is new; its defensive `discard_partial` migration above also makes
+  // `usage_sources` is new; its defensive cursor-state migrations above also make
   // intermediate development databases safe to reopen. `usage_ledger` does need a user
   // migration: its provenance/pricing defaults identify every old Claude row as reported
   // rather than retroactively estimating or repricing it.
@@ -1728,6 +1730,7 @@ export interface UsageSourceCursor {
   offset: number;
   modelId: string | null;
   discardPartial: boolean;
+  fileId: string | null;
 }
 
 export interface DurableUsageEvent {
@@ -1747,11 +1750,16 @@ export interface DurableUsageEvent {
 /** Last committed byte position for a harness-owned usage stream. */
 export function usageCursorFor(sourceKey: string): UsageSourceCursor {
   const row = openDb()
-    .prepare(`SELECT offset, model_id, discard_partial FROM usage_sources WHERE source_key = ?`)
-    .get(sourceKey) as { offset: number; model_id: string; discard_partial: number } | undefined;
+    .prepare(`SELECT offset, model_id, discard_partial, file_id FROM usage_sources WHERE source_key = ?`)
+    .get(sourceKey) as { offset: number; model_id: string; discard_partial: number; file_id: string } | undefined;
   return row
-    ? { offset: row.offset, modelId: row.model_id || null, discardPartial: row.discard_partial === 1 }
-    : { offset: 0, modelId: null, discardPartial: false };
+    ? {
+      offset: row.offset,
+      modelId: row.model_id || null,
+      discardPartial: row.discard_partial === 1,
+      fileId: row.file_id || null,
+    }
+    : { offset: 0, modelId: null, discardPartial: false, fileId: null };
 }
 
 /** Keep an observed source's cursor alive without changing its committed byte position. */
@@ -1809,12 +1817,14 @@ export function commitUsageRead(input: {
       );
     }
     d.prepare(
-      `INSERT INTO usage_sources (source_key, agent, offset, model_id, discard_partial, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO usage_sources
+         (source_key, agent, offset, model_id, discard_partial, file_id, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_key) DO UPDATE SET
          offset = excluded.offset,
          model_id = excluded.model_id,
          discard_partial = excluded.discard_partial,
+         file_id = excluded.file_id,
          updated_at = excluded.updated_at`,
     ).run(
       input.sourceKey,
@@ -1822,6 +1832,7 @@ export function commitUsageRead(input: {
       input.cursor.offset,
       input.cursor.modelId ?? "",
       input.cursor.discardPartial ? 1 : 0,
+      input.cursor.fileId ?? "",
       input.updatedAt,
     );
     d.exec("COMMIT;");

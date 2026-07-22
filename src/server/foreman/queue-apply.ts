@@ -6,6 +6,7 @@ import { paneToken } from "@shared/pane.ts";
 import { SEND_ATTEMPT_CAP, hasPane, inFlightItem, settledIdle } from "./queue-machine.ts";
 import type { QueueAction, QueueConfig } from "./queue-machine.ts";
 import { foremanMayActLive } from "./verdict.ts";
+import { foremanAutomationAuthorized } from "../harness/index.ts";
 
 // The I/O half of the queue: execute what the pure machine decided. Kept behind a
 // narrow interface so the whole thing can be driven against a fake in tests -
@@ -198,6 +199,9 @@ export async function queueSendStillValid(
     const sessions = await actions.sessions();
     const fresh = resolveLiveSession(sessions, obs.noteKey);
     if (!fresh) return { ok: false, why: "the session is gone" };
+    if (!foremanAutomationAuthorized(fresh)) {
+      return { ok: false, why: "the session is not authorized for Foreman automation" };
+    }
 
     // 2. An unanswered question outranks the queue.
     if (reportBucket(fresh, sessions) === "needs-you") {

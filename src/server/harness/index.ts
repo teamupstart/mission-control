@@ -139,8 +139,8 @@ export function hooksFor(agent: AgentType): HookSpec | null {
   return HARNESSES[agent].hooks;
 }
 
-/** Whether Foreman may answer this session's needs-you prompts automatically. */
-export function foremanCanHandleNeedsYou(session: Session): boolean {
+/** Whether Foreman may automate this session. */
+export function foremanAutomationAuthorized(session: Session): boolean {
   const harness = HARNESSES[session.agent];
   if (!harness.workQueue || !harness.hooks) return false;
   return harness.hooks.scope === "machine" || session.hooksSeen;

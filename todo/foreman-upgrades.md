@@ -40,7 +40,7 @@ Foreman's engineering rigor.
 | Knowledge capture / learning | `/stow` routes durable facts to canonical homes | Notes are ephemeral triage aids; no feedback loop |
 | Turn-end safety | Backstop blocks blind exit while work in flight | Partial: the `unfinished-work` stall rule (`src/shared/stall.ts`) flags a session idle with a task or queue still open, but only reports it - no recovery playbook |
 | Cross-session awareness | Serializes same-file tasks, `blocked-by` | Each session reviewed in isolation |
-| Multi-harness | Claude, Grok, Pi, Codex, OpenCode | Claude only (Codex has no transcript endpoint) |
+| Multi-harness | Claude, Grok, Pi, Codex, OpenCode | Claude plus Mission Control-launched Codex; operator-started Codex remains human-operated because its hooks are launch-scoped |
 | Domain specialization | Secondmates (persistent scoped supervisors) | One global policy/allowlist |
 | External channels | X-mode (bounded public replies) | In-app + browser notification only |
 
@@ -91,9 +91,12 @@ it through the loop it already runs. Closes the gap from "auto-responder" to fir
 "auto-supervisor," reusing dispatch we've already built. Adopt firstmate's **ship vs scout**
 distinction so escalation policy differs by deliverable type (PR/merge vs report).
 
-### 5. Codex support — closes a known gap
-The shipped plan flags this: Foreman excludes Codex because there's no transcript endpoint. A
-transcript adapter for Codex unlocks every session — the rest of the pipeline is agent-agnostic.
+### 5. Codex support — shipped within the launch-scoped boundary
+Codex rollout messages now feed the shared transcript path, and Mission Control launches attach
+the hooks Foreman needs for prompt triage and proactive work queues. Delivery remains
+harness-neutral. Operator-started Codex sessions deliberately stay human-operated because those
+launch-scoped hooks are the authorization boundary, so this closes the capability gap without
+turning passive discovery into permission to type.
 
 ### 6. Turn-end / wedged-session recovery — reliability
 firstmate refuses to let a session exit blind while work is in flight. Foreman only looks at
@@ -127,4 +130,5 @@ phone without opening the dashboard. (The Slack MCP is already available.)
 2. **#2 (away digest)** - the batching/digest half shipped; the Foreman-autonomy half is open -
    and **#3 (learning loop)** — immediate felt value.
 3. **#4 (dispatch)** — the strategic leap that makes Foreman a real supervisor, not a triager.
-4. **#5 (Codex)** and **#6 (wedged recovery)** — coverage + reliability once the core is richer.
+4. **#6 (wedged recovery)** — reliability once the core is richer. **#5 (Codex)** is shipped for
+   Mission Control-launched sessions within its hook boundary.

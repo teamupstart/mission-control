@@ -10,7 +10,7 @@ import { llmRunnerChoice } from "../llm/config.ts";
 import { activeAgentCount } from "./backlog-machine.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
-import { foremanCanHandleNeedsYou } from "../harness/index.ts";
+import { foremanAutomationAuthorized } from "../harness/index.ts";
 
 // Foreman's operating config + derived live status. The config is the only
 // durable state (in app_config); the worker itself runs as a separate process
@@ -173,7 +173,7 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
 function countNeedsYou(sessions: Session[]): number {
   let n = 0;
   for (const s of sessions) {
-    if (foremanCanHandleNeedsYou(s) && reportBucket(s, sessions) === "needs-you") n++;
+    if (foremanAutomationAuthorized(s) && reportBucket(s, sessions) === "needs-you") n++;
   }
   return n;
 }

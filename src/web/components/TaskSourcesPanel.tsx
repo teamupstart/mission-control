@@ -277,7 +277,7 @@ function GithubFields({
   );
 }
 
-/** One configured source, with everything about it on screen at once. */
+/** One configured source's editor. The overview chooses which source reaches this surface. */
 function SourceCard({
   src,
   kindLabel,
@@ -321,7 +321,7 @@ function SourceCard({
   }
 
   return (
-    <li className="ts-card">
+    <div className="ts-card ts-editor">
       <div className="ts-head">
         <label className="skill-switch">
           <input
@@ -544,7 +544,113 @@ function SourceCard({
           {busy === "forget" ? "Forgetting…" : "Forget seen items"}
         </button>
       </div>
-    </li>
+    </div>
+  );
+}
+
+type SourceFilter = "all" | "enabled" | "attention" | "paused";
+type SourceHealth = Exclude<SourceFilter, "all">;
+
+function sourceHealth(src: TaskSourceInstance, status: TaskSourceStatus | undefined): SourceHealth {
+  if (status?.lastError) return "attention";
+  if (!src.enabled) return "paused";
+  return "enabled";
+}
+
+function SourceDirectory({
+  sources,
+  kinds,
+  statuses,
+  onSelect,
+  onAdd,
+}: {
+  sources: TaskSourceInstance[];
+  kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
+  statuses: TaskSourceStatus[];
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+}): React.JSX.Element {
+  const [filter, setFilter] = useState<SourceFilter>("all");
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState<TaskSourceKind | "all">("all");
+  const byId = new Map(statuses.map((s) => [s.sourceId, s]));
+  const counts = sources.reduce(
+    (all, src) => {
+      const health = sourceHealth(src, byId.get(src.id));
+      all[health] += 1;
+      return all;
+    },
+    { enabled: 0, attention: 0, paused: 0 },
+  );
+  const needle = query.trim().toLowerCase();
+  const visible = sources.filter((src) => {
+    const status = byId.get(src.id);
+    const label = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;
+    const matchesFilter = filter === "all" || sourceHealth(src, status) === filter;
+    const matchesKind = kind === "all" || src.kind === kind;
+    const haystack = `${nameOf(src, label)} ${label} ${src.repoRoot}`.toLowerCase();
+    return matchesFilter && matchesKind && (!needle || haystack.includes(needle));
+  });
+
+  return (
+    <>
+      <div className="settings-section-head">
+        <h3>Task sources <span className="ts-count">· {sources.length} configured</span></h3>
+        <button className="btn" onClick={onAdd}>+ Add source</button>
+      </div>
+
+      <div className="ts-overview" aria-label="Task source overview">
+        <div className="ts-metric"><strong>{sources.length}</strong><span>configured sources</span></div>
+        <div className="ts-metric"><strong className="ts-good">{counts.enabled}</strong><span>running normally</span></div>
+        <div className="ts-metric"><strong className={counts.attention > 0 ? "ts-attention" : "ts-good"}>{counts.attention}</strong><span>need attention</span></div>
+      </div>
+      {counts.attention > 0 && (
+        <p className="ts-attention-callout">
+          <strong>Attention:</strong> {counts.attention} source{counts.attention === 1 ? "" : "s"} had a failed sweep. Filter to review and repair {counts.attention === 1 ? "it" : "them"}.
+        </p>
+      )}
+
+      <div className="ts-directory-tools">
+        <input
+          className="field-input"
+          value={query}
+          placeholder="Search sources, repositories or types…"
+          aria-label="Search task sources"
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <select className="harnesses-select" value={kind} aria-label="Filter task sources by type" onChange={(e) => setKind(e.target.value as TaskSourceKind | "all")}>
+          <option value="all">All types</option>
+          {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
+        </select>
+      </div>
+      <div className="ts-filters" aria-label="Filter task sources by health">
+        {([
+          ["all", `All ${sources.length}`],
+          ["enabled", `Enabled ${counts.enabled}`],
+          ["attention", `Attention ${counts.attention}`],
+          ["paused", `Paused ${counts.paused}`],
+        ] as const).map(([id, label]) => (
+          <button key={id} className={filter === id ? "is-active" : ""} onClick={() => setFilter(id)}>{label}</button>
+        ))}
+      </div>
+
+      <div className="ts-directory" role="list" aria-label="Configured task sources">
+        {visible.map((src) => {
+          const status = byId.get(src.id);
+          const kindLabel = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;
+          const health = sourceHealth(src, status);
+          const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : "Healthy";
+          return (
+            <button className="ts-directory-row" role="listitem" key={src.id} onClick={() => onSelect(src.id)}>
+              <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
+              <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
+              <span className="ts-directory-chevron" aria-hidden>›</span>
+            </button>
+          );
+        })}
+        {visible.length === 0 && <p className="ts-directory-empty">No sources match these filters.</p>}
+      </div>
+    </>
   );
 }
 
@@ -554,7 +660,9 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
   const [draftRepo, setDraftRepo] = useState("");
   const [draftKind, setDraftKind] = useState<TaskSourceKind | "">("");
   const [adding, setAdding] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     void fetchRepos().then(setRepos);
@@ -604,23 +712,24 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       maxPerSweep: DEFAULT_MAX_PER_SWEEP,
       config: {},
     };
-    await save([...sourcesRef.current, added]);
+    const saved = await save([...sourcesRef.current, added]);
+    if (saved) setShowAdd(false);
   }
+
+  useEffect(() => {
+    if (selectedId && !sources.some((s) => s.id === selectedId)) setSelectedId(null);
+  }, [selectedId, sources]);
+
+  const selected = selectedId ? sources.find((s) => s.id === selectedId) : undefined;
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Task sources</h3>
-      </div>
-
       <p className="settings-hint settings-blurb">
-        Pulls work <strong>into</strong> the backlog from systems that already hold it, so
-        it doesn't have to be re-typed. A source files backlog tasks and nothing else:{" "}
-        <strong>it never dispatches an agent, never cuts a worktree and never types into a
-        session</strong>. What it files is a list you read and delete from, and a task you
-        delete stays deleted.
+        Pulls work <strong>into</strong> the backlog from systems that already hold it. A
+        source files backlog tasks and nothing else: <strong>it never dispatches an agent,
+        never cuts a worktree and never types into a session</strong>. What it files is a
+        list you read and delete from, and a task you delete stays deleted.
       </p>
-
       {/* The daemon has not answered. Said out loud rather than drawing an empty list,
           which is indistinguishable from "no sources are configured" - and would tell an
           operator nothing is being swept while the stored config sweeps on. */}
@@ -633,29 +742,44 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
 
       {error && <p className="settings-error">{error}</p>}
 
-      {view && sources.length === 0 ? (
+      {view && sources.length === 0 && !showAdd ? (
         <p className="settings-hint ts-empty">
           No sources yet - nothing is being swept. Add one below; it starts switched off.
         </p>
-      ) : (
-        <ul className="ts-list">
-          {sources.map((src) => (
-            <SourceCard
-              key={src.id}
-              src={src}
-              kindLabel={kinds.find((k) => k.kind === src.kind)?.label ?? src.kind}
-              status={view?.status.find((s) => s.sourceId === src.id)}
-              repos={repos}
-              now={now}
-              onChange={replace}
-              onRemove={() => remove(src.id)}
-              state={state}
-            />
-          ))}
-        </ul>
+      ) : null}
+
+      {view && selected && !showAdd && (
+        <>
+          <button className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
+          <SourceCard
+            src={selected}
+            kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
+            status={view.status.find((s) => s.sourceId === selected.id)}
+            repos={repos}
+            now={now}
+            onChange={replace}
+            onRemove={() => {
+              remove(selected.id);
+              setSelectedId(null);
+            }}
+            state={state}
+          />
+        </>
       )}
 
-      <div className="ts-add">
+      {view && !selected && !showAdd && sources.length > 0 && (
+        <SourceDirectory
+          sources={sources}
+          kinds={kinds}
+          statuses={view.status}
+          onSelect={setSelectedId}
+          onAdd={() => setShowAdd(true)}
+        />
+      )}
+
+      {view && showAdd && <div className="ts-add ts-add-panel">
+        <button className="ts-back" onClick={() => setShowAdd(false)}>← All task sources</button>
+        <div className="settings-section-head"><h3>Add a task source</h3></div>
         <p className="settings-group-label">Add a source</p>
         {kinds.length > 0 && (
           <p className="settings-hint">{kinds.find((k) => k.kind === kind)?.blurb}</p>
@@ -687,7 +811,11 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
           </button>
         </div>
         {addError && <p className="settings-error">{addError}</p>}
-      </div>
+      </div>}
+
+      {view && sources.length === 0 && !showAdd && (
+        <button className="btn ts-empty-add" onClick={() => setShowAdd(true)}>+ Add source</button>
+      )}
     </section>
   );
 }

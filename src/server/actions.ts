@@ -422,6 +422,7 @@ async function driveShortcutEffort(
   deps: PaneDeps,
 ): Promise<ActionResult> {
   const levels = spec.levelsFor(modelId);
+  const original = current;
   while (current !== target) {
     const from = levels.indexOf(current);
     const to = levels.indexOf(target);
@@ -433,95 +434,39 @@ async function driveShortcutEffort(
     if (!moved.ok) return moved;
     const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
     if (observed !== expected) {
-      if (target === "max" && expected === "max" && current === "xhigh") {
-        const advanced = await driveAdvancedMax(session, pane, picker, modelId, current, deps);
-        if (!advanced.ok) return advanced;
-        current = "max";
-        continue;
-      }
-      return { ok: false, error: "the agent ignored the session-only effort shortcut" };
+      const restored = await restoreShortcutEffort(session, pane, picker, modelId, levels, current, original, deps);
+      return restored
+        ? { ok: false, error: "the agent ignored the session-only effort shortcut" }
+        : { ok: false, error: "the effort shortcut stopped before the target and could not be rolled back" };
     }
     current = observed;
   }
   return { ok: true };
 }
 
-async function driveAdvancedMax(
+async function restoreShortcutEffort(
   session: Session,
   pane: BoundPane,
   picker: ShortcutEffortPicker,
   modelId: string,
+  levels: readonly ThinkingLevel[],
   current: ThinkingLevel,
+  target: ThinkingLevel,
   deps: PaneDeps,
-): Promise<ActionResult> {
-  const advanced = picker.advanced;
-  if (!advanced) return { ok: false, error: "max effort is not session-selectable for this model" };
-
-  const opened = await writeText(pane, advanced.command);
-  if (!opened.ok) return opened;
-  const pending = await deps.capture(session);
-  if (!hasPendingCommand(pending, advanced.command) || readPaneDialog(session, pending)) {
-    return { ok: false, error: "the model command could not be verified in the composer; no setting was changed" };
+): Promise<boolean> {
+  while (current !== target) {
+    const from = levels.indexOf(current);
+    const to = levels.indexOf(target);
+    if (from < 0 || to < 0) return false;
+    const expected = levels[from + (to > from ? 1 : -1)];
+    if (!expected) return false;
+    const moved = await sendKeys(pane, [to > from ? picker.raise : picker.lower]);
+    if (!moved.ok) return false;
+    const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
+    if (observed !== expected) return false;
+    current = observed;
   }
-  const submitted = await sendKeys(pane, ["enter"]);
-  if (!submitted.ok) return submitted;
-  const models = await awaitEffortPicker(session, advanced.modelVisible, deps);
-  if (!models || advanced.selectedModel(models) !== modelId.toLowerCase()) {
-    return { ok: false, error: "the active model was not selected in Codex's picker" };
-  }
-  const modelAccepted = await sendKeys(pane, ["enter"]);
-  if (!modelAccepted.ok) return modelAccepted;
-  const reasoning = await awaitEffortPicker(session, advanced.reasoningVisible, deps);
-  if (!reasoning) return { ok: false, error: "Codex's reasoning picker did not open" };
-
-  let selected = advanced.selectedReasoning(reasoning);
-  const seen = new Set<ThinkingLevel | "more">();
-  while (selected !== "more") {
-    if (!selected || seen.has(selected) || seen.size >= 8) {
-      return { ok: false, error: "Codex's advanced reasoning row could not be verified" };
-    }
-    seen.add(selected);
-    const moved = await sendKeys(pane, ["down"]);
-    if (!moved.ok) return moved;
-    selected = await awaitMenuSelection(
-      session,
-      advanced.reasoningVisible,
-      advanced.selectedReasoning,
-      selected,
-      deps,
-    );
-  }
-  const moreAccepted = await sendKeys(pane, ["enter"]);
-  if (!moreAccepted.ok) return moreAccepted;
-  const advancedScreen = await awaitEffortPicker(session, advanced.advancedVisible, deps);
-  if (!advancedScreen) return { ok: false, error: "Codex's advanced reasoning picker did not open" };
-
-  let advancedSelected = advanced.selectedAdvanced(advancedScreen);
-  if (advancedSelected !== "ultra") {
-    if (advancedSelected !== "max") {
-      return { ok: false, error: "Codex's Ultra row could not be verified" };
-    }
-    const moved = await sendKeys(pane, ["down"]);
-    if (!moved.ok) return moved;
-    advancedSelected = await awaitMenuSelection(
-      session,
-      advanced.advancedVisible,
-      advanced.selectedAdvanced,
-      advancedSelected,
-      deps,
-    );
-  }
-  if (advancedSelected !== "ultra") return { ok: false, error: "Codex's Ultra row could not be verified" };
-  const ultraAccepted = await sendKeys(pane, ["enter"]);
-  if (!ultraAccepted.ok) return ultraAccepted;
-  const ultra = await awaitShortcutEffort(session, picker, modelId, current, deps);
-  if (ultra !== "ultra") return { ok: false, error: "Codex did not apply Ultra to this session" };
-  const lowered = await sendKeys(pane, [picker.lower]);
-  if (!lowered.ok) return lowered;
-  const max = await awaitShortcutEffort(session, picker, modelId, "ultra", deps);
-  return max === "max"
-    ? { ok: true }
-    : { ok: false, error: "Codex did not lower Ultra to session-only Max" };
+  return true;
 }
 
 const EFFORT_PICKER_POLL_MS = 50;
@@ -538,23 +483,6 @@ async function awaitShortcutEffort(
     const screen = await deps.capture(session);
     const selected = screen ? picker.selected(screen, modelId) : null;
     if (selected && selected !== previous) return selected;
-    if (Date.now() >= deadline) return null;
-    await sleep(EFFORT_PICKER_POLL_MS);
-  }
-}
-
-async function awaitMenuSelection<T extends string>(
-  session: Session,
-  visible: RegExp,
-  selected: (paneText: string) => T | null,
-  previous: T,
-  deps: PaneDeps,
-): Promise<T | null> {
-  const deadline = Date.now() + repaintTimeoutFor(session);
-  for (;;) {
-    const screen = await deps.capture(session);
-    const next = screen && visible.test(screen) ? selected(screen) : null;
-    if (next && next !== previous) return next;
     if (Date.now() >= deadline) return null;
     await sleep(EFFORT_PICKER_POLL_MS);
   }

@@ -186,15 +186,6 @@ export interface EffortSpec {
         selected(paneText: string, modelId: string): ThinkingLevel | "ultra" | null;
         lower: "shift-down";
         raise: "shift-up";
-        advanced: {
-          command: string;
-          modelVisible: RegExp;
-          selectedModel(paneText: string): string | null;
-          reasoningVisible: RegExp;
-          selectedReasoning(paneText: string): ThinkingLevel | "more" | null;
-          advancedVisible: RegExp;
-          selectedAdvanced(paneText: string): "max" | "ultra" | null;
-        } | null;
       }
     | null;
 }
@@ -216,10 +207,6 @@ function claudePickerSelection(paneText: string, model: string): ThinkingLevel |
   return match ? (match[1]!.toLowerCase() as ThinkingLevel) : null;
 }
 
-const CODEX_MODEL_PICKER_VISIBLE = /Select Model and Effort[\s\S]*Press enter to confirm/i;
-const CODEX_REASONING_PICKER_VISIBLE = /Select Reasoning Level for\s+\S+[\s\S]*Press enter to confirm/i;
-const CODEX_ADVANCED_PICKER_VISIBLE = /Advanced Reasoning[\s\S]*Consumes usage limits faster/i;
-
 function codexComposerReady(paneText: string): boolean {
   const prompt = paneText
     .split("\n")
@@ -233,25 +220,6 @@ function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel 
   const escaped = modelId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`^\\s*${escaped}\\s+(low|medium|high|xhigh|max|ultra)(?:\\s|·)`, "im").exec(paneText);
   return match ? (match[1]!.toLowerCase() as ThinkingLevel | "ultra") : null;
-}
-
-function codexSelectedModel(paneText: string): string | null {
-  if (!CODEX_MODEL_PICKER_VISIBLE.test(paneText)) return null;
-  return /^\s*›\s*\d+\.\s+(\S+)/im.exec(paneText)?.[1]?.toLowerCase() ?? null;
-}
-
-function codexSelectedReasoning(paneText: string): ThinkingLevel | "more" | null {
-  if (!CODEX_REASONING_PICKER_VISIBLE.test(paneText)) return null;
-  const label = /^\s*›\s*\d+\.\s+(Low|Medium|High|Extra high|More reasoning…)/im.exec(paneText)?.[1]?.toLowerCase();
-  if (label === "extra high") return "xhigh";
-  if (label === "more reasoning…") return "more";
-  return label ? (label as ThinkingLevel) : null;
-}
-
-function codexSelectedAdvanced(paneText: string): "max" | "ultra" | null {
-  if (!CODEX_ADVANCED_PICKER_VISIBLE.test(paneText)) return null;
-  const label = /^\s*›\s*\d+\.\s+(Max|Ultra)\b/im.exec(paneText)?.[1];
-  return label ? (label.toLowerCase() as "max" | "ultra") : null;
 }
 
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
@@ -366,15 +334,6 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
         selected: codexStatusSelection,
         lower: "shift-down",
         raise: "shift-up",
-        advanced: {
-          command: "/model",
-          modelVisible: CODEX_MODEL_PICKER_VISIBLE,
-          selectedModel: codexSelectedModel,
-          reasoningVisible: CODEX_REASONING_PICKER_VISIBLE,
-          selectedReasoning: codexSelectedReasoning,
-          advancedVisible: CODEX_ADVANCED_PICKER_VISIBLE,
-          selectedAdvanced: codexSelectedAdvanced,
-        },
       },
     },
   },

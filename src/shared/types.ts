@@ -1047,6 +1047,7 @@ export type TaskDependency =
       type: "task";
       taskId: string;
       title: string;
+      selectedAt: number | null;
       satisfiedAt: number | null;
     }
   | {
@@ -1057,6 +1058,7 @@ export type TaskDependency =
       agentSessionId: string | null;
       branch: string | null;
       prUrl: string | null;
+      selectedAt: number | null;
       satisfiedAt: number | null;
     };
 

@@ -44,10 +44,26 @@ function mkDiscovered(over: Partial<DiscoveredSession> = {}): DiscoveredSession 
 
 test("task round-trips dependencies and upsert updates in place (no duplicate row)", () => {
   openDb();
-  upsertTask(mkTask({ dependencies: [{ type: "task", taskId: "pre", title: "Prerequisite", satisfiedAt: null }] }));
+  upsertTask(mkTask({
+    dependencies: [
+      {
+        type: "task",
+        taskId: "pre",
+        title: "Prerequisite",
+        selectedAt: 10,
+        satisfiedAt: null,
+      },
+    ],
+  }));
   assert.equal(getTask("t1")?.status, "backlog");
   assert.deepEqual(getTask("t1")?.dependencies, [
-    { type: "task", taskId: "pre", title: "Prerequisite", satisfiedAt: null },
+    {
+      type: "task",
+      taskId: "pre",
+      title: "Prerequisite",
+      selectedAt: 10,
+      satisfiedAt: null,
+    },
   ]);
 
   upsertTask(mkTask({ status: "running", worktreePath: "/wt", sessionId: "s1", updatedAt: 2000 }));

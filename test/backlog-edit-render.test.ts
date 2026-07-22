@@ -130,7 +130,15 @@ test("a declared dependency disables both dragging and manual launch", () => {
   const dependency = mkTask({ id: "pre", title: "Merge this first", status: "running" });
   const blocked = mkTask({
     id: "blocked",
-    dependencies: [{ type: "task", taskId: dependency.id, title: dependency.title, satisfiedAt: null }],
+    dependencies: [
+      {
+        type: "task",
+        taskId: dependency.id,
+        title: dependency.title,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
+    ],
   });
   const html = renderToStaticMarkup(
     createElement(BacklogColumn, {

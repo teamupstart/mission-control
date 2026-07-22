@@ -200,6 +200,7 @@ export class TaskManager {
     taskId: string,
     current: Task["dependencies"] = [],
   ): TaskDependency[] {
+    const selectedAt = Date.now();
     const existing = new Map(
       current.map((dependency) => [
         dependency.type === "task" ? `task:${dependency.taskId}` : `session:${dependency.sessionId}`,
@@ -232,10 +233,13 @@ export class TaskManager {
           const previouslySatisfied =
             existing.get(`task:${target.id}`)?.satisfiedAt ??
             existing.get(`session:${session.id}`)?.satisfiedAt;
+          const previousEdge =
+            existing.get(`task:${target.id}`) ?? existing.get(`session:${session.id}`);
           dependency = {
             type: "task",
             taskId: target.id,
             title: target.title,
+            selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
               target.kind === "scout" && target.status === "done"
                 ? target.completedAt ?? Date.now()
@@ -257,6 +261,7 @@ export class TaskManager {
             agentSessionId: session.agentSessionId,
             branch: session.gitBranch,
             prUrl: observedPr,
+            selectedAt,
             satisfiedAt: observedPr && session.prState === "merged" ? Date.now() : null,
           };
         }
@@ -270,6 +275,7 @@ export class TaskManager {
           const activeSession = sessions.find(
             (session) => session.state !== "exited" && session.task?.id === target.id,
           );
+          const previousEdge = existing.get(`task:${target.id}`);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
           const eligible = target.status === "backlog" || target.status === "dispatching" || target.status === "running" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
@@ -279,6 +285,7 @@ export class TaskManager {
             type: "task",
             taskId: target.id,
             title: target.title,
+            selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
               target.kind === "scout" && target.status === "done"
                 ? target.completedAt ?? Date.now()

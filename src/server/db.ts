@@ -1556,10 +1556,13 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
     for (const value of parsed) {
       if (!value || typeof value !== "object") continue;
       const row = value as Record<string, unknown>;
+      const selectedAt = typeof row.selectedAt === "number" ? row.selectedAt : null;
       const satisfiedAt = typeof row.satisfiedAt === "number" ? row.satisfiedAt : null;
       if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
         const key = `task:${row.taskId}`;
-        if (!seen.has(key)) out.push({ type: "task", taskId: row.taskId, title: row.title, satisfiedAt });
+        if (!seen.has(key)) {
+          out.push({ type: "task", taskId: row.taskId, title: row.title, selectedAt, satisfiedAt });
+        }
         seen.add(key);
       } else if (
         row.type === "session" &&
@@ -1576,6 +1579,7 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
             agentSessionId: typeof row.agentSessionId === "string" ? row.agentSessionId : null,
             branch: typeof row.branch === "string" ? row.branch : null,
             prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
+            selectedAt,
             satisfiedAt,
           });
         }

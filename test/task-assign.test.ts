@@ -342,7 +342,13 @@ test("assignment revalidates dependencies at the prompt boundary", async () => {
       r.upsertTask({
         ...target,
         dependencies: [
-          { type: "task", taskId: "cas-pre", title: "Merge first", satisfiedAt: null },
+          {
+            type: "task",
+            taskId: "cas-pre",
+            title: "Merge first",
+            selectedAt: null,
+            satisfiedAt: null,
+          },
         ],
       });
       return cleanReset();
@@ -381,7 +387,13 @@ test("a reused session attributes its merged PR only to the current task after r
       id: "wait-current",
       repoRoot: clone,
       dependencies: [
-        { type: "task", taskId: "binding-current", title: "Current task", satisfiedAt: null },
+        {
+          type: "task",
+          taskId: "binding-current",
+          title: "Current task",
+          selectedAt: null,
+          satisfiedAt: null,
+        },
       ],
     }),
   );
@@ -390,7 +402,13 @@ test("a reused session attributes its merged PR only to the current task after r
       id: "wait-previous",
       repoRoot: clone,
       dependencies: [
-        { type: "task", taskId: "binding-previous", title: "Previous task", satisfiedAt: null },
+        {
+          type: "task",
+          taskId: "binding-previous",
+          title: "Previous task",
+          selectedAt: null,
+          satisfiedAt: null,
+        },
       ],
     }),
   );

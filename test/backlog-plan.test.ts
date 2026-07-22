@@ -107,7 +107,13 @@ test("a model edge can never reverse an operator-declared dependency", () => {
   const foundation = mkTask();
   const followup = mkTask({
     dependencies: [
-      { type: "task", taskId: foundation.id, title: foundation.title, satisfiedAt: null },
+      {
+        type: "task",
+        taskId: foundation.id,
+        title: foundation.title,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
     ],
   });
   const plan = sanitizePlan(
@@ -344,7 +350,15 @@ test("with no plan at all nothing is blocked - the board renders exactly as it d
 test("an operator-declared ship dependency blocks without a Foreman plan until its merge is recorded", () => {
   const dep = mkTask({ status: "running" });
   const t = mkTask({
-    dependencies: [{ type: "task", taskId: dep.id, title: dep.title, satisfiedAt: null }],
+    dependencies: [
+      {
+        type: "task",
+        taskId: dep.id,
+        title: dep.title,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
+    ],
   });
   const [blocker] = blockersFor(t, null, [dep, t]);
   assert.equal(blocker?.source, "declared");
@@ -358,7 +372,15 @@ test("an operator-declared ship dependency blocks without a Foreman plan until i
 test("a completed scout satisfies a declared dependency without a PR", () => {
   const scout = mkTask({ kind: "scout", status: "done" });
   const t = mkTask({
-    dependencies: [{ type: "task", taskId: scout.id, title: scout.title, satisfiedAt: null }],
+    dependencies: [
+      {
+        type: "task",
+        taskId: scout.id,
+        title: scout.title,
+        selectedAt: null,
+        satisfiedAt: null,
+      },
+    ],
   });
   assert.deepEqual(blockersFor(t, null, [scout, t]), []);
   assert.deepEqual(readyBacklog([scout, t], null).map((task) => task.id), [t.id]);

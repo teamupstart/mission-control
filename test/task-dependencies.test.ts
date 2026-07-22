@@ -78,8 +78,15 @@ test("an unmet dependency forces a dispatch-now create into the backlog and bloc
 
   assert.equal(dependent.status, "backlog");
   assert.deepEqual(dependent.dependencies, [
-    { type: "task", taskId: "force-pre", title: "Merge the foundation", satisfiedAt: null },
+    {
+      type: "task",
+      taskId: "force-pre",
+      title: "Merge the foundation",
+      selectedAt: dependent.dependencies[0]?.selectedAt,
+      satisfiedAt: null,
+    },
   ]);
+  assert.equal(typeof dependent.dependencies[0]?.selectedAt, "number");
   await tasks.dispatch(dependent.id);
   assert.equal(registry.getTask(dependent.id)?.status, "backlog");
 });
@@ -271,7 +278,7 @@ test("new work after a merge starts a dependency episode on the same session and
   assert.equal(tasks.dependencyBlockers(nextDependent).length, 1);
 });
 
-test("a prompt after GitHub merged rolls forward before a delayed merge observation", () => {
+test("a delayed merge satisfies pre-prompt edges and rebinds post-prompt edges", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const id = "merge-prompt-race";
@@ -298,7 +305,14 @@ test("a prompt after GitHub merged rolls forward before a delayed merge observat
     })]]),
     new Set(),
   );
-  const promptAt = originalEpisode.startedAt + 100;
+  const beforePrompt = tasks.create({
+    ...createInput,
+    title: "Wait for work selected before the raced prompt",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const promptAt = Date.now();
   registry.applyHook({
     agent: "claude",
     event: "UserPromptSubmit",
@@ -309,14 +323,14 @@ test("a prompt after GitHub merged rolls forward before a delayed merge observat
     prompt: "begin the follow-up",
     ts: promptAt,
   });
-  const dependent = tasks.create({
+  const afterPrompt = tasks.create({
     ...createInput,
     title: "Wait for the follow-up after the raced merge",
     backlog: true,
     dependencies: [{ type: "session", sessionId: id }],
   });
   assert.equal(
-    dependent.dependencies[0]?.type === "session" ? dependent.dependencies[0].prUrl : null,
+    afterPrompt.dependencies[0]?.type === "session" ? afterPrompt.dependencies[0].prUrl : null,
     url,
   );
 
@@ -335,14 +349,109 @@ test("a prompt after GitHub merged rolls forward before a delayed merge observat
   );
 
   const nextEpisode = registry.workEpisodeForSession(id)!;
-  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  const beforeEdge = registry.getTask(beforePrompt.id)?.dependencies[0];
+  const afterEdge = registry.getTask(afterPrompt.id)?.dependencies[0];
+  assert.ok((beforeEdge?.selectedAt ?? promptAt) < promptAt);
+  assert.ok((afterEdge?.selectedAt ?? promptAt - 1) >= promptAt);
   assert.notEqual(nextEpisode.episodeId, originalEpisode.episodeId);
   assert.equal(nextEpisode.startedAt, promptAt);
-  assert.equal(edge?.type === "session" ? edge.episodeId : null, nextEpisode.episodeId);
-  assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
-  assert.equal(edge?.satisfiedAt, null);
+  assert.equal(
+    beforeEdge?.type === "session" ? beforeEdge.episodeId : null,
+    originalEpisode.episodeId,
+  );
+  assert.equal(beforeEdge?.type === "session" ? beforeEdge.prUrl : null, url);
+  assert.equal(beforeEdge?.satisfiedAt, promptAt - 1);
+  assert.equal(
+    afterEdge?.type === "session" ? afterEdge.episodeId : null,
+    nextEpisode.episodeId,
+  );
+  assert.equal(afterEdge?.type === "session" ? afterEdge.prUrl : null, null);
+  assert.equal(afterEdge?.satisfiedAt, null);
   assert.equal(registry.getSession(id)?.prUrl, null);
-  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(beforePrompt.id)!), []);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(afterPrompt.id)!).length, 1);
+});
+
+test("persisted merge reconciliation preserves prompt ordering after session exit", async () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "exited-merge-prompt-race";
+  const cwd = "/repo/exited-merge-prompt-race";
+  const url = "https://github.com/example/repo/pull/85";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/exited-merge-prompt-race" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "exited-merge-prompt-race-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const originalEpisode = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: 85,
+      branch: "feat/exited-merge-prompt-race",
+      agentSessionId: "exited-merge-prompt-race-episode",
+      episodeId: originalEpisode.episodeId,
+      createdAt: originalEpisode.startedAt,
+    })]]),
+    new Set(),
+  );
+  const beforePrompt = tasks.create({
+    ...createInput,
+    title: "Wait for exited work selected before the prompt",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const promptAt = Date.now();
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: "exited-merge-prompt-race-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue after the pending merge",
+    ts: promptAt,
+  });
+  const afterPrompt = tasks.create({
+    ...createInput,
+    title: "Wait for exited follow-up work",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  registry.applyDiscovery([]);
+
+  await pollAndReconcilePrs(
+    registry,
+    async () => null,
+    async (candidate) =>
+      candidate === url ? { state: "merged", mergedAt: promptAt - 1 } : null,
+  );
+
+  const nextEpisode = registry.workEpisodeForSession(id)!;
+  const beforeEdge = registry.getTask(beforePrompt.id)?.dependencies[0];
+  const afterEdge = registry.getTask(afterPrompt.id)?.dependencies[0];
+  assert.ok((beforeEdge?.selectedAt ?? promptAt) < promptAt);
+  assert.ok((afterEdge?.selectedAt ?? promptAt - 1) >= promptAt);
+  assert.notEqual(nextEpisode.episodeId, originalEpisode.episodeId);
+  assert.equal(nextEpisode.startedAt, promptAt);
+  assert.equal(
+    beforeEdge?.type === "session" ? beforeEdge.episodeId : null,
+    originalEpisode.episodeId,
+  );
+  assert.equal(beforeEdge?.satisfiedAt, promptAt - 1);
+  assert.equal(
+    afterEdge?.type === "session" ? afterEdge.episodeId : null,
+    nextEpisode.episodeId,
+  );
+  assert.equal(afterEdge?.type === "session" ? afterEdge.prUrl : null, null);
+  assert.equal(afterEdge?.satisfiedAt, null);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(beforePrompt.id)!), []);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(afterPrompt.id)!).length, 1);
 });
 
 test("post-merge episode rollover preserves running task ownership", () => {
@@ -425,6 +534,7 @@ test("persisted dependency PR polling is bounded and backs off per URL", async (
         agentSessionId: `bounded-agent-${i}`,
         branch: `feat/bounded-${i}`,
         prUrl: `https://github.com/example/repo/pull/${200 + i}`,
+        selectedAt: now,
         satisfiedAt: null,
       }],
     }));

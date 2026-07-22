@@ -1444,15 +1444,22 @@ export class Registry extends EventEmitter {
   }
 
   private rolloverWorkEpisode(
-    session: Session,
     previous: SessionWorkEpisode,
     startedAt: number,
+    session = this.sessions.get(previous.sessionId),
   ): SessionWorkEpisode | null {
-    const taskId = dbTaskIdForSession(session.id);
+    if (
+      session?.agentSessionId !== null &&
+      session?.agentSessionId !== undefined &&
+      session.agentSessionId !== previous.agentSessionId
+    ) {
+      return null;
+    }
+    const taskId = dbTaskIdForSession(previous.sessionId);
     const next = this.startWorkEpisode(
-      session.id,
-      session.agentSessionId,
-      session.gitBranch,
+      previous.sessionId,
+      session?.agentSessionId ?? previous.agentSessionId,
+      session?.gitBranch ?? previous.branch,
       startedAt,
       false,
       false,
@@ -1460,9 +1467,71 @@ export class Registry extends EventEmitter {
       startedAt,
     );
     if (!next) return null;
-    if (taskId) this.bindTaskToWorkEpisode(taskId, session.id, next, startedAt);
+    if (taskId) this.bindTaskToWorkEpisode(taskId, previous.sessionId, next, startedAt);
     this.rebindPendingSessionDependencies(previous, next, startedAt);
     return next;
+  }
+
+  private reconcileWorkEpisodeMerge(
+    target: Pick<
+      SessionWorkEpisode,
+      "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
+    > & { prUrl: string },
+    mergedAt: number,
+  ): boolean {
+    const current = sessionWorkEpisodeFor(target.sessionId);
+    const isCurrent = Boolean(
+      current &&
+        current.episodeId === target.episodeId &&
+        current.agentSessionId === target.agentSessionId &&
+        current.branch === target.branch &&
+        current.prUrl === target.prUrl,
+    );
+    const promptAt =
+      isCurrent && typeof current?.promptedAt === "number" && current.promptedAt > mergedAt
+        ? current.promptedAt
+        : null;
+    const binding = taskWorkEpisodeForSession(target.sessionId);
+    const taskId =
+      binding &&
+      binding.episodeId === target.episodeId &&
+      binding.agentSessionId === target.agentSessionId &&
+      binding.branch === target.branch &&
+      binding.prUrl === target.prUrl
+        ? binding.taskId
+        : null;
+
+    for (const task of [...this.tasks.values()]) {
+      let changed = false;
+      const dependencies = task.dependencies.map((dependency) => {
+        if (dependency.satisfiedAt !== null) return dependency;
+        const matchesSession =
+          dependency.type === "session" &&
+          dependency.sessionId === target.sessionId &&
+          dependency.episodeId === target.episodeId &&
+          dependency.agentSessionId === target.agentSessionId &&
+          dependency.branch === target.branch &&
+          dependency.prUrl === target.prUrl;
+        const matchesTask =
+          dependency.type === "task" && taskId !== null && dependency.taskId === taskId;
+        if (!matchesSession && !matchesTask) return dependency;
+        if (
+          promptAt !== null &&
+          (dependency.selectedAt === null || dependency.selectedAt >= promptAt)
+        ) {
+          return dependency;
+        }
+        changed = true;
+        return { ...dependency, satisfiedAt: mergedAt };
+      });
+      if (changed) {
+        this.upsertTask({ ...task, dependencies, updatedAt: Math.max(task.updatedAt, mergedAt) });
+      }
+    }
+
+    markWorkEpisodeMerged(target.sessionId, target.episodeId, target.prUrl, mergedAt);
+    if (promptAt === null || !current) return false;
+    return this.rolloverWorkEpisode(current, promptAt) !== null;
   }
 
   private resolvePendingWorkEpisode(
@@ -1571,7 +1640,7 @@ export class Registry extends EventEmitter {
       existing.mergedAt !== null &&
       now >= existing.mergedAt
     ) {
-      return this.rolloverWorkEpisode(session, existing, now);
+      return this.rolloverWorkEpisode(existing, now, session);
     }
     if (evidence.kind === "new_work" && now >= existing.startedAt) {
       if (recordWorkEpisodePrompt(session.id, existing.episodeId, now)) {
@@ -1820,18 +1889,20 @@ export class Registry extends EventEmitter {
       )
         continue;
       if (match?.state === "merged" && match.mergedAt === null) continue;
-      if (
-        match?.state === "merged" &&
-        match.mergedAt !== null &&
-        typeof currentEpisode?.promptedAt === "number" &&
-        currentEpisode.promptedAt > match.mergedAt
-      ) {
-        this.rolloverWorkEpisode(s, currentEpisode, currentEpisode.promptedAt);
-        match = null;
-      }
       const at = Date.now();
       const acceptedEpisode = match?.episodeId ? this.acceptPrForEpisode(s, match, at) : null;
       if (match?.episodeId && !acceptedEpisode) match = null;
+      if (match && acceptedEpisode) this.reconcileSessionDependencies(s, match, at);
+      if (match?.state === "merged" && match.mergedAt !== null && acceptedEpisode) {
+        if (
+          this.reconcileWorkEpisodeMerge(
+            { ...acceptedEpisode, prUrl: match.url },
+            match.mergedAt,
+          )
+        ) {
+          match = null;
+        }
+      }
       const url = match?.url ?? null;
       const number = match?.number ?? null;
       const state = match?.state ?? null;
@@ -1847,26 +1918,6 @@ export class Registry extends EventEmitter {
       } else {
         this.prObservations.delete(id);
       }
-      if (state === "merged" && match && acceptedEpisode) {
-        const mergedAt = match.mergedAt as number;
-        markWorkEpisodeMerged(id, acceptedEpisode.episodeId, match.url, mergedAt);
-        const binding = taskWorkEpisodeForSession(id);
-        if (
-          binding &&
-          binding.episodeId === acceptedEpisode.episodeId &&
-          binding.agentSessionId === match.agentSessionId &&
-          binding.branch === match.branch &&
-          binding.prUrl === match.url &&
-          binding.prHeadSha === match.headSha
-        ) {
-          this.satisfyTaskDependencies(binding.taskId, mergedAt);
-        }
-      }
-      this.reconcileSessionDependencies(
-        s,
-        acceptedEpisode ? match : null,
-        state === "merged" && match ? match.mergedAt as number : at,
-      );
       if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
         continue;
       const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
@@ -1905,44 +1956,53 @@ export class Registry extends EventEmitter {
   reconcileDependencyPrMerges(mergedUrls: Map<string, number>): void {
     if (mergedUrls.size === 0) return;
     const bindings = new Map<string, TaskWorkEpisodeBinding | null>();
-    for (const task of [...this.tasks.values()]) {
-      let changed = false;
-      const dependencies = task.dependencies.map((dependency) => {
-        if (dependency.satisfiedAt !== null) return dependency;
+    const targets = new Map<
+      string,
+      Pick<
+        SessionWorkEpisode,
+        "sessionId" | "episodeId" | "agentSessionId" | "branch" | "prUrl"
+      > & { prUrl: string }
+    >();
+    for (const task of this.tasks.values()) {
+      for (const dependency of task.dependencies) {
+        if (dependency.satisfiedAt !== null) continue;
         if (dependency.type === "session") {
-          if (!dependency.prUrl) return dependency;
-          const mergedAt = mergedUrls.get(dependency.prUrl);
-          if (mergedAt === undefined) return dependency;
-          if (dependency.episodeId) {
-            markWorkEpisodeMerged(
-              dependency.sessionId,
-              dependency.episodeId,
-              dependency.prUrl,
-              mergedAt,
-            );
+          if (
+            !dependency.prUrl ||
+            !mergedUrls.has(dependency.prUrl) ||
+            dependency.episodeId === null ||
+            dependency.agentSessionId === null
+          ) {
+            continue;
           }
-          changed = true;
-          return { ...dependency, satisfiedAt: mergedAt };
+          const key = `${dependency.sessionId}\0${dependency.episodeId}\0${dependency.prUrl}`;
+          targets.set(key, {
+            sessionId: dependency.sessionId,
+            episodeId: dependency.episodeId,
+            agentSessionId: dependency.agentSessionId,
+            branch: dependency.branch,
+            prUrl: dependency.prUrl,
+          });
+          continue;
         }
         let binding = bindings.get(dependency.taskId);
         if (binding === undefined) {
           binding = taskWorkEpisodeForTask(dependency.taskId);
           bindings.set(dependency.taskId, binding);
         }
-        if (!binding?.prUrl) return dependency;
-        const mergedAt = mergedUrls.get(binding.prUrl);
-        if (mergedAt === undefined) return dependency;
-        markWorkEpisodeMerged(binding.sessionId, binding.episodeId, binding.prUrl, mergedAt);
-        changed = true;
-        return { ...dependency, satisfiedAt: mergedAt };
-      });
-      if (changed) {
-        const updatedAt = Math.max(
-          task.updatedAt,
-          ...dependencies.map((dependency) => dependency.satisfiedAt ?? 0),
-        );
-        this.upsertTask({ ...task, dependencies, updatedAt });
+        if (!binding?.prUrl || !mergedUrls.has(binding.prUrl)) continue;
+        const key = `${binding.sessionId}\0${binding.episodeId}\0${binding.prUrl}`;
+        targets.set(key, {
+          sessionId: binding.sessionId,
+          episodeId: binding.episodeId,
+          agentSessionId: binding.agentSessionId,
+          branch: binding.branch,
+          prUrl: binding.prUrl,
+        });
       }
+    }
+    for (const target of targets.values()) {
+      this.reconcileWorkEpisodeMerge(target, mergedUrls.get(target.prUrl)!);
     }
   }
 
@@ -2588,17 +2648,15 @@ export class Registry extends EventEmitter {
         const branch = match.branch;
         const agentSessionId = match.agentSessionId;
         const prUrl = dependency.prUrl ?? match.url;
-        const satisfiedAt = match.state === "merged" ? at : null;
         if (
           branch === dependency.branch &&
           agentSessionId === dependency.agentSessionId &&
-          prUrl === dependency.prUrl &&
-          satisfiedAt === dependency.satisfiedAt
+          prUrl === dependency.prUrl
         ) {
           return dependency;
         }
         changed = true;
-        return { ...dependency, branch, agentSessionId, prUrl, satisfiedAt };
+        return { ...dependency, branch, agentSessionId, prUrl };
       });
       if (changed) this.upsertTask({ ...task, dependencies, updatedAt: at });
     }

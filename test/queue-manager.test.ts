@@ -172,19 +172,27 @@ test("a reorder cannot move an in-flight item's recorded send time", () => {
   );
 });
 
-// ---- only a session that can RUN a queue may be given one ----
+// ---- every declaring harness can be given a queue ----
 
-test("add refuses a non-claude session rather than stranding the batch", () => {
-  // Every tick filters to `agent === "claude"`, so a queue on a Codex session never
-  // advances - and because the session is LIVE its key is live, so neither the
-  // re-attach hint nor the orphan sweep will ever offer the batch to anyone.
-  // `reattachQueue` already refuses this for the identical reason.
+test("add accepts only a hook-authorized Codex session", () => {
   const registry = new Registry();
   const queues = new QueueManager(registry);
-  registry.applyDiscovery([mkDiscovered("s-codex", { agent: "codex" })]);
+  const codex = mkDiscovered("s-codex", { agent: "codex" });
+  registry.applyDiscovery([codex]);
 
-  assert.equal(queues.add("s-codex", "do the thing"), null);
-  assert.equal(queues.get("s-codex"), null, "and no empty queue row is left behind");
+  assert.equal(queues.add("s-codex", "too early"), null);
+  registry.applyHook({
+    agent: "codex",
+    event: "Stop",
+    sessionId: "codex-launched",
+    cwd: codex.cwd,
+    transcriptPath: null,
+    env: { tmuxPane: paneOf(codex) },
+  });
+
+  const item = queues.add("s-codex", "do the thing");
+  assert.ok(item, "the write boundary must agree with tickTargets");
+  assert.equal(queues.get("s-codex")?.items[0]?.intent, "do the thing");
 });
 
 // ---- re-attach is guarded at the WRITE, not by a hint round-tripped through a browser ----

@@ -46,6 +46,17 @@ function mkDisco(id: string, cwd: string, branch: string): DiscoveredSession {
   } as DiscoveredSession;
 }
 
+function authorizeQueue(id: string, cwd: string): void {
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: `agent-${id}`,
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+}
+
 /** Read a card back off the dashboard API, exactly as the renderer sees it. */
 async function card(id: string): Promise<Session> {
   const res = await app.request("/api/sessions", { headers: LOOPBACK });
@@ -72,6 +83,7 @@ test("POST /reset clears the session's whole work queue (clear:true)", async () 
   const branch = "mancej/feature";
   const clone = mkCloneOnBranch("harness-reset-q-true-", branch);
   registry.applyDiscovery([mkDisco("s-true", clone, branch)]);
+  authorizeQueue("s-true", clone);
 
   // A realistic backlog: two waiting items and one already in flight against the
   // agent's now-doomed context - the state a per-item `remove` would refuse.
@@ -108,6 +120,7 @@ test("POST /reset clears the queue even with clear:false", async () => {
   const branch = "mancej/second";
   const clone = mkCloneOnBranch("harness-reset-q-false-", branch);
   registry.applyDiscovery([mkDisco("s-false", clone, branch)]);
+  authorizeQueue("s-false", clone);
 
   const item = queues.add("s-false", "the only task")!;
   const before = await card("s-false");
@@ -132,6 +145,8 @@ test("POST /reset leaves an unrelated session's queue alone", async () => {
   const mine = mkCloneOnBranch("harness-reset-q-mine-", branch);
   const other = mkCloneOnBranch("harness-reset-q-other-", "mancej/other");
   registry.applyDiscovery([mkDisco("s-mine", mine, branch), mkDisco("s-other", other, "mancej/other")]);
+  authorizeQueue("s-mine", mine);
+  authorizeQueue("s-other", other);
 
   queues.add("s-mine", "reset wipes this");
   const keep = queues.add("s-other", "this must survive")!;

@@ -22,7 +22,7 @@ const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { normTty } = await import("../src/server/discovery/tty.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { Session, Task } from "../src/shared/types.ts";
+import type { Session, Task, WorkItem } from "../src/shared/types.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 openDb();
@@ -1021,12 +1021,7 @@ test("the queue endpoints 404 for an unknown session", async () => {
   assert.equal(add.status, 404);
 });
 
-test("adding to a NON-claude session is refused, with a reason that isn't a lie", async () => {
-  // The panel hides its add box for a Codex session, but presentation is not
-  // enforcement and this route is reachable without it - the worker is itself a
-  // client of this API. Every tick filters to claude, so the queue would never
-  // advance, and because the session is live its key is live: neither the re-attach
-  // hint nor the orphan sweep would ever offer the batch to anyone.
+test("Codex queue writes require launch-scoped hook authorization", async () => {
   const codex: DiscoveredSession = {
     syntheticId: "sess-codex",
     agent: "codex",
@@ -1047,13 +1042,36 @@ test("adding to a NON-claude session is refused, with a reason that isn't a lie"
   const res = await app.request("/api/sessions/sess-codex/queue", {
     method: "POST",
     headers: jsonHeaders,
-    body: JSON.stringify({ intent: "never going to run" }),
+    body: JSON.stringify({ intent: "run through Foreman" }),
   });
-  assert.equal(res.status, 409, "the session exists, so this is a refusal - not a 404");
-  assert.match(((await res.json()) as { error: string }).error, /Claude-only/);
+  assert.equal(res.status, 409);
+  assert.match(((await res.json()) as { error: string }).error, /Start Codex through Mission Control/);
+
+  const empty = await app.request("/api/sessions/sess-codex/queue", { headers: LOOPBACK });
+  assert.equal(await empty.json(), null);
+
+  const hooked = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      agent: "codex",
+      sessionId: "codex-launched",
+      cwd: "/repo/app",
+      env: { tmuxPane: "%4" },
+    }),
+  });
+  assert.equal(hooked.status, 204);
+
+  const accepted = await app.request("/api/sessions/sess-codex/queue", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify({ intent: "run through Foreman" }),
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(((await accepted.json()) as { intent: string }).intent, "run through Foreman");
 
   const read = await app.request("/api/sessions/sess-codex/queue", { headers: LOOPBACK });
-  assert.equal(await read.json(), null, "and no empty queue row is left stranded on it");
+  assert.equal(((await read.json()) as { items: WorkItem[] }).items[0]?.intent, "run through Foreman");
 });
 
 test("an item-scoped route refuses a session that doesn't own the item", async () => {

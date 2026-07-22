@@ -2,7 +2,6 @@ import type { ForemanStatus, Session } from "@shared/types.ts";
 import { ForemanConfigSchema } from "@shared/protocol.ts";
 import type { ForemanConfig, ForemanConfigPatch, ForemanLeaseResult } from "@shared/protocol.ts";
 import { backlogTasks, reportBucket } from "@shared/session.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { readyBacklog } from "@shared/backlog.ts";
 import { resolveForemanModels } from "@shared/foreman-models.ts";
 import { getAppConfig, setAppConfig } from "../db.ts";
@@ -11,6 +10,7 @@ import { llmRunnerChoice } from "../llm/config.ts";
 import { activeAgentCount } from "./backlog-machine.ts";
 import { noteKeyFor } from "../registry.ts";
 import type { Registry } from "../registry.ts";
+import { foremanAutomationAuthorized } from "../harness/index.ts";
 
 // Foreman's operating config + derived live status. The config is the only
 // durable state (in app_config); the worker itself runs as a separate process
@@ -166,14 +166,14 @@ export function foremanStatus(registry: Registry, now = Date.now()): ForemanStat
 
 /**
  * How many drainable sessions currently sit in the shared `needs-you` bucket -
- * Foreman's inbound queue. Gated on the same `workQueue` capability `tickTargets`
- * selects with: a session the worker will never process must not be counted, or the
- * queueDepth badge sits above zero forever.
+ * Foreman's inbound queue. Gated on the same harness and per-session authorization
+ * `tickTargets` selects with: a session the worker will never process must not be counted,
+ * or the queueDepth badge sits above zero forever.
  */
 function countNeedsYou(sessions: Session[]): number {
   let n = 0;
   for (const s of sessions) {
-    if (capabilitiesFor(s.agent).workQueue && reportBucket(s, sessions) === "needs-you") n++;
+    if (foremanAutomationAuthorized(s) && reportBucket(s, sessions) === "needs-you") n++;
   }
   return n;
 }

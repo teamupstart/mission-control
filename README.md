@@ -277,13 +277,12 @@ that clears its context, an MCP client. Absent is a first-class answer.
 
 That is why the differences you see are consistent rather than piecemeal. A Codex card
 draws no permission-mode chip and <kbd>⇧</kbd><kbd>Tab</kbd> does nothing on it, because
-Codex has no mode cycle to walk; its work-queue drawer explains why instead of offering a
-box that would never drain, because [Foreman](#foreman-auto-responder) does not drive
-Codex sessions; and the [skills](#skills-every-session-no-restarts) catalog links a skill
-into each harness's own directory while nudging only the one that needs telling. Where the
-capability *is* there the branch disappears entirely: a **reset** of a Codex checkout
-clears its context with the same `/clear` a Claude one gets, because Codex declares that
-command too.
+Codex has no mode cycle to walk; its work-queue drawer is available once that session's
+launch-scoped hooks have reported, so [Foreman](#foreman-auto-responder) can observe and
+drive it; and the [skills](#skills-every-session-no-restarts) catalog links a skill into
+each harness's own directory while nudging only the one that needs telling. Where the
+capability *is* there the branch disappears entirely: a **reset** of a Codex checkout clears
+its context with the same `/clear` a Claude one gets, because Codex declares that command too.
 
 The declarations move as the harness does, and a capability is filled in only after it has
 been pointed at a real install. Several of Codex's were `null` on the strength of a
@@ -1144,8 +1143,9 @@ panel owns the config it writes.
 
 The dashboard tells you *who needs you*; **Foreman** can start draining that queue for
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
-Claude session, reads the transcript to understand the goal **and the session's terminal
-screen to see the ask itself**, then:
+Claude Code session or Mission Control-launched Codex session that has reported a hook,
+reads the transcript to understand the goal **and the session's terminal screen to see
+the ask itself**, then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;
@@ -1172,13 +1172,15 @@ reasoning kept as the recommendation - rather than typed at a menu that would di
 You get the same affordance for the same reason: a menu on any session is offered to you as
 [clickable rows](#answer-a-sessions-menu-from-the-dashboard) too, and whichever of you
 reaches it second is refused rather than pressing the wrong row. Because a visible menu puts
-a session in `needs-you` on its own, Foreman also picks up sessions parked on one that no
-hook has told it about - and it treats the menu itself as the question, rather than waiting
-for a hook to agree that one is being asked. That gap is real and measurable: Claude reports
-`AskUserQuestion` as *work in progress* when the menu opens and only says it is waiting for
-you about six seconds later, so an ask caught in between used to be handed straight back to
-you as "no reply channel", with an answer Foreman had already written. The menu's own rows
-identify the ask, so one question costs one review however the hooks land.
+a session in `needs-you` on its own, Foreman can pick up a Claude session parked on one that
+no hook has reported yet: Claude's hooks are machine-scoped, so the visible menu supplies the
+missing state without crossing a launch boundary. That gap is real and measurable: Claude
+reports `AskUserQuestion` as *work in progress* when the menu opens and only says it is
+waiting for you about six seconds later, so an ask caught in between used to be handed
+straight back to you as "no reply channel", with an answer Foreman had already written. The
+menu's own rows identify the ask, so one question costs one review however the hooks land.
+Codex hooks are launch-scoped instead: an operator-started Codex menu remains available as
+clickable rows for you, but is explicitly excluded from Foreman automation.
 
 Each session is reviewed in a **fresh `claude -p` process**, so context never bleeds
 between reviews. Foreman ships **OFF**, and even once enabled it starts in **dry-run**: it
@@ -1373,12 +1375,13 @@ is the proactive half: queue a batch of work for one specific session, and Forem
 in one item at a time, in the order you authored, checking each one before releasing the
 next.
 
-**Claude sessions only, and the reason is delivery rather than evidence.** Codex reports
-hooks and its rollout reads back as conversation, so the observation half is there - what
-has never been run is Foreman typing into a Codex pane, and a queue whose drain has not
-been exercised is a batch that silently never moves. So the capability stays declared
-absent, the drawer says so instead of offering a box, and the daemon refuses the write
-rather than accepting work it would not deliver.
+**Claude Code and Codex sessions are supported.** Codex reports pickup and completion through
+the hooks Mission Control attaches to dispatched launches, and its rollout reads back as a
+conversation for verification. Delivery uses the same harness-neutral pane path as Claude.
+Codex renders no collapsed-paste placeholder, so Mission Control sends one Enter and records
+that submission as unverified rather than retrying on evidence Codex cannot provide. A Codex
+session started without reporting hooks is refused at the composer with instructions to
+launch it through Mission Control, rather than accepting a batch it cannot verify.
 
 The **Work queue** panel is a drawer, kept out of the way until you ask for it: press
 **Queue** on the card (next to **Send** / **Focus** / **Reset**) or <kbd>q</kbd> on the

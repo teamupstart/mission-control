@@ -269,8 +269,8 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   difference there, since Codex writes one registration and has no `-s user|project` to
   choose between. `GOAL_UNSUPPORTED.codex` (`@shared/goal.ts`) went null with the first of
   those: an entry there and its harness's `messages` capability are ONE fact in two files,
-  and `harness-transcript.test.ts` fails until they agree. Codex is down to two nulls,
-  `permissionModes` and `workQueue`.
+  and `harness-transcript.test.ts` fails until they agree. Codex is down to one top-level
+  null, `permissionModes`.
   The nulls on this axis that ARE still true are the ones someone pointed at a real install:
   `control.pastePlaceholder` (below), and `skills.reloadCommand`, which is the whole
   difference between "this harness has no skills" and "this harness needs no nudge" - Codex
@@ -293,11 +293,14 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   from inheriting Claude's last state. The third is now gated on `prepareCodexLaunch`'s
   `instrumented` as well as on the capability, because an uninstrumented Codex launch will
   never produce that signal either.
-  `HARNESS_CAPABILITIES.codex.workQueue` is the second of those two, still deliberate and on
-  a different argument than it used to carry: not "no hooks and no readable transcript",
-  both of which now exist, but that Foreman's DELIVERY half - `tickTargets` driving a Codex
-  pane - has never been run against one. That is the unlock `docs/plans/codex/plan.md` phase
-  8 describes, not a line to flip on its own. **`detect`, `bin` and `control`
+  `HARNESS_CAPABILITIES.codex.workQueue` is non-null now too: Codex's launch-scoped hooks
+  report pickup/completion, its rollout supplies the verification transcript, and the
+  harness-neutral injection path reaches its keystroke control spec. That last path has a
+  measured degradation rather than a guessed success: Codex renders no collapsed-paste
+  placeholder, so delivery spends one Enter and reports `submitVerified: false`; it never
+  retries on evidence this TUI cannot produce. An operator-started Codex that has never
+  reported a hook still takes the per-session refusal, with the launch-scoped remedy, rather
+  than accepting a batch it cannot verify. **`detect`, `bin` and `control`
   are the three that are NOT nullable**: a harness nothing can find on the process table has
   no card at all, one that names no binary cannot be dispatched, and one we cannot talk to
   is not one we can dispatch to. Inside `control`, though, `pastePlaceholder: null` is

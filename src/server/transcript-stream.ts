@@ -13,9 +13,8 @@ import { sleep } from "./util/timers.ts";
 //
 // Harness-agnostic - it holds the SSE loop and the attribution, and asks
 // `sessionMessages` for the reading. A harness whose record carries no conversation
-// (Codex, whose rollout is metadata only) reports `unavailable` here for the same reason
-// the one-shot window does, and says which harness and why rather than naming Claude at
-// every reader.
+// reports `unavailable` here for the same reason the one-shot window does, and says which
+// harness and why rather than naming either shipped one at every reader.
 
 /** How often the server re-checks the file for new turns while a card is open. */
 const POLL_MS = 900;

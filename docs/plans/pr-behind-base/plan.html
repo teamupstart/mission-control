@@ -287,7 +287,7 @@ prBehind: { commits: number; conflicts: boolean } | null;</code></pre>
 
 <ol>
 <li><strong><code>hasPane(s)</code></strong> and <code>s.state !== "exited"</code>. Nowhere to type, ever.</li>
-<li><strong><code>s.hooksSeen</code></strong>. No hooks have ever arrived, so nothing will ever report this session idle and <code>settledIdle</code> can never be true. This <strong>excludes Codex entirely</strong>, which pushes nothing at us. That is a real capability gap and it gets declared as one rather than papered over: the card says why, and the sentence is composed from the capability, not typed at the refusing surface.</li>
+<li><strong><code>s.hooksSeen</code></strong>. No hooks have ever arrived, so nothing will report this session idle and <code>settledIdle</code> can never be true. For Codex this deliberately excludes operator-started sessions: only Mission Control launches attach the hooks that authorize automation. The card says why, and the sentence is composed from the capability rather than typed at the refusing surface. See <a href="../../../README.md#foreman-auto-responder">Foreman</a> for the current harness boundary.</li>
 <li><strong><code>settledIdle(s, now, settleMs)</code></strong> (<code>src/server/foreman/queue-machine.ts:118</code>). Never type into a working agent.</li>
 <li><strong>No in-flight work-queue item</strong> (<code>s.queue</code>). If the Foreman <em>is</em> running, this would collide with a send it is mid-way through.</li>
 <li><strong>No in-flight no-mistakes run</strong> (<code>s.nomistakes</code>). That run is already pushing.</li>
@@ -354,7 +354,7 @@ prBehind: { commits: number; conflicts: boolean } | null;</code></pre>
 <li><strong>Signal source.</strong> Local <code>git rev-list</code> + <code>merge-tree</code> (recommended, &sect;3B), or extend the existing <code>gh</code> call and accept that it only sees <code>BEHIND</code> under branch protection.</li>
 <li><strong>Clean merges.</strong> Always prompt the agent, or let the daemon perform a merge itself when <code>merge-tree</code> proves it clean and the worktree is idle and clean, prompting only on conflict?</li>
 <li><strong>Settings home.</strong> A new section inside the Shipping panel, its own top-level settings category, or fold the toggle into Harnesses?</li>
-<li><strong>Codex.</strong> Accept that no hooks means no idle signal and declare the capability absent, or find a passive readiness signal (<code>activePaneDialog</code> plus a transcript-derived state) so Codex sessions can be prompted too?</li>
+<li><strong>Codex.</strong> Resolved: Mission Control-launched sessions use launch-scoped hooks; passive discovery alone never authorizes automation. See <a href="../../../README.md#foreman-auto-responder">Foreman</a>.</li>
 </ol>
 
 <h2>11. Testing</h2>

@@ -382,10 +382,43 @@ test("tickTargets takes needs-you first (oldest-waiting first), and never lists 
   );
 });
 
-test("tickTargets ignores exited sessions and non-claude agents", () => {
+test("tickTargets requires hook authorization for launch-scoped Codex triage", () => {
+  const menu = {
+    prompt: "Run the command?",
+    options: [{ number: 1, label: "Yes" }],
+    highlighted: 1,
+  };
+  const operatorCodex = mkSession({
+    id: "operator-codex",
+    agent: "codex",
+    hooksSeen: false,
+    paneDialog: menu,
+    queue: mkSummary({ openCount: 1 }),
+  });
+  const launchedCodex = mkSession({ id: "launched-codex", agent: "codex", paneDialog: menu });
+  const operatorClaude = mkSession({
+    id: "operator-claude",
+    hooksSeen: false,
+    paneDialog: menu,
+  });
+
+  assert.deepEqual(
+    tickTargets([operatorCodex, launchedCodex, operatorClaude], ["drain"]).map((s) => s.id),
+    ["launched-codex", "operator-claude", "operator-codex"],
+  );
+  assert.equal(
+    tick({ session: operatorCodex, bucket: "needs-you", items: [mkItem()] }).kind,
+    "escalate",
+  );
+});
+
+test("tickTargets ignores exited sessions and includes a Codex queue", () => {
   const gone = mkSession({ id: "gone", state: "exited", queue: mkSummary({ openCount: 1 }) });
   const codex = mkSession({ id: "codex", agent: "codex", queue: mkSummary({ openCount: 1 }) });
-  assert.deepEqual(tickTargets([gone, codex], ["drain"]), []);
+  assert.deepEqual(
+    tickTargets([gone, codex], ["drain"]).map((s) => s.id),
+    ["codex"],
+  );
 });
 
 // ---- decideQueueTick: the precedence, in order ----

@@ -1,5 +1,10 @@
 # Integrating Codex properly
 
+> Historical implementation analysis. Current user-facing behavior is documented in
+> [Foreman](../../../README.md#foreman-auto-responder) and
+> [Work queues](../../../README.md#work-queues-load-a-session-up-and-walk-away); capability
+> ownership lives in `HARNESS_CAPABILITIES` and `HARNESSES`.
+
 Codex is a registered harness with a card, a dispatch path and a model picker. Everything
 past that is declared absent. This plan is about the fact that **most of those declarations
 are false**, and about the order in which to make them true without shipping a lie.
@@ -504,8 +509,8 @@ Each is a spike with a capture, not a code change on spec.
 
 #### Phase 8 - The consequential unlocks
 
-Only reachable once the phases above land. Each is a `null` → value flip plus the surfaces
-that were gated on it.
+**Status: shipped within the launch-scoped hook boundary.** This section records the
+implementation plan that led there; the current contracts are linked at the top of this document.
 
 - **`workQueue`** - its null is justified as "no hooks AND no readable transcript"
   (`harness-capabilities.ts:98-107`). Both halves fall. Note: after Phase 3 alone the
@@ -581,8 +586,9 @@ These need an answer before the phases they gate are built.
 4. **Phase 2 vs Phase 4 shipping order.** Phase 2 is free and unblocks `settledIdle`; Phase 4
    is authoritative but needs consent. Ship Phase 2 alone first (recommended), or hold both
    until the hook lands so the state semantics change once?
-5. **What Phase 8 turns on by default.** Foreman auto-responding to Codex sessions is a
-   behaviour change for existing installs, not just a new capability.
+5. **What Phase 8 turns on by default.** Resolved: Foreman can auto-respond only after a
+   Mission Control-launched Codex session reports a hook. Operator-started sessions remain
+   human-operated.
 
 ## Done means
 

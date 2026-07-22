@@ -626,6 +626,29 @@ test("the guard re-resolves by noteKey, not a cached session id", async () => {
   assert.equal(r.ok === true ? r.session.id : "", "new-synthetic", "it resolved the CURRENT id");
 });
 
+test("a hookless resumed Codex process cannot inherit an authorized queue send", async () => {
+  const observed = mkSession({ id: "launched", agent: "codex" });
+  const item = mkItem();
+  const resumed = mkSession({
+    id: "operator-resume",
+    agent: "codex",
+    instrumented: false,
+    hooksSeen: false,
+  });
+  const fake = mkFake({ session: resumed, items: [item] });
+
+  const out = await applyQueueAction(
+    fake,
+    observed,
+    { kind: "send", item, payload: "do it", round: 0 },
+    CFG,
+    NOW,
+  );
+  assert.equal(out.kind, "aborted");
+  assert.deepEqual(fake.injected, []);
+  assert.match(out.kind === "aborted" ? out.why : "", /not authorized/);
+});
+
 test("a failure of the re-check ITSELF aborts the send", async () => {
   // An abort costs a tick; a bad send costs the human's afternoon.
   const session = mkSession();

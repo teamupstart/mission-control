@@ -35,6 +35,7 @@ function toState(evt: HookIngest): HookReading {
 }
 
 export const codexHooks: HookSpec = {
+  scope: "launch",
   events: CODEX_HOOK_EVENTS,
   matcherEvents: [],
   toState,

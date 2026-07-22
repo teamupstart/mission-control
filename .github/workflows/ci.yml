@@ -32,9 +32,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # >=24 is required (node:sqlite is used unflagged from Node 24). 24 is the
-        # supported floor; 25 matches the current dev environment.
-        node-version: ['24', '25']
+        # >=24 is required (node:sqlite is used unflagged from Node 24). Test the
+        # supported floor and the current release. Node 25 is EOL.
+        node-version: ['24', '26']
 
     name: check (node ${{ matrix.node-version }})
 
@@ -51,16 +51,26 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      # These checks are independent: typecheck and tests read source, while build writes
+      # only `dist/`. Run them together so the longest one, rather than their sum,
+      # determines the gate's duration. Collect every exit status so a failure does not
+      # hide failures from the other concurrent checks.
+      - name: Typecheck, test, and build
+        shell: bash
+        run: |
+          pids=()
+          npm run typecheck & pids+=($!)
+          npm test & pids+=($!)
+          npm run build & pids+=($!)
 
-      - name: Test
-        run: npm test
+          check_status=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || check_status=1
+          done
+          exit "$check_status"
 
-      - name: Build
-        run: npm run build
-
-      # Runs the bundles Build just produced. Ordered after it because it needs `dist/`.
+      # Runs the bundles Build just produced. Ordered after the concurrent gate because
+      # it needs `dist/` and should not run when one of those checks has failed.
       - name: Smoke the built bundles
         run: npm run smoke
 

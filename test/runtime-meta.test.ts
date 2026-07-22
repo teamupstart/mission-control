@@ -162,7 +162,7 @@ test("a confirmed effort releases the observation to later passive metadata", ()
     { ...transcriptRead, thinkingLevel: "xhigh", effortRevision: "turn-2" },
     "transcript",
   );
-  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.applyRuntimeMeta("s1", { ...transcriptRead, effortRevision: "turn-3" }, "transcript");
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
@@ -236,6 +236,41 @@ test("out-of-order statusLine metadata cannot regress a confirmed effort", (t) =
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
   assert.equal(metaOf(r)?.model, "Opus 4.8");
   assert.equal(metaOf(r)?.updatedAt, confirmedAt);
+});
+
+test("unversioned statusLine effort stays guarded after confirmation", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
+
+  r.applyStatusLine(
+    statusIngest({
+      contextWindow: { usedPercentage: 55, contextWindowSize: 200_000, tokens: 110_000 },
+      effort: "high",
+      ts: undefined,
+    }),
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.contextPct, 55);
+
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "turn-2",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: undefined }));
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_100 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
 });
 
 test("an agent-session rebind clears effort state before new metadata arrives", () => {

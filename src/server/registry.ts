@@ -285,6 +285,14 @@ export class Registry extends EventEmitter {
   }>();
   private runtimeEffortRevisions = new Map<string, string>();
   private statusLineTimestamps = new Map<string, number>();
+  private effortFreshnessGuards = new Map<string, {
+    agentSessionId: string | null;
+    transcriptPath: string | null;
+    modelId: string | null;
+    effortRevision: string | null;
+    statusLineTimestamp: number | null;
+    verifiedAt: number;
+  }>();
   /**
    * What DISCOVERY said this session's conversation is, keyed by synthetic id - the
    * subset of `Session.agentSessionId` / `transcriptPath` that was read off the live
@@ -850,15 +858,19 @@ export class Registry extends EventEmitter {
     if (!effort) return;
     const s = this.sessions.get(sessionId);
     if (!s?.meta) return;
-    this.observedEfforts.set(sessionId, {
+    const freshness = {
       agentSessionId: s.agentSessionId,
       transcriptPath: s.transcriptPath,
       modelId: s.meta.modelId,
-      previous: s.meta.thinkingLevel ?? effort,
-      effort,
       effortRevision: this.runtimeEffortRevisions.get(sessionId) ?? null,
       statusLineTimestamp: this.statusLineTimestamps.get(sessionId) ?? null,
       verifiedAt: Date.now(),
+    };
+    this.effortFreshnessGuards.set(sessionId, freshness);
+    this.observedEfforts.set(sessionId, {
+      ...freshness,
+      previous: s.meta.thinkingLevel ?? effort,
+      effort,
     });
     if (s.meta.thinkingLevel === effort) return;
     const updated: Session = {
@@ -1311,8 +1323,9 @@ export class Registry extends EventEmitter {
       this.statusLineTimestamps.set(s.id, statusLineTimestamp);
     }
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
-    const reconciled = this.reconcileObservedEffort(
+    const guarded = this.guardEffortFreshness(
       s.id,
+      s.meta?.thinkingLevel ?? null,
       metaFromStatusLine(ingest, Date.now()),
       agentSessionId,
       s.transcriptPath,
@@ -1320,7 +1333,18 @@ export class Registry extends EventEmitter {
       null,
       statusLineTimestamp,
     );
-    const meta = reconciled.rejectedStatusLineEffort && s.meta
+    const reconciled = this.reconcileObservedEffort(
+      s.id,
+      guarded.meta,
+      agentSessionId,
+      s.transcriptPath,
+      "statusline",
+      null,
+      statusLineTimestamp,
+    );
+    const rejectedStatusLineEffort =
+      guarded.rejectedStatusLineEffort || reconciled.rejectedStatusLineEffort;
+    const meta = rejectedStatusLineEffort && s.meta
       ? { ...reconciled.meta, source: s.meta.source, updatedAt: s.meta.updatedAt }
       : reconciled.meta;
     const next: Session = { ...s, meta, agentSessionId };
@@ -1539,11 +1563,21 @@ export class Registry extends EventEmitter {
       s.meta?.source === "statusline" &&
       source !== "statusline" &&
       now - s.meta.updatedAt < STATUSLINE_TTL_MS;
-    const hasObservedEffort = this.observedEfforts.has(sessionId);
-    if (statusLineHasPrecedence && !hasObservedEffort) return;
+    const hasEffortFreshnessGuard = this.effortFreshnessGuards.has(sessionId);
+    if (statusLineHasPrecedence && !hasEffortFreshnessGuard) return;
+    const guarded = this.guardEffortFreshness(
+      sessionId,
+      s.meta?.thinkingLevel ?? null,
+      metaFromRead(read, source, now),
+      s.agentSessionId,
+      s.transcriptPath,
+      source,
+      read.effortRevision,
+      null,
+    );
     const reconciled = this.reconcileObservedEffort(
       sessionId,
-      metaFromRead(read, source, now),
+      guarded.meta,
       s.agentSessionId,
       s.transcriptPath,
       source,
@@ -1703,8 +1737,7 @@ export class Registry extends EventEmitter {
       (meta.thinkingLevel !== null &&
         (meta.thinkingLevel !== observed.previous ||
           source === "statusline" ||
-          (observed.effortRevision !== null &&
-            effortRevision !== null &&
+          (effortRevision !== null &&
             effortRevision !== observed.effortRevision)))
     ) {
       this.observedEfforts.delete(sessionId);
@@ -1716,6 +1749,40 @@ export class Registry extends EventEmitter {
       meta: { ...meta, thinkingLevel: observed.effort },
       rejectedStatusLineEffort: false,
     };
+  }
+
+  private guardEffortFreshness(
+    sessionId: string,
+    currentEffort: ThinkingLevel | null,
+    meta: SessionMeta,
+    agentSessionId: string | null,
+    transcriptPath: string | null,
+    source: MetaSource,
+    effortRevision: string | null,
+    statusLineTimestamp: number | null,
+  ): { meta: SessionMeta; rejectedStatusLineEffort: boolean } {
+    const guard = this.effortFreshnessGuards.get(sessionId);
+    if (!guard) return { meta, rejectedStatusLineEffort: false };
+    const identityChanged =
+      (guard.agentSessionId !== null && agentSessionId !== null && agentSessionId !== guard.agentSessionId) ||
+      (guard.transcriptPath !== null && transcriptPath !== null && transcriptPath !== guard.transcriptPath);
+    if (identityChanged) {
+      this.effortFreshnessGuards.delete(sessionId);
+      return { meta, rejectedStatusLineEffort: false };
+    }
+    const fresh = source === "statusline"
+      ? statusLineTimestamp !== null &&
+        statusLineTimestamp > guard.verifiedAt &&
+        (guard.statusLineTimestamp === null || statusLineTimestamp > guard.statusLineTimestamp)
+      : effortRevision !== null && effortRevision !== guard.effortRevision;
+    if (!fresh) {
+      return {
+        meta: { ...meta, thinkingLevel: currentEffort },
+        rejectedStatusLineEffort: source === "statusline",
+      };
+    }
+    if (meta.modelId !== guard.modelId) this.effortFreshnessGuards.delete(sessionId);
+    return { meta, rejectedStatusLineEffort: false };
   }
 
   private clearEffortTrackingOnRebind(previous: Session, next: Session): boolean {
@@ -1733,6 +1800,7 @@ export class Registry extends EventEmitter {
   private clearSessionEffortTracking(sessionId: string): void {
     this.observedEfforts.delete(sessionId);
     this.runtimeEffortRevisions.delete(sessionId);
+    this.effortFreshnessGuards.delete(sessionId);
   }
 
   // ---- reviews (used by phase 3) ----

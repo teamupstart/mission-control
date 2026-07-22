@@ -1782,7 +1782,7 @@ export function commitUsageRead(input: {
        (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
         cost_usd, cost_basis, cost_known, pricing_version, input, output,
         reasoning_output, cache_read, cache_write)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'api-equivalent', ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(note_key, model_id, query_source, window_end_ns)
        DO UPDATE SET session_id = COALESCE(usage_ledger.session_id, excluded.session_id)`,
   );
@@ -1798,6 +1798,7 @@ export function commitUsageRead(input: {
         event.identity,
         event.ts,
         event.costUsd ?? 0,
+        event.costUsd === null ? "unpriced" : "api-equivalent",
         event.costUsd === null ? 0 : 1,
         event.pricingVersion,
         event.input,

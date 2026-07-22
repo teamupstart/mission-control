@@ -156,6 +156,12 @@ test("an unknown Codex model preserves tokens but makes the whole summary unpric
   assert.equal(summary?.costUsd, null);
   assert.equal(summary?.input, 11);
   assert.deepEqual(summary?.pricingModels, ["gpt-future"]);
+  const stored = openDb()
+    .prepare(`SELECT cost_basis, cost_known FROM usage_ledger WHERE note_key = ?`)
+    .get("conversation-unknown") as { cost_basis: string; cost_known: number };
+  assert.equal(stored.cost_basis, "unpriced",
+    "the durable row must preserve unknown-model provenance, not only summarize as partial");
+  assert.equal(stored.cost_known, 0);
   assert.equal(fleetEstimatedCostSince(30_000), null,
     "a known subtotal must not masquerade as the complete fleet estimate");
 });

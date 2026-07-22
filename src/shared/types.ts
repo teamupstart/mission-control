@@ -1863,7 +1863,7 @@ export interface SessionFileEntry {
   path: string;
 }
 
-export type SessionFileKind = "html" | "text" | "binary" | "oversized";
+export type SessionFileKind = "html" | "markdown" | "text" | "binary" | "oversized";
 
 /** A file opened through the daemon's contained, UTF-8-only reader. */
 export interface SessionFileDocument {

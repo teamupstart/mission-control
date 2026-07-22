@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionFileDocument, SessionFileEntry } from "@shared/types.ts";
 import { api } from "./api.ts";
+import { pathDefaultsToPreview } from "./workspaceLinks.ts";
 
 export type FileSaveState =
   | "saved"
@@ -30,6 +31,7 @@ export interface SessionFilesState {
   files: SessionFileEntry[];
   listState: "idle" | "loading" | "ready" | "failed";
   listError: string | null;
+  openError: string | null;
   selectedPath: string | null;
   mode: "preview" | "editor";
   buffers: Record<string, FileBuffer>;
@@ -39,6 +41,7 @@ export interface SessionFilesController {
   sessions: Record<string, SessionFilesState>;
   ensure: (sessionId: string) => void;
   refresh: (sessionId: string) => void;
+  probe: (sessionId: string, path: string) => Promise<boolean>;
   select: (sessionId: string, path: string) => void;
   setMode: (sessionId: string, mode: "preview" | "editor") => void;
   edit: (sessionId: string, path: string, text: string) => void;
@@ -51,8 +54,30 @@ export interface SessionFilesController {
 
 const EMPTY_SESSION: SessionFilesState = {
   files: [], listState: "idle", listError: null, selectedPath: null,
-  mode: "preview", buffers: {},
+  openError: null, mode: "preview", buffers: {},
 };
+
+export class LatestFileRequests {
+  private sequence = 0;
+  private readonly latest = new Map<string, number>();
+
+  begin(key: string): number {
+    const request = ++this.sequence;
+    this.latest.set(key, request);
+    return request;
+  }
+
+  isCurrent(key: string, request: number): boolean {
+    return this.latest.get(key) === request;
+  }
+
+  forgetSession(sessionId: string): void {
+    const prefix = `${sessionId}\0`;
+    for (const key of this.latest.keys()) {
+      if (key.startsWith(prefix)) this.latest.delete(key);
+    }
+  }
+}
 
 export function updateExistingSession(
   all: Record<string, SessionFilesState>,
@@ -65,12 +90,66 @@ export function updateExistingSession(
   return updated === current ? all : { ...all, [id]: updated };
 }
 
+function hasLocalFileChanges(buffer: FileBuffer): boolean {
+  return buffer.saveState !== "saved" && buffer.saveState !== "readonly";
+}
+
+export function applyFileLoadFailure(
+  state: SessionFilesState,
+  filePath: string,
+  error: string,
+): SessionFilesState {
+  const buffer = state.buffers[filePath];
+  let buffers = state.buffers;
+  if (buffer && !hasLocalFileChanges(buffer)) {
+    buffers = { ...state.buffers };
+    delete buffers[filePath];
+  }
+  if (state.selectedPath !== filePath && buffers === state.buffers) return state;
+  return {
+    ...state,
+    buffers,
+    openError: state.selectedPath === filePath ? error : state.openError,
+  };
+}
+
+export function applyFileLoadSuccess(
+  state: SessionFilesState,
+  filePath: string,
+  doc: SessionFileDocument,
+  force: boolean,
+): SessionFilesState {
+  const current = state.buffers[filePath];
+  const selected = state.selectedPath === filePath;
+  if (force && current && hasLocalFileChanges(current)) {
+    return selected && state.openError ? { ...state, openError: null } : state;
+  }
+  return {
+    ...state,
+    mode: selected && doc.kind !== "html" && doc.kind !== "markdown" ? "editor" : state.mode,
+    openError: selected ? null : state.openError,
+    buffers: {
+      ...state.buffers,
+      [filePath]: {
+        document: doc,
+        text: doc.text ?? "",
+        savedText: doc.text ?? "",
+        saveState: doc.editable ? "saved" : "readonly",
+        error: doc.error,
+        conflict: null,
+      },
+    },
+  };
+}
+
 export function useSessionFilesStore(connected: boolean): SessionFilesController {
   const [sessions, setSessions] = useState<Record<string, SessionFilesState>>({});
   const sessionsRef = useRef(sessions);
   const connectedRef = useRef(connected);
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const inFlight = useRef(new Set<string>());
+  const requests = useRef(new LatestFileRequests());
+  const probeFiles = useRef(new Map<string, Promise<ReadonlySet<string>>>());
   sessionsRef.current = sessions;
   connectedRef.current = connected;
 
@@ -90,41 +169,29 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     });
   }, []);
 
-  const loadFile = useCallback(async (sessionId: string, filePath: string, force = false) => {
+  const loadFile = useCallback(async (sessionId: string, filePath: string, force = false): Promise<boolean> => {
     const existing = sessionsRef.current[sessionId]?.buffers[filePath];
-    if (existing && !force) return;
+    if (existing && !force) return true;
+    const key = `${sessionId}\0file\0${filePath}`;
+    const request = requests.current.begin(key);
     const result = await api.readFile(sessionId, filePath);
+    if (!requests.current.isCurrent(key, request)) return result.ok;
     if (!result.ok) {
-      updateExisting(sessionId, (s) => ({ ...s, listError: result.error }));
-      return;
+      updateExisting(sessionId, (s) => applyFileLoadFailure(s, filePath, result.error));
+      return false;
     }
-    const doc = result.file;
-    updateExisting(sessionId, (s) => ({
-      ...(force && s.buffers[filePath]?.saveState !== "saved"
-        ? s
-        : {
-            ...s,
-            mode: doc.kind === "html" ? s.mode : "editor",
-            buffers: {
-              ...s.buffers,
-              [filePath]: {
-                document: doc,
-                text: doc.text ?? "",
-                savedText: doc.text ?? "",
-                saveState: doc.editable ? "saved" as const : "readonly" as const,
-                error: doc.error,
-                conflict: null,
-              },
-            },
-          }),
-    }));
+    updateExisting(sessionId, (s) => applyFileLoadSuccess(s, filePath, result.file, force));
+    return true;
   }, [updateExisting]);
 
   const ensure = useCallback((sessionId: string) => {
     const current = sessionsRef.current[sessionId];
     if (current && current.listState !== "idle" && current.listState !== "failed") return;
+    const key = `${sessionId}\0list`;
+    const request = requests.current.begin(key);
     update(sessionId, (s) => ({ ...s, listState: "loading", listError: null }));
     void api.listFiles(sessionId).then((result) => {
+      if (!requests.current.isCurrent(key, request)) return;
       if (!result.ok) {
         updateExisting(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
         return;
@@ -245,9 +312,27 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   const select = useCallback((sessionId: string, filePath: string) => {
     const previous = sessionsRef.current[sessionId]?.selectedPath;
     if (previous && previous !== filePath) void save(sessionId, previous);
-    update(sessionId, (s) => ({ ...s, selectedPath: filePath }));
-    void loadFile(sessionId, filePath);
+    update(sessionId, (s) => ({
+      ...s,
+      selectedPath: filePath,
+      openError: null,
+      mode: pathDefaultsToPreview(filePath) ? "preview" : "editor",
+    }));
+    void loadFile(sessionId, filePath, true);
   }, [loadFile, save, update]);
+
+  const probe = useCallback(async (sessionId: string, filePath: string): Promise<boolean> => {
+    const listed = sessionsRef.current[sessionId];
+    if (listed?.listState === "ready") return listed.files.some((file) => file.path === filePath);
+    let files = probeFiles.current.get(sessionId);
+    if (!files) {
+      files = api.listFiles(sessionId).then((result) => (
+        new Set(result.ok ? result.files.map((file) => file.path) : [])
+      ));
+      probeFiles.current.set(sessionId, files);
+    }
+    return (await files).has(filePath);
+  }, []);
 
   const edit = useCallback((sessionId: string, filePath: string, text: string) => {
     update(sessionId, (s) => {
@@ -267,8 +352,12 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, [save]);
 
   const refresh = useCallback((sessionId: string) => {
+    probeFiles.current.delete(sessionId);
+    const key = `${sessionId}\0list`;
+    const request = requests.current.begin(key);
     update(sessionId, (s) => ({ ...s, listState: "loading", listError: null }));
     void api.listFiles(sessionId).then((result) => {
+      if (!requests.current.isCurrent(key, request)) return;
       if (!result.ok) return updateExisting(sessionId, (s) => ({ ...s, listState: "failed", listError: result.error }));
       updateExisting(sessionId, (s) => ({ ...s, files: result.files, listState: "ready", listError: null }));
       const selected = sessionsRef.current[sessionId]?.selectedPath;
@@ -305,6 +394,8 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     if (revision) void save(sessionId, filePath, revision);
   }, [save]);
   const drop = useCallback((sessionId: string) => {
+    requests.current.forgetSession(sessionId);
+    probeFiles.current.delete(sessionId);
     for (const [key, timer] of timers.current) {
       if (key.startsWith(`${sessionId}\0`)) {
         clearTimeout(timer);
@@ -333,6 +424,6 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
   }, []);
 
   return useMemo(() => ({
-    sessions, ensure, refresh, select, setMode, edit, flush, retry, reloadDisk, overwriteDisk, drop,
-  }), [sessions, ensure, refresh, select, setMode, edit, flush, retry, reloadDisk, overwriteDisk, drop]);
+    sessions, ensure, refresh, probe, select, setMode, edit, flush, retry, reloadDisk, overwriteDisk, drop,
+  }), [sessions, ensure, refresh, probe, select, setMode, edit, flush, retry, reloadDisk, overwriteDisk, drop]);
 }

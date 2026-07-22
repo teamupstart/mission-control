@@ -14,7 +14,11 @@ import {
   withFileSaveLock,
 } from "../src/server/session-files.ts";
 import {
+  applyFileLoadFailure,
+  applyFileLoadSuccess,
+  LatestFileRequests,
   updateExistingSession,
+  type FileBuffer,
   type SessionFilesState,
 } from "../src/web/lib/sessionFiles.ts";
 
@@ -45,12 +49,14 @@ test("reads UTF-8 text by content and classifies HTML independently", async (t) 
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(path.join(dir, "README"), "hello π\n");
   await writeFile(path.join(dir, "page.html"), "<h1>Hello</h1>");
+  await writeFile(path.join(dir, "notes.md"), "# Notes");
   const text = await readSessionFile(dir, "README");
   assert.equal(text.kind, "text");
   assert.equal(text.editable, true);
   assert.equal(text.text, "hello π\n");
   assert.match(text.revision, /^[a-f0-9]{64}$/);
   assert.equal((await readSessionFile(dir, "page.html")).kind, "html");
+  assert.equal((await readSessionFile(dir, "notes.md")).kind, "markdown");
 });
 
 test("rejects binary, invalid UTF-8, oversized, traversal, and symlink escape targets", async (t) => {
@@ -106,7 +112,7 @@ test("save locks serialize writers for the same target", async () => {
 test("async file results cannot recreate a dropped session", () => {
   const state: SessionFilesState = {
     files: [], listState: "ready", listError: null, selectedPath: null,
-    mode: "editor", buffers: {},
+    openError: null, mode: "editor", buffers: {},
   };
   const sessions = { active: state };
   let called = false;
@@ -118,6 +124,62 @@ test("async file results cannot recreate a dropped session", () => {
   assert.equal(retained, sessions);
   assert.deepEqual(dropped, {});
   assert.equal(called, false);
+});
+
+test("only the latest file request may update a session path", () => {
+  const requests = new LatestFileRequests();
+  const key = "active\0file\0README.md";
+  const first = requests.begin(key);
+  const second = requests.begin(key);
+  assert.equal(requests.isCurrent(key, first), false);
+  assert.equal(requests.isCurrent(key, second), true);
+  requests.forgetSession("active");
+  assert.equal(requests.isCurrent(key, second), false);
+  const recreated = requests.begin(key);
+  assert.ok(recreated > second);
+  assert.equal(requests.isCurrent(key, recreated), true);
+});
+
+test("failed revalidation removes clean stale buffers but preserves local edits", () => {
+  const document = {
+    path: "README.md", kind: "markdown" as const, editable: true, text: "disk",
+    size: 4, mtime: 1, language: "markdown", revision: "one", error: null,
+  };
+  const clean: FileBuffer = {
+    document, text: "disk", savedText: "disk", saveState: "saved", error: null, conflict: null,
+  };
+  const base: SessionFilesState = {
+    files: [], listState: "ready", listError: null, selectedPath: "README.md",
+    openError: null, mode: "preview", buffers: { "README.md": clean },
+  };
+  const stale = applyFileLoadFailure(base, "README.md", "File not found");
+  assert.equal(stale.openError, "File not found");
+  assert.equal(stale.buffers["README.md"], undefined);
+
+  const modified = { ...clean, text: "local", saveState: "modified" as const };
+  const edited = applyFileLoadFailure(
+    { ...base, buffers: { "README.md": modified } },
+    "README.md",
+    "File not found",
+  );
+  assert.equal(edited.openError, "File not found");
+  assert.equal(edited.buffers["README.md"], modified);
+  const refreshed = applyFileLoadSuccess(edited, "README.md", { ...document, text: "new disk" }, true);
+  assert.equal(refreshed.openError, null);
+  assert.equal(refreshed.buffers["README.md"], modified);
+});
+
+test("background file loads cannot replace the selected path's error", () => {
+  const state: SessionFilesState = {
+    files: [], listState: "ready", listError: null, selectedPath: "current.txt",
+    openError: "Current file is missing", mode: "editor", buffers: {},
+  };
+  assert.equal(applyFileLoadFailure(state, "old.txt", "Old file is missing"), state);
+  const loaded = applyFileLoadSuccess(state, "old.txt", {
+    path: "old.txt", kind: "text", editable: true, text: "old", size: 3,
+    mtime: 1, language: "text", revision: "one", error: null,
+  }, true);
+  assert.equal(loaded.openError, "Current file is missing");
 });
 
 test("matching revisions save atomically, preserve mode, and leave no temp file", async (t) => {

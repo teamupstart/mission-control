@@ -1800,6 +1800,15 @@ dumps), and a confident wrong guess reads worse than no colour. And **single new
 line breaks** in chat turns, which is what the transcript did before it parsed markdown,
 so no existing message reflows into a run-on paragraph.
 
+Links in a formatted transcript that resolve inside that session's checkout open in the
+same session's Files workspace. Console and Board reveal their integrated Files tab; Cards
+reuse the extracted Files window. Checkout-relative links and absolute paths beneath the
+checkout are accepted, including optional line and column suffixes. External links keep
+their normal browser behavior, and resolved paths outside the checkout never open. HTML and
+Markdown open in Preview by default, while ordinary text opens in the editor. HTML preview
+remains inert: a bounded set of checkout-local stylesheets is inlined through the contained
+file reader, without granting the sandbox scripts or network access.
+
 ## Keyboard shortcuts
 
 The dashboard is keyboard-driven - select a session with the arrow keys and act on it

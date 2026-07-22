@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { Session } from "@shared/types.ts";
 import type { FileBuffer, SessionFilesController } from "../lib/sessionFiles.ts";
 import { FileEditor } from "./FileEditor.tsx";
+import { Markdown } from "./Markdown.tsx";
+import { api } from "../lib/api.ts";
+import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 
 const PREVIEW_CSP =
   "default-src 'none'; connect-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; " +
@@ -15,6 +18,87 @@ export function htmlPreviewSource(source: string): string {
     return source.slice(0, at) + meta + source.slice(at);
   }
   return `<!doctype html><html><head>${meta}</head><body>${source}</body></html>`;
+}
+
+interface StylesheetLink {
+  index: number;
+  length: number;
+  path: string;
+}
+
+const MAX_PREVIEW_STYLESHEETS = 32;
+const PREVIEW_STYLESHEET_CONCURRENCY = 4;
+
+function htmlAttribute(tag: string, name: string): string | null {
+  const match = tag.match(new RegExp(
+    `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`,
+    "i",
+  ));
+  return match ? (match[1] ?? match[2] ?? match[3] ?? "") : null;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+}
+
+/** Find checkout-local stylesheet links without treating remote CSS as readable workspace data. */
+function localStylesheets(source: string, documentPath: string): StylesheetLink[] {
+  const found: StylesheetLink[] = [];
+  for (const match of source.matchAll(/<link\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
+    if (match.index == null) continue;
+    const tag = match[0];
+    const rel = htmlAttribute(tag, "rel") ?? "";
+    if (!rel.split(/\s+/).some((part) => part.toLowerCase() === "stylesheet")) continue;
+    const href = htmlAttribute(tag, "href");
+    const path = href ? workspaceAssetPath(href, documentPath) : null;
+    if (path) found.push({ index: match.index, length: tag.length, path });
+  }
+  return found;
+}
+
+/**
+ * Inline local CSS before an HTML document enters its opaque sandbox.
+ *
+ * A srcDoc document otherwise resolves `theme.css` against the dashboard URL, which is
+ * neither the checkout nor a file-serving endpoint. Keeping style-src inline-only is the
+ * useful security boundary, so local CSS is read through the same contained session-file
+ * API as the document and embedded rather than granting the iframe network access.
+ */
+export async function inlinePreviewStyles(
+  source: string,
+  documentPath: string,
+  read: (path: string) => Promise<string | null>,
+  signal?: AbortSignal,
+): Promise<string> {
+  const links = localStylesheets(source, documentPath);
+  if (links.length === 0) return source;
+  const paths = [...new Set(links.map((link) => link.path))].slice(0, MAX_PREVIEW_STYLESHEETS);
+  const css = new Map<string, string | null>();
+  let cursor = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(PREVIEW_STYLESHEET_CONCURRENCY, paths.length) },
+    async () => {
+      while (!signal?.aborted) {
+        const path = paths[cursor++];
+        if (!path) return;
+        css.set(path, await read(path));
+      }
+    },
+  ));
+  if (signal?.aborted) return source;
+  let output = "";
+  cursor = 0;
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i]!;
+    output += source.slice(cursor, link.index);
+    const text = css.get(link.path);
+    if (text != null) {
+      const safe = text.replace(/<\/style/gi, "<\\/style");
+      output += `<style data-mission-source="${escapeHtmlAttribute(link.path)}">\n${safe}\n</style>`;
+    }
+    cursor = link.index + link.length;
+  }
+  return output + source.slice(cursor);
 }
 
 function SaveStatus({ buffer }: { buffer: FileBuffer }): React.JSX.Element {
@@ -50,11 +134,30 @@ export function FileWorkspace({
   const selectedPath = state?.selectedPath ?? null;
   const buffer = selectedPath ? state?.buffers[selectedPath] : null;
   const mode = state?.mode ?? "preview";
+  const previewable = buffer?.document.kind === "html" || buffer?.document.kind === "markdown";
   const [previewText, setPreviewText] = useState("");
   useEffect(() => {
-    const timer = setTimeout(() => setPreviewText(buffer?.text ?? ""), 180);
-    return () => clearTimeout(timer);
-  }, [buffer?.text]);
+    let live = true;
+    const abort = new AbortController();
+    const timer = setTimeout(() => {
+      const text = buffer?.text ?? "";
+      if (buffer?.document.kind !== "html") {
+        setPreviewText(text);
+        return;
+      }
+      void inlinePreviewStyles(text, buffer.document.path, async (assetPath) => {
+        const result = await api.readFile(session.id, assetPath, abort.signal);
+        return result.ok ? result.file.text : null;
+      }, abort.signal).then((next) => {
+        if (live) setPreviewText(next);
+      });
+    }, 180);
+    return () => {
+      live = false;
+      abort.abort();
+      clearTimeout(timer);
+    };
+  }, [buffer?.document.kind, buffer?.document.path, buffer?.text, session.id]);
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return q ? files.filter((file) => file.path.toLowerCase().includes(q)) : files;
@@ -117,8 +220,8 @@ export function FileWorkspace({
           {buffer && <span className="file-size">{formatBytes(buffer.document.size)}</span>}
           {buffer && <SaveStatus buffer={buffer} />}
           <span className="file-toolbar-spacer" />
-          {buffer?.document.kind === "html" && (
-            <div className="file-mode" role="group" aria-label="HTML view mode">
+          {previewable && (
+            <div className="file-mode" role="group" aria-label="File view mode">
               <button className={mode === "preview" ? "on" : ""} onClick={() => controller.setMode(session.id, "preview")}>Preview</button>
               <button className={mode === "editor" ? "on" : ""} disabled={!buffer.document.editable} onClick={() => controller.setMode(session.id, "editor")}>Editor</button>
             </div>
@@ -130,12 +233,18 @@ export function FileWorkspace({
 
         <div className="file-content">
           {!selectedPath && <p className="file-empty">Choose a file from the checkout.</p>}
-          {selectedPath && !buffer && <p className="file-empty">Loading {selectedPath}…</p>}
+          {selectedPath && state?.openError && <p className="file-error">{state.openError}</p>}
+          {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (
             <iframe className="html-preview" title={`Preview of ${buffer.document.path}`} sandbox="" srcDoc={htmlPreviewSource(previewText)} />
           )}
-          {buffer?.document.text != null && (buffer.document.kind !== "html" || mode === "editor") && !comparing && (
+          {buffer?.document.text != null && buffer.document.kind === "markdown" && mode === "preview" && (
+            <article className="file-markdown-preview markdown">
+              <Markdown>{previewText}</Markdown>
+            </article>
+          )}
+          {buffer?.document.text != null && (!previewable || mode === "editor") && !comparing && (
             <FileEditor
               path={buffer.document.path}
               value={buffer.text}

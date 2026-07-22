@@ -38,6 +38,10 @@ function isHtml(filePath: string): boolean {
   return /\.html?$/i.test(filePath);
 }
 
+function isMarkdown(filePath: string): boolean {
+  return /\.(?:md|markdown|mdown)$/i.test(filePath);
+}
+
 export async function readFileWithinCap(
   handle: Pick<FileHandle, "read">,
   cap: number,
@@ -133,7 +137,9 @@ export async function listSessionFiles(cwd: string): Promise<SessionFileEntry[]>
 export async function readSessionFile(cwd: string, relativePath: string): Promise<SessionFileDocument> {
   const { target } = await rootAndTarget(cwd, relativePath);
   const html = isHtml(relativePath);
-  const cap = html ? MAX_SESSION_PREVIEW_BYTES : MAX_SESSION_EDITOR_BYTES;
+  const markdown = isMarkdown(relativePath);
+  const previewable = html || markdown;
+  const cap = previewable ? MAX_SESSION_PREVIEW_BYTES : MAX_SESSION_EDITOR_BYTES;
   const handle = await open(target, constants.O_RDONLY);
   let info: Stats;
   let bounded: Awaited<ReturnType<typeof readFileWithinCap>> | undefined;
@@ -154,7 +160,7 @@ export async function readSessionFile(cwd: string, relativePath: string): Promis
       mtime: info.mtimeMs,
       language: languageFor(relativePath),
       revision: "",
-      error: `File exceeds the ${Math.round(cap / 1024 / 1024)} MiB ${html ? "preview" : "editor"} limit`,
+      error: `File exceeds the ${Math.round(cap / 1024 / 1024)} MiB ${previewable ? "preview" : "editor"} limit`,
     };
   }
   const bytes = bounded!.bytes;
@@ -179,7 +185,7 @@ export async function readSessionFile(cwd: string, relativePath: string): Promis
   const editable = bytes.length <= MAX_SESSION_EDITOR_BYTES;
   return {
     path: relativePath,
-    kind: html ? "html" : "text",
+    kind: html ? "html" : markdown ? "markdown" : "text",
     editable,
     text,
     size: bytes.length,

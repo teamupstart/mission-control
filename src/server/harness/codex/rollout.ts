@@ -118,7 +118,10 @@ export function rolloutBelongsToSession(path: string, session: Session): boolean
   if (!meta || meta.subagent) return false;
   if (session.cwd && meta.cwd !== session.cwd) return false;
   if (session.agentSessionId) return meta.sessionId === session.agentSessionId;
-  return meta.cwd !== null;
+  // A retained rollout path cannot establish the identity it is supposed to prove.
+  // Without an agent session id, accept it only when this live session has a cwd that
+  // matches the rollout's own recorded cwd; two absent identities prove nothing.
+  return session.cwd !== null && meta.cwd === session.cwd;
 }
 
 /**

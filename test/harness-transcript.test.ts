@@ -246,3 +246,23 @@ test("a Codex clear cannot reuse the prior rollout cache binding", () => {
   assert.equal(codexTranscript.locate(rebound), null);
   assert.equal(codexTranscript.locate({ ...rebound, transcriptPath: null }), newRollout);
 });
+
+test("an unidentified Codex session cannot reuse a retained rollout path", () => {
+  const day = join(home, "codex", "sessions", "2026", "07", "14");
+  mkdirSync(day, { recursive: true });
+  const rollout = join(day, "rollout-2026-07-14T10-00-00-unknown.jsonl");
+  writeFileSync(rollout, `${JSON.stringify({
+    timestamp: "2026-07-14T10:00:00.000Z",
+    type: "session_meta",
+    payload: { id: "other-session", timestamp: "2026-07-14T10:00:00.000Z", cwd: "/repo/other" },
+  })}\n`);
+
+  const unidentified = session({
+    id: "cx-unidentified",
+    agent: "codex",
+    cwd: null,
+    agentSessionId: null,
+    transcriptPath: rollout,
+  });
+  assert.equal(codexTranscript.locate(unidentified), null);
+});

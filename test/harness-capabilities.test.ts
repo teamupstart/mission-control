@@ -124,15 +124,15 @@ test("each shipped harness declares its launch-time effort syntax", () => {
 
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {
   // A guard nothing exercises rots. Codex used to be the live proof for all five; it now
-  // declares `skills`, `clearContext` and `mcp`, so those three moved to `withCapabilityNull`
-  // fixtures rather than being dropped - the paths are what a harness filling in less than
-  // these two would land on, and they are still reachable code.
+  // declares `skills`, `workQueue`, `clearContext` and `mcp`, so those four moved to
+  // `withCapabilityNull` fixtures rather than being dropped - the paths are what a harness
+  // filling in less than these two would land on, and they are still reachable code.
   //
   // The point of naming them HERE is that the two lists cannot drift apart silently. A
   // capability that gains a null declarer must leave `BY_FIXTURE`, and one that loses its
   // last declarer must join it - either way this fails first, rather than a loop over an
   // empty `hasnt` quietly asserting nothing.
-  const BY_FIXTURE: readonly SplitCap[] = ["skills", "clearContext", "mcp"];
+  const BY_FIXTURE: readonly SplitCap[] = ["skills", "workQueue", "clearContext", "mcp"];
   for (const cap of ["permissionModes", "skills", "workQueue", "clearContext", "mcp"] as const) {
     const declared = split(cap).hasnt.length > 0;
     if (BY_FIXTURE.includes(cap)) {
@@ -261,6 +261,32 @@ test("a harness that can't hold a queue is never selected for a tick, or asked t
     assert.equal(verdict.kind, "skip");
     assert.match(verdict.why ?? "", new RegExp(AGENT_IDENTITY[agent].label));
   }
+});
+
+test("the work-queue null path still refuses selection and explains why", async () => {
+  await withCapabilityNull("codex", "workQueue", () => {
+    const session = mkSession({
+      id: "q-codex-null",
+      agent: "codex",
+      state: "idle",
+      hooksSeen: true,
+      instrumented: true,
+      pendingReviews: 1,
+    });
+    assert.deepEqual(tickTargets([session], ["drain", "prompted"]), []);
+    assert.match(workQueueUnsupportedWhy("codex") ?? "", /Codex/);
+
+    const verdict = decidePromptedWrapup({
+      session,
+      bucket: "idle",
+      queue: null,
+      goalPrompt: "ship the thing",
+      cfg: { triggers: ["prompted"] } as never,
+      now: 0,
+    } as never);
+    assert.equal(verdict.kind, "skip");
+    assert.match(verdict.why ?? "", /Codex/);
+  });
 });
 
 test("the panel's refusal and the daemon's are the same sentence, composed once", () => {

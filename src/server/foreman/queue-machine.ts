@@ -9,6 +9,7 @@ import type {
 import { reportBucket } from "@shared/session.ts";
 import { capabilitiesFor } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
+import { foremanAutomationAuthorized } from "../harness/index.ts";
 import type { ReportBucket } from "@shared/session.ts";
 import {
   autoWrapupPayload,
@@ -209,12 +210,11 @@ export function tickTargets(
    */
   triggers: readonly WrapupTrigger[],
 ): Session[] {
-  // Both halves gate on the `workQueue` capability rather than on an agent id: a harness
-  // with none reports no hooks and has no readable turns, so the machine could neither
-  // tell when it picked an item up nor check that it finished one. Selecting it would be
-  // a branch that can never advance.
+  // Both halves gate on the `workQueue` capability rather than on an agent id. Needs-you
+  // additionally requires the authorization promised by that harness's hook scope;
+  // queued work still reaches step 3 so an old hookless batch can be escalated.
   const needsYou = sessions
-    .filter((s) => capabilitiesFor(s.agent).workQueue && reportBucket(s, sessions) === "needs-you")
+    .filter((s) => foremanAutomationAuthorized(s) && reportBucket(s, sessions) === "needs-you")
     .sort((a, b) => waitedSince(a) - waitedSince(b));
   const seen = new Set(needsYou.map((s) => s.id));
   const rest = sessions.filter(
@@ -331,7 +331,7 @@ export function decideQueueTick(input: QueueTickInput): QueueAction {
   //    episode. This sits above the in-flight branch on purpose: an item in
   //    `in_progress` whose agent is asking something must not be "verified" as
   //    though the silence meant completion.
-  if (bucket === "needs-you") return { kind: "triage" };
+  if (bucket === "needs-you" && foremanAutomationAuthorized(session)) return { kind: "triage" };
 
   // 3. No hooks means no pickup signal and no completion signal - the queue has
   //    nothing to gate on, so it can never advance. Say so rather than stalling.

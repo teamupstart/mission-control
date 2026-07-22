@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session, SessionQueue, WorkItem } from "@shared/types.ts";
 import { composeWrapup, wrapupAskCopy } from "@shared/queue.ts";
-import { capabilitiesFor, workQueueUnsupportedWhy } from "@shared/harness-capabilities.ts";
+import { workQueueBlockedReason } from "@shared/harness-capabilities.ts";
 import { withAttachments } from "@shared/attachments.ts";
 import { isTerminal, isWaiting, itemLabel, moveTarget } from "../lib/queue.ts";
 import { allowlistSuggestion, foremanSendBlock } from "../lib/foreman.ts";
@@ -112,7 +112,7 @@ export function WorkQueue({
    * The queue can't work at all for some sessions, and offering it anyway would
    * just rack up escalations on arrival. Say why instead.
    */
-  const blocked = queueBlockedReason(session);
+  const blocked = workQueueBlockedReason(session);
 
   // The card's summary says there IS a queue but we couldn't read it. Say so, and
   // show nothing else - an add box under a wrong "0 to do" is the one response that
@@ -1004,28 +1004,4 @@ function ReattachHint({
       {err && <p className="wq-error">{err}</p>}
     </div>
   );
-}
-
-/**
- * Why this session can't hold a work queue, or null when it can. Letting someone
- * queue work that escalates on arrival is a worse answer than not offering it.
- *
- * Both reasons are PERMANENT incapacities, and that is the bar. `hooksSeen` rather
- * than `instrumented`: the latter is a 30-minute freshness window on the hook
- * overlay, so gating on it declared "install the Claude integrations" over a
- * perfectly instrumented session that had merely been quiet for half an hour - and
- * then hid its whole queue behind that sentence, leaving the items unreachable. A
- * session that has ever reported a hook has the integrations; whether it reported
- * one recently is not this question.
- */
-function queueBlockedReason(s: Session): string | null {
-  // The harness cannot hold a queue at all. The sentence is composed from the capability
-  // (`workQueueUnsupportedWhy`) rather than written out here, so the panel, the daemon's
-  // own refusal in `ensureQueue`, and the re-attach button all give the same answer.
-  const queue = capabilitiesFor(s.agent).workQueue;
-  if (!queue) return workQueueUnsupportedWhy(s.agent);
-  // It can, but THIS session isn't instrumented - fixable, so the sentence says how, in
-  // the harness's own words.
-  if (!s.hooksSeen) return queue.uninstrumentedWhy;
-  return null;
 }

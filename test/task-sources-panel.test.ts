@@ -94,29 +94,33 @@ test("an answered, empty config says nothing is being swept", () => {
   assert.doesNotMatch(html, /ts-unknown/);
 });
 
-test("a configured source renders with its switch OFF until it is turned on", () => {
+test("a configured source is a compact overview row with its health", () => {
   const html = render(viewOf([mkSource()]));
   assert.match(html, /widgets bugs/);
-  const toggle = (html.match(/<input[^>]*type="checkbox"[^>]*>/g) ?? [])[0];
-  assert.ok(toggle, "the source has an enable switch");
-  assert.doesNotMatch(toggle, /checked/);
+  assert.match(html, /GitHub issues/);
+  assert.match(html, /Paused/);
+  assert.match(html, /Configured task sources/);
+  assert.match(html, /role="listitem"><button class="ts-directory-row"/);
+  assert.doesNotMatch(html, /<button[^>]*role="listitem"/);
 });
 
 // "Never swept" and "swept, found nothing" are the two states most easily confused, and
 // the confusion is expensive: the first can mean broken since setup.
-test("a never-swept source says so, rather than reporting a clean empty sweep", () => {
+test("the overview keeps a never-swept enabled source out of the healthy count", () => {
   const html = render(
-    viewOf([mkSource()], [
+    viewOf([mkSource({ enabled: true })], [
       { sourceId: "src-1", lastSweepAt: null, lastError: null, lastFiled: 0, seenCount: 0, sweeping: false },
     ]),
   );
-  assert.match(html, /Never swept yet/);
-  assert.doesNotMatch(html, /filed nothing new/);
+  assert.match(html, />0<\/strong><span>running normally/);
+  assert.match(html, />1<\/strong><span>awaiting first sweep/);
+  assert.match(html, /Never swept/);
+  assert.match(html, /Pending 1/);
 });
 
-test("a sweep that found nothing says that instead", () => {
+test("a sweep that found nothing remains healthy in the overview", () => {
   const html = render(
-    viewOf([mkSource()], [
+    viewOf([mkSource({ enabled: true })], [
       {
         sourceId: "src-1",
         lastSweepAt: Date.now() - 120_000,
@@ -127,14 +131,13 @@ test("a sweep that found nothing says that instead", () => {
       },
     ]),
   );
-  assert.match(html, /filed nothing new/);
-  assert.match(html, /4 item\(s\) already filed/);
-  assert.doesNotMatch(html, /Never swept yet/);
+  assert.match(html, /Healthy/);
+  assert.match(html, /Healthy 1/);
 });
 
 // A failing source has to be legible as failing. Without this it reads as a source that
 // keeps finding nothing, which is what a healthy quiet one looks like.
-test("a failed sweep is shown as a failure, not as a quiet one", () => {
+test("a failed sweep is shown in the attention summary and row", () => {
   const html = render(
     viewOf([mkSource({ enabled: true })], [
       {
@@ -147,52 +150,20 @@ test("a failed sweep is shown as a failure, not as a quiet one", () => {
       },
     ]),
   );
-  assert.match(html, /ts-status-failed/);
-  assert.match(html, /gh is not authenticated/);
+  assert.match(html, /need attention/);
+  assert.match(html, /Attention:.*1 source had a failed sweep/);
+  assert.match(html, /Failed/);
 });
 
-// The pair that selects nothing is refused by the schema, so the panel must not offer a
-// shape that can express it - hence one radio group rather than two checkboxes.
-test("the assignee filter is a single choice, so the empty-selection pair is unreachable", () => {
-  const html = render(viewOf([mkSource()]));
-  const radios = (html.match(/<input[^>]*type="radio"[^>]*name="ts-assignee"[^>]*>/g) ?? []);
-  assert.equal(radios.length, 3, "anyone / assigned to me / unassigned");
-  assert.equal(radios.filter((r) => r.includes("checked")).length, 1);
-});
-
-// "Forget seen items" is the only thing that undoes a delete, and offering it on a source
-// that has filed nothing would promise an effect it cannot have.
-test("Forget seen items is offered, and disabled while there is nothing to forget", () => {
-  const empty = render(
-    viewOf([mkSource()], [
-      { sourceId: "src-1", lastSweepAt: null, lastError: null, lastFiled: 0, seenCount: 0, sweeping: false },
-    ]),
-  );
-  assert.match(empty, /Forget seen items/);
-  assert.match(empty, /<button[^>]*disabled[^>]*>Forget seen items<\/button>/);
-
-  const filed = render(
-    viewOf([mkSource()], [
-      { sourceId: "src-1", lastSweepAt: 1, lastError: null, lastFiled: 2, seenCount: 2, sweeping: false },
-    ]),
-  );
-  assert.match(filed, /<button[^>]*>Forget seen items<\/button>/);
-});
-
-// A sweep already in flight must not be startable a second time: two concurrent sweeps
-// read the seen set separately and would file the same item twice.
-test("Sweep now is disabled while a sweep is running", () => {
-  const html = render(
-    viewOf([mkSource({ enabled: true })], [
-      { sourceId: "src-1", lastSweepAt: 1, lastError: null, lastFiled: 0, seenCount: 0, sweeping: true },
-    ]),
-  );
-  assert.match(html, /Sweeping now…/);
-  assert.match(html, /<button[^>]*disabled[^>]*>Sweep now<\/button>/);
-});
-
-test("the add control offers every kind this build registers", () => {
+test("the overview exposes filtering and an add-source entry point", () => {
   const html = render(viewOf([]));
-  for (const k of KINDS) assert.ok(html.includes(k.label), `add control missing ${k.label}`);
-  assert.match(html, /Add a source/);
+  assert.match(html, /\+ Add source/);
+  assert.match(html, /No sources yet - nothing is being swept/);
+});
+
+test("health filters expose their pressed state", () => {
+  const html = render(viewOf([mkSource()]));
+  assert.match(html, /class="is-active" aria-pressed="true">All 1<\/button>/);
+  assert.match(html, /aria-pressed="false">Healthy 0<\/button>/);
+  assert.match(html, /aria-pressed="false">Paused 1<\/button>/);
 });

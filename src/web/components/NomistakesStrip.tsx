@@ -134,7 +134,7 @@ export function NomistakesStrip({
         </ul>
       )}
 
-      {nm.gateStep && needsYou && <GateActions sessionId={sessionId} findings={nm.findings} />}
+      {nm.gateStep && needsYou && <GateActions sessionId={sessionId} nm={nm} />}
     </div>
   );
 }
@@ -204,18 +204,51 @@ function FindingRow({ f }: { f: NmFinding }): React.JSX.Element {
 
 type Mode = "idle" | "confirm-approve" | "confirm-skip" | "fix";
 
+/**
+ * Identity of the selection form, including the response attempt that advances a
+ * same-step gate into its next round. Finding ids alone are not a round identity:
+ * a re-review can legitimately return the same ids, and that new form must start
+ * with every current finding selected rather than inherit the prior subset.
+ */
+export function gateSelectionKey(nm: NmRunSummary): string {
+  const findingIds = nm.findings.map((f) => f.id).join(",");
+  const response = nm.response ? `${nm.response.responseId}:${nm.response.status}` : "none";
+  return `${nm.id}:${nm.gateStep ?? ""}:${findingIds}:${response}`;
+}
+
 function GateActions({
   sessionId,
-  findings,
+  nm,
 }: {
   sessionId: string;
-  findings: NmFinding[];
+  nm: NmRunSummary;
 }): React.JSX.Element {
+  const findings = nm.findings;
+  const findingKey = gateSelectionKey(nm);
   const [mode, setMode] = useState<Mode>("idle");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [instructions, setInstructions] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set(findings.map((f) => f.id)));
+  const [accepted, setAccepted] = useState<{
+    action: "approve" | "fix" | "skip";
+    findingIds: string[];
+    findingKey: string;
+  } | null>(null);
+
+  // One review step can park repeatedly. A successful fix advances to a new set of
+  // findings while the terminal still shows the prose from the prior round, so reset
+  // the form from the finding identity rather than carrying its old checkboxes forward.
+  useEffect(() => {
+    setMode("idle");
+    setErr(null);
+    setInstructions("");
+    setSelected(new Set(findings.map((f) => f.id)));
+    setAccepted(null);
+    // `findings` and the response attempt are represented by findingKey; depending
+    // on either object would reset on every SSE snapshot even when the round did not move.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findingKey]);
 
   async function send(action: "approve" | "fix" | "skip"): Promise<void> {
     setBusy(true);
@@ -227,7 +260,7 @@ function GateActions({
     const r = await api.nomistakesRespond(sessionId, action, opts);
     setBusy(false);
     if (r.ok) {
-      setMode("idle");
+      setAccepted({ action, findingIds: action === "fix" ? [...selected] : [], findingKey });
       setInstructions("");
     } else {
       setErr(r.error ?? "failed");
@@ -243,9 +276,38 @@ function GateActions({
     });
   }
 
+  const submitting = nm.response?.status === "submitting" ? nm.response : null;
+  const locallyAccepted = !nm.response && accepted?.findingKey === findingKey ? accepted : null;
+  if (submitting || locallyAccepted) {
+    const action = submitting?.action ?? locallyAccepted!.action;
+    const ids = submitting?.findingIds ?? locallyAccepted!.findingIds;
+    return (
+      <div className="nm-submit-state" role="status">
+        <strong>{action === "fix" ? "Fix submitted" : `${action} submitted`}</strong>
+        {ids.length > 0 && <span className="mono"> {ids.join(", ")}</span>}
+        <span> · waiting for no-mistakes to reach the next gate or finish.</span>
+        <span className="dim"> The terminal can still show the earlier question while this runs.</span>
+      </div>
+    );
+  }
+
+  const prior = nm.response?.status === "submitted" ? nm.response : null;
+  const priorStep = prior?.step;
+  const sameStep = priorStep && priorStep === nm.gateStep;
+  const roundNote = prior ? (
+    <div className="nm-round-note">
+      <strong>Previous {prior.action === "fix" ? "fix" : prior.action} submitted:</strong>{" "}
+      {prior.findingIds.length > 0 && <span className="mono">{prior.findingIds.join(", ")}. </span>}
+      {sameStep
+        ? `The findings above are a newer ${priorStep} round and may not match the terminal's earlier question.`
+        : "The findings above are from a later pipeline step and may not match the terminal's earlier question."}
+    </div>
+  ) : null;
+
   if (mode === "fix") {
     return (
       <div className="nm-fix">
+        {roundNote}
         {findings.length > 1 && (
           <div className="nm-fixsel">
             {findings.map((f) => (
@@ -275,6 +337,9 @@ function GateActions({
           </button>
         </div>
         {err && <span className="nm-err">{err}</span>}
+        {nm.response?.status === "failed" && (
+          <span className="nm-err">{nm.response.error ?? "submission failed"}</span>
+        )}
       </div>
     );
   }
@@ -282,35 +347,46 @@ function GateActions({
   if (mode === "confirm-approve" || mode === "confirm-skip") {
     const action = mode === "confirm-approve" ? "approve" : "skip";
     return (
-      <div className="nm-actrow">
-        <span className="nm-warn">
-          {action === "approve"
-            ? "Advance the pipeline (may push & open a PR)?"
-            : "Skip this check?"}
-        </span>
-        <button className="btn btn-approve" disabled={busy} onClick={() => void send(action)}>
-          Confirm {action}
-        </button>
-        <button className="btn btn-ghost" onClick={() => setMode("idle")}>
-          Cancel
-        </button>
-        {err && <span className="nm-err">{err}</span>}
+      <div>
+        {roundNote}
+        <div className="nm-actrow">
+          <span className="nm-warn">
+            {action === "approve"
+              ? "Advance the pipeline (may push & open a PR)?"
+              : "Skip this check?"}
+          </span>
+          <button className="btn btn-approve" disabled={busy} onClick={() => void send(action)}>
+            Confirm {action}
+          </button>
+          <button className="btn btn-ghost" onClick={() => setMode("idle")}>
+            Cancel
+          </button>
+          {err && <span className="nm-err">{err}</span>}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="nm-actrow">
-      <button className="btn btn-approve" onClick={() => setMode("confirm-approve")}>
-        Approve
-      </button>
-      <button className="btn btn-send" onClick={() => setMode("fix")}>
-        Fix
-      </button>
-      <button className="btn" onClick={() => setMode("confirm-skip")}>
-        Skip
-      </button>
-      {err && <span className="nm-err">{err}</span>}
+    <div>
+      {roundNote}
+      {nm.response?.status === "failed" && (
+        <div className="nm-err">
+          The last response was not delivered: {nm.response.error ?? "submission failed"}
+        </div>
+      )}
+      <div className="nm-actrow">
+        <button className="btn btn-approve" onClick={() => setMode("confirm-approve")}>
+          Approve
+        </button>
+        <button className="btn btn-send" onClick={() => setMode("fix")}>
+          Fix
+        </button>
+        <button className="btn" onClick={() => setMode("confirm-skip")}>
+          Skip
+        </button>
+        {err && <span className="nm-err">{err}</span>}
+      </div>
     </div>
   );
 }

@@ -33,6 +33,13 @@ function tmp(prefix: string): string {
 
 process.env.MISSION_HOME = tmp("mission-byline-http-");
 process.env.NM_HOME = tmp("nm-byline-http-");
+const fakeAxi = join(tmp("nm-byline-http-bin-"), "no-mistakes");
+writeFileSync(
+  fakeAxi,
+  '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "no-mistakes 0.0-fake"; fi\nexit 0\n',
+  { mode: 0o755 },
+);
+process.env.NOMISTAKES_BIN = fakeAxi;
 
 const { openDb } = await import("../src/server/db.ts");
 const { ensureToken } = await import("../src/server/auth.ts");
@@ -42,9 +49,9 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { QueueManager } = await import("../src/server/queue.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { forgetFixLog } = await import("../src/server/nomistakes-fixes.ts");
-const { pollFixLogs } = await import("../src/server/nomistakes.ts");
+const { pollFixLogs, isResponding, responseForRun } = await import("../src/server/nomistakes.ts");
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
-import type { NmFixDetail } from "../src/shared/types.ts";
+import type { NmFixDetail, NmRunSummary } from "../src/shared/types.ts";
 
 openDb();
 const TOKEN = ensureToken();
@@ -141,6 +148,34 @@ function mkApp(): { app: ReturnType<typeof buildApp>; registry: InstanceType<typ
   return { app, registry };
 }
 
+function parkedRun(over: Partial<NmRunSummary> = {}): NmRunSummary {
+  return {
+    id: "run-http-response",
+    status: "running",
+    branch: "main",
+    startedAt: null,
+    endedAt: null,
+    prUrl: null,
+    awaitingAgent: "parked 1s",
+    findingsSummary: "1 awaiting",
+    gateStep: "review",
+    gateSummary: null,
+    gateRisk: null,
+    steps: [],
+    activeSteps: [],
+    findings: [],
+    outcome: null,
+    ...over,
+  };
+}
+
+async function waitForRespond(cwd: string): Promise<void> {
+  for (let i = 0; i < 500 && isResponding(cwd); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(isResponding(cwd), false, "the respond never settled");
+}
+
 /**
  * Both halves the dashboard actually reads, for the one fix on a checkout: the
  * card-weight summary (which rides the session snapshot, filled by `pollFixLogs`)
@@ -230,6 +265,22 @@ test("a gate-reply for an unknown session is refused, not recorded", async () =>
     body: JSON.stringify({ runId: "run-http-3", step: "review", findingIds: [], text: "x" }),
   });
   assert.equal(res.status, 404);
+});
+
+test("a dashboard response inherits the current gate step", async () => {
+  const repo = mkRepo("run-http-response");
+  const { app, registry } = mkApp();
+  registry.applyDiscovery([disco({ syntheticId: "sess-response", cwd: repo, pid: 14 })]);
+  registry.reconcileNomistakes([parkedRun()]);
+
+  const post = await app.request("/api/sessions/sess-response/nomistakes/respond", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({ action: "approve" }),
+  });
+  assert.equal(post.status, 200);
+  assert.equal(responseForRun("run-http-response")?.step, "review");
+  await waitForRespond(repo);
 });
 
 /**

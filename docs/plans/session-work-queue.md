@@ -718,10 +718,11 @@ Each of these is a sentence of behavior that is otherwise left to whoever writes
   anchor now exceeds the reset transcript's length, which is detected (§3.3) and escalates rather
   than verifying against a near-empty window. Both paths lead to "tell the human", never to a
   phantom gap.
-- **The UI refuses to queue where the queue cannot work.** The add box is disabled for a non-claude
-  session (no transcript endpoint - a codex item would rack up `verifyFailures` and escalate) and
-  for an uninstrumented one (no pickup or completion signal at all), with the reason shown. Letting
-  someone queue work that escalates on arrival is a worse answer than not offering it.
+- **The UI refuses to queue where the queue cannot work.** The add box is disabled when the
+  harness has no work-queue capability or the session has never reported a hook, with the reason
+  shown. Claude and Codex both have readable transcripts and harness-neutral delivery now, but
+  Codex hooks are launch-scoped, so only Mission Control-launched Codex sessions accept queues.
+  Letting someone queue work that escalates on arrival is a worse answer than not offering it.
 - **Triage can wait behind a verify in v1, and that is accepted.** The loop is serial, so an in-
   flight verify (up to 2x120s) delays an urgent needs-you prompt by that much even though targets
   order needs-you first. This is a change in *frequency*, not in kind - a triage review already
@@ -889,10 +890,12 @@ makes them worth having.
 need a live agent, which the project guardrail puts off-limits for an automated check. Steps 6-12 of
 the manual list below remain worth a human pass with a scratch tmux session before trusting live mode.
 
+Current harness support and its launch-scoped safety boundary are documented in
+[Work queues](../../README.md#work-queues-load-a-session-up-and-walk-away).
+
 ## Out of scope (future)
 
 - Running tests/lint during verification (evidence-only by decision; no-mistakes is the gate).
-- Codex queues - Foreman is Claude-only today (no transcript endpoint).
 - Queueing via MCP so one agent can queue work for another; v1 is dashboard-authored.
 - Auto-rebinding an orphaned queue (re-attach stays manual, by design).
 - Auto-launching the wrap-up actions. Foreman always asks.

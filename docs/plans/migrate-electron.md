@@ -318,11 +318,12 @@ external (automatic for `node:` builtins under `--platform=node`).
   "dev:desktop": "concurrently -n server,web,shell -c blue,magenta,green \
      \"npm:dev:server\" \"npm:dev:web\" \"npm:dev:electron\""
   ```
-- In **dev**, the daemon supervisor detects the `tsx watch` daemon via `/api/health` and
-  **adopts** it (never spawns), so the fast server loop is preserved. The window loads Vite
-  → **full React HMR / Fast Refresh inside the Electron window**, identical to the browser.
-  Main/preload edits trigger a ~1-2s electronmon restart. The plain browser workflow
-  (`npm run dev` + open `:5173`) still works untouched.
+- In **dev**, `dev:server` exclusively owns the daemon and its `tsx watch` restart loop.
+  `MISSION_DEV_SERVER_URL` marks the Electron shell as development-only, so shell restarts
+  never adopt, spawn, supervise, or stop the daemon. The window loads Vite → **full React
+  HMR / Fast Refresh inside the Electron window**, identical to the browser. Main/preload
+  edits trigger a ~1-2s electronmon restart. The plain browser workflow (`npm run dev` +
+  open `:5173`) still works untouched.
 - DevTools (`Cmd+Opt+I`) available; document a VS Code `--inspect` attach config for main.
 - **Acceptance:** editing a `.tsx` hot-updates the Electron window with state preserved;
   editing `src/main/*` restarts only the shell; `npm run dev` (browser-only) is unchanged.

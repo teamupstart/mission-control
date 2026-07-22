@@ -174,6 +174,10 @@
 <header class="hero">
   <p class="eyebrow">docs/plans/codex</p>
   <h1>Integrating Codex properly</h1>
+  <blockquote><p>Historical implementation analysis. Current user-facing behavior is documented in
+    <a href="../../../README.md#foreman-auto-responder">Foreman</a> and
+    <a href="../../../README.md#work-queues-load-a-session-up-and-walk-away">Work queues</a>; capability
+    ownership lives in <code>HARNESS_CAPABILITIES</code> and <code>HARNESSES</code>.</p></blockquote>
   <p class="standfirst">
     Codex is a registered harness with a card, a dispatch path and a model picker. Everything
     past that is declared absent. This plan is about the fact that <strong>most of those
@@ -776,7 +780,8 @@ session_meta   turn_context   world_state</code></pre>
 
 <div class="phase">
   <h3><span class="tag">Phase 8</span> The consequential unlocks</h3>
-  <p>Only reachable once the phases above land. Each is a <code>null</code> &rarr; value flip plus the surfaces that were gated on it.</p>
+  <p><strong>Status: shipped within the launch-scoped hook boundary.</strong> This section records the
+  implementation plan that led there; the current contracts are linked at the top of this document.</p>
   <ul>
     <li><strong><code>workQueue</code></strong> &mdash; its null is justified as "no hooks AND no readable transcript" (<code>harness-capabilities.ts:98-107</code>). Both halves fall. Note: after Phase 3 alone the sentence at <code>:237</code> becomes half-true and should be narrowed to the hook half rather than left standing.</li>
     <li><strong>Foreman</strong> &mdash; <code>tickTargets</code> starts selecting Codex, which makes <code>promptHarness</code>'s Codex branch, the Codex-glyph menu parse and <code>classifyPending</code>'s <code>terminal-pane</code> branch reachable for the first time. All three are already written and already tested; nothing new is needed beyond the capability flip.</li>
@@ -818,7 +823,7 @@ session_meta   turn_context   world_state</code></pre>
   <li><strong><code>costUsd</code> for Codex.</strong> Report tokens and rate limits but leave dollars null (recommended), or price <code>gpt-5*</code> from a table and accept a different error bar beside Claude's figure?</li>
   <li><strong><code>McpSpec.scope</code>.</strong> Make it nullable for harnesses without a scope concept, or give Codex a synthetic one?</li>
   <li><strong>Phase 2 vs Phase 4 shipping order.</strong> Phase 2 is free and unblocks <code>settledIdle</code>; Phase 4 is authoritative but needs consent. Ship Phase 2 alone first (recommended), or hold both until the hook lands so the state semantics change once?</li>
-  <li><strong>What Phase 8 turns on by default.</strong> Foreman auto-responding to Codex sessions is a behaviour change for existing installs, not just a new capability.</li>
+  <li><strong>What Phase 8 turns on by default.</strong> Resolved: Foreman can auto-respond only after a Mission Control-launched Codex session reports a hook. Operator-started sessions remain human-operated.</li>
 </ol>
 
 <h2>Done means</h2>

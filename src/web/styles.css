@@ -1196,6 +1196,30 @@ body {
   color: var(--exited);
   width: 100%;
 }
+.nm-submit-state {
+  padding-top: 2px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.nm-submit-state strong {
+  color: var(--working);
+}
+.nm-submit-state .mono {
+  color: var(--fg);
+}
+.nm-round-note {
+  padding: 3px 0 5px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.nm-round-note strong {
+  color: var(--working);
+}
+.nm-round-note .mono {
+  color: var(--fg);
+}
 .nm-fix {
   display: flex;
   flex-direction: column;
@@ -5131,6 +5155,138 @@ kbd {
 .ts-empty,
 .ts-unknown {
   margin-top: 12px;
+}
+.ts-count {
+  color: var(--dim);
+  font-weight: 400;
+}
+.ts-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+.ts-metric {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.ts-metric strong {
+  display: block;
+  font-size: 17px;
+  line-height: 1;
+}
+.ts-metric span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.ts-good { color: var(--idle); }
+.ts-attention { color: var(--attention); }
+.ts-attention-callout {
+  margin: 0 0 10px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--attention);
+  border-radius: 0 7px 7px 0;
+  background: color-mix(in oklab, var(--attention) 10%, var(--panel-2));
+  color: color-mix(in oklab, var(--attention) 66%, var(--fg));
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.ts-directory-tools {
+  display: flex;
+  gap: 8px;
+}
+.ts-directory-tools .field-input { flex: 1; min-width: 0; }
+.ts-directory-tools .harnesses-select { max-width: 130px; }
+.ts-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 10px 0;
+}
+.ts-filters button {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ts-filters button.is-active {
+  border-color: color-mix(in oklab, var(--working) 50%, var(--border));
+  background: color-mix(in oklab, var(--working) 13%, transparent);
+  color: var(--fg);
+}
+.ts-directory {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.ts-directory-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.ts-directory-item:last-child .ts-directory-row { border-bottom: 0; }
+.ts-directory-row:hover { background: color-mix(in oklab, var(--working) 6%, var(--panel)); }
+.ts-directory-main { min-width: 0; flex: 1; }
+.ts-directory-main strong,
+.ts-directory-main span { display: block; }
+.ts-directory-main strong { font-size: 12px; font-weight: 620; }
+.ts-directory-main span {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--dim);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ts-health {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.ts-health i { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); }
+.ts-health-attention { color: var(--attention); }
+.ts-health-attention i { background: var(--attention); }
+.ts-health-pending { color: var(--muted); }
+.ts-health-pending i { background: var(--muted); }
+.ts-health-paused { color: var(--dim); }
+.ts-health-paused i { background: var(--dim); }
+.ts-directory-chevron { color: var(--dim); font-size: 16px; }
+.ts-directory-empty { margin: 0; padding: 14px; color: var(--dim); font-size: 11.5px; }
+.ts-back {
+  margin: 0 0 11px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--working);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ts-add-panel { margin-top: 0; }
+.ts-empty-add { margin-top: 10px; }
+@media (max-width: 460px) {
+  .ts-overview { grid-template-columns: 1fr; }
+  .ts-directory-tools { flex-direction: column; }
+  .ts-directory-tools .harnesses-select { max-width: none; }
 }
 
 /* ---- Cost (telemetry + what the fleet spends) ----

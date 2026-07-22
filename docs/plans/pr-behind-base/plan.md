@@ -192,11 +192,12 @@ guard (`queueSendStillValid`, `src/server/foreman/queue-apply.ts:186`). Cheapest
 because the last one costs a subprocess and everything above it exists to avoid running it.
 
 1. **`hasPane(s)`** and `s.state !== "exited"`. Nowhere to type, ever.
-2. **`s.hooksSeen`**. No hooks have ever arrived, so nothing will ever report this session
-   idle and `settledIdle` can never be true. This **excludes Codex entirely**, which pushes
-   nothing at us. That is a real capability gap and it gets declared as one rather than
-   papered over: the card says why, and the sentence is composed from the capability, not
-   typed at the refusing surface.
+2. **`s.hooksSeen`**. No hooks have ever arrived, so nothing will report this session idle
+   and `settledIdle` can never be true. For Codex this deliberately excludes operator-started
+   sessions: only Mission Control launches attach the hooks that authorize automation. The
+   card says why, and the sentence is composed from the capability rather than typed at the
+   refusing surface. See [Foreman](../../../README.md#foreman-auto-responder) for the current
+   harness boundary.
 3. **`settledIdle(s, now, settleMs)`** (`src/server/foreman/queue-machine.ts:118`). Never
    type into a working agent.
 4. **No in-flight work-queue item** (`s.queue`). If the Foreman *is* running, this would
@@ -317,9 +318,9 @@ Presented via `request_plan_decisions` rather than settled here.
    conflict?
 3. **Settings home.** A new section inside the Shipping panel, its own top-level settings
    category, or fold the toggle into Harnesses?
-4. **Codex.** Accept that no hooks means no idle signal and declare the capability absent,
-   or find a passive readiness signal (`activePaneDialog` plus a transcript-derived state)
-   so Codex sessions can be prompted too?
+4. **Codex.** Resolved: Mission Control-launched sessions use launch-scoped hooks; passive
+   discovery alone never authorizes automation. See
+   [Foreman](../../../README.md#foreman-auto-responder).
 
 ---
 

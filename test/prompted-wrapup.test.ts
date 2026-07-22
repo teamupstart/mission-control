@@ -219,9 +219,9 @@ test("a session with no pane is skipped silently - there is nothing to escalate"
   assert.equal(decide({ session: mkSession({ terminals: [] }) }).kind, "skip");
 });
 
-test("an exited or non-Claude session is never a candidate", () => {
+test("an exited session is skipped while a supported Codex session is checked", () => {
   assert.equal(decide({ session: mkSession({ state: "exited" }) }).kind, "skip");
-  assert.equal(decide({ session: mkSession({ agent: "codex" }) }).kind, "skip");
+  assert.equal(decide({ session: mkSession({ agent: "codex" }) }).kind, "check");
 });
 
 test("no captured goal means nothing to verify the work AGAINST", () => {

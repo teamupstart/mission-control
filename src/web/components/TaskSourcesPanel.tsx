@@ -277,7 +277,7 @@ function GithubFields({
   );
 }
 
-/** One configured source, with everything about it on screen at once. */
+/** One configured source's editor. The overview chooses which source reaches this surface. */
 function SourceCard({
   src,
   kindLabel,
@@ -321,7 +321,7 @@ function SourceCard({
   }
 
   return (
-    <li className="ts-card">
+    <div className="ts-card ts-editor">
       <div className="ts-head">
         <label className="skill-switch">
           <input
@@ -544,7 +544,152 @@ function SourceCard({
           {busy === "forget" ? "Forgetting…" : "Forget seen items"}
         </button>
       </div>
-    </li>
+    </div>
+  );
+}
+
+type SourceFilter = "all" | "healthy" | "attention" | "pending" | "paused";
+type SourceHealth = Exclude<SourceFilter, "all">;
+
+function sourceHealth(src: TaskSourceInstance, status: TaskSourceStatus | undefined): SourceHealth {
+  if (status?.lastError) return "attention";
+  if (!src.enabled) return "paused";
+  if (!status || status.lastSweepAt === null) return "pending";
+  return "healthy";
+}
+
+interface SourceDirectoryFilters {
+  health: SourceFilter;
+  query: string;
+  kind: TaskSourceKind | "all";
+}
+
+function SourceDirectory({
+  sources,
+  kinds,
+  statuses,
+  filters,
+  onFiltersChange,
+  restoreFocusId,
+  onFocusRestored,
+  onSelect,
+  onAdd,
+}: {
+  sources: TaskSourceInstance[];
+  kinds: { kind: TaskSourceKind; label: string; blurb: string }[];
+  statuses: TaskSourceStatus[];
+  filters: SourceDirectoryFilters;
+  onFiltersChange: (filters: SourceDirectoryFilters) => void;
+  restoreFocusId: string | null;
+  onFocusRestored: () => void;
+  onSelect: (id: string) => void;
+  onAdd: () => void;
+}): React.JSX.Element {
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const byId = new Map(statuses.map((s) => [s.sourceId, s]));
+  const counts = sources.reduce(
+    (all, src) => {
+      const health = sourceHealth(src, byId.get(src.id));
+      all[health] += 1;
+      return all;
+    },
+    { healthy: 0, attention: 0, pending: 0, paused: 0 },
+  );
+  const needle = filters.query.trim().toLowerCase();
+  const visible = sources.filter((src) => {
+    const status = byId.get(src.id);
+    const label = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;
+    const matchesFilter = filters.health === "all" || sourceHealth(src, status) === filters.health;
+    const matchesKind = filters.kind === "all" || src.kind === filters.kind;
+    const haystack = `${nameOf(src, label)} ${label} ${src.repoRoot}`.toLowerCase();
+    return matchesFilter && matchesKind && (!needle || haystack.includes(needle));
+  });
+
+  useEffect(() => {
+    if (!restoreFocusId) return;
+    const row = rowRefs.current.get(restoreFocusId);
+    if (!row) return;
+    row.focus();
+    onFocusRestored();
+  }, [onFocusRestored, restoreFocusId]);
+
+  return (
+    <>
+      <div className="settings-section-head">
+        <h3>Task sources <span className="ts-count">· {sources.length} configured</span></h3>
+        <button className="btn" onClick={onAdd}>+ Add source</button>
+      </div>
+
+      <div className="ts-overview" aria-label="Task source overview">
+        <div className="ts-metric"><strong>{sources.length}</strong><span>configured sources</span></div>
+        <div className="ts-metric"><strong className="ts-good">{counts.healthy}</strong><span>running normally</span></div>
+        <div className="ts-metric"><strong className={counts.attention > 0 ? "ts-attention" : "ts-good"}>{counts.attention}</strong><span>need attention</span></div>
+        <div className="ts-metric"><strong>{counts.pending}</strong><span>awaiting first sweep</span></div>
+      </div>
+      {counts.attention > 0 && (
+        <p className="ts-attention-callout">
+          <strong>Attention:</strong> {counts.attention} source{counts.attention === 1 ? "" : "s"} had a failed sweep. Filter to review and repair {counts.attention === 1 ? "it" : "them"}.
+        </p>
+      )}
+
+      <div className="ts-directory-tools">
+        <input
+          className="field-input"
+          value={filters.query}
+          placeholder="Search sources, repositories or types…"
+          aria-label="Search task sources"
+          onChange={(e) => onFiltersChange({ ...filters, query: e.target.value })}
+        />
+        <select className="harnesses-select" value={filters.kind} aria-label="Filter task sources by type" onChange={(e) => onFiltersChange({ ...filters, kind: e.target.value as TaskSourceKind | "all" })}>
+          <option value="all">All types</option>
+          {kinds.map((k) => <option key={k.kind} value={k.kind}>{k.label}</option>)}
+        </select>
+      </div>
+      <div className="ts-filters" aria-label="Filter task sources by health">
+        {([
+          ["all", `All ${sources.length}`],
+          ["healthy", `Healthy ${counts.healthy}`],
+          ["attention", `Attention ${counts.attention}`],
+          ["pending", `Pending ${counts.pending}`],
+          ["paused", `Paused ${counts.paused}`],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            className={filters.health === id ? "is-active" : ""}
+            aria-pressed={filters.health === id}
+            onClick={() => onFiltersChange({ ...filters, health: id })}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="ts-directory" role="list" aria-label="Configured task sources">
+        {visible.map((src) => {
+          const status = byId.get(src.id);
+          const kindLabel = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;
+          const health = sourceHealth(src, status);
+          const healthText = health === "attention" ? "Failed" : health === "paused" ? "Paused" : status?.sweeping ? "Sweeping" : health === "pending" ? status ? "Never swept" : "No status" : "Healthy";
+          return (
+            <div className="ts-directory-item" role="listitem" key={src.id}>
+              <button
+                ref={(node) => {
+                  if (node) rowRefs.current.set(src.id, node);
+                  else rowRefs.current.delete(src.id);
+                }}
+                className="ts-directory-row"
+                onClick={() => onSelect(src.id)}
+              >
+                <span className="ts-directory-main"><strong>{nameOf(src, kindLabel)}</strong><span>{kindLabel} · {src.repoRoot} · every {minutesOf(src.intervalMs)} min</span></span>
+                <span className={`ts-health ts-health-${health}`}><i />{healthText}</span>
+                <span className="ts-directory-chevron" aria-hidden>›</span>
+              </button>
+            </div>
+          );
+        })}
+        {visible.length === 0 && <p className="ts-directory-empty">No sources match these filters.</p>}
+      </div>
+    </>
   );
 }
 
@@ -554,7 +699,16 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
   const [draftRepo, setDraftRepo] = useState("");
   const [draftKind, setDraftKind] = useState<TaskSourceKind | "">("");
   const [adding, setAdding] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null);
+  const [directoryFilters, setDirectoryFilters] = useState<SourceDirectoryFilters>({
+    health: "all",
+    query: "",
+    kind: "all",
+  });
+  const editorRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void fetchRepos().then(setRepos);
@@ -604,23 +758,31 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
       maxPerSweep: DEFAULT_MAX_PER_SWEEP,
       config: {},
     };
-    await save([...sourcesRef.current, added]);
+    const saved = await save([...sourcesRef.current, added]);
+    if (saved) setShowAdd(false);
   }
+
+  useEffect(() => {
+    if (selectedId && !sources.some((s) => s.id === selectedId)) {
+      setSelectedId(null);
+      setRestoreFocusId(null);
+    }
+  }, [selectedId, sources]);
+
+  const selected = selectedId ? sources.find((s) => s.id === selectedId) : undefined;
+
+  useEffect(() => {
+    if (selected) editorRef.current?.focus();
+  }, [selected?.id]);
 
   return (
     <section className="settings-section">
-      <div className="settings-section-head">
-        <h3>Task sources</h3>
-      </div>
-
       <p className="settings-hint settings-blurb">
-        Pulls work <strong>into</strong> the backlog from systems that already hold it, so
-        it doesn't have to be re-typed. A source files backlog tasks and nothing else:{" "}
-        <strong>it never dispatches an agent, never cuts a worktree and never types into a
-        session</strong>. What it files is a list you read and delete from, and a task you
-        delete stays deleted.
+        Pulls work <strong>into</strong> the backlog from systems that already hold it. A
+        source files backlog tasks and nothing else: <strong>it never dispatches an agent,
+        never cuts a worktree and never types into a session</strong>. What it files is a
+        list you read and delete from, and a task you delete stays deleted.
       </p>
-
       {/* The daemon has not answered. Said out loud rather than drawing an empty list,
           which is indistinguishable from "no sources are configured" - and would tell an
           operator nothing is being swept while the stored config sweeps on. */}
@@ -633,29 +795,52 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
 
       {error && <p className="settings-error">{error}</p>}
 
-      {view && sources.length === 0 ? (
+      {view && sources.length === 0 && !showAdd ? (
         <p className="settings-hint ts-empty">
           No sources yet - nothing is being swept. Add one below; it starts switched off.
         </p>
-      ) : (
-        <ul className="ts-list">
-          {sources.map((src) => (
-            <SourceCard
-              key={src.id}
-              src={src}
-              kindLabel={kinds.find((k) => k.kind === src.kind)?.label ?? src.kind}
-              status={view?.status.find((s) => s.sourceId === src.id)}
-              repos={repos}
-              now={now}
-              onChange={replace}
-              onRemove={() => remove(src.id)}
-              state={state}
-            />
-          ))}
-        </ul>
+      ) : null}
+
+      {view && selected && !showAdd && (
+        <div className="ts-editor-view">
+          <button ref={editorRef} className="ts-back" onClick={() => setSelectedId(null)}>← All task sources</button>
+          <SourceCard
+            src={selected}
+            kindLabel={kinds.find((k) => k.kind === selected.kind)?.label ?? selected.kind}
+            status={view.status.find((s) => s.sourceId === selected.id)}
+            repos={repos}
+            now={now}
+            onChange={replace}
+            onRemove={() => {
+              remove(selected.id);
+              setSelectedId(null);
+              setRestoreFocusId(null);
+            }}
+            state={state}
+          />
+        </div>
       )}
 
-      <div className="ts-add">
+      {view && !selected && !showAdd && sources.length > 0 && (
+        <SourceDirectory
+          sources={sources}
+          kinds={kinds}
+          statuses={view.status}
+          filters={directoryFilters}
+          onFiltersChange={setDirectoryFilters}
+          restoreFocusId={restoreFocusId}
+          onFocusRestored={() => setRestoreFocusId(null)}
+          onSelect={(id) => {
+            setRestoreFocusId(id);
+            setSelectedId(id);
+          }}
+          onAdd={() => setShowAdd(true)}
+        />
+      )}
+
+      {view && showAdd && <div className="ts-add ts-add-panel">
+        <button className="ts-back" onClick={() => setShowAdd(false)}>← All task sources</button>
+        <div className="settings-section-head"><h3>Add a task source</h3></div>
         <p className="settings-group-label">Add a source</p>
         {kinds.length > 0 && (
           <p className="settings-hint">{kinds.find((k) => k.kind === kind)?.blurb}</p>
@@ -687,7 +872,11 @@ export function TaskSourcesPanel({ state }: { state: TaskSourcesState }): React.
           </button>
         </div>
         {addError && <p className="settings-error">{addError}</p>}
-      </div>
+      </div>}
+
+      {view && sources.length === 0 && !showAdd && (
+        <button className="btn ts-empty-add" onClick={() => setShowAdd(true)}>+ Add source</button>
+      )}
     </section>
   );
 }

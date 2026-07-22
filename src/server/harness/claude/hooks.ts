@@ -136,6 +136,7 @@ function promptText(evt: HookIngest): string | null {
 }
 
 export const claudeHooks: HookSpec = {
+  scope: "machine",
   events: EVENTS,
   matcherEvents: MATCHER_EVENTS,
   toState,

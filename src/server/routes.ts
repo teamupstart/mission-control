@@ -42,6 +42,7 @@ import {
   ResolveEpisodeSchema,
   SetNoteSchema,
   SetPermissionModeSchema,
+  SetSessionEffortSchema,
   SetWorkItemStateSchema,
   PromptedWrapupSchema,
   WrapupAskedSchema,
@@ -108,6 +109,7 @@ import {
 } from "./foreman/instructions.ts";
 import { computeCommitDiff, computeSessionDiff, repoRootOf } from "./diff.ts";
 import { fixDetail } from "./nomistakes-fixes.ts";
+import { readRuntimeEffortBaseline } from "./runtime-meta.ts";
 import { checkToken } from "./auth.ts";
 import {
   dropGateReply,
@@ -126,6 +128,8 @@ import {
   selectPaneOption,
   sendText,
   setPermissionMode,
+  setSessionEffort,
+  defaultPaneDeps,
   submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
@@ -759,6 +763,47 @@ export function buildApp(
     // Record on failure too: a walk that stops early still leaves the session in a
     // mode we observed, and the chip should show where it actually ended up.
     registry.recordObservedPermissionMode(session.id, r.mode ?? null);
+    return c.json(r, r.ok ? 200 : 409);
+  });
+
+  app.post("/api/sessions/:id/effort", async (c) => {
+    const sessionId = c.req.param("id");
+    if (!registry.getSession(sessionId)) return c.json({ error: "no such session" }, 404);
+    const parsed = await parseBody(c, SetSessionEffortSchema);
+    if (!parsed.ok) return parsed.res;
+    const session = registry.getSession(sessionId);
+    if (!session) return c.json({ error: "no such session" }, 404);
+    const baseline = readRuntimeEffortBaseline(session);
+    if (baseline === undefined) {
+      return c.json({
+        ok: false,
+        error: "the session's passive effort baseline is not ready; no setting was changed",
+        effort: null,
+      }, 409);
+    }
+    if (!registry.recordRuntimeEffortBaseline(session.id, baseline, session)) {
+      return c.json({
+        ok: false,
+        error: "the session changed before its effort baseline could be recorded",
+        effort: null,
+      }, 409);
+    }
+    const r = await setSessionEffort(session, parsed.data.effort, {
+      ...defaultPaneDeps,
+      assertBeforeWrite: () => {
+        const current = registry.getSession(session.id);
+        return current?.agent === session.agent &&
+          current.agentSessionId === session.agentSessionId &&
+          current.transcriptPath === session.transcriptPath;
+      },
+    });
+    if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
+      return c.json({
+        ok: false,
+        error: "the live effort changed, but the session identity changed before it could be published",
+        effort: null,
+      }, 409);
+    }
     return c.json(r, r.ok ? 200 : 409);
   });
 

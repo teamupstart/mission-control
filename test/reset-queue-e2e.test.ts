@@ -121,6 +121,20 @@ test("POST /reset clears the queue even with clear:false", async () => {
   const clone = mkCloneOnBranch("harness-reset-q-false-", branch);
   registry.applyDiscovery([mkDisco("s-false", clone, branch)]);
   authorizeQueue("s-false", clone);
+  registry.applyRuntimeMeta(
+    "s-false",
+    {
+      modelId: "claude-opus-4-8",
+      contextTokens: 20_000,
+      contextWindow: 200_000,
+      contextPct: 10,
+      longContext: false,
+      thinkingLevel: "high",
+      effortRevision: "turn-1",
+    },
+    "transcript",
+  );
+  registry.recordObservedSessionEffort("s-false", "xhigh");
 
   const item = queues.add("s-false", "the only task")!;
   const before = await card("s-false");
@@ -131,6 +145,7 @@ test("POST /reset clears the queue even with clear:false", async () => {
   assert.equal(res.status, 200);
 
   const after = await card("s-false");
+  assert.equal(after.meta?.thinkingLevel, null, "the reset drops the previous conversation's effort");
   console.log("[reset-queue] AFTER  clear:false ->", JSON.stringify(after.queue));
   assert.equal(after.queue, null, "still cleared, even though /clear was not sent");
   assert.equal(getQueueRow(item.noteKey), undefined, "the row is gone");

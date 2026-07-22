@@ -97,6 +97,8 @@ test("every key renders into Ghostty's own convention, which is a third one", as
     down: 'perform action "csi:B"',
     left: 'perform action "csi:D"',
     right: 'perform action "csi:C"',
+    "shift-up": 'perform action "csi:1;2A"',
+    "shift-down": 'perform action "csi:1;2B"',
     "shift-tab": 'perform action "csi:Z"',
   };
 

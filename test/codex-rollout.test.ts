@@ -16,8 +16,8 @@ import type { Session } from "@shared/types.ts";
 // Records shaped like real Codex rollout JSONL lines.
 const sessionMeta = (cwd: string, ts: string): string =>
   JSON.stringify({ timestamp: ts, type: "session_meta", payload: { id: "x", timestamp: ts, cwd, cli_version: "1", source: "cli", thread_source: "user" } });
-const turnContext = (model: string, effort: string | null): string =>
-  JSON.stringify({ timestamp: "t", type: "turn_context", payload: { model, effort } });
+const turnContext = (model: string, effort: string | null, timestamp = "t"): string =>
+  JSON.stringify({ timestamp, type: "turn_context", payload: { model, effort } });
 const tokenCount = (current: number, window: number, cumulative = current): string =>
   JSON.stringify({
     timestamp: "t",
@@ -63,18 +63,20 @@ test("parseRolloutMeta derives model, effort, and context% from the newest recor
     contextPct: 50,
     longContext: false,
     thinkingLevel: "high",
+    effortRevision: "t",
   });
 });
 
 test("parseRolloutMeta uses the newest turn_context + token_count", () => {
   const m = parseRolloutMeta([
-    turnContext("gpt-5", "low"),
+    turnContext("gpt-5", "low", "turn-1"),
     tokenCount(10, 100),
-    turnContext("gpt-5-codex", "xhigh"), // newer
+    turnContext("gpt-5-codex", "xhigh", "turn-2"), // newer
     tokenCount(60, 100), // newer
   ]);
   assert.equal(m?.modelId, "gpt-5-codex");
   assert.equal(m?.thinkingLevel, "xhigh");
+  assert.equal(m?.effortRevision, "turn-2");
   assert.equal(m?.contextPct, 60);
 });
 

@@ -75,6 +75,8 @@ const KEY_FORMS: Record<Key, { via: "csi"; final: string } | { via: "named"; nam
   down: { via: "csi", final: "B" },
   left: { via: "csi", final: "D" },
   right: { via: "csi", final: "C" },
+  "shift-up": { via: "csi", final: "1;2A" },
+  "shift-down": { via: "csi", final: "1;2B" },
   "shift-tab": { via: "csi", final: "Z" },
 };
 

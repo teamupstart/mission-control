@@ -269,17 +269,19 @@ test("latestTodoNarration ignores sidechain TodoWrites and non-TodoWrite lines",
 
 // ---- runtime metadata (model / context% / thinking level) ----
 
-const effortSet = (lvl: string): string =>
+const effortSet = (lvl: string, uuid = `effort-${lvl}`): string =>
   JSON.stringify({
     type: "user",
+    uuid,
     message: {
       role: "user",
       content: `<local-command-stdout>Set effort level to ${lvl} (saved as your default)</local-command-stdout>`,
     },
   });
-const modelWithEffort = (lvl: string): string =>
+const modelWithEffort = (lvl: string, uuid = `model-${lvl}`): string =>
   JSON.stringify({
     type: "user",
+    uuid,
     message: { role: "user", content: `<local-command-stdout>Set model to Opus 4.8 with ${lvl} effort</local-command-stdout>` },
   });
 const asstUsage = (model: string | null, usage: Record<string, number>, extra: object = {}): string =>
@@ -311,6 +313,7 @@ test("computeRuntimeMeta derives model + context% from the newest assistant usag
     contextPct: 50,
     longContext: false,
     thinkingLevel: null,
+    effortRevision: null,
   });
 });
 
@@ -367,6 +370,7 @@ test("computeRuntimeMeta skips sidechain + api-error records and folds in effort
   assert.equal(m?.modelId, "claude-sonnet-5"); // the main-chain record, not the noise
   assert.equal(m?.contextTokens, 20_000);
   assert.equal(m?.thinkingLevel, "high");
+  assert.equal(m?.effortRevision, "effort-high");
 });
 
 test("computeRuntimeMeta returns null when nothing useful is present", () => {

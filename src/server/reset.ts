@@ -48,7 +48,10 @@ export async function resetSession(
   // affordance a bare /clear leans on. Keyed on the PRE-reset session, whose note key
   // still names the queue: a /clear only rotates that key once the agent processes it,
   // which is after this returns.
-  if (r.ok) registry.clearQueue(noteKeyFor(session));
+  if (r.ok) {
+    registry.clearObservedSessionEffort(session.id);
+    registry.clearQueue(noteKeyFor(session));
+  }
 
   return r;
 }

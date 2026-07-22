@@ -35,13 +35,26 @@ const EFFORT_WITH_RE = new RegExp(`Set model to [\\s\\S]*? with (${EFFORT}) effo
  * Pure, for testing.
  */
 export function latestEffortLevel(lines: string[]): ThinkingLevel | null {
+  return latestEffort(lines).level;
+}
+
+function latestEffort(lines: string[]): { level: ThinkingLevel | null; revision: string | null } {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!;
     if (!line.includes("effort")) continue; // cheap pre-filter before regex
     const m = EFFORT_SET_RE.exec(line) ?? EFFORT_WITH_RE.exec(line);
-    if (m) return m[1]!.toLowerCase() as ThinkingLevel;
+    if (!m) continue;
+    let revision: string | null = null;
+    try {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (typeof record.uuid === "string") revision = record.uuid;
+      else if (typeof record.timestamp === "string") revision = record.timestamp;
+    } catch {
+      revision = null;
+    }
+    return { level: m[1]!.toLowerCase() as ThinkingLevel, revision };
   }
-  return null;
+  return { level: null, revision: null };
 }
 
 /** The `usage` + `model` off the newest main-chain assistant record, or null. */
@@ -82,7 +95,8 @@ function contextTokensFromUsage(usage: Record<string, unknown>): number | null {
  */
 export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
   const usage = latestAssistantUsage(lines);
-  const thinkingLevel = latestEffortLevel(lines);
+  const effort = latestEffort(lines);
+  const thinkingLevel = effort.level;
   const modelId = usage?.modelId ?? null;
   const contextTokens = usage?.tokens ?? null;
 
@@ -102,6 +116,7 @@ export function computeRuntimeMeta(lines: string[]): RuntimeMetaRead | null {
     contextPct,
     longContext: isLongContext(size),
     thinkingLevel,
+    effortRevision: effort.revision,
   };
 }
 

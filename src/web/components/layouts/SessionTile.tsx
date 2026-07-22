@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import type { AssignResetConfirm, Session } from "@shared/types.ts";
 import { gateStepView, relativeTime, stateDisplay, uptime } from "../../lib/format.ts";
 import { AgentDot, CostChip, InspectorTileFlag, PrTileFlag, RuntimeMetaRow } from "../session-bits.tsx";
+import { EffortPicker } from "../EffortPicker.tsx";
 import { canAcceptTask, dropTaskOnSession } from "./BacklogColumn.tsx";
 
 /**
@@ -210,7 +211,8 @@ export function SessionTile({
           alert. When it stops being routine the chip's own tone says so (costTone), which
           keeps one spelling of the number per surface rather than two. */}
       <span className="tile-runtime-line">
-        {session.meta && <RuntimeMetaRow meta={session.meta} />}
+        {session.meta && <RuntimeMetaRow meta={session.meta} session={session} showEffort={false} />}
+        {session.meta?.thinkingLevel && <EffortPicker session={session} />}
         <CostChip cost={session.cost} />
       </span>
 

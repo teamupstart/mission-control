@@ -1,7 +1,7 @@
-import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
+import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
-import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
+import { parsePaneModeLine, readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
 import type { ControlSpec } from "./harness/types.ts";
@@ -20,6 +20,7 @@ import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
+import { sessionEffortLevels, supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
   bindSession,
@@ -141,9 +142,11 @@ export async function withPaneLock<T>(
 export interface PaneDeps {
   pane: (session: PaneHandles) => BoundPane | null;
   capture: (session: Session) => Promise<string | null>;
+  /** Rechecked synchronously just before an effort-control write reaches the pane. */
+  assertBeforeWrite?: () => boolean;
 }
 
-const defaultPaneDeps: PaneDeps = {
+export const defaultPaneDeps: PaneDeps = {
   pane: (session) => bindSession(session),
   capture: capturePaneText,
 };
@@ -266,10 +269,11 @@ async function paneWriteBlock(
  * presses named keys, and which convention those keys are rendered in - tmux's `BTab`,
  * wezterm's `\x1b[Z` - is the adapter's business and never this file's.
  */
-async function writeText(pane: BoundPane, text: string): Promise<ActionResult> {
+async function writeText(pane: BoundPane, text: string, assertBeforeWrite?: () => boolean): Promise<ActionResult> {
   if (!pane.write) return { ok: false, error: cannotType(pane) };
   const blocked = await paneWriteBlock(pane);
   if (blocked) return blocked;
+  if (assertBeforeWrite && !assertBeforeWrite()) return { ok: false, error: "the session changed before its effort could be updated" };
   return fromTerminal(await pane.write.text(text));
 }
 
@@ -298,6 +302,293 @@ export async function sendText(
   deps: PaneDeps = defaultPaneDeps,
 ): Promise<ActionResult> {
   return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), () => sendTextLocked(session, text, submit, deps));
+}
+
+/**
+ * Change reasoning effort through the harness's own model picker. This is deliberately
+ * conversation-scoped: neither harness config nor a task's launch override can rewrite
+ * a process that is already running.
+ */
+export interface EffortResult extends ActionResult {
+  effort: ThinkingLevel | null;
+}
+
+export async function setSessionEffort(
+  session: Session,
+  target: ThinkingLevel,
+  deps: PaneDeps = defaultPaneDeps,
+): Promise<EffortResult> {
+  const spec = harnessFor(session.agent).effort;
+  const modelId = session.meta?.modelId ?? null;
+  const model = session.meta?.model ?? null;
+  const current = session.meta?.thinkingLevel ?? null;
+  if (!spec) return { ok: false, error: "this agent has no reasoning-effort control", effort: null };
+  const picker = spec.sessionPicker;
+  if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control", effort: null };
+  if (!model) return { ok: false, error: "the selected model is not known yet", effort: null };
+  if (!modelId) return { ok: false, error: "the selected model id is not known yet", effort: null };
+  if (!current) return { ok: false, error: "the selected model's current effort is not known yet", effort: null };
+  if (!supportsSessionEffort(session.agent, modelId, current, target)) {
+    return { ok: false, error: `${target} effort is not atomically reachable from ${current}`, effort: null };
+  }
+  const from = spec.levelsFor(modelId).indexOf(current);
+  const to = spec.levelsFor(modelId).indexOf(target);
+  if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed", effort: null };
+  if (from === to) return { ok: true, effort: current };
+
+  return withPaneLock<EffortResult>(session, () => ({ ok: false, error: PANE_BUSY, effort: null }), async () => {
+    const pane = deps.pane(session);
+    if (!pane) return { ok: false, error: NO_HANDLE, effort: null };
+    const modeLine = modeLineSpecFor(session.agent);
+    const before = await deps.capture(session);
+    if (
+      !before ||
+      readPaneDialog(session, before) ||
+      !picker.composerReady(before) ||
+      (picker.kind === "horizontal" &&
+        (picker.visible.test(before) || !modeLine || !parsePaneModeLine(before, modeLine)))
+    ) {
+      return { ok: false, error: "the agent's empty composer is not ready; no setting was changed", effort: null };
+    }
+
+    if (picker.kind === "shortcuts") {
+      if (picker.selected(before, modelId) !== current) {
+        return { ok: false, error: "the agent's visible effort does not match session metadata; no setting was changed", effort: null };
+      }
+      return driveShortcutEffort(session, pane, picker, modelId, current, target, deps);
+    }
+
+    return driveHorizontalEffort(session, pane, picker, spec, modelId, model, current, target, deps);
+  });
+}
+
+type HorizontalEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "horizontal" }>;
+type ShortcutEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "shortcuts" }>;
+
+async function driveHorizontalEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: HorizontalEffortPicker,
+  spec: EffortSpec,
+  modelId: string,
+  model: string,
+  current: ThinkingLevel,
+  target: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<EffortResult> {
+  const levels = spec.levelsFor(modelId);
+  const to = levels.indexOf(target);
+
+  const opened = await writeText(pane, picker.command, deps.assertBeforeWrite);
+  if (!opened.ok) return { ...opened, effort: null };
+  const pending = await deps.capture(session);
+  if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) {
+    return { ok: false, error: "the model command could not be verified in the composer; no setting was changed", effort: null };
+  }
+  const submitted = await sendKeys(pane, ["enter"]);
+  if (!submitted.ok) return { ...submitted, effort: null };
+  const screen = await awaitEffortPicker(session, picker.visible, deps);
+  if (!screen) {
+    return { ok: false, error: "the agent's effort picker did not open; no setting was changed", effort: null };
+  }
+  let selected = picker.selected(screen, model);
+  const seen = new Set<ThinkingLevel>();
+  for (let i = 0; selected !== target; i++) {
+    const selectedIndex = selected ? levels.indexOf(selected) : -1;
+    if (!selected || selectedIndex < 0 || seen.has(selected) || i >= levels.length) {
+      return { ok: false, error: "the picker selection could not be verified; no setting was changed", effort: null };
+    }
+    seen.add(selected);
+    const direction: Key = to > selectedIndex ? "right" : "left";
+    const moved = await sendKeys(pane, [direction]);
+    if (!moved.ok) return { ...moved, effort: null };
+    const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
+    if (!next) return { ok: false, error: "the agent ignored the effort arrow; no setting was changed", effort: null };
+    selected = next.level;
+  }
+  const final = await deps.capture(session);
+  if (!final || !picker.visible.test(final) || picker.selected(final, model) !== target) {
+    return { ok: false, error: "the effort selection changed before it could be confirmed", effort: null };
+  }
+  const committed = await writeText(pane, picker.commit, deps.assertBeforeWrite);
+  if (!committed.ok) return { ...committed, effort: null };
+  const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
+  if (closed) return { ok: true, effort: target };
+  const recovered = await recoverHorizontalEffort(
+    session,
+    pane,
+    picker,
+    levels,
+    model,
+    current,
+    target,
+    deps,
+  );
+  if (recovered === target) return { ok: true, effort: target };
+  return {
+    ok: false,
+    error: recovered === current
+      ? "the agent did not apply the session-only effort change"
+      : "the agent did not confirm or restore the session-only effort change",
+    effort: null,
+  };
+}
+
+/**
+ * A successful `s` may have changed Claude even when the repaint used to observe the
+ * picker close is lost. Re-open the native picker before reporting failure: either the
+ * target is now confirmed, or the previous value is restored and its close verified.
+ */
+async function recoverHorizontalEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: HorizontalEffortPicker,
+  levels: readonly ThinkingLevel[],
+  model: string,
+  current: ThinkingLevel,
+  target: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<ThinkingLevel | null> {
+  const before = await deps.capture(session);
+  if (!before || readPaneDialog(session, before) || !picker.composerReady(before) || picker.visible.test(before)) {
+    return null;
+  }
+  const opened = await writeText(pane, picker.command);
+  if (!opened.ok) return null;
+  const pending = await deps.capture(session);
+  if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) return null;
+  const submitted = await sendKeys(pane, ["enter"]);
+  if (!submitted.ok) return null;
+  const screen = await awaitEffortPicker(session, picker.visible, deps);
+  let selected = screen ? picker.selected(screen, model) : null;
+  if (!selected) return null;
+  if (selected === target) {
+    // The original commit is now confirmed. Best-effort close this verification picker;
+    // a close delivery failure cannot undo the value we have just read back.
+    await writeText(pane, picker.commit);
+    return target;
+  }
+
+  const restore = levels.indexOf(current);
+  const seen = new Set<ThinkingLevel>();
+  for (let i = 0; selected !== current; i++) {
+    const from = levels.indexOf(selected);
+    if (from < 0 || restore < 0 || seen.has(selected) || i >= levels.length) return null;
+    seen.add(selected);
+    const moved = await sendKeys(pane, [restore > from ? "right" : "left"]);
+    if (!moved.ok) return null;
+    const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
+    if (!next) return null;
+    selected = next.level;
+  }
+  const restored = await writeText(pane, picker.commit);
+  if (!restored.ok || !(await awaitEffortPickerClosed(session, picker.visible, deps))) return null;
+  return current;
+}
+
+async function driveShortcutEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  current: ThinkingLevel,
+  target: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<EffortResult> {
+  const levels = sessionEffortLevels(session.agent, modelId, current);
+  const from = levels.indexOf(current);
+  const to = levels.indexOf(target);
+  if (from < 0 || to < 0 || Math.abs(to - from) !== 1) {
+    return { ok: false, error: `${target} effort is not atomically reachable from ${current}`, effort: null };
+  }
+  const moved = await sendKeys(pane, [to > from ? picker.raise : picker.lower]);
+  const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
+  if (observed === target) return { ok: true, effort: target };
+  const final = observed ?? (await readShortcutEffort(session, picker, modelId, deps));
+  if (final === target) return { ok: true, effort: target };
+  if (!moved.ok) return { ...moved, effort: null };
+  return {
+    ok: false,
+    error: final === current
+      ? "the agent ignored the session-only effort shortcut; no setting was changed"
+      : `the session-only effort shortcut produced unexpected ${final ?? "unknown"} effort`,
+    effort: null,
+  };
+}
+
+const EFFORT_PICKER_POLL_MS = 50;
+
+async function readShortcutEffort(
+  session: Session,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  deps: PaneDeps,
+): Promise<ThinkingLevel | null> {
+  const screen = await deps.capture(session);
+  return screen ? picker.selected(screen, modelId) : null;
+}
+
+async function awaitShortcutEffort(
+  session: Session,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  previous: ThinkingLevel | null,
+  deps: PaneDeps,
+): Promise<ThinkingLevel | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    const selected = screen ? picker.selected(screen, modelId) : null;
+    if (selected && selected !== previous) return selected;
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
+
+async function awaitEffortPicker(
+  session: Session,
+  visible: RegExp,
+  deps: PaneDeps,
+): Promise<string | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    if (screen && visible.test(screen)) return screen;
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
+
+async function awaitEffortSelection(
+  session: Session,
+  visible: RegExp,
+  selected: (paneText: string, model: string) => ThinkingLevel | null,
+  model: string,
+  previous: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<{ level: ThinkingLevel } | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    const level = screen && visible.test(screen) ? selected(screen, model) : null;
+    if (level && level !== previous) return { level };
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
+
+async function awaitEffortPickerClosed(
+  session: Session,
+  visible: RegExp,
+  deps: PaneDeps,
+): Promise<boolean> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    if (screen !== null && !visible.test(screen)) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
 }
 
 async function sendTextLocked(

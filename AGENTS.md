@@ -250,12 +250,13 @@ duplicate. A new format gets a new version tag parsed **alongside** this one.
   new group also needs a `GROUPS` entry in `KeyboardPanel`.
 - **Harnesses (the agent axis)**: **two records, split by purity, and a new agent must fill
   in both.** `HARNESS_CAPABILITIES` (`@shared/harness-capabilities.ts`) holds what can be
-  answered without a `node:` import - permission modes, skills, work queue, context
-  clearing, MCP - because the dashboard decides most of these in the browser and cannot
-  import a spec that calls `statSync`. `HARNESSES` (`src/server/harness/index.ts`) spreads
-  that record in and adds what needs one (`transcript`, `hooks`, `control`, plus a spec per
-  capability under `src/server/harness/<agent>/`); `Harness extends HarnessCapabilities`, so
-  a server call site holding a harness still reads every slot off one object. The two
+  answered without a `node:` import - permission modes, skills, work queue, reasoning
+  effort, context clearing, MCP - because the dashboard decides most of these in the
+  browser and cannot import a spec that calls `statSync`. The server-side `HARNESSES`
+  record (`src/server/harness/index.ts`) spreads that record in and adds what needs one
+  (`transcript`, `hooks`, `control`, plus a spec per capability under
+  `src/server/harness/<agent>/`); `Harness extends HarnessCapabilities`, so a server call
+  site holding a harness still reads every slot off one object. The two
   `Record<AgentType, …>`s are the enforcement - a new agent id that declares nothing does
   not compile - and they ask disjoint questions, so neither is a copy of the other. Do not
   put a pure capability in the server record or a filesystem-reading one in shared.

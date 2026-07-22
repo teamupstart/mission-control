@@ -97,6 +97,8 @@ const KEY_NAMES: Record<Key, string> = {
   down: "down",
   left: "left",
   right: "right",
+  "shift-up": "shift-up",
+  "shift-down": "shift-down",
   "shift-tab": "shift-tab",
 };
 

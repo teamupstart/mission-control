@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
 import type { HookIngest } from "@shared/protocol.ts";
 import { mkMuxHandle } from "./helpers/session-fixture.ts";
+import { MODEL_PICKER_XHIGH } from "./fixtures/claude-panes.ts";
 
 /** The mode-line spec the registry holds, so the parser is pinned to the shipped wording. */
 const CLAUDE_MODE_LINE = claudeTui.modeLine!;
@@ -113,13 +114,7 @@ test("parsePaneModeLine ignores the trailing `·` segments", () => {
 test("parsePaneModeLine finds nothing when a dialog covers the mode line", () => {
   // A real `/model` picker: Claude replaces the footer entirely, so there is no
   // mode to read - and Shift+Tab would be swallowed by the dialog.
-  const pane = [
-    "    4. Sonnet                   Sonnet 5 · Efficient for routine tasks",
-    "    5. Haiku                    Haiku 4.5 · Fastest for quick answers",
-    "  ◉ xHigh effort ←/→ to adjust",
-    "  Enter to set as default · s to use this session only · Esc to cancel",
-  ].join("\n");
-  assert.equal(parsePaneModeLine(pane, CLAUDE_MODE_LINE), null);
+  assert.equal(parsePaneModeLine(MODEL_PICKER_XHIGH, CLAUDE_MODE_LINE), null);
 });
 
 test("parsePaneModeLine doesn't mistake transcript prose for the mode line", () => {

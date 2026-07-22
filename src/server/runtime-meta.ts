@@ -2,6 +2,7 @@ import { envVar } from "./config.ts";
 import { unref } from "./util/timers.ts";
 import { allHarnesses, transcriptFor } from "./harness/index.ts";
 import type { Registry } from "./registry.ts";
+import type { Session } from "@shared/types.ts";
 
 // Passive poller that keeps each live session's model / thinking level / context %
 // current from the highest-authority *passive* source: whatever file its harness
@@ -18,6 +19,19 @@ import type { Registry } from "./registry.ts";
 
 /** How often to refresh runtime metadata (ms). */
 const RUNTIME_META_POLL_MS = Number(envVar("RUNTIME_META_POLL_MS") ?? 4000);
+
+export function readRuntimeEffortBaseline(session: Session): string | null | undefined {
+  try {
+    const spec = transcriptFor(session);
+    if (!spec) return undefined;
+    const path = spec.locate(session);
+    if (!path) return undefined;
+    const meta = spec.passiveRead(path).meta;
+    return meta ? meta.effortRevision : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export function startRuntimeMetaPoller(registry: Registry): () => void {
   let stopped = false;

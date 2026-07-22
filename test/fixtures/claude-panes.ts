@@ -173,3 +173,10 @@ Which holder policy do you want?
 
 Enter to select · ↑/↓ to navigate · Esc to cancel
 `;
+
+export const MODEL_PICKER_XHIGH = `
+    4. Sonnet                   Sonnet 5 · Efficient for routine tasks
+    5. Haiku                    Haiku 4.5 · Fastest for quick answers
+  ◉ xHigh effort ←/→ to adjust
+  Enter to set as default · s to use this session only · Esc to cancel
+`;

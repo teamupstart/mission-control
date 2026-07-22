@@ -368,6 +368,8 @@ export const api = {
    */
   setMode: (id: string, mode: PermissionMode) =>
     post(`/api/sessions/${encodeURIComponent(id)}/mode`, { mode }),
+  setEffort: (id: string, effort: import("@shared/types.ts").ThinkingLevel) =>
+    post(`/api/sessions/${encodeURIComponent(id)}/effort`, { effort }),
   reset: (id: string, clear = true) =>
     post(`/api/sessions/${encodeURIComponent(id)}/reset`, { clear }),
   /**

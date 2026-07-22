@@ -44,6 +44,13 @@ function metaOf(r: InstanceType<typeof Registry>, id = "s1"): Session["meta"] {
   return r.snapshot().sessions.find((s) => s.id === id)?.meta ?? null;
 }
 
+function recordBaseline(
+  r: InstanceType<typeof Registry>,
+  revision: string | null,
+): boolean {
+  return r.recordRuntimeEffortBaseline("s1", revision, r.getSession("s1")!);
+}
+
 const statusIngest = (over: Partial<StatusLineIngest> = {}): StatusLineIngest =>
   ({
     env: { tmuxPane: "%3" },
@@ -62,6 +69,7 @@ const transcriptRead: RuntimeMetaRead = {
   contextPct: 10,
   longContext: false,
   thinkingLevel: "high",
+  effortRevision: "turn-1",
 };
 
 test("applyStatusLine populates meta on the bound session (exact %, effort, model)", () => {
@@ -118,6 +126,256 @@ test("a null passive read is a no-op (never clears a good reading)", () => {
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
   r.applyRuntimeMeta("s1", null, "transcript");
   assert.equal(metaOf(r)?.model, "Sonnet 5");
+});
+
+test("an observed session effort emits immediately and survives stale passive metadata", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  let observed = 0;
+  r.subscribe((e: ServerEvent) => {
+    if (e.type === "session_upsert" && e.session.meta?.thinkingLevel === "xhigh") observed++;
+  });
+
+  r.recordObservedSessionEffort("s1", "xhigh");
+  const recordedAt = metaOf(r)!.updatedAt;
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(observed, 1);
+
+  t.mock.timers.tick(60_000);
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.ok(metaOf(r)!.updatedAt >= recordedAt);
+});
+
+test("an orderable later passive revision reconciles an independently changed effort", () => {
+  const r = seeded();
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "2026-07-22T12:00:00.000Z" },
+    "transcript",
+  );
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      thinkingLevel: "medium",
+      effortRevision: "2026-07-22T12:00:01.000Z",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "medium");
+});
+
+test("an orderable confirmation releases the observation to later passive metadata", () => {
+  const r = seeded();
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "2026-07-22T12:00:00.000Z" },
+    "transcript",
+  );
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      thinkingLevel: "xhigh",
+      effortRevision: "2026-07-22T12:00:01.000Z",
+    },
+    "transcript",
+  );
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "2026-07-22T12:00:02.000Z" },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("an opaque passive revision cannot overwrite a verified effort change", () => {
+  const r = seeded();
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "4ed47a6b-8d93-4b80-af8d-7ebaf442b32a" },
+    "transcript",
+  );
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "abdf4e48-5097-46d2-9e72-e8e111a97870",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.modelId, "claude-sonnet-5");
+});
+
+test("a new agent session releases the prior session's observed effort", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high" }));
+  recordBaseline(r, null);
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyStatusLine(statusIngest({ sessionId: "new-session", effort: "high" }));
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("only a timestamped post-change statusLine overrides an observed effort", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  recordBaseline(r, null);
+  const acceptedAt = metaOf(r)!.updatedAt;
+  r.recordObservedSessionEffort("s1", "xhigh");
+
+  t.mock.timers.tick(100);
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_500 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.updatedAt, acceptedAt);
+  t.mock.timers.tick(100);
+  r.applyStatusLine(statusIngest({ effort: "high", ts: undefined }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.updatedAt, acceptedAt);
+
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, thinkingLevel: "high", effortRevision: "turn-2" },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+});
+
+test("out-of-order statusLine metadata cannot regress a confirmed effort", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  recordBaseline(r, null);
+  r.recordObservedSessionEffort("s1", "xhigh");
+
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  const confirmedAt = metaOf(r)!.updatedAt;
+
+  t.mock.timers.tick(100);
+  r.applyStatusLine(
+    statusIngest({
+      effort: "high",
+      model: { id: "claude-sonnet-4-6", displayName: "Sonnet" },
+      ts: 1_500,
+    }),
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.model, "Opus 4.8");
+  assert.equal(metaOf(r)?.updatedAt, confirmedAt);
+});
+
+test("unversioned statusLine effort stays guarded after confirmation", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  recordBaseline(r, null);
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
+
+  r.applyStatusLine(
+    statusIngest({
+      contextWindow: { usedPercentage: 55, contextWindowSize: 200_000, tokens: 110_000 },
+      effort: "high",
+      ts: undefined,
+    }),
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(metaOf(r)?.contextPct, 55);
+
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "turn-2",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: undefined }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_100 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+});
+
+test("an observed effort requires a synchronously captured passive baseline", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), false);
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+
+  recordBaseline(r, "2026-07-22T12:00:00.000Z");
+  assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), true);
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "2026-07-22T12:00:00.000Z",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+
+  r.applyRuntimeMeta(
+    "s1",
+    {
+      ...transcriptRead,
+      modelId: "claude-opus-4-8",
+      thinkingLevel: "high",
+      effortRevision: "2026-07-22T12:00:01.000Z",
+    },
+    "transcript",
+  );
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("an agent-session rebind clears effort state before new metadata arrives", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.recordObservedSessionEffort("s1", "xhigh");
+
+  r.applyStatus({ tmuxPane: "%3" }, "new-session", "rebound");
+  assert.equal(metaOf(r)?.thinkingLevel, null);
+
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("a rebind clears transcript baseline identity before publication", () => {
+  const r = new Registry();
+  r.applyDiscovery([
+    disco({
+      agentSessionId: "old-session",
+      transcriptPath: "/tmp/old-session.jsonl",
+    }),
+  ]);
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  const expected = r.getSession("s1")!;
+  assert.equal(expected.effortBaselineReady, true);
+
+  r.applyStatusLine(statusIngest({ sessionId: "new-session", effort: "high" }));
+  const rebound = r.getSession("s1")!;
+  assert.equal(rebound.transcriptPath, null);
+  assert.equal(rebound.effortBaselineReady, false);
+
+  assert.equal(r.recordRuntimeEffortBaseline("s1", "old-baseline", expected), false);
+  assert.equal(rebound.effortBaselineReady, false);
+  assert.equal(recordBaseline(r, "new-baseline"), true);
+  assert.equal(r.recordObservedSessionEffort("s1", "xhigh", expected), false);
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
 test("meta only emits when a displayed value actually changes", () => {

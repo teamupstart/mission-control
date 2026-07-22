@@ -39,6 +39,8 @@ export interface RuntimeMetaRead {
   contextPct: number | null;
   longContext: boolean;
   thinkingLevel: ThinkingLevel | null;
+  /** Source revision; only orderable revisions can release a verified effort change. */
+  effortRevision: string | null;
 }
 
 /** What a passive read yields about a session's liveness. */

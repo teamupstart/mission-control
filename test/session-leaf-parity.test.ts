@@ -20,6 +20,7 @@ import {
   StateBadge,
 } from "../src/web/components/session-bits.tsx";
 import { Tooltip } from "../src/web/components/Tooltip.tsx";
+import { EffortPicker } from "../src/web/components/EffortPicker.tsx";
 import { meta, mkSession } from "./helpers/session-fixture.ts";
 import type { Session, SessionCost } from "../src/shared/types.ts";
 
@@ -336,8 +337,9 @@ test("the card's title and rename affordance are the shared SessionTitle", () =>
 
 test("the card's context meter is the shared RuntimeMetaRow", () => {
   const m = meta({ contextPct: 73 });
+  const session = mkSession({ meta: m });
   assert.ok(
-    card({ meta: m }).includes(bit(RuntimeMetaRow, { meta: m })),
+    card({ meta: m }).includes(bit(RuntimeMetaRow, { meta: m, session })),
     "card should render the shared RuntimeMetaRow",
   );
 });
@@ -381,7 +383,11 @@ test("the board tile's agent dot and context meter are the shared ones", () => {
     tile.includes(bit(AgentDot, { agent: session.agent })),
     "tile should render the shared AgentDot",
   );
-  assert.ok(tile.includes(bit(RuntimeMetaRow, { meta: m })), "tile should render the shared meter");
+  assert.ok(
+    tile.includes(bit(RuntimeMetaRow, { meta: m, session, showEffort: false })),
+    "tile should render the shared meter without nesting its effort control",
+  );
+  assert.ok(tile.includes(bit(EffortPicker, { session })), "tile should render the shared effort control beside it");
 });
 
 test("the board tile's cost badge is the shared CostChip", () => {
@@ -462,7 +468,7 @@ test("card and console detail agree on every shared leaf", () => {
     ["PrChip", bit(PrChip, { session })],
     ["StateBadge", bit(StateBadge, { session, gateNeedsYou: false, onOpenReviews: () => {} })],
     ["InspectorChip", bit(InspectorChip, { session })],
-    ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta! })],
+    ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta!, session })],
     ["CostChip", bit(CostChip, { cost: session.cost })],
   ] as const) {
     assert.ok(html.includes(fragment), `card should contain the shared ${name}`);

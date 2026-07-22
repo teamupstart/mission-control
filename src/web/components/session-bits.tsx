@@ -14,6 +14,7 @@ import { PRIORITY_LABELS } from "@shared/task.ts";
 import { compactTokens, contextTone, fmtUsd, stateDisplay } from "../lib/format.ts";
 import { api } from "../lib/api.ts";
 import { Tooltip } from "./Tooltip.tsx";
+import { EffortPicker } from "./EffortPicker.tsx";
 
 /**
  * The small, presentational pieces a session is drawn from - the agent dot, the
@@ -521,10 +522,19 @@ export function RenameEditor({
  * facts ccstatusline shows in the terminal. Each chip is independently omitted when unknown.
  *
  * A `<span>` (styled `display:flex`), not a `<div>`, so it's phrasing content: the board's
- * tile draws its whole body as spans, and this row has to nest into that flow - and into
- * any button-like container a layout wraps it in - without being invalid HTML.
+ * tile draws its whole body as spans. A layout that needs the effort control outside an
+ * interactive tile flow can suppress it here and render the shared picker beside the row.
  */
-export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Element | null {
+export function RuntimeMetaRow({
+  meta,
+  session,
+  showEffort = true,
+}: {
+  meta: SessionMeta;
+  session?: Session;
+  /** Board renders its interactive effort control as a sibling of this shared row. */
+  showEffort?: boolean;
+}): React.JSX.Element | null {
   const hasCtx = meta.contextPct != null;
   if (!meta.model && !meta.thinkingLevel && !hasCtx) return null;
   const tone = contextTone(meta.contextPct);
@@ -540,17 +550,20 @@ export function RuntimeMetaRow({ meta }: { meta: SessionMeta }): React.JSX.Eleme
           {meta.longContext && <span className="rt-1m">1M</span>}
         </span>
       )}
-      {meta.thinkingLevel && (
-        <span
-          className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}
-          title={`Reasoning effort: ${meta.thinkingLevel}`}
-        >
-          <span className="rt-think-glyph" aria-hidden>
-            ✦
+      {showEffort && meta.thinkingLevel &&
+        (session ? (
+          <EffortPicker session={session} />
+        ) : (
+          <span
+            className={`rt-pill rt-think rt-think-${meta.thinkingLevel}`}
+            title={`Reasoning effort: ${meta.thinkingLevel}`}
+          >
+            <span className="rt-think-glyph" aria-hidden>
+              ✦
+            </span>
+            {meta.thinkingLevel}
           </span>
-          {meta.thinkingLevel}
-        </span>
-      )}
+        ))}
       {hasCtx && (
         <span className={`rt-ctx rt-ctx-${tone}`} title={ctxTitle}>
           <span className="rt-meter" aria-hidden>

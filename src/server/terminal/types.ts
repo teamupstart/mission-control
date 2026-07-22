@@ -108,6 +108,8 @@ const KEYS = {
   down: true,
   left: true,
   right: true,
+  "shift-up": true,
+  "shift-down": true,
   "shift-tab": true,
 } as const;
 

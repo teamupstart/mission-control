@@ -34,7 +34,7 @@ const FALLBACK_START_SLOP_MS = 30 * 1000;
  * Model and effort are normally written once near the rollout's head. Keep that
  * identity after the file grows beyond the tail window used for live polling.
  */
-const rolloutTurnMeta = new Map<string, Pick<RuntimeMetaRead, "modelId" | "thinkingLevel">>();
+const rolloutTurnMeta = new Map<string, Pick<RuntimeMetaRead, "modelId" | "thinkingLevel" | "effortRevision">>();
 
 /**
  * Forget the retained model/effort for every rollout not in `keep`.
@@ -113,6 +113,17 @@ export function parseSessionMeta(headLine: string | null): CodexSessionMeta | nu
   return { cwd, start: Number.isNaN(start) ? 0 : start, sessionId, subagent };
 }
 
+export function rolloutBelongsToSession(path: string, session: Session): boolean {
+  const meta = parseSessionMeta(readHeadLine(path));
+  if (!meta || meta.subagent) return false;
+  if (session.cwd && meta.cwd !== session.cwd) return false;
+  if (session.agentSessionId) return meta.sessionId === session.agentSessionId;
+  // A retained rollout path cannot establish the identity it is supposed to prove.
+  // Without an agent session id, accept it only when this live session has a cwd that
+  // matches the rollout's own recorded cwd; two absent identities prove nothing.
+  return session.cwd !== null && meta.cwd === session.cwd;
+}
+
 /**
  * Locate the rollout file for a Codex session by matching cwd, choosing the one
  * whose start time is closest to the session's (two Codex sessions in the same
@@ -157,6 +168,10 @@ export function findRolloutForSession(
           const path = join(dDir, f);
           const meta = parseSessionMeta(readHeadLine(path));
           if (!meta || meta.subagent || meta.cwd !== target) continue;
+          if (session.agentSessionId) {
+            if (meta.sessionId === session.agentSessionId) return path;
+            continue;
+          }
           if (startedAt == null) return path; // no start to disambiguate -> newest match
           if (!best || Math.abs(meta.start - startedAt) < Math.abs(best.start - startedAt)) {
             best = { path, start: meta.start };
@@ -197,6 +212,7 @@ function normalizeEffort(effort: unknown): ThinkingLevel | null {
 export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
   let modelId: string | null = null;
   let thinkingLevel: ThinkingLevel | null = null;
+  let effortRevision: string | null = null;
   let contextTokens: number | null = null;
   let contextWindow: number | null = null;
   let haveTurn = false;
@@ -215,6 +231,7 @@ export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
     if (!haveTurn && o.type === "turn_context") {
       if (typeof payload.model === "string") modelId = payload.model;
       thinkingLevel = normalizeEffort(payload.effort);
+      effortRevision = typeof o.timestamp === "string" ? o.timestamp : null;
       haveTurn = true;
     } else if (!haveTokens && o.type === "event_msg" && payload.type === "token_count") {
       const info = (payload.info ?? {}) as Record<string, unknown>;
@@ -241,6 +258,7 @@ export function parseRolloutMeta(lines: string[]): RuntimeMetaRead | null {
     contextPct,
     longContext: isLongContext(contextWindow),
     thinkingLevel,
+    effortRevision,
   };
 }
 
@@ -275,10 +293,18 @@ function readRetainedRolloutMeta(path: string, tailLines: string[]): RuntimeMeta
   // A turn_context always carries a model. This lets a later model/effort change
   // supersede the head value, including an explicitly unsupported/null effort.
   if (tail?.modelId) {
-    turn = { modelId: tail.modelId, thinkingLevel: tail.thinkingLevel };
+    turn = {
+      modelId: tail.modelId,
+      thinkingLevel: tail.thinkingLevel,
+      effortRevision: tail.effortRevision,
+    };
   } else if (!turn) {
     const head = parseRolloutMeta(readHeadLines(path));
-    turn = { modelId: head?.modelId ?? null, thinkingLevel: head?.thinkingLevel ?? null };
+    turn = {
+      modelId: head?.modelId ?? null,
+      thinkingLevel: head?.thinkingLevel ?? null,
+      effortRevision: head?.effortRevision ?? null,
+    };
   }
   rolloutTurnMeta.set(path, turn);
 
@@ -290,6 +316,7 @@ function readRetainedRolloutMeta(path: string, tailLines: string[]): RuntimeMeta
     contextPct: tail?.contextPct ?? null,
     longContext: tail?.longContext ?? false,
     thinkingLevel: tail?.modelId ? tail.thinkingLevel : turn.thinkingLevel,
+    effortRevision: tail?.modelId ? tail.effortRevision : turn.effortRevision,
   };
 }
 

@@ -216,3 +216,53 @@ test("the rollout lookup caches per session and prunes what retain drops", () =>
   codexTranscript.retain?.(new Set<string>());
   assert.equal(codexTranscript.locate(s), null);
 });
+
+test("a Codex clear cannot reuse the prior rollout cache binding", () => {
+  const day = join(home, "codex", "sessions", "2026", "07", "13");
+  mkdirSync(day, { recursive: true });
+  const oldRollout = join(day, "rollout-2026-07-13T10-00-00-old.jsonl");
+  const newRollout = join(day, "rollout-2026-07-13T10-05-00-new.jsonl");
+  writeFileSync(oldRollout, `${JSON.stringify({
+    timestamp: "2026-07-13T10:00:00.000Z",
+    type: "session_meta",
+    payload: { id: "before-clear", timestamp: "2026-07-13T10:00:00.000Z", cwd: "/repo/clear" },
+  })}\n`);
+  writeFileSync(newRollout, `${JSON.stringify({
+    timestamp: "2026-07-13T10:05:00.000Z",
+    type: "session_meta",
+    payload: { id: "after-clear", timestamp: "2026-07-13T10:05:00.000Z", cwd: "/repo/clear" },
+  })}\n`);
+
+  const before = session({
+    id: "cx-clear",
+    agent: "codex",
+    cwd: "/repo/clear",
+    startedAt: Date.parse("2026-07-13T10:00:00.000Z"),
+    agentSessionId: "before-clear",
+  });
+  assert.equal(codexTranscript.locate(before), oldRollout);
+
+  const rebound = { ...before, agentSessionId: "after-clear", transcriptPath: oldRollout };
+  assert.equal(codexTranscript.locate(rebound), null);
+  assert.equal(codexTranscript.locate({ ...rebound, transcriptPath: null }), newRollout);
+});
+
+test("an unidentified Codex session cannot reuse a retained rollout path", () => {
+  const day = join(home, "codex", "sessions", "2026", "07", "14");
+  mkdirSync(day, { recursive: true });
+  const rollout = join(day, "rollout-2026-07-14T10-00-00-unknown.jsonl");
+  writeFileSync(rollout, `${JSON.stringify({
+    timestamp: "2026-07-14T10:00:00.000Z",
+    type: "session_meta",
+    payload: { id: "other-session", timestamp: "2026-07-14T10:00:00.000Z", cwd: "/repo/other" },
+  })}\n`);
+
+  const unidentified = session({
+    id: "cx-unidentified",
+    agent: "codex",
+    cwd: null,
+    agentSessionId: null,
+    transcriptPath: rollout,
+  });
+  assert.equal(codexTranscript.locate(unidentified), null);
+});

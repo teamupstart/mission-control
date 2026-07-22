@@ -245,7 +245,7 @@ export class TaskManager {
           };
         } else {
           const episode = this.registry.workEpisodeForSession(session.id);
-          if (!session.agentSessionId || !episode) {
+          if (!session.agentSessionId || !episode || episode.awaitingAgentRebind) {
             throw new TaskDependencyError("dependency session has no stable work identity yet");
           }
           const observedPr = this.observedPrFor(session);
@@ -728,11 +728,22 @@ export class TaskManager {
         scope: "session",
       };
     }
+    if (done.workIdentityReady === false || (!opts.reset && !done.workIdentityReady)) {
+      return {
+        ok: false,
+        error: "could not confirm the agent's new work identity, so the task was not typed",
+        scope: "session",
+      };
+    }
     if (opts.reset) {
-      this.registry.resetWorkEpisode(s.id, {
-        awaitingAgentRebind: true,
-        previousAgentSessionId: s.agentSessionId,
-      });
+      this.registry.resetWorkEpisode(s.id);
+    }
+    if (this.registry.workEpisodeForSession(s.id)?.awaitingAgentRebind) {
+      return {
+        ok: false,
+        error: "could not confirm the agent's new work identity, so the task was not typed",
+        scope: "session",
+      };
     }
 
     const ready = this.registry.getTask(t.id);

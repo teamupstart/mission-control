@@ -25,6 +25,7 @@ export async function resetSession(
   session: Session,
   clear: boolean,
 ): Promise<ResetResult> {
+  const resetStartedAt = Date.now();
   // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
   // or clear the run in that window.
   const showing = session.nomistakes;
@@ -48,14 +49,22 @@ export async function resetSession(
   // affordance a bare /clear leans on. Keyed on the PRE-reset session, whose note key
   // still names the queue: a /clear only rotates that key once the agent processes it,
   // which is after this returns.
+  let workIdentityReady = false;
   if (r.ok) {
-    registry.resetWorkEpisode(session.id, {
+    const episode = registry.resetWorkEpisode(session.id, {
       awaitingAgentRebind: clear,
       previousAgentSessionId: session.agentSessionId,
+      at: resetStartedAt,
     });
+    workIdentityReady = Boolean(
+      episode &&
+      (!episode.awaitingAgentRebind ||
+        (clear && r.cleared &&
+          await registry.waitForWorkEpisodeReady(session.id, episode.episodeId, 5000)))
+    );
     registry.clearObservedSessionEffort(session.id);
     registry.clearQueue(noteKeyFor(session));
   }
 
-  return r;
+  return { ...r, workIdentityReady };
 }

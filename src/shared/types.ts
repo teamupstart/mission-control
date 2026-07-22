@@ -1866,6 +1866,7 @@ export interface ResetPreview {
 export interface ResetResult {
   ok: boolean;
   error: string | null;
+  workIdentityReady?: boolean;
   /**
    * The worktree root the reset actually ran in (git's own `--show-toplevel`),
    * or null when we never got that far. Identifies which checkout was wiped, so

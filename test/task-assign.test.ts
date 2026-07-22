@@ -453,7 +453,7 @@ test("a reused session attributes its merged PR only to the current task after r
   assert.equal(restarted.getTask("wait-previous")?.dependencies[0]?.satisfiedAt, null);
 });
 
-test("a late post-clear identity preserves assigned task ownership", async () => {
+test("assignment binds only after reset identity is resolved", async () => {
   const { r, tasks, sessionId, clone, agentSessionId } = setupInRepo(
     "mission-assign-late-clear-",
     { gitBranch: "main" },
@@ -466,24 +466,13 @@ test("a late post-clear identity preserves assigned task ownership", async () =>
     inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
   });
   assert.equal(assigned.ok, true, assigned.error);
-  const pendingEpisode = r.workEpisodeForSession(sessionId)!;
-  assert.equal(pendingEpisode.agentSessionId, agentSessionId);
-  assert.equal(pendingEpisode.awaitingAgentRebind, true);
-
-  const restarted = new Registry();
-  restarted.applyDiscovery([
-    mkDiscovered({
-      syntheticId: sessionId,
-      cwd: clone,
-      gitRoot: clone,
-      repoRoot: clone,
-      gitBranch: "main",
-    }),
-  ]);
-  assert.equal(restarted.workEpisodeForSession(sessionId)?.awaitingAgentRebind, true);
+  const assignedEpisode = r.workEpisodeForSession(sessionId)!;
+  assert.equal(assignedEpisode.agentSessionId, agentSessionId);
+  assert.equal(assignedEpisode.awaitingAgentRebind, false);
+  assert.equal(r.getTask("t1")?.sessionId, sessionId);
 
   const reboundAgentSessionId = `${agentSessionId}-after-clear`;
-  restarted.applyHook({
+  r.applyHook({
     agent: "claude",
     event: "Stop",
     sessionId: reboundAgentSessionId,
@@ -491,52 +480,11 @@ test("a late post-clear identity preserves assigned task ownership", async () =>
     transcriptPath: null,
     env: {},
   });
-  const reboundEpisode = restarted.workEpisodeForSession(sessionId)!;
-  assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
+  const reboundEpisode = r.workEpisodeForSession(sessionId)!;
+  assert.notEqual(reboundEpisode.episodeId, assignedEpisode.episodeId);
   assert.equal(reboundEpisode.agentSessionId, reboundAgentSessionId);
   assert.equal(reboundEpisode.awaitingAgentRebind, false);
-  assert.equal(restarted.getTask("t1")?.sessionId, sessionId);
-
-  restarted.upsertTask(
-    mkTask({
-      id: "wait-late-clear",
-      repoRoot: clone,
-      dependencies: [
-        { type: "task", taskId: "t1", title: "Assigned after clear", satisfiedAt: null },
-      ],
-    }),
-  );
-  restarted.applyDiscovery([
-    mkDiscovered({
-      syntheticId: sessionId,
-      cwd: clone,
-      gitRoot: clone,
-      repoRoot: clone,
-      gitBranch: "feat/late-clear",
-    }),
-  ]);
-  restarted.reconcilePrs(
-    new Map([
-      [
-        sessionId,
-        {
-          url: "https://github.com/example/repo/pull/52",
-          number: 52,
-          state: "merged" as const,
-          checks: "passing" as const,
-          branch: "feat/late-clear",
-          agentSessionId: reboundAgentSessionId,
-          episodeId: reboundEpisode.episodeId,
-          createdAt: reboundEpisode.startedAt,
-          headSha: "late-clear-head",
-          worktreeHeadSha: "late-clear-head",
-        },
-      ],
-    ]),
-    new Set(),
-  );
-
-  assert.ok(restarted.getTask("wait-late-clear")?.dependencies[0]?.satisfiedAt);
+  assert.equal(r.getTask("t1")?.sessionId, null);
 });
 
 test("an agent that went busy between the checks and the reset is not reset anyway", async () => {
@@ -651,6 +599,29 @@ test("a clean agent is reset onto origin's default branch and released from its 
   // and an unconfirmed clear stops the assign rather than typing behind it.
   assert.equal(res.ok, false);
   assert.match(res.error!, /clear/);
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+test("assignment does not type before reset identity proof arrives", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-identity-proof-");
+  r.upsertTask(mkTask({ repoRoot: clone }));
+  let typed = false;
+
+  const res = await tasks.assign("t1", sessionId, {
+    paneReady,
+    reset: async () => ({
+      ...(await cleanReset()),
+      workIdentityReady: false,
+    }),
+    inject: async () => {
+      typed = true;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+
+  assert.equal(res.ok, false);
+  assert.match(res.error ?? "", /work identity/);
+  assert.equal(typed, false);
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 

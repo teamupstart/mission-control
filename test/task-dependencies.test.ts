@@ -219,6 +219,19 @@ test("a standalone dependency follows an expected reset identity rebind", () => 
     previousAgentSessionId: "standalone-before-clear",
   });
   const pendingEpisode = registry.workEpisodeForSession(id)!;
+
+  registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: "standalone-after-clear",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    source: "clear",
+  });
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reset-rebind" })]);
+  const reboundEpisode = registry.workEpisodeForSession(id)!;
+  assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
   const dependent = tasks.create({
     ...createInput,
     title: "Wait across reset identity",
@@ -230,20 +243,8 @@ test("a standalone dependency follows an expected reset identity rebind", () => 
     dependent.dependencies[0]?.type === "session"
       ? dependent.dependencies[0].agentSessionId
       : null,
-    "standalone-before-clear",
+    "standalone-after-clear",
   );
-
-  registry.applyHook({
-    agent: "claude",
-    event: "Stop",
-    sessionId: "standalone-after-clear",
-    cwd,
-    transcriptPath: null,
-    env: {},
-  });
-  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/reset-rebind" })]);
-  const reboundEpisode = registry.workEpisodeForSession(id)!;
-  assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
   registry.reconcilePrs(
     new Map([
       [
@@ -290,21 +291,6 @@ test("old-identity work disarms a pending reset rebind", () => {
     previousAgentSessionId: "original-identity",
   });
   const pendingEpisode = registry.workEpisodeForSession(id)!;
-  registry.upsertTask(
-    baseTask({
-      id: "old-identity-task",
-      title: "Work resumed without rebind",
-      status: "running",
-      sessionId: id,
-    }),
-  );
-  assert.equal(registry.bindTaskToWorkEpisode("old-identity-task", id), false);
-  const dependent = tasks.create({
-    ...createInput,
-    title: "Wait for original identity work",
-    backlog: true,
-    dependencies: [{ type: "task", taskId: "old-identity-task" }],
-  });
 
   registry.applyHook({
     agent: "claude",
@@ -317,6 +303,21 @@ test("old-identity work disarms a pending reset rebind", () => {
   });
   assert.equal(registry.workEpisodeForSession(id)?.episodeId, pendingEpisode.episodeId);
   assert.equal(registry.workEpisodeForSession(id)?.awaitingAgentRebind, false);
+  registry.upsertTask(
+    baseTask({
+      id: "old-identity-task",
+      title: "Work resumed without rebind",
+      status: "running",
+      sessionId: id,
+    }),
+  );
+  assert.equal(registry.bindTaskToWorkEpisode("old-identity-task", id), true);
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for original identity work",
+    backlog: true,
+    dependencies: [{ type: "task", taskId: "old-identity-task" }],
+  });
   registry.applyHook({
     agent: "claude",
     event: "SessionStart",
@@ -352,9 +353,120 @@ test("old-identity work disarms a pending reset rebind", () => {
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
 });
 
+test("a later identity without reset proof cannot inherit pending ownership", () => {
+  const registry = new Registry();
+  const id = "unproven-later-identity";
+  const cwd = "/repo/unproven-later-identity";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "identity-before-reset",
+    cwd,
+    transcriptPath: "/transcripts/before.jsonl",
+    env: {},
+  });
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "identity-before-reset",
+  });
+  const pending = registry.workEpisodeForSession(id)!;
+  registry.upsertTask(baseTask({
+    id: "unproven-owner",
+    status: "running",
+    sessionId: id,
+  }));
+  assert.equal(registry.bindTaskToWorkEpisode("unproven-owner", id), false);
+
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "unrelated-later-identity",
+    cwd,
+    transcriptPath: "/transcripts/later.jsonl",
+    env: {},
+  });
+
+  const later = registry.workEpisodeForSession(id)!;
+  assert.notEqual(later.episodeId, pending.episodeId);
+  assert.equal(later.awaitingAgentRebind, false);
+  assert.equal(registry.getTask("unproven-owner")?.sessionId, null);
+});
+
+test("a rejected PR cannot resolve or bind a pending reset episode", () => {
+  const registry = new Registry();
+  const id = "rejected-pr-pending";
+  const cwd = "/repo/rejected-pr-pending";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/rejected" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "rejected-pr-identity",
+    cwd,
+    transcriptPath: "/transcripts/rejected.jsonl",
+    env: {},
+  });
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "rejected-pr-identity",
+    at: Date.now() - 1,
+  });
+  const pending = registry.workEpisodeForSession(id)!;
+  registry.upsertTask(baseTask({
+    id: "rejected-pr-owner",
+    status: "running",
+    sessionId: id,
+  }));
+  assert.equal(registry.bindTaskToWorkEpisode("rejected-pr-owner", id), false);
+
+  registry.reconcilePrs(new Map([[id, prMatch({
+    branch: "feat/rejected",
+    agentSessionId: "rejected-pr-identity",
+    episodeId: pending.episodeId,
+    createdAt: pending.startedAt,
+    headSha: "stale-head",
+    worktreeHeadSha: "current-head",
+  })]]), new Set());
+
+  assert.equal(registry.workEpisodeForSession(id)?.awaitingAgentRebind, true);
+  assert.equal(registry.bindTaskToWorkEpisode("rejected-pr-owner", id), false);
+  assert.equal(registry.getSession(id)?.prUrl, null);
+});
+
+test("passive rollout replacement resolves a hookless reset after restart", () => {
+  const id = "passive-reset-recovery";
+  const cwd = "/repo/passive-reset-recovery";
+  const registry = new Registry();
+  registry.applyDiscovery([discovered(id, cwd, {
+    agent: "codex",
+    gitBranch: "main",
+    agentSessionId: "passive-before",
+    transcriptPath: "/rollouts/before.jsonl",
+  })]);
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "passive-before",
+    at: Date.now() - 1,
+  });
+  const pending = registry.workEpisodeForSession(id)!;
+
+  const restarted = new Registry();
+  restarted.applyDiscovery([discovered(id, cwd, {
+    agent: "codex",
+    gitBranch: "feat/passive-reset",
+    agentSessionId: "passive-after",
+    transcriptPath: "/rollouts/after.jsonl",
+  })]);
+
+  const resolved = restarted.workEpisodeForSession(id)!;
+  assert.equal(resolved.episodeId, pending.episodeId);
+  assert.equal(resolved.agentSessionId, "passive-after");
+  assert.equal(resolved.awaitingAgentRebind, false);
+  assert.equal(resolved.rebindFromTranscriptPath, null);
+});
+
 test("a delayed daemon restart resolves pending ownership from hook identity", () => {
   const registry = new Registry();
-  const tasks = new TaskManager(registry);
   const id = "delayed-restart-rebind";
   const cwd = "/repo/delayed-restart-rebind";
   registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
@@ -372,23 +484,9 @@ test("a delayed daemon restart resolves pending ownership from hook identity", (
     at: 1,
   });
   const pendingEpisode = registry.workEpisodeForSession(id)!;
-  registry.upsertTask(
-    baseTask({
-      id: "delayed-restart-task",
-      title: "Survive delayed restart",
-      status: "running",
-      sessionId: id,
-    }),
-  );
-  assert.equal(registry.bindTaskToWorkEpisode("delayed-restart-task", id), false);
-  const dependent = tasks.create({
-    ...createInput,
-    title: "Wait for delayed restart work",
-    backlog: true,
-    dependencies: [{ type: "task", taskId: "delayed-restart-task" }],
-  });
 
   const restarted = new Registry();
+  const restartedTasks = new TaskManager(restarted);
   restarted.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/delayed-restart" })]);
   assert.equal(restarted.workEpisodeForSession(id)?.episodeId, pendingEpisode.episodeId);
   assert.equal(restarted.workEpisodeForSession(id)?.awaitingAgentRebind, true);
@@ -405,7 +503,21 @@ test("a delayed daemon restart resolves pending ownership from hook identity", (
   assert.equal(reboundEpisode.episodeId, pendingEpisode.episodeId);
   assert.equal(reboundEpisode.agentSessionId, "restart-after-clear");
   assert.equal(reboundEpisode.awaitingAgentRebind, false);
-  assert.equal(restarted.getTask("delayed-restart-task")?.sessionId, id);
+  restarted.upsertTask(
+    baseTask({
+      id: "delayed-restart-task",
+      title: "Survive delayed restart",
+      status: "running",
+      sessionId: id,
+    }),
+  );
+  assert.equal(restarted.bindTaskToWorkEpisode("delayed-restart-task", id), true);
+  const dependent = restartedTasks.create({
+    ...createInput,
+    title: "Wait for delayed restart work",
+    backlog: true,
+    dependencies: [{ type: "task", taskId: "delayed-restart-task" }],
+  });
   restarted.reconcilePrs(
     new Map([
       [
@@ -425,7 +537,7 @@ test("a delayed daemon restart resolves pending ownership from hook identity", (
   );
 
   assert.ok(restarted.getTask(dependent.id)?.dependencies[0]?.satisfiedAt);
-  assert.deepEqual(tasks.dependencyBlockers(restarted.getTask(dependent.id)!), []);
+  assert.deepEqual(restartedTasks.dependencyBlockers(restarted.getTask(dependent.id)!), []);
 });
 
 test("a reused standalone session cannot satisfy an earlier episode with an unrelated PR", () => {

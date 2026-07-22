@@ -761,7 +761,17 @@ export class Registry extends EventEmitter {
     if (prev && this.clearEffortTrackingOnRebind(prev, base) && base.meta) {
       base.meta = { ...base.meta, thinkingLevel: null };
     }
-    this.ensureWorkEpisode(base, now);
+    this.ensureWorkEpisode(
+      base,
+      now,
+      d.agentSessionId && d.transcriptPath
+        ? {
+            kind: "passive_identity",
+            agentSessionId: d.agentSessionId,
+            transcriptPath: d.transcriptPath,
+          }
+        : { kind: "none" },
+    );
     base.task = this.taskSummaryFor(base.id, base.cwd);
     return base;
   }
@@ -859,10 +869,16 @@ export class Registry extends EventEmitter {
         next,
         ts,
         evt.sessionId
-          ? evt.event === "SessionStart" || evt.event === "SessionEnd"
-            ? "hook_identity"
-            : "hook_work"
-          : "none",
+          ? evt.event === "SessionStart" && evt.source === "clear"
+            ? {
+                kind: "clear_start",
+                agentSessionId: evt.sessionId,
+                transcriptPath: evt.transcriptPath ?? null,
+              }
+            : evt.event === "SessionStart" || evt.event === "SessionEnd"
+              ? { kind: "hook_identity" }
+              : { kind: "hook_work" }
+          : { kind: "none" },
       );
       next.task = this.taskSummaryFor(next.id, next.cwd);
       if (
@@ -1386,6 +1402,7 @@ export class Registry extends EventEmitter {
     startedAt: number,
     invalidateOwnership = true,
     awaitingAgentRebind = false,
+    rebindFromTranscriptPath: string | null = null,
   ): SessionWorkEpisode | null {
     if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
     this.prObservations.delete(sessionId);
@@ -1401,6 +1418,7 @@ export class Registry extends EventEmitter {
       prUrl: null,
       prHeadSha: null,
       awaitingAgentRebind,
+      rebindFromTranscriptPath: awaitingAgentRebind ? rebindFromTranscriptPath : null,
       startedAt,
       updatedAt: startedAt,
     };
@@ -1429,20 +1447,24 @@ export class Registry extends EventEmitter {
       ...episode,
       agentSessionId,
       awaitingAgentRebind: false,
+      rebindFromTranscriptPath: null,
       updatedAt: now,
     };
     if (episode.agentSessionId === agentSessionId) replaceSessionWorkEpisode(next);
-    const taskId = dbTaskIdForSession(episode.sessionId);
-    if (taskId && !taskWorkEpisodeForTask(taskId)) {
-      this.bindTaskToWorkEpisode(taskId, episode.sessionId, next, now);
-    }
+    this.invalidateTaskOwnership(episode.sessionId);
     return next;
   }
 
   private ensureWorkEpisode(
     session: Session,
     now = Date.now(),
-    evidence: "none" | "hook_identity" | "hook_work" = "none",
+    evidence:
+      | { kind: "none" | "hook_identity" | "hook_work" }
+      | {
+          kind: "clear_start" | "passive_identity";
+          agentSessionId: string;
+          transcriptPath: string | null;
+        } = { kind: "none" },
   ): SessionWorkEpisode | null {
     if (!session.agentSessionId) return null;
     let existing = sessionWorkEpisodeFor(session.id);
@@ -1461,15 +1483,26 @@ export class Registry extends EventEmitter {
       return episode;
     }
     if (existing.agentSessionId !== session.agentSessionId) {
-      if (
+      const identityEvidence =
+        evidence.kind === "clear_start" || evidence.kind === "passive_identity"
+          ? evidence
+          : null;
+      const pathReplaced = existing.rebindFromTranscriptPath === null
+        ? identityEvidence?.kind === "clear_start" || identityEvidence?.transcriptPath !== null
+        : identityEvidence?.transcriptPath !== null &&
+          identityEvidence?.transcriptPath !== existing.rebindFromTranscriptPath;
+      const canResolvePending = Boolean(
         existing.awaitingAgentRebind &&
-        (evidence === "none" || now < existing.startedAt)
-      ) {
+        identityEvidence &&
+        identityEvidence.agentSessionId === session.agentSessionId &&
+        now >= existing.startedAt &&
+        pathReplaced
+      );
+      if (canResolvePending) {
+        const rebound = this.resolvePendingWorkEpisode(existing, session.agentSessionId, now);
+        if (rebound) existing = rebound;
+      } else if (existing.awaitingAgentRebind && evidence.kind === "none") {
         return existing;
-      }
-      const rebound = this.resolvePendingWorkEpisode(existing, session.agentSessionId, now);
-      if (existing.awaitingAgentRebind && rebound) {
-        existing = rebound;
       } else {
         return this.startWorkEpisode(
           session.id,
@@ -1481,7 +1514,7 @@ export class Registry extends EventEmitter {
     }
     if (
       existing.awaitingAgentRebind &&
-      evidence === "hook_work" &&
+      evidence.kind === "hook_work" &&
       now >= existing.startedAt
     ) {
       const resumed = this.resolvePendingWorkEpisode(existing, existing.agentSessionId, now);
@@ -1524,26 +1557,51 @@ export class Registry extends EventEmitter {
       previousAgentSessionId?: string | null;
       at?: number;
     } = {},
-  ): void {
+  ): SessionWorkEpisode | null {
     const session = this.sessions.get(sessionId);
     const at = options.at ?? Date.now();
     const awaitingAgentRebind = Boolean(
       options.awaitingAgentRebind &&
       session?.agentSessionId === options.previousAgentSessionId
     );
-    this.startWorkEpisode(
+    return this.startWorkEpisode(
       sessionId,
       session?.agentSessionId ?? null,
       null,
       at,
       true,
       awaitingAgentRebind,
+      session?.transcriptPath ?? null,
     );
   }
 
   workEpisodeForSession(sessionId: string): SessionWorkEpisode | null {
     const session = this.sessions.get(sessionId);
     return session ? this.ensureWorkEpisode(session) : sessionWorkEpisodeFor(sessionId);
+  }
+
+  waitForWorkEpisodeReady(
+    sessionId: string,
+    episodeId: string,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    const current = sessionWorkEpisodeFor(sessionId);
+    if (current?.episodeId !== episodeId) return Promise.resolve(false);
+    if (!current.awaitingAgentRebind) return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      const timer = unref(setTimeout(() => {
+        unsub();
+        resolve(false);
+      }, timeoutMs));
+      const unsub = this.subscribe((event) => {
+        if (event.type !== "session_upsert" || event.session.id !== sessionId) return;
+        const episode = sessionWorkEpisodeFor(sessionId);
+        if (episode?.episodeId === episodeId && episode.awaitingAgentRebind) return;
+        clearTimeout(timer);
+        unsub();
+        resolve(episode?.episodeId === episodeId);
+      });
+    });
   }
 
   bindTaskToWorkEpisode(
@@ -1589,16 +1647,11 @@ export class Registry extends EventEmitter {
     at: number,
   ): SessionWorkEpisode | null {
     if (!match.episodeId || !session.agentSessionId) return null;
-    let episode = sessionWorkEpisodeFor(session.id);
-    if (
-      episode?.awaitingAgentRebind &&
-      episode.agentSessionId === match.agentSessionId
-    ) {
-      episode = this.resolvePendingWorkEpisode(episode, episode.agentSessionId, at);
-    }
+    const episode = sessionWorkEpisodeFor(session.id);
     const firstAssociation = episode?.prUrl === null;
     if (
       !episode ||
+      episode.awaitingAgentRebind ||
       episode.episodeId !== match.episodeId ||
       episode.agentSessionId !== match.agentSessionId ||
       match.branch !== session.gitBranch ||

@@ -184,6 +184,7 @@ export function openDb(): DatabaseSync {
       pr_url           TEXT,
       pr_head_sha      TEXT,
       awaiting_agent_rebind INTEGER NOT NULL DEFAULT 0,
+      rebind_from_transcript_path TEXT,
       started_at       INTEGER NOT NULL,
       updated_at       INTEGER NOT NULL
     );
@@ -727,6 +728,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
   d.exec(`
     WITH ranked AS (
       SELECT id, ROW_NUMBER() OVER (
@@ -1708,6 +1710,7 @@ export interface SessionWorkEpisode {
   prUrl: string | null;
   prHeadSha: string | null;
   awaitingAgentRebind: boolean;
+  rebindFromTranscriptPath: string | null;
   startedAt: number;
   updatedAt: number;
 }
@@ -1732,6 +1735,7 @@ type SessionWorkEpisodeRow = {
   pr_url: string | null;
   pr_head_sha: string | null;
   awaiting_agent_rebind: number;
+  rebind_from_transcript_path: string | null;
   started_at: number;
   updated_at: number;
 };
@@ -1757,6 +1761,7 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
     awaitingAgentRebind: Boolean(row.awaiting_agent_rebind),
+    rebindFromTranscriptPath: row.rebind_from_transcript_path,
     startedAt: row.started_at,
     updatedAt: row.updated_at,
   };
@@ -1788,8 +1793,8 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
     .prepare(
       `INSERT INTO session_work_episodes
          (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha,
-          awaiting_agent_rebind, started_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          episode_id       = excluded.episode_id,
          agent_session_id = excluded.agent_session_id,
@@ -1797,6 +1802,7 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
          awaiting_agent_rebind = excluded.awaiting_agent_rebind,
+         rebind_from_transcript_path = excluded.rebind_from_transcript_path,
          started_at       = excluded.started_at,
          updated_at       = excluded.updated_at`,
     )
@@ -1808,6 +1814,7 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
       episode.prUrl,
       episode.prHeadSha,
       episode.awaitingAgentRebind ? 1 : 0,
+      episode.rebindFromTranscriptPath,
       episode.startedAt,
       episode.updatedAt,
     );
@@ -1826,7 +1833,8 @@ export function rebindPendingSessionWorkEpisode(
     const result = d
       .prepare(
         `UPDATE session_work_episodes
-         SET agent_session_id = ?, awaiting_agent_rebind = 0, updated_at = ?
+         SET agent_session_id = ?, awaiting_agent_rebind = 0,
+             rebind_from_transcript_path = NULL, updated_at = ?
          WHERE session_id = ? AND episode_id = ? AND awaiting_agent_rebind = 1`,
       )
       .run(agentSessionId, now, sessionId, episodeId);

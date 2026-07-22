@@ -155,7 +155,7 @@ export interface StateDisplay {
  * strip already brands itself "no-mistakes", so the badge names the agent's own
  * state instead of repeating it.
  */
-export function stateDisplay(session: Session): StateDisplay {
+export function stateDisplay(session: Session, gateNeedsYou: boolean): StateDisplay {
   if (session.state === "exited") return { label: "exited", tone: "exited" };
   // A pending review always needs you, regardless of the agent's own state.
   if (session.pendingReviews > 0) {
@@ -168,6 +168,13 @@ export function stateDisplay(session: Session): StateDisplay {
   // definitively blocked session on the board. Mirrors `reportBucket`.
   if (activePaneDialog(session)) {
     return { label: "needs an answer", tone: "attention" };
+  }
+  // A parked no-mistakes gate is a cross-session decision: another session carrying
+  // the same run may still be driving it. App computes that once with `gateParked` and
+  // every layout passes the answer here. Keeping the boolean required makes a new
+  // status surface choose deliberately instead of silently filing the gate as idle.
+  if (gateNeedsYou) {
+    return { label: "needs decision", tone: "attention" };
   }
   const validating: StateDisplay = { label: "validating", tone: "working" };
   if (!session.stateConfirmed) {

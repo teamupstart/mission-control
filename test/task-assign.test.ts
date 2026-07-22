@@ -1,5 +1,5 @@
 import { test, after } from "node:test";
-import { mkMuxHandle, mkTask as baseTask } from "./helpers/session-fixture.ts";
+import { mkMuxHandle, mkTask as baseTask, nm } from "./helpers/session-fixture.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -126,6 +126,23 @@ test("a busy agent is refused - the prompt would land mid-turn", async () => {
   const res = await tasks.assign("t1", live.id);
   assert.equal(res.ok, false);
   assert.match(res.error!, /drop onto an idle one/);
+  assert.equal(r.getTask("t1")?.status, "backlog");
+});
+
+test("an idle agent parked at a no-mistakes gate is refused", async () => {
+  const branch = "feature/review";
+  const { r, tasks, sessionId } = setup({ gitBranch: branch });
+  r.reconcileNomistakes([
+    nm({ branch, awaitingAgent: "parked 10s", gateStep: "review" }),
+  ]);
+  assert.equal(r.getSession(sessionId)?.state, "idle");
+  assert.equal(r.getSession(sessionId)?.nomistakes?.gateStep, "review");
+
+  r.upsertTask(mkTask());
+  const res = await tasks.assign("t1", sessionId);
+  assert.equal(res.ok, false);
+  assert.match(res.error!, /no-mistakes gate waiting on you/);
+  assert.match(res.error!, /resolve it first/);
   assert.equal(r.getTask("t1")?.status, "backlog");
 });
 

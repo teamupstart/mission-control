@@ -51,7 +51,7 @@ export function SessionTile({
   /** The drop needs a yes: the handover would take something from this agent. */
   onDropConfirm: (pending: { taskId: string; confirm: AssignResetConfirm }) => void;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  const st = stateDisplay(session, gateNeedsYou);
   // A run always produces a gate line, and the line always carries the run's segments:
   // pairing them here is what lets the tile head drop its own diamond (below) on the
   // strength of a single guard rather than re-deriving the invariant at each use.
@@ -64,7 +64,7 @@ export function SessionTile({
     [registerEl, session.id],
   );
 
-  const droppable = canAcceptTask(session, draggingRepo);
+  const droppable = canAcceptTask(session, draggingRepo, gateNeedsYou);
 
   return (
     <div

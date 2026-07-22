@@ -116,6 +116,22 @@ test("a parked gate reads in attention tone", () => {
   assert.match(html, /step 1 \/ 2/);
 });
 
+test("a parked idle session is presented under needs you, not idle", () => {
+  const session = mkSession({
+    state: "idle",
+    nomistakes: nm({
+      awaitingAgent: "parked 10s",
+      gateStep: "review",
+      steps: [{ step: "review", status: "awaiting_approval", findings: 1 }],
+    }),
+  });
+  const view = { ...props([session]), gateAlerts: new Set([session.id]) };
+  const html = renderToStaticMarkup(createElement(BoardView, view));
+  assert.match(html, /class="board-col tone-attention/);
+  assert.match(html, /<h2>needs you<\/h2>/);
+  assert.doesNotMatch(html, /class="tile tone-idle/);
+});
+
 test("a landed gate names its outcome and drops the step position", () => {
   const passed = nm({
     status: "completed",

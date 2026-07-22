@@ -54,9 +54,13 @@ function insp(over: Partial<NonNullable<Session["inspector"]>> = {}): Session["i
   };
 }
 
-function card(over: Partial<Session> = {}): string {
+function card(over: Partial<Session> = {}, gateNeedsYou = false): string {
   return renderToStaticMarkup(
-    createElement(SessionCard, { session: mkSession(over), onOpenReviews: () => {} }),
+    createElement(SessionCard, {
+      session: mkSession(over),
+      gateNeedsYou,
+      onOpenReviews: () => {},
+    }),
   );
 }
 
@@ -285,10 +289,31 @@ test("the card's state badge is the shared StateBadge", () => {
   for (const pendingReviews of [0, 2]) {
     const session = mkSession({ pendingReviews });
     assert.ok(
-      card({ pendingReviews }).includes(bit(StateBadge, { session, onOpenReviews: () => {} })),
+      card({ pendingReviews }).includes(
+        bit(StateBadge, { session, gateNeedsYou: false, onOpenReviews: () => {} }),
+      ),
       `card should render the shared StateBadge with ${pendingReviews} pending reviews`,
     );
   }
+});
+
+test("a parked no-mistakes gate gives cards and rails the same attention status", () => {
+  const session = mkSession({ state: "idle", pendingReviews: 0 });
+  const badge = bit(StateBadge, { session, gateNeedsYou: true, onOpenReviews: () => {} });
+  const rail = renderToStaticMarkup(
+    createElement(RailRow, {
+      session,
+      selected: false,
+      gateNeedsYou: true,
+      onSelect: () => {},
+    }),
+  );
+
+  assert.ok(card({ state: "idle", pendingReviews: 0 }, true).includes(badge));
+  assert.match(badge, /badge-attention/);
+  assert.match(badge, /needs decision/);
+  assert.match(rail, /tone-attention/);
+  assert.match(rail, /needs decision/);
 });
 
 test("the card's title and rename affordance are the shared SessionTitle", () => {
@@ -434,7 +459,7 @@ test("card and console detail agree on every shared leaf", () => {
   for (const [name, fragment] of [
     ["AgentDot", bit(AgentDot, { agent: session.agent })],
     ["PrChip", bit(PrChip, { session })],
-    ["StateBadge", bit(StateBadge, { session, onOpenReviews: () => {} })],
+    ["StateBadge", bit(StateBadge, { session, gateNeedsYou: false, onOpenReviews: () => {} })],
     ["InspectorChip", bit(InspectorChip, { session })],
     ["RuntimeMetaRow", bit(RuntimeMetaRow, { meta: session.meta! })],
     ["CostChip", bit(CostChip, { cost: session.cost })],

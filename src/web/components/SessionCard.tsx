@@ -141,7 +141,7 @@ export function SessionCard({
   /** Live pending review ids, so Foreman's Approve can tell a since-resolved draft is stale. */
   pendingReviewIds?: ReadonlySet<string>;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  const st = stateDisplay(session, gateNeedsYou);
   const attention = st.tone === "attention";
   const canSend = canWriteTo(session);
   const canRename = canRenameSession(session);
@@ -192,7 +192,7 @@ export function SessionCard({
         </div>
         <PrChip session={session} />
         <InspectorChip session={session} />
-        <StateBadge session={session} onOpenReviews={onOpenReviews} />
+        <StateBadge session={session} gateNeedsYou={gateNeedsYou} onOpenReviews={onOpenReviews} />
         {attention &&
           session.note &&
           (session.note.disposition === "escalated" ||

@@ -331,12 +331,15 @@ export function PrTileFlag({ session }: { session: Session }): React.JSX.Element
 /** The status badge; a button that opens the reviews modal when there are pending reviews. */
 export function StateBadge({
   session,
+  gateNeedsYou,
   onOpenReviews,
 }: {
   session: Session;
+  /** Cross-session verdict for a parked no-mistakes gate. */
+  gateNeedsYou: boolean;
   onOpenReviews?: () => void;
 }): React.JSX.Element {
-  const st = stateDisplay(session);
+  const st = stateDisplay(session, gateNeedsYou);
   if (session.pendingReviews > 0 && onOpenReviews) {
     return (
       <button

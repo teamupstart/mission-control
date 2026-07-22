@@ -255,10 +255,14 @@ function BacklogCard({
  * The server re-checks in `TaskManager.assign` regardless, because a session can go
  * busy between the hover and the drop.
  */
-export function canAcceptTask(session: Session, repoRoot: string | null): boolean {
+export function canAcceptTask(
+  session: Session,
+  repoRoot: string | null,
+  gateNeedsYou: boolean,
+): boolean {
   if (!repoRoot) return false;
   if (!session.instrumented) return false;
-  if (stateDisplay(session).tone !== "idle") return false;
+  if (stateDisplay(session, gateNeedsYou).tone !== "idle") return false;
   return session.repoRoot != null && session.repoRoot === repoRoot;
 }
 

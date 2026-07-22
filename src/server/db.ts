@@ -184,6 +184,7 @@ export function openDb(): DatabaseSync {
       pr_url           TEXT,
       pr_head_sha      TEXT,
       merged_at        INTEGER,
+      prompted_at      INTEGER,
       awaiting_agent_rebind INTEGER NOT NULL DEFAULT 0,
       rebind_from_transcript_path TEXT,
       started_at       INTEGER NOT NULL,
@@ -732,6 +733,7 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "session_work_episodes", "awaiting_agent_rebind", "INTEGER NOT NULL DEFAULT 0");
   addColumn(d, "session_work_episodes", "rebind_from_transcript_path", "TEXT");
   addColumn(d, "session_work_episodes", "merged_at", "INTEGER");
+  addColumn(d, "session_work_episodes", "prompted_at", "INTEGER");
   addColumn(d, "task_work_episode_bindings", "merged_at", "INTEGER");
   d.exec(`
     WITH ranked AS (
@@ -1714,6 +1716,7 @@ export interface SessionWorkEpisode {
   prUrl: string | null;
   prHeadSha: string | null;
   mergedAt: number | null;
+  promptedAt: number | null;
   awaitingAgentRebind: boolean;
   rebindFromTranscriptPath: string | null;
   startedAt: number;
@@ -1741,6 +1744,7 @@ type SessionWorkEpisodeRow = {
   pr_url: string | null;
   pr_head_sha: string | null;
   merged_at: number | null;
+  prompted_at: number | null;
   awaiting_agent_rebind: number;
   rebind_from_transcript_path: string | null;
   started_at: number;
@@ -1769,6 +1773,7 @@ function sessionWorkEpisodeFromRow(row: SessionWorkEpisodeRow): SessionWorkEpiso
     prUrl: row.pr_url,
     prHeadSha: row.pr_head_sha,
     mergedAt: row.merged_at,
+    promptedAt: row.prompted_at,
     awaitingAgentRebind: Boolean(row.awaiting_agent_rebind),
     rebindFromTranscriptPath: row.rebind_from_transcript_path,
     startedAt: row.started_at,
@@ -1802,9 +1807,9 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
   openDb()
     .prepare(
       `INSERT INTO session_work_episodes
-         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at,
+         (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, prompted_at,
           awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET
          episode_id       = excluded.episode_id,
          agent_session_id = excluded.agent_session_id,
@@ -1812,6 +1817,7 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
          pr_url           = excluded.pr_url,
          pr_head_sha      = excluded.pr_head_sha,
          merged_at        = excluded.merged_at,
+         prompted_at      = excluded.prompted_at,
          awaiting_agent_rebind = excluded.awaiting_agent_rebind,
          rebind_from_transcript_path = excluded.rebind_from_transcript_path,
          started_at       = excluded.started_at,
@@ -1825,6 +1831,7 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
       episode.prUrl,
       episode.prHeadSha,
       episode.mergedAt,
+      episode.promptedAt,
       episode.awaitingAgentRebind ? 1 : 0,
       episode.rebindFromTranscriptPath,
       episode.startedAt,
@@ -1954,6 +1961,21 @@ export function updateWorkEpisodePr(
   return true;
 }
 
+export function recordWorkEpisodePrompt(
+  sessionId: string,
+  episodeId: string,
+  promptedAt: number,
+): boolean {
+  const result = openDb()
+    .prepare(
+      `UPDATE session_work_episodes
+       SET prompted_at = MAX(COALESCE(prompted_at, 0), ?), updated_at = MAX(updated_at, ?)
+       WHERE session_id = ? AND episode_id = ?`,
+    )
+    .run(promptedAt, promptedAt, sessionId, episodeId);
+  return Number(result.changes) > 0;
+}
+
 export function markWorkEpisodeMerged(
   sessionId: string,
   episodeId: string,
@@ -1967,14 +1989,14 @@ export function markWorkEpisodeMerged(
     const session = d
       .prepare(
         `UPDATE session_work_episodes
-         SET merged_at = COALESCE(merged_at, ?), updated_at = ?
+         SET merged_at = COALESCE(merged_at, ?), updated_at = MAX(updated_at, ?)
          WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
       )
       .run(now, now, sessionId, episodeId, prUrl);
     const binding = d
       .prepare(
         `UPDATE task_work_episode_bindings
-         SET merged_at = COALESCE(merged_at, ?), updated_at = ?
+         SET merged_at = COALESCE(merged_at, ?), updated_at = MAX(updated_at, ?)
          WHERE session_id = ? AND episode_id = ? AND pr_url = ?`,
       )
       .run(now, now, sessionId, episodeId, prUrl);

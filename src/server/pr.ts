@@ -16,14 +16,59 @@ import { run } from "./util/exec.ts";
 // still see the PR that carried it, right up until the session is reset onto a
 // different branch. Only a *closed-unmerged* PR is treated as "no PR".
 //
-// Cheap by construction: only feature-branch sessions are queried (one `gh` call
-// per distinct worktree), and an all-idle or all-on-main dashboard spawns nothing.
+// Cheap by construction: live sessions cost one `gh` call per distinct worktree;
+// persisted dependency links are concurrency-limited and back off independently.
 
 /** Branches that never carry a PR, so we never spend a `gh` call on them. */
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
 type PrLookup = "error" | null | Omit<PrMatch, "branch" | "agentSessionId" | "episodeId">;
-type PrStateLookup = "error" | PrState | null;
+type PrStateMatch = { state: PrState; mergedAt: number | null };
+type PrStateLookup = "error" | PrStateMatch | null;
+
+const DEPENDENCY_PR_CONCURRENCY = 4;
+const DEPENDENCY_PR_MAX_BACKOFF_MS = 5 * 60_000;
+
+export class DependencyPrPollState {
+  private entries = new Map<string, { attempts: number; nextAt: number }>();
+
+  due(urls: string[], now: number): string[] {
+    const current = new Set(urls);
+    for (const url of this.entries.keys()) {
+      if (!current.has(url)) this.entries.delete(url);
+    }
+    return urls.filter((url) => (this.entries.get(url)?.nextAt ?? 0) <= now);
+  }
+
+  record(url: string, result: PrStateLookup, now: number): void {
+    if (result !== "error" && result?.state === "merged") {
+      this.entries.delete(url);
+      return;
+    }
+    const attempts = (this.entries.get(url)?.attempts ?? 0) + 1;
+    const delay = Math.min(
+      PR_POLL_MS * 2 ** Math.min(attempts - 1, 8),
+      DEPENDENCY_PR_MAX_BACKOFF_MS,
+    );
+    this.entries.set(url, { attempts, nextAt: now + delay });
+  }
+}
+
+async function forEachConcurrent<T>(
+  values: T[],
+  limit: number,
+  visit: (value: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, values.length) }, async () => {
+      while (next < values.length) {
+        const value = values[next++];
+        if (value !== undefined) await visit(value);
+      }
+    }),
+  );
+}
 
 /**
  * Ask `gh` for the pull request whose head is `branch`, run from `cwd` so `gh`
@@ -45,7 +90,7 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
         "--state",
         "all",
         "--json",
-        "url,number,state,statusCheckRollup,createdAt,headRefOid",
+        "url,number,state,statusCheckRollup,createdAt,mergedAt,headRefOid",
         "--limit",
         "20",
       ],
@@ -63,22 +108,27 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
     const open = arr.find((p) => prStateOf(p) === "open");
     const match = open ?? arr.find((p) => prStateOf(p) === "merged");
     if (!match) return null;
-    const { url, number, createdAt, headRefOid } = match as {
+    const { url, number, createdAt, mergedAt, headRefOid } = match as {
       url?: unknown;
       number?: unknown;
       createdAt?: unknown;
+      mergedAt?: unknown;
       headRefOid?: unknown;
     };
+    const state = prStateOf(match);
     const createdAtMs = typeof createdAt === "string" ? Date.parse(createdAt) : Number.NaN;
+    const mergedAtMs = typeof mergedAt === "string" ? Date.parse(mergedAt) : Number.NaN;
     if (typeof url !== "string" || !Number.isFinite(createdAtMs) || typeof headRefOid !== "string") {
       return "error";
     }
+    if (state === "merged" && !Number.isFinite(mergedAtMs)) return "error";
     return {
       url,
       number: typeof number === "number" ? number : null,
-      state: prStateOf(match) as PrState,
+      state: state as PrState,
       checks: checksOf(match),
       createdAt: createdAtMs,
+      mergedAt: state === "merged" ? mergedAtMs : null,
       headSha: headRefOid,
       worktreeHeadSha,
     };
@@ -88,10 +138,15 @@ async function queryPr(cwd: string, branch: string): Promise<PrLookup> {
 }
 
 async function queryPrUrl(url: string): Promise<PrStateLookup> {
-  const res = await run("gh", ["pr", "view", url, "--json", "state"], { timeoutMs: 8000 });
+  const res = await run("gh", ["pr", "view", url, "--json", "state,mergedAt"], { timeoutMs: 8000 });
   if (res.code !== 0) return "error";
   try {
-    return prStateOf(JSON.parse(res.stdout));
+    const parsed = JSON.parse(res.stdout) as { state?: unknown; mergedAt?: unknown };
+    const state = prStateOf(parsed);
+    if (state === null) return parsed.state === "CLOSED" ? null : "error";
+    if (state === "open") return { state, mergedAt: null };
+    const mergedAt = typeof parsed.mergedAt === "string" ? Date.parse(parsed.mergedAt) : Number.NaN;
+    return Number.isFinite(mergedAt) ? { state, mergedAt } : "error";
   } catch {
     return "error";
   }
@@ -174,6 +229,8 @@ export async function pollAndReconcilePrs(
   registry: Registry,
   lookup: (cwd: string, branch: string) => Promise<PrLookup> = queryPr,
   lookupUrl: (url: string) => Promise<PrStateLookup> = queryPrUrl,
+  dependencyState = new DependencyPrPollState(),
+  now = Date.now(),
 ): Promise<void> {
   const targets = registry.prPollTargets();
   const dependencyUrls = registry.dependencyPrPollTargets();
@@ -210,14 +267,26 @@ export async function pollAndReconcilePrs(
     }
     // r === null (no open/merged PR) -> omitted from both -> reconcile clears the chip
   }
-  const observedUrls = new Set([...found.values()].map((match) => match.url));
-  const mergedUrls = new Set(
-    [...found.values()].filter((match) => match.state === "merged").map((match) => match.url),
-  );
-  await Promise.all(
-    dependencyUrls.filter((url) => !observedUrls.has(url)).map(async (url) => {
-      if (await lookupUrl(url) === "merged") mergedUrls.add(url);
-    }),
+  const observed = new Map([...found.values()].map((match) => [match.url, match]));
+  const mergedUrls = new Map<string, number>();
+  const dueUrls = dependencyState.due(dependencyUrls, now);
+  for (const url of dependencyUrls) {
+    const match = observed.get(url);
+    if (!match) continue;
+    if (match.state === "merged" && match.mergedAt !== null) {
+      mergedUrls.set(url, match.mergedAt);
+    }
+  }
+  await forEachConcurrent(
+    dueUrls.filter((url) => !observed.has(url)),
+    DEPENDENCY_PR_CONCURRENCY,
+    async (url) => {
+      const result = await lookupUrl(url);
+      dependencyState.record(url, result, now);
+      if (result !== "error" && result?.state === "merged" && result.mergedAt !== null) {
+        mergedUrls.set(url, result.mergedAt);
+      }
+    },
   );
   registry.reconcilePrs(found, skip);
   registry.reconcileDependencyPrMerges(mergedUrls);
@@ -231,11 +300,12 @@ export async function pollAndReconcilePrs(
 export function startPrPoller(registry: Registry): () => void {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  const dependencyState = new DependencyPrPollState();
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      await pollAndReconcilePrs(registry);
+      await pollAndReconcilePrs(registry, queryPr, queryPrUrl, dependencyState);
     } catch (err) {
       console.error("[pr] poll failed:", err);
     }

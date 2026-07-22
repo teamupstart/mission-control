@@ -32,7 +32,7 @@ function disco(over: Partial<DiscoveredSession>): DiscoveredSession {
 const PR = "https://github.com/o/r/pull/42";
 
 function match(over: Partial<PrMatch> = {}): PrMatch {
-  return {
+  const result: PrMatch = {
     url: PR,
     number: 42,
     state: "open",
@@ -41,10 +41,13 @@ function match(over: Partial<PrMatch> = {}): PrMatch {
     agentSessionId: null,
     episodeId: null,
     createdAt: null,
+    mergedAt: null,
     headSha: null,
     worktreeHeadSha: null,
     ...over,
   };
+  if (result.state === "merged" && result.mergedAt === null) result.mergedAt = Date.now();
+  return result;
 }
 
 test("reconcilePrs sets the open PR on the matching session", () => {

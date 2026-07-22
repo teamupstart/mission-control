@@ -11,7 +11,7 @@ const home = mkdtempSync(join(tmpdir(), "mission-task-dependencies-"));
 process.env.HARNESS_HOME = home;
 const { Registry } = await import("../src/server/registry.ts");
 const { TaskManager } = await import("../src/server/tasks.ts");
-const { pollAndReconcilePrs } = await import("../src/server/pr.ts");
+const { DependencyPrPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
 
@@ -48,7 +48,7 @@ function discovered(
 }
 
 function prMatch(over: Partial<PrMatch> = {}): PrMatch {
-  return {
+  const match: PrMatch = {
     url: "https://github.com/example/repo/pull/1",
     number: 1,
     state: "open",
@@ -57,10 +57,13 @@ function prMatch(over: Partial<PrMatch> = {}): PrMatch {
     agentSessionId: null,
     episodeId: null,
     createdAt: null,
+    mergedAt: null,
     headSha: "current-head",
     worktreeHeadSha: "current-head",
     ...over,
   };
+  if (match.state === "merged" && match.mergedAt === null) match.mergedAt = Date.now();
+  return match;
 }
 
 test("an unmet dependency forces a dispatch-now create into the backlog and blocks later dispatch", async () => {
@@ -268,6 +271,185 @@ test("new work after a merge starts a dependency episode on the same session and
   assert.equal(tasks.dependencyBlockers(nextDependent).length, 1);
 });
 
+test("a prompt after GitHub merged rolls forward before a delayed merge observation", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "merge-prompt-race";
+  const cwd = "/repo/merge-prompt-race";
+  const url = "https://github.com/example/repo/pull/83";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/merge-prompt-race" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "merge-prompt-race-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const originalEpisode = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: 83,
+      branch: "feat/merge-prompt-race",
+      agentSessionId: "merge-prompt-race-episode",
+      episodeId: originalEpisode.episodeId,
+      createdAt: originalEpisode.startedAt,
+    })]]),
+    new Set(),
+  );
+  const promptAt = originalEpisode.startedAt + 100;
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: "merge-prompt-race-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "begin the follow-up",
+    ts: promptAt,
+  });
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for the follow-up after the raced merge",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  assert.equal(
+    dependent.dependencies[0]?.type === "session" ? dependent.dependencies[0].prUrl : null,
+    url,
+  );
+
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: 83,
+      state: "merged",
+      branch: "feat/merge-prompt-race",
+      agentSessionId: "merge-prompt-race-episode",
+      episodeId: originalEpisode.episodeId,
+      createdAt: originalEpisode.startedAt,
+      mergedAt: promptAt - 1,
+    })]]),
+    new Set(),
+  );
+
+  const nextEpisode = registry.workEpisodeForSession(id)!;
+  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.notEqual(nextEpisode.episodeId, originalEpisode.episodeId);
+  assert.equal(nextEpisode.startedAt, promptAt);
+  assert.equal(edge?.type === "session" ? edge.episodeId : null, nextEpisode.episodeId);
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
+  assert.equal(edge?.satisfiedAt, null);
+  assert.equal(registry.getSession(id)?.prUrl, null);
+  assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+});
+
+test("post-merge episode rollover preserves running task ownership", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "owned-rollover";
+  const cwd = "/repo/owned-rollover";
+  registry.upsertTask(baseTask({
+    id: "owned-rollover-task",
+    title: "Owned rollover task",
+    status: "running",
+    worktreePath: cwd,
+  }));
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/owned-rollover" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "owned-rollover-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask("owned-rollover-task")!, sessionId: id });
+  registry.bindTaskToWorkEpisode("owned-rollover-task", id);
+  const originalEpisode = registry.workEpisodeForSession(id)!;
+  const mergedAt = originalEpisode.startedAt + 10;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url: "https://github.com/example/repo/pull/84",
+      number: 84,
+      state: "merged",
+      branch: "feat/owned-rollover",
+      agentSessionId: "owned-rollover-episode",
+      episodeId: originalEpisode.episodeId,
+      createdAt: originalEpisode.startedAt,
+      mergedAt,
+    })]]),
+    new Set(),
+  );
+
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: "owned-rollover-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue with the next change",
+    ts: mergedAt + 1,
+  });
+
+  const nextEpisode = registry.workEpisodeForSession(id)!;
+  const owner = registry.getTask("owned-rollover-task")!;
+  assert.notEqual(nextEpisode.episodeId, originalEpisode.episodeId);
+  assert.equal(owner.status, "running");
+  assert.equal(owner.sessionId, id);
+  assert.equal(registry.getSession(id)?.task?.id, owner.id);
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for preserved task ownership",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  assert.equal(dependent.dependencies[0]?.type, "task");
+  assert.equal(dependent.dependencies[0]?.satisfiedAt, null);
+});
+
+test("persisted dependency PR polling is bounded and backs off per URL", async () => {
+  const registry = new Registry();
+  const now = Date.now();
+  for (let i = 0; i < 12; i += 1) {
+    registry.upsertTask(baseTask({
+      id: `bounded-pr-${i}`,
+      status: "backlog",
+      dependencies: [{
+        type: "session",
+        sessionId: `bounded-session-${i}`,
+        title: `Bounded dependency ${i}`,
+        episodeId: `bounded-episode-${i}`,
+        agentSessionId: `bounded-agent-${i}`,
+        branch: `feat/bounded-${i}`,
+        prUrl: `https://github.com/example/repo/pull/${200 + i}`,
+        satisfiedAt: null,
+      }],
+    }));
+  }
+  const state = new DependencyPrPollState();
+  let active = 0;
+  let maxActive = 0;
+  let calls = 0;
+  const lookupUrl = async () => {
+    calls += 1;
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    active -= 1;
+    return { state: "open" as const, mergedAt: null };
+  };
+
+  await pollAndReconcilePrs(registry, async () => null, lookupUrl, state, now);
+  assert.equal(calls, 12);
+  assert.ok(maxActive <= 4);
+  await pollAndReconcilePrs(registry, async () => null, lookupUrl, state, now + 1);
+  assert.equal(calls, 12);
+  for (let i = 0; i < 12; i += 1) registry.removeTask(`bounded-pr-${i}`);
+});
+
 test("persisted dependency PRs keep merging after their sessions exit", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
@@ -354,7 +536,7 @@ test("persisted dependency PRs keep merging after their sessions exit", async ()
     },
     async (url) => {
       polledUrls.add(url);
-      return "merged";
+      return { state: "merged", mergedAt: Date.now() };
     },
   );
 
@@ -948,6 +1130,7 @@ test("an in-flight PR poll cannot cross work episodes", async () => {
     state: "merged",
     checks: "passing",
     createdAt: Date.now(),
+    mergedAt: Date.now(),
     headSha: "old-head",
     worktreeHeadSha: "old-head",
   });
@@ -1171,6 +1354,7 @@ test("a current-episode PR can first pin after its remote head advances", async 
     state: "open",
     checks: "passing",
     createdAt,
+    mergedAt: null,
     headSha: "remote-head-after-push",
     worktreeHeadSha: "local-head-before-push",
   }));
@@ -1187,6 +1371,7 @@ test("a current-episode PR can first pin after its remote head advances", async 
     state: "merged",
     checks: "passing",
     createdAt,
+    mergedAt: Date.now(),
     headSha: "remote-head-at-merge",
     worktreeHeadSha: "local-head-before-push",
   }));
@@ -1395,6 +1580,7 @@ test("a historical merge on a reused branch cannot satisfy a new episode", async
     state: "merged",
     checks: "passing",
     createdAt: episode.startedAt - 1,
+    mergedAt: Date.now(),
     headSha: "historical-head",
     worktreeHeadSha: "new-work-head",
   }));

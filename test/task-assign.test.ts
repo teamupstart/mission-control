@@ -441,6 +441,7 @@ test("a reused session attributes its merged PR only to the current task after r
           agentSessionId,
           episodeId: currentEpisode.episodeId,
           createdAt: currentEpisode.startedAt,
+          mergedAt: Date.now(),
           headSha: "current-head",
           worktreeHeadSha: "current-head",
         },

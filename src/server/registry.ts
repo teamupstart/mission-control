@@ -872,9 +872,18 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
-  recordRuntimeEffortBaseline(sessionId: string, revision: string | null): boolean {
+  recordRuntimeEffortBaseline(
+    sessionId: string,
+    revision: string | null,
+    expected: Pick<Session, "agent" | "agentSessionId" | "transcriptPath">,
+  ): boolean {
     const s = this.sessions.get(sessionId);
-    if (!s) return false;
+    if (
+      !s ||
+      s.agent !== expected.agent ||
+      s.agentSessionId !== expected.agentSessionId ||
+      s.transcriptPath !== expected.transcriptPath
+    ) return false;
     this.runtimeEffortRevisions.set(sessionId, revision);
     if (s.effortBaselineReady) return true;
     const updated: Session = { ...s, effortBaselineReady: true };

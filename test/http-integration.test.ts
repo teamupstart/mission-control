@@ -192,6 +192,62 @@ test("an effort change waits for a passive freshness baseline", async () => {
   assert.equal(registry.getSession("sess-1")?.meta?.thinkingLevel, "high");
 });
 
+test("an effort request revalidates identity after parsing its body", async () => {
+  const transcriptPath = join(process.env.MISSION_HOME!, "old-effort-session.jsonl");
+  writeFileSync(transcriptPath, `${JSON.stringify({
+    uuid: "old-effort",
+    type: "user",
+    message: { role: "user", content: "Set effort level to high" },
+  })}\n`);
+  seedSession();
+  const bound = await app.request("/hooks/Stop", {
+    method: "POST",
+    headers: authed,
+    body: JSON.stringify({
+      env: { tmuxPane: "%3" },
+      sessionId: "old-effort-session",
+      transcriptPath,
+    }),
+  });
+  assert.equal(bound.status, 204);
+  registry.applyStatusLine({
+    env: { tmuxPane: "%3" },
+    sessionId: "old-effort-session",
+    model: { id: "claude-opus-4-8", displayName: "Opus" },
+    effort: "high",
+  });
+
+  const bodyControl: { release?: () => void } = {};
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      bodyControl.release = () => {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ effort: "xhigh" })));
+        controller.close();
+      };
+    },
+  });
+  const pending = app.request("/api/sessions/sess-1/effort", {
+    method: "POST",
+    headers: authed,
+    body,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  registry.applyStatusLine({
+    env: { tmuxPane: "%3" },
+    sessionId: "new-effort-session",
+    model: { id: "claude-opus-4-8", displayName: "Opus" },
+    effort: "high",
+  });
+  bodyControl.release!();
+
+  const res = await pending;
+  assert.equal(res.status, 409);
+  const result = (await res.json()) as { error: string };
+  assert.match(result.error, /passive effort baseline is not ready/i);
+  assert.equal(registry.getSession("sess-1")?.effortBaselineReady, false);
+});
+
 test("parseBody rejects a malformed write body with 400 (and never mutates)", async () => {
   // /api/tasks runs through the shared parseBody helper before any dispatch.
   const res = await app.request("/api/tasks", {

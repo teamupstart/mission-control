@@ -44,6 +44,13 @@ function metaOf(r: InstanceType<typeof Registry>, id = "s1"): Session["meta"] {
   return r.snapshot().sessions.find((s) => s.id === id)?.meta ?? null;
 }
 
+function recordBaseline(
+  r: InstanceType<typeof Registry>,
+  revision: string | null,
+): boolean {
+  return r.recordRuntimeEffortBaseline("s1", revision, r.getSession("s1")!);
+}
+
 const statusIngest = (over: Partial<StatusLineIngest> = {}): StatusLineIngest =>
   ({
     env: { tmuxPane: "%3" },
@@ -186,7 +193,7 @@ test("a newer passive revision publishes a native return to the prior effort", (
 test("a new agent session releases the prior session's observed effort", () => {
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high" }));
-  r.recordRuntimeEffortBaseline("s1", null);
+  recordBaseline(r, null);
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyStatusLine(statusIngest({ sessionId: "new-session", effort: "high" }));
   assert.equal(metaOf(r)?.thinkingLevel, "high");
@@ -196,7 +203,7 @@ test("only a timestamped post-change statusLine overrides an observed effort", (
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
-  r.recordRuntimeEffortBaseline("s1", null);
+  recordBaseline(r, null);
   const acceptedAt = metaOf(r)!.updatedAt;
   r.recordObservedSessionEffort("s1", "xhigh");
 
@@ -221,7 +228,7 @@ test("out-of-order statusLine metadata cannot regress a confirmed effort", (t) =
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
-  r.recordRuntimeEffortBaseline("s1", null);
+  recordBaseline(r, null);
   r.recordObservedSessionEffort("s1", "xhigh");
 
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
@@ -245,7 +252,7 @@ test("unversioned statusLine effort stays guarded after confirmation", (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
   const r = seeded();
   r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
-  r.recordRuntimeEffortBaseline("s1", null);
+  recordBaseline(r, null);
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_001 }));
 
@@ -283,7 +290,7 @@ test("an observed effort requires a synchronously captured passive baseline", ()
   assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), false);
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 
-  r.recordRuntimeEffortBaseline("s1", "old-record");
+  recordBaseline(r, "old-record");
   assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), true);
   r.applyRuntimeMeta(
     "s1",
@@ -339,7 +346,9 @@ test("a rebind clears transcript baseline identity before publication", () => {
   assert.equal(rebound.transcriptPath, null);
   assert.equal(rebound.effortBaselineReady, false);
 
-  assert.equal(r.recordRuntimeEffortBaseline("s1", "new-baseline"), true);
+  assert.equal(r.recordRuntimeEffortBaseline("s1", "old-baseline", expected), false);
+  assert.equal(rebound.effortBaselineReady, false);
+  assert.equal(recordBaseline(r, "new-baseline"), true);
   assert.equal(r.recordObservedSessionEffort("s1", "xhigh", expected), false);
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });

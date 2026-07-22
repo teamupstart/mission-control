@@ -766,10 +766,12 @@ export function buildApp(
   });
 
   app.post("/api/sessions/:id/effort", async (c) => {
-    const session = registry.getSession(c.req.param("id"));
-    if (!session) return c.json({ error: "no such session" }, 404);
+    const sessionId = c.req.param("id");
+    if (!registry.getSession(sessionId)) return c.json({ error: "no such session" }, 404);
     const parsed = await parseBody(c, SetSessionEffortSchema);
     if (!parsed.ok) return parsed.res;
+    const session = registry.getSession(sessionId);
+    if (!session) return c.json({ error: "no such session" }, 404);
     const baseline = readRuntimeEffortBaseline(session);
     if (baseline === undefined) {
       return c.json({
@@ -778,7 +780,7 @@ export function buildApp(
         effort: null,
       }, 409);
     }
-    if (!registry.recordRuntimeEffortBaseline(session.id, baseline)) {
+    if (!registry.recordRuntimeEffortBaseline(session.id, baseline, session)) {
       return c.json({
         ok: false,
         error: "the session changed before its effort baseline could be recorded",

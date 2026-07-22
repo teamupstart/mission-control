@@ -120,7 +120,8 @@ test("a null passive read is a no-op (never clears a good reading)", () => {
   assert.equal(metaOf(r)?.model, "Sonnet 5");
 });
 
-test("an observed session effort emits immediately and survives stale passive metadata", () => {
+test("an observed session effort emits immediately and survives stale passive metadata", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
   const r = seeded();
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
   let observed = 0;
@@ -133,18 +134,35 @@ test("an observed session effort emits immediately and survives stale passive me
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
   assert.equal(observed, 1);
 
+  t.mock.timers.tick(60_000);
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
   assert.ok(metaOf(r)!.updatedAt >= recordedAt);
 });
 
-test("passive metadata reconciles a confirmed or independently changed effort", () => {
+test("passive metadata reconciles an independently changed effort", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "medium" }, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "medium");
+});
+
+test("a confirmed effort releases the observation to later passive metadata", () => {
   const r = seeded();
   r.applyRuntimeMeta("s1", transcriptRead, "transcript");
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "xhigh" }, "transcript");
-  r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "medium" }, "transcript");
-  assert.equal(metaOf(r)?.thinkingLevel, "medium");
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("a new agent session releases the prior session's observed effort", () => {
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high" }));
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyStatusLine(statusIngest({ sessionId: "new-session", effort: "high" }));
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
 test("meta only emits when a displayed value actually changes", () => {

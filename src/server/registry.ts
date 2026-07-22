@@ -198,7 +198,6 @@ const OVERLAY_TTL_MS = 30 * 60 * 1000;
  * allowed to take over so an idle card doesn't freeze on a stale exact figure.
  */
 const STATUSLINE_TTL_MS = 3 * 60 * 1000;
-const OBSERVED_EFFORT_TTL_MS = 30_000;
 /**
  * Caps on remembered no-mistakes dismissals (see `nmDismissed`): how many
  * checkouts we keep at all, and how many retired runs per checkout. Only a reset
@@ -275,10 +274,11 @@ export class Registry extends EventEmitter {
    *  no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
   private passiveStates = new Map<string, PassiveState>();
   private observedEfforts = new Map<string, {
+    agentSessionId: string | null;
+    transcriptPath: string | null;
     modelId: string | null;
     previous: ThinkingLevel;
     effort: ThinkingLevel;
-    updatedAt: number;
   }>();
   /**
    * What DISCOVERY said this session's conversation is, keyed by synthetic id - the
@@ -840,10 +840,11 @@ export class Registry extends EventEmitter {
     const s = this.sessions.get(sessionId);
     if (!s?.meta) return;
     this.observedEfforts.set(sessionId, {
+      agentSessionId: s.agentSessionId,
+      transcriptPath: s.transcriptPath,
       modelId: s.meta.modelId,
       previous: s.meta.thinkingLevel ?? effort,
       effort,
-      updatedAt: Date.now(),
     });
     if (s.meta.thinkingLevel === effort) return;
     const updated: Session = {
@@ -1274,8 +1275,13 @@ export class Registry extends EventEmitter {
     this.recordRateLimits(ingest);
     const s = this.findSessionByEnv(ingest.env, ingest.sessionId, ingest.cwd);
     if (!s) return;
-    const meta = this.reconcileObservedEffort(s.id, metaFromStatusLine(ingest, Date.now()));
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
+    const meta = this.reconcileObservedEffort(
+      s.id,
+      metaFromStatusLine(ingest, Date.now()),
+      agentSessionId,
+      s.transcriptPath,
+    );
     const next: Session = { ...s, meta, agentSessionId };
     // A statusLine can be the first thing to bind an agent session id (it carries one and
     // fires on every render, where a hook fires on events). That rotates the note key, so
@@ -1490,7 +1496,12 @@ export class Registry extends EventEmitter {
       now - s.meta.updatedAt < STATUSLINE_TTL_MS
     )
       return;
-    const meta = this.reconcileObservedEffort(sessionId, metaFromRead(read, source, now));
+    const meta = this.reconcileObservedEffort(
+      sessionId,
+      metaFromRead(read, source, now),
+      s.agentSessionId,
+      s.transcriptPath,
+    );
     const changed = !metaDisplayEqual(s.meta, meta);
     const next: Session = { ...s, meta };
     this.sessions.set(sessionId, next);
@@ -1605,18 +1616,26 @@ export class Registry extends EventEmitter {
     this.syncAllOrphanHints();
   }
 
-  private reconcileObservedEffort(sessionId: string, meta: SessionMeta): SessionMeta {
+  private reconcileObservedEffort(
+    sessionId: string,
+    meta: SessionMeta,
+    agentSessionId: string | null,
+    transcriptPath: string | null,
+  ): SessionMeta {
     const observed = this.observedEfforts.get(sessionId);
     if (!observed) return meta;
     if (
       meta.modelId !== observed.modelId ||
+      (observed.agentSessionId !== null && agentSessionId !== null && agentSessionId !== observed.agentSessionId) ||
+      (observed.transcriptPath !== null && transcriptPath !== null && transcriptPath !== observed.transcriptPath) ||
       meta.thinkingLevel === observed.effort ||
-      (meta.thinkingLevel !== observed.previous && meta.thinkingLevel !== null) ||
-      Date.now() - observed.updatedAt >= OBSERVED_EFFORT_TTL_MS
+      (meta.thinkingLevel !== observed.previous && meta.thinkingLevel !== null)
     ) {
       this.observedEfforts.delete(sessionId);
       return meta;
     }
+    observed.agentSessionId ??= agentSessionId;
+    observed.transcriptPath ??= transcriptPath;
     return { ...meta, thinkingLevel: observed.effort };
   }
 

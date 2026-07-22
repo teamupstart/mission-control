@@ -235,3 +235,18 @@ test("the shipped html-plans skill is a real, loadable Claude skill", () => {
   const text = readFileSync(new URL("../skills/html-plans/SKILL.md", import.meta.url), "utf8");
   assert.ok(text.split("---")[2]!.trim().length > 200);
 });
+
+test("the shipped Pull Request skill is a real, triggered Mission Control skill", () => {
+  const skill = readCatalog().skills.find((s) => s.id === "pull-request");
+  assert.ok(skill, "pull-request should be in the catalog");
+  assert.equal(skill.name, "Pull Request");
+  assert.equal(skill.category, "shipping");
+  assert.equal(skill.enforcement, "triggered");
+  assert.match(skill.description, /opening.*pull request/i);
+
+  const text = readFileSync(new URL("../skills/pull-request/SKILL.md", import.meta.url), "utf8");
+  assert.match(text, /PR's goal/i);
+  assert.match(text, /design decisions/i);
+  assert.match(text, /proof of work/i);
+  assert.match(text, /screenshots/i);
+});

@@ -65,6 +65,17 @@ export async function fetchStatus(cwd: string): Promise<NmRunSummary | null> {
 const responding = new Set<string>();
 const responseByRun = new Map<string, NmGateResponse>();
 const RESPONSE_HISTORY_CAP = 200;
+const RESPONSE_ERROR_CHAR_CAP = 4000;
+const RESPONSE_ERROR_TRUNCATION = "\n… [earlier output truncated]\n";
+
+function retainedResponseError(error: string): string {
+  const trimmed = error.trim();
+  if (trimmed.length <= RESPONSE_ERROR_CHAR_CAP) return trimmed;
+  return (
+    RESPONSE_ERROR_TRUNCATION +
+    trimmed.slice(-(RESPONSE_ERROR_CHAR_CAP - RESPONSE_ERROR_TRUNCATION.length))
+  );
+}
 
 export function isResponding(cwd: string): boolean {
   return responding.has(cwd);
@@ -147,7 +158,13 @@ export async function respond(
           console.error(`[nomistakes] respond ${action} failed:`, error);
           if (opts.runId) {
             const prior = responseByRun.get(opts.runId);
-            if (prior) responseByRun.set(opts.runId, { ...prior, status: "failed", error });
+            if (prior) {
+              responseByRun.set(opts.runId, {
+                ...prior,
+                status: "failed",
+                error: retainedResponseError(error),
+              });
+            }
           }
           opts.onUndelivered?.();
         } else if (opts.runId) {
@@ -161,7 +178,13 @@ export async function respond(
         console.error("[nomistakes] respond error:", err);
         if (opts.runId) {
           const prior = responseByRun.get(opts.runId);
-          if (prior) responseByRun.set(opts.runId, { ...prior, status: "failed", error });
+          if (prior) {
+            responseByRun.set(opts.runId, {
+              ...prior,
+              status: "failed",
+              error: retainedResponseError(error),
+            });
+          }
         }
         opts.onUndelivered?.();
         await pollAndReconcile(registry);

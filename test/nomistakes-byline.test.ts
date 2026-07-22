@@ -278,6 +278,7 @@ function fakeAxi(): string {
     bin,
     `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "no-mistakes 0.0-fake"; exit 0; fi
+if [ -f ./respond-error ]; then cat ./respond-error >&2; exit 1; fi
 if [ -f ./respond-fails ]; then exit 1; fi
 exit 0
 `,
@@ -347,6 +348,20 @@ test("a delivered respond keeps its byline", async () => {
   await settled(cwd);
   assert.equal(retracted, false, "a delivered decision keeps its author");
   assert.equal(responseForRun(runId)?.status, "submitted", "the next gate can identify the prior response");
+});
+
+test("a failed respond retains a bounded dashboard error", async () => {
+  const cwd = tmp("respond-large-error-");
+  const runId = "run-dashboard-large-error";
+  writeFileSync(join(cwd, "respond-error"), `opening diagnosis\n${"x".repeat(10_000)}\nfinal diagnosis`);
+  const r = await respond(noSessions, cwd, "fix", { runId });
+  assert.equal(r.ok, true);
+  await settled(cwd);
+  const error = responseForRun(runId)?.error ?? "";
+  assert.equal(error.length, 4000);
+  assert.match(error, /^\n… \[earlier output truncated\]\n/);
+  assert.match(error, /final diagnosis$/);
+  assert.doesNotMatch(error, /opening diagnosis/);
 });
 
 // ---- the foreman side: classify -> plan -> apply ----

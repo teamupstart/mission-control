@@ -39,7 +39,7 @@ export interface RuntimeMetaRead {
   contextPct: number | null;
   longContext: boolean;
   thinkingLevel: ThinkingLevel | null;
-  /** Opaque source revision used to reject stale effort reconciliation. */
+  /** Source revision; only orderable revisions can release a verified effort change. */
   effortRevision: string | null;
 }
 

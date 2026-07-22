@@ -207,6 +207,18 @@ const STATUSLINE_TTL_MS = 3 * 60 * 1000;
 const NM_DISMISSED_CHECKOUTS = 200;
 const NM_DISMISSED_RUNS_PER_CHECKOUT = 8;
 
+/**
+ * Passive effort revisions are source-specific. Codex supplies ISO timestamps, which
+ * we can order; Claude supplies record UUIDs, which we cannot. A different opaque
+ * revision is therefore not evidence that the read happened after a verified change.
+ */
+function isLaterEffortRevision(previous: string | null, next: string | null): boolean {
+  if (previous === null || next === null) return false;
+  const previousTime = Date.parse(previous);
+  const nextTime = Date.parse(next);
+  return Number.isFinite(previousTime) && Number.isFinite(nextTime) && nextTime > previousTime;
+}
+
 /** Hook-derived state for a session, applied over passive discovery. */
 interface HookOverlay {
   /**
@@ -1806,8 +1818,7 @@ export class Registry extends EventEmitter {
       (meta.thinkingLevel !== null &&
         (meta.thinkingLevel !== observed.previous ||
           source === "statusline" ||
-          (effortRevision !== null &&
-            effortRevision !== observed.effortRevision)))
+          isLaterEffortRevision(observed.effortRevision, effortRevision)))
     ) {
       this.observedEfforts.delete(sessionId);
       return { meta, rejectedStatusLineEffort: false };
@@ -1843,7 +1854,7 @@ export class Registry extends EventEmitter {
       ? statusLineTimestamp !== null &&
         statusLineTimestamp > guard.verifiedAt &&
         (guard.statusLineTimestamp === null || statusLineTimestamp > guard.statusLineTimestamp)
-      : effortRevision !== guard.effortRevision;
+      : isLaterEffortRevision(guard.effortRevision, effortRevision);
     if (!fresh) {
       return {
         meta: { ...meta, thinkingLevel: currentEffort },

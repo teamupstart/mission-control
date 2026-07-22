@@ -148,34 +148,58 @@ test("an observed session effort emits immediately and survives stale passive me
   assert.ok(metaOf(r)!.updatedAt >= recordedAt);
 });
 
-test("passive metadata reconciles an independently changed effort", () => {
+test("an orderable later passive revision reconciles an independently changed effort", () => {
   const r = seeded();
-  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "2026-07-22T12:00:00.000Z" },
+    "transcript",
+  );
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyRuntimeMeta(
     "s1",
-    { ...transcriptRead, thinkingLevel: "medium", effortRevision: "turn-2" },
+    {
+      ...transcriptRead,
+      thinkingLevel: "medium",
+      effortRevision: "2026-07-22T12:00:01.000Z",
+    },
     "transcript",
   );
   assert.equal(metaOf(r)?.thinkingLevel, "medium");
 });
 
-test("a confirmed effort releases the observation to later passive metadata", () => {
+test("an orderable confirmation releases the observation to later passive metadata", () => {
   const r = seeded();
-  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "2026-07-22T12:00:00.000Z" },
+    "transcript",
+  );
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyRuntimeMeta(
     "s1",
-    { ...transcriptRead, thinkingLevel: "xhigh", effortRevision: "turn-2" },
+    {
+      ...transcriptRead,
+      thinkingLevel: "xhigh",
+      effortRevision: "2026-07-22T12:00:01.000Z",
+    },
     "transcript",
   );
-  r.applyRuntimeMeta("s1", { ...transcriptRead, effortRevision: "turn-3" }, "transcript");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "2026-07-22T12:00:02.000Z" },
+    "transcript",
+  );
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
-test("a newer passive revision publishes a native return to the prior effort", () => {
+test("an opaque passive revision cannot overwrite a verified effort change", () => {
   const r = seeded();
-  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.applyRuntimeMeta(
+    "s1",
+    { ...transcriptRead, effortRevision: "4ed47a6b-8d93-4b80-af8d-7ebaf442b32a" },
+    "transcript",
+  );
   r.recordObservedSessionEffort("s1", "xhigh");
   r.applyRuntimeMeta(
     "s1",
@@ -183,11 +207,11 @@ test("a newer passive revision publishes a native return to the prior effort", (
       ...transcriptRead,
       modelId: "claude-opus-4-8",
       thinkingLevel: "high",
-      effortRevision: "turn-2",
+      effortRevision: "abdf4e48-5097-46d2-9e72-e8e111a97870",
     },
     "transcript",
   );
-  assert.equal(metaOf(r)?.thinkingLevel, "high");
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
 });
 
 test("a new agent session releases the prior session's observed effort", () => {
@@ -221,7 +245,7 @@ test("only a timestamped post-change statusLine overrides an observed effort", (
     { ...transcriptRead, thinkingLevel: "high", effortRevision: "turn-2" },
     "transcript",
   );
-  assert.equal(metaOf(r)?.thinkingLevel, "high");
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
 });
 
 test("out-of-order statusLine metadata cannot regress a confirmed effort", (t) => {
@@ -276,10 +300,10 @@ test("unversioned statusLine effort stays guarded after confirmation", (t) => {
     },
     "transcript",
   );
-  assert.equal(metaOf(r)?.thinkingLevel, "high");
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
 
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: undefined }));
-  assert.equal(metaOf(r)?.thinkingLevel, "high");
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
   r.applyStatusLine(statusIngest({ effort: "xhigh", ts: 2_100 }));
   assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
 });
@@ -290,7 +314,7 @@ test("an observed effort requires a synchronously captured passive baseline", ()
   assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), false);
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 
-  recordBaseline(r, "old-record");
+  recordBaseline(r, "2026-07-22T12:00:00.000Z");
   assert.equal(r.recordObservedSessionEffort("s1", "xhigh"), true);
   r.applyRuntimeMeta(
     "s1",
@@ -298,7 +322,7 @@ test("an observed effort requires a synchronously captured passive baseline", ()
       ...transcriptRead,
       modelId: "claude-opus-4-8",
       thinkingLevel: "high",
-      effortRevision: "old-record",
+      effortRevision: "2026-07-22T12:00:00.000Z",
     },
     "transcript",
   );
@@ -310,7 +334,7 @@ test("an observed effort requires a synchronously captured passive baseline", ()
       ...transcriptRead,
       modelId: "claude-opus-4-8",
       thinkingLevel: "high",
-      effortRevision: "new-record",
+      effortRevision: "2026-07-22T12:00:01.000Z",
     },
     "transcript",
   );

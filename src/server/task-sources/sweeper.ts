@@ -40,6 +40,7 @@ interface Entry {
   lastFiled: number;
   /** Last configured state observed by this process; status is process-local too. */
   enabled: boolean | null;
+  healthGeneration: number;
   /** In flight, so the tick and a "Sweep now" click cannot double-file. */
   sweeping: boolean;
 }
@@ -48,7 +49,14 @@ const entries = new Map<string, Entry>();
 function entryFor(id: string): Entry {
   let e = entries.get(id);
   if (!e) {
-    e = { lastSweepAt: null, lastError: null, lastFiled: 0, enabled: null, sweeping: false };
+    e = {
+      lastSweepAt: null,
+      lastError: null,
+      lastFiled: 0,
+      enabled: null,
+      healthGeneration: 0,
+      sweeping: false,
+    };
     entries.set(id, e);
   }
   return e;
@@ -58,6 +66,7 @@ function entryFor(id: string): Entry {
 function observeEnabled(inst: TaskSourceInstance): Entry {
   const e = entryFor(inst.id);
   if (e.enabled === true && !inst.enabled) {
+    e.healthGeneration += 1;
     e.lastSweepAt = null;
     e.lastError = null;
     e.lastFiled = 0;
@@ -113,18 +122,26 @@ export async function sweepOnce(
     };
   }
   entry.sweeping = true;
+  const healthGeneration = entry.healthGeneration;
   const controller = new AbortController();
   const timer = unref(setTimeout(() => controller.abort(), SWEEP_TIMEOUT_MS));
   try {
     const result = await sweepSource(inst, contextFor(inst, controller.signal));
     const report = await ingestSweep(inst, result, tasks);
-    entry.lastSweepAt = Date.now();
-    entry.lastFiled = report.filed;
-    // A per-candidate refusal is worth surfacing too: with `error` null and rows refused,
-    // the panel would otherwise report a clean sweep that filed nothing.
-    entry.lastError =
-      report.error ?? (report.refused.length > 0 ? report.refused.join("; ") : null);
+    if (entry.healthGeneration === healthGeneration) {
+      entry.lastSweepAt = Date.now();
+      entry.lastFiled = report.filed;
+      // A per-candidate refusal is worth surfacing too: with `error` null and rows refused,
+      // the panel would otherwise report a clean sweep that filed nothing.
+      entry.lastError =
+        report.error ?? (report.refused.length > 0 ? report.refused.join("; ") : null);
+    }
     return report;
+  } catch (err) {
+    if (entry.healthGeneration === healthGeneration) {
+      entry.lastError = err instanceof Error ? err.message : String(err);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
     entry.sweeping = false;
@@ -178,10 +195,6 @@ export function startTaskSourceSweeper(tasks: TaskManager): () => void {
         try {
           await sweepOnce(inst, tasks);
         } catch (err) {
-          // `sweepOnce` already reports a failing source through its status; this is the
-          // backstop for a failure in the machinery around it, and it must not cost the
-          // other sources their turn.
-          entryFor(inst.id).lastError = err instanceof Error ? err.message : String(err);
           console.error(`[task-source] ${inst.id} sweep failed:`, err);
         }
       }

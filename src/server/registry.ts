@@ -88,10 +88,11 @@ import {
   recordEpisode as dbRecordEpisode,
   resolveEpisode as dbResolveEpisode,
   episodesFor,
-  fleetSpendSince,
+  fleetEstimatedCostSince,
   fleetTokensSince,
   prsOpenedSince,
   pruneUsageLedger,
+  pruneUsageSources,
   reorderQueueItems,
   sessionCostFor,
   upsertQueue,
@@ -535,6 +536,11 @@ export class Registry extends EventEmitter {
       pruneUsageLedger(now - USAGE_RETENTION_MS);
     } catch (err) {
       console.error("[registry] usage ledger prune failed:", err);
+    }
+    try {
+      pruneUsageSources(now - USAGE_RETENTION_MS);
+    } catch (err) {
+      console.error("[registry] usage source prune failed:", err);
     }
   }
 
@@ -1577,12 +1583,18 @@ export class Registry extends EventEmitter {
     }
   }
 
+  /** Refresh denormalized session and fleet summaries after a durable usage commit. */
+  applyDurableUsage(noteKey: string): void {
+    this.syncSessionsForCost(noteKey);
+    this.recomputeFleetCost();
+  }
+
   /** The fleet figures as of now, read straight from the ledger. */
   private fleetCostNow(now = Date.now()): FleetCost {
     const dayStart = startOfLocalDay(now);
     return {
-      spendToday: fleetSpendSince(dayStart),
-      burnPerHour: fleetSpendSince(now - 3_600_000),
+      estimatedCostToday: fleetEstimatedCostSince(dayStart),
+      estimatedBurnPerHour: fleetEstimatedCostSince(now - 3_600_000),
       tokensToday: fleetTokensSince(dayStart),
       // The one figure here that is not the ledger's. Cheap - a COUNT over an adoption
       // table that gains single-digit rows a day - and it shares the local-midnight
@@ -1613,8 +1625,8 @@ export class Registry extends EventEmitter {
     this.lastFleetCostAt = now;
     const same =
       this.lastFleetCost != null &&
-      this.lastFleetCost.spendToday === fleet.spendToday &&
-      this.lastFleetCost.burnPerHour === fleet.burnPerHour &&
+      this.lastFleetCost.estimatedCostToday === fleet.estimatedCostToday &&
+      this.lastFleetCost.estimatedBurnPerHour === fleet.estimatedBurnPerHour &&
       this.lastFleetCost.tokensToday === fleet.tokensToday &&
       this.lastFleetCost.prsToday === fleet.prsToday &&
       rateLimitsDisplayEqual(this.lastFleetCost.rateLimits, fleet.rateLimits) &&
@@ -1708,6 +1720,9 @@ export class Registry extends EventEmitter {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     const prev = session.cost;
+    // A durable ledger summary outranks this cumulative tail convenience. The empty
+    // pricing metadata is the signature of the passive Codex reading.
+    if (prev && (prev.basis !== "unpriced" || prev.pricingModels.length > 0 || prev.pricingVersions.length > 0)) return;
     if (prev && prev.costUsd === null && prev.input === cost.input && prev.output === cost.output &&
         prev.cacheRead === cost.cacheRead && prev.reasoningOutput === cost.reasoningOutput) return;
     const next = { ...session, cost };

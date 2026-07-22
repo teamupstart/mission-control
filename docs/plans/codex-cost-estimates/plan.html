@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Plan · Unified Claude and Codex API-equivalent cost estimates</title>
+<style>
+  :root{--bg:#f7f8fa;--panel:#fff;--ink:#17202a;--muted:#647180;--rule:#dce2e8;--soft:#eef3f6;--accent:#087f5b;--accent2:#2563eb;--warn:#9a6700;--warnbg:#fff8db;--good:#177245;--bad:#b42318;--code:#f2f4f7;--shadow:0 10px 30px rgba(15,23,42,.07)}
+  @media(prefers-color-scheme:dark){:root{--bg:#0d1218;--panel:#141b23;--ink:#e8edf2;--muted:#9aa7b4;--rule:#2b3642;--soft:#18232d;--accent:#56d6aa;--accent2:#80aaff;--warn:#ffd66b;--warnbg:#2a2516;--good:#62d69a;--bad:#ff8a80;--code:#111820;--shadow:none}}
+  *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}main{max-width:1100px;margin:0 auto;padding:42px 24px 80px}a{color:var(--accent2)}h1{font-size:clamp(2.15rem,5vw,3.45rem);line-height:1.04;letter-spacing:-.035em;margin:0 0 16px;max-width:900px}h2{font-size:1.48rem;line-height:1.25;margin:54px 0 18px;padding-top:12px;border-top:1px solid var(--rule)}h3{font-size:1.08rem;margin:27px 0 8px}p{margin:0 0 15px}.lede{font-size:1.17rem;color:var(--muted);max-width:850px}.eyebrow{font:700 12px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.11em;color:var(--accent);margin-bottom:12px}.meta{display:flex;flex-wrap:wrap;gap:8px;margin:24px 0 30px}.tag{font:650 12px ui-monospace,monospace;padding:5px 9px;border:1px solid var(--rule);border-radius:999px;background:var(--panel)}nav{position:sticky;top:0;z-index:3;margin:0 -24px;padding:10px 24px;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);display:flex;gap:16px;overflow:auto;white-space:nowrap}nav a{text-decoration:none;font-size:13px;font-weight:650;color:var(--muted)}nav a:hover{color:var(--accent)}.hero,.card,.decision,.warning,.accept{background:var(--panel);border:1px solid var(--rule);border-radius:14px;box-shadow:var(--shadow)}.hero{padding:24px 26px;margin:25px 0}.hero strong{color:var(--accent)}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px}.card,.decision{padding:18px 20px}.decision{margin:13px 0}.decision h3{margin:0 0 7px}.decision .num{display:inline-grid;place-items:center;width:26px;height:26px;margin-right:8px;border-radius:50%;background:var(--accent);color:#fff;font:700 12px ui-monospace,monospace}.chosen{font:700 10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.08em;color:var(--good);border:1px solid currentColor;border-radius:999px;padding:2px 7px;margin-left:8px}.warning{padding:16px 19px;background:var(--warnbg);border-color:color-mix(in srgb,var(--warn) 45%,var(--rule));color:var(--warn)}.warning p{margin:0;color:inherit}.accept{padding:20px 23px;border-left:4px solid var(--good)}code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code)}code{font-size:.86em;padding:.12em .35em;border-radius:4px;overflow-wrap:anywhere}pre{padding:16px;border:1px solid var(--rule);border-radius:10px;overflow:auto;font-size:13px;line-height:1.55}pre code{padding:0;background:none}.table{overflow:auto;border:1px solid var(--rule);border-radius:12px;background:var(--panel);margin:15px 0 22px}table{border-collapse:collapse;width:100%;min-width:660px;font-size:14px}th,td{text-align:left;vertical-align:top;padding:11px 13px;border-bottom:1px solid var(--rule)}th{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);background:var(--soft)}tr:last-child td{border-bottom:0}ul,ol{padding-left:1.4rem}li{margin:.38rem 0}.diagram-wrap{overflow:auto;padding:16px;background:var(--panel);border:1px solid var(--rule);border-radius:14px}.diagram{display:block;width:100%;min-width:860px;height:auto}.box{fill:var(--panel);stroke:var(--rule);stroke-width:1.6}.box.source{stroke:var(--accent)}.box.store{stroke:var(--accent2)}.svg-title{font:700 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:var(--ink)}.svg-sub{font:11px ui-monospace,monospace;fill:var(--muted)}.arrow{stroke:var(--muted);stroke-width:1.6;fill:none;marker-end:url(#arrow)}.arrow-label{font:11px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:var(--muted)}.steps{counter-reset:step;list-style:none;padding:0}.steps>li{counter-increment:step;position:relative;padding:0 0 24px 49px;margin:0}.steps>li:before{content:counter(step);position:absolute;left:0;top:0;width:31px;height:31px;border-radius:9px;display:grid;place-items:center;background:var(--soft);border:1px solid var(--rule);font:700 12px ui-monospace,monospace;color:var(--accent)}.steps>li:not(:last-child):after{content:"";position:absolute;left:15px;top:33px;bottom:2px;border-left:1px solid var(--rule)}.steps strong{display:block;margin-bottom:3px}.small{color:var(--muted);font-size:13px}.cols{columns:2;column-gap:36px}.cols li{break-inside:avoid}.review{border:2px solid var(--accent);border-radius:14px;padding:20px 22px;background:color-mix(in srgb,var(--accent) 5%,var(--panel))}.review h2{border:0;padding:0;margin:0 0 12px}.review li{margin:.65rem 0}footer{margin-top:55px;padding-top:18px;border-top:1px solid var(--rule);color:var(--muted);font-size:13px}@media(max-width:760px){main{padding:28px 16px 60px}nav{margin:0 -16px;padding:10px 16px}.grid{grid-template-columns:1fr}.cols{columns:1}h2{margin-top:42px}}
+</style>
+</head>
+<body><main>
+  <div class="eyebrow">Mission Control · implemented locally</div>
+  <h1>Unified Claude and Codex API-equivalent cost estimates</h1>
+  <p class="lede">Turn both harnesses' request usage into one durable, clearly qualified API-equivalent estimate while retaining which calculator produced each ledger row and keeping subscription quota separate.</p>
+  <div class="meta"><span class="tag">Status · awaiting operator test before PR</span><span class="tag">Source · local rollout JSONL</span><span class="tag">Pricing · versioned standard API rates</span><span class="tag">No network at runtime</span></div>
+
+  <nav><a href="#outcome">Outcome</a><a href="#decisions">Decisions</a><a href="#evidence">Evidence</a><a href="#flow">Data flow</a><a href="#design">Design</a><a href="#ui">UI</a><a href="#files">Files</a><a href="#tests">Verification</a><a href="#review">Review</a></nav>
+
+  <section id="outcome" class="hero">
+    <p><strong>Implemented outcome:</strong> supported Claude and Codex cards both show <code>≈$1.24</code>. Tooltips identify whether Claude Code or Mission Control calculated the row, while model and pricing snapshots remain available for Codex. Unknown models stay token-only.</p>
+    <p>Fleet economics use one completeness-aware <strong>estimated cost today</strong>, <strong>estimated rate</strong>, and <strong>cost / PR</strong> across Claude and Codex. Provider quota and plan limits remain separate.</p>
+  </section>
+
+  <section id="decisions">
+    <h2>Decisions</h2>
+    <div class="decision"><h3><span class="num">1</span>Provenance is data <span class="chosen">chosen</span></h3><p>Add <code>reported | api-equivalent | unpriced</code> to session and ledger summaries. The first two identify the calculator—not different economics—and components branch on basis, never on agent id.</p></div>
+    <div class="decision"><h3><span class="num">2</span>Price requests, not cumulative snapshots <span class="chosen">chosen</span></h3><p>Persist every <code>last_token_usage</code> event with the active <code>turn_context.model</code>. This is required for model switches, long-context rules, cache tiers, and midnight boundaries.</p></div>
+    <div class="decision"><h3><span class="num">3</span>Rollouts remain the source <span class="chosen">chosen</span></h3><p>No Codex OTel installation. Rollouts already reach operator-started sessions and carry the necessary token categories without adding <code>/v1/logs</code> or editing <code>~/.codex/config.toml</code>.</p></div>
+    <div class="decision"><h3><span class="num">4</span>Combine like estimates; keep quota separate <span class="chosen">chosen</span></h3><p>Claude Code's token-price estimate and Mission Control's Codex token-price estimate share one completeness-aware SQL sum. Subscription quota remains a separate provider signal.</p></div>
+    <div class="decision"><h3><span class="num">5</span>No new opt-in <span class="chosen">chosen</span></h3><p>The app already reads Codex rollouts and displays their tokens. Local pricing adds no credential, telemetry export, network request, or user-config mutation.</p></div>
+    <div class="decision"><h3><span class="num">6</span>Unknowns refuse to guess <span class="chosen">chosen</span></h3><p>Unknown model, service tier, or parent attribution stays explicit. There is no “nearest model” price and no cwd/time-based subagent join.</p></div>
+  </section>
+
+  <section id="evidence">
+    <h2>What is actually tracked</h2>
+    <div class="grid">
+      <div class="card"><h3>Codex rollout</h3><p>Conversation id, source, exact model, effort, per-request and cumulative input, cached input, cache-write input, output, reasoning output, context window, and quota windows.</p></div>
+      <div class="card"><h3>Codex SQLite</h3><p><code>threads.tokens_used</code>, model, provider, and rollout path—but only an aggregate. The rollout remains the richer pricing source.</p></div>
+      <div class="card"><h3>Before this implementation</h3><p>Mission Control parsed only the newest cumulative usage, set <code>costUsd: null</code>, and updated the live card without writing Codex usage to the daily ledger.</p></div>
+      <div class="card"><h3>Not tracked</h3><p>No per-session ChatGPT dollar/credit charge, authoritative bill, service-tier history, hosted-tool fee total, or safely attributable unlinked subagent total.</p></div>
+    </div>
+
+    <h3>Initial standard-rate snapshot</h3>
+    <div class="table"><table><thead><tr><th>Model</th><th>Input / MTok</th><th>Cached / MTok</th><th>Output / MTok</th></tr></thead><tbody>
+      <tr><td><code>gpt-5.6-sol</code></td><td>$5.00</td><td>$0.50</td><td>$30.00</td></tr>
+      <tr><td><code>gpt-5.6-terra</code></td><td>$2.50</td><td>$0.25</td><td>$15.00</td></tr>
+      <tr><td><code>gpt-5.6-luna</code></td><td>$1.00</td><td>$0.10</td><td>$6.00</td></tr>
+      <tr><td><code>gpt-5.5</code></td><td>$5.00</td><td>$0.50</td><td>$30.00</td></tr>
+    </tbody></table></div>
+    <p class="small">GPT-5.6 cache writes use 1.25× input. Requests above 272K input use the documented per-request long-context multipliers. Reasoning tokens are included in output and are not charged twice. Sources: <a href="https://developers.openai.com/api/docs/models/gpt-5.6-sol">Sol</a>, <a href="https://developers.openai.com/api/docs/models/gpt-5.6-terra">Terra</a>, <a href="https://developers.openai.com/api/docs/models/gpt-5.6-luna">Luna</a>, <a href="https://developers.openai.com/api/docs/models/gpt-5.5">GPT-5.5</a>, and <a href="https://developers.openai.com/api/docs/guides/latest-model">model guidance</a>.</p>
+  </section>
+
+  <section id="flow">
+    <h2>Data flow</h2>
+    <div class="diagram-wrap"><svg class="diagram" viewBox="0 0 1040 400" role="img" aria-label="Claude OpenTelemetry estimates and Codex rollout records flow into one usage ledger. The ledger retains calculator provenance and creates completeness-aware combined fleet estimates for session components and the FleetStrip.">
+      <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--muted)"/></marker></defs>
+      <rect class="box source" x="25" y="190" width="165" height="92" rx="12"/><text class="svg-title" x="108" y="222" text-anchor="middle">Codex rollout</text><text class="svg-sub" x="108" y="244" text-anchor="middle">turn_context</text><text class="svg-sub" x="108" y="263" text-anchor="middle">last_token_usage</text>
+      <rect class="box" x="235" y="170" width="190" height="132" rx="12"/><text class="svg-title" x="330" y="205" text-anchor="middle">Usage reader</text><text class="svg-sub" x="330" y="230" text-anchor="middle">byte cursor · complete lines</text><text class="svg-sub" x="330" y="250" text-anchor="middle">active model · stable id</text><text class="svg-sub" x="330" y="270" text-anchor="middle">1 MiB catch-up chunks</text>
+      <rect class="box source" x="470" y="20" width="185" height="86" rx="12"/><text class="svg-title" x="562" y="53" text-anchor="middle">Claude OTel</text><text class="svg-sub" x="562" y="76" text-anchor="middle">Claude Code estimate</text><text class="svg-sub" x="562" y="94" text-anchor="middle">token-price arithmetic</text>
+      <rect class="box source" x="470" y="135" width="185" height="100" rx="12"/><text class="svg-title" x="562" y="169" text-anchor="middle">Codex estimator</text><text class="svg-sub" x="562" y="193" text-anchor="middle">versioned exact rates</text><text class="svg-sub" x="562" y="212" text-anchor="middle">cache + long context</text>
+      <rect class="box store" x="470" y="270" width="185" height="100" rx="12"/><text class="svg-title" x="562" y="304" text-anchor="middle">usage_sources</text><text class="svg-sub" x="562" y="328" text-anchor="middle">cursor + model + skip state</text><text class="svg-sub" x="562" y="347" text-anchor="middle">atomic with event</text>
+      <rect class="box store" x="705" y="190" width="175" height="92" rx="12"/><text class="svg-title" x="792" y="222" text-anchor="middle">usage_ledger</text><text class="svg-sub" x="792" y="245" text-anchor="middle">calculator · known · version</text><text class="svg-sub" x="792" y="264" text-anchor="middle">token tiers + estimate</text>
+      <rect class="box" x="925" y="100" width="95" height="92" rx="12"/><text class="svg-title" x="972" y="133" text-anchor="middle">Session</text><text class="svg-sub" x="972" y="156" text-anchor="middle">CostChip</text><text class="svg-sub" x="972" y="173" text-anchor="middle">rail mark</text>
+      <rect class="box" x="925" y="275" width="95" height="92" rx="12"/><text class="svg-title" x="972" y="308" text-anchor="middle">Fleet</text><text class="svg-sub" x="972" y="331" text-anchor="middle">combined</text><text class="svg-sub" x="972" y="348" text-anchor="middle">or partial</text>
+      <path class="arrow" d="M190 236H230"/><text class="arrow-label" x="200" y="225">JSONL</text>
+      <path class="arrow" d="M425 210C445 199 449 177 465 170"/><text class="arrow-label" x="432" y="178">events</text>
+      <path class="arrow" d="M425 269C446 279 450 314 465 320"/><text class="arrow-label" x="429" y="310">cursor</text>
+      <path class="arrow" d="M655 63C688 74 681 201 700 216"/><text class="arrow-label" x="668" y="116">estimate</text>
+      <path class="arrow" d="M655 185C684 188 685 210 700 218"/><text class="arrow-label" x="663" y="204">estimate</text>
+      <path class="arrow" d="M655 320C684 317 685 265 700 255"/><text class="arrow-label" x="662" y="300">atomic</text>
+      <path class="arrow" d="M880 218C903 208 900 157 920 149"/><text class="arrow-label" x="888" y="181">by key</text>
+      <path class="arrow" d="M880 255C903 267 901 313 920 320"/><text class="arrow-label" x="885" y="297">complete sum</text>
+      <text class="svg-sub" x="25" y="392">No price fetch · no API key · no Codex config edit · no agent branch in the orchestrator</text>
+    </svg></div>
+  </section>
+
+  <section id="design">
+    <h2>Implementation design</h2>
+    <ol class="steps">
+      <li><strong>Add cost provenance.</strong><span>Add <code>CostBasis</code> and distinct pricing-model/version lists to <code>SessionCost</code>. Keep the calculator provenance in each ledger row while presenting both known bases as API-equivalent estimates. Existing <code>Session.cost = byJson</code> already enforces visible changes.</span></li>
+      <li><strong>Add a server-only harness usage capability.</strong><span><code>HARNESSES.codex</code> supplies a request reader and estimator; Claude declares null because OTLP metrics remain its source. Consumers call <code>usageFor(session)</code>.</span></li>
+      <li><strong>Read append-only JSONL safely.</strong><span>Resume from a durable byte offset, process only complete lines, preserve active model, cap catch-up at 1 MiB, and derive replay-stable event identities from conversation id + timestamp + raw record.</span></li>
+      <li><strong>Price with a pinned registry.</strong><span>Exact model match only. Separate uncached input, cache reads, cache writes, and output. Apply long-context rules per request. Persist full precision and round only in UI.</span></li>
+      <li><strong>Persist cursor and event atomically.</strong><span>Add <code>usage_sources</code>; migrate <code>usage_ledger</code> with basis, known, and pricing-version columns. An identity conflict preserves the original economic snapshot and updates only missing provenance, so replay cannot double count or reprice history.</span></li>
+      <li><strong>Drain through a generic collector.</strong><span>Start <code>src/server/usage.ts</code> beside runtime metadata. Require proven conversation id, catch up immediately while <code>more</code>, and hold a removed session for a final 30-second grace drain.</span></li>
+      <li><strong>Combine fleet SQL with completeness.</strong><span>Known Claude and Codex estimates use one sum. Tokens include every basis, including unpriced rows. Any unpriced row makes that time window partial, and cost/PR is withheld rather than understated.</span></li>
+      <li><strong>Update every UI vocabulary.</strong><span>Shared CostChip handles all three figure layouts and prefixes every dollar with <code>≈</code>. Rail uses the same convention. FleetStrip renders one combined estimate while quota stays separate.</span></li>
+      <li><strong>Correct the contracts and docs.</strong><span>README, Settings, AGENTS, shared comments, fixtures, and tests stop claiming that Codex has only an opaque token scalar.</span></li>
+    </ol>
+
+    <div class="warning"><p><strong>Critical SQL rule:</strong> existing Claude ledger rows must migrate to <code>reported / known</code>. An unknown-model Codex row still stores tokens, but any unknown row makes both the session and matching fleet-window dollar total null—never a silently partial estimate.</p></div>
+  </section>
+
+  <section id="ui">
+    <h2>UI contract</h2>
+    <div class="table"><table><thead><tr><th>Basis</th><th>Chip</th><th>Tooltip</th><th>Fleet</th></tr></thead><tbody>
+      <tr><td>Client-calculated</td><td><code>≈$1.24</code></td><td>Claude Code token-price estimate; not Pro or Max plan spend</td><td rowspan="2">One estimated cost today, rate, and cost/PR</td></tr>
+      <tr><td>Mission-calculated</td><td><code>≈$1.24</code></td><td>Codex standard API equivalent; model, snapshot, and tiers</td></tr>
+      <tr><td>Unpriced</td><td><code>48k tok</code></td><td>No exact standard rate for the recorded model</td><td>Tokens shown; estimate marked partial; cost/PR withheld</td></tr>
+    </tbody></table></div>
+    <p><strong>Layout parity:</strong> the shared chip reaches Cards, Console/Board detail, and Board overview. The Console/Board rail retains its compact mark vocabulary and uses the one existing <code>costIsNotable</code> threshold.</p>
+    <p><strong>Settings:</strong> the Claude telemetry switch remains exactly that. The surrounding explanation says Claude and Codex estimates are combined because both approximate API-token value; plan quota remains independent.</p>
+  </section>
+
+  <section id="files">
+    <h2>Files that move together</h2>
+    <div class="table"><table><thead><tr><th>Area</th><th>Files</th><th>Responsibility</th></tr></thead><tbody>
+      <tr><td>Contracts</td><td><code>src/shared/types.ts</code><br><code>src/shared/cost.ts</code></td><td>Basis, pricing metadata, fleet fields, support prose</td></tr>
+      <tr><td>Harness</td><td><code>src/server/harness/types.ts</code><br><code>src/server/harness/index.ts</code></td><td>Usage capability and registry selector</td></tr>
+      <tr><td>Codex</td><td><code>harness/codex/usage.ts</code><br><code>harness/codex/pricing.ts</code></td><td>JSONL events, exact rates, estimator</td></tr>
+      <tr><td>Daemon</td><td><code>src/server/usage.ts</code><br><code>src/server/index.ts</code><br><code>src/server/registry.ts</code></td><td>Collector lifecycle, session sync, fleet recompute</td></tr>
+      <tr><td>Storage</td><td><code>src/server/db.ts</code></td><td>Migration, cursors, atomic event upsert, completeness-aware combined sum</td></tr>
+      <tr><td>Web</td><td><code>session-bits.tsx</code><br><code>RailRow.tsx</code><br><code>FleetStrip.tsx</code><br><code>CostSettingsPanel.tsx</code></td><td>Calculator provenance, layout parity, unified estimate language</td></tr>
+      <tr><td>Docs</td><td><code>README.md</code><br><code>AGENTS.md</code></td><td>Replace stale scalar/no-tier claims</td></tr>
+    </tbody></table></div>
+    <p class="small">No new HTTP route, Electron IPC capability, overlay, build entry point, or ServerEvent variant.</p>
+  </section>
+
+  <section id="tests">
+    <h2>Verification</h2>
+    <ul class="cols">
+      <li>Exact arithmetic for all catalogued Codex models</li>
+      <li>Cached read and nonzero cache-write pricing</li>
+      <li>Per-request >272K long-context multiplier</li>
+      <li>Reasoning output never double charged</li>
+      <li>Unknown and near-match model refusal</li>
+      <li><code>last_token_usage</code>, not cumulative total</li>
+      <li>Mid-rollout model switch</li>
+      <li>Chunk boundary and incomplete line</li>
+      <li>Replay-stable identity and no double count</li>
+      <li>Atomic cursor/event crash behavior</li>
+      <li>Existing-row migration to reported/known</li>
+      <li>Unknown row invalidates partial dollars</li>
+      <li>Combined Claude and Codex estimate arithmetic</li>
+      <li>Combined tokens, including unpriced</li>
+      <li>Daemon restart and final grace drain</li>
+      <li><code>/clear</code> conversation rotation</li>
+      <li>No write without proven conversation id</li>
+      <li>No guessed subagent parent</li>
+      <li>All-Codex FleetStrip rendering</li>
+      <li>Cost/PR combines all known estimates</li>
+      <li>Partial windows withhold cost/PR</li>
+      <li>Shared-leaf layout parity and accessible labels</li>
+    </ul>
+    <pre><code>npm test -- test/codex-pricing.test.ts test/codex-usage.test.ts test/usage-ledger.test.ts
+npm test -- test/runtime-meta.test.ts test/fleet-strip.test.ts test/session-leaf-parity.test.ts
+npm run typecheck
+npm test
+npm run lint
+npm run build</code></pre>
+  </section>
+
+  <section id="review" class="review">
+    <h2>Resolved review decisions</h2>
+    <ol>
+      <li><strong>Semantics:</strong> every dollar uses <code>≈$</code> so subscription-plan activity is not presented as an incurred charge.</li>
+      <li><strong>Fleet scope:</strong> Claude and Codex API-token estimates combine into one daily value, rate, and cost/PR; quota remains separate.</li>
+      <li><strong>Default behavior:</strong> local Codex estimation needs no second Cost toggle or runtime network call.</li>
+      <li><strong>Completeness:</strong> unknown pricing marks the affected fleet window partial and withholds cost/PR.</li>
+      <li><strong>History:</strong> there is no first-install scan of ended historical rollouts; active sessions backfill on daemon restart and future events retain for 180 days.</li>
+    </ol>
+    <p class="small">The full signatures, SQL columns, sequencing, acceptance criteria, and known limitations are in <a href="plan.md">plan.md</a>.</p>
+  </section>
+
+  <section><h2>Acceptance summary</h2><div class="accept"><p>Supported Claude and Codex sessions show consistently qualified estimates everywhere; fleet totals, rates, and cost/PR combine all known estimates; unknowns produce an explicit partial state; request events remain durable and replay-safe; quota stays separate; and the implementation adds no external configuration or credential dependency.</p></div></section>
+
+  <footer>Rendered review companion for <a href="plan.md">docs/plans/codex-cost-estimates/plan.md</a>. The design is implemented locally and awaiting operator testing before any PR.</footer>
+</main></body></html>

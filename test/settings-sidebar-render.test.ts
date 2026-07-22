@@ -50,7 +50,7 @@ const SKILLS_ONLY = /Enable Mission Control skills/; // the skills master toggle
 const LAYOUT_ONLY = /Dashboard layout/; // the picker's radiogroup label
 const HARNESSES_ONLY = /Auto mode on dispatch/; // the harnesses toggle label
 const APPEARANCE_ONLY = /Format messages/; // the rich-text toggle label
-const COST_ONLY = /Track what the fleet costs/; // the telemetry master toggle label
+const COST_ONLY = /Track Claude estimated cost/; // the telemetry master toggle label
 const INSPECTOR_ONLY = /Run the Inspector/; // the inspector master toggle label
 const SHIPPING_ONLY = /YOLO mode - merge/; // the auto-merge master toggle label
 const TASK_SOURCES_ONLY = /never dispatches an agent/; // the task-sources safety sentence
@@ -177,7 +177,10 @@ test("the cost panel says every number is an estimate", () => {
   // that the client-side figure can differ from billing, and on a subscription the
   // dollars are notional entirely - a panel that dropped the word would be presenting a
   // guess as a bill.
-  assert.match(render("cost"), /estimate/i);
+  const html = render("cost");
+  assert.match(html, /estimate/i);
+  assert.match(html, /Standard API rates/);
+  assert.match(html, /not Pro, Max, or ChatGPT plan spend/);
 });
 
 test("the cost panel's controls are disabled until the first read lands", () => {

@@ -1278,8 +1278,10 @@ function UsageBar({
           {collapsed ? "▸" : "▾"}
         </span>
         Usage
-        {collapsed && fleet.spendToday > 0 && (
-          <span className="topbar-usage-compact">{fmtUsd(fleet.spendToday)}</span>
+        {collapsed && fleet.estimatedCostToday !== null && fleet.estimatedCostToday > 0 && (
+          <span className="topbar-usage-compact">
+            ≈{fmtUsd(fleet.estimatedCostToday)}
+          </span>
         )}
       </button>
       {!collapsed && <FleetStrip fleet={fleet} view={view} />}

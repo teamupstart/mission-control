@@ -1,6 +1,6 @@
 import { CostConfigSchema } from "@shared/protocol.ts";
 import type { CostConfig, CostConfigPatch, CostTelemetryStatus } from "@shared/protocol.ts";
-import { getAppConfig, setAppConfig, usageLedgerHasRows } from "./db.ts";
+import { getAppConfig, reportedUsageLedgerHasRows, setAppConfig } from "./db.ts";
 import {
   claudeSettingsPath,
   otelEnvFlags,
@@ -67,7 +67,7 @@ export function costTelemetryStatus(): CostTelemetryStatus {
   return {
     config: getCostConfig(),
     installed: flags.installed,
-    receiving: usageLedgerHasRows(),
+    receiving: reportedUsageLedgerHasRows(),
     sessionIdDisabled: flags.sessionIdDisabled,
     settingsPath: claudeSettingsPath(),
   };

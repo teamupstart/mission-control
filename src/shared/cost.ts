@@ -47,17 +47,10 @@ export function costIsNotable(cost: SessionCost | null | undefined): boolean {
   return costTone(cost?.costUsd) !== "normal";
 }
 
-/**
- * Agents whose spend we do not track, and why - rendered where a figure would be.
- *
- * Codex keeps a single `tokens_used` scalar in `~/.codex/state_5.sqlite`: no tier split,
- * no cost, no per-model breakdown. Pricing that to the same confidence as Claude's own
- * `cost.usage` counter is not possible, and showing a number with a different error bar
- * beside a Claude one is worse than showing none. Mirrors `GOAL_UNSUPPORTED`.
- */
+/** Agents whose usage cannot produce either reported or API-equivalent dollars. */
 export const COST_UNSUPPORTED: Record<AgentType, string | null> = {
   claude: null,
-  codex: "Codex reports no cost telemetry",
+  codex: null,
 };
 
 /** How long each rate-limit window runs, which is what makes a runway projectable. */
@@ -77,8 +70,9 @@ export interface RunwayProjection {
  *
  * The projection uses the window's OWN average - `usedPercentage` over the time since the
  * window opened - and nothing else. That is a deliberate choice over projecting from
- * `burnPerHour`: the dollar burn and the quota are different meters (a Max plan's dollars
- * are notional, and a cache-heavy hour is cheap in dollars and not in quota), so deriving
+ * the estimated hourly cost: API-equivalent dollars and quota are different meters (a
+ * subscription's dollars are notional, and a cache-heavy hour is cheap in dollars but not
+ * in quota), so deriving
  * one from the other would produce a confident number about the wrong quantity. This one
  * needs no extra state, survives a daemon restart, and is checkable by hand against the
  * two figures Claude sends.

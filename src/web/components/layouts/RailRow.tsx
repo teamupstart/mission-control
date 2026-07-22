@@ -46,7 +46,7 @@ export function RailRow({
   // rail is the one place a routine cost is invisible until it isn't. The other three
   // surfaces carry the figure itself (`CostChip`); `costIsNotable` is shared so all four
   // agree on where the line sits.
-  if (costIsNotable(session.cost)) marks.push("$");
+  if (costIsNotable(session.cost)) marks.push("≈$");
 
   return (
     <button

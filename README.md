@@ -50,11 +50,11 @@ and get your decision back.
   moment a session needs input, a review lands, a no-mistakes gate parks, a session
   **gets stuck**, or a dispatched task fails - with an **Away mode** that buffers the
   rest and hands you one digest when you come back.
-- **Tracks what the fleet costs**: an opt-in badge on every card, and a topbar strip
-  carrying today's spend, the burn rate, tokens, cost per pull request shipped, and how
-  long your rate-limit windows last at the current pace. It consumes **Claude Code's own
-  cost figures** over OpenTelemetry - Mission Control keeps no price list and does no
-  arithmetic of its own. See [Cost telemetry](#cost-telemetry).
+- **Tracks fleet economics**: a badge on every priced card and a topbar strip carrying
+  one Claude + Codex API-equivalent estimate, tokens, estimated cost per pull request,
+  and rate-limit runway. Claude calculates its rows and reports them over OpenTelemetry;
+  Mission Control calculates Codex rows from request-level rollout counters. See
+  [Cost telemetry](#cost-telemetry).
 - **Says what each session is for**: every card carries a one-sentence **Goal** - what
   that session is currently trying to solve - derived from your own prompts and
   refreshed as you steer it. No API key: it runs the local `claude` CLI.
@@ -637,8 +637,9 @@ harness can never read a prompt at all.
 
 ### Cost telemetry
 
-You run a fleet; this tells you what it costs. Off by default - switch it on in
-**Settings → Cost**, or from the CLI:
+You run a fleet; this values its usage consistently without pretending a subscription has
+a per-request dollar bill. Codex estimates are automatic. Claude's client-calculated
+estimate stream is off by default; switch that on in **Settings → Cost**, or from the CLI:
 
 ```sh
 npm run install-telemetry     # adds an env block to ~/.claude/settings.json
@@ -647,15 +648,15 @@ npm run install-hooks -- --uninstall   # removes that block - and the hooks, and
                                        # cost telemetry, use Settings → Cost.
 ```
 
-Once on, every card carries a **spend badge** beside its model / thinking / context row,
-and the topbar grows a foldable **Usage** row carrying the fleet strip:
+Once either source has data, every priced card carries a **cost badge** beside its model /
+thinking / context row, and the topbar grows a foldable **Usage** row:
 
 | Figure | What it is |
 |---|---|
-| **Spend today** | every session on the machine, since local midnight |
-| **Burn rate** | the last hour's spend - what the fleet is costing *now*, not a projection |
+| **Estimated cost today** | Claude- plus Codex-estimated API-equivalent usage since local midnight |
+| **Estimated rate** | the last hour of that same combined estimate |
 | **Tokens today** | input, output and cache, every tier summed |
-| **Cost / PR** | today's spend over the pull requests your agents opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review), so it is a unit price for shipped work rather than for branch activity. Absent until the first one lands |
+| **Cost / PR** | today's combined estimate over pull requests either agent opened today. Counts only PRs we can [prove we opened](#inspector-automated-pr-review) |
 | **Runway** | per rate-limit window: how long it lasts at the pace it has been spent so far. The bar is consumption, the figure beside it is the projection. Each row names the provider whose quota it is, since Claude and Codex report their own |
 
 The runway is the only forward-looking number in the app, and it is an average
@@ -666,19 +667,19 @@ meters, so deriving one from the other would be a confident number about the wro
 An average cannot see a burst; a fleet that idled all morning and then started six
 sessions reads as calm for a while.
 
-Folding the row away keeps today's spend visible beside the toggle, and the choice
+Folding the row away keeps today's estimate visible beside the toggle, and the choice
 persists per machine like the layout.
 
 Three sources, each used for the one thing only it can do:
 
 | Source | Provides |
 |---|---|
-| **OpenTelemetry** | `claude_code.cost.usage` (USD) and `claude_code.token.usage` by tier, per session, model, and `query_source` (so subagent spend is separated natively) |
+| **OpenTelemetry** | Claude Code's locally calculated `claude_code.cost.usage` estimate and `claude_code.token.usage` by tier, per session, model, and `query_source` |
 | **statusLine payload** | your Claude subscription's `five_hour` / `seven_day` rate-limit windows - the only local source of those, since OTel has no quota metric |
-| **Codex rollout file** | Codex's own quota windows and its cumulative token count. Grouped per provider, so the two accounts' meters update independently and one being stale never ages the other |
+| **Codex rollout file** | quota windows plus request-level `last_token_usage`, including model, cached input, cache writes, output, and reasoning output. A durable byte cursor and event identity make restarts/replays idempotent |
 
 The Claude plan meters need the [opt-in statusLine wrapper](#status-line-optional)
-(`npm run install-statusline`); the spend figures don't, and Codex's windows need neither -
+(`npm run install-statusline`); the estimated-cost figures don't, and Codex's windows need neither -
 they ride in a file the daemon is already reading for the model and context figures. They are two separate opt-ins
 because they are two different asks of your config - one adds an `env` block, the other
 rewrites the command that draws your terminal line. Only `--telemetry` adds the block and
@@ -689,11 +690,13 @@ A plan meter disappears once its window resets rather than holding the last perc
 a quota that has already rolled over is not a figure worth showing, and the same rule
 already governs an account with no rate limits to report.
 
-**Every figure is a local estimate.** Anthropic's own docs say the client-side number can
-differ from your bill, and on a Pro or Max plan the dollars are notional entirely - the
-plan meters are the real constraint there. Nothing here reconstructs cost from a token
-count times a rate table: there is no rate table to drift, no effective-date logic, and
-no exposure to a mispriced model.
+**Every dollar figure is one API-equivalent estimate and is marked `≈$`.** Claude Code
+calculates its rows from request usage; Mission Control prices Codex requests at an
+immutable snapshot of OpenAI Standard API rates, including cache and long-context rules.
+Estimator provenance remains on each session, but both values have the same economic
+meaning: neither is Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice. If
+any row in a fleet window has no verified price, that window reads **partial** and cost/PR
+is withheld rather than presenting a known subtotal as the complete estimate.
 
 Enabling it writes six keys into your `~/.claude/settings.json` `env` block (see
 [Configuration](#configuration)); the edit is surgical, your other settings and comments
@@ -704,13 +707,12 @@ sees sessions it didn't start.
 Ledger rows are kept for **180 days** and pruned by age alone - a finished session's cost
 is exactly when the record starts being interesting.
 
-**A Codex card shows tokens, never dollars.** Its rollout file carries a cumulative token
-count and no price, so the daemon records exactly that - the count, with the cost left
-explicitly unset - and the chip reads `48k tok` with "Pricing unavailable" on hover rather
-than a dollar figure. That is deliberate: pricing a count we cannot break down by tier
-would put a number with a different error bar next to Claude's own, and the two would be
-read as the same kind of fact. It also means Codex spend contributes to no fleet total and
-no **Cost / PR** - those figures are the ledger's, and nothing unpriced enters it.
+Codex ingestion covers the main rollout only. Separate subagent rollouts are not assigned
+to a parent by cwd or timing because that relationship is not proven. The standard-price
+snapshot currently recognizes `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, and
+`gpt-5.5`; a new model intentionally stays unpriced until its official rate is added.
+Claude's estimate can include provider-priced server tools such as web search; Codex
+rollouts do not currently expose every separately billed hosted-tool fee.
 
 ### Review channel (MCP)
 

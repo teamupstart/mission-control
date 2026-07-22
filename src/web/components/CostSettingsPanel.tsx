@@ -1,8 +1,8 @@
 import { COST_EXPORT_INTERVAL_MAX_MS, COST_EXPORT_INTERVAL_MIN_MS } from "@shared/protocol.ts";
 import type { CostState } from "../useCost.ts";
 
-// The Cost settings section: whether we ask Claude Code for cost telemetry, how often, and
-// which number the topbar strip leads with.
+// The Cost settings section: whether we ask Claude Code for its API-equivalent estimate,
+// how often, and how that joins automatic Codex estimates in one fleet total.
 //
 // The master toggle here is unlike the other panels' toggles in one way worth being
 // careful about: it does not change what the daemon does with data it already has, it
@@ -30,10 +30,10 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
       </div>
 
       <p className="settings-hint settings-blurb">
-        Mission Control consumes <strong>Claude Code's own</strong> cost figures over
-        OpenTelemetry - it keeps no price list and does no arithmetic of its own. Every number
-        is still a local <strong>estimate</strong>: Anthropic's client-side figure can differ
-        from your bill, and on a Pro or Max plan the dollars are notional entirely.
+        Claude Code calculates an estimated API cost from its request usage and reports it
+        over OpenTelemetry. Mission Control applies versioned OpenAI Standard API rates to
+        Codex rollout usage. Both feed one <strong>API-equivalent estimate</strong>:
+        it is not Pro, Max, or ChatGPT plan spend, credits consumed, or an invoice.
       </p>
 
       {error && <p className="settings-error">{error}</p>}
@@ -44,9 +44,8 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         // correctly configured and the dashboard still has no numbers on it. Saying so
         // beats leaving someone to conclude the feature is broken.
         <p className="settings-hint">
-          Nothing has reported yet. The <code>env</code> block only applies to sessions
-          started after it was written - open a new Claude Code session and its spend will
-          appear within one export interval.
+          No Claude telemetry has reported yet. The <code>env</code> block only applies to
+          sessions started after it was written. Codex estimates do not depend on this toggle.
         </p>
       )}
 
@@ -60,7 +59,7 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
 
       <div className="kb-row">
         <div className="kb-row-text">
-          <span className="kb-row-label">Track what the fleet costs</span>
+          <span className="kb-row-label">Track Claude estimated cost</span>
           <span className="kb-row-desc">
             Writes an <code>env</code> block into{" "}
             <code>{status?.settingsPath ?? "~/.claude/settings.json"}</code> so every Claude
@@ -120,9 +119,8 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
         <div className="kb-row-text">
           <span className="kb-row-label">Lead with</span>
           <span className="kb-row-desc">
-            Which figure comes first in the topbar. On a subscription the plan meters are the
-            real constraint and the dollars are notional; on an API key it is the other way
-            round. Both still render - this only decides the order.
+            Which group comes first in the topbar. The estimate combines Claude and Codex;
+            plan meters remain separate because they measure subscription quota instead.
           </span>
         </div>
         <div className="kb-row-controls">
@@ -133,7 +131,7 @@ export function CostSettingsPanel({ state }: { state: CostState }): React.JSX.El
             aria-label="Which cost figure the topbar leads with"
             onChange={(e) => void update({ view: e.target.value === "plan" ? "plan" : "usd" })}
           >
-            <option value="usd">Dollars spent</option>
+            <option value="usd">Estimated cost</option>
             <option value="plan">Plan usage</option>
           </select>
         </div>

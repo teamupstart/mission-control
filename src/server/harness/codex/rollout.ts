@@ -388,6 +388,9 @@ export function parseRolloutUsage(lines: string[]): import("@shared/types.ts").S
     const cached = num("cached_input_tokens");
     return {
       costUsd: null,
+      basis: "unpriced",
+      pricingModels: [],
+      pricingVersions: [],
       input: Math.max(0, num("input_tokens") - cached),
       cacheRead: cached,
       cacheWrite: 0,

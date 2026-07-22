@@ -580,7 +580,7 @@ export function RuntimeMetaRow({
 }
 
 /**
- * What a session has spent so far, as a chip beside the runtime row.
+ * One session's API-equivalent cost estimate, as a chip beside the runtime row.
  *
  * Sits next to `RuntimeMetaRow` rather than among the alert marks because cost is the
  * fourth runtime fact of the same kind as model, thinking level and context - something
@@ -603,21 +603,29 @@ export function CostChip({ cost }: { cost: SessionCost | null }): React.JSX.Elem
     const total = tokensIn + cost.output;
     if (total <= 0) return null;
     return (
-      <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Pricing unavailable.`}>
+      <Tooltip label={`${compactTokens(tokensIn)} in / ${compactTokens(cost.output)} out${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning)` : ""}. Standard API pricing unavailable${cost.pricingModels.length ? ` for ${cost.pricingModels.join(", ")}` : " because no exact model was recorded"}.`}>
         <span className="rt-pill cost-chip">{compactTokens(total)} tok</span>
       </Tooltip>
     );
   }
   if (cost.costUsd <= 0) return null;
   const tone = costTone(cost.costUsd);
+  const missionEstimated = cost.basis === "api-equivalent";
+  const models = cost.pricingModels.length ? cost.pricingModels.join(", ") : "unknown model";
+  const versions = cost.pricingVersions.length ? cost.pricingVersions.join(", ") : "no pricing snapshot";
   return (
     <Tooltip
       label={
-        `${fmtUsd(cost.costUsd)} estimated - ${compactTokens(tokensIn)} in / ` +
-        `${compactTokens(cost.output)} out.\nClaude Code's own figure; your bill may differ.`
+        missionEstimated
+          ? `${fmtUsd(cost.costUsd)} API-equivalent estimate - ${compactTokens(cost.input)} uncached input, ` +
+            `${compactTokens(cost.cacheRead)} cached input, ${compactTokens(cost.cacheWrite)} cache write, ` +
+            `${compactTokens(cost.output)} output${cost.reasoningOutput ? ` (${compactTokens(cost.reasoningOutput)} reasoning, already included)` : ""}.\n` +
+            `Model: ${models}. Pricing: ${versions}. Calculated by Mission Control; not ChatGPT plan spend or an invoice.`
+          : `${fmtUsd(cost.costUsd)} API-equivalent estimate - ${compactTokens(tokensIn)} in / ` +
+            `${compactTokens(cost.output)} out.\nCalculated by Claude Code; not subscription-plan spend or an invoice.`
       }
     >
-      <span className={`rt-pill cost-chip cost-${tone}`}>{fmtUsd(cost.costUsd)}</span>
+      <span className={`rt-pill cost-chip cost-${tone}`}>≈{fmtUsd(cost.costUsd)}</span>
     </Tooltip>
   );
 }

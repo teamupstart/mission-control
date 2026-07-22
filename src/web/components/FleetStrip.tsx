@@ -62,41 +62,47 @@ export function FleetStrip({
 export function fleetStripHasContent(fleet: FleetCost | null): boolean {
   if (!fleet) return false;
   const limits = fleet.rateLimits;
-  return fleet.spendToday > 0 || !!limits?.fiveHour || !!limits?.sevenDay || !!fleet.rateLimitSources?.some((s) => s.windows.length);
+  return (fleet.estimatedCostToday ?? 0) > 0 || fleet.tokensToday > 0 ||
+    !!limits?.fiveHour || !!limits?.sevenDay || !!fleet.rateLimitSources?.some((s) => s.windows.length);
 }
 
 /** The dollar-and-token half. Null when the ledger has nothing for today. */
 function FleetStats({ fleet }: { fleet: FleetCost }): React.JSX.Element | null {
-  if (fleet.spendToday <= 0) return null;
+  if ((fleet.estimatedCostToday ?? 0) <= 0 && fleet.tokensToday <= 0) return null;
+  const estimated = fleet.estimatedCostToday;
   return (
     <div className="fs-stats">
-      <FleetStat
-        n={fmtUsd(fleet.spendToday)}
-        label="spend today"
-        cost
-        tip={
-          `${fmtUsd(fleet.spendToday)} across every session on this machine since midnight.\n` +
-          `Claude Code's own estimate; your bill may differ.`
-        }
-      />
-      <FleetStat
-        n={fmtUsd(fleet.burnPerHour)}
-        unit="/hr"
-        label="burn rate"
-        tip={`${fmtUsd(fleet.burnPerHour)} in the last hour. What the fleet is spending now, not a projection.`}
-      />
-      <FleetStat
+      {estimated !== null && estimated > 0 && <>
+        <FleetStat
+          n={`≈${fmtUsd(estimated)}`}
+          label="estimated cost today"
+          cost
+          tip={`${fmtUsd(estimated)} of API-equivalent usage since midnight. Claude Code calculates its rows; Mission Control calculates Codex rows from a versioned Standard API price snapshot. This is not subscription spend or an invoice.`}
+        />
+        {fleet.estimatedBurnPerHour !== null && <FleetStat
+          n={`≈${fmtUsd(fleet.estimatedBurnPerHour)}`}
+          unit="/hr"
+          label="estimated rate"
+          tip={`${fmtUsd(fleet.estimatedBurnPerHour)} of API-equivalent usage in the last hour; not actual subscription spend.`}
+        />}
+      </>}
+      {estimated === null && <FleetStat
+        n="partial"
+        label="cost estimate"
+        tip="At least one usage row has no verified model price, so Mission Control will not present the known subtotal as a complete fleet estimate. Tokens remain complete."
+      />}
+      {fleet.tokensToday > 0 && <FleetStat
         n={compactTokens(fleet.tokensToday)}
         label="tokens today"
         tip={`${fleet.tokensToday.toLocaleString("en-US")} tokens since midnight - input, output and cache, every tier summed.`}
-      />
-      {fleet.prsToday > 0 && (
+      />}
+      {estimated !== null && estimated > 0 && fleet.prsToday > 0 && (
         <FleetStat
-          n={fmtUsd(fleet.spendToday / fleet.prsToday)}
+          n={`≈${fmtUsd(estimated / fleet.prsToday)}`}
           label="cost / PR"
           tip={
-            `${fmtUsd(fleet.spendToday)} today over ${fleet.prsToday} pull request${fleet.prsToday === 1 ? "" : "s"} your agents opened.\n` +
-            `Counts only PRs we can prove we opened - not every PR on the branch.`
+            `${fmtUsd(estimated)} of API-equivalent usage today over ${fleet.prsToday} pull request${fleet.prsToday === 1 ? "" : "s"} your agents opened.\n` +
+            `Includes Claude and Codex estimates; counts only PRs we can prove we opened.`
           }
         />
       )}

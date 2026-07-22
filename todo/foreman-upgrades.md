@@ -40,7 +40,7 @@ Foreman's engineering rigor.
 | Knowledge capture / learning | `/stow` routes durable facts to canonical homes | Notes are ephemeral triage aids; no feedback loop |
 | Turn-end safety | Backstop blocks blind exit while work in flight | Partial: the `unfinished-work` stall rule (`src/shared/stall.ts`) flags a session idle with a task or queue still open, but only reports it - no recovery playbook |
 | Cross-session awareness | Serializes same-file tasks, `blocked-by` | Each session reviewed in isolation |
-| Multi-harness | Claude, Grok, Pi, Codex, OpenCode | Claude plus Mission Control-launched Codex; operator-started Codex remains human-operated because its hooks are launch-scoped |
+| Multi-harness | Claude, Grok, Pi, Codex, OpenCode | Claude plus Mission Control-launched Codex; operator-started Codex remains human-operated because its hooks are launch-scoped, except for independently observed parked no-mistakes gates |
 | Domain specialization | Secondmates (persistent scoped supervisors) | One global policy/allowlist |
 | External channels | X-mode (bounded public replies) | In-app + browser notification only |
 

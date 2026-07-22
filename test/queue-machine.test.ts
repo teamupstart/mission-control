@@ -382,7 +382,7 @@ test("tickTargets takes needs-you first (oldest-waiting first), and never lists 
   );
 });
 
-test("tickTargets requires hook authorization for launch-scoped Codex triage", () => {
+test("tickTargets still requires hook authorization for an operator-started Codex menu", () => {
   const menu = {
     prompt: "Run the command?",
     options: [{ number: 1, label: "Yes" }],
@@ -409,6 +409,65 @@ test("tickTargets requires hook authorization for launch-scoped Codex triage", (
   assert.equal(
     tick({ session: operatorCodex, bucket: "needs-you", items: [mkItem()] }).kind,
     "escalate",
+  );
+});
+
+test("tickTargets triages an operator-started Codex session only when no-mistakes is parked", () => {
+  const parkedRun: NonNullable<Session["nomistakes"]> = {
+    id: "run-parked",
+    status: "running",
+    branch: "feature",
+    startedAt: NOW - 60_000,
+    endedAt: null,
+    prUrl: null,
+    awaitingAgent: "parked 1m",
+    findingsSummary: "1 awaiting",
+    gateStep: "review",
+    gateSummary: null,
+    gateRisk: null,
+    steps: [],
+    activeSteps: [],
+    findings: [
+      {
+        id: "review-error",
+        severity: "error",
+        file: "src/a.ts",
+        action: "ask-user",
+        description: "The fallback persists state outside this session.",
+      },
+    ],
+    response: null,
+    outcome: null,
+  };
+  const operatorCodex = mkSession({
+    id: "operator-codex-gate",
+    agent: "codex",
+    hooksSeen: false,
+    instrumented: false,
+    state: "idle",
+    nomistakes: parkedRun,
+  });
+
+  assert.deepEqual(
+    tickTargets([operatorCodex], ["drain"]).map((s) => s.id),
+    ["operator-codex-gate"],
+    "the independently-polled gate reaches triage without widening ordinary Codex automation",
+  );
+  assert.equal(
+    tick({ session: operatorCodex, bucket: "needs-you", items: [mkItem()] }).kind,
+    "triage",
+    "a queue behind the gate yields to the gate instead of being escalated as hookless",
+  );
+
+  const stillDriving = mkSession({
+    ...operatorCodex,
+    id: "same-run-driver",
+    state: "working",
+  });
+  assert.deepEqual(
+    tickTargets([operatorCodex, stillDriving], ["drain"]),
+    [],
+    "a sibling still driving the same run keeps the gate out of Foreman's queue",
   );
 });
 

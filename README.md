@@ -1154,7 +1154,10 @@ The dashboard tells you *who needs you*; **Foreman** can start draining that que
 you. It's an optional agent that watches the `needs-you` bucket and, for each blocked
 Claude Code session or Mission Control-launched Codex session that has reported a hook,
 reads the transcript to understand the goal **and the session's terminal screen to see
-the ask itself**, then:
+the ask itself**. A parked no-mistakes gate is the narrow exception to that hook boundary:
+the daemon observes and attributes the gate independently, so Foreman can review it for an
+operator-started Codex session without enabling automation for that session's ordinary menus,
+questions, work queue, or wrap-up. Foreman then:
 
 - **auto-answers** the routine calls - implementation trade-offs (defaulting to the most
   correct, secure, non-duplicative option) and non-destructive access requests;

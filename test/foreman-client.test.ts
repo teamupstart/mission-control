@@ -60,6 +60,29 @@ test("getConfig throws on a non-2xx, like every other read", async () => {
   await assert.rejects(withDaemon({}, () => client.getConfig(), false), /\/api\/foreman\/config -> 500/);
 });
 
+test("submitted Foreman replies use settled prompt injection; unsubmitted drafts do not", async () => {
+  const real = globalThis.fetch;
+  const calls: Array<{ url: string; body: unknown }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    });
+    return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+  }) as typeof fetch;
+  try {
+    await client.sendText("session/1", "Fix both findings.", true);
+    await client.sendText("session/1", "Draft only.", false);
+  } finally {
+    globalThis.fetch = real;
+  }
+
+  assert.match(calls[0]!.url, /\/api\/sessions\/session%2F1\/inject$/);
+  assert.deepEqual(calls[0]!.body, { text: "Fix both findings.", origin: "foreman" });
+  assert.match(calls[1]!.url, /\/api\/sessions\/session%2F1\/send$/);
+  assert.deepEqual(calls[1]!.body, { text: "Draft only.", submit: false });
+});
+
 // ---- transcript: the other read whose bytes carry a safety property ----
 
 test("transcript coerces an old daemon's string tools back into named calls", async () => {

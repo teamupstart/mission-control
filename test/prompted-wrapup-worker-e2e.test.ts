@@ -82,6 +82,37 @@ process.stdin.on("end", () => {
   return { bin, log };
 }
 
+/** A successful full Foreman reviewer, used by the parked-gate loop test below. */
+function mkFakeForeman(): { bin: string; log: string } {
+  const dir = tmp("fake-foreman-");
+  const log = join(dir, "calls.log");
+  const bin = join(dir, "claude");
+  const verdict = {
+    purpose: "The no-mistakes review found a session-scope regression.",
+    classification: "implementation",
+    action: "answer",
+    answer: {
+      text: "Fix the reported finding and preserve the change for this session only.",
+      submit: true,
+    },
+    confidence: 0.96,
+  };
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+process.stdin.resume();
+process.stdin.on("end", () => {
+  fs.appendFileSync(process.env.FAKE_CLAUDE_LOG, Date.now() + "\\n");
+  process.stdout.write(JSON.stringify({ result: ${JSON.stringify(JSON.stringify(verdict))} }));
+});
+`,
+  );
+  chmodSync(bin, 0o755);
+  writeFileSync(log, "");
+  return { bin, log };
+}
+
 /** Invocation timestamps, oldest first. */
 function claudeCalls(log: string): number[] {
   return readFileSync(log, "utf8")
@@ -278,9 +309,123 @@ function cfg(over: Record<string, unknown> = {}): Record<string, unknown> {
     maxFixRounds: 10,
     wrapupTriggers: ["prompted"],
     wrapup: "ask",
+    autoBacklog: false,
     ...over,
   };
 }
+
+test("the real worker answers a parked no-mistakes gate on hookless Codex without widening menus", async () => {
+  const repo = tmp("pw-repo-");
+  const fake = mkFakeForeman();
+  const session = mkSession(repo, {
+    id: "operator-codex-gate",
+    agent: "codex",
+    name: "operator Codex at a gate",
+    agentSessionId: null,
+    hooksSeen: false,
+    instrumented: false,
+    goal: { text: "Keep effort changes scoped to one live session.", source: "model", updatedAt: Date.now() },
+    nomistakes: {
+      id: "run-parked",
+      status: "running",
+      branch: "feature",
+      startedAt: Date.now() - 60_000,
+      endedAt: null,
+      prUrl: null,
+      awaitingAgent: "parked 1m",
+      findingsSummary: "1 awaiting",
+      gateStep: "review",
+      gateSummary: null,
+      gateRisk: null,
+      steps: [],
+      activeSteps: [],
+      findings: [
+        {
+          id: "session-scope",
+          severity: "error",
+          file: "src/server/actions.ts",
+          action: "ask-user",
+          description: "The fallback persists the choice for later sessions.",
+        },
+      ],
+      response: null,
+      outcome: null,
+    },
+  });
+  let note: unknown = null;
+
+  const stub = await startStub((req, url, raw) => {
+    const p = url.pathname;
+    if (p === "/api/foreman/config") {
+      return {
+        status: 200,
+        json: cfg({
+          runner: "claude",
+          mode: "live",
+          repoAllowlist: [repo],
+          wrapupTriggers: [],
+        }),
+      };
+    }
+    if (p === "/api/foreman/heartbeat") return { status: 200, json: { leader: true } };
+    if (p === "/api/sessions") return { status: 200, json: [session] };
+    if (p === "/api/reviews" || p === "/api/queues") return { status: 200, json: [] };
+    if (p === "/api/foreman/instructions") return { status: 200, json: { text: "" } };
+    if (p === "/api/sessions/operator-codex-gate/queue") return { status: 200, json: null };
+    if (p === "/api/sessions/operator-codex-gate/note" && req.method === "GET") {
+      return { status: 200, json: note };
+    }
+    if (p === "/api/sessions/operator-codex-gate/note" && req.method === "PUT") {
+      note = JSON.parse(raw);
+      return { status: 200, json: { ok: true } };
+    }
+    if (p === "/api/sessions/operator-codex-gate/pane") {
+      return { status: 200, json: { text: null } };
+    }
+    if (p === "/api/sessions/operator-codex-gate/transcript") {
+      return {
+        status: 200,
+        json: {
+          messages: [
+            { role: "user", text: "Change effort for only this live session.", tools: [] },
+            { role: "assistant", text: "I ran no-mistakes and it found a persistence issue.", tools: [] },
+          ],
+          truncated: false,
+        },
+      };
+    }
+    if (
+      p === "/api/sessions/operator-codex-gate/inject" ||
+      p === "/api/sessions/operator-codex-gate/gate-reply" ||
+      p === "/api/sessions/operator-codex-gate/foreman-episode"
+    ) {
+      return { status: 200, json: { ok: true } };
+    }
+    return { status: 200, json: null };
+  });
+
+  const out = await runWorker({ port: stub.port, claudeBin: fake.bin, claudeLog: fake.log, ms: 6500 });
+  await stub.close();
+
+  const sends = stub.to("POST", "/api/sessions/operator-codex-gate/inject");
+  assert.equal(sends.length, 1, `the parked gate was not answered exactly once\n${out}`);
+  assert.deepEqual(sends[0]?.body, {
+    text: "Fix the reported finding and preserve the change for this session only.",
+    origin: "foreman",
+  });
+  assert.equal(
+    stub.to("POST", "/api/sessions/operator-codex-gate/gate-reply").length,
+    1,
+    "the answer is attributed to Foreman in the no-mistakes fix log",
+  );
+  assert.equal(
+    stub.to("POST", "/api/sessions/operator-codex-gate/foreman-episode").length,
+    1,
+    "the decision is retained in Foreman history",
+  );
+  assert.equal((note as { disposition?: string } | null)?.disposition, "answered", out);
+  assert.equal(claudeCalls(fake.log).length, 1, `the same gate was reviewed more than once\n${out}`);
+});
 
 test("a daemon blip on the queue read never double-fires a wrap-up, and never stalls triage", async () => {
   // The bug this pins: `client.queue()` used to coerce a throw to `null`, and `null` is

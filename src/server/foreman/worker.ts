@@ -9,7 +9,8 @@ import { classifyPending } from "./pending.ts";
 import type { Pending } from "./pending.ts";
 import { parsePaneDialog } from "../discovery/pane-dialog.ts";
 import type { PaneDialog } from "../discovery/pane-dialog.ts";
-import { dialogSpecFor, foremanAutomationAuthorized } from "../harness/index.ts";
+import { dialogSpecFor } from "../harness/index.ts";
+import { foremanTriageAuthorized } from "./authorization.ts";
 import type { CapturedInputs, ReviewInput } from "./prompt.ts";
 import {
   applyVerdict,
@@ -1271,7 +1272,7 @@ async function processSession(
   reviews: ReviewItem[],
   queueItem?: ReviewInput["queueItem"],
 ): Promise<boolean> {
-  if (!foremanAutomationAuthorized(session)) return false;
+  if (!foremanTriageAuthorized(session)) return false;
   const pending = classifyPending(session, reviews);
 
   // Idempotency: don't re-handle a prompt whose marker we've already stamped.

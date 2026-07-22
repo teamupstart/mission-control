@@ -1170,7 +1170,7 @@ export interface NmFinding {
   description: string;
 }
 
-/** A dashboard gate decision whose blocking `axi respond` process has not settled. */
+/** A dashboard gate decision and its retained asynchronous delivery state. */
 export interface NmGateResponse {
   runId: string;
   step: string;

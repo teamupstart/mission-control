@@ -92,10 +92,7 @@ const codexNormal = (level: string): string => `
 
 interface CodexDriverOptions {
   start?: ThinkingLevel;
-  directMax?: boolean;
   failWrites?: readonly number[];
-  jumpAt?: number;
-  jumpTo?: ThinkingLevel;
 }
 
 function codexDriven(options: CodexDriverOptions = {}): { deps: PaneDeps; did: string[]; screen: () => string } {
@@ -125,8 +122,7 @@ function codexDriven(options: CodexDriverOptions = {}): { deps: PaneDeps; did: s
           return { ok: false, error: "key delivery failed", outcomeUnknown: false };
         }
         const index = levels.indexOf(level);
-        if (options.jumpAt === keyWrites && options.jumpTo) level = options.jumpTo;
-        else if (key === "shift-up" && index < levels.length - 1 && (level !== "xhigh" || options.directMax)) {
+        if (key === "shift-up" && index < levels.length - 1 && level !== "xhigh") {
           level = levels[index + 1]!;
         } else if (key === "shift-down" && index > 0) level = levels[index - 1]!;
         screen = codexNormal(level);
@@ -169,55 +165,33 @@ test("Codex never opens the persistent picker when Max shortcut is unavailable",
   const result = await setSessionEffort(codex, "max", h.deps);
 
   assert.equal(result.ok, false);
-  assert.deepEqual(h.did, ["keys:shift-up", "keys:shift-up", "keys:shift-down"]);
+  assert.deepEqual(h.did, []);
   assert.equal(h.screen(), codexNormal("high"));
 });
 
-test("Codex uses the direct session-only Max shortcut when available", async () => {
-  const h = codexDriven({ directMax: true });
-  const result = await setSessionEffort(codexSession(), "max", h.deps);
-
-  assert.equal(result.ok, true);
-  assert.deepEqual(h.did, ["keys:shift-up", "keys:shift-up"]);
-  assert.equal(h.screen(), codexNormal("max"));
-});
-
-test("Codex rolls back every verified step after a later delivery failure", async () => {
-  const h = codexDriven({ start: "low", directMax: true, failWrites: [3] });
-  const result = await setSessionEffort(codexSession("low"), "max", h.deps);
+test("Codex refuses every multi-step effort change before sending a key", async () => {
+  const h = codexDriven({ start: "low" });
+  const result = await setSessionEffort(codexSession("low"), "high", h.deps);
 
   assert.equal(result.ok, false);
-  assert.deepEqual(h.did, [
-    "keys:shift-up",
-    "keys:shift-up",
-    "keys:shift-up",
-    "keys:shift-down",
-    "keys:shift-down",
-  ]);
+  assert.deepEqual(h.did, []);
   assert.equal(h.screen(), codexNormal("low"));
 });
 
-test("Codex rolls back from the actually observed unexpected effort", async () => {
-  const h = codexDriven({ start: "low", jumpAt: 2, jumpTo: "xhigh" });
-  const result = await setSessionEffort(codexSession("low"), "max", h.deps);
+test("Codex applies one adjacent effort change with one native shortcut", async () => {
+  const h = codexDriven({ start: "low" });
+  const result = await setSessionEffort(codexSession("low"), "medium", h.deps);
 
-  assert.equal(result.ok, false);
-  assert.deepEqual(h.did, [
-    "keys:shift-up",
-    "keys:shift-up",
-    "keys:shift-down",
-    "keys:shift-down",
-    "keys:shift-down",
-  ]);
-  assert.equal(h.screen(), codexNormal("low"));
+  assert.deepEqual(result, { ok: true, effort: "medium" });
+  assert.deepEqual(h.did, ["keys:shift-up"]);
+  assert.equal(h.screen(), codexNormal("medium"));
 });
 
-test("Codex reports the last observed effort when rollback cannot be verified", async () => {
-  const h = codexDriven({ start: "low", directMax: true, failWrites: [3, 4] });
-  const result = await setSessionEffort(codexSession("low"), "max", h.deps);
+test("Codex does not retry a refused atomic shortcut", async () => {
+  const h = codexDriven({ start: "low", failWrites: [1] });
+  const result = await setSessionEffort(codexSession("low"), "medium", h.deps);
 
   assert.equal(result.ok, false);
-  assert.match(result.error ?? "", /effort is high/);
-  assert.match(result.error ?? "", /rollback to low could not be verified/);
-  assert.equal(h.screen(), codexNormal("high"));
+  assert.deepEqual(h.did, ["keys:shift-up"]);
+  assert.equal(h.screen(), codexNormal("low"));
 });

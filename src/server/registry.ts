@@ -27,6 +27,7 @@ import type {
   SessionState,
   Task,
   TaskSummary,
+  ThinkingLevel,
   WorkItem,
   WorkItemState,
   InspectorInspection,
@@ -197,6 +198,7 @@ const OVERLAY_TTL_MS = 30 * 60 * 1000;
  * allowed to take over so an idle card doesn't freeze on a stale exact figure.
  */
 const STATUSLINE_TTL_MS = 3 * 60 * 1000;
+const OBSERVED_EFFORT_TTL_MS = 30_000;
 /**
  * Caps on remembered no-mistakes dismissals (see `nmDismissed`): how many
  * checkouts we keep at all, and how many retired runs per checkout. Only a reset
@@ -272,6 +274,12 @@ export class Registry extends EventEmitter {
    *  the process + conversation that produced it. Consulted only when a session has
    *  no fresh hook overlay. See `PassiveState` and `applyPassiveActivity`. */
   private passiveStates = new Map<string, PassiveState>();
+  private observedEfforts = new Map<string, {
+    modelId: string | null;
+    previous: ThinkingLevel;
+    effort: ThinkingLevel;
+    updatedAt: number;
+  }>();
   /**
    * What DISCOVERY said this session's conversation is, keyed by synthetic id - the
    * subset of `Session.agentSessionId` / `transcriptPath` that was read off the live
@@ -827,6 +835,25 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
+  recordObservedSessionEffort(sessionId: string, effort: ThinkingLevel | null): void {
+    if (!effort) return;
+    const s = this.sessions.get(sessionId);
+    if (!s?.meta) return;
+    this.observedEfforts.set(sessionId, {
+      modelId: s.meta.modelId,
+      previous: s.meta.thinkingLevel ?? effort,
+      effort,
+      updatedAt: Date.now(),
+    });
+    if (s.meta.thinkingLevel === effort) return;
+    const updated: Session = {
+      ...s,
+      meta: { ...s.meta, thinkingLevel: effort },
+    };
+    this.sessions.set(sessionId, updated);
+    this.emitSession(updated);
+  }
+
   /**
    * Optimistically apply a rename to the live card the instant the terminal rename
    * lands, rather than waiting up to a poll interval for discovery to read the new
@@ -1247,7 +1274,7 @@ export class Registry extends EventEmitter {
     this.recordRateLimits(ingest);
     const s = this.findSessionByEnv(ingest.env, ingest.sessionId, ingest.cwd);
     if (!s) return;
-    const meta = metaFromStatusLine(ingest, Date.now());
+    const meta = this.reconcileObservedEffort(s.id, metaFromStatusLine(ingest, Date.now()));
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
     const next: Session = { ...s, meta, agentSessionId };
     // A statusLine can be the first thing to bind an agent session id (it carries one and
@@ -1463,7 +1490,7 @@ export class Registry extends EventEmitter {
       now - s.meta.updatedAt < STATUSLINE_TTL_MS
     )
       return;
-    const meta = metaFromRead(read, source, now);
+    const meta = this.reconcileObservedEffort(sessionId, metaFromRead(read, source, now));
     const changed = !metaDisplayEqual(s.meta, meta);
     const next: Session = { ...s, meta };
     this.sessions.set(sessionId, next);
@@ -1567,6 +1594,7 @@ export class Registry extends EventEmitter {
     this.exitTimers.delete(id);
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
+    this.observedEfforts.delete(id);
     if (!this.sessions.delete(id)) return;
     this.emitEvent({ type: "session_remove", id });
     // Eviction is the INSTANT a queue becomes orphaned - `orphanedQueueFor` derives
@@ -1575,6 +1603,21 @@ export class Registry extends EventEmitter {
     // that should show the hint is typically an idle session at the same cwd, which
     // is exactly the case where nothing else about it moves.
     this.syncAllOrphanHints();
+  }
+
+  private reconcileObservedEffort(sessionId: string, meta: SessionMeta): SessionMeta {
+    const observed = this.observedEfforts.get(sessionId);
+    if (!observed) return meta;
+    if (
+      meta.modelId !== observed.modelId ||
+      meta.thinkingLevel === observed.effort ||
+      (meta.thinkingLevel !== observed.previous && meta.thinkingLevel !== null) ||
+      Date.now() - observed.updatedAt >= OBSERVED_EFFORT_TTL_MS
+    ) {
+      this.observedEfforts.delete(sessionId);
+      return meta;
+    }
+    return { ...meta, thinkingLevel: observed.effort };
   }
 
   // ---- reviews (used by phase 3) ----

@@ -770,6 +770,7 @@ export function buildApp(
     const parsed = await parseBody(c, SetSessionEffortSchema);
     if (!parsed.ok) return parsed.res;
     const r = await setSessionEffort(session, parsed.data.effort);
+    if (r.ok) registry.recordObservedSessionEffort(session.id, r.effort);
     return c.json(r, r.ok ? 200 : 409);
   });
 

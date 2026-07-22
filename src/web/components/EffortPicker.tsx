@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Session, ThinkingLevel } from "@shared/types.ts";
-import { capabilitiesFor } from "@shared/harness-capabilities.ts";
+import { sessionEffortLevels } from "@shared/harness-capabilities.ts";
 import { canWriteTo } from "@shared/pane.ts";
 import { api } from "../lib/api.ts";
 
@@ -51,8 +51,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
   }, [optimistic, reported, modelId, reportedAt]);
 
   const level = optimistic?.level ?? reported;
-  const effort = capabilitiesFor(session.agent).effort;
-  const levels = effort?.sessionPicker ? effort.levelsFor(modelId) : [];
+  const levels = sessionEffortLevels(session.agent, modelId, level);
   const canPick = session.state !== "exited" && canWriteTo(session);
 
   const place = useCallback(() => {

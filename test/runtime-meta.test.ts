@@ -120,6 +120,33 @@ test("a null passive read is a no-op (never clears a good reading)", () => {
   assert.equal(metaOf(r)?.model, "Sonnet 5");
 });
 
+test("an observed session effort emits immediately and survives stale passive metadata", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  let observed = 0;
+  r.subscribe((e: ServerEvent) => {
+    if (e.type === "session_upsert" && e.session.meta?.thinkingLevel === "xhigh") observed++;
+  });
+
+  r.recordObservedSessionEffort("s1", "xhigh");
+  const recordedAt = metaOf(r)!.updatedAt;
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.equal(observed, 1);
+
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  assert.ok(metaOf(r)!.updatedAt >= recordedAt);
+});
+
+test("passive metadata reconciles a confirmed or independently changed effort", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.recordObservedSessionEffort("s1", "xhigh");
+  r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "xhigh" }, "transcript");
+  r.applyRuntimeMeta("s1", { ...transcriptRead, thinkingLevel: "medium" }, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "medium");
+});
+
 test("meta only emits when a displayed value actually changes", () => {
   const r = seeded();
   let upserts = 0;

@@ -33,7 +33,7 @@ process.env.CODEX_HOME = join(home, "codex");
 
 const { AGENT_TYPES } = await import("../src/shared/types.ts");
 const { AGENT_IDENTITY } = await import("../src/shared/agent.ts");
-const { HARNESS_CAPABILITIES, capabilitiesFor, skillsAgents, supportsSessionEffort, workQueueUnsupportedWhy } = await import(
+const { HARNESS_CAPABILITIES, capabilitiesFor, sessionEffortLevels, skillsAgents, supportsSessionEffort, workQueueUnsupportedWhy } = await import(
   "../src/shared/harness-capabilities.ts"
 );
 const { HARNESSES } = await import("../src/server/harness/index.ts");
@@ -127,9 +127,13 @@ test("each shipped harness declares its launch-time effort syntax", () => {
 test("the live effort picker follows the selected model, not the launch default", () => {
   assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-sol").includes("max"), true);
   assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-luna").includes("max"), false);
-  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max"), true);
-  assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
-  assert.equal(supportsSessionEffort("claude", "claude-opus-4-8", "max"), true);
+  assert.deepEqual(sessionEffortLevels("codex", "gpt-5.6-sol", "high"), ["medium", "high", "xhigh"]);
+  assert.deepEqual(sessionEffortLevels("codex", "gpt-5.6-sol", "xhigh"), ["high", "xhigh"]);
+  assert.deepEqual(sessionEffortLevels("codex", "gpt-5.6-sol", "max"), ["xhigh", "max"]);
+  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "xhigh", "max"), false);
+  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max", "xhigh"), true);
+  assert.equal(supportsSessionEffort("codex", "gpt-5.5", "xhigh", "max"), false);
+  assert.equal(supportsSessionEffort("claude", "claude-opus-4-8", "high", "max"), true);
   const claude = capabilitiesFor("claude").effort?.sessionPicker;
   const codex = capabilitiesFor("codex").effort?.sessionPicker;
   assert.equal(claude?.kind, "horizontal");

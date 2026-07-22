@@ -360,10 +360,27 @@ export function supportsEffort(agent: AgentType, level: ThinkingLevel): boolean 
 export function supportsSessionEffort(
   agent: AgentType,
   modelId: string | null,
+  current: ThinkingLevel | null,
   level: ThinkingLevel,
 ): boolean {
+  return sessionEffortLevels(agent, modelId, current).includes(level);
+}
+
+export function sessionEffortLevels(
+  agent: AgentType,
+  modelId: string | null,
+  current: ThinkingLevel | null,
+): readonly ThinkingLevel[] {
   const effort = HARNESS_CAPABILITIES[agent].effort;
-  return Boolean(effort?.sessionPicker && effort.levelsFor(modelId).includes(level));
+  const picker = effort?.sessionPicker;
+  if (!effort || !picker || !current) return [];
+  const levels = effort.levelsFor(modelId);
+  const currentIndex = levels.indexOf(current);
+  if (currentIndex < 0) return [];
+  if (picker.kind === "horizontal") return levels;
+  return levels.filter((level, index) =>
+    level === current || (Math.abs(index - currentIndex) === 1 && level !== "max")
+  );
 }
 
 /**

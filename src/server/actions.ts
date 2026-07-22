@@ -20,7 +20,7 @@ import { emulatorHandle, muxHandle, paneToken, type PaneHandles } from "@shared/
 import { EMULATOR_IDS } from "@shared/terminal.ts";
 import type { EmulatorHandle, MuxHandle } from "@shared/terminal.ts";
 import { harnessFor } from "./harness/index.ts";
-import { supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
+import { sessionEffortLevels, supportsSessionEffort, type EffortSpec } from "@shared/harness-capabilities.ts";
 import { PLAIN_NAMES } from "./terminal/names.ts";
 import {
   bindSession,
@@ -306,32 +306,36 @@ export async function sendText(
  * conversation-scoped: neither harness config nor a task's launch override can rewrite
  * a process that is already running.
  */
+export interface EffortResult extends ActionResult {
+  effort: ThinkingLevel | null;
+}
+
 export async function setSessionEffort(
   session: Session,
-  target: import("@shared/types.ts").ThinkingLevel,
+  target: ThinkingLevel,
   deps: PaneDeps = defaultPaneDeps,
-): Promise<ActionResult> {
+): Promise<EffortResult> {
   const spec = harnessFor(session.agent).effort;
   const modelId = session.meta?.modelId ?? null;
   const model = session.meta?.model ?? null;
   const current = session.meta?.thinkingLevel ?? null;
-  if (!spec) return { ok: false, error: "this agent has no reasoning-effort control" };
+  if (!spec) return { ok: false, error: "this agent has no reasoning-effort control", effort: null };
   const picker = spec.sessionPicker;
-  if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control" };
-  if (!model) return { ok: false, error: "the selected model is not known yet" };
-  if (!modelId) return { ok: false, error: "the selected model id is not known yet" };
-  if (!current) return { ok: false, error: "the selected model's current effort is not known yet" };
-  if (!supportsSessionEffort(session.agent, modelId, target)) {
-    return { ok: false, error: `${target} effort is not supported by the selected model` };
+  if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control", effort: null };
+  if (!model) return { ok: false, error: "the selected model is not known yet", effort: null };
+  if (!modelId) return { ok: false, error: "the selected model id is not known yet", effort: null };
+  if (!current) return { ok: false, error: "the selected model's current effort is not known yet", effort: null };
+  if (!supportsSessionEffort(session.agent, modelId, current, target)) {
+    return { ok: false, error: `${target} effort is not atomically reachable from ${current}`, effort: null };
   }
   const from = spec.levelsFor(modelId).indexOf(current);
   const to = spec.levelsFor(modelId).indexOf(target);
-  if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed" };
-  if (from === to) return { ok: true };
+  if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed", effort: null };
+  if (from === to) return { ok: true, effort: current };
 
-  return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), async () => {
+  return withPaneLock<EffortResult>(session, () => ({ ok: false, error: PANE_BUSY, effort: null }), async () => {
     const pane = deps.pane(session);
-    if (!pane) return { ok: false, error: NO_HANDLE };
+    if (!pane) return { ok: false, error: NO_HANDLE, effort: null };
     const modeLine = modeLineSpecFor(session.agent);
     const before = await deps.capture(session);
     if (
@@ -341,14 +345,14 @@ export async function setSessionEffort(
       (picker.kind === "horizontal" &&
         (picker.visible.test(before) || !modeLine || !parsePaneModeLine(before, modeLine)))
     ) {
-      return { ok: false, error: "the agent's empty composer is not ready; no setting was changed" };
+      return { ok: false, error: "the agent's empty composer is not ready; no setting was changed", effort: null };
     }
 
     if (picker.kind === "shortcuts") {
       if (picker.selected(before, modelId) !== current) {
-        return { ok: false, error: "the agent's visible effort does not match session metadata; no setting was changed" };
+        return { ok: false, error: "the agent's visible effort does not match session metadata; no setting was changed", effort: null };
       }
-      return driveShortcutEffort(session, pane, picker, spec, modelId, current, target, deps);
+      return driveShortcutEffort(session, pane, picker, modelId, current, target, deps);
     }
 
     return driveHorizontalEffort(session, pane, picker, spec, modelId, model, current, target, deps);
@@ -358,10 +362,6 @@ export async function setSessionEffort(
 type HorizontalEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "horizontal" }>;
 type ShortcutEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "shortcuts" }>;
 type ShortcutEffort = ThinkingLevel | "ultra";
-
-type ShortcutRollback =
-  | { restored: true; observed: ThinkingLevel }
-  | { restored: false; observed: ShortcutEffort | null };
 
 async function driveHorizontalEffort(
   session: Session,
@@ -373,194 +373,80 @@ async function driveHorizontalEffort(
   current: ThinkingLevel,
   target: ThinkingLevel,
   deps: PaneDeps,
-): Promise<ActionResult> {
+): Promise<EffortResult> {
   const levels = spec.levelsFor(modelId);
   const to = levels.indexOf(target);
 
   const opened = await writeText(pane, picker.command);
-  if (!opened.ok) return opened;
+  if (!opened.ok) return { ...opened, effort: null };
   const pending = await deps.capture(session);
   if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) {
-    return { ok: false, error: "the model command could not be verified in the composer; no setting was changed" };
+    return { ok: false, error: "the model command could not be verified in the composer; no setting was changed", effort: null };
   }
   const submitted = await sendKeys(pane, ["enter"]);
-  if (!submitted.ok) return submitted;
+  if (!submitted.ok) return { ...submitted, effort: null };
   const screen = await awaitEffortPicker(session, picker.visible, deps);
   if (!screen) {
-    return { ok: false, error: "the agent's effort picker did not open; no setting was changed" };
+    return { ok: false, error: "the agent's effort picker did not open; no setting was changed", effort: null };
   }
   let selected = picker.selected(screen, model);
   const seen = new Set<ThinkingLevel>();
   for (let i = 0; selected !== target; i++) {
     const selectedIndex = selected ? levels.indexOf(selected) : -1;
     if (!selected || selectedIndex < 0 || seen.has(selected) || i >= levels.length) {
-      return { ok: false, error: "the picker selection could not be verified; no setting was changed" };
+      return { ok: false, error: "the picker selection could not be verified; no setting was changed", effort: null };
     }
     seen.add(selected);
     const direction: Key = to > selectedIndex ? "right" : "left";
     const moved = await sendKeys(pane, [direction]);
-    if (!moved.ok) return moved;
+    if (!moved.ok) return { ...moved, effort: null };
     const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
-    if (!next) return { ok: false, error: "the agent ignored the effort arrow; no setting was changed" };
+    if (!next) return { ok: false, error: "the agent ignored the effort arrow; no setting was changed", effort: null };
     selected = next.level;
   }
   const final = await deps.capture(session);
   if (!final || !picker.visible.test(final) || picker.selected(final, model) !== target) {
-    return { ok: false, error: "the effort selection changed before it could be confirmed" };
+    return { ok: false, error: "the effort selection changed before it could be confirmed", effort: null };
   }
   const committed = await writeText(pane, picker.commit);
-  if (!committed.ok) return committed;
   const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
-  return closed
-    ? { ok: true }
-    : { ok: false, error: "the agent did not confirm the session-only effort change" };
+  if (closed) return { ok: true, effort: target };
+  return {
+    ...(committed.ok ? {} : committed),
+    ok: false,
+    error: committed.error ?? "the agent did not confirm the session-only effort change",
+    effort: null,
+  };
 }
 
 async function driveShortcutEffort(
   session: Session,
   pane: BoundPane,
   picker: ShortcutEffortPicker,
-  spec: EffortSpec,
   modelId: string,
   current: ThinkingLevel,
   target: ThinkingLevel,
   deps: PaneDeps,
-): Promise<ActionResult> {
-  const levels = spec.levelsFor(modelId);
-  const original = current;
-  const targetIndex = levels.indexOf(target);
-  if (levels.indexOf(current) < 0 || targetIndex < 0) {
-    return { ok: false, error: "the selected model's effort options changed" };
+): Promise<EffortResult> {
+  const levels = sessionEffortLevels(session.agent, modelId, current);
+  const from = levels.indexOf(current);
+  const to = levels.indexOf(target);
+  if (from < 0 || to < 0 || Math.abs(to - from) !== 1) {
+    return { ok: false, error: `${target} effort is not atomically reachable from ${current}`, effort: null };
   }
-  while (current !== target) {
-    const from = levels.indexOf(current);
-    const key: Key = targetIndex > from ? picker.raise : picker.lower;
-    const expected = levels[from + (targetIndex > from ? 1 : -1)];
-    if (!expected) {
-      return failShortcutEffort(
-        session,
-        pane,
-        picker,
-        modelId,
-        levels,
-        original,
-        current,
-        { ok: false, error: "the selected model's effort options changed" },
-        deps,
-      );
-    }
-    const moved = await sendKeys(pane, [key]);
-    if (!moved.ok) {
-      return failShortcutEffort(
-        session,
-        pane,
-        picker,
-        modelId,
-        levels,
-        original,
-        await readShortcutEffort(session, picker, modelId, deps),
-        moved,
-        deps,
-      );
-    }
-    const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
-    if (observed !== expected) {
-      return failShortcutEffort(
-        session,
-        pane,
-        picker,
-        modelId,
-        levels,
-        original,
-        observed ?? (await readShortcutEffort(session, picker, modelId, deps)),
-        { ok: false, error: "the agent ignored the session-only effort shortcut" },
-        deps,
-      );
-    }
-    current = observed;
-  }
-  const final = await readShortcutEffort(session, picker, modelId, deps);
-  return final === target
-    ? { ok: true }
-    : failShortcutEffort(
-        session,
-        pane,
-        picker,
-        modelId,
-        levels,
-        original,
-        final,
-        { ok: false, error: "the session-only effort changed before it could be confirmed" },
-        deps,
-      );
-}
-
-async function failShortcutEffort(
-  session: Session,
-  pane: BoundPane,
-  picker: ShortcutEffortPicker,
-  modelId: string,
-  levels: readonly ThinkingLevel[],
-  original: ThinkingLevel,
-  observed: ShortcutEffort | null,
-  failure: ActionResult,
-  deps: PaneDeps,
-): Promise<ActionResult> {
-  const reason = failure.error ?? "the session-only effort change failed";
-  if (observed === null) {
-    return { ...failure, error: `${reason}; the current effort could not be verified, so rollback was not attempted` };
-  }
-  if (observed === original) return failure;
-  const rollback = await restoreShortcutEffort(
-    session,
-    pane,
-    picker,
-    modelId,
-    levels,
-    observed,
-    original,
-    deps,
-  );
-  if (rollback.restored) return failure;
-  return rollback.observed === null
-    ? { ...failure, error: `${reason}; rollback to ${original} could not be verified and the current effort is unknown` }
-    : {
-        ...failure,
-        error: `${reason}; effort is ${rollback.observed} and rollback to ${original} could not be verified`,
-      };
-}
-
-async function restoreShortcutEffort(
-  session: Session,
-  pane: BoundPane,
-  picker: ShortcutEffortPicker,
-  modelId: string,
-  levels: readonly ThinkingLevel[],
-  current: ShortcutEffort,
-  target: ThinkingLevel,
-  deps: PaneDeps,
-): Promise<ShortcutRollback> {
-  while (current !== target) {
-    if (current === "ultra") return { restored: false, observed: current };
-    const from = levels.indexOf(current);
-    const to = levels.indexOf(target);
-    if (from < 0 || to < 0) return { restored: false, observed: current };
-    const expected = levels[from + (to > from ? 1 : -1)];
-    if (!expected) return { restored: false, observed: current };
-    const moved = await sendKeys(pane, [to > from ? picker.raise : picker.lower]);
-    if (!moved.ok) {
-      return { restored: false, observed: await readShortcutEffort(session, picker, modelId, deps) };
-    }
-    const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
-    if (observed !== expected) {
-      return {
-        restored: false,
-        observed: observed ?? (await readShortcutEffort(session, picker, modelId, deps)),
-      };
-    }
-    current = observed;
-  }
-  return { restored: true, observed: target };
+  const moved = await sendKeys(pane, [to > from ? picker.raise : picker.lower]);
+  const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
+  if (observed === target) return { ok: true, effort: target };
+  const final = observed ?? (await readShortcutEffort(session, picker, modelId, deps));
+  if (final === target) return { ok: true, effort: target };
+  if (!moved.ok) return { ...moved, effort: null };
+  return {
+    ok: false,
+    error: final === current
+      ? "the agent ignored the session-only effort shortcut; no setting was changed"
+      : `the session-only effort shortcut produced unexpected ${final ?? "unknown"} effort`,
+    effort: null,
+  };
 }
 
 const EFFORT_PICKER_POLL_MS = 50;

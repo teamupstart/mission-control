@@ -554,8 +554,8 @@ type SourceFilter = "all" | "healthy" | "attention" | "pending" | "paused";
 type SourceHealth = Exclude<SourceFilter, "all">;
 
 function sourceHealth(src: TaskSourceInstance, status: TaskSourceStatus | undefined): SourceHealth {
-  if (status?.lastError) return "attention";
   if (!src.enabled) return "paused";
+  if (status?.lastError) return "attention";
   if (!status || status.lastSweepAt === null) return "pending";
   return "healthy";
 }

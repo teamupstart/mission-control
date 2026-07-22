@@ -86,7 +86,7 @@ import type { AwayWatcher } from "./away/watcher.ts";
 import { getHarnessesConfig, setHarnessesConfig } from "./harnesses.ts";
 import { getTaskSourcesConfig, setTaskSourcesConfig, taskSourceById } from "./task-sources/config.ts";
 import { taskSourceKinds } from "./task-sources/index.ts";
-import { preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
+import { noteTaskSourceConfigChange, preflightOnce, sweepOnce, taskSourceStatuses } from "./task-sources/sweeper.ts";
 import type { TaskSourcesView } from "@shared/task-source.ts";
 import { setUiConfig, uiConfigView } from "./ui-config.ts";
 import { costTelemetryStatus, setCostConfig } from "./cost.ts";
@@ -1281,7 +1281,9 @@ export function buildApp(
       if (!repoRoot) return c.json({ error: `not a git repository: ${s.repoRoot}` }, 400);
       sources.push({ ...s, repoRoot });
     }
+    const before = getTaskSourcesConfig();
     setTaskSourcesConfig({ sources });
+    noteTaskSourceConfigChange(before.sources, sources);
     return c.json(taskSourcesView());
   });
 

@@ -76,6 +76,17 @@ function observeEnabled(inst: TaskSourceInstance): Entry {
   return e;
 }
 
+/** Invalidate immediately at the config write, before a quick re-enable can hide it. */
+export function noteTaskSourceConfigChange(
+  before: TaskSourceInstance[],
+  next: TaskSourceInstance[],
+): void {
+  const wasEnabled = new Map(before.map((s) => [s.id, s.enabled]));
+  for (const src of next) {
+    if (wasEnabled.get(src.id) === true && !src.enabled) observeEnabled(src);
+  }
+}
+
 /** Status for every configured source, for the settings panel. */
 export function taskSourceStatuses(sources: TaskSourceInstance[]): TaskSourceStatus[] {
   return sources.map((s) => {

@@ -92,6 +92,7 @@ import {
   episodesFor,
   fleetEstimatedCostSince,
   fleetTokensSince,
+  firstWorkEpisodePromptAfter,
   prsOpenedSince,
   pruneUsageLedger,
   pruneUsageSources,
@@ -1487,10 +1488,14 @@ export class Registry extends EventEmitter {
         current.branch === target.branch &&
         current.prUrl === target.prUrl,
     );
-    const promptAt =
+    const latestPromptAt =
       isCurrent && typeof current?.promptedAt === "number" && current.promptedAt > mergedAt
         ? current.promptedAt
         : null;
+    const promptAt = isCurrent
+      ? firstWorkEpisodePromptAfter(target.sessionId, target.episodeId, mergedAt)
+      : null;
+    const dependencyBoundaryAt = promptAt ?? (latestPromptAt !== null ? mergedAt : null);
     const binding = taskWorkEpisodeForSession(target.sessionId);
     const taskId =
       binding &&
@@ -1516,8 +1521,8 @@ export class Registry extends EventEmitter {
           dependency.type === "task" && taskId !== null && dependency.taskId === taskId;
         if (!matchesSession && !matchesTask) return dependency;
         if (
-          promptAt !== null &&
-          (dependency.selectedAt === null || dependency.selectedAt >= promptAt)
+          dependencyBoundaryAt !== null &&
+          (dependency.selectedAt === null || dependency.selectedAt >= dependencyBoundaryAt)
         ) {
           return dependency;
         }
@@ -1530,8 +1535,9 @@ export class Registry extends EventEmitter {
     }
 
     markWorkEpisodeMerged(target.sessionId, target.episodeId, target.prUrl, mergedAt);
-    if (promptAt === null || !current) return false;
-    return this.rolloverWorkEpisode(current, promptAt) !== null;
+    const rolloverAt = promptAt ?? latestPromptAt;
+    if (rolloverAt === null || !current) return false;
+    return this.rolloverWorkEpisode(current, rolloverAt) !== null;
   }
 
   private resolvePendingWorkEpisode(

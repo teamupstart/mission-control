@@ -278,7 +278,7 @@ test("new work after a merge starts a dependency episode on the same session and
   assert.equal(tasks.dependencyBlockers(nextDependent).length, 1);
 });
 
-test("a delayed merge satisfies pre-prompt edges and rebinds post-prompt edges", async () => {
+test("a delayed merge uses the first post-merge prompt across multiple prompts", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);
   const id = "merge-prompt-race";
@@ -333,6 +333,19 @@ test("a delayed merge satisfies pre-prompt edges and rebinds post-prompt edges",
     afterPrompt.dependencies[0]?.type === "session" ? afterPrompt.dependencies[0].prUrl : null,
     url,
   );
+  await new Promise<void>((resolve) => setTimeout(resolve, 2));
+  const laterPromptAt = Date.now();
+  registry.applyHook({
+    agent: "claude",
+    event: "UserPromptSubmit",
+    sessionId: "merge-prompt-race-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prompt: "continue the follow-up",
+    ts: laterPromptAt,
+  });
+  assert.ok((afterPrompt.dependencies[0]?.selectedAt ?? laterPromptAt) < laterPromptAt);
 
   registry.reconcilePrs(
     new Map([[id, prMatch({

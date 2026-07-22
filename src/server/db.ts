@@ -191,6 +191,13 @@ export function openDb(): DatabaseSync {
       updated_at       INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS session_work_episode_prompts (
+      session_id  TEXT NOT NULL,
+      episode_id  TEXT NOT NULL,
+      prompted_at INTEGER NOT NULL,
+      PRIMARY KEY (session_id, episode_id, prompted_at)
+    );
+
     CREATE TABLE IF NOT EXISTS task_work_episode_bindings (
       task_id          TEXT PRIMARY KEY,
       episode_id       TEXT NOT NULL,
@@ -1808,8 +1815,11 @@ export function sessionWorkEpisodeFor(sessionId: string): SessionWorkEpisode | n
 }
 
 export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
-  openDb()
-    .prepare(
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(
       `INSERT INTO session_work_episodes
          (session_id, episode_id, agent_session_id, branch, pr_url, pr_head_sha, merged_at, prompted_at,
           awaiting_agent_rebind, rebind_from_transcript_path, started_at, updated_at)
@@ -1826,8 +1836,7 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
          rebind_from_transcript_path = excluded.rebind_from_transcript_path,
          started_at       = excluded.started_at,
          updated_at       = excluded.updated_at`,
-    )
-    .run(
+    ).run(
       episode.sessionId,
       episode.episodeId,
       episode.agentSessionId,
@@ -1841,6 +1850,22 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
       episode.startedAt,
       episode.updatedAt,
     );
+    d.prepare(
+      `DELETE FROM session_work_episode_prompts
+       WHERE session_id = ? AND episode_id <> ?`,
+    ).run(episode.sessionId, episode.episodeId);
+    if (episode.promptedAt !== null) {
+      d.prepare(
+        `INSERT OR IGNORE INTO session_work_episode_prompts
+           (session_id, episode_id, prompted_at)
+         VALUES (?, ?, ?)`,
+      ).run(episode.sessionId, episode.episodeId, episode.promptedAt);
+    }
+    if (ownsTransaction) d.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function rebindPendingSessionWorkEpisode(
@@ -1877,7 +1902,17 @@ export function rebindPendingSessionWorkEpisode(
 }
 
 export function deleteSessionWorkEpisode(sessionId: string): void {
-  openDb().prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    d.prepare(`DELETE FROM session_work_episode_prompts WHERE session_id = ?`).run(sessionId);
+    d.prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
+    if (ownsTransaction) d.exec("COMMIT");
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
@@ -1970,14 +2005,44 @@ export function recordWorkEpisodePrompt(
   episodeId: string,
   promptedAt: number,
 ): boolean {
-  const result = openDb()
-    .prepare(
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const result = d.prepare(
       `UPDATE session_work_episodes
        SET prompted_at = MAX(COALESCE(prompted_at, 0), ?), updated_at = MAX(updated_at, ?)
        WHERE session_id = ? AND episode_id = ?`,
+    ).run(promptedAt, promptedAt, sessionId, episodeId);
+    if (Number(result.changes) > 0) {
+      d.prepare(
+        `INSERT OR IGNORE INTO session_work_episode_prompts
+           (session_id, episode_id, prompted_at)
+         VALUES (?, ?, ?)`,
+      ).run(sessionId, episodeId, promptedAt);
+    }
+    if (ownsTransaction) d.exec("COMMIT");
+    return Number(result.changes) > 0;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+export function firstWorkEpisodePromptAfter(
+  sessionId: string,
+  episodeId: string,
+  after: number,
+): number | null {
+  const row = openDb()
+    .prepare(
+      `SELECT prompted_at FROM session_work_episode_prompts
+       WHERE session_id = ? AND episode_id = ? AND prompted_at > ?
+       ORDER BY prompted_at ASC
+       LIMIT 1`,
     )
-    .run(promptedAt, promptedAt, sessionId, episodeId);
-  return Number(result.changes) > 0;
+    .get(sessionId, episodeId, after) as { prompted_at: number } | undefined;
+  return row?.prompted_at ?? null;
 }
 
 export function markWorkEpisodeMerged(

@@ -34,6 +34,9 @@ test("does not claim external URLs, dashboard routes, or checkout escapes", () =
   assert.equal(workspaceFileTarget("https://example.com/page.html", CWD), null);
   assert.equal(workspaceFileTarget("https://example.com:443/page.ts:12", CWD), null);
   assert.equal(workspaceFileTarget("https%3A%2F%2Fexample.com%2Fpage.ts%3A12", CWD), null);
+  assert.equal(workspaceFileTarget("mailto:123", CWD), null);
+  assert.equal(workspaceFileTarget("tel:123", CWD), null);
+  assert.equal(workspaceFileTarget("sms%3A123", CWD), null);
   assert.equal(workspaceFileTarget("/api/sessions", CWD), null);
   assert.equal(workspaceFileTarget("/Users/jordan/other/page.html", CWD), null);
   assert.equal(workspaceFileTarget("../../secret.txt", CWD), null);

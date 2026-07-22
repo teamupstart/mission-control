@@ -6,6 +6,12 @@ export interface WorkspaceFileTarget {
   column: number | null;
 }
 
+// Protocols transcript links can legitimately hand back to the browser. Check these
+// before parsing `:line[:column]`, otherwise numeric payloads such as `tel:123` look
+// like source locations. This is deliberately narrower than URI scheme syntax so
+// extensionless files such as `Makefile:9` remain valid workspace links.
+const EXTERNAL_LINK_SCHEME = /^(?:https?|ircs?|mailto|xmpp|tel|sms|geo|ftps?):/i;
+
 /** Decode an href component without letting one malformed escape break the transcript. */
 function decodePath(value: string): string | null {
   try {
@@ -51,6 +57,7 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
   const fragment = hashAt >= 0 ? href.slice(hashAt + 1, queryAt > hashAt ? queryAt : undefined) : "";
   const decoded = decodePath(href.slice(0, cutAt));
   if (!decoded || decoded.includes("\0")) return null;
+  if (EXTERNAL_LINK_SCHEME.test(decoded) || decoded.startsWith("//")) return null;
 
   let filePath = decoded;
   let line: number | null = null;
@@ -67,7 +74,7 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
       column = location[2] ? Number(location[2]) : null;
     }
   }
-  if (/^[a-z][a-z\d+.-]*:/i.test(filePath) || filePath.startsWith("//")) return null;
+  if (/^[a-z][a-z\d+.-]*:/i.test(filePath)) return null;
 
   const normalizedCwd = cwd.replaceAll("\\", "/").replace(/\/+$/, "");
   let relative: string;

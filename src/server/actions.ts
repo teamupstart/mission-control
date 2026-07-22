@@ -357,6 +357,11 @@ export async function setSessionEffort(
 
 type HorizontalEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "horizontal" }>;
 type ShortcutEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "shortcuts" }>;
+type ShortcutEffort = ThinkingLevel | "ultra";
+
+type ShortcutRollback =
+  | { restored: true; observed: ThinkingLevel }
+  | { restored: false; observed: ShortcutEffort | null };
 
 async function driveHorizontalEffort(
   session: Session,
@@ -423,25 +428,106 @@ async function driveShortcutEffort(
 ): Promise<ActionResult> {
   const levels = spec.levelsFor(modelId);
   const original = current;
+  const targetIndex = levels.indexOf(target);
+  if (levels.indexOf(current) < 0 || targetIndex < 0) {
+    return { ok: false, error: "the selected model's effort options changed" };
+  }
   while (current !== target) {
     const from = levels.indexOf(current);
-    const to = levels.indexOf(target);
-    if (from < 0 || to < 0) return { ok: false, error: "the selected model's effort options changed" };
-    const key: Key = to > from ? picker.raise : picker.lower;
-    const expected = levels[from + (to > from ? 1 : -1)];
-    if (!expected) return { ok: false, error: "the selected model's effort options changed" };
+    const key: Key = targetIndex > from ? picker.raise : picker.lower;
+    const expected = levels[from + (targetIndex > from ? 1 : -1)];
+    if (!expected) {
+      return failShortcutEffort(
+        session,
+        pane,
+        picker,
+        modelId,
+        levels,
+        original,
+        current,
+        { ok: false, error: "the selected model's effort options changed" },
+        deps,
+      );
+    }
     const moved = await sendKeys(pane, [key]);
-    if (!moved.ok) return moved;
+    if (!moved.ok) {
+      return failShortcutEffort(
+        session,
+        pane,
+        picker,
+        modelId,
+        levels,
+        original,
+        await readShortcutEffort(session, picker, modelId, deps),
+        moved,
+        deps,
+      );
+    }
     const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
     if (observed !== expected) {
-      const restored = await restoreShortcutEffort(session, pane, picker, modelId, levels, current, original, deps);
-      return restored
-        ? { ok: false, error: "the agent ignored the session-only effort shortcut" }
-        : { ok: false, error: "the effort shortcut stopped before the target and could not be rolled back" };
+      return failShortcutEffort(
+        session,
+        pane,
+        picker,
+        modelId,
+        levels,
+        original,
+        observed ?? (await readShortcutEffort(session, picker, modelId, deps)),
+        { ok: false, error: "the agent ignored the session-only effort shortcut" },
+        deps,
+      );
     }
     current = observed;
   }
-  return { ok: true };
+  const final = await readShortcutEffort(session, picker, modelId, deps);
+  return final === target
+    ? { ok: true }
+    : failShortcutEffort(
+        session,
+        pane,
+        picker,
+        modelId,
+        levels,
+        original,
+        final,
+        { ok: false, error: "the session-only effort changed before it could be confirmed" },
+        deps,
+      );
+}
+
+async function failShortcutEffort(
+  session: Session,
+  pane: BoundPane,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  levels: readonly ThinkingLevel[],
+  original: ThinkingLevel,
+  observed: ShortcutEffort | null,
+  failure: ActionResult,
+  deps: PaneDeps,
+): Promise<ActionResult> {
+  const reason = failure.error ?? "the session-only effort change failed";
+  if (observed === null) {
+    return { ...failure, error: `${reason}; the current effort could not be verified, so rollback was not attempted` };
+  }
+  if (observed === original) return failure;
+  const rollback = await restoreShortcutEffort(
+    session,
+    pane,
+    picker,
+    modelId,
+    levels,
+    observed,
+    original,
+    deps,
+  );
+  if (rollback.restored) return failure;
+  return rollback.observed === null
+    ? { ...failure, error: `${reason}; rollback to ${original} could not be verified and the current effort is unknown` }
+    : {
+        ...failure,
+        error: `${reason}; effort is ${rollback.observed} and rollback to ${original} could not be verified`,
+      };
 }
 
 async function restoreShortcutEffort(
@@ -450,34 +536,52 @@ async function restoreShortcutEffort(
   picker: ShortcutEffortPicker,
   modelId: string,
   levels: readonly ThinkingLevel[],
-  current: ThinkingLevel,
+  current: ShortcutEffort,
   target: ThinkingLevel,
   deps: PaneDeps,
-): Promise<boolean> {
+): Promise<ShortcutRollback> {
   while (current !== target) {
+    if (current === "ultra") return { restored: false, observed: current };
     const from = levels.indexOf(current);
     const to = levels.indexOf(target);
-    if (from < 0 || to < 0) return false;
+    if (from < 0 || to < 0) return { restored: false, observed: current };
     const expected = levels[from + (to > from ? 1 : -1)];
-    if (!expected) return false;
+    if (!expected) return { restored: false, observed: current };
     const moved = await sendKeys(pane, [to > from ? picker.raise : picker.lower]);
-    if (!moved.ok) return false;
+    if (!moved.ok) {
+      return { restored: false, observed: await readShortcutEffort(session, picker, modelId, deps) };
+    }
     const observed = await awaitShortcutEffort(session, picker, modelId, current, deps);
-    if (observed !== expected) return false;
+    if (observed !== expected) {
+      return {
+        restored: false,
+        observed: observed ?? (await readShortcutEffort(session, picker, modelId, deps)),
+      };
+    }
     current = observed;
   }
-  return true;
+  return { restored: true, observed: target };
 }
 
 const EFFORT_PICKER_POLL_MS = 50;
+
+async function readShortcutEffort(
+  session: Session,
+  picker: ShortcutEffortPicker,
+  modelId: string,
+  deps: PaneDeps,
+): Promise<ShortcutEffort | null> {
+  const screen = await deps.capture(session);
+  return screen ? picker.selected(screen, modelId) : null;
+}
 
 async function awaitShortcutEffort(
   session: Session,
   picker: ShortcutEffortPicker,
   modelId: string,
-  previous: ThinkingLevel | "ultra" | null,
+  previous: ShortcutEffort | null,
   deps: PaneDeps,
-): Promise<ThinkingLevel | "ultra" | null> {
+): Promise<ShortcutEffort | null> {
   const deadline = Date.now() + repaintTimeoutFor(session);
   for (;;) {
     const screen = await deps.capture(session);

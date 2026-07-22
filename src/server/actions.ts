@@ -142,9 +142,11 @@ export async function withPaneLock<T>(
 export interface PaneDeps {
   pane: (session: PaneHandles) => BoundPane | null;
   capture: (session: Session) => Promise<string | null>;
+  /** Rechecked synchronously just before an effort-control write reaches the pane. */
+  assertBeforeWrite?: () => boolean;
 }
 
-const defaultPaneDeps: PaneDeps = {
+export const defaultPaneDeps: PaneDeps = {
   pane: (session) => bindSession(session),
   capture: capturePaneText,
 };
@@ -267,10 +269,11 @@ async function paneWriteBlock(
  * presses named keys, and which convention those keys are rendered in - tmux's `BTab`,
  * wezterm's `\x1b[Z` - is the adapter's business and never this file's.
  */
-async function writeText(pane: BoundPane, text: string): Promise<ActionResult> {
+async function writeText(pane: BoundPane, text: string, assertBeforeWrite?: () => boolean): Promise<ActionResult> {
   if (!pane.write) return { ok: false, error: cannotType(pane) };
   const blocked = await paneWriteBlock(pane);
   if (blocked) return blocked;
+  if (assertBeforeWrite && !assertBeforeWrite()) return { ok: false, error: "the session changed before its effort could be updated" };
   return fromTerminal(await pane.write.text(text));
 }
 
@@ -376,7 +379,7 @@ async function driveHorizontalEffort(
   const levels = spec.levelsFor(modelId);
   const to = levels.indexOf(target);
 
-  const opened = await writeText(pane, picker.command);
+  const opened = await writeText(pane, picker.command, deps.assertBeforeWrite);
   if (!opened.ok) return { ...opened, effort: null };
   const pending = await deps.capture(session);
   if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) {
@@ -407,7 +410,7 @@ async function driveHorizontalEffort(
   if (!final || !picker.visible.test(final) || picker.selected(final, model) !== target) {
     return { ok: false, error: "the effort selection changed before it could be confirmed", effort: null };
   }
-  const committed = await writeText(pane, picker.commit);
+  const committed = await writeText(pane, picker.commit, deps.assertBeforeWrite);
   if (!committed.ok) return { ...committed, effort: null };
   const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
   if (closed) return { ok: true, effort: target };

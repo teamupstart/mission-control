@@ -129,6 +129,7 @@ import {
   sendText,
   setPermissionMode,
   setSessionEffort,
+  defaultPaneDeps,
   submitPaneForm,
   validateSessionName,
   validateSessionNameAgainstTasks,
@@ -787,7 +788,15 @@ export function buildApp(
         effort: null,
       }, 409);
     }
-    const r = await setSessionEffort(session, parsed.data.effort);
+    const r = await setSessionEffort(session, parsed.data.effort, {
+      ...defaultPaneDeps,
+      assertBeforeWrite: () => {
+        const current = registry.getSession(session.id);
+        return current?.agent === session.agent &&
+          current.agentSessionId === session.agentSessionId &&
+          current.transcriptPath === session.transcriptPath;
+      },
+    });
     if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
       return c.json({
         ok: false,

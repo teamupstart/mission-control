@@ -16,6 +16,7 @@ import {
 import {
   applyFileLoadFailure,
   applyFileLoadSuccess,
+  LatestFileRequests,
   updateExistingSession,
   type FileBuffer,
   type SessionFilesState,
@@ -123,6 +124,20 @@ test("async file results cannot recreate a dropped session", () => {
   assert.equal(retained, sessions);
   assert.deepEqual(dropped, {});
   assert.equal(called, false);
+});
+
+test("only the latest file request may update a session path", () => {
+  const requests = new LatestFileRequests();
+  const key = "active\0file\0README.md";
+  const first = requests.begin(key);
+  const second = requests.begin(key);
+  assert.equal(requests.isCurrent(key, first), false);
+  assert.equal(requests.isCurrent(key, second), true);
+  requests.forgetSession("active");
+  assert.equal(requests.isCurrent(key, second), false);
+  const recreated = requests.begin(key);
+  assert.ok(recreated > second);
+  assert.equal(requests.isCurrent(key, recreated), true);
 });
 
 test("failed revalidation removes clean stale buffers but preserves local edits", () => {

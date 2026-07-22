@@ -12,6 +12,7 @@ import { NomistakesFixLog } from "./NomistakesFixLog.tsx";
 import { AGENT_IDENTITY } from "@shared/agent.ts";
 import { Tooltip } from "./Tooltip.tsx";
 import { TranscriptPanel, type TranscriptHandle } from "./TranscriptPanel.tsx";
+import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import { ForemanNote } from "./ForemanNote.tsx";
 import { PaneDialogPrompt } from "./PaneDialogPrompt.tsx";
 import { WorkQueue } from "./WorkQueue.tsx";
@@ -109,7 +110,7 @@ export function SessionCard({
   /** Open this checkout's shared file workspace. */
   onOpenFiles?: () => void;
   /** Open a link in this session's file workspace when it is checkout-contained. */
-  onOpenFile?: (href: string) => boolean;
+  onOpenFile?: WorkspaceLinkHandler;
   onReset?: () => void;
   /** This card's session was killed (successfully), so focus mode has nothing left to show. */
   onKilled?: () => void;

@@ -53,3 +53,38 @@ test("remote stylesheets are neither fetched nor inlined", async () => {
   assert.equal(read, false);
   assert.equal(hydrated, source);
 });
+
+test("stylesheet reads are deduplicated and concurrency-bounded", async () => {
+  let active = 0;
+  let peak = 0;
+  const reads: string[] = [];
+  const links = Array.from({ length: 40 }, (_, index) => (
+    `<link rel="stylesheet" href="${index % 2 === 0 ? "shared" : `theme-${index}`}.css">`
+  )).join("");
+  await inlinePreviewStyles(links, "index.html", async (path) => {
+    reads.push(path);
+    active++;
+    peak = Math.max(peak, active);
+    await Promise.resolve();
+    active--;
+    return "body {}";
+  });
+  assert.equal(reads.filter((path) => path === "shared.css").length, 1);
+  assert.ok(reads.length <= 32);
+  assert.ok(peak <= 4);
+});
+
+test("obsolete stylesheet batches stop scheduling reads", async () => {
+  const abort = new AbortController();
+  let reads = 0;
+  const links = Array.from({ length: 20 }, (_, index) => (
+    `<link rel="stylesheet" href="theme-${index}.css">`
+  )).join("");
+  const hydrated = await inlinePreviewStyles(links, "index.html", async () => {
+    reads++;
+    abort.abort();
+    return "body {}";
+  }, abort.signal);
+  assert.equal(hydrated, links);
+  assert.ok(reads <= 4);
+});

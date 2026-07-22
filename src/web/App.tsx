@@ -260,10 +260,19 @@ export function App(): React.JSX.Element {
     files.ensure(sessionId);
     setFileTabRequest((request) => ({ sessionId, nonce: (request?.nonce ?? 0) + 1 }));
   }, [files.ensure]);
-  const openSessionFile = useCallback((sessionId: string, href: string): boolean => {
+  const openSessionFile = useCallback((
+    sessionId: string,
+    href: string,
+    probe = false,
+  ): boolean | Promise<boolean> => {
     const session = sessions.find((candidate) => candidate.id === sessionId);
-    const target = session?.cwd ? workspaceFileTarget(href, session.cwd) : null;
+    let ambiguousRoot = false;
+    const target = session?.cwd ? workspaceFileTarget(href, session.cwd, () => {
+      ambiguousRoot = true;
+      return true;
+    }) : null;
     if (!target) return false;
+    if (probe) return ambiguousRoot ? files.probe(sessionId, target.path) : true;
     files.ensure(sessionId);
     files.select(sessionId, target.path);
     if (layout === "grid") {
@@ -274,7 +283,7 @@ export function App(): React.JSX.Element {
       requestFilesTab(sessionId);
     }
     return true;
-  }, [files.ensure, files.select, layout, requestFilesTab, sessions]);
+  }, [files.ensure, files.probe, files.select, layout, requestFilesTab, sessions]);
 
   /**
    * The overlays keyed on a session id, and how to drop that id.

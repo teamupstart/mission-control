@@ -23,16 +23,18 @@ test("resolves relative links and source locations", () => {
   assert.deepEqual(workspaceFileTarget("README.md#L12C3", CWD), {
     path: "README.md", line: 12, column: 3,
   });
-  assert.deepEqual(workspaceFileTarget("README.md:12", CWD), {
+  const rootFiles = new Set(["README.md", "package.json", "readme.md", "Makefile"]);
+  const exists = (path: string) => rootFiles.has(path);
+  assert.deepEqual(workspaceFileTarget("README.md:12", CWD, exists), {
     path: "README.md", line: 12, column: null,
   });
-  assert.deepEqual(workspaceFileTarget("package.json:12", CWD), {
+  assert.deepEqual(workspaceFileTarget("package.json:12", CWD, exists), {
     path: "package.json", line: 12, column: null,
   });
-  assert.deepEqual(workspaceFileTarget("readme.md:5:2", CWD), {
+  assert.deepEqual(workspaceFileTarget("readme.md:5:2", CWD, exists), {
     path: "readme.md", line: 5, column: 2,
   });
-  assert.deepEqual(workspaceFileTarget("Makefile:9:2", CWD), {
+  assert.deepEqual(workspaceFileTarget("Makefile:9:2", CWD, exists), {
     path: "Makefile", line: 9, column: 2,
   });
 });
@@ -46,6 +48,11 @@ test("does not claim external URLs, dashboard routes, or checkout escapes", () =
   assert.equal(workspaceFileTarget("sms%3A123", CWD), null);
   assert.equal(workspaceFileTarget("webcal:123", CWD), null);
   assert.equal(workspaceFileTarget("custom+viewer%3A456", CWD), null);
+  assert.equal(workspaceFileTarget("custom.viewer:123", CWD), null);
+  assert.equal(workspaceFileTarget("Tel:123", CWD), null);
+  assert.deepEqual(workspaceFileTarget("custom.viewer:123", CWD, (path) => path === "custom.viewer"), {
+    path: "custom.viewer", line: 123, column: null,
+  });
   assert.equal(workspaceFileTarget("/api/sessions", CWD), null);
   assert.equal(workspaceFileTarget("/Users/jordan/other/page.html", CWD), null);
   assert.equal(workspaceFileTarget("../../secret.txt", CWD), null);

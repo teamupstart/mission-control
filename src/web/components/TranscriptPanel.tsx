@@ -16,6 +16,7 @@ import { mergeEpisodes } from "../lib/episodes.ts";
 import { ForemanEpisodeCard } from "./ForemanEpisodeCard.tsx";
 import { useRichText } from "../lib/rich-text.ts";
 import { Markdown } from "./Markdown.tsx";
+import type { WorkspaceLinkHandler } from "./Markdown.tsx";
 import { agentAccentStyle } from "./session-bits.tsx";
 import {
   AttachmentStrip,
@@ -97,7 +98,7 @@ export function TranscriptPanel({
    */
   onReplyBox?: (present: boolean) => void;
   /** Claim links that resolve to a file in this transcript's session checkout. */
-  onOpenFile?: (href: string) => boolean;
+  onOpenFile?: WorkspaceLinkHandler;
   ref?: React.Ref<TranscriptHandle>;
 }): React.JSX.Element {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
@@ -359,7 +360,7 @@ function Turn({
 }: {
   m: TranscriptMessage;
   agentLabel: string;
-  onOpenFile?: (href: string) => boolean;
+  onOpenFile?: WorkspaceLinkHandler;
 }): React.JSX.Element {
   const [richText] = useRichText();
   // A turn the human didn't type says who did. Much of the "user" side of a supervised

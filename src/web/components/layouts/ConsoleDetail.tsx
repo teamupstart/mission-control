@@ -285,7 +285,7 @@ export function ConsoleDetail({
               dialogOpen={Boolean(dialog)}
               episodes={episodes}
               onReplyBox={setHasReply}
-              onOpenFile={(href) => view.onOpenFile(session.id, href)}
+              onOpenFile={(href, probe) => view.onOpenFile(session.id, href, probe)}
               resetNonce={view.resetNonces[session.id] ?? 0}
             />
           </div>

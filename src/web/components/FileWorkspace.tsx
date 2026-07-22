@@ -26,6 +26,9 @@ interface StylesheetLink {
   path: string;
 }
 
+const MAX_PREVIEW_STYLESHEETS = 32;
+const PREVIEW_STYLESHEET_CONCURRENCY = 4;
+
 function htmlAttribute(tag: string, name: string): string | null {
   const match = tag.match(new RegExp(
     `\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>\u0060]+))`,
@@ -65,16 +68,30 @@ export async function inlinePreviewStyles(
   source: string,
   documentPath: string,
   read: (path: string) => Promise<string | null>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const links = localStylesheets(source, documentPath);
   if (links.length === 0) return source;
-  const css = await Promise.all(links.map((link) => read(link.path)));
-  let output = "";
+  const paths = [...new Set(links.map((link) => link.path))].slice(0, MAX_PREVIEW_STYLESHEETS);
+  const css = new Map<string, string | null>();
   let cursor = 0;
+  await Promise.all(Array.from(
+    { length: Math.min(PREVIEW_STYLESHEET_CONCURRENCY, paths.length) },
+    async () => {
+      while (!signal?.aborted) {
+        const path = paths[cursor++];
+        if (!path) return;
+        css.set(path, await read(path));
+      }
+    },
+  ));
+  if (signal?.aborted) return source;
+  let output = "";
+  cursor = 0;
   for (let i = 0; i < links.length; i++) {
     const link = links[i]!;
     output += source.slice(cursor, link.index);
-    const text = css[i];
+    const text = css.get(link.path);
     if (text != null) {
       const safe = text.replace(/<\/style/gi, "<\\/style");
       output += `<style data-mission-source="${escapeHtmlAttribute(link.path)}">\n${safe}\n</style>`;
@@ -121,6 +138,7 @@ export function FileWorkspace({
   const [previewText, setPreviewText] = useState("");
   useEffect(() => {
     let live = true;
+    const abort = new AbortController();
     const timer = setTimeout(() => {
       const text = buffer?.text ?? "";
       if (buffer?.document.kind !== "html") {
@@ -128,14 +146,15 @@ export function FileWorkspace({
         return;
       }
       void inlinePreviewStyles(text, buffer.document.path, async (assetPath) => {
-        const result = await api.readFile(session.id, assetPath);
+        const result = await api.readFile(session.id, assetPath, abort.signal);
         return result.ok ? result.file.text : null;
-      }).then((next) => {
+      }, abort.signal).then((next) => {
         if (live) setPreviewText(next);
       });
     }, 180);
     return () => {
       live = false;
+      abort.abort();
       clearTimeout(timer);
     };
   }, [buffer?.document.kind, buffer?.document.path, buffer?.text, session.id]);

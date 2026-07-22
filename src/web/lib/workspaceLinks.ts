@@ -16,13 +16,7 @@ function linkScheme(value: string): string | null {
 }
 
 function isRootSourceLocation(value: string): boolean {
-  const match = value.match(/^([^/:?#]+):\d+(?::\d+)?$/);
-  if (!match) return false;
-  const fileName = match[1]!;
-  // A dot is strong file-name evidence regardless of case (`package.json:12`).
-  // For extensionless roots, retain the conventional-capitalization escape hatch
-  // (`Makefile:9`) so arbitrary numeric URI schemes still stay external.
-  return fileName.includes(".") || /^[A-Z]/.test(fileName);
+  return /^[^/:?#]+:\d+(?::\d+)?$/.test(value);
 }
 
 export function markdownLinkUrl(value: string): string {
@@ -66,7 +60,11 @@ function normalizeRelative(value: string): string | null {
  * same-origin dashboard routes must be left to the browser. Absolute paths are only
  * claimed when they sit beneath this session's cwd.
  */
-export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTarget | null {
+export function workspaceFileTarget(
+  href: string,
+  cwd: string,
+  rootFileExists?: (path: string) => boolean,
+): WorkspaceFileTarget | null {
   if (!cwd || !href || href.startsWith("#") || href.startsWith("?")) return null;
 
   const hashAt = href.indexOf("#");
@@ -76,10 +74,10 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
   const decoded = decodePath(href.slice(0, cutAt));
   if (!decoded || decoded.includes("\0")) return null;
   const scheme = linkScheme(decoded);
-  if (
-    decoded.startsWith("//") ||
-    (scheme && (BLOCKED_LINK_SCHEMES.has(scheme) || !isRootSourceLocation(decoded)))
-  ) return null;
+  const ambiguousRoot = Boolean(scheme && isRootSourceLocation(decoded));
+  if (decoded.startsWith("//") || (scheme && (BLOCKED_LINK_SCHEMES.has(scheme) || !ambiguousRoot))) {
+    return null;
+  }
 
   let filePath = decoded;
   let line: number | null = null;
@@ -107,7 +105,8 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
     relative = filePath;
   }
   const path = normalizeRelative(relative);
-  return path ? { path, line, column } : null;
+  if (!path || (ambiguousRoot && !rootFileExists?.(path))) return null;
+  return { path, line, column };
 }
 
 export function pathDefaultsToPreview(filePath: string): boolean {

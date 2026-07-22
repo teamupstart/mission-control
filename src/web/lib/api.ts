@@ -292,10 +292,12 @@ export async function fetchSessionFiles(
 export async function fetchSessionFile(
   id: string,
   path: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: true; file: SessionFileDocument } | { ok: false; error: string }> {
   try {
     const res = await fetch(
       `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
+      { signal },
     );
     const data = (await res.json().catch(() => ({}))) as SessionFileDocument & { error?: string };
     if (!res.ok) return { ok: false, error: data.error ?? `HTTP ${res.status}` };

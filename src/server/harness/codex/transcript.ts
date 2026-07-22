@@ -4,7 +4,12 @@ import type { ToolCall, TranscriptMessage } from "@shared/types.ts";
 import { jsonlMessages } from "../../transcript.ts";
 import { readTailLines } from "../../util/file-tail.ts";
 import { TOOL_INPUT_CAP } from "../claude/transcript.ts";
-import { findRolloutForSession, readRolloutPassive, retainRolloutMeta } from "./rollout.ts";
+import {
+  findRolloutForSession,
+  readRolloutPassive,
+  retainRolloutMeta,
+  rolloutBelongsToSession,
+} from "./rollout.ts";
 
 // Codex's transcript capability: runtime metadata, AND messages.
 //
@@ -31,6 +36,7 @@ const RESCAN_MS = 30_000;
 /** A cached lookup for one session (path null = looked, none yet). */
 interface RolloutBinding {
   cwd: string;
+  agentSessionId: string | null;
   path: string | null;
   triedAt: number;
 }
@@ -48,19 +54,26 @@ const bindings = new Map<string, RolloutBinding>();
 
 /**
  * The rollout path for a session, cached. A found path is reused until the session's cwd
- * changes; a miss is retried only every `RESCAN_MS`, so a rollout-less session doesn't
+ * or agent session changes; a miss is retried only every `RESCAN_MS`, so a rollout-less session doesn't
  * trigger a filesystem walk every tick.
  */
 function locate(s: Session): string | null {
-  if (s.transcriptPath) return s.transcriptPath;
+  if (s.transcriptPath) {
+    return rolloutBelongsToSession(s.transcriptPath, s) ? s.transcriptPath : null;
+  }
   if (!s.cwd) return null;
   const now = Date.now();
   const hit = bindings.get(s.id);
-  if (hit && hit.cwd === s.cwd && (hit.path !== null || now - hit.triedAt < RESCAN_MS)) {
+  if (
+    hit &&
+    hit.cwd === s.cwd &&
+    hit.agentSessionId === s.agentSessionId &&
+    (hit.path !== null || now - hit.triedAt < RESCAN_MS)
+  ) {
     return hit.path;
   }
   const path = findRolloutForSession(s);
-  bindings.set(s.id, { cwd: s.cwd, path, triedAt: now });
+  bindings.set(s.id, { cwd: s.cwd, agentSessionId: s.agentSessionId, path, triedAt: now });
   return path;
 }
 

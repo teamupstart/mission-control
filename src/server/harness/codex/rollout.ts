@@ -113,6 +113,14 @@ export function parseSessionMeta(headLine: string | null): CodexSessionMeta | nu
   return { cwd, start: Number.isNaN(start) ? 0 : start, sessionId, subagent };
 }
 
+export function rolloutBelongsToSession(path: string, session: Session): boolean {
+  const meta = parseSessionMeta(readHeadLine(path));
+  if (!meta || meta.subagent) return false;
+  if (session.cwd && meta.cwd !== session.cwd) return false;
+  if (session.agentSessionId) return meta.sessionId === session.agentSessionId;
+  return meta.cwd !== null;
+}
+
 /**
  * Locate the rollout file for a Codex session by matching cwd, choosing the one
  * whose start time is closest to the session's (two Codex sessions in the same
@@ -157,6 +165,10 @@ export function findRolloutForSession(
           const path = join(dDir, f);
           const meta = parseSessionMeta(readHeadLine(path));
           if (!meta || meta.subagent || meta.cwd !== target) continue;
+          if (session.agentSessionId) {
+            if (meta.sessionId === session.agentSessionId) return path;
+            continue;
+          }
           if (startedAt == null) return path; // no start to disambiguate -> newest match
           if (!best || Math.abs(meta.start - startedAt) < Math.abs(best.start - startedAt)) {
             best = { path, start: meta.start };

@@ -183,7 +183,7 @@ export interface EffortSpec {
     | {
         kind: "shortcuts";
         composerReady(paneText: string): boolean;
-        selected(paneText: string, modelId: string): ThinkingLevel | "ultra" | null;
+        selected(paneText: string, modelId: string): ThinkingLevel | null;
         lower: "shift-down";
         raise: "shift-up";
       }
@@ -216,10 +216,12 @@ function codexComposerReady(paneText: string): boolean {
   return prompt === "›" || prompt === "› Ask Codex to do anything" || prompt === "› Use /skills to list available skills";
 }
 
-function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel | "ultra" | null {
+function codexStatusSelection(paneText: string, modelId: string): ThinkingLevel | null {
   const escaped = modelId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = new RegExp(`^\\s*${escaped}\\s+(low|medium|high|xhigh|max|ultra)(?:\\s|·)`, "im").exec(paneText);
-  return match ? (match[1]!.toLowerCase() as ThinkingLevel | "ultra") : null;
+  if (!match) return null;
+  const level = match[1]!.toLowerCase();
+  return level === "ultra" ? "max" : level as ThinkingLevel;
 }
 
 /** One agent's capabilities, as far as they can be stated without touching a disk. */

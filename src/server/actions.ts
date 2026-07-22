@@ -361,7 +361,6 @@ export async function setSessionEffort(
 
 type HorizontalEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "horizontal" }>;
 type ShortcutEffortPicker = Extract<NonNullable<EffortSpec["sessionPicker"]>, { kind: "shortcuts" }>;
-type ShortcutEffort = ThinkingLevel | "ultra";
 
 async function driveHorizontalEffort(
   session: Session,
@@ -456,7 +455,7 @@ async function readShortcutEffort(
   picker: ShortcutEffortPicker,
   modelId: string,
   deps: PaneDeps,
-): Promise<ShortcutEffort | null> {
+): Promise<ThinkingLevel | null> {
   const screen = await deps.capture(session);
   return screen ? picker.selected(screen, modelId) : null;
 }
@@ -465,9 +464,9 @@ async function awaitShortcutEffort(
   session: Session,
   picker: ShortcutEffortPicker,
   modelId: string,
-  previous: ShortcutEffort | null,
+  previous: ThinkingLevel | null,
   deps: PaneDeps,
-): Promise<ShortcutEffort | null> {
+): Promise<ThinkingLevel | null> {
   const deadline = Date.now() + repaintTimeoutFor(session);
   for (;;) {
     const screen = await deps.capture(session);

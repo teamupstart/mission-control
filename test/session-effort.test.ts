@@ -91,12 +91,12 @@ const codexNormal = (level: string): string => `
 `;
 
 interface CodexDriverOptions {
-  start?: ThinkingLevel;
+  start?: ThinkingLevel | "ultra";
   failWrites?: readonly number[];
 }
 
 function codexDriven(options: CodexDriverOptions = {}): { deps: PaneDeps; did: string[]; screen: () => string } {
-  const levels: readonly ThinkingLevel[] = ["low", "medium", "high", "xhigh", "max"];
+  const levels: readonly (ThinkingLevel | "ultra")[] = ["low", "medium", "high", "xhigh", "ultra"];
   let level = options.start ?? "high";
   let screen = codexNormal(level);
   let keyWrites = 0;
@@ -152,6 +152,15 @@ test("Codex live effort uses its non-persisting reasoning shortcut", async () =>
 
   assert.equal(result.ok, true);
   assert.deepEqual(h.did, ["keys:shift-up"]);
+  assert.equal(h.screen(), codexNormal("xhigh"));
+});
+
+test("Codex lowers visible ultra effort through normalized max metadata", async () => {
+  const h = codexDriven({ start: "ultra" });
+  const result = await setSessionEffort(codexSession("max"), "xhigh", h.deps);
+
+  assert.deepEqual(result, { ok: true, effort: "xhigh" });
+  assert.deepEqual(h.did, ["keys:shift-down"]);
   assert.equal(h.screen(), codexNormal("xhigh"));
 });
 

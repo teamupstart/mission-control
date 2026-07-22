@@ -62,6 +62,24 @@ test("create uses parseBody, returns 201, preserves Markdown, and includes effec
   assert.equal(((await read.json()) as { guidanceMarkdown: string }).guidanceMarkdown, guidanceMarkdown);
 });
 
+test("Persona defaults expose the daemon-resolved environment model", async () => {
+  const { request } = fixture();
+  process.env.MISSION_WORKFLOW_PERSONA_MODEL = "model-from-daemon-env";
+  try {
+    const response = await request("/api/personas/defaults");
+    assert.equal(response.status, 200);
+    const defaults = (await response.json()) as {
+      runner: { id: string };
+      models: Record<string, { id: string; source: string }>;
+    };
+    assert.equal(defaults.runner.id, "claude");
+    assert.deepEqual(defaults.models.claude, { id: "model-from-daemon-env", source: "env" });
+    assert.deepEqual(defaults.models.codex, { id: "model-from-daemon-env", source: "env" });
+  } finally {
+    delete process.env.MISSION_WORKFLOW_PERSONA_MODEL;
+  }
+});
+
 test("two tabs editing one revision get a stable 409 with the current row", async () => {
   const { request } = fixture();
   const created = await request("/api/personas", {

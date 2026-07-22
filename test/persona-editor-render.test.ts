@@ -9,12 +9,17 @@ import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
-import { PersonaLibrary, readPersonaImport } from "../src/web/workflows/PersonaLibrary.tsx";
+import {
+  PersonaLibrary,
+  importMayReplaceEditor,
+  readPersonaImport,
+} from "../src/web/workflows/PersonaLibrary.tsx";
 import {
   PersonaEditor,
   PersonaEditorStatus,
   isPersonaSaveShortcut,
   personaLineSeparator,
+  projectPersonaDraftExecution,
   personaUpdatePatch,
   reconcilePersonaSave,
 } from "../src/web/workflows/PersonaEditor.tsx";
@@ -53,12 +58,20 @@ const PROVIDERS: LlmProviderView[] = [
 
 const CLAUDE_RUNNER = { id: "claude", source: "default", unknown: null } as const;
 const CODEX_RUNNER = { id: "codex", source: "config", unknown: null } as const;
+const DEFAULTS = {
+  runner: CLAUDE_RUNNER,
+  models: {
+    claude: { id: "persona-env-model", source: "env" },
+    codex: { id: "persona-env-model", source: "env" },
+  },
+} as const;
 
 const callbacks = {
   providers: PROVIDERS,
-  appRunner: CLAUDE_RUNNER,
+  defaults: DEFAULTS,
   isOverlayOpen: () => false,
   onDirtyChange: () => {},
+  onDraftEdit: () => {},
   onSaved: () => {},
   onDuplicate: () => {},
   onArchive: () => {},
@@ -72,7 +85,7 @@ test("an empty library offers New and import without pretending workflows alread
   const html = text(renderToStaticMarkup(createElement(PersonaLibrary, {
     personas: [],
     providers: PROVIDERS,
-    appRunner: CLAUDE_RUNNER,
+    defaults: DEFAULTS,
     isOverlayOpen: () => false,
     onDirtyChange: () => {},
   })));
@@ -84,6 +97,13 @@ test("an empty library offers New and import without pretending workflows alread
 });
 
 test("an unsaved Persona uses the resolved app runner and its model defaults", () => {
+  const defaults = {
+    runner: CODEX_RUNNER,
+    models: {
+      claude: { id: "claude-from-env", source: "env" as const },
+      codex: { id: "codex-from-env", source: "env" as const },
+    },
+  };
   const html = renderToStaticMarkup(createElement(PersonaEditor, {
     persona: null,
     seed: {
@@ -94,17 +114,32 @@ test("an unsaved Persona uses the resolved app runner and its model defaults", (
       model: null,
     },
     providers: PROVIDERS,
-    appRunner: CODEX_RUNNER,
+    defaults,
     isOverlayOpen: () => false,
     onDirtyChange: () => {},
+    onDraftEdit: () => {},
     onSaved: () => {},
     onDuplicate: () => {},
     onArchive: () => {},
   }));
   assert.match(text(html), /Codex/);
-  assert.match(text(html), /gpt-5\.6-terra/);
+  assert.match(text(html), /codex-from-env/);
   assert.doesNotMatch(text(html), /claude-sonnet-5/);
   assert.doesNotMatch(text(html), /App default after save/);
+});
+
+test("an explicit unsaved model overrides the server-resolved Persona default", () => {
+  const projection = projectPersonaDraftExecution(null, {
+    name: "Draft",
+    description: "",
+    guidanceMarkdown: "# Exact\r\n",
+    runner: "codex",
+    model: "gpt-explicit",
+  }, DEFAULTS);
+  assert.deepEqual(projection, {
+    runner: "codex",
+    model: { id: "gpt-explicit", source: "config" },
+  });
 });
 
 test("a selected Persona renders metadata, effective values, editor, preview, and exact exports", () => {
@@ -219,6 +254,18 @@ test("save reconciliation preserves edits made while the request is in flight", 
     "utf8",
   );
   assert.match(library, /key=\{editorKey\}/);
+});
+
+test("import replaces editor identity only when no concurrent workspace edit occurred", () => {
+  assert.equal(importMayReplaceEditor(4, 4), true);
+  assert.equal(importMayReplaceEditor(4, 5), false);
+
+  const library = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/PersonaLibrary.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(library, /importMayReplaceEditor\(startedAtGeneration, editorGeneration\.current\)/);
+  assert.match(library, /setEditorKey\(\(key\) => key \+ 1\)/);
 });
 
 test("Workflows and Runs tabs are honest Phase 1 shells", () => {

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isLlmRunnerId } from "@shared/llm.ts";
-import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
+import type { LlmRunnerId } from "@shared/llm.ts";
+import type { ResolvedModel } from "@shared/model-choice.ts";
 import type { LlmProviderView } from "@shared/types.ts";
-import { providerModelDefault } from "@shared/model.ts";
 import {
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
 } from "@shared/workflow.ts";
-import type { PersonaView } from "@shared/workflow.ts";
+import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
 import { FileEditor } from "../components/FileEditor.tsx";
 import { Markdown } from "../components/Markdown.tsx";
 import { ModelField, ModelSuggestions } from "../components/ModelField.tsx";
@@ -99,6 +99,25 @@ function providerLabel(providers: readonly LlmProviderView[], id: LlmRunnerId): 
   return providers.find((provider) => provider.id === id)?.label ?? id;
 }
 
+export function projectPersonaDraftExecution(
+  persona: PersonaView | null,
+  draft: PersonaDraftSeed,
+  defaults: PersonaDefaultsView | null,
+): { runner: LlmRunnerId | null; model: ResolvedModel | undefined } {
+  const selectedRunner = knownRunner(draft.runner);
+  const unchanged = persona !== null && draft.runner === persona.runner && draft.model === persona.model;
+  if (unchanged) {
+    return { runner: persona.execution.runner.id, model: persona.execution.model };
+  }
+  const runner = selectedRunner ?? defaults?.runner.id ?? persona?.execution.runner.id ?? null;
+  const model = draft.model !== null
+    ? { id: draft.model, source: "config" as const }
+    : runner === null
+      ? undefined
+      : defaults?.models[runner];
+  return { runner, model };
+}
+
 export function PersonaEditorStatus({
   dirty,
   conflict,
@@ -129,9 +148,10 @@ export function PersonaEditor({
   persona,
   seed,
   providers,
-  appRunner,
+  defaults,
   isOverlayOpen,
   onDirtyChange,
+  onDraftEdit,
   onSaved,
   onDuplicate,
   onArchive,
@@ -139,9 +159,10 @@ export function PersonaEditor({
   persona: PersonaView | null;
   seed?: PersonaDraftSeed;
   providers: readonly LlmProviderView[];
-  appRunner: ResolvedLlmRunner | null;
+  defaults: PersonaDefaultsView | null;
   isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
+  onDraftEdit: () => void;
   onSaved: (persona: PersonaView) => void;
   onDuplicate: (seed: PersonaDraftSeed) => void;
   onArchive: (persona: PersonaView) => void | Promise<void>;
@@ -183,11 +204,10 @@ export function PersonaEditor({
   }, [dirty, loadedRevision, persona]);
 
   const selectedRunner = knownRunner(draft.runner);
-  const effectiveRunner = persona?.execution.runner.id ?? selectedRunner ?? appRunner?.id;
+  const draftExecution = projectPersonaDraftExecution(persona, draft, defaults);
+  const effectiveRunner = draftExecution.runner;
   const runnerForControls = selectedRunner ?? effectiveRunner ?? "claude";
-  const effectiveModel = persona?.execution.model ?? (effectiveRunner
-    ? { id: providerModelDefault(effectiveRunner, "balanced"), source: "default" as const }
-    : undefined);
+  const effectiveModel = draftExecution.model;
   const exactBytes = useMemo(() => new TextEncoder().encode(draft.guidanceMarkdown).byteLength, [draft.guidanceMarkdown]);
   const lineSeparator = useMemo(
     () => personaLineSeparator(draft.guidanceMarkdown),
@@ -197,6 +217,7 @@ export function PersonaEditor({
   function edit(patch: Partial<PersonaDraftSeed>): void {
     const nextDraft = { ...draftRef.current, ...patch };
     editGeneration.current += 1;
+    onDraftEdit();
     draftRef.current = nextDraft;
     setDraft(nextDraft);
     setDirty(true);

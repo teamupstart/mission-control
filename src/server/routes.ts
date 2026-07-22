@@ -335,6 +335,11 @@ export function buildApp(
     }
     return c.json(manager.list(raw === "true"));
   });
+  app.get("/api/personas/defaults", (c) => {
+    const manager = personaManager();
+    if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);
+    return c.json(manager.defaults());
+  });
   app.get("/api/personas/:id", (c) => {
     const manager = personaManager();
     if (!manager) return c.json({ error: "Persona manager unavailable" }, 503);

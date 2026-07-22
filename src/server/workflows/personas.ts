@@ -1,16 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { envVar } from "@shared/harness-runtime.mjs";
 import type { CreatePersona, UpdatePersona } from "@shared/protocol.ts";
-import { resolveLlmRunner } from "@shared/llm.ts";
-import type { ResolvedLlmRunner } from "@shared/llm.ts";
+import { LLM_RUNNER_IDS, resolveLlmRunner } from "@shared/llm.ts";
+import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
 import { resolveModelChoice } from "@shared/model-choice.ts";
+import type { ResolvedModel } from "@shared/model-choice.ts";
 import { providerModelDefault } from "@shared/model.ts";
 import {
   WORKFLOW_PERSONA_MODEL_ENV,
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
 } from "@shared/workflow.ts";
-import type { Persona, PersonaExecutionView, PersonaView } from "@shared/workflow.ts";
+import type {
+  Persona,
+  PersonaDefaultsView,
+  PersonaExecutionView,
+  PersonaView,
+} from "@shared/workflow.ts";
 import type { Registry } from "../registry.ts";
 import { llmRunnerChoice } from "../llm/config.ts";
 import { WorkflowStore } from "./store.ts";
@@ -23,6 +29,21 @@ export type PersonaMutation =
       reason: "not_found" | "revision_conflict" | "name_conflict" | "archived";
       current: PersonaView | null;
     };
+
+function resolvePersonaModel(
+  runner: LlmRunnerId,
+  model: string | null | undefined,
+  envModel: string | null | undefined,
+): ResolvedModel {
+  return resolveModelChoice(
+    {
+      ...WORKFLOW_PERSONA_MODEL_SPEC,
+      fallback: providerModelDefault(runner, "balanced"),
+    },
+    model,
+    envModel,
+  );
+}
 
 /**
  * Resolve the exact provider/model a fresh Persona call would use.
@@ -39,15 +60,21 @@ export function resolvePersonaExecution(
     persona.runner === null
       ? appRunner
       : resolveLlmRunner(persona.runner as string, undefined);
-  const model = resolveModelChoice(
-    {
-      ...WORKFLOW_PERSONA_MODEL_SPEC,
-      fallback: providerModelDefault(runner.id, "balanced"),
-    },
-    persona.model,
-    envModel,
-  );
+  const model = resolvePersonaModel(runner.id, persona.model, envModel);
   return { runner, model };
+}
+
+export function resolvePersonaDefaults(
+  appRunner: ResolvedLlmRunner = llmRunnerChoice(),
+  envModel: string | null | undefined = envVar(WORKFLOW_PERSONA_MODEL_ENV),
+): PersonaDefaultsView {
+  return {
+    runner: appRunner,
+    models: Object.fromEntries(LLM_RUNNER_IDS.map((runner) => [
+      runner,
+      resolvePersonaModel(runner, null, envModel),
+    ])) as Record<LlmRunnerId, PersonaDefaultsView["models"][LlmRunnerId]>,
+  };
 }
 
 export function personaView(
@@ -78,6 +105,10 @@ export class PersonaManager {
   get(id: string): PersonaView | null {
     const persona = this.store.getPersona(id);
     return persona ? personaView(persona) : null;
+  }
+
+  defaults(): PersonaDefaultsView {
+    return resolvePersonaDefaults();
   }
 
   create(input: CreatePersona, now = Date.now()): PersonaMutation {

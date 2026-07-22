@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { LlmStatus } from "@shared/types.ts";
-import type { PersonaView } from "@shared/workflow.ts";
-import { fetchLlmStatus } from "../lib/api.ts";
+import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
+import { fetchLlmStatus, fetchPersonaDefaults } from "../lib/api.ts";
 import type { WorkflowTab } from "./useWorkflowRoute.ts";
 import { PersonaLibrary } from "./PersonaLibrary.tsx";
 
@@ -21,12 +21,15 @@ export function WorkflowPage({
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
   const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
+  const [personaDefaults, setPersonaDefaults] = useState<PersonaDefaultsView | null>(null);
 
   useEffect(() => {
     if (!connected) return;
     let live = true;
-    void fetchLlmStatus().then((status) => {
-      if (live && status) setLlmStatus(status);
+    void Promise.all([fetchLlmStatus(), fetchPersonaDefaults()]).then(([status, defaults]) => {
+      if (!live) return;
+      if (status) setLlmStatus(status);
+      if (defaults) setPersonaDefaults(defaults);
     });
     return () => {
       live = false;
@@ -58,7 +61,7 @@ export function WorkflowPage({
         <PersonaLibrary
           personas={personas}
           providers={llmStatus?.runners ?? []}
-          appRunner={llmStatus?.runner ?? null}
+          defaults={personaDefaults}
           isOverlayOpen={isOverlayOpen}
           onDirtyChange={onDirtyChange}
         />

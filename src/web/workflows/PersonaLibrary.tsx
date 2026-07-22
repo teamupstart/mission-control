@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ResolvedLlmRunner } from "@shared/llm.ts";
 import type { LlmProviderView } from "@shared/types.ts";
 import { WORKFLOW_LIMITS } from "@shared/workflow.ts";
-import type { PersonaView } from "@shared/workflow.ts";
+import type { PersonaDefaultsView, PersonaView } from "@shared/workflow.ts";
 import { PersonaEditor } from "./PersonaEditor.tsx";
 import type { PersonaDraftSeed } from "./PersonaEditor.tsx";
 import { deriveImportedPersonaName, personaRequest } from "./personaApi.ts";
@@ -28,16 +27,23 @@ export async function readPersonaImport(
   return markdown;
 }
 
+export function importMayReplaceEditor(
+  startedAtGeneration: number,
+  currentGeneration: number,
+): boolean {
+  return startedAtGeneration === currentGeneration;
+}
+
 export function PersonaLibrary({
   personas,
   providers,
-  appRunner,
+  defaults,
   isOverlayOpen,
   onDirtyChange,
 }: {
   personas: PersonaView[];
   providers: readonly LlmProviderView[];
-  appRunner: ResolvedLlmRunner | null;
+  defaults: PersonaDefaultsView | null;
   isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
@@ -53,6 +59,7 @@ export function PersonaLibrary({
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editorKey, setEditorKey] = useState(0);
+  const editorGeneration = useRef(0);
   const importRef = useRef<HTMLInputElement>(null);
 
   const listed = includeArchived ? ordered : active;
@@ -84,6 +91,7 @@ export function PersonaLibrary({
 
   function select(id: string): void {
     if (!mayDiscard()) return;
+    editorGeneration.current += 1;
     setSeed(null);
     setSelectedId(id);
     setEditorKey((key) => key + 1);
@@ -93,6 +101,7 @@ export function PersonaLibrary({
 
   function start(seedValue: PersonaDraftSeed): void {
     if (!mayDiscard()) return;
+    editorGeneration.current += 1;
     setSelectedId(null);
     setSeed(seedValue);
     setEditorKey((key) => key + 1);
@@ -102,6 +111,7 @@ export function PersonaLibrary({
 
   async function importMarkdown(file: File): Promise<void> {
     if (!mayDiscard()) return;
+    const startedAtGeneration = editorGeneration.current;
     try {
       const guidanceMarkdown = await readPersonaImport(file);
       const persona = await personaRequest<PersonaView>("/api/personas", {
@@ -113,9 +123,12 @@ export function PersonaLibrary({
           model: null,
         }),
       });
+      if (!importMayReplaceEditor(startedAtGeneration, editorGeneration.current)) return;
+      editorGeneration.current += 1;
       setLocalPersona(persona);
       setSelectedId(persona.id);
       setSeed(null);
+      setEditorKey((key) => key + 1);
       setDirty(false);
       setError(null);
     } catch (cause) {
@@ -184,9 +197,12 @@ export function PersonaLibrary({
             persona={selected}
             seed={seed ?? undefined}
             providers={providers}
-            appRunner={appRunner}
+            defaults={defaults}
             isOverlayOpen={isOverlayOpen}
             onDirtyChange={setDirty}
+            onDraftEdit={() => {
+              editorGeneration.current += 1;
+            }}
             onSaved={(persona) => {
               setLocalPersona(persona);
               setSelectedId(persona.id);

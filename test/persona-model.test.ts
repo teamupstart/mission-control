@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Persona } from "../src/shared/workflow.ts";
-import { resolvePersonaExecution } from "../src/server/workflows/personas.ts";
+import {
+  resolvePersonaDefaults,
+  resolvePersonaExecution,
+} from "../src/server/workflows/personas.ts";
 
 // What is at stake: the editor promises to show the same provider and model a future Persona
 // attempt will actually spawn. The app runner, Persona override, environment, and provider-
@@ -50,6 +53,17 @@ test("the Persona environment model wins when there is no stored override", () =
     id: "claude-opus-4-8",
     source: "env",
   });
+});
+
+test("Persona defaults expose the complete server-side model ladder to new drafts", () => {
+  const defaults = resolvePersonaDefaults(CODEX, "model-from-env");
+  assert.equal(defaults.runner, CODEX);
+  assert.deepEqual(defaults.models.claude, { id: "model-from-env", source: "env" });
+  assert.deepEqual(defaults.models.codex, { id: "model-from-env", source: "env" });
+
+  const fallbacks = resolvePersonaDefaults(CODEX, undefined);
+  assert.deepEqual(fallbacks.models.claude, { id: "claude-sonnet-5", source: "default" });
+  assert.deepEqual(fallbacks.models.codex, { id: "gpt-5.6-terra", source: "default" });
 });
 
 test("the fallback is compatible with the resolved provider", () => {

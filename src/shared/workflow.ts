@@ -58,6 +58,11 @@ export interface PersonaExecutionView {
   model: ResolvedModel;
 }
 
+export interface PersonaDefaultsView {
+  runner: ResolvedLlmRunner;
+  models: Record<LlmRunnerId, ResolvedModel>;
+}
+
 export interface PersonaView extends Persona {
   execution: PersonaExecutionView;
 }

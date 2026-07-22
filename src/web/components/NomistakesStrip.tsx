@@ -204,6 +204,18 @@ function FindingRow({ f }: { f: NmFinding }): React.JSX.Element {
 
 type Mode = "idle" | "confirm-approve" | "confirm-skip" | "fix";
 
+/**
+ * Identity of the selection form, including the response attempt that advances a
+ * same-step gate into its next round. Finding ids alone are not a round identity:
+ * a re-review can legitimately return the same ids, and that new form must start
+ * with every current finding selected rather than inherit the prior subset.
+ */
+export function gateSelectionKey(nm: NmRunSummary): string {
+  const findingIds = nm.findings.map((f) => f.id).join(",");
+  const response = nm.response ? `${nm.response.responseId}:${nm.response.status}` : "none";
+  return `${nm.id}:${nm.gateStep ?? ""}:${findingIds}:${response}`;
+}
+
 function GateActions({
   sessionId,
   nm,
@@ -212,7 +224,7 @@ function GateActions({
   nm: NmRunSummary;
 }): React.JSX.Element {
   const findings = nm.findings;
-  const findingKey = `${nm.id}:${nm.gateStep ?? ""}:${findings.map((f) => f.id).join(",")}`;
+  const findingKey = gateSelectionKey(nm);
   const [mode, setMode] = useState<Mode>("idle");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -233,8 +245,8 @@ function GateActions({
     setInstructions("");
     setSelected(new Set(findings.map((f) => f.id)));
     setAccepted(null);
-    // `findings` is represented by findingKey; depending on the array would reset on
-    // every SSE snapshot even when the gate itself did not move.
+    // `findings` and the response attempt are represented by findingKey; depending
+    // on either object would reset on every SSE snapshot even when the round did not move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findingKey]);
 

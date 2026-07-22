@@ -328,6 +328,7 @@ test("a respond the gate never received reports itself undelivered", async () =>
   await settled(cwd);
   assert.deepEqual(undo, ["retracted"]);
   assert.deepEqual(responseForRun(runId), {
+    responseId: 1,
     runId,
     step: "review",
     action: "fix",

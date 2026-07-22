@@ -1172,6 +1172,8 @@ export interface NmFinding {
 
 /** A dashboard gate decision and its retained asynchronous delivery state. */
 export interface NmGateResponse {
+  /** Monotonic daemon-local identity for this response attempt. */
+  responseId: number;
   runId: string;
   step: string;
   action: "approve" | "fix" | "skip";

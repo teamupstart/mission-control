@@ -67,6 +67,7 @@ const responseByRun = new Map<string, NmGateResponse>();
 const RESPONSE_HISTORY_CAP = 200;
 const RESPONSE_ERROR_CHAR_CAP = 4000;
 const RESPONSE_ERROR_TRUNCATION = "\n… [earlier output truncated]\n";
+let nextResponseId = 0;
 
 function retainedResponseError(error: string): string {
   const trimmed = error.trim();
@@ -138,6 +139,7 @@ export async function respond(
       responseByRun.delete(responseByRun.keys().next().value!);
     }
     responseByRun.set(opts.runId, {
+      responseId: ++nextResponseId,
       runId: opts.runId,
       step: opts.step ?? "",
       action,

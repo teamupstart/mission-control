@@ -15,6 +15,8 @@ export const MAX_SESSION_FILE_ENTRIES = 2_000;
 export const MAX_SESSION_EDITOR_BYTES = 2 * 1024 * 1024;
 export const MAX_SESSION_PREVIEW_BYTES = 5 * 1024 * 1024;
 
+const saveLocks = new Map<string, Promise<void>>();
+
 export class SessionFileError extends Error {
   constructor(message: string, readonly status = 400) {
     super(message);
@@ -56,6 +58,21 @@ async function readPathWithinCap(filePath: string, cap: number) {
     return await readFileWithinCap(handle, cap);
   } finally {
     await handle.close();
+  }
+}
+
+export async function withFileSaveLock<T>(target: string, action: () => Promise<T>): Promise<T> {
+  const previous = saveLocks.get(target) ?? Promise.resolve();
+  let release = (): void => {};
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => current);
+  saveLocks.set(target, tail);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (saveLocks.get(target) === tail) saveLocks.delete(target);
   }
 }
 
@@ -193,47 +210,49 @@ export async function saveSessionFile(
     }
     throw error;
   }
-  const current = await readPathWithinCap(resolved.target, MAX_SESSION_EDITOR_BYTES);
-  if (current.exceeded) {
-    return { ok: false, status: 409, error: "file changed on disk", currentText: null };
-  }
-  const currentRevision = revision(current.bytes);
-  const currentText = decodeConflictText(current.bytes);
-  if (currentRevision !== expectedRevision) {
-    return { ok: false, status: 409, error: "file changed on disk", currentRevision, currentText };
-  }
+  return withFileSaveLock(resolved.target, async () => {
+    const current = await readPathWithinCap(resolved.target, MAX_SESSION_EDITOR_BYTES);
+    if (current.exceeded) {
+      return { ok: false, status: 409, error: "file changed on disk", currentText: null };
+    }
+    const currentRevision = revision(current.bytes);
+    const currentText = decodeConflictText(current.bytes);
+    if (currentRevision !== expectedRevision) {
+      return { ok: false, status: 409, error: "file changed on disk", currentRevision, currentText };
+    }
 
-  const info = await lstat(resolved.target);
-  const temp = path.join(path.dirname(resolved.target), `.mission-control-${randomUUID()}.tmp`);
-  let tempExists = false;
-  try {
-    const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, info.mode & 0o777);
-    tempExists = true;
+    const info = await lstat(resolved.target);
+    const temp = path.join(path.dirname(resolved.target), `.mission-control-${randomUUID()}.tmp`);
+    let tempExists = false;
     try {
-      await handle.writeFile(bytes);
-      await handle.sync();
-      await handle.chmod(info.mode & 0o777);
+      const handle = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, info.mode & 0o777);
+      tempExists = true;
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+        await handle.chmod(info.mode & 0o777);
+      } finally {
+        await handle.close();
+      }
+      const latest = await readPathWithinCap(resolved.target, MAX_SESSION_EDITOR_BYTES).catch(() => null);
+      if (!latest || latest.exceeded || revision(latest.bytes) !== expectedRevision) {
+        return {
+          ok: false,
+          status: 409,
+          error: latest ? "file changed while saving" : "file was deleted while saving",
+          currentRevision: latest && !latest.exceeded ? revision(latest.bytes) : undefined,
+          currentText: latest && !latest.exceeded ? decodeConflictText(latest.bytes) : null,
+          deleted: !latest,
+        };
+      }
+      await rename(temp, resolved.target);
+      tempExists = false;
+      const written = await stat(resolved.target);
+      return { ok: true, revision: revision(bytes), mtime: written.mtimeMs };
     } finally {
-      await handle.close();
+      if (tempExists) await unlink(temp).catch(() => {});
     }
-    const latest = await readPathWithinCap(resolved.target, MAX_SESSION_EDITOR_BYTES).catch(() => null);
-    if (!latest || latest.exceeded || revision(latest.bytes) !== expectedRevision) {
-      return {
-        ok: false,
-        status: 409,
-        error: latest ? "file changed while saving" : "file was deleted while saving",
-        currentRevision: latest && !latest.exceeded ? revision(latest.bytes) : undefined,
-        currentText: latest && !latest.exceeded ? decodeConflictText(latest.bytes) : null,
-        deleted: !latest,
-      };
-    }
-    await rename(temp, resolved.target);
-    tempExists = false;
-    const written = await stat(resolved.target);
-    return { ok: true, revision: revision(bytes), mtime: written.mtimeMs };
-  } finally {
-    if (tempExists) await unlink(temp).catch(() => {});
-  }
+  });
 }
 
 function decodeConflictText(bytes: Buffer): string | null {

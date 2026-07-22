@@ -26,6 +26,11 @@ export function filterSessionFiles(
     .map(({ file }) => file);
 }
 
+export function moveFilePickerIndex(index: number, count: number, delta: -1 | 1): number {
+  if (count === 0) return 0;
+  return Math.max(0, Math.min(count - 1, index + delta));
+}
+
 export function FilePicker({
   session,
   controller,
@@ -105,10 +110,10 @@ export function FilePicker({
           onKeyDown={(event) => {
             if (event.key === "ArrowDown") {
               event.preventDefault();
-              setActive((index) => Math.min(shown.length - 1, index + 1));
+              setActive((index) => moveFilePickerIndex(index, shown.length, 1));
             } else if (event.key === "ArrowUp") {
               event.preventDefault();
-              setActive((index) => Math.max(0, index - 1));
+              setActive((index) => moveFilePickerIndex(index, shown.length, -1));
             } else if (event.key === "Home") {
               event.preventDefault();
               setActive(0);

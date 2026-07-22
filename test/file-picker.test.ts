@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { filterSessionFiles } from "../src/web/components/FilePicker.tsx";
+import { filterSessionFiles, moveFilePickerIndex } from "../src/web/components/FilePicker.tsx";
 
 const entries = [
   { path: "src/web/components/FileWorkspace.tsx" },
@@ -42,6 +42,13 @@ test("the picker owns arrow movement and Enter selection", () => {
     /useEffect\(\(\) => activeRef\.current\?\.scrollIntoView/,
     "an expression-bodied scroll effect crashes Strict Mode when Chrome returns a thenable",
   );
+});
+
+test("picker movement stays selectable while results are empty", () => {
+  assert.equal(moveFilePickerIndex(0, 0, 1), 0);
+  assert.equal(moveFilePickerIndex(0, 3, 1), 1);
+  assert.equal(moveFilePickerIndex(2, 3, 1), 2);
+  assert.equal(moveFilePickerIndex(0, 3, -1), 0);
 });
 
 test("file shortcuts route through the customizable registry and Files tab request", () => {

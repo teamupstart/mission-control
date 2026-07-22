@@ -11,6 +11,7 @@ import {
   readSessionFile,
   saveSessionFile,
   SessionFileError,
+  withFileSaveLock,
 } from "../src/server/session-files.ts";
 import {
   updateExistingSession,
@@ -79,6 +80,27 @@ test("bounded reads stop after one byte beyond the cap", async (t) => {
   const result = await readFileWithinCap(handle, 8);
   assert.equal(result.exceeded, true);
   assert.equal(result.bytes.length, 9);
+});
+
+test("save locks serialize writers for the same target", async () => {
+  const order: string[] = [];
+  let releaseFirst = (): void => {};
+  const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = withFileSaveLock("same-target", async () => {
+    order.push("first:start");
+    await gate;
+    order.push("first:end");
+  });
+  await Promise.resolve();
+  const second = withFileSaveLock("same-target", async () => {
+    order.push("second:start");
+    order.push("second:end");
+  });
+  await Promise.resolve();
+  assert.deepEqual(order, ["first:start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["first:start", "first:end", "second:start", "second:end"]);
 });
 
 test("async file results cannot recreate a dropped session", () => {

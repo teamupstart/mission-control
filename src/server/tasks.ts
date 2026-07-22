@@ -171,6 +171,19 @@ export class TaskManager {
     return declaredBlockers(task, this.registry.listTasks());
   }
 
+  private observedPrFor(session: Session): string | null {
+    const observation = this.registry.prObservationFor(session.id);
+    if (
+      !observation ||
+      observation.url !== session.prUrl ||
+      observation.branch !== session.gitBranch ||
+      observation.agentSessionId !== session.agentSessionId
+    ) {
+      return null;
+    }
+    return observation.url;
+  }
+
   /**
    * Resolve untrusted ids to durable dependency edges and reject deadlocks.
    *
@@ -211,6 +224,7 @@ export class TaskManager {
           throw new TaskDependencyError("dependency session is no longer active");
         } else if (session.task && this.registry.getTask(session.task.id)) {
           const target = this.registry.getTask(session.task.id)!;
+          const observedPr = this.observedPrFor(session);
           const previouslySatisfied =
             existing.get(`task:${target.id}`)?.satisfiedAt ??
             existing.get(`session:${session.id}`)?.satisfiedAt;
@@ -221,22 +235,23 @@ export class TaskManager {
             satisfiedAt:
               target.kind === "scout" && target.status === "done"
                 ? target.completedAt ?? Date.now()
-                : session.prState === "merged"
+                : observedPr && session.prState === "merged"
                   ? Date.now()
                   : previouslySatisfied ?? null,
           };
         } else {
-          if (!session.prUrl && !session.agentSessionId && !session.gitBranch) {
+          if (!session.agentSessionId && !session.gitBranch) {
             throw new TaskDependencyError("dependency session has no stable work identity yet");
           }
+          const observedPr = this.observedPrFor(session);
           dependency = {
             type: "session",
             sessionId: session.id,
             title: session.name,
             agentSessionId: session.agentSessionId,
             branch: session.gitBranch,
-            prUrl: session.prUrl,
-            satisfiedAt: session.prState === "merged" ? Date.now() : null,
+            prUrl: observedPr,
+            satisfiedAt: observedPr && session.prState === "merged" ? Date.now() : null,
           };
         }
       } else {
@@ -249,6 +264,7 @@ export class TaskManager {
           const activeSession = sessions.find(
             (session) => session.state !== "exited" && session.task?.id === target.id,
           );
+          const observedPr = activeSession ? this.observedPrFor(activeSession) : null;
           const eligible = target.status === "backlog" || target.status === "dispatching" || target.status === "running" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
             throw new TaskDependencyError("dependency task is neither backlogged nor active");
@@ -260,7 +276,7 @@ export class TaskManager {
             satisfiedAt:
               target.kind === "scout" && target.status === "done"
                 ? target.completedAt ?? Date.now()
-                : activeSession?.prState === "merged"
+                : observedPr && activeSession?.prState === "merged"
                   ? Date.now()
                   : existing.get(`task:${target.id}`)?.satisfiedAt ?? null,
           };

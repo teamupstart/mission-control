@@ -224,6 +224,60 @@ test("a reused standalone session cannot satisfy an earlier episode with an unre
   assert.equal(restartedTasks.dependencyBlockers(restarted.getTask(dependent.id)!).length, 1);
 });
 
+test("stale PR chips cannot pin or satisfy dependencies for new work", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+
+  for (const state of ["open", "merged"] as const) {
+    const id = `stale-${state}`;
+    const cwd = `/repo/${state}`;
+    registry.applyDiscovery([discovered(id, cwd, { gitBranch: `feat/${state}-old` })]);
+    registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: `${state}-old-episode`,
+      cwd,
+      transcriptPath: null,
+      env: {},
+    });
+    registry.reconcilePrs(
+      new Map([
+        [
+          id,
+          {
+            url: `https://github.com/example/repo/pull/${state === "open" ? 20 : 21}`,
+            number: state === "open" ? 20 : 21,
+            state,
+            checks: "passing" as const,
+          },
+        ],
+      ]),
+      new Set(),
+    );
+
+    registry.applyDiscovery([discovered(id, cwd, { gitBranch: `feat/${state}-new` })]);
+    registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: `${state}-new-episode`,
+      cwd,
+      transcriptPath: null,
+      env: {},
+    });
+    const dependent = tasks.create({
+      ...createInput,
+      title: `Wait for ${state} replacement`,
+      backlog: true,
+      dependencies: [{ type: "session", sessionId: id }],
+    });
+    const edge = dependent.dependencies[0];
+    assert.equal(edge?.type, "session");
+    assert.equal(edge?.satisfiedAt, null);
+    assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
+    assert.equal(tasks.dependencyBlockers(dependent).length, 1);
+  }
+});
+
 test("completing a scout satisfies its dependents, while dependency cycles are refused", async () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

@@ -131,6 +131,12 @@ export type PrMatch = {
   checks: PrChecks | null;
 };
 
+export type PrObservation = {
+  url: string;
+  branch: string | null;
+  agentSessionId: string | null;
+};
+
 /** How many finished tasks to rehydrate on start, so "recent outcomes" survives a restart. */
 const RECENT_TERMINAL_TASKS = 50;
 
@@ -275,6 +281,7 @@ interface PassiveState {
  */
 export class Registry extends EventEmitter {
   private sessions = new Map<string, Session>();
+  private prObservations = new Map<string, PrObservation>();
   private reviews = new Map<string, ReviewItem>();
   private tasks = new Map<string, Task>();
   /** Reusable workflow Personas, including archived rows for durable history links. */
@@ -827,6 +834,13 @@ export class Registry extends EventEmitter {
       if (this.clearEffortTrackingOnRebind(target, next) && next.meta) {
         next.meta = { ...next.meta, thinkingLevel: null };
       }
+      if (evt.prUrl) {
+        this.prObservations.set(next.id, {
+          url: evt.prUrl,
+          branch: next.gitBranch,
+          agentSessionId: next.agentSessionId,
+        });
+      }
       // Binding the agent session id can change the note key, so re-resolve
       // everything keyed by it NOW rather than waiting for the next discovery
       // sweep. A `/clear` mints a new agent session id mid-pane, and until this
@@ -1324,6 +1338,10 @@ export class Registry extends EventEmitter {
     return out;
   }
 
+  prObservationFor(sessionId: string): PrObservation | null {
+    return this.prObservations.get(sessionId) ?? null;
+  }
+
   /**
    * Reconcile each session's PR chip against what `gh` reported this tick.
    * `found` holds the open-or-merged PR for every session that has one right now;
@@ -1343,6 +1361,15 @@ export class Registry extends EventEmitter {
       const number = match?.number ?? null;
       const state = match?.state ?? null;
       const checks = match?.checks ?? null;
+      if (match) {
+        this.prObservations.set(id, {
+          url: match.url,
+          branch: s.gitBranch,
+          agentSessionId: s.agentSessionId,
+        });
+      } else {
+        this.prObservations.delete(id);
+      }
       if (s.prUrl === url && s.prNumber === number && s.prState === state && s.prChecks === checks)
         continue;
       const next: Session = { ...s, prUrl: url, prNumber: number, prState: state, prChecks: checks };
@@ -1817,6 +1844,7 @@ export class Registry extends EventEmitter {
 
   private remove(id: string): void {
     this.exitTimers.delete(id);
+    this.prObservations.delete(id);
     this.nmBindings.delete(id);
     this.discoveredIdentity.delete(id);
     this.clearSessionEffortTracking(id);

@@ -22,6 +22,7 @@ import type {
   ReviewKind,
   ReviewStatus,
   SessionCost,
+  CostBasis,
   SessionGoal,
   SessionNote,
   SessionQueue,
@@ -291,7 +292,7 @@ export function openDb(): DatabaseSync {
       PRIMARY KEY (source_id, external_id)
     );
 
-    -- What the fleet has spent, one row per OpenTelemetry export window.
+    -- API-equivalent estimates and token usage, one row per source event or export window.
     --
     -- Its OWN table rather than a new kind in session_events, and the reason is written
     -- down at logEvent below: that table has exactly one writer, and hooksEverSeen asks
@@ -325,14 +326,30 @@ export function openDb(): DatabaseSync {
       window_end_ns TEXT NOT NULL,
       ts            INTEGER NOT NULL,        -- window end in epoch ms, for range queries
       cost_usd      REAL NOT NULL DEFAULT 0,
+      cost_basis    TEXT NOT NULL DEFAULT 'reported',
+      cost_known    INTEGER NOT NULL DEFAULT 1,
+      pricing_version TEXT NOT NULL DEFAULT '',
       input         INTEGER NOT NULL DEFAULT 0,
       output        INTEGER NOT NULL DEFAULT 0,
+      reasoning_output INTEGER NOT NULL DEFAULT 0,
       cache_read    INTEGER NOT NULL DEFAULT 0,
       cache_write   INTEGER NOT NULL DEFAULT 0,
       UNIQUE(note_key, model_id, query_source, window_end_ns)
     );
     CREATE INDEX IF NOT EXISTS idx_ledger_key ON usage_ledger(note_key, ts);
     CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);
+
+    -- Durable byte cursors for harness-owned append-only usage sources. The event rows
+    -- and cursor move in one transaction, so a crash can replay but cannot skip usage.
+    CREATE TABLE IF NOT EXISTS usage_sources (
+      source_key   TEXT PRIMARY KEY,
+      agent        TEXT NOT NULL,
+      offset       INTEGER NOT NULL,
+      model_id     TEXT NOT NULL DEFAULT '',
+      discard_partial INTEGER NOT NULL DEFAULT 0,
+      file_id      TEXT NOT NULL DEFAULT '',
+      updated_at   INTEGER NOT NULL
+    );
 
     -- The last skills generation each session was told about. Durable on purpose:
     -- held in memory, a daemon restart would forget every ack while the generation
@@ -485,6 +502,15 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
 
+  // Usage provenance and immutable pricing metadata. Old rows are Claude's reported
+  // telemetry, so the defaults are the truthful migration rather than a placeholder.
+  addColumn(d, "usage_ledger", "cost_basis", "TEXT NOT NULL DEFAULT 'reported'");
+  addColumn(d, "usage_ledger", "cost_known", "INTEGER NOT NULL DEFAULT 1");
+  addColumn(d, "usage_ledger", "pricing_version", "TEXT NOT NULL DEFAULT ''");
+  addColumn(d, "usage_ledger", "reasoning_output", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "usage_sources", "discard_partial", "INTEGER NOT NULL DEFAULT 0");
+  addColumn(d, "usage_sources", "file_id", "TEXT NOT NULL DEFAULT ''");
+
   // `proposed_payload`: what a drafted item would actually type. CREATE TABLE IF
   // NOT EXISTS won't add a column to a table that already exists, so an ALTER is
   // the only way an upgraded DB gets it. Nullable with no default, so existing
@@ -604,10 +630,10 @@ function migrate(d: DatabaseSync): void {
   // separate table over columns on `session_notes`: no ALTER, and no row written before
   // this build that has to be reasoned about.)
   //
-  // `usage_ledger` needs no migration for the same reason, and it is the stronger case:
-  // there is nothing to backfill at all. An existing install starts accruing spend from
-  // the first export after telemetry is switched on, and reads as unpriced (not $0)
-  // before that - which is the truthful answer for work nobody was measuring.
+  // `usage_sources` is new; its defensive cursor-state migrations above also make
+  // intermediate development databases safe to reopen. `usage_ledger` does need a user
+  // migration: its provenance/pricing defaults identify every old Claude row as reported
+  // rather than retroactively estimating or repricing it.
 
   rebuildInFlightIndexIfStale(d);
 }
@@ -1632,7 +1658,7 @@ export function pruneSessionGoals(liveKeys: Iterable<string>, olderThan: number)
   return Number(r.changes);
 }
 
-// ---- usage ledger (what the fleet has spent) ----
+// ---- usage ledger (API-equivalent estimates and token usage) ----
 
 /**
  * The columns an OTel datapoint may land in, keyed by the name the ingest uses.
@@ -1700,8 +1726,125 @@ export function upsertUsageCell(k: UsageCell, col: UsageCol, value: number): voi
     .run(k.noteKey, k.sessionId, k.agent, k.modelId, k.querySource, k.windowEndNs, k.ts, value);
 }
 
+export interface UsageSourceCursor {
+  offset: number;
+  modelId: string | null;
+  discardPartial: boolean;
+  fileId: string | null;
+}
+
+export interface DurableUsageEvent {
+  identity: string;
+  ts: number;
+  modelId: string | null;
+  querySource: string;
+  input: number;
+  output: number;
+  reasoningOutput: number;
+  cacheRead: number;
+  cacheWrite: number;
+  costUsd: number | null;
+  pricingVersion: string;
+}
+
+/** Last committed byte position for a harness-owned usage stream. */
+export function usageCursorFor(sourceKey: string): UsageSourceCursor {
+  const row = openDb()
+    .prepare(`SELECT offset, model_id, discard_partial, file_id FROM usage_sources WHERE source_key = ?`)
+    .get(sourceKey) as { offset: number; model_id: string; discard_partial: number; file_id: string } | undefined;
+  return row
+    ? {
+      offset: row.offset,
+      modelId: row.model_id || null,
+      discardPartial: row.discard_partial === 1,
+      fileId: row.file_id || null,
+    }
+    : { offset: 0, modelId: null, discardPartial: false, fileId: null };
+}
+
+/** Keep an observed source's cursor alive without changing its committed byte position. */
+export function touchUsageSource(sourceKey: string, observedAt: number): boolean {
+  return openDb()
+    .prepare(`UPDATE usage_sources SET updated_at = ? WHERE source_key = ?`)
+    .run(observedAt, sourceKey).changes > 0;
+}
+
 /**
- * What one session has spent, or null when the ledger has never heard of its key.
+ * Commit request events and their new cursor atomically.
+ *
+ * Event identity is immutable economic history: a replay may fill missing live-session
+ * provenance, but never recalculates tokens or dollars with a newer price snapshot.
+ */
+export function commitUsageRead(input: {
+  sourceKey: string;
+  noteKey: string;
+  sessionId: string | null;
+  agent: string;
+  cursor: UsageSourceCursor;
+  events: DurableUsageEvent[];
+  updatedAt: number;
+}): void {
+  const d = openDb();
+  const insert = d.prepare(
+    `INSERT INTO usage_ledger
+       (note_key, session_id, agent, model_id, query_source, window_end_ns, ts,
+        cost_usd, cost_basis, cost_known, pricing_version, input, output,
+        reasoning_output, cache_read, cache_write)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(note_key, model_id, query_source, window_end_ns)
+       DO UPDATE SET session_id = COALESCE(usage_ledger.session_id, excluded.session_id)`,
+  );
+  try {
+    d.exec("BEGIN IMMEDIATE;");
+    for (const event of input.events) {
+      insert.run(
+        input.noteKey,
+        input.sessionId,
+        input.agent,
+        event.modelId ?? "",
+        event.querySource,
+        event.identity,
+        event.ts,
+        event.costUsd ?? 0,
+        event.costUsd === null ? "unpriced" : "api-equivalent",
+        event.costUsd === null ? 0 : 1,
+        event.pricingVersion,
+        event.input,
+        event.output,
+        event.reasoningOutput,
+        event.cacheRead,
+        event.cacheWrite,
+      );
+    }
+    d.prepare(
+      `INSERT INTO usage_sources
+         (source_key, agent, offset, model_id, discard_partial, file_id, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source_key) DO UPDATE SET
+         offset = excluded.offset,
+         model_id = excluded.model_id,
+         discard_partial = excluded.discard_partial,
+         file_id = excluded.file_id,
+         updated_at = excluded.updated_at`,
+    ).run(
+      input.sourceKey,
+      input.agent,
+      input.cursor.offset,
+      input.cursor.modelId ?? "",
+      input.cursor.discardPartial ? 1 : 0,
+      input.cursor.fileId ?? "",
+      input.updatedAt,
+    );
+    d.exec("COMMIT;");
+  } catch (err) {
+    try { d.exec("ROLLBACK;"); } catch {}
+    throw err;
+  }
+}
+
+/**
+ * One session's estimated API-equivalent cost, or null when the ledger has never heard
+ * of its key.
  *
  * Null rather than a zeroed summary, deliberately: "we have not been told" and "it cost
  * nothing" are different claims, and only the first is ever true of a session with no
@@ -1713,40 +1856,62 @@ export function upsertUsageCell(k: UsageCell, col: UsageCol, value: number): voi
  * row rather than as `undefined` arriving on the wire.
  */
 export function sessionCostFor(noteKey: string): SessionCost | null {
-  const r = openDb()
+  const rows = openDb()
     .prepare(
-      `SELECT SUM(cost_usd) c, SUM(input) i, SUM(output) o,
-              SUM(cache_read) cr, SUM(cache_write) cw, MAX(ts) u
+      `SELECT cost_basis, cost_known, cost_usd, input, output, reasoning_output,
+              cache_read, cache_write, model_id, pricing_version, ts
          FROM usage_ledger WHERE note_key = ?`,
     )
-    .get(noteKey) as
-    | { c: number | null; i: number | null; o: number | null; cr: number | null; cw: number | null; u: number | null }
-    | undefined;
-  // `SUM` over no rows is NULL, not 0 - which is what distinguishes the two claims above.
-  if (!r || r.c == null) return null;
+    .all(noteKey) as unknown as Array<{
+      cost_basis: string; cost_known: number; cost_usd: number; input: number; output: number;
+      reasoning_output: number; cache_read: number; cache_write: number; model_id: string;
+      pricing_version: string; ts: number;
+    }>;
+  if (!rows.length) return null;
+  const bases = new Set(rows.map((r) => r.cost_basis));
+  const mixed = bases.size !== 1;
+  const rawBasis = mixed ? "unpriced" : rows[0]!.cost_basis;
+  const basis: CostBasis = rawBasis === "reported" || rawBasis === "api-equivalent"
+    ? rawBasis
+    : "unpriced";
+  const known = !mixed && rows.every((r) => r.cost_known === 1);
   return {
-    costUsd: r.c,
-    input: r.i ?? 0,
-    output: r.o ?? 0,
-    cacheRead: r.cr ?? 0,
-    cacheWrite: r.cw ?? 0,
-    updatedAt: r.u ?? 0,
+    costUsd: known ? rows.reduce((n, r) => n + r.cost_usd, 0) : null,
+    basis: known ? basis : "unpriced",
+    pricingModels: [...new Set(rows.map((r) => r.model_id).filter(Boolean))].sort(),
+    pricingVersions: [...new Set(rows.map((r) => r.pricing_version).filter(Boolean))].sort(),
+    input: rows.reduce((n, r) => n + r.input, 0),
+    output: rows.reduce((n, r) => n + r.output, 0),
+    reasoningOutput: rows.reduce((n, r) => n + r.reasoning_output, 0),
+    cacheRead: rows.reduce((n, r) => n + r.cache_read, 0),
+    cacheWrite: rows.reduce((n, r) => n + r.cache_write, 0),
+    updatedAt: Math.max(...rows.map((r) => r.ts)),
   };
 }
 
-/** Fleet-wide dollars since `tsMs`. 0 when nothing landed in the window, which is a fact. */
-export function fleetSpendSince(tsMs: number): number {
+/**
+ * Fleet-wide API-equivalent estimate since `tsMs`, regardless of who calculated it.
+ *
+ * Null when even one row is unpriced: returning the sum of known rows would present a
+ * partial subtotal as the fleet's total. Zero remains the truthful answer for no rows.
+ */
+export function fleetEstimatedCostSince(tsMs: number): number | null {
   const r = openDb()
-    .prepare(`SELECT SUM(cost_usd) c FROM usage_ledger WHERE ts >= ?`)
-    .get(tsMs) as { c: number | null } | undefined;
+    .prepare(
+      `SELECT SUM(CASE WHEN cost_known = 1 THEN cost_usd ELSE 0 END) c,
+              SUM(CASE WHEN cost_known = 0 THEN 1 ELSE 0 END) unknown
+         FROM usage_ledger WHERE ts >= ?`,
+    )
+    .get(tsMs) as { c: number | null; unknown: number | null } | undefined;
+  if ((r?.unknown ?? 0) > 0) return null;
   return r?.c ?? 0;
 }
 
 /**
  * Fleet-wide tokens since `tsMs`, every tier summed.
  *
- * A separate query from `fleetSpendSince` rather than one row carrying both, because the
- * two are asked at different times: spend is also read per session, and the strip is the
+ * A separate query from `fleetEstimatedCostSince` rather than one row carrying both, because the
+ * two are asked at different times: cost is also read per session, and the strip is the
  * only caller that wants tokens. Two indexed scans of the same rows cost less than the
  * coupling.
  */
@@ -1775,11 +1940,19 @@ export function prsOpenedSince(tsMs: number): number {
   return r?.n ?? 0;
 }
 
-/** True when the ledger holds anything at all - "has telemetry ever arrived?". */
+/** True when the ledger holds any reported or locally-derived usage row. */
 export function usageLedgerHasRows(): boolean {
   const r = openDb().prepare(`SELECT 1 AS x FROM usage_ledger LIMIT 1`).get() as
     | { x: number }
     | undefined;
+  return Boolean(r);
+}
+
+/** True only after Claude's reported telemetry has arrived; Codex rows are automatic. */
+export function reportedUsageLedgerHasRows(): boolean {
+  const r = openDb()
+    .prepare(`SELECT 1 AS x FROM usage_ledger WHERE cost_basis = 'reported' LIMIT 1`)
+    .get() as { x: number } | undefined;
   return Boolean(r);
 }
 
@@ -1794,6 +1967,11 @@ export function usageLedgerHasRows(): boolean {
  */
 export function pruneUsageLedger(cutoff: number): number {
   return Number(openDb().prepare(`DELETE FROM usage_ledger WHERE ts < ?`).run(cutoff).changes);
+}
+
+/** Cursor retention is independent of event retention and deliberately age-only. */
+export function pruneUsageSources(cutoff: number): number {
+  return Number(openDb().prepare(`DELETE FROM usage_sources WHERE updated_at < ?`).run(cutoff).changes);
 }
 
 // ---- Foreman session work queues ----

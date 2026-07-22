@@ -16,7 +16,7 @@ import { AlertBar } from "./components/AlertBar.tsx";
 import { SettingsModal, type SettingsCategoryId } from "./components/SettingsModal.tsx";
 import { ForemanBar } from "./components/ForemanBar.tsx";
 import { AgentDot } from "./components/session-bits.tsx";
-import { FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
+import { compactFleetCost, FleetStrip, fleetStripHasContent } from "./components/FleetStrip.tsx";
 import { Tooltip } from "./components/Tooltip.tsx";
 import { GridView } from "./components/layouts/GridView.tsx";
 import { ConsoleView } from "./components/layouts/ConsoleView.tsx";
@@ -35,7 +35,7 @@ import { moveSelection, type ArrowKey } from "./lib/layoutNav.ts";
 import { groupByTone, TONE_ORDER } from "./lib/tone.ts";
 import { useKeybindings, chordFromEvent, formatChord } from "./lib/keybindings.ts";
 import type { ActionId } from "./lib/keybindings.ts";
-import { canRenameSession, fmtUsd, stateDisplay, type Tone } from "./lib/format.ts";
+import { canRenameSession, stateDisplay, type Tone } from "./lib/format.ts";
 import { OverlayHost, OVERLAY_IDS, useOverlayHost } from "./components/Overlay.tsx";
 import { FileWindow } from "./components/FileWindow.tsx";
 import { FilePicker } from "./components/FilePicker.tsx";
@@ -1249,7 +1249,7 @@ function Stat({ n, label, tone }: { n: number; label: string; tone?: Tone }): Re
  * by exactly this row's height. The strip is the tallest thing the topbar can grow, which
  * is the whole reason it folds.
  *
- * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's spend
+ * The fold mirrors `WorkQueue`'s `Header`: the caret is the button, and today's estimate
  * stays visible even collapsed (the work queue's precedent is its `count`) so folding the
  * strip away never hides the one figure worth a glance.
  */
@@ -1265,6 +1265,7 @@ function UsageBar({
   onToggleCollapsed: () => void;
 }): React.JSX.Element | null {
   if (!fleetStripHasContent(fleet) || !fleet) return null;
+  const compactCost = compactFleetCost(fleet);
   return (
     <div className={`topbar-usage${collapsed ? " collapsed" : ""}`}>
       <button
@@ -1278,8 +1279,8 @@ function UsageBar({
           {collapsed ? "▸" : "▾"}
         </span>
         Usage
-        {collapsed && fleet.spendToday > 0 && (
-          <span className="topbar-usage-compact">{fmtUsd(fleet.spendToday)}</span>
+        {collapsed && compactCost && (
+          <span className="topbar-usage-compact">{compactCost}</span>
         )}
       </button>
       {!collapsed && <FleetStrip fleet={fleet} view={view} />}

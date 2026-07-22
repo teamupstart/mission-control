@@ -11,6 +11,7 @@ import type {
   TranscriptMessages,
   TranscriptSpec,
   TuiSpec,
+  UsageSpec,
 } from "./types.ts";
 import { claudeHooks } from "./claude/hooks.ts";
 import { claudeTranscript } from "./claude/transcript.ts";
@@ -24,6 +25,7 @@ import { codexDetect } from "./codex/detect.ts";
 import { codexBin } from "./codex/bin.ts";
 import { codexControl } from "./codex/control.ts";
 import { codexHooks } from "./codex/hooks.ts";
+import { codexUsage } from "./codex/usage.ts";
 
 // The registry of agent harnesses. Extend this; do not start a parallel list.
 //
@@ -53,6 +55,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
   claude: {
     ...HARNESS_CAPABILITIES.claude,
     transcript: claudeTranscript,
+    usage: null,
     hooks: claudeHooks,
     detect: claudeDetect,
     bin: claudeBin,
@@ -79,6 +82,7 @@ export const HARNESSES: Record<AgentType, Harness> = {
   codex: {
     ...HARNESS_CAPABILITIES.codex,
     transcript: codexTranscript,
+    usage: codexUsage,
     hooks: codexHooks,
     detect: codexDetect,
     bin: codexBin,
@@ -125,6 +129,11 @@ export function allHarnesses(): Harness[] {
 /** A session's transcript capability, or null when its harness records nothing readable. */
 export function transcriptFor(session: Session): TranscriptSpec | null {
   return HARNESSES[session.agent].transcript;
+}
+
+/** A session's durable request-usage capability, if its harness records one locally. */
+export function usageFor(session: Session): UsageSpec | null {
+  return HARNESSES[session.agent].usage;
 }
 
 /**

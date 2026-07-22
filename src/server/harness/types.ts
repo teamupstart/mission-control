@@ -79,6 +79,50 @@ export interface TranscriptPassiveRead {
   rateLimits?: import("@shared/types.ts").RateLimitSource | null;
 }
 
+/** Durable byte position for an append-only harness usage source. */
+export interface UsageCursor {
+  offset: number;
+  modelId: string | null;
+  /** True while advancing past a record that exceeded the bounded read size. */
+  discardPartial: boolean;
+  /** Device/inode generation of the file this byte position belongs to. */
+  fileId: string | null;
+}
+
+/** One billable request observed in a harness-owned local record. */
+export interface HarnessUsageEvent {
+  identity: string;
+  ts: number;
+  modelId: string | null;
+  querySource: "main" | "subagent" | "auxiliary";
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  reasoningOutput: number;
+}
+
+export interface UsageRead {
+  events: HarnessUsageEvent[];
+  cursor: UsageCursor;
+  /** Proven session id from the source header, or null while the header is unreadable. */
+  sourceId: string | null;
+  more: boolean;
+  reset: boolean;
+}
+
+export interface PricedUsage {
+  costUsd: number;
+  pricingModel: string;
+  pricingVersion: string;
+}
+
+/** Reading and valuing request-level usage from a harness's append-only local source. */
+export interface UsageSpec {
+  read(path: string, cursor: UsageCursor, maxBytes: number): UsageRead;
+  estimate(event: HarnessUsageEvent): PricedUsage | null;
+}
+
 export interface TranscriptWindow {
   /** Opening turns then recent turns, de-duped; empty when unreadable. */
   messages: TranscriptMessage[];
@@ -566,6 +610,8 @@ export interface Harness extends HarnessCapabilities {
   id: AgentType;
   /** How this harness records a session on disk, or null when it records nothing. */
   transcript: TranscriptSpec | null;
+  /** Durable request-usage reader, or null when usage arrives through another transport. */
+  usage: UsageSpec | null;
   /** How this harness pushes its lifecycle at us, or null when it pushes nothing. */
   hooks: HookSpec | null;
   /** How to find this harness's process. Required - see `DetectSpec`. */

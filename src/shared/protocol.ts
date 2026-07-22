@@ -1267,8 +1267,8 @@ export const CostConfigSchema = z.object({
     .max(COST_EXPORT_INTERVAL_MAX_MS)
     .default(15_000),
   /**
-   * What the topbar strip leads with. `usd` is honest about being an estimate; `plan`
-   * is the truer number for a Pro/Max subscriber, for whom the dollars are notional.
+   * What the topbar strip leads with. `usd` is an API-equivalent estimate across both
+   * harnesses; `plan` is the truer constraint for a subscriber using included quota.
    */
   view: z.enum(["usd", "plan"]).default("usd"),
 });

@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FleetStrip, fleetStripHasContent } from "../src/web/components/FleetStrip.tsx";
+import {
+  compactFleetCost,
+  FleetStrip,
+  fleetStripHasContent,
+} from "../src/web/components/FleetStrip.tsx";
 import { FIVE_HOUR_MS, SEVEN_DAY_MS, projectRunway } from "../src/shared/cost.ts";
 import { fmtRunway } from "../src/web/lib/format.ts";
 import type { FleetCost, RateLimitWindow } from "../src/shared/types.ts";
@@ -35,8 +39,8 @@ function win(used: number, msFromNow: number): RateLimitWindow {
 
 function fleet(over: Partial<FleetCost> = {}): FleetCost {
   return {
-    spendToday: 14.82,
-    burnPerHour: 6.1,
+    estimatedCostToday: 14.82,
+    estimatedBurnPerHour: 6.1,
     tokensToday: 21_400_000,
     prsToday: 6,
     rateLimits: null,
@@ -105,18 +109,64 @@ test("runways are formatted as approximations, and a sub-minute one still reads 
 // ---- what the strip will and will not claim ----
 
 test("no telemetry at all draws no strip - not a fleet that cost nothing", () => {
-  const empty = fleet({ spendToday: 0, burnPerHour: 0, tokensToday: 0, prsToday: 0 });
+  const empty = fleet({ estimatedCostToday: 0, estimatedBurnPerHour: 0, tokensToday: 0, prsToday: 0 });
   assert.equal(fleetStripHasContent(empty), false);
   assert.equal(fleetStripHasContent(null), false);
   assert.equal(render(empty), "");
 });
 
 test("rate limits alone are enough to draw the strip, with no dollar figures on it", () => {
-  const f = fleet({ spendToday: 0, prsToday: 0, rateLimits: { fiveHour: win(40, 3 * HOUR), sevenDay: null, updatedAt: NOW } });
+  const f = fleet({ estimatedCostToday: 0, prsToday: 0, rateLimits: { fiveHour: win(40, 3 * HOUR), sevenDay: null, updatedAt: NOW } });
   const html = render(f);
   assert.equal(fleetStripHasContent(f), true);
   assert.ok(html.includes("5-hr limit runway"));
   assert.ok(!html.includes("spend today"));
+});
+
+test("Codex-only usage renders the same unified estimate and cost per PR", () => {
+  const f = fleet({
+    estimatedCostToday: 3.25,
+    estimatedBurnPerHour: 0.75,
+    prsToday: 2,
+  });
+  const html = render(f);
+  assert.equal(fleetStripHasContent(f), true);
+  assert.ok(html.includes("estimated cost today"));
+  assert.ok(html.includes("≈$3.25"));
+  assert.ok(html.includes("tokens today"));
+  assert.ok(html.includes("cost / PR"));
+  assert.ok(html.includes("≈$1.63"));
+});
+
+test("unpriced usage exposes a partial estimate instead of understating the fleet", () => {
+  const html = render(fleet({ estimatedCostToday: null, estimatedBurnPerHour: null }));
+  assert.ok(html.includes("partial"));
+  assert.ok(html.includes("tokens today"));
+  assert.ok(!html.includes("cost / PR"));
+});
+
+test("daily and recent cost windows report completeness independently", () => {
+  const partialDay = render(fleet({ estimatedCostToday: null, estimatedBurnPerHour: 0.75 }));
+  assert.ok(partialDay.includes("cost estimate"));
+  assert.ok(partialDay.includes("estimated rate"));
+  assert.ok(partialDay.includes("≈$0.75"));
+
+  const partialHour = render(fleet({ estimatedCostToday: 3.25, estimatedBurnPerHour: null }));
+  assert.ok(partialHour.includes("≈$3.25"));
+  assert.ok(partialHour.includes("estimated rate"));
+  assert.ok(partialHour.includes("partial"));
+});
+
+test("recent usage alone is enough to draw the independent rate window", () => {
+  const f = fleet({ estimatedCostToday: 0, estimatedBurnPerHour: 0.75, tokensToday: 0, prsToday: 0 });
+  assert.equal(fleetStripHasContent(f), true);
+  assert.ok(render(f).includes("≈$0.75"));
+});
+
+test("collapsed fleet cost preserves an unpriced daily window", () => {
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: null })), "partial");
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: 3.25 })), "≈$3.25");
+  assert.equal(compactFleetCost(fleet({ estimatedCostToday: 0 })), null);
 });
 
 test("Claude and Codex quota windows render independently with their own durations", () => {
@@ -136,17 +186,17 @@ test("no PRs opened today means no cost-per-PR, rather than a division by zero",
   const html = render(fleet({ prsToday: 0 }));
   assert.ok(!html.includes("cost / PR"));
   assert.ok(!html.includes("Infinity"));
-  assert.ok(html.includes("spend today"));
+  assert.ok(html.includes("estimated cost today"));
 });
 
-test("cost per PR divides today's spend by today's proven PRs", () => {
+test("cost per PR divides today's unified estimate by today's proven PRs", () => {
   // $14.82 over 6 pull requests.
-  assert.ok(render(fleet({ spendToday: 14.82, prsToday: 6 })).includes("$2.47"));
+  assert.ok(render(fleet({ estimatedCostToday: 14.82, prsToday: 6 })).includes("≈$2.47"));
 });
 
 test("every figure the strip promises is on it", () => {
   const html = render(fleet({ rateLimits: { fiveHour: win(74, 40 * 60_000), sevenDay: null, updatedAt: NOW } }));
-  for (const label of ["spend today", "burn rate", "tokens today", "cost / PR"]) {
+  for (const label of ["estimated cost today", "estimated rate", "tokens today", "cost / PR"]) {
     assert.ok(html.includes(label), `missing ${label}`);
   }
   assert.ok(html.includes("$14.82"));

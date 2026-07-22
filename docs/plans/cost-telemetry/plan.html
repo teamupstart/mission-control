@@ -101,12 +101,16 @@
   </p>
 </header>
 
+<div class="callout">
+<p><strong>Historical scope.</strong> This document owns the original Claude OTel/statusLine ingestion rationale. The current fleet vocabulary, Codex estimator, completeness rules, and ledger extensions are owned by the <a href="../codex-cost-estimates/plan.html">unified Claude and Codex cost plan</a>. Terms such as “spend”, “burn”, and “Codex out of scope” below describe this first implementation phase, not the current product contract.</p>
+</div>
+
 <div class="callout good">
 <p><strong>Built as written</strong>, with the three questions this plan left open resolved in the code:</p>
 <ul>
-  <li><strong>Two install prompts, not one.</strong> <code>npm run install-telemetry</code> (the <code>env</code> block) is separate from <code>npm run install-statusline</code> (the wrapper) - two different asks of the user's config, and someone may well want the spend figures without us near their status line. In the app the Cost settings toggle owns the env block; <code>removeIntegrations</code> still tears it down unconditionally.</li>
+  <li><strong>Two install prompts, not one.</strong> <code>npm run install-telemetry</code> (the <code>env</code> block) is separate from <code>npm run install-statusline</code> (the wrapper) - two different asks of the user's config, and someone may well want the estimate figures without us near their status line. In the app the Cost settings toggle owns the env block; <code>removeIntegrations</code> still tears it down unconditionally.</li>
   <li><strong>Export interval: 15s</strong>, settable 5s-60s in Settings &rarr; Cost.</li>
-  <li><strong>Rail treatment: glyph-when-notable.</strong> <code>RailRow</code> pushes a <code>$</code> mark once <code>costIsNotable</code> (<code>@shared/cost.ts</code>) says so; the other three surfaces carry the figure via <code>CostChip</code>.</li>
+  <li><strong>Rail treatment: glyph-when-notable.</strong> <code>RailRow</code> pushes an <code>≈$</code> mark once <code>costIsNotable</code> (<code>@shared/cost.ts</code>) says so; the other three surfaces carry the figure via <code>CostChip</code>.</li>
 </ul>
 <p>And two things this plan did not anticipate, both found while building - read the schema and open-questions sections below through them:</p>
 <ul>
@@ -364,7 +368,7 @@ CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);</code></pre>
 <li><code>Session</code> field + comparator + read route. The compiler walks you through this one.</li>
 <li><code>CostChip</code> + the four surfaces + parity test.</li>
 <li>Statusline wrapper: add <code>rate_limits</code>; install prompt.</li>
-<li>Fleet strip: spend, burn rate, and the two rate-limit bars.</li>
+<li>Fleet strip: estimated total, recent rate, and the two rate-limit bars.</li>
 <li>Settings panel.</li>
 <li>Optional: transcript backfill for pre-feature history, behind an <code>app_config</code> flag and labelled approximate.</li>
 <li>README: a capability section, and Configuration lines for the telemetry env vars.</li>
@@ -374,17 +378,15 @@ CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);</code></pre>
 
 <h2>Open questions</h2>
 
-<p>Kept as they were asked. The first three were answered while building - the answers are in the callout at the top of this page. The last two stand: Codex is out of scope, cost-per-PR is deferred.</p>
+<p>Kept as they were asked. The first three were answered while building - the answers are in the callout at the top of this page. Codex and cost-per-PR were implemented later; the <a href="../codex-cost-estimates/plan.html">unified cost plan</a> owns those current contracts.</p>
 
 <p><strong>Two config edits, not one.</strong> OTel needs an <code>env</code> block; rate limits need the statusline wrapper. Both touch the user's <code>settings.json</code>. Worth deciding whether install is one prompt or two, and whether rate limits are opt-in separately given they are the more invasive.</p>
 
 <p><strong>Export interval.</strong> 60s default makes the badge feel stale next to a live context meter. Lowering it increases request volume from every session on the machine. 10-15s is probably right; worth measuring.</p>
 
-<p><strong>Rail treatment.</strong> <code>RailRow.tsx:52-54</code> sets an explicit budget: "Two lines, never four [...] a rail you can only fit six sessions in has stopped being a rail." A full <code>$1.24</code> in <code>.rail-meta</code> is honest but costs horizontal room. A glyph in the <code>marks</code> array only when over budget fits the existing vocabulary but makes the rail the one place cost is invisible until it is a problem. Leaning glyph-when-notable.</p>
+<p><strong>Rail treatment.</strong> <code>RailRow.tsx:52-54</code> sets an explicit budget: "Two lines, never four [...] a rail you can only fit six sessions in has stopped being a rail." A full <code>≈$1.24</code> in <code>.rail-meta</code> is honest but costs horizontal room. A glyph in the <code>marks</code> array only when over budget fits the existing vocabulary but makes the rail the one place cost is invisible until it is a problem. Leaning glyph-when-notable.</p>
 
-<p><strong>Codex.</strong> Out of scope; the schema carries an <code>agent</code> column for it. Codex here stores state in <code>~/.codex/state_5.sqlite</code> with a single <code>tokens_used</code> scalar - no tier split, no cost - so it cannot be priced to the same confidence. Codex cards read "not tracked".</p>
-
-<p><strong>Cost per PR</strong> needs a join from ledger rows to a PR, which <code>Session.prUrl</code> gives only while the session lives. Deferred; <code>note_key</code> on every row keeps the join possible later.</p>
+<p><strong>Codex and cost per PR.</strong> These original open questions are closed. See the <a href="../codex-cost-estimates/plan.html">unified cost plan</a> for request-level rollout pricing, completeness-aware fleet totals, and the proven-PR denominator.</p>
 
 <h2>Implementation</h2>
 
@@ -397,7 +399,7 @@ CREATE INDEX IF NOT EXISTS idx_ledger_ts  ON usage_ledger(ts);</code></pre>
 <li><strong><code>ServerEvent</code> gains <code>{ type: "cost_fleet", fleet: FleetCost }</code></strong> - a new top-level collection for the topbar strip. Rate limits are account-global, so they ride here, not on each session.</li>
 </ul>
 
-<p>No <code>Session.rateLimits</code> field, and no pricing table in the runtime.</p>
+<p>No <code>Session.rateLimits</code> field. This Claude-only ingestion path needs no price table; the later Codex estimator owns a separate versioned snapshot described in the <a href="../codex-cost-estimates/plan.html">unified cost plan</a>.</p>
 
 <h3>The OTLP body the receiver parses (verified on the wire)</h3>
 

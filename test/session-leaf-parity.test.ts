@@ -345,24 +345,29 @@ test("the card's context meter is the shared RuntimeMetaRow", () => {
 });
 
 test("the card's cost badge is the shared CostChip", () => {
-  // Both sides of the chip's own gate. An unpriced session (no telemetry, or none yet)
-  // renders nothing at all, and that empty case is the one a hand-copied card would get
-  // wrong - it is what every card looks like before anyone switches telemetry on.
+  // Every economic basis plus the null gate. A hand-copied card is most likely to lose
+  // the approximation marker or to render an unknown model as a confident dollar value.
   const cases: (SessionCost | null)[] = [
     null,
-    { costUsd: 1.24, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1 },
+    { costUsd: 1.24, basis: "reported", pricingModels: [], pricingVersions: [], input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1 },
     // Past COST_ATTENTION_USD, where the chip changes tone rather than growing a
     // second copy of itself in the tile's alert marks.
-    { costUsd: 12.5, input: 2, output: 9, cacheRead: 1, cacheWrite: 1, updatedAt: 1 },
+    { costUsd: 12.5, basis: "reported", pricingModels: [], pricingVersions: [], input: 2, output: 9, cacheRead: 1, cacheWrite: 1, updatedAt: 1 },
+    { costUsd: 2.75, basis: "api-equivalent", pricingModels: ["gpt-5.6-sol"], pricingVersions: ["openai-standard-2026-07-22"], input: 100, output: 20, cacheRead: 30, cacheWrite: 10, updatedAt: 1 },
+    { costUsd: null, basis: "unpriced", pricingModels: ["gpt-future"], pricingVersions: [], input: 100, output: 20, cacheRead: 30, cacheWrite: 10, updatedAt: 1 },
   ];
   for (const cost of cases) {
     const fragment = bit(CostChip, { cost });
     if (!fragment) {
-      assert.ok(!card({ cost }).includes("cost-chip"), "an unpriced session draws no chip");
+      assert.ok(!card({ cost }).includes("cost-chip"), "a session with no usage draws no chip");
       continue;
     }
     assert.ok(card({ cost }).includes(fragment), `card should render the shared CostChip (${cost?.costUsd})`);
   }
+  const api = bit(CostChip, { cost: cases[3]! });
+  assert.ok(api.includes("≈$2.75"));
+  const unknown = bit(CostChip, { cost: cases[4]! });
+  assert.ok(unknown.includes("tok"));
 });
 
 test("the board tile's agent dot and context meter are the shared ones", () => {
@@ -392,7 +397,7 @@ test("the board tile's agent dot and context meter are the shared ones", () => {
 
 test("the board tile's cost badge is the shared CostChip", () => {
   const cost: SessionCost = {
-    costUsd: 3.5, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
+    costUsd: 3.5, basis: "reported", pricingModels: [], pricingVersions: [], input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
   };
   const session = mkSession({ cost });
   const tile = renderToStaticMarkup(
@@ -420,7 +425,7 @@ test("card and console detail agree on every shared leaf", () => {
     pendingReviews: 2,
     meta: meta({ contextPct: 73 }),
     cost: {
-      costUsd: 1.24, input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
+      costUsd: 1.24, basis: "reported", pricingModels: [], pricingVersions: [], input: 2, output: 561, cacheRead: 91_000, cacheWrite: 27_298, updatedAt: 1,
     },
     inspector: insp({ open: 3, round: 2 }),
   };

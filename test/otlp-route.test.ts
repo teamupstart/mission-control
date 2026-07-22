@@ -37,7 +37,7 @@ const app = buildApp(
   new QueueManager(registry),
 );
 
-// Anchored to now, not to the day this was written: `spendToday` is measured from LOCAL
+// Anchored to now, not to the day this was written: `estimatedCostToday` starts at LOCAL
 // midnight, so a hard-coded export window silently stops counting toward it the following
 // day and the assertion below turns into a test of nothing.
 const END_NS = `${Date.now()}000000`;
@@ -104,7 +104,7 @@ test("an authorized export is accepted with a JSON body, not a bare 204", async 
   // difference between one export per interval and two.
   assert.match(res.headers.get("content-type") ?? "", /application\/json/);
   assert.deepEqual(await res.json(), {});
-  assert.equal(registry.snapshot().fleetCost?.spendToday, 0.0965845);
+  assert.equal(registry.snapshot().fleetCost?.estimatedCostToday, 0.0965845);
 });
 
 test("a malformed body is a 400, not a 500", async () => {

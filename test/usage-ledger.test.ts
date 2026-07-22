@@ -18,11 +18,15 @@ process.env.MISSION_HOME = home;
 
 const {
   openDb,
-  fleetSpendSince,
+  fleetEstimatedCostSince,
+  fleetTokensSince,
+  commitUsageRead,
+  usageCursorFor,
   pruneUsageLedger,
   sessionCostFor,
   upsertUsageCell,
   usageLedgerHasRows,
+  reportedUsageLedgerHasRows,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -46,12 +50,12 @@ test("an unseen key reports null, not a zeroed summary", () => {
 });
 
 test("the ledger reports whether it holds anything at all", () => {
-  // Before anything is written this is the honest answer to "has telemetry ever arrived",
-  // which is what tells an unconfigured install apart from a quiet one.
+  // Before anything is written this is the honest answer to "has any usage arrived?".
   const before = usageLedgerHasRows();
   upsertUsageCell(cell("k-any", "1000000000000000001", 1_000), "costUsd", 0.01);
   assert.equal(before, false);
   assert.equal(usageLedgerHasRows(), true);
+  assert.equal(reportedUsageLedgerHasRows(), true);
 });
 
 test("per-column writes preserve each other within one window", () => {
@@ -64,7 +68,7 @@ test("per-column writes preserve each other within one window", () => {
   const cost = sessionCostFor("k-cols");
   assert.deepEqual(
     { ...cost, updatedAt: 0 },
-    { costUsd: 0.4, input: 12, output: 34, cacheRead: 56, cacheWrite: 78, updatedAt: 0 },
+    { costUsd: 0.4, basis: "reported", pricingModels: ["claude-opus-4-8[1m]"], pricingVersions: [], input: 12, output: 34, reasoningOutput: 0, cacheRead: 56, cacheWrite: 78, updatedAt: 0 },
     "cost and tokens are separate metrics on one window - neither may erase the other",
   );
 });
@@ -87,20 +91,79 @@ test("`updatedAt` follows the newest window, and a replace moves it forward", ()
   assert.equal(sessionCostFor("k-fresh")?.updatedAt, 12_000);
 });
 
-test("keys are independent - one session's spend is never another's", () => {
+test("keys are independent - one session's estimate is never another's", () => {
   upsertUsageCell(cell("k-a", "2000000000000000000", 1_000), "costUsd", 1);
   upsertUsageCell(cell("k-b", "2000000000000000000", 1_000), "costUsd", 2);
   assert.equal(sessionCostFor("k-a")?.costUsd, 1);
   assert.equal(sessionCostFor("k-b")?.costUsd, 2);
 });
 
-test("fleetSpendSince windows on ts, and reports 0 rather than null for an empty window", () => {
+test("fleetEstimatedCostSince windows on ts, and reports 0 rather than null for an empty window", () => {
   upsertUsageCell(cell("k-win", "3000000000000000001", 10_000), "costUsd", 5);
   upsertUsageCell(cell("k-win", "3000000000000000002", 20_000), "costUsd", 7);
-  assert.equal(fleetSpendSince(20_000) >= 7, true, "the newer window is in range");
-  assert.equal(fleetSpendSince(9_000) >= 12, true, "both windows are in range");
-  // 0, not null: "nothing was spent in the last hour" IS a fact, unlike an unseen key.
-  assert.equal(fleetSpendSince(Date.now() + 86_400_000), 0);
+  assert.equal((fleetEstimatedCostSince(20_000) ?? 0) >= 7, true, "the newer window is in range");
+  assert.equal((fleetEstimatedCostSince(9_000) ?? 0) >= 12, true, "both windows are in range");
+  // 0, not null: "no estimated usage landed in the last hour" IS a fact, unlike an unseen key.
+  assert.equal(fleetEstimatedCostSince(Date.now() + 86_400_000), 0);
+});
+
+test("Codex request rows retain estimator provenance and join fleet cost and token totals", () => {
+  const tokensBefore = fleetTokensSince(20_000);
+  commitUsageRead({
+    sourceKey: "codex:conversation-1",
+    noteKey: "conversation-1",
+    sessionId: "live-1",
+    agent: "codex",
+    cursor: { offset: 144, modelId: "gpt-5.6-sol", discardPartial: true, fileId: "1:2" },
+    updatedAt: 25_000,
+    events: [{
+      identity: "event-1", ts: 25_000, modelId: "gpt-5.6-sol", querySource: "main",
+      input: 100, output: 20, reasoningOutput: 4, cacheRead: 30, cacheWrite: 10,
+      costUsd: 0.0042, pricingVersion: "snapshot-1",
+    }],
+  });
+  assert.deepEqual(usageCursorFor("codex:conversation-1"), {
+    offset: 144, modelId: "gpt-5.6-sol", discardPartial: true, fileId: "1:2",
+  });
+  const summary = sessionCostFor("conversation-1");
+  assert.equal(summary?.basis, "api-equivalent");
+  assert.equal(summary?.costUsd, 0.0042);
+  assert.deepEqual(summary?.pricingModels, ["gpt-5.6-sol"]);
+  assert.deepEqual(summary?.pricingVersions, ["snapshot-1"]);
+  assert.equal(summary?.reasoningOutput, 4);
+  assert.equal((fleetEstimatedCostSince(20_000) ?? 0) >= 7.0042, true,
+    "Claude- and Codex-calculated rows share one economic total");
+  assert.equal(fleetTokensSince(20_000), tokensBefore + 160,
+    "Codex tiers join the same fleet token total as Claude rows without double-counting reasoning");
+});
+
+test("an unknown Codex model preserves tokens but makes the whole summary unpriced", () => {
+  commitUsageRead({
+    sourceKey: "codex:conversation-unknown",
+    noteKey: "conversation-unknown",
+    sessionId: null,
+    agent: "codex",
+    cursor: { offset: 88, modelId: "gpt-future", discardPartial: false, fileId: "1:3" },
+    updatedAt: 30_000,
+    events: [{
+      identity: "event-unknown", ts: 30_000, modelId: "gpt-future", querySource: "main",
+      input: 11, output: 7, reasoningOutput: 3, cacheRead: 5, cacheWrite: 2,
+      costUsd: null, pricingVersion: "",
+    }],
+  });
+  const summary = sessionCostFor("conversation-unknown");
+  assert.equal(summary?.basis, "unpriced");
+  assert.equal(summary?.costUsd, null);
+  assert.equal(summary?.input, 11);
+  assert.deepEqual(summary?.pricingModels, ["gpt-future"]);
+  const stored = openDb()
+    .prepare(`SELECT cost_basis, cost_known FROM usage_ledger WHERE note_key = ?`)
+    .get("conversation-unknown") as { cost_basis: string; cost_known: number };
+  assert.equal(stored.cost_basis, "unpriced",
+    "the durable row must preserve unknown-model provenance, not only summarize as partial");
+  assert.equal(stored.cost_known, 0);
+  assert.equal(fleetEstimatedCostSince(30_000), null,
+    "a known subtotal must not masquerade as the complete fleet estimate");
 });
 
 test("pruning is by age alone and leaves newer rows untouched", () => {

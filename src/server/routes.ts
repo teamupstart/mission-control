@@ -536,10 +536,12 @@ export function buildApp(
     return c.body(null, 204);
   });
 
-  // --- OTLP metrics ingest (token-guarded): Claude Code's OWN cost arithmetic, which
-  // is why this app has no pricing table anywhere. The exporter posts here when the
-  // `env` block in ~/.claude/settings.json points `OTEL_EXPORTER_OTLP_ENDPOINT` at the
-  // daemon; the path is OTLP's, not ours - the SDK appends `/v1/metrics` to the base. ---
+  // --- OTLP metrics ingest (token-guarded): Claude Code's own API-equivalent cost
+  // arithmetic. It joins Mission Control's Codex estimate in fleet totals while retaining
+  // its client-reported provenance on each ledger row.
+  // The exporter posts here when the `env` block in ~/.claude/settings.json points
+  // `OTEL_EXPORTER_OTLP_ENDPOINT` at the daemon; the path is OTLP's, not ours - the SDK
+  // appends `/v1/metrics` to the base. ---
   app.post("/v1/metrics", async (c) => {
     if (!authed(c)) return c.json({ error: "unauthorized" }, 401);
     const parsed = await parseBody(c, OtlpMetricsSchema);

@@ -110,15 +110,16 @@ export interface SessionMeta {
   updatedAt: number;
 }
 
+/** Which estimator produced the API-equivalent dollar figure. */
+export type CostBasis = "reported" | "api-equivalent" | "unpriced";
+
 /**
- * What one session has spent, summed out of the `usage_ledger`.
+ * One session's estimated API-equivalent cost, summed out of the `usage_ledger`.
  *
- * Every figure here is Claude Code's OWN arithmetic, consumed over OpenTelemetry rather
- * than reconstructed from a transcript against a price list we maintain - there is no
- * rate table anywhere in this app, and deliberately so (see docs/plans/cost-telemetry).
- * It is still a LOCAL ESTIMATE: Anthropic's own docs say the client-side number may
- * differ from billing, and on a Pro/Max subscription the dollars are notional entirely.
- * Anything that renders it says "estimate".
+ * Both priced variants are API-equivalent estimates. `reported` means the harness client
+ * performed the arithmetic (Claude Code); `api-equivalent` means Mission Control applied
+ * its versioned standard-rate snapshot (Codex). The distinction is estimator provenance,
+ * not economic basis: neither is subscription-plan spend or an invoice.
  *
  * Null on a session, rather than zero, when the ledger has no rows for its key - "we
  * have not been told" and "it cost nothing" are different claims and only one of them
@@ -127,6 +128,11 @@ export interface SessionMeta {
 export interface SessionCost {
   /** SUM(cost_usd) over every ledger window for this session's note key. */
   costUsd: number | null;
+  basis: CostBasis;
+  /** Exact model ids observed in the rows represented by this summary. */
+  pricingModels: string[];
+  /** Immutable estimator snapshots represented here; empty for client-calculated rows. */
+  pricingVersions: string[];
   /** Token totals by tier. `cacheRead`/`cacheWrite` are billed at different rates. */
   input: number;
   output: number;
@@ -173,12 +179,15 @@ export interface RateLimits {
   updatedAt: number;
 }
 
-/** Fleet-wide spend for the topbar strip. A top-level collection, not a session field. */
+/** Fleet-wide estimated usage cost for the topbar strip. */
 export interface FleetCost {
-  /** SUM(cost_usd) since local midnight, across every session on the machine. */
-  spendToday: number;
-  /** SUM(cost_usd) over the last hour - the burn rate, not a projection. */
-  burnPerHour: number;
+  /**
+   * Claude- plus Codex-estimated API-equivalent cost since local midnight. Null when any
+   * usage in the window is unpriced, because a known subtotal is not a complete total.
+   */
+  estimatedCostToday: number | null;
+  /** Same estimate over the last hour; null when that window contains unpriced usage. */
+  estimatedBurnPerHour: number | null;
   /**
    * Every tier summed - input, output, cache read and cache write - since local midnight.
    *
@@ -349,15 +358,13 @@ export interface Session {
   /** A passive read has established the effort baseline for this exact live identity. */
   effortBaselineReady: boolean;
   /**
-   * What this session has spent so far, denormalized off the usage ledger and keyed on
+   * This session's API-equivalent estimate, denormalized off the usage ledger and keyed on
    * the same stable note key as `note` and `goal` - never on `id`, which re-mints on
    * every restart while the ledger is meant to outlive the session.
    *
-   * Null until an OTel export lands for the key, which also means null forever for a
-   * Codex session (it emits no such telemetry, and its own `tokens_used` scalar carries
-   * no tier split and no cost, so it cannot be priced to the same confidence). A Codex
-   * card reads "not tracked" rather than showing a number with a different error bar
-   * beside a Claude one.
+   * Null until either a reported OTel window or a durable harness usage event lands for
+   * the key. `basis` retains which calculator produced known estimates and keeps
+   * unpriced token counts explicit.
    */
   cost: SessionCost | null;
   /**
@@ -1672,7 +1679,7 @@ export type ServerEvent =
       reviews: ReviewItem[];
       tasks: Task[];
       /**
-       * Fleet spend at connect time. Carried in the snapshot rather than waited for,
+       * Fleet cost estimate at connect time. Carried in the snapshot rather than waited for,
        * or the topbar strip would sit blank until the next export happened to change
        * something - up to a whole export interval of a dashboard that looks broken.
        */
@@ -1685,8 +1692,8 @@ export type ServerEvent =
   | { type: "task_upsert"; task: Task }
   | { type: "task_remove"; id: string }
   /**
-   * Fleet-wide spend and the subscription's rate limits. A top-level collection, not a
-   * per-session field: the rate limits are account-global, so hanging them off each
+   * Fleet-wide API-equivalent estimate and subscription rate limits. A top-level collection,
+   * not a per-session field: the rate limits are account-global, so hanging them off each
    * session would ship the same numbers N times and invite N places to disagree.
    */
   | { type: "cost_fleet"; fleet: FleetCost };

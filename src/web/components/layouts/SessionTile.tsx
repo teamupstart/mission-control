@@ -207,7 +207,7 @@ export function SessionTile({
           that now carries its number. The board used to draw only the bare meter here; the
           percentage is the triage signal (a session near full is about to compact). */}
       {/* Beside the runtime row, deliberately NOT up in `.tile-marks` above: that row
-          means "things that want your attention", and a routine spend figure is not an
+          means "things that want your attention", and a routine estimate is not an
           alert. When it stops being routine the chip's own tone says so (costTone), which
           keeps one spelling of the number per surface rather than two. */}
       <span className="tile-runtime-line">

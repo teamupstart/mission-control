@@ -39,3 +39,15 @@ test("global overlays stay mounted on Fleet and Workflows pages", () => {
     assert.match(overlays, new RegExp(`<${component}`));
   }
 });
+
+test("the provider catalog reloads when the event stream reconnects", () => {
+  const workflowPage = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/WorkflowPage.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(workflowPage, /if \(!connected\) return;/);
+  assert.match(workflowPage, /\}, \[connected\]\);/);
+
+  const app = readFileSync(fileURLToPath(new URL("../src/web/App.tsx", import.meta.url)), "utf8");
+  assert.match(app, /<WorkflowPage[\s\S]*?connected=\{connected\}/);
+});

@@ -51,8 +51,11 @@ function markdownPath(name: string): string {
   return `${slug || "persona"}.md`;
 }
 
-export function isPersonaSaveShortcut(event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "key">): boolean {
-  return (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s";
+export function isPersonaSaveShortcut(
+  event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "key">,
+  overlayOpen: boolean,
+): boolean {
+  return !overlayOpen && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s";
 }
 
 export function personaLineSeparator(markdown: string): "\r\n" | "\r" | "\n" {
@@ -97,6 +100,7 @@ export function PersonaEditor({
   persona,
   seed,
   providers,
+  isOverlayOpen,
   onDirtyChange,
   onSaved,
   onDuplicate,
@@ -105,6 +109,7 @@ export function PersonaEditor({
   persona: PersonaView | null;
   seed?: PersonaDraftSeed;
   providers: readonly LlmProviderView[];
+  isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
   onSaved: (persona: PersonaView) => void;
   onDuplicate: (seed: PersonaDraftSeed) => void;
@@ -207,7 +212,7 @@ export function PersonaEditor({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
-      if (isPersonaSaveShortcut(event)) {
+      if (isPersonaSaveShortcut(event, isOverlayOpen())) {
         event.preventDefault();
         void save();
       }

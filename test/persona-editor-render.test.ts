@@ -49,6 +49,7 @@ const PROVIDERS: LlmProviderView[] = [
 
 const callbacks = {
   providers: PROVIDERS,
+  isOverlayOpen: () => false,
   onDirtyChange: () => {},
   onSaved: () => {},
   onDuplicate: () => {},
@@ -63,6 +64,7 @@ test("an empty library offers New and import without pretending workflows alread
   const html = text(renderToStaticMarkup(createElement(PersonaLibrary, {
     personas: [],
     providers: PROVIDERS,
+    isOverlayOpen: () => false,
     onDirtyChange: () => {},
   })));
   assert.match(html, /No saved Personas yet/);
@@ -83,6 +85,7 @@ test("an unsaved Persona does not invent the app's effective provider", () => {
       model: null,
     },
     providers: PROVIDERS,
+    isOverlayOpen: () => false,
     onDirtyChange: () => {},
     onSaved: () => {},
     onDuplicate: () => {},
@@ -176,6 +179,8 @@ test("Workflows and Runs tabs are honest Phase 1 shells", () => {
   const workflows = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "workflows",
     personas: [],
+    connected: true,
+    isOverlayOpen: () => false,
     onTab: () => {},
     onDirtyChange: () => {},
   }));
@@ -185,6 +190,8 @@ test("Workflows and Runs tabs are honest Phase 1 shells", () => {
   const runs = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "runs",
     personas: [],
+    connected: true,
+    isOverlayOpen: () => false,
     onTab: () => {},
     onDirtyChange: () => {},
   }));
@@ -243,7 +250,8 @@ test("the shared editor maps multiple exact changes across mixed line endings", 
 });
 
 test("Persona save owns Cmd/Ctrl+S without claiming plain S", () => {
-  assert.equal(isPersonaSaveShortcut({ metaKey: true, ctrlKey: false, key: "s" }), true);
-  assert.equal(isPersonaSaveShortcut({ metaKey: false, ctrlKey: true, key: "S" }), true);
-  assert.equal(isPersonaSaveShortcut({ metaKey: false, ctrlKey: false, key: "s" }), false);
+  assert.equal(isPersonaSaveShortcut({ metaKey: true, ctrlKey: false, key: "s" }, false), true);
+  assert.equal(isPersonaSaveShortcut({ metaKey: false, ctrlKey: true, key: "S" }, false), true);
+  assert.equal(isPersonaSaveShortcut({ metaKey: false, ctrlKey: false, key: "s" }, false), false);
+  assert.equal(isPersonaSaveShortcut({ metaKey: true, ctrlKey: false, key: "s" }, true), false);
 });

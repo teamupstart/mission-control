@@ -50,21 +50,20 @@ export function applyExactEditorChanges(
   changes: ChangeSet,
   insertedLineSeparator = "\n",
 ): string {
-  const edits: Array<{ from: number; to: number; insert: string }> = [];
   const lineStarts = exactLineStarts(value);
+  const chunks: string[] = [];
+  let cursor = 0;
   changes.iterChanges((from, to, _fromNew, _toNew, inserted) => {
-    edits.push({
-      from: exactOffset(lineStarts, state, from),
-      to: exactOffset(lineStarts, state, to),
-      insert: inserted.sliceString(0, undefined, insertedLineSeparator),
-    });
+    const exactFrom = exactOffset(lineStarts, state, from);
+    const exactTo = exactOffset(lineStarts, state, to);
+    chunks.push(
+      value.slice(cursor, exactFrom),
+      inserted.sliceString(0, undefined, insertedLineSeparator),
+    );
+    cursor = exactTo;
   });
-  let next = value;
-  for (let index = edits.length - 1; index >= 0; index -= 1) {
-    const edit = edits[index]!;
-    next = next.slice(0, edit.from) + edit.insert + next.slice(edit.to);
-  }
-  return next;
+  chunks.push(value.slice(cursor));
+  return chunks.join("");
 }
 
 export function FileEditor({

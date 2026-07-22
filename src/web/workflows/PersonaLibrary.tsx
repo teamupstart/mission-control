@@ -16,10 +16,12 @@ const EMPTY_SEED: PersonaDraftSeed = {
 export function PersonaLibrary({
   personas,
   providers,
+  isOverlayOpen,
   onDirtyChange,
 }: {
   personas: PersonaView[];
   providers: readonly LlmProviderView[];
+  isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
   const ordered = useMemo(
@@ -162,6 +164,7 @@ export function PersonaLibrary({
             persona={selected}
             seed={seed ?? undefined}
             providers={providers}
+            isOverlayOpen={isOverlayOpen}
             onDirtyChange={setDirty}
             onSaved={(persona) => {
               setLocalPersona(persona);

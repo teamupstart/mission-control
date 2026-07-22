@@ -161,6 +161,7 @@ export function App(): React.JSX.Element {
   useLayoutEffect(() => {
     overlaysRef.current = overlays;
   }, [overlays]);
+  const isOverlayOpen = useCallback(() => overlaysRef.current.anyOpen, []);
 
   // The native "Settings…" menu item (⌘,) pushes here over IPC; the topbar gear
   // sets the same state directly. No-op in a plain browser (no preload bridge).
@@ -919,6 +920,8 @@ export function App(): React.JSX.Element {
             <WorkflowPage
               tab={route.page === "workflows" ? route.tab : "workflows"}
               personas={personas}
+              connected={connected}
+              isOverlayOpen={isOverlayOpen}
               onTab={(tab) => navigate({ page: "workflows", tab })}
               onDirtyChange={setWorkflowDirty}
             />

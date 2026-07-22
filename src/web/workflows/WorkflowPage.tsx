@@ -8,17 +8,22 @@ import { PersonaLibrary } from "./PersonaLibrary.tsx";
 export function WorkflowPage({
   tab,
   personas,
+  connected,
+  isOverlayOpen,
   onTab,
   onDirtyChange,
 }: {
   tab: WorkflowTab;
   personas: PersonaView[];
+  connected: boolean;
+  isOverlayOpen: () => boolean;
   onTab: (tab: WorkflowTab) => void;
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
   const [providers, setProviders] = useState<LlmProviderView[]>([]);
 
   useEffect(() => {
+    if (!connected) return;
     let live = true;
     void fetchLlmStatus().then((status) => {
       if (live && status) setProviders(status.runners);
@@ -26,7 +31,7 @@ export function WorkflowPage({
     return () => {
       live = false;
     };
-  }, []);
+  }, [connected]);
 
   return (
     <main className="workflow-page">
@@ -53,6 +58,7 @@ export function WorkflowPage({
         <PersonaLibrary
           personas={personas}
           providers={providers}
+          isOverlayOpen={isOverlayOpen}
           onDirtyChange={onDirtyChange}
         />
       )}

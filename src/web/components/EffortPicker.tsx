@@ -52,7 +52,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
 
   const level = optimistic?.level ?? reported;
   const levels = sessionEffortLevels(session.agent, modelId, level);
-  const canPick = session.state !== "exited" && canWriteTo(session);
+  const canPick = session.effortBaselineReady && session.state !== "exited" && canWriteTo(session);
 
   const place = useCallback(() => {
     const el = chipRef.current;

@@ -615,6 +615,7 @@ export class Registry extends EventEmitter {
       prState: prev?.prState ?? null,
       prChecks: prev?.prChecks ?? null,
       meta: prev?.meta ?? null,
+      effortBaselineReady: prev?.effortBaselineReady ?? false,
       cost: null,
       note: null,
       goal: null,
@@ -681,6 +682,15 @@ export class Registry extends EventEmitter {
     // last known value and let `applyDiscovery` re-resolve every hint once the map is
     // whole. `applyHook` resolves its own inline because by then the map already is.
     base.orphanedQueue = prev?.orphanedQueue ?? null;
+    if (
+      prev &&
+      prev.agentSessionId !== null &&
+      base.agentSessionId !== null &&
+      prev.agentSessionId !== base.agentSessionId &&
+      base.transcriptPath === prev.transcriptPath
+    ) {
+      base.transcriptPath = null;
+    }
     if (prev && this.clearEffortTrackingOnRebind(prev, base) && base.meta) {
       base.meta = { ...base.meta, thinkingLevel: null };
     }
@@ -752,6 +762,14 @@ export class Registry extends EventEmitter {
             prChecks: null,
           }
         : {};
+      const agentSessionId = evt.sessionId ?? target.agentSessionId;
+      const agentRebound =
+        target.agentSessionId !== null &&
+        agentSessionId !== null &&
+        target.agentSessionId !== agentSessionId;
+      const transcriptPath = agentRebound && evt.transcriptPath === target.transcriptPath
+        ? null
+        : evt.transcriptPath ?? (agentRebound ? null : target.transcriptPath);
       const next: Session = {
         ...target,
         ...pr,
@@ -762,8 +780,8 @@ export class Registry extends EventEmitter {
         activity,
         permissionMode,
         lastActivity: ts,
-        agentSessionId: evt.sessionId ?? target.agentSessionId,
-        transcriptPath: evt.transcriptPath ?? target.transcriptPath,
+        agentSessionId,
+        transcriptPath,
       };
       if (this.clearEffortTrackingOnRebind(target, next) && next.meta) {
         next.meta = { ...next.meta, thinkingLevel: null };
@@ -854,14 +872,34 @@ export class Registry extends EventEmitter {
     this.emitSession(updated);
   }
 
-  recordRuntimeEffortBaseline(sessionId: string, revision: string | null): void {
-    if (this.sessions.has(sessionId)) this.runtimeEffortRevisions.set(sessionId, revision);
+  recordRuntimeEffortBaseline(sessionId: string, revision: string | null): boolean {
+    const s = this.sessions.get(sessionId);
+    if (!s) return false;
+    this.runtimeEffortRevisions.set(sessionId, revision);
+    if (s.effortBaselineReady) return true;
+    const updated: Session = { ...s, effortBaselineReady: true };
+    this.sessions.set(sessionId, updated);
+    this.emitSession(updated);
+    return true;
   }
 
-  recordObservedSessionEffort(sessionId: string, effort: ThinkingLevel | null): boolean {
+  recordObservedSessionEffort(
+    sessionId: string,
+    effort: ThinkingLevel | null,
+    expected?: Pick<Session, "agentSessionId" | "transcriptPath">,
+  ): boolean {
     if (!effort || !this.runtimeEffortRevisions.has(sessionId)) return false;
     const s = this.sessions.get(sessionId);
-    if (!s?.meta) return false;
+    if (
+      !s?.meta ||
+      !s.effortBaselineReady ||
+      (expected &&
+        expected.agentSessionId !== null &&
+        expected.agentSessionId !== s.agentSessionId) ||
+      (expected &&
+        expected.transcriptPath !== null &&
+        expected.transcriptPath !== s.transcriptPath)
+    ) return false;
     const freshness = {
       agentSessionId: s.agentSessionId,
       transcriptPath: s.transcriptPath,
@@ -889,10 +927,11 @@ export class Registry extends EventEmitter {
   clearObservedSessionEffort(sessionId: string): void {
     this.clearSessionEffortTracking(sessionId);
     const s = this.sessions.get(sessionId);
-    if (!s?.meta || s.meta.thinkingLevel === null) return;
+    if (!s || (!s.effortBaselineReady && (!s.meta || s.meta.thinkingLevel === null))) return;
     const updated: Session = {
       ...s,
-      meta: { ...s.meta, thinkingLevel: null },
+      meta: s.meta ? { ...s.meta, thinkingLevel: null } : null,
+      effortBaselineReady: false,
     };
     this.sessions.set(sessionId, updated);
     this.emitSession(updated);
@@ -1271,6 +1310,11 @@ export class Registry extends EventEmitter {
   applyStatus(env: HookIngest["env"], agentSessionId: string | null, activity: string): void {
     const s = this.findSessionByEnv(env, agentSessionId);
     if (!s) return;
+    const nextAgentSessionId = agentSessionId ?? s.agentSessionId;
+    const agentRebound =
+      s.agentSessionId !== null &&
+      nextAgentSessionId !== null &&
+      s.agentSessionId !== nextAgentSessionId;
     const next: Session = {
       ...s,
       instrumented: true,
@@ -1278,7 +1322,8 @@ export class Registry extends EventEmitter {
       hooksSeen: true,
       activity,
       lastActivity: Date.now(),
-      agentSessionId: agentSessionId ?? s.agentSessionId,
+      agentSessionId: nextAgentSessionId,
+      transcriptPath: agentRebound ? null : s.transcriptPath,
     };
     if (this.clearEffortTrackingOnRebind(s, next) && next.meta) {
       next.meta = { ...next.meta, thinkingLevel: null };
@@ -1328,12 +1373,17 @@ export class Registry extends EventEmitter {
       this.statusLineTimestamps.set(s.id, statusLineTimestamp);
     }
     const agentSessionId = ingest.sessionId ?? s.agentSessionId;
+    const agentRebound =
+      s.agentSessionId !== null &&
+      agentSessionId !== null &&
+      s.agentSessionId !== agentSessionId;
+    const transcriptPath = agentRebound ? null : s.transcriptPath;
     const guarded = this.guardEffortFreshness(
       s.id,
       s.meta?.thinkingLevel ?? null,
       metaFromStatusLine(ingest, Date.now()),
       agentSessionId,
-      s.transcriptPath,
+      transcriptPath,
       "statusline",
       null,
       statusLineTimestamp,
@@ -1342,7 +1392,7 @@ export class Registry extends EventEmitter {
       s.id,
       guarded.meta,
       agentSessionId,
-      s.transcriptPath,
+      transcriptPath,
       "statusline",
       null,
       statusLineTimestamp,
@@ -1352,7 +1402,7 @@ export class Registry extends EventEmitter {
     const meta = rejectedStatusLineEffort && s.meta
       ? { ...reconciled.meta, source: s.meta.source, updatedAt: s.meta.updatedAt }
       : reconciled.meta;
-    const next: Session = { ...s, meta, agentSessionId };
+    const next: Session = { ...s, meta, agentSessionId, transcriptPath };
     this.clearEffortTrackingOnRebind(s, next);
     // A statusLine can be the first thing to bind an agent session id (it carries one and
     // fires on every render, where a hook fires on events). That rotates the note key, so
@@ -1567,7 +1617,14 @@ export class Registry extends EventEmitter {
       source !== "statusline" &&
       now - s.meta.updatedAt < STATUSLINE_TTL_MS;
     const hasEffortFreshnessGuard = this.effortFreshnessGuards.has(sessionId);
-    if (statusLineHasPrecedence && !hasEffortFreshnessGuard) return;
+    if (statusLineHasPrecedence && !hasEffortFreshnessGuard) {
+      if (!s.effortBaselineReady) {
+        const next: Session = { ...s, effortBaselineReady: true };
+        this.sessions.set(sessionId, next);
+        this.emitSession(next);
+      }
+      return;
+    }
     const guarded = this.guardEffortFreshness(
       sessionId,
       s.meta?.thinkingLevel ?? null,
@@ -1590,8 +1647,8 @@ export class Registry extends EventEmitter {
     const meta = statusLineHasPrecedence && s.meta
       ? { ...s.meta, thinkingLevel: reconciled.meta.thinkingLevel }
       : reconciled.meta;
-    const changed = !metaDisplayEqual(s.meta, meta);
-    const next: Session = { ...s, meta };
+    const changed = !metaDisplayEqual(s.meta, meta) || !s.effortBaselineReady;
+    const next: Session = { ...s, meta, effortBaselineReady: true };
     this.sessions.set(sessionId, next);
     if (changed) this.emitSession(next);
   }
@@ -1796,7 +1853,10 @@ export class Registry extends EventEmitter {
       (previous.transcriptPath !== null &&
         next.transcriptPath !== null &&
         previous.transcriptPath !== next.transcriptPath);
-    if (rebound) this.clearSessionEffortTracking(next.id);
+    if (rebound) {
+      this.clearSessionEffortTracking(next.id);
+      next.effortBaselineReady = false;
+    }
     return rebound;
   }
 
@@ -3082,6 +3142,7 @@ export const SESSION_FIELD_COMPARATORS: SessionFieldComparators = {
   // Only the *visible* fields of SessionMeta, so re-reading an identical model /
   // context% doesn't re-render the meter. See `metaDisplayEqual`.
   meta: metaDisplayEqual,
+  effortBaselineReady: byValue,
   // A nested object the chip renders as a unit, so structural. Not `alwaysEqual` despite
   // being written only by the ingest: a session that binds its agent session id LATE
   // rotates its note key, and `mergeDiscovered` / `applyHook` / `applyStatusLine` each

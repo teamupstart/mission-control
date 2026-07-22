@@ -322,6 +322,28 @@ test("an agent-session rebind clears effort state before new metadata arrives", 
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
+test("a rebind clears transcript baseline identity before publication", () => {
+  const r = new Registry();
+  r.applyDiscovery([
+    disco({
+      agentSessionId: "old-session",
+      transcriptPath: "/tmp/old-session.jsonl",
+    }),
+  ]);
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  const expected = r.getSession("s1")!;
+  assert.equal(expected.effortBaselineReady, true);
+
+  r.applyStatusLine(statusIngest({ sessionId: "new-session", effort: "high" }));
+  const rebound = r.getSession("s1")!;
+  assert.equal(rebound.transcriptPath, null);
+  assert.equal(rebound.effortBaselineReady, false);
+
+  assert.equal(r.recordRuntimeEffortBaseline("s1", "new-baseline"), true);
+  assert.equal(r.recordObservedSessionEffort("s1", "xhigh", expected), false);
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
 test("meta only emits when a displayed value actually changes", () => {
   const r = seeded();
   let upserts = 0;

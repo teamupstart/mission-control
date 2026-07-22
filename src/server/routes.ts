@@ -778,9 +778,21 @@ export function buildApp(
         effort: null,
       }, 409);
     }
-    registry.recordRuntimeEffortBaseline(session.id, baseline);
+    if (!registry.recordRuntimeEffortBaseline(session.id, baseline)) {
+      return c.json({
+        ok: false,
+        error: "the session changed before its effort baseline could be recorded",
+        effort: null,
+      }, 409);
+    }
     const r = await setSessionEffort(session, parsed.data.effort);
-    if (r.ok) registry.recordObservedSessionEffort(session.id, r.effort);
+    if (r.ok && !registry.recordObservedSessionEffort(session.id, r.effort, session)) {
+      return c.json({
+        ok: false,
+        error: "the live effort changed, but the session identity changed before it could be published",
+        effort: null,
+      }, 409);
+    }
     return c.json(r, r.ok ? 200 : 409);
   });
 

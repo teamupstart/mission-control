@@ -228,6 +228,14 @@ test("each harness with session-only effort control renders a live picker", () =
     }),
   );
   assert.match(claude, /Change effort for this session/);
+
+  const unready = renderToStaticMarkup(
+    createElement(EffortPicker, {
+      session: mkSession({ effortBaselineReady: false, meta: meta({ thinkingLevel: "high" }) }),
+    }),
+  );
+  assert.doesNotMatch(unready, /Change effort for this session/);
+  assert.match(unready, /Reasoning effort: high/);
 });
 
 test("a newer conflicting metadata read clears an optimistic effort", () => {

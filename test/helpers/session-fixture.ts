@@ -118,6 +118,7 @@ export function mkSession(over: Partial<Session> = {}): Session {
     prState: null,
     prChecks: null,
     meta: meta(),
+    effortBaselineReady: true,
     note: null,
     cost: null,
     goal: { text: "Ensure all worktree changes are in main", source: "model", updatedAt: 0 },

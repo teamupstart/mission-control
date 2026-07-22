@@ -353,6 +353,54 @@ test("old-identity work disarms a pending reset rebind", () => {
   assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
 });
 
+test("old-identity work before clear issuance cannot resolve the reset episode", () => {
+  const registry = new Registry();
+  const id = "pre-clear-old-work";
+  const cwd = "/repo/pre-clear-old-work";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "main" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "pre-clear-identity",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    ts: 100,
+  });
+  registry.resetWorkEpisode(id, {
+    awaitingAgentRebind: true,
+    previousAgentSessionId: "pre-clear-identity",
+    at: 200,
+  });
+  const pending = registry.workEpisodeForSession(id)!;
+
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "pre-clear-identity",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    ts: 150,
+  });
+  assert.equal(registry.workEpisodeForSession(id)?.episodeId, pending.episodeId);
+  assert.equal(registry.workEpisodeForSession(id)?.awaitingAgentRebind, true);
+
+  registry.applyHook({
+    agent: "claude",
+    event: "SessionStart",
+    sessionId: "post-clear-identity",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    source: "clear",
+    ts: 250,
+  });
+  assert.equal(registry.workEpisodeForSession(id)?.episodeId, pending.episodeId);
+  assert.equal(registry.workEpisodeForSession(id)?.agentSessionId, "post-clear-identity");
+  assert.equal(registry.workEpisodeForSession(id)?.awaitingAgentRebind, false);
+});
+
 test("a later identity without reset proof cannot inherit pending ownership", () => {
   const registry = new Registry();
   const id = "unproven-later-identity";
@@ -923,6 +971,66 @@ test("a pinned PR remains attributable after its head advances", () => {
 
   const edge = registry.getTask(dependent.id)?.dependencies[0];
   assert.equal(edge?.type === "session" ? edge.prUrl : null, url);
+  assert.ok(edge?.satisfiedAt);
+  assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
+});
+
+test("an unrelated hook PR hint cannot block the validated episode PR", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "replace-hook-pr-hint";
+  const cwd = "/repo/replace-hook-pr-hint";
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: "feat/hook-hint" })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "hook-hint-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  const episode = registry.workEpisodeForSession(id)!;
+  registry.applyHook({
+    agent: "claude",
+    event: "PostToolUse",
+    sessionId: "hook-hint-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+    prUrl: "https://github.com/example/repo/pull/70",
+  });
+  assert.equal(registry.getSession(id)?.prUrl, "https://github.com/example/repo/pull/70");
+  assert.equal(registry.workEpisodeForSession(id)?.prUrl, null);
+  assert.equal(registry.prObservationFor(id), null);
+
+  const dependent = tasks.create({
+    ...createInput,
+    title: "Wait for validated PR",
+    backlog: true,
+    dependencies: [{ type: "session", sessionId: id }],
+  });
+  assert.equal(
+    dependent.dependencies[0]?.type === "session" ? dependent.dependencies[0].prUrl : null,
+    null,
+  );
+
+  const validatedUrl = "https://github.com/example/repo/pull/71";
+  registry.reconcilePrs(new Map([[id, prMatch({
+    url: validatedUrl,
+    number: 71,
+    state: "merged",
+    branch: "feat/hook-hint",
+    agentSessionId: "hook-hint-episode",
+    episodeId: episode.episodeId,
+    createdAt: episode.startedAt,
+    headSha: "validated-head",
+    worktreeHeadSha: "validated-head",
+  })]]), new Set());
+
+  assert.equal(registry.getSession(id)?.prUrl, validatedUrl);
+  assert.equal(registry.workEpisodeForSession(id)?.prUrl, validatedUrl);
+  const edge = registry.getTask(dependent.id)?.dependencies[0];
+  assert.equal(edge?.type === "session" ? edge.prUrl : null, validatedUrl);
   assert.ok(edge?.satisfiedAt);
   assert.deepEqual(tasks.dependencyBlockers(registry.getTask(dependent.id)!), []);
 });

@@ -2147,9 +2147,10 @@ export async function resetToOrigin(
   // Read the screen BEFORE the keystrokes, so "nothing has happened yet" is a state we
   // can recognise rather than one we mistake for a clear that already landed.
   const before = await deps.capture(session);
+  const clearIssuedAt = Date.now();
   const sent = await sendText(session, clearing.command, true, deps);
   const cleared = sent.ok && (await awaitClearProcessed(session, clearing.command, before, deps));
-  return { ok: true, error: null, root, cleared, detached };
+  return { ok: true, error: null, root, cleared, detached, clearIssuedAt };
 }
 
 /** How long to give the agent to act on a `/clear` before we stop claiming it did. */

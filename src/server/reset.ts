@@ -25,7 +25,6 @@ export async function resetSession(
   session: Session,
   clear: boolean,
 ): Promise<ResetResult> {
-  const resetStartedAt = Date.now();
   // Sampled BEFORE the reset: the fetch inside can take ~30s, and the poller may swap
   // or clear the run in that window.
   const showing = session.nomistakes;
@@ -54,7 +53,7 @@ export async function resetSession(
     const episode = registry.resetWorkEpisode(session.id, {
       awaitingAgentRebind: clear,
       previousAgentSessionId: session.agentSessionId,
-      at: resetStartedAt,
+      at: r.clearIssuedAt ?? Date.now(),
     });
     workIdentityReady = Boolean(
       episode &&

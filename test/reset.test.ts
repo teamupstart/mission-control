@@ -206,9 +206,12 @@ test("resetToOrigin reports cleared only once the agent has ACTED on the /clear"
     "❯ /clear", // typed, not yet acted on - the window the race lives in
     "welcome back", // the screen the clear leaves behind
   ]);
+  const beforeClear = Date.now();
   const r = await resetToOrigin(session, true, deps);
   assert.equal(r.ok, true);
   assert.equal(r.cleared, true);
+  assert.ok(r.clearIssuedAt !== undefined && r.clearIssuedAt >= beforeClear);
+  assert.ok(r.clearIssuedAt !== undefined && r.clearIssuedAt <= Date.now());
 });
 
 test("a /clear that sits in the composer is never reported as cleared", async () => {

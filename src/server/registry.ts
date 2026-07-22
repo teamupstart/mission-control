@@ -865,7 +865,7 @@ export class Registry extends EventEmitter {
       if (this.clearEffortTrackingOnRebind(target, next) && next.meta) {
         next.meta = { ...next.meta, thinkingLevel: null };
       }
-      const episode = this.ensureWorkEpisode(
+      this.ensureWorkEpisode(
         next,
         ts,
         evt.sessionId
@@ -881,27 +881,6 @@ export class Registry extends EventEmitter {
           : { kind: "none" },
       );
       next.task = this.taskSummaryFor(next.id, next.cwd);
-      if (
-        evt.prUrl &&
-        episode &&
-        next.gitBranch &&
-        updateWorkEpisodePr(
-          next.id,
-          episode.episodeId,
-          next.gitBranch,
-          evt.prUrl,
-          null,
-          ts,
-        )
-      ) {
-        this.prObservations.set(next.id, {
-          url: evt.prUrl,
-          branch: next.gitBranch,
-          agentSessionId: next.agentSessionId,
-          episodeId: episode.episodeId,
-          headSha: null,
-        });
-      }
       // Binding the agent session id can change the note key, so re-resolve
       // everything keyed by it NOW rather than waiting for the next discovery
       // sweep. A `/clear` mints a new agent session id mid-pane, and until this

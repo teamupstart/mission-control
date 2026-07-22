@@ -1,6 +1,6 @@
 # Phase 1 plan: workflow contracts, storage, and Persona library
 
-Status: **implementation-ready**
+Status: **implemented**
 
 Parent: [Persona-driven workflow builder](./plan.md)
 

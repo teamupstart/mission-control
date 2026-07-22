@@ -1185,9 +1185,9 @@ variable set in the daemon's shell outranks the box and would otherwise be invis
 browser. Any id the selected provider's CLI accepts works; the fields are free text, not a fixed
 list, with suggestions offered for whichever provider is in force.
 
-All three are cheap calls with a deterministic tier standing behind them, so a missing or
-logged-out provider costs you a rougher title, your own words instead of a refined goal, or a
-digest with no narrative - never an error and never a failed dispatch.
+The currently active jobs are cheap calls with a deterministic tier standing behind them, so a
+missing or logged-out provider costs you a rougher title, your own words instead of a refined goal,
+or a digest with no narrative - never an error and never a failed dispatch.
 
 **Foreman's four models and the Inspector's review model are not here.** They live with the
 subsystem that spends them - **Settings → Foreman** and **Settings → Inspector** - because each

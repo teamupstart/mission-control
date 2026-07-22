@@ -1,16 +1,17 @@
 // Mission Control - macOS desktop shell.
 //
-// Wraps the existing loopback daemon + React UI in a native app: it supervises
-// the daemon (adopting one that's already running), shows the dashboard in a
-// window that hides-on-close, and keeps a menu-bar presence so alerts fire with
-// no window open. The daemon and UI are reused unchanged; this process only adds
-// the native shell.
+// Wraps the existing loopback daemon + React UI in a native app: packaged builds
+// supervise the daemon (adopting one that's already running), while development
+// leaves it to `dev:server`. The shell shows the dashboard in a window that
+// hides-on-close and keeps a menu-bar presence so alerts fire with no window
+// open. The daemon and UI are reused unchanged.
 
 import { app, dialog, ipcMain, session, shell } from "electron";
 import { join } from "node:path";
 import { stateDir } from "@shared/harness-runtime.mjs";
 import { startDaemon, waitForHealthy } from "./daemon.ts";
 import type { DaemonController } from "./daemon.ts";
+import { startElectronOwnedDaemon } from "./daemon-policy.ts";
 import { createWindow, getMainWindow, showWindow } from "./window.ts";
 import { installAppMenu } from "./menu.ts";
 import { createTray, destroyTray } from "./tray.ts";
@@ -94,17 +95,20 @@ app.whenReady().then(async () => {
     cb(permission === "notifications");
   });
 
-  daemon = await startDaemon({
-    serverEntry: paths.serverEntry,
-    webDir: paths.webDir,
-    // Log alongside the daemon's own state (honors MISSION_HOME), matching where
-    // it keeps its db + token.
-    logPath: join(stateDir(), "daemon.log"),
-  });
+  daemon = await startElectronOwnedDaemon(process.env.MISSION_DEV_SERVER_URL, () =>
+    startDaemon({
+      serverEntry: paths.serverEntry,
+      webDir: paths.webDir,
+      // Log alongside the daemon's own state (honors MISSION_HOME), matching where
+      // it keeps its db + token.
+      logPath: join(stateDir(), "daemon.log"),
+    }),
+  );
 
   // Give the daemon a moment to bind before the window loads its origin (the
   // window also retries, so this is just to avoid a visible "connecting" flash).
-  if (!process.env.MISSION_DEV_SERVER_URL) await waitForHealthy(15000);
+  // In development, `dev:server` owns the daemon and its hot-reload lifecycle.
+  if (daemon) await waitForHealthy(15000);
 
   createWindow(paths.preload);
   installAppMenu({ onOpenSettings: openSettings });

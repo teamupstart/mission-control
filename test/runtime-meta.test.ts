@@ -186,6 +186,33 @@ test("a new agent session releases the prior session's observed effort", () => {
   assert.equal(metaOf(r)?.thinkingLevel, "high");
 });
 
+test("only a timestamped post-change statusLine overrides an observed effort", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 2_000 });
+  const r = seeded();
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_000 }));
+  r.recordObservedSessionEffort("s1", "xhigh");
+
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 1_500 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+  r.applyStatusLine(statusIngest({ effort: "high", ts: undefined }));
+  assert.equal(metaOf(r)?.thinkingLevel, "xhigh");
+
+  r.applyStatusLine(statusIngest({ effort: "high", ts: 2_001 }));
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
+test("an agent-session rebind clears effort state before new metadata arrives", () => {
+  const r = seeded();
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  r.recordObservedSessionEffort("s1", "xhigh");
+
+  r.applyStatus({ tmuxPane: "%3" }, "new-session", "rebound");
+  assert.equal(metaOf(r)?.thinkingLevel, null);
+
+  r.applyRuntimeMeta("s1", transcriptRead, "transcript");
+  assert.equal(metaOf(r)?.thinkingLevel, "high");
+});
+
 test("meta only emits when a displayed value actually changes", () => {
   const r = seeded();
   let upserts = 0;

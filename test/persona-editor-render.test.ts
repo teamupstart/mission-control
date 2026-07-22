@@ -1,18 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { EditorState } from "@codemirror/state";
+import { WORKFLOW_LIMITS } from "../src/shared/workflow.ts";
 import type { PersonaView } from "../src/shared/workflow.ts";
 import type { LlmProviderView } from "../src/shared/types.ts";
 import { WorkflowPage } from "../src/web/workflows/WorkflowPage.tsx";
-import { PersonaLibrary } from "../src/web/workflows/PersonaLibrary.tsx";
+import { PersonaLibrary, readPersonaImport } from "../src/web/workflows/PersonaLibrary.tsx";
 import {
   PersonaEditor,
   PersonaEditorStatus,
   isPersonaSaveShortcut,
   personaLineSeparator,
   personaUpdatePatch,
+  reconcilePersonaSave,
 } from "../src/web/workflows/PersonaEditor.tsx";
 import { applyExactEditorChanges } from "../src/web/components/FileEditor.tsx";
 import {
@@ -47,8 +51,12 @@ const PROVIDERS: LlmProviderView[] = [
   { id: "codex", label: "Codex" },
 ];
 
+const CLAUDE_RUNNER = { id: "claude", source: "default", unknown: null } as const;
+const CODEX_RUNNER = { id: "codex", source: "config", unknown: null } as const;
+
 const callbacks = {
   providers: PROVIDERS,
+  appRunner: CLAUDE_RUNNER,
   isOverlayOpen: () => false,
   onDirtyChange: () => {},
   onSaved: () => {},
@@ -64,6 +72,7 @@ test("an empty library offers New and import without pretending workflows alread
   const html = text(renderToStaticMarkup(createElement(PersonaLibrary, {
     personas: [],
     providers: PROVIDERS,
+    appRunner: CLAUDE_RUNNER,
     isOverlayOpen: () => false,
     onDirtyChange: () => {},
   })));
@@ -74,7 +83,7 @@ test("an empty library offers New and import without pretending workflows alread
   assert.match(editor, /New Persona/);
 });
 
-test("an unsaved Persona does not invent the app's effective provider", () => {
+test("an unsaved Persona uses the resolved app runner and its model defaults", () => {
   const html = renderToStaticMarkup(createElement(PersonaEditor, {
     persona: null,
     seed: {
@@ -85,13 +94,17 @@ test("an unsaved Persona does not invent the app's effective provider", () => {
       model: null,
     },
     providers: PROVIDERS,
+    appRunner: CODEX_RUNNER,
     isOverlayOpen: () => false,
     onDirtyChange: () => {},
     onSaved: () => {},
     onDuplicate: () => {},
     onArchive: () => {},
   }));
-  assert.match(text(html), /App default after save/);
+  assert.match(text(html), /Codex/);
+  assert.match(text(html), /gpt-5\.6-terra/);
+  assert.doesNotMatch(text(html), /claude-sonnet-5/);
+  assert.doesNotMatch(text(html), /App default after save/);
 });
 
 test("a selected Persona renders metadata, effective values, editor, preview, and exact exports", () => {
@@ -175,6 +188,39 @@ test("an unknown stored provider is reported and survives an unrelated edit", ()
   );
 });
 
+test("save reconciliation preserves edits made while the request is in flight", () => {
+  const submitted = {
+    name: PERSONA.name,
+    description: PERSONA.description,
+    guidanceMarkdown: PERSONA.guidanceMarkdown,
+    runner: PERSONA.runner,
+    model: PERSONA.model,
+  };
+  const current = { ...submitted, guidanceMarkdown: "# Newer\r\n\r\nExact  \r\n" };
+  const saved = { ...PERSONA, name: "Code Quality copy", revision: 4 };
+  assert.deepEqual(reconcilePersonaSave(saved, submitted, current, 7, 8), {
+    draft: {
+      ...submitted,
+      name: "Code Quality copy",
+      guidanceMarkdown: current.guidanceMarkdown,
+    },
+    dirty: true,
+  });
+  assert.deepEqual(reconcilePersonaSave(saved, submitted, submitted, 7, 7), {
+    draft: {
+      ...submitted,
+      name: "Code Quality copy",
+    },
+    dirty: false,
+  });
+
+  const library = readFileSync(
+    fileURLToPath(new URL("../src/web/workflows/PersonaLibrary.tsx", import.meta.url)),
+    "utf8",
+  );
+  assert.match(library, /key=\{editorKey\}/);
+});
+
 test("Workflows and Runs tabs are honest Phase 1 shells", () => {
   const workflows = renderToStaticMarkup(createElement(WorkflowPage, {
     tab: "workflows",
@@ -204,6 +250,32 @@ test("Markdown import derives a name without changing the body", () => {
   assert.equal(deriveImportedPersonaName("fallback.md", markdown), "Imported Quality");
   assert.equal(deriveImportedPersonaName("fallback.md", "No H1"), "fallback");
   assert.equal(markdown, "preface\r\n# Imported Quality\r\n\r\nExact body  \r\n");
+});
+
+test("Persona import rejects oversized files before reading and rechecks decoded bytes", async () => {
+  let read = false;
+  await assert.rejects(
+    readPersonaImport({
+      size: WORKFLOW_LIMITS.personaGuidanceBytes + 1,
+      text: async () => {
+        read = true;
+        return "too late";
+      },
+    }),
+    /exceeds 100000 UTF-8 bytes/,
+  );
+  assert.equal(read, false);
+
+  await assert.rejects(
+    readPersonaImport({
+      size: WORKFLOW_LIMITS.personaGuidanceBytes,
+      text: async () => "é".repeat(WORKFLOW_LIMITS.personaGuidanceBytes / 2 + 1),
+    }),
+    /exceeds 100000 UTF-8 bytes/,
+  );
+
+  const exact = "# Exact\r\n\r\nTrailing space  \r\n";
+  assert.equal(await readPersonaImport({ size: exact.length, text: async () => exact }), exact);
 });
 
 test("Markdown export encodes the exact accepted text", async () => {

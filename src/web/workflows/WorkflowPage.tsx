@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { LlmProviderView } from "@shared/types.ts";
+import type { LlmStatus } from "@shared/types.ts";
 import type { PersonaView } from "@shared/workflow.ts";
 import { fetchLlmStatus } from "../lib/api.ts";
 import type { WorkflowTab } from "./useWorkflowRoute.ts";
@@ -20,13 +20,13 @@ export function WorkflowPage({
   onTab: (tab: WorkflowTab) => void;
   onDirtyChange: (dirty: boolean) => void;
 }): React.JSX.Element {
-  const [providers, setProviders] = useState<LlmProviderView[]>([]);
+  const [llmStatus, setLlmStatus] = useState<LlmStatus | null>(null);
 
   useEffect(() => {
     if (!connected) return;
     let live = true;
     void fetchLlmStatus().then((status) => {
-      if (live && status) setProviders(status.runners);
+      if (live && status) setLlmStatus(status);
     });
     return () => {
       live = false;
@@ -57,7 +57,8 @@ export function WorkflowPage({
       {tab === "personas" && (
         <PersonaLibrary
           personas={personas}
-          providers={providers}
+          providers={llmStatus?.runners ?? []}
+          appRunner={llmStatus?.runner ?? null}
           isOverlayOpen={isOverlayOpen}
           onDirtyChange={onDirtyChange}
         />

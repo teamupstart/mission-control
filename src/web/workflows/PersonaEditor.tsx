@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { isLlmRunnerId } from "@shared/llm.ts";
-import type { LlmRunnerId } from "@shared/llm.ts";
+import type { LlmRunnerId, ResolvedLlmRunner } from "@shared/llm.ts";
 import type { LlmProviderView } from "@shared/types.ts";
+import { providerModelDefault } from "@shared/model.ts";
 import {
   WORKFLOW_PERSONA_MODEL_SPEC,
   normalizePersonaName,
@@ -31,6 +32,34 @@ function fromPersona(persona: PersonaView): PersonaDraftSeed {
   };
 }
 
+const PERSONA_DRAFT_FIELDS = ["name", "description", "guidanceMarkdown", "runner", "model"] as const;
+
+export function reconcilePersonaSave(
+  saved: PersonaView,
+  submitted: PersonaDraftSeed,
+  current: PersonaDraftSeed,
+  submittedGeneration: number,
+  currentGeneration: number,
+): { draft: PersonaDraftSeed; dirty: boolean } {
+  const savedDraft = fromPersona(saved);
+  if (submittedGeneration === currentGeneration) return { draft: savedDraft, dirty: false };
+  const draft: PersonaDraftSeed = {
+    name: current.name !== submitted.name ? current.name : savedDraft.name,
+    description: current.description !== submitted.description
+      ? current.description
+      : savedDraft.description,
+    guidanceMarkdown: current.guidanceMarkdown !== submitted.guidanceMarkdown
+      ? current.guidanceMarkdown
+      : savedDraft.guidanceMarkdown,
+    runner: current.runner !== submitted.runner ? current.runner : savedDraft.runner,
+    model: current.model !== submitted.model ? current.model : savedDraft.model,
+  };
+  return {
+    draft,
+    dirty: PERSONA_DRAFT_FIELDS.some((field) => draft[field] !== savedDraft[field]),
+  };
+}
+
 export function personaUpdatePatch(
   persona: PersonaView,
   draft: PersonaDraftSeed,
@@ -38,7 +67,7 @@ export function personaUpdatePatch(
 ): Record<string, unknown> {
   const original = fromPersona(persona);
   const patch: Record<string, unknown> = { expectedRevision };
-  for (const field of ["name", "description", "guidanceMarkdown", "runner", "model"] as const) {
+  for (const field of PERSONA_DRAFT_FIELDS) {
     if (draft[field] !== original[field]) patch[field] = draft[field];
   }
   return patch;
@@ -100,6 +129,7 @@ export function PersonaEditor({
   persona,
   seed,
   providers,
+  appRunner,
   isOverlayOpen,
   onDirtyChange,
   onSaved,
@@ -109,6 +139,7 @@ export function PersonaEditor({
   persona: PersonaView | null;
   seed?: PersonaDraftSeed;
   providers: readonly LlmProviderView[];
+  appRunner: ResolvedLlmRunner | null;
   isOverlayOpen: () => boolean;
   onDirtyChange: (dirty: boolean) => void;
   onSaved: (persona: PersonaView) => void;
@@ -122,6 +153,8 @@ export function PersonaEditor({
     runner: null,
     model: null,
   });
+  const draftRef = useRef(draft);
+  const editGeneration = useRef(0);
   const [loadedRevision, setLoadedRevision] = useState(persona?.revision ?? null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<PersonaView | null>(null);
@@ -142,15 +175,19 @@ export function PersonaEditor({
       setConflict(persona);
       return;
     }
-    setDraft(fromPersona(persona));
+    const nextDraft = fromPersona(persona);
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
     setLoadedRevision(persona.revision);
     setConflict(null);
   }, [dirty, loadedRevision, persona]);
 
   const selectedRunner = knownRunner(draft.runner);
-  const effectiveRunner = persona?.execution.runner.id ?? selectedRunner;
+  const effectiveRunner = persona?.execution.runner.id ?? selectedRunner ?? appRunner?.id;
   const runnerForControls = selectedRunner ?? effectiveRunner ?? "claude";
-  const effectiveModel = persona?.execution.model;
+  const effectiveModel = persona?.execution.model ?? (effectiveRunner
+    ? { id: providerModelDefault(effectiveRunner, "balanced"), source: "default" as const }
+    : undefined);
   const exactBytes = useMemo(() => new TextEncoder().encode(draft.guidanceMarkdown).byteLength, [draft.guidanceMarkdown]);
   const lineSeparator = useMemo(
     () => personaLineSeparator(draft.guidanceMarkdown),
@@ -158,7 +195,10 @@ export function PersonaEditor({
   );
 
   function edit(patch: Partial<PersonaDraftSeed>): void {
-    setDraft((current) => ({ ...current, ...patch }));
+    const nextDraft = { ...draftRef.current, ...patch };
+    editGeneration.current += 1;
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
     setDirty(true);
     setConflict(null);
     setError(null);
@@ -166,7 +206,9 @@ export function PersonaEditor({
 
   async function save(asDuplicate = false): Promise<void> {
     if (archived || saving || (persona !== null && !dirty && !asDuplicate)) return;
-    const updateBody = persona ? personaUpdatePatch(persona, draft, loadedRevision!) : null;
+    const submittedDraft = draftRef.current;
+    const submittedGeneration = editGeneration.current;
+    const updateBody = persona ? personaUpdatePatch(persona, submittedDraft, loadedRevision!) : null;
     if (!asDuplicate && updateBody && Object.keys(updateBody).length === 1) {
       setDirty(false);
       setConflict(null);
@@ -176,9 +218,9 @@ export function PersonaEditor({
     setError(null);
     try {
       const create = persona === null || asDuplicate;
-      const name = asDuplicate ? `${draft.name || "Persona"} copy` : draft.name;
+      const name = asDuplicate ? `${submittedDraft.name || "Persona"} copy` : submittedDraft.name;
       const body = create
-        ? { ...draft, name, runner: knownRunner(draft.runner) }
+        ? { ...submittedDraft, name, runner: knownRunner(submittedDraft.runner) }
         : updateBody!;
       const saved = await personaRequest<PersonaView>(
         create ? "/api/personas" : `/api/personas/${persona.id}`,
@@ -187,9 +229,17 @@ export function PersonaEditor({
           body: JSON.stringify(body),
         },
       );
-      setDraft(fromPersona(saved));
+      const reconciled = reconcilePersonaSave(
+        saved,
+        submittedDraft,
+        draftRef.current,
+        submittedGeneration,
+        editGeneration.current,
+      );
+      draftRef.current = reconciled.draft;
+      setDraft(reconciled.draft);
       setLoadedRevision(saved.revision);
-      setDirty(false);
+      setDirty(reconciled.dirty);
       setConflict(null);
       onSaved(saved);
     } catch (cause) {
@@ -242,7 +292,9 @@ export function PersonaEditor({
 
   function reload(): void {
     if (!conflict) return;
-    setDraft(fromPersona(conflict));
+    const nextDraft = fromPersona(conflict);
+    draftRef.current = nextDraft;
+    setDraft(nextDraft);
     setLoadedRevision(conflict.revision);
     setDirty(false);
     setConflict(null);

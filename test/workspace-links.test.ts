@@ -22,10 +22,18 @@ test("resolves relative links and source locations", () => {
   assert.deepEqual(workspaceFileTarget("README.md#L12C3", CWD), {
     path: "README.md", line: 12, column: 3,
   });
+  assert.deepEqual(workspaceFileTarget("README.md:12", CWD), {
+    path: "README.md", line: 12, column: null,
+  });
+  assert.deepEqual(workspaceFileTarget("Makefile:9:2", CWD), {
+    path: "Makefile", line: 9, column: 2,
+  });
 });
 
 test("does not claim external URLs, dashboard routes, or checkout escapes", () => {
   assert.equal(workspaceFileTarget("https://example.com/page.html", CWD), null);
+  assert.equal(workspaceFileTarget("https://example.com:443/page.ts:12", CWD), null);
+  assert.equal(workspaceFileTarget("https%3A%2F%2Fexample.com%2Fpage.ts%3A12", CWD), null);
   assert.equal(workspaceFileTarget("/api/sessions", CWD), null);
   assert.equal(workspaceFileTarget("/Users/jordan/other/page.html", CWD), null);
   assert.equal(workspaceFileTarget("../../secret.txt", CWD), null);

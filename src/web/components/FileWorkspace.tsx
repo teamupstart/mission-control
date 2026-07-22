@@ -8,7 +8,7 @@ import { workspaceAssetPath } from "../lib/workspaceLinks.ts";
 
 const PREVIEW_CSP =
   "default-src 'none'; connect-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; " +
-  "font-src data:; form-action 'none'";
+  "font-src data:; form-action 'none'; navigate-to 'none'";
 
 export function htmlPreviewSource(source: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}">`;
@@ -202,7 +202,7 @@ export function FileWorkspace({
 
         <div className="file-content">
           {!selectedPath && <p className="file-empty">Choose a file from the checkout.</p>}
-          {selectedPath && !buffer && state?.openError && <p className="file-error">{state.openError}</p>}
+          {selectedPath && state?.openError && <p className="file-error">{state.openError}</p>}
           {selectedPath && !buffer && !state?.openError && <p className="file-empty">Loading {selectedPath}…</p>}
           {buffer && buffer.document.text == null && <p className="file-empty">{buffer.document.error ?? "This file cannot be opened."}</p>}
           {buffer?.document.text != null && buffer.document.kind === "html" && mode === "preview" && (

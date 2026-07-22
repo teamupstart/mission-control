@@ -8,6 +8,7 @@ test("HTML preview injects a restrictive CSP into an existing head", () => {
   assert.match(source, /default-src 'none'/);
   assert.match(source, /connect-src 'none'/);
   assert.match(source, /form-action 'none'/);
+  assert.match(source, /navigate-to 'none'/);
   assert.ok(source.indexOf("Content-Security-Policy") < source.indexOf("<title>"));
 });
 

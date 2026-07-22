@@ -67,6 +67,58 @@ export function updateExistingSession(
   return updated === current ? all : { ...all, [id]: updated };
 }
 
+function hasLocalFileChanges(buffer: FileBuffer): boolean {
+  return buffer.saveState !== "saved" && buffer.saveState !== "readonly";
+}
+
+export function applyFileLoadFailure(
+  state: SessionFilesState,
+  filePath: string,
+  error: string,
+): SessionFilesState {
+  const buffer = state.buffers[filePath];
+  let buffers = state.buffers;
+  if (buffer && !hasLocalFileChanges(buffer)) {
+    buffers = { ...state.buffers };
+    delete buffers[filePath];
+  }
+  if (state.selectedPath !== filePath && buffers === state.buffers) return state;
+  return {
+    ...state,
+    buffers,
+    openError: state.selectedPath === filePath ? error : state.openError,
+  };
+}
+
+export function applyFileLoadSuccess(
+  state: SessionFilesState,
+  filePath: string,
+  doc: SessionFileDocument,
+  force: boolean,
+): SessionFilesState {
+  const current = state.buffers[filePath];
+  const selected = state.selectedPath === filePath;
+  if (force && current && hasLocalFileChanges(current)) {
+    return selected && state.openError ? { ...state, openError: null } : state;
+  }
+  return {
+    ...state,
+    mode: selected && doc.kind !== "html" && doc.kind !== "markdown" ? "editor" : state.mode,
+    openError: selected ? null : state.openError,
+    buffers: {
+      ...state.buffers,
+      [filePath]: {
+        document: doc,
+        text: doc.text ?? "",
+        savedText: doc.text ?? "",
+        saveState: doc.editable ? "saved" : "readonly",
+        error: doc.error,
+        conflict: null,
+      },
+    },
+  };
+}
+
 export function useSessionFilesStore(connected: boolean): SessionFilesController {
   const [sessions, setSessions] = useState<Record<string, SessionFilesState>>({});
   const sessionsRef = useRef(sessions);
@@ -97,30 +149,10 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
     if (existing && !force) return;
     const result = await api.readFile(sessionId, filePath);
     if (!result.ok) {
-      updateExisting(sessionId, (s) => ({ ...s, openError: result.error }));
+      updateExisting(sessionId, (s) => applyFileLoadFailure(s, filePath, result.error));
       return;
     }
-    const doc = result.file;
-    updateExisting(sessionId, (s) => ({
-      ...(force && s.buffers[filePath]?.saveState !== "saved"
-        ? s
-        : {
-            ...s,
-            mode: doc.kind === "html" || doc.kind === "markdown" ? s.mode : "editor",
-            openError: null,
-            buffers: {
-              ...s.buffers,
-              [filePath]: {
-                document: doc,
-                text: doc.text ?? "",
-                savedText: doc.text ?? "",
-                saveState: doc.editable ? "saved" as const : "readonly" as const,
-                error: doc.error,
-                conflict: null,
-              },
-            },
-          }),
-    }));
+    updateExisting(sessionId, (s) => applyFileLoadSuccess(s, filePath, result.file, force));
   }, [updateExisting]);
 
   const ensure = useCallback((sessionId: string) => {
@@ -254,7 +286,7 @@ export function useSessionFilesStore(connected: boolean): SessionFilesController
       openError: null,
       mode: pathDefaultsToPreview(filePath) ? "preview" : "editor",
     }));
-    void loadFile(sessionId, filePath);
+    void loadFile(sessionId, filePath, true);
   }, [loadFile, save, update]);
 
   const edit = useCallback((sessionId: string, filePath: string, text: string) => {

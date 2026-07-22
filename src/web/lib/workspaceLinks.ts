@@ -44,8 +44,6 @@ function normalizeRelative(value: string): string | null {
  */
 export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTarget | null {
   if (!cwd || !href || href.startsWith("#") || href.startsWith("?")) return null;
-  // A colon before any slash is a URL scheme. The later colon in `/file.ts:12` is not.
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith("//")) return null;
 
   const hashAt = href.indexOf("#");
   const queryAt = href.indexOf("?");
@@ -69,6 +67,7 @@ export function workspaceFileTarget(href: string, cwd: string): WorkspaceFileTar
       column = location[2] ? Number(location[2]) : null;
     }
   }
+  if (/^[a-z][a-z\d+.-]*:/i.test(filePath) || filePath.startsWith("//")) return null;
 
   const normalizedCwd = cwd.replaceAll("\\", "/").replace(/\/+$/, "");
   let relative: string;

@@ -101,6 +101,7 @@ import {
   taskIdForSession as dbTaskIdForSession,
   bindTaskWorkEpisode as dbBindTaskWorkEpisode,
   deleteSessionWorkEpisode,
+  deleteWorkEpisodePrompts,
   invalidateTaskWorkEpisodeBindings,
   rebindPendingSessionWorkEpisode,
   replaceSessionWorkEpisode,
@@ -1390,10 +1391,12 @@ export class Registry extends EventEmitter {
     rebindFromTranscriptPath: string | null = null,
     promptedAt: number | null = null,
   ): SessionWorkEpisode | null {
+    const previous = sessionWorkEpisodeFor(sessionId);
     if (invalidateOwnership) this.invalidateTaskOwnership(sessionId);
     this.prObservations.delete(sessionId);
     if (!agentSessionId) {
       deleteSessionWorkEpisode(sessionId);
+      if (previous) this.pruneWorkEpisodePrompts(previous);
       return null;
     }
     const episode: SessionWorkEpisode = {
@@ -1411,11 +1414,37 @@ export class Registry extends EventEmitter {
       updatedAt: startedAt,
     };
     replaceSessionWorkEpisode(episode);
+    if (previous && previous.episodeId !== episode.episodeId) {
+      this.pruneWorkEpisodePrompts(previous);
+    }
     return episode;
   }
 
+  private hasPendingSessionDependency(
+    episode: Pick<SessionWorkEpisode, "sessionId" | "episodeId" | "agentSessionId">,
+  ): boolean {
+    return [...this.tasks.values()].some((task) =>
+      task.dependencies.some(
+        (dependency) =>
+          dependency.type === "session" &&
+          dependency.satisfiedAt === null &&
+          dependency.sessionId === episode.sessionId &&
+          dependency.episodeId === episode.episodeId &&
+          dependency.agentSessionId === episode.agentSessionId,
+      ),
+    );
+  }
+
+  private pruneWorkEpisodePrompts(
+    episode: Pick<SessionWorkEpisode, "sessionId" | "episodeId" | "agentSessionId">,
+  ): void {
+    if (sessionWorkEpisodeFor(episode.sessionId)?.episodeId === episode.episodeId) return;
+    if (this.hasPendingSessionDependency(episode)) return;
+    deleteWorkEpisodePrompts(episode.sessionId, episode.episodeId);
+  }
+
   private rebindPendingSessionDependencies(
-    previous: SessionWorkEpisode,
+    previous: Pick<SessionWorkEpisode, "sessionId" | "episodeId" | "agentSessionId">,
     next: SessionWorkEpisode,
     at: number,
   ): void {
@@ -1492,9 +1521,7 @@ export class Registry extends EventEmitter {
       isCurrent && typeof current?.promptedAt === "number" && current.promptedAt > mergedAt
         ? current.promptedAt
         : null;
-    const promptAt = isCurrent
-      ? firstWorkEpisodePromptAfter(target.sessionId, target.episodeId, mergedAt)
-      : null;
+    const promptAt = firstWorkEpisodePromptAfter(target.sessionId, target.episodeId, mergedAt);
     const dependencyBoundaryAt = promptAt ?? (latestPromptAt !== null ? mergedAt : null);
     const binding = taskWorkEpisodeForSession(target.sessionId);
     const taskId =
@@ -1536,8 +1563,18 @@ export class Registry extends EventEmitter {
 
     markWorkEpisodeMerged(target.sessionId, target.episodeId, target.prUrl, mergedAt);
     const rolloverAt = promptAt ?? latestPromptAt;
-    if (rolloverAt === null || !current) return false;
-    return this.rolloverWorkEpisode(current, rolloverAt) !== null;
+    let rolledOver = false;
+    if (rolloverAt !== null && current && isCurrent) {
+      rolledOver = this.rolloverWorkEpisode(current, rolloverAt) !== null;
+    } else if (
+      promptAt !== null &&
+      current &&
+      current.episodeId !== target.episodeId
+    ) {
+      this.rebindPendingSessionDependencies(target, current, current.startedAt);
+    }
+    this.pruneWorkEpisodePrompts(target);
+    return rolledOver;
   }
 
   private resolvePendingWorkEpisode(

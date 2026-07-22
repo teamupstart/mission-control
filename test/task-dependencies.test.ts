@@ -467,6 +467,80 @@ test("persisted merge reconciliation preserves prompt ordering after session exi
   assert.equal(tasks.dependencyBlockers(registry.getTask(afterPrompt.id)!).length, 1);
 });
 
+for (const transition of ["branch change", "reset"] as const) {
+  test(`historical merge ordering survives a ${transition}`, async () => {
+    const registry = new Registry();
+    const tasks = new TaskManager(registry);
+    const suffix = transition === "branch change" ? "branch" : "reset";
+    const id = `historical-${suffix}`;
+    const cwd = `/repo/historical-${suffix}`;
+    const url = `https://github.com/example/repo/pull/${transition === "branch change" ? 86 : 87}`;
+    const branch = `feat/historical-${suffix}`;
+    registry.applyDiscovery([discovered(id, cwd, { gitBranch: branch })]);
+    registry.applyHook({
+      agent: "claude",
+      event: "Stop",
+      sessionId: `historical-${suffix}-episode`,
+      cwd,
+      transcriptPath: null,
+      env: {},
+    });
+    const originalEpisode = registry.workEpisodeForSession(id)!;
+    registry.reconcilePrs(
+      new Map([[id, prMatch({
+        url,
+        number: transition === "branch change" ? 86 : 87,
+        branch,
+        agentSessionId: `historical-${suffix}-episode`,
+        episodeId: originalEpisode.episodeId,
+        createdAt: originalEpisode.startedAt,
+      })]]),
+      new Set(),
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    const promptAt = Date.now();
+    registry.applyHook({
+      agent: "claude",
+      event: "UserPromptSubmit",
+      sessionId: `historical-${suffix}-episode`,
+      cwd,
+      transcriptPath: null,
+      env: {},
+      prompt: "start work after the pending merge",
+      ts: promptAt,
+    });
+    const dependent = tasks.create({
+      ...createInput,
+      title: `Wait across historical ${suffix}`,
+      backlog: true,
+      dependencies: [{ type: "session", sessionId: id }],
+    });
+
+    if (transition === "branch change") {
+      registry.applyDiscovery([
+        discovered(id, cwd, { gitBranch: "feat/historical-branch-next" }),
+      ]);
+    } else {
+      registry.resetWorkEpisode(id);
+    }
+    const replacement = registry.workEpisodeForSession(id)!;
+    assert.notEqual(replacement.episodeId, originalEpisode.episodeId);
+
+    await pollAndReconcilePrs(
+      registry,
+      async () => null,
+      async (candidate) =>
+        candidate === url ? { state: "merged", mergedAt: promptAt - 1 } : null,
+    );
+
+    const edge = registry.getTask(dependent.id)?.dependencies[0];
+    assert.equal(edge?.type === "session" ? edge.episodeId : null, replacement.episodeId);
+    assert.equal(edge?.type === "session" ? edge.prUrl : null, null);
+    assert.equal(edge?.satisfiedAt, null);
+    assert.equal(tasks.dependencyBlockers(registry.getTask(dependent.id)!).length, 1);
+  });
+}
+
 test("post-merge episode rollover preserves running task ownership", () => {
   const registry = new Registry();
   const tasks = new TaskManager(registry);

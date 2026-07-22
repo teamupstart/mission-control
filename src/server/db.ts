@@ -1850,10 +1850,6 @@ export function replaceSessionWorkEpisode(episode: SessionWorkEpisode): void {
       episode.startedAt,
       episode.updatedAt,
     );
-    d.prepare(
-      `DELETE FROM session_work_episode_prompts
-       WHERE session_id = ? AND episode_id <> ?`,
-    ).run(episode.sessionId, episode.episodeId);
     if (episode.promptedAt !== null) {
       d.prepare(
         `INSERT OR IGNORE INTO session_work_episode_prompts
@@ -1902,17 +1898,15 @@ export function rebindPendingSessionWorkEpisode(
 }
 
 export function deleteSessionWorkEpisode(sessionId: string): void {
-  const d = openDb();
-  const ownsTransaction = !d.isTransaction;
-  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
-  try {
-    d.prepare(`DELETE FROM session_work_episode_prompts WHERE session_id = ?`).run(sessionId);
-    d.prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
-    if (ownsTransaction) d.exec("COMMIT");
-  } catch (error) {
-    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
-    throw error;
-  }
+  openDb().prepare(`DELETE FROM session_work_episodes WHERE session_id = ?`).run(sessionId);
+}
+
+export function deleteWorkEpisodePrompts(sessionId: string, episodeId: string): void {
+  openDb()
+    .prepare(
+      `DELETE FROM session_work_episode_prompts WHERE session_id = ? AND episode_id = ?`,
+    )
+    .run(sessionId, episodeId);
 }
 
 export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {

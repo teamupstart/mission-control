@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SessionNote } from "../src/shared/types.ts";
+import type { NmRunSummary, SessionNote } from "../src/shared/types.ts";
 import type { DiscoveredSession } from "../src/server/discovery/correlate.ts";
+import { mkMuxHandle } from "./helpers/session-fixture.ts";
 
 // Isolate the db in a throwaway home before config.ts resolves the state dir.
 const home = mkdtempSync(join(tmpdir(), "mission-fstatus-"));
@@ -65,5 +66,70 @@ test("foremanStatus counts only notes belonging to currently-live sessions", () 
     status.lastActionAt,
     r.getNote(s.id)!.updatedAt,
     "lastActionAt reflects the live note, not the gone one",
+  );
+});
+
+test("foremanStatus counts a hookless Codex no-mistakes gate but not its ordinary menu", () => {
+  const r = new Registry();
+  const discovered = mkDiscovered({
+    syntheticId: "operator-codex",
+    agent: "codex",
+    cwd: "/wt/codex",
+    gitRoot: "/wt/codex",
+    gitBranch: "feature",
+    terminals: [mkMuxHandle({ session: "codex", windowIndex: 0, paneId: "%9" })],
+  });
+  r.applyDiscovery([discovered]);
+  r.applyPassiveActivity(r.getSession("operator-codex")!, {
+    state: "idle",
+    lastActivity: Date.now() - 60_000,
+  });
+  r.applyDiscovery([discovered]);
+
+  const parked: NmRunSummary = {
+    id: "run-parked",
+    status: "running",
+    branch: "feature",
+    startedAt: Date.now() - 60_000,
+    endedAt: null,
+    prUrl: null,
+    awaitingAgent: "parked 1m",
+    findingsSummary: "1 awaiting",
+    gateStep: "review",
+    gateSummary: null,
+    gateRisk: null,
+    steps: [],
+    activeSteps: [],
+    findings: [
+      {
+        id: "session-scope",
+        severity: "error",
+        file: "src/a.ts",
+        action: "ask-user",
+        description: "The fallback persists state for future sessions.",
+      },
+    ],
+    response: null,
+    outcome: null,
+  };
+  r.reconcileNomistakes([parked]);
+
+  assert.equal(foremanStatus(r).queueDepth, 1, "the worker-visible parked gate appears in its badge");
+
+  r.reconcileNomistakes([]);
+  r.applyDiscovery([
+    {
+      ...discovered,
+      paneDialog: {
+        prompt: "Run the command?",
+        options: [{ number: 1, label: "Yes" }],
+        highlighted: 1,
+      },
+    },
+  ]);
+  assert.equal(
+    foremanStatus(r).queueDepth,
+    0,
+    "the exception does not authorize arbitrary operator-started Codex menus",
   );
 });

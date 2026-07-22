@@ -482,6 +482,15 @@ export class ForemanClient implements ForemanActions {
   }
 
   async sendText(id: string, text: string, submit: boolean): Promise<unknown> {
+    // A submitted Foreman answer is a whole agent turn, even when it happens to be one
+    // line. Route it through the same bracketed-paste + harness settle sequence as work
+    // queue prompts. `/send` types and presses Enter back-to-back; Codex can coalesce that
+    // Enter into the paste window and leave the answer visibly sitting in its composer
+    // while this client reports success. `inject` waits out the harness's settle window first.
+    //
+    // `submit: false` is intentionally different: it is a draft the model asked to leave
+    // in the composer, so it keeps the literal `/send` path and spends no Enter.
+    if (submit) return this.inject(id, text);
     const res = await send("POST", `/api/sessions/${enc(id)}/send`, { text, submit });
     if (!res.ok) throw new Error(`sendText ${id} -> ${res.status}`);
     return res.json();

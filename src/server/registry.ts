@@ -2012,11 +2012,21 @@ export class Registry extends EventEmitter {
 
   /** Persist + broadcast a task, and refresh any session bound to it. */
   upsertTask(task: Task): void {
-    dbUpsertTask(task);
+    const previous = this.tasks.get(task.id);
+    const displaced = dbUpsertTask(task);
+    for (const id of displaced) {
+      const prior = this.tasks.get(id);
+      if (!prior) continue;
+      const unbound = { ...prior, sessionId: null };
+      this.tasks.set(id, unbound);
+      this.emitEvent({ type: "task_upsert", task: unbound });
+    }
     this.tasks.set(task.id, task);
     this.emitEvent({ type: "task_upsert", task });
     this.syncSessionsForWorktree(task.worktreePath);
-    // An assigned task has no worktree to sync by, so refresh its agent directly.
+    if (previous?.sessionId && previous.sessionId !== task.sessionId) {
+      this.resyncSessionTask(previous.sessionId);
+    }
     if (task.sessionId) this.resyncSessionTask(task.sessionId);
     if (isTerminalTask(task.status)) this.pruneTerminalTasks();
   }
@@ -2167,13 +2177,12 @@ export class Registry extends EventEmitter {
    *    correlates by that worktree path - see `activeTaskForCwd`.
    */
   private activeTaskFor(sessionId: string, cwd: string | null): Task | undefined {
-    let best: Task | undefined;
     for (const t of this.tasks.values()) {
       if (t.sessionId !== sessionId) continue;
       if (t.status === "backlog" || t.status === "cancelled") continue;
-      if (!best || t.updatedAt > best.updatedAt) best = t;
+      return t;
     }
-    return best ?? this.activeTaskForCwd(cwd);
+    return this.activeTaskForCwd(cwd);
   }
 
   /**

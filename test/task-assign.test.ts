@@ -296,6 +296,136 @@ test("a retriage made while the prompt is being typed survives the assignment", 
   assert.deepEqual(after.labels, ["infra", "urgent"]);
 });
 
+test("dependency edits cannot enter while assignment owns the task", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-dependency-lock-");
+  r.upsertTask(mkTask({ id: "lock-pre", repoRoot: clone, title: "Merge first" }));
+  r.upsertTask(mkTask({ id: "lock-target", repoRoot: clone }));
+  let releasePane!: () => void;
+  let paneReached!: () => void;
+  const atPane = new Promise<void>((resolve) => {
+    paneReached = resolve;
+  });
+  const holdPane = new Promise<void>((resolve) => {
+    releasePane = resolve;
+  });
+  const assigning = tasks.assign("lock-target", sessionId, {
+    paneReady: async () => {
+      paneReached();
+      await holdPane;
+      return { ok: true };
+    },
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  await atPane;
+
+  const edit = await tasks.update("lock-target", {
+    dependencies: [{ type: "task", taskId: "lock-pre" }],
+  });
+  assert.equal(edit.ok, false);
+  assert.match(edit.error ?? "", /being assigned/);
+
+  releasePane();
+  assert.equal((await assigning).ok, true);
+  assert.equal(r.getTask("lock-target")?.status, "running");
+});
+
+test("assignment revalidates dependencies at the prompt boundary", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-dependency-cas-");
+  r.upsertTask(mkTask({ id: "cas-pre", repoRoot: clone, title: "Merge first" }));
+  r.upsertTask(mkTask({ id: "cas-target", repoRoot: clone }));
+  let injected = false;
+  const result = await tasks.assign("cas-target", sessionId, {
+    paneReady,
+    reset: async () => {
+      const target = r.getTask("cas-target")!;
+      r.upsertTask({
+        ...target,
+        dependencies: [
+          { type: "task", taskId: "cas-pre", title: "Merge first", satisfiedAt: null },
+        ],
+      });
+      return cleanReset();
+    },
+    inject: async () => {
+      injected = true;
+      return { ok: true, pasted: true, submitVerified: true };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error ?? "", /Merge first/);
+  assert.equal(injected, false);
+  assert.equal(r.getTask("cas-target")?.status, "backlog");
+});
+
+test("a reused session attributes its merged PR only to the current task after restart", async () => {
+  const { r, tasks, sessionId, clone } = setupInRepo("mission-assign-current-binding-");
+  r.upsertTask(
+    mkTask({
+      id: "binding-previous",
+      repoRoot: clone,
+      title: "Previous task",
+      status: "done",
+      sessionId,
+      dispatchedAt: 1,
+      completedAt: 2,
+      updatedAt: 2,
+    }),
+  );
+  r.upsertTask(mkTask({ id: "binding-current", repoRoot: clone, title: "Current task" }));
+  r.upsertTask(
+    mkTask({
+      id: "wait-current",
+      repoRoot: clone,
+      dependencies: [
+        { type: "task", taskId: "binding-current", title: "Current task", satisfiedAt: null },
+      ],
+    }),
+  );
+  r.upsertTask(
+    mkTask({
+      id: "wait-previous",
+      repoRoot: clone,
+      dependencies: [
+        { type: "task", taskId: "binding-previous", title: "Previous task", satisfiedAt: null },
+      ],
+    }),
+  );
+
+  const assigned = await tasks.assign("binding-current", sessionId, {
+    paneReady,
+    reset: cleanReset,
+    inject: async () => ({ ok: true, pasted: true, submitVerified: true }),
+  });
+  assert.equal(assigned.ok, true);
+  assert.equal(r.getTask("binding-previous")?.sessionId, null);
+  assert.equal((await tasks.update("binding-previous", { priority: "high" })).ok, true);
+
+  const restarted = new Registry();
+  restarted.applyDiscovery([
+    mkDiscovered({ syntheticId: sessionId, cwd: clone, gitRoot: clone, repoRoot: clone }),
+  ]);
+  assert.equal(restarted.getSession(sessionId)?.task?.id, "binding-current");
+  restarted.reconcilePrs(
+    new Map([
+      [
+        sessionId,
+        {
+          url: "https://github.com/example/repo/pull/99",
+          number: 99,
+          state: "merged" as const,
+          checks: "passing" as const,
+        },
+      ],
+    ]),
+    new Set(),
+  );
+
+  assert.ok(restarted.getTask("wait-current")?.dependencies[0]?.satisfiedAt);
+  assert.equal(restarted.getTask("wait-previous")?.dependencies[0]?.satisfiedAt, null);
+});
+
 test("an agent that went busy between the checks and the reset is not reset anyway", async () => {
   // The idle check happens several git invocations before the reset, and the reset
   // itself spends up to 30s in a fetch. An agent a human woke up inside that window

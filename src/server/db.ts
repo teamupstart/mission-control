@@ -700,6 +700,24 @@ function migrate(d: DatabaseSync): void {
   addColumn(d, "tasks", "priority", "TEXT");
   addColumn(d, "tasks", "labels", "TEXT");
   addColumn(d, "tasks", "dependencies", "TEXT");
+  d.exec(`
+    WITH ranked AS (
+      SELECT id, ROW_NUMBER() OVER (
+        PARTITION BY session_id
+        ORDER BY
+          CASE status WHEN 'running' THEN 0 WHEN 'dispatching' THEN 1 ELSE 2 END,
+          COALESCE(dispatched_at, created_at) DESC,
+          updated_at DESC,
+          id DESC
+      ) AS position
+      FROM tasks
+      WHERE session_id IS NOT NULL
+    )
+    UPDATE tasks SET session_id = NULL
+    WHERE id IN (SELECT id FROM ranked WHERE position > 1);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session
+      ON tasks(session_id) WHERE session_id IS NOT NULL;
+  `);
 
   // Usage provenance and immutable pricing metadata. Old rows are Claude's reported
   // telemetry, so the defaults are the truthful migration rather than a placeholder.
@@ -1570,9 +1588,23 @@ function rowToTask(r: TaskRow): Task {
   };
 }
 
-export function upsertTask(t: Task): void {
-  openDb()
-    .prepare(
+export function upsertTask(t: Task): string[] {
+  const d = openDb();
+  const ownsTransaction = !d.isTransaction;
+  if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
+  try {
+    const displaced = t.sessionId
+      ? (d
+          .prepare(`SELECT id FROM tasks WHERE session_id = ? AND id <> ?`)
+          .all(t.sessionId, t.id) as unknown as Array<{ id: string }>).map((row) => row.id)
+      : [];
+    if (t.sessionId) {
+      d.prepare(`UPDATE tasks SET session_id = NULL WHERE session_id = ? AND id <> ?`).run(
+        t.sessionId,
+        t.id,
+      );
+    }
+    d.prepare(
       `INSERT INTO tasks (
          id, title, intent, kind, agent, priority, labels, dependencies, model, effort,
          source_id, external_id, source_url, repo_root, worktree_path, branch,
@@ -1590,8 +1622,7 @@ export function upsertTask(t: Task): void {
          status=excluded.status, outcome=excluded.outcome, outcome_url=excluded.outcome_url,
          error=excluded.error, updated_at=excluded.updated_at, dispatched_at=excluded.dispatched_at,
          completed_at=excluded.completed_at`,
-    )
-    .run(
+    ).run(
       t.id, t.title, t.intent, t.kind, t.agent, t.priority,
       // Stored as NULL rather than "[]" when empty, so the column reads the same for a
       // task filed before labels existed and one filed today with none - there is no
@@ -1605,6 +1636,12 @@ export function upsertTask(t: Task): void {
       t.tmuxSession, t.sessionId, t.status, t.outcome, t.outcomeUrl, t.error, t.createdAt,
       t.updatedAt, t.dispatchedAt, t.completedAt,
     );
+    if (ownsTransaction) d.exec("COMMIT");
+    return displaced;
+  } catch (error) {
+    if (ownsTransaction && d.isTransaction) d.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 export function getTask(id: string): Task | undefined {

@@ -138,6 +138,8 @@ export class TaskManager {
    * Held here rather than checked at the route so the invariant holds on every path.
    */
   private titling = new Map<string, Promise<void>>();
+  private assigningTasks = new Set<string>();
+  private assigningSessions = new Set<string>();
 
   constructor(private registry: Registry) {
     this.dispatcher = new Dispatcher(registry);
@@ -413,6 +415,7 @@ export class TaskManager {
     // Read only AFTER the wait - the task may have been cancelled or removed during it.
     const t = this.registry.getTask(id);
     if (!t) return null;
+    if (this.assigningTasks.has(id)) return t;
     if (t.status === "backlog" || (t.status === "failed" && !t.worktreePath)) {
       if (this.dependencyBlockers(t).length > 0) return t;
       // A task-specific model is an explicit operator choice and must always win. Foreman
@@ -453,6 +456,9 @@ export class TaskManager {
     await this.titling.get(id);
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task" };
+    if (this.assigningTasks.has(id) && !isAnnotationOnlyUpdate(patch)) {
+      return { ok: false, error: "task is being assigned" };
+    }
     if (t.status !== "backlog" && !isAnnotationOnlyUpdate(patch)) {
       return { ok: false, error: `task is ${t.status}, not in the backlog` };
     }
@@ -532,11 +538,6 @@ export class TaskManager {
    * window they hold open is where this method's ordering rules can be broken.
    */
   async assign(id: string, sessionId: string, opts: AssignOptions = {}): Promise<AssignOutcome> {
-    const inject = opts.inject ?? injectPrompt;
-    const paneReady = opts.paneReady ?? paneAcceptsPrompt;
-    const reset = opts.reset ?? ((s: Session) => resetSession(this.registry, s, true));
-    const doRename = opts.rename ?? rename;
-
     const t = this.registry.getTask(id);
     if (!t) return { ok: false, error: "no such task", scope: "task" };
     if (t.status !== "backlog") {
@@ -553,6 +554,32 @@ export class TaskManager {
 
     const s = this.registry.getSession(sessionId);
     if (!s) return { ok: false, error: "no such session", scope: "session" };
+    if (this.assigningTasks.has(id)) {
+      return { ok: false, error: "task is already being assigned", scope: "task" };
+    }
+    if (this.assigningSessions.has(sessionId)) {
+      return { ok: false, error: "that agent is already taking another task", scope: "session" };
+    }
+    this.assigningTasks.add(id);
+    this.assigningSessions.add(sessionId);
+    try {
+      return await this.assignReserved(t, s, opts);
+    } finally {
+      this.assigningTasks.delete(id);
+      this.assigningSessions.delete(sessionId);
+    }
+  }
+
+  private async assignReserved(
+    t: Task,
+    s: Session,
+    opts: AssignOptions,
+  ): Promise<AssignOutcome> {
+    const inject = opts.inject ?? injectPrompt;
+    const paneReady = opts.paneReady ?? paneAcceptsPrompt;
+    const reset = opts.reset ?? ((session: Session) => resetSession(this.registry, session, true));
+    const doRename = opts.rename ?? rename;
+
     if (s.state !== "idle") {
       return {
         ok: false,
@@ -646,7 +673,7 @@ export class TaskManager {
     // Re-read immediately before the destructive step. The idle check above is by now
     // several git invocations old, and the reset itself spends up to 30s in a fetch -
     // an agent a human woke up in that window must not be reset out from under them.
-    const fresh = this.registry.getSession(sessionId);
+    const fresh = this.registry.getSession(s.id);
     if (
       !fresh ||
       !fresh.instrumented ||
@@ -674,10 +701,27 @@ export class TaskManager {
       };
     }
 
+    const ready = this.registry.getTask(t.id);
+    if (!ready || ready.status !== "backlog") {
+      return {
+        ok: false,
+        error: ready ? `task is ${ready.status}, not in the backlog` : "no such task",
+        scope: "task",
+      };
+    }
+    const blockers = this.dependencyBlockers(ready);
+    if (blockers.length > 0) {
+      return {
+        ok: false,
+        error: `task is waiting on ${blockers.map((blocker) => blocker.title).join(", ")}`,
+        scope: "task",
+      };
+    }
+
     // Type the prompt BEFORE claiming the task: if the pane refuses (it is locked, or
     // the agent died between the drop and here) the task must stay in the backlog,
     // droppable again, rather than sit marked `running` with nothing running it.
-    const r = await inject(s, t.intent);
+    const r = await inject(this.registry.getSession(s.id) ?? s, ready.intent);
     if (!r.ok) {
       return { ok: false, error: r.error ?? "could not type into the agent's pane", scope: "session" };
     }
@@ -687,7 +731,7 @@ export class TaskManager {
     // for a retriage to land, and priority/labels stay editable in every status - so a
     // stale spread here writes yesterday's priority back over one just set on the card,
     // silently, on a gesture that was only meant to hand the task to an agent.
-    const cur = this.registry.getTask(id) ?? t;
+    const cur = this.registry.getTask(t.id) ?? t;
     const now = Date.now();
     this.registry.upsertTask({
       ...cur,
@@ -702,8 +746,8 @@ export class TaskManager {
     await this.renameForTask(
       // Re-read for the same reason the task is: the reset detached the checkout and the
       // injection took a round trip, and `rename` targets the tmux session BY NAME.
-      this.registry.getSession(sessionId) ?? s,
-      this.registry.getTask(id) ?? cur,
+      this.registry.getSession(s.id) ?? s,
+      this.registry.getTask(t.id) ?? cur,
       doRename,
     );
     return { ok: true };

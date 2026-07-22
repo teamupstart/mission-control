@@ -987,7 +987,7 @@ a different risk class, and it would need its own gate (an allowlist, a rate lim
 run) of exactly the kind Foreman carries.
 
 **Settings → Task sources** (the ⚙ gear, or <kbd>⌘</kbd><kbd>,</kbd>) configures them. Its
-directory summarizes which sources are healthy, awaiting their first sweep, paused, or need
+directory summarizes which sources are healthy, awaiting a current sweep, paused, or need
 attention; search it or filter by health and source type, then select a row to open that
 source's editor. Add one by picking a kind and the repo its tasks should be filed against;
 it arrives **switched off**, because adding a source is configuration and turning it on is
@@ -1003,6 +1003,10 @@ consent. Per source:
 | **Sweep now** | run it once, right now, and see what it filed |
 | **Check it works** | is `gh` installed, authenticated, and able to list issues here? |
 | **Forget seen items** | make everything this source has filed fileable again |
+
+Pausing clears the source's previous health, so re-enabling it cannot inherit a stale
+healthy result. It remains pending until the next sweep; a manual sweep run while paused
+already counts as that fresh result.
 
 ### GitHub issues
 

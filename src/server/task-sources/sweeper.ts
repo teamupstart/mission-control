@@ -38,6 +38,10 @@ interface Entry {
   lastSweepAt: number | null;
   lastError: string | null;
   lastFiled: number;
+  /** Last configured state observed by this process; status is process-local too. */
+  enabled: boolean | null;
+  /** Invalidates a sweep result that started before the source was paused. */
+  healthGeneration: number;
   /** In flight, so the tick and a "Sweep now" click cannot double-file. */
   sweeping: boolean;
 }
@@ -46,16 +50,47 @@ const entries = new Map<string, Entry>();
 function entryFor(id: string): Entry {
   let e = entries.get(id);
   if (!e) {
-    e = { lastSweepAt: null, lastError: null, lastFiled: 0, sweeping: false };
+    e = {
+      lastSweepAt: null,
+      lastError: null,
+      lastFiled: 0,
+      enabled: null,
+      healthGeneration: 0,
+      sweeping: false,
+    };
     entries.set(id, e);
   }
   return e;
 }
 
+/** A paused source has no current health until it is swept in that state. */
+function observeEnabled(inst: TaskSourceInstance): Entry {
+  const e = entryFor(inst.id);
+  if (e.enabled === true && !inst.enabled) {
+    e.healthGeneration += 1;
+    e.lastSweepAt = null;
+    e.lastError = null;
+    e.lastFiled = 0;
+  }
+  e.enabled = inst.enabled;
+  return e;
+}
+
+/** Invalidate immediately at the config write, before a quick re-enable can hide it. */
+export function noteTaskSourceConfigChange(
+  before: TaskSourceInstance[],
+  next: TaskSourceInstance[],
+): void {
+  const wasEnabled = new Map(before.map((s) => [s.id, s.enabled]));
+  for (const src of next) {
+    if (wasEnabled.get(src.id) === true && !src.enabled) observeEnabled(src);
+  }
+}
+
 /** Status for every configured source, for the settings panel. */
 export function taskSourceStatuses(sources: TaskSourceInstance[]): TaskSourceStatus[] {
   return sources.map((s) => {
-    const e = entryFor(s.id);
+    const e = observeEnabled(s);
     return {
       sourceId: s.id,
       lastSweepAt: e.lastSweepAt,
@@ -87,7 +122,7 @@ export async function sweepOnce(
   inst: TaskSourceInstance,
   tasks: TaskManager,
 ): Promise<SweepReport> {
-  const entry = entryFor(inst.id);
+  const entry = observeEnabled(inst);
   if (entry.sweeping) {
     return {
       sourceId: inst.id,
@@ -99,18 +134,26 @@ export async function sweepOnce(
     };
   }
   entry.sweeping = true;
+  const healthGeneration = entry.healthGeneration;
   const controller = new AbortController();
   const timer = unref(setTimeout(() => controller.abort(), SWEEP_TIMEOUT_MS));
   try {
     const result = await sweepSource(inst, contextFor(inst, controller.signal));
     const report = await ingestSweep(inst, result, tasks);
-    entry.lastSweepAt = Date.now();
-    entry.lastFiled = report.filed;
-    // A per-candidate refusal is worth surfacing too: with `error` null and rows refused,
-    // the panel would otherwise report a clean sweep that filed nothing.
-    entry.lastError =
-      report.error ?? (report.refused.length > 0 ? report.refused.join("; ") : null);
+    if (entry.healthGeneration === healthGeneration) {
+      entry.lastSweepAt = Date.now();
+      entry.lastFiled = report.filed;
+      // A per-candidate refusal is worth surfacing too: with `error` null and rows refused,
+      // the panel would otherwise report a clean sweep that filed nothing.
+      entry.lastError =
+        report.error ?? (report.refused.length > 0 ? report.refused.join("; ") : null);
+    }
     return report;
+  } catch (err) {
+    if (entry.healthGeneration === healthGeneration) {
+      entry.lastError = err instanceof Error ? err.message : String(err);
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
     entry.sweeping = false;
@@ -159,14 +202,11 @@ export function startTaskSourceSweeper(tasks: TaskManager): () => void {
       // holds for `harnesses.ts`.
       for (const inst of getTaskSourcesConfig().sources) {
         if (stopped) break;
+        observeEnabled(inst);
         if (!inst.enabled || !due(inst, now)) continue;
         try {
           await sweepOnce(inst, tasks);
         } catch (err) {
-          // `sweepOnce` already reports a failing source through its status; this is the
-          // backstop for a failure in the machinery around it, and it must not cost the
-          // other sources their turn.
-          entryFor(inst.id).lastError = err instanceof Error ? err.message : String(err);
           console.error(`[task-source] ${inst.id} sweep failed:`, err);
         }
       }

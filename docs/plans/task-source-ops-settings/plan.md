@@ -17,7 +17,12 @@ per-source setting and safety action.
    filtering.
 4. Keep Add a source and all existing operations: enable, sweep, preflight, forget seen,
    edit source configuration and remove.
-5. Extend the panel tests to pin the overview health/count behavior and selected-editor
+5. Invalidate pre-pause health, including an in-flight result from the old lifecycle, so a
+   re-enabled source cannot appear healthy until a fresh sweep. Preserve a manual sweep
+   performed while the source is paused as fresh status.
+6. Restore focus to the selected directory row on return, or to the directory itself when
+   the current filters hide that row, and consume the restoration request in either case.
+7. Extend the panel tests to pin the overview health/count behavior and selected-editor
    navigation, while preserving the existing safety copy tests.
 
 ## UI behavior
@@ -29,15 +34,20 @@ The default pane is a directory:
 - Each row shows source name, type, repository/scope, interval and current health.
 - Selecting a row replaces the directory with that source's existing editor and a
   “All task sources” back control.
+- Search and filter state survives the editor round trip. Returning restores focus to the
+  former row when it is still visible, otherwise to the directory container.
 - Add source stays in the directory header; the initial implementation retains the
   existing source-type selector and repository chooser rather than claiming to implement
-  Jira or Slack connectors.
+  Jira, Slack, Linear or other connectors.
 
 ## Data flow
 
-No daemon contract changes are needed. The panel derives its overview from the existing
+The API response shape is unchanged. The panel derives its overview from the existing
 `TaskSourcesView.sources` and `TaskSourcesView.status` response; mutations continue through
-the existing `save`, `sweep`, `preflight` and `forget` callbacks.
+the existing `save`, `sweep`, `preflight` and `forget` callbacks. The daemon's in-memory
+status lifecycle changes: disabling a source invalidates its previous health and any sweep
+that began before the transition, while a sweep begun while paused remains current after
+re-enabling.
 
 ```mermaid
 flowchart LR
@@ -50,6 +60,7 @@ flowchart LR
 
 ## Verification
 
-- Update static-render panel tests for the overview and its health states.
+- Update panel tests for the overview, health states, navigation and focus restoration.
+- Add sweeper regressions for disabling, paused manual sweeps and in-flight stale results.
 - Run the focused tests, typecheck and project test/lint commands.
 - Commit on a feature branch and run the repository’s no-mistakes PR workflow.

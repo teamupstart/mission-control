@@ -57,9 +57,11 @@ function splitList(raw: string): string[] {
 /**
  * What one source's last sweep says about itself, in one line.
  *
- * "Never swept" and "swept, found nothing" are deliberately different sentences: they are
- * the two states a background feature is most often confused about, and reading the first
- * as the second is how a source that has been broken since setup goes unnoticed.
+ * "No current sweep" and "swept, found nothing" are deliberately different states. A null
+ * timestamp also follows a pause that invalidated older health, so it means the source has
+ * not swept in its current lifecycle, not necessarily that it has never swept in process
+ * history. The concise UI still calls that "Never swept" to distinguish it from an empty
+ * successful result.
  */
 function statusLine(status: TaskSourceStatus | undefined, now: number): string {
   if (!status) return "No status yet.";
@@ -552,8 +554,8 @@ type SourceFilter = "all" | "healthy" | "attention" | "pending" | "paused";
 type SourceHealth = Exclude<SourceFilter, "all">;
 
 function sourceHealth(src: TaskSourceInstance, status: TaskSourceStatus | undefined): SourceHealth {
-  if (status?.lastError) return "attention";
   if (!src.enabled) return "paused";
+  if (status?.lastError) return "attention";
   if (!status || status.lastSweepAt === null) return "pending";
   return "healthy";
 }
@@ -586,6 +588,7 @@ function SourceDirectory({
   onAdd: () => void;
 }): React.JSX.Element {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const directoryRef = useRef<HTMLDivElement>(null);
   const byId = new Map(statuses.map((s) => [s.sourceId, s]));
   const counts = sources.reduce(
     (all, src) => {
@@ -608,8 +611,8 @@ function SourceDirectory({
   useEffect(() => {
     if (!restoreFocusId) return;
     const row = rowRefs.current.get(restoreFocusId);
-    if (!row) return;
-    row.focus();
+    if (row) row.focus();
+    else directoryRef.current?.focus();
     onFocusRestored();
   }, [onFocusRestored, restoreFocusId]);
 
@@ -664,7 +667,7 @@ function SourceDirectory({
         ))}
       </div>
 
-      <div className="ts-directory" role="list" aria-label="Configured task sources">
+      <div ref={directoryRef} className="ts-directory" role="list" aria-label="Configured task sources" tabIndex={-1}>
         {visible.map((src) => {
           const status = byId.get(src.id);
           const kindLabel = kinds.find((k) => k.kind === src.kind)?.label ?? src.kind;

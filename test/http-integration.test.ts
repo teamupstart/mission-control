@@ -177,6 +177,7 @@ test("an effort change waits for a passive freshness baseline", async () => {
   seedSession();
   registry.applyStatusLine({
     env: { tmuxPane: "%3" },
+    cwd: null,
     sessionId: "baseline-wait",
     model: { id: "claude-opus-4-8", displayName: "Opus" },
     effort: "high",
@@ -212,6 +213,7 @@ test("an effort request revalidates identity after parsing its body", async () =
   assert.equal(bound.status, 204);
   registry.applyStatusLine({
     env: { tmuxPane: "%3" },
+    cwd: null,
     sessionId: "old-effort-session",
     model: { id: "claude-opus-4-8", displayName: "Opus" },
     effort: "high",
@@ -235,6 +237,7 @@ test("an effort request revalidates identity after parsing its body", async () =
   await new Promise<void>((resolve) => setImmediate(resolve));
   registry.applyStatusLine({
     env: { tmuxPane: "%3" },
+    cwd: null,
     sessionId: "new-effort-session",
     model: { id: "claude-opus-4-8", displayName: "Opus" },
     effort: "high",

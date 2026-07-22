@@ -48,6 +48,7 @@ function mkSession(over: Partial<Session> = {}): Session {
     prState: null,
     prChecks: null,
     meta: null,
+    effortBaselineReady: false,
     note: null,
     cost: null,
     goal: null,

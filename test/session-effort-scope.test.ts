@@ -45,7 +45,7 @@ test("a successful live effort change leaves the future-session default untouche
   });
 
   const result = await setSessionEffort(session, "xhigh", {
-    pane: (candidate) => candidate.id === "live-one" ? pane : null,
+    pane: (candidate) => candidate.terminals.some((handle) => handle.paneId === "%2") ? pane : null,
     capture: async () => screen,
   });
 

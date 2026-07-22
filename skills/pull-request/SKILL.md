@@ -9,9 +9,9 @@ metadata:
 
 # Pull Request
 
-Use this skill whenever this Mission Control session opens a pull request, including
-when you prepare the description before running `gh pr create`. Treat the pull request
-as the handoff to a reviewer, not as a log of commands you ran.
+Use this skill whenever this Mission Control session prepares, opens, or reports a pull
+request, including when you write the description before running `gh pr create`. Treat
+the pull request as the handoff to a reviewer, not as a log of commands you ran.
 
 ## Write the description in this order
 
@@ -29,8 +29,9 @@ Do not use vague summaries like "updates the feature" or "tests pass" when you c
 the behavior changed, the command or test suite run, and what it verified. If a check or
 screenshot is unavailable, say so plainly and explain why rather than implying it exists.
 
-## Before opening
+## Before opening or reporting
 
 Review the final PR title and description for specificity. Make sure a reviewer can
 understand what changed, why this design was chosen, and how it was verified from the PR
-alone. Then open the pull request with that description.
+alone. Open a new pull request with that description. Before reporting an existing one,
+verify its current description meets the same standard and update it if necessary.

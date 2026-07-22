@@ -1638,11 +1638,15 @@ switch it on, and it applies to **every** session on this machine whose harness 
 skills directory - including sessions this app never launched - without terminating or
 recreating any of them.
 
-Skills are ordinary Claude Code skills, living in `skills/<id>/SKILL.md` in this repo
+Skills are ordinary native harness skills, living in `skills/<id>/SKILL.md` in this repo
 so they're versioned and reviewed with the app. Enabling one symlinks it into
 `mission-<id>` under **each declaring harness's own directory** - `~/.claude/skills` for
 Claude, `~/.agents/skills` for Codex - which is that agent's own loading path; the harness
 never reimplements it.
+
+The opt-in **Pull Request** row applies whenever a session prepares, opens, or reports a
+PR. Its reviewer-ready description contract lives in
+[`skills/pull-request/SKILL.md`](skills/pull-request/SKILL.md).
 
 **Being loaded and being noticed are two capabilities, and only the second differs.** A
 Claude session re-reads its directory only when told, so the daemon types `/reload-skills`

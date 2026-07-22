@@ -14,7 +14,6 @@ const { TaskManager } = await import("../src/server/tasks.ts");
 const { DependencyPrPollState, pollAndReconcilePrs } = await import("../src/server/pr.ts");
 const {
   firstWorkEpisodePromptAfter,
-  historicalTaskWorkEpisodeBindingsForTask,
 } = await import("../src/server/db.ts");
 
 after(() => rmSync(home, { recursive: true, force: true }));
@@ -148,6 +147,8 @@ async function historicalTaskSetup(
   return {
     registry,
     tasks,
+    id,
+    cwd,
     prerequisiteId,
     url,
     originalEpisode,
@@ -174,6 +175,11 @@ test("an unmet dependency forces a dispatch-now create into the backlog and bloc
       type: "task",
       taskId: "force-pre",
       title: "Merge the foundation",
+      sessionId: null,
+      episodeId: null,
+      agentSessionId: null,
+      branch: null,
+      prUrl: null,
       selectedAt: dependent.dependencies[0]?.selectedAt,
       satisfiedAt: null,
     },
@@ -640,8 +646,9 @@ for (const [transition, suffix] of [
   test(`task dependency provenance survives a ${transition}`, async () => {
     const setup = await historicalTaskSetup(suffix, transition, true);
     assert.notEqual(setup.replacement.episodeId, setup.originalEpisode.episodeId);
+    const retainedEdge = setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0];
     assert.equal(
-      historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId)[0]?.prUrl,
+      retainedEdge?.type === "task" ? retainedEdge.prUrl : null,
       setup.url,
     );
     assert.ok(setup.registry.dependencyPrPollTargets().includes(setup.url));
@@ -659,6 +666,11 @@ for (const [transition, suffix] of [
     const afterEdge = setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0];
     assert.equal(beforeEdge?.satisfiedAt, setup.promptAt - 1);
     assert.equal(afterEdge?.satisfiedAt, null);
+    assert.equal(
+      afterEdge?.type === "task" ? afterEdge.episodeId : null,
+      setup.replacement.episodeId,
+    );
+    assert.equal(afterEdge?.type === "task" ? afterEdge.prUrl : null, null);
     assert.deepEqual(
       setup.tasks.dependencyBlockers(setup.registry.getTask(setup.beforePrompt!.id)!),
       [],
@@ -667,8 +679,24 @@ for (const [transition, suffix] of [
       setup.tasks.dependencyBlockers(setup.registry.getTask(setup.afterPrompt.id)!).length,
       1,
     );
+    const replacementUrl = `https://github.com/example/repo/pull/1${suffix}`;
+    const replacementBranch = setup.registry.getSession(setup.id)?.gitBranch ?? "feat/replacement";
+    setup.registry.reconcilePrs(
+      new Map([[setup.id, prMatch({
+        url: replacementUrl,
+        number: Number(`1${suffix}`),
+        state: "merged",
+        branch: replacementBranch,
+        agentSessionId: setup.replacement.agentSessionId,
+        episodeId: setup.replacement.episodeId,
+        createdAt: setup.replacement.startedAt,
+        mergedAt: Date.now(),
+      })]]),
+      new Set(),
+    );
+    assert.ok(setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0]?.satisfiedAt);
     assert.deepEqual(
-      historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId),
+      setup.tasks.dependencyBlockers(setup.registry.getTask(setup.afterPrompt.id)!),
       [],
     );
   });
@@ -676,7 +704,8 @@ for (const [transition, suffix] of [
 
 test("editing away an edge prunes retained task provenance", async () => {
   const setup = await historicalTaskSetup("90", "branch change", false);
-  assert.equal(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId).length, 1);
+  const retainedEdge = setup.registry.getTask(setup.afterPrompt.id)?.dependencies[0];
+  assert.equal(retainedEdge?.type === "task" ? retainedEdge.prUrl : null, setup.url);
   assert.equal(
     firstWorkEpisodePromptAfter(
       setup.originalEpisode.sessionId,
@@ -688,7 +717,6 @@ test("editing away an edge prunes retained task provenance", async () => {
 
   const updated = await setup.tasks.update(setup.afterPrompt.id, { dependencies: [] });
   assert.equal(updated.ok, true);
-  assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId), []);
   assert.equal(
     firstWorkEpisodePromptAfter(
       setup.originalEpisode.sessionId,
@@ -701,10 +729,9 @@ test("editing away an edge prunes retained task provenance", async () => {
 
 test("removing a dependent prunes retained task provenance", async () => {
   const setup = await historicalTaskSetup("91", "reset", false);
-  assert.equal(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId).length, 1);
+  assert.ok(setup.registry.dependencyPrPollTargets().includes(setup.url));
 
   setup.registry.removeTask(setup.afterPrompt.id);
-  assert.deepEqual(historicalTaskWorkEpisodeBindingsForTask(setup.prerequisiteId), []);
   assert.equal(
     firstWorkEpisodePromptAfter(
       setup.originalEpisode.sessionId,
@@ -713,6 +740,133 @@ test("removing a dependent prunes retained task provenance", async () => {
     ),
     null,
   );
+});
+
+test("task dependency provenance survives terminal eviction and restart", async () => {
+  const setup = await historicalTaskSetup("92", "branch change", false);
+  const prerequisite = setup.registry.getTask(setup.prerequisiteId)!;
+  setup.registry.upsertTask({
+    ...prerequisite,
+    status: "done",
+    worktreePath: null,
+    sessionId: null,
+    updatedAt: 1,
+    completedAt: 1,
+  });
+  for (let i = 0; i < 60; i += 1) {
+    setup.registry.upsertTask(baseTask({
+      id: `terminal-provenance-filler-${i}`,
+      title: `Terminal provenance filler ${i}`,
+      status: "done",
+      updatedAt: 10_000 + i,
+      completedAt: 10_000 + i,
+    }));
+  }
+  assert.equal(setup.registry.getTask(setup.prerequisiteId), undefined);
+  assert.ok(setup.registry.dependencyPrPollTargets().includes(setup.url));
+
+  const restarted = new Registry();
+  const restartedTasks = new TaskManager(restarted);
+  assert.equal(restarted.getTask(setup.prerequisiteId), undefined);
+  const retained = restarted.getTask(setup.afterPrompt.id)?.dependencies[0];
+  assert.equal(retained?.type === "task" ? retained.prUrl : null, setup.url);
+  assert.ok(restarted.dependencyPrPollTargets().includes(setup.url));
+
+  await pollAndReconcilePrs(
+    restarted,
+    async () => null,
+    async (candidate) =>
+      candidate === setup.url
+        ? { state: "merged", mergedAt: setup.promptAt - 1 }
+        : null,
+  );
+
+  const rebound = restarted.getTask(setup.afterPrompt.id)?.dependencies[0];
+  assert.equal(rebound?.satisfiedAt, null);
+  assert.equal(
+    rebound?.type === "task" ? rebound.episodeId : null,
+    setup.replacement.episodeId,
+  );
+  assert.equal(rebound?.type === "task" ? rebound.prUrl : null, null);
+  assert.equal(
+    restartedTasks.dependencyBlockers(restarted.getTask(setup.afterPrompt.id)!).length,
+    1,
+  );
+});
+
+test("high-fanout task merge batches provenance cleanup", () => {
+  const registry = new Registry();
+  const tasks = new TaskManager(registry);
+  const id = "task-fanout-session";
+  const taskId = "task-fanout-prerequisite";
+  const cwd = "/repo/task-fanout";
+  const branch = "feat/task-fanout";
+  const url = "https://github.com/example/repo/pull/193";
+  registry.upsertTask(baseTask({
+    id: taskId,
+    title: "High fanout prerequisite",
+    status: "running",
+    worktreePath: cwd,
+  }));
+  registry.applyDiscovery([discovered(id, cwd, { gitBranch: branch })]);
+  registry.applyHook({
+    agent: "claude",
+    event: "Stop",
+    sessionId: "task-fanout-episode",
+    cwd,
+    transcriptPath: null,
+    env: {},
+  });
+  registry.upsertTask({ ...registry.getTask(taskId)!, sessionId: id });
+  registry.bindTaskToWorkEpisode(taskId, id);
+  const episode = registry.workEpisodeForSession(id)!;
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: 193,
+      branch,
+      agentSessionId: episode.agentSessionId,
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+    })]]),
+    new Set(),
+  );
+  const dependents = Array.from({ length: 60 }, (_, index) =>
+    tasks.create({
+      ...createInput,
+      title: `High fanout dependent ${index}`,
+      backlog: true,
+      dependencies: [{ type: "task", taskId }],
+    }),
+  );
+  const internals = registry as unknown as {
+    cleanupDependencyProvenance: () => void;
+  };
+  const cleanup = internals.cleanupDependencyProvenance.bind(registry);
+  let cleanupCalls = 0;
+  internals.cleanupDependencyProvenance = () => {
+    cleanupCalls += 1;
+    cleanup();
+  };
+
+  registry.reconcilePrs(
+    new Map([[id, prMatch({
+      url,
+      number: 193,
+      state: "merged",
+      branch,
+      agentSessionId: episode.agentSessionId,
+      episodeId: episode.episodeId,
+      createdAt: episode.startedAt,
+      mergedAt: Date.now(),
+    })]]),
+    new Set(),
+  );
+
+  assert.equal(cleanupCalls, 1);
+  for (const dependent of dependents) {
+    assert.ok(registry.getTask(dependent.id)?.dependencies[0]?.satisfiedAt);
+  }
 });
 
 test("post-merge episode rollover preserves running task ownership", () => {

@@ -1584,7 +1584,18 @@ function parseTaskDependencies(raw: string | null): Task["dependencies"] {
       if (row.type === "task" && typeof row.taskId === "string" && typeof row.title === "string") {
         const key = `task:${row.taskId}`;
         if (!seen.has(key)) {
-          out.push({ type: "task", taskId: row.taskId, title: row.title, selectedAt, satisfiedAt });
+          out.push({
+            type: "task",
+            taskId: row.taskId,
+            title: row.title,
+            sessionId: typeof row.sessionId === "string" ? row.sessionId : null,
+            episodeId: typeof row.episodeId === "string" ? row.episodeId : null,
+            agentSessionId: typeof row.agentSessionId === "string" ? row.agentSessionId : null,
+            branch: typeof row.branch === "string" ? row.branch : null,
+            prUrl: typeof row.prUrl === "string" ? row.prUrl : null,
+            selectedAt,
+            satisfiedAt,
+          });
         }
         seen.add(key);
       } else if (
@@ -1937,25 +1948,11 @@ export function workEpisodePromptIdentities(): Array<{
   return rows.map((row) => ({ sessionId: row.session_id, episodeId: row.episode_id }));
 }
 
-function archiveTaskWorkEpisodeBindings(d: DatabaseSync, where: string, value: string): void {
-  d.prepare(
-    `INSERT OR IGNORE INTO historical_task_work_episode_bindings
-       (task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-        merged_at, bound_at, updated_at)
-     SELECT task_id, episode_id, session_id, agent_session_id, branch, pr_url, pr_head_sha,
-            merged_at, bound_at, updated_at
-     FROM task_work_episode_bindings
-     WHERE ${where} = ?`,
-  ).run(value);
-}
-
 export function bindTaskWorkEpisode(binding: TaskWorkEpisodeBinding): void {
   const d = openDb();
   const ownsTransaction = !d.isTransaction;
   if (ownsTransaction) d.exec("BEGIN IMMEDIATE");
   try {
-    archiveTaskWorkEpisodeBindings(d, "task_id", binding.taskId);
-    archiveTaskWorkEpisodeBindings(d, "session_id", binding.sessionId);
     d.prepare(
       `DELETE FROM task_work_episode_bindings WHERE session_id = ? AND task_id <> ?`,
     ).run(binding.sessionId, binding.taskId);
@@ -2013,7 +2010,7 @@ export function taskWorkEpisodeForTask(taskId: string): TaskWorkEpisodeBinding |
 
 export function historicalTaskWorkEpisodeBindings(): TaskWorkEpisodeBinding[] {
   const rows = openDb()
-    .prepare(`SELECT * FROM historical_task_work_episode_bindings`)
+    .prepare(`SELECT * FROM historical_task_work_episode_bindings ORDER BY updated_at DESC`)
     .all() as unknown as TaskWorkEpisodeRow[];
   return rows.map(taskWorkEpisodeFromRow);
 }
@@ -2155,7 +2152,6 @@ export function invalidateTaskWorkEpisodeBindings(sessionId: string): string[] {
          UNION SELECT id AS task_id FROM tasks WHERE session_id = ?`,
       )
       .all(sessionId, sessionId) as unknown as Array<{ task_id: string }>;
-    archiveTaskWorkEpisodeBindings(d, "session_id", sessionId);
     d.prepare(`DELETE FROM task_work_episode_bindings WHERE session_id = ?`).run(sessionId);
     d.prepare(`UPDATE tasks SET session_id = NULL WHERE session_id = ?`).run(sessionId);
     if (ownsTransaction) d.exec("COMMIT");

@@ -235,10 +235,16 @@ export class TaskManager {
             existing.get(`session:${session.id}`)?.satisfiedAt;
           const previousEdge =
             existing.get(`task:${target.id}`) ?? existing.get(`session:${session.id}`);
+          const episode = this.registry.workEpisodeForSession(session.id);
           dependency = {
             type: "task",
             taskId: target.id,
             title: target.title,
+            sessionId: previousEdge?.sessionId ?? session.id,
+            episodeId: previousEdge?.episodeId ?? episode?.episodeId ?? null,
+            agentSessionId: previousEdge?.agentSessionId ?? episode?.agentSessionId ?? null,
+            branch: previousEdge?.branch ?? episode?.branch ?? null,
+            prUrl: previousEdge?.prUrl ?? observedPr,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
               target.kind === "scout" && target.status === "done"
@@ -276,6 +282,7 @@ export class TaskManager {
             (session) => session.state !== "exited" && session.task?.id === target.id,
           );
           const previousEdge = existing.get(`task:${target.id}`);
+          const binding = this.registry.workEpisodeForTask(target.id);
           const observedPr = activeSession ? this.observedPrFor(activeSession, target.id) : null;
           const eligible = target.status === "backlog" || target.status === "dispatching" || target.status === "running" || Boolean(activeSession);
           if (!eligible && !existing.has(`task:${target.id}`)) {
@@ -285,6 +292,11 @@ export class TaskManager {
             type: "task",
             taskId: target.id,
             title: target.title,
+            sessionId: previousEdge?.sessionId ?? binding?.sessionId ?? null,
+            episodeId: previousEdge?.episodeId ?? binding?.episodeId ?? null,
+            agentSessionId: previousEdge?.agentSessionId ?? binding?.agentSessionId ?? null,
+            branch: previousEdge?.branch ?? binding?.branch ?? null,
+            prUrl: previousEdge?.prUrl ?? observedPr ?? binding?.prUrl ?? null,
             selectedAt: previousEdge ? previousEdge.selectedAt : selectedAt,
             satisfiedAt:
               target.kind === "scout" && target.status === "done"

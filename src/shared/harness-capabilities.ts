@@ -170,17 +170,37 @@ export interface EffortSpec {
   levelsFor(modelId: string | null): readonly ThinkingLevel[];
   /** Exact argv fragment that applies one level to a newly launched session. */
   launchArgs(level: ThinkingLevel): readonly string[];
-  /**
-   * The harness's own, session-scoped model picker. Both shipped TUIs expose effort
-   * there; Mission Control opens it and drives only the horizontal effort control.
-   */
+  /** The harness's own session-scoped model picker, or null when it has none. */
   sessionPicker: {
     command: string;
+    /** Whether the command can be typed without appending to a draft or acting on a dialog. */
+    composerReady(paneText: string): boolean;
     /** A conservative confirmation that the native picker has rendered. */
     visible: RegExp;
-    /** How the harness commits the changed selection to this conversation. */
-    commit: "enter" | "session-key";
-  };
+    /** Read the effort on the model row that an arrow or commit would affect. */
+    selected(paneText: string, model: string): ThinkingLevel | null;
+    /** The key that commits the changed selection to this conversation only. */
+    commit: string;
+  } | null;
+}
+
+const CLAUDE_PICKER_VISIBLE = /select model[\s\S]*use this session only/i;
+
+function claudeComposerReady(paneText: string): boolean {
+  const prompt = paneText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("❯"))
+    .at(-1);
+  return prompt === "❯";
+}
+
+function claudePickerSelection(paneText: string, model: string): ThinkingLevel | null {
+  if (!CLAUDE_PICKER_VISIBLE.test(paneText)) return null;
+  const selected = paneText.split("\n").find((line) => line.includes("❯"));
+  if (!selected || !selected.toLowerCase().includes(model.toLowerCase())) return null;
+  const match = /\b(xhigh|medium|high|max|low)\b/i.exec(selected);
+  return match ? (match[1]!.toLowerCase() as ThinkingLevel) : null;
 }
 
 /** One agent's capabilities, as far as they can be stated without touching a disk. */
@@ -236,11 +256,12 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       levels: THINKING_LEVELS,
       levelsFor: () => THINKING_LEVELS,
       launchArgs: (level) => ["--effort", level],
-      // Claude's `/model` picker labels `s` as "use this session only".
       sessionPicker: {
         command: "/model",
-        visible: /effort[\s\S]*(?:←|left|right|adjust)/i,
-        commit: "session-key",
+        composerReady: claudeComposerReady,
+        visible: CLAUDE_PICKER_VISIBLE,
+        selected: claudePickerSelection,
+        commit: "s",
       },
     },
   },
@@ -284,12 +305,7 @@ export const HARNESS_CAPABILITIES: Record<AgentType, HarnessCapabilities> = {
       // `-c` parses its value as TOML, falling back to a raw string. The level is a
       // closed enum, so it is both valid here and safe on tmux's shell command line.
       launchArgs: (level) => ["-c", `model_reasoning_effort=${level}`],
-      // Codex's `/model` picker commits to the current conversation on Enter.
-      sessionPicker: {
-        command: "/model",
-        visible: /(?:reasoning|selected) effort/i,
-        commit: "enter",
-      },
+      sessionPicker: null,
     },
   },
 };
@@ -317,7 +333,8 @@ export function supportsSessionEffort(
   modelId: string | null,
   level: ThinkingLevel,
 ): boolean {
-  return HARNESS_CAPABILITIES[agent].effort?.levelsFor(modelId).includes(level) ?? false;
+  const effort = HARNESS_CAPABILITIES[agent].effort;
+  return Boolean(effort?.sessionPicker && effort.levelsFor(modelId).includes(level));
 }
 
 /**

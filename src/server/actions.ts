@@ -1,7 +1,7 @@
-import type { PermissionMode, ResetPreview, ResetResult, Session, Task } from "@shared/types.ts";
+import type { PermissionMode, ResetPreview, ResetResult, Session, Task, ThinkingLevel } from "@shared/types.ts";
 import type { FormOutcome } from "@shared/protocol.ts";
 import { capturePaneText } from "./discovery/pane-capture.ts";
-import { readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
+import { parsePaneModeLine, readPaneModeLine, type PaneModeLine } from "./discovery/pane-mode.ts";
 import { hasPendingCommand, hasPendingPaste } from "./discovery/pane-paste.ts";
 import { controlFor } from "./harness/index.ts";
 import type { ControlSpec } from "./harness/types.ts";
@@ -313,8 +313,12 @@ export async function setSessionEffort(
 ): Promise<ActionResult> {
   const spec = harnessFor(session.agent).effort;
   const modelId = session.meta?.modelId ?? null;
+  const model = session.meta?.model ?? null;
   const current = session.meta?.thinkingLevel ?? null;
   if (!spec) return { ok: false, error: "this agent has no reasoning-effort control" };
+  const picker = spec.sessionPicker;
+  if (!picker) return { ok: false, error: "this agent has no session-only reasoning-effort control" };
+  if (!model) return { ok: false, error: "the selected model is not known yet" };
   if (!current) return { ok: false, error: "the selected model's current effort is not known yet" };
   if (!supportsSessionEffort(session.agent, modelId, target)) {
     return { ok: false, error: `${target} effort is not supported by the selected model` };
@@ -327,26 +331,105 @@ export async function setSessionEffort(
   return withPaneLock<ActionResult>(session, () => ({ ok: false, error: PANE_BUSY }), async () => {
     const pane = deps.pane(session);
     if (!pane) return { ok: false, error: NO_HANDLE };
-    const opened = await writeText(pane, spec.sessionPicker.command);
+    const modeLine = modeLineSpecFor(session.agent);
+    const before = await deps.capture(session);
+    if (
+      !before ||
+      picker.visible.test(before) ||
+      readPaneDialog(session, before) ||
+      !modeLine ||
+      !parsePaneModeLine(before, modeLine) ||
+      !picker.composerReady(before)
+    ) {
+      return { ok: false, error: "the agent's empty composer is not ready; no setting was changed" };
+    }
+
+    const opened = await writeText(pane, picker.command);
     if (!opened.ok) return opened;
+    const pending = await deps.capture(session);
+    if (!hasPendingCommand(pending, picker.command) || readPaneDialog(session, pending)) {
+      return { ok: false, error: "the model command could not be verified in the composer; no setting was changed" };
+    }
     const submitted = await sendKeys(pane, ["enter"]);
     if (!submitted.ok) return submitted;
-    // The picker is a TUI event loop, not a line-oriented shell. Give it the harness's
-    // normal composer settle time before sending arrows; this also keeps a delayed redraw
-    // from receiving a commit keystroke as prompt text.
-    const control = controlFor(session);
-    await sleep(control.kind === "keystroke" ? control.settleMs : 400);
-    if (!spec.sessionPicker.visible.test((await deps.capture(session)) ?? "")) {
+    const screen = await awaitEffortPicker(session, picker.visible, deps);
+    if (!screen) {
       return { ok: false, error: "the agent's effort picker did not open; no setting was changed" };
     }
-    const direction: Key = to > from ? "right" : "left";
-    const moved = await sendKeys(pane, Array.from({ length: Math.abs(to - from) }, () => direction));
-    if (!moved.ok) return moved;
-    if (spec.sessionPicker.commit === "enter") return sendKeys(pane, ["enter"]);
-    // Claude's picker reserves `s` for "use this session only"; it is a picker key,
-    // not prompt text, so it deliberately has no trailing Enter.
-    return writeText(pane, "s");
+    let selected = picker.selected(screen, model);
+    const seen = new Set<ThinkingLevel>();
+    for (let i = 0; selected !== target; i++) {
+      const selectedIndex = selected ? spec.levelsFor(modelId).indexOf(selected) : -1;
+      if (!selected || selectedIndex < 0 || seen.has(selected) || i >= spec.levelsFor(modelId).length) {
+        return { ok: false, error: "the picker selection could not be verified; no setting was changed" };
+      }
+      seen.add(selected);
+      const direction: Key = to > selectedIndex ? "right" : "left";
+      const moved = await sendKeys(pane, [direction]);
+      if (!moved.ok) return moved;
+      const next = await awaitEffortSelection(session, picker.visible, picker.selected, model, selected, deps);
+      if (!next) return { ok: false, error: "the agent ignored the effort arrow; no setting was changed" };
+      selected = next.level;
+    }
+    const final = await deps.capture(session);
+    if (!final || !picker.visible.test(final) || picker.selected(final, model) !== target) {
+      return { ok: false, error: "the effort selection changed before it could be confirmed" };
+    }
+    const committed = await writeText(pane, picker.commit);
+    if (!committed.ok) return committed;
+    const closed = await awaitEffortPickerClosed(session, picker.visible, deps);
+    return closed
+      ? { ok: true }
+      : { ok: false, error: "the agent did not confirm the session-only effort change" };
   });
+}
+
+const EFFORT_PICKER_POLL_MS = 50;
+
+async function awaitEffortPicker(
+  session: Session,
+  visible: RegExp,
+  deps: PaneDeps,
+): Promise<string | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    if (screen && visible.test(screen)) return screen;
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
+
+async function awaitEffortSelection(
+  session: Session,
+  visible: RegExp,
+  selected: (paneText: string, model: string) => ThinkingLevel | null,
+  model: string,
+  previous: ThinkingLevel,
+  deps: PaneDeps,
+): Promise<{ level: ThinkingLevel } | null> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    const level = screen && visible.test(screen) ? selected(screen, model) : null;
+    if (level && level !== previous) return { level };
+    if (Date.now() >= deadline) return null;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
+}
+
+async function awaitEffortPickerClosed(
+  session: Session,
+  visible: RegExp,
+  deps: PaneDeps,
+): Promise<boolean> {
+  const deadline = Date.now() + repaintTimeoutFor(session);
+  for (;;) {
+    const screen = await deps.capture(session);
+    if (screen !== null && !visible.test(screen)) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(EFFORT_PICKER_POLL_MS);
+  }
 }
 
 async function sendTextLocked(

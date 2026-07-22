@@ -9,6 +9,23 @@ const GAP = 8;
 const WIDTH = 224;
 
 type Anchor = { left: number; top?: number; bottom?: number };
+type OptimisticEffort = {
+  level: ThinkingLevel;
+  modelId: string | null;
+  updatedAt: number;
+};
+
+export function reconcileOptimisticEffort(
+  optimistic: OptimisticEffort | null,
+  reported: ThinkingLevel | null,
+  modelId: string | null,
+  updatedAt: number,
+): OptimisticEffort | null {
+  if (!optimistic) return null;
+  if (reported === optimistic.level) return null;
+  if (modelId !== optimistic.modelId || updatedAt > optimistic.updatedAt) return null;
+  return optimistic;
+}
 
 /**
  * The live reasoning-effort chip. Unlike launch defaults, this opens the selected
@@ -18,7 +35,8 @@ type Anchor = { left: number; top?: number; bottom?: number };
 export function EffortPicker({ session }: { session: Session }): React.JSX.Element | null {
   const reported = session.meta?.thinkingLevel ?? null;
   const modelId = session.meta?.modelId ?? null;
-  const [optimistic, setOptimistic] = useState<ThinkingLevel | null>(null);
+  const reportedAt = session.meta?.updatedAt ?? 0;
+  const [optimistic, setOptimistic] = useState<OptimisticEffort | null>(null);
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const [busy, setBusy] = useState<ThinkingLevel | null>(null);
@@ -29,12 +47,12 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
   // The passive metadata reader eventually confirms the TUI change. Until then, keep the
   // chip honest about the change we successfully delivered rather than flashing backward.
   useEffect(() => {
-    if (optimistic && reported === optimistic) setOptimistic(null);
-  }, [optimistic, reported]);
+    setOptimistic((value) => reconcileOptimisticEffort(value, reported, modelId, reportedAt));
+  }, [optimistic, reported, modelId, reportedAt]);
 
-  const level = optimistic ?? reported;
+  const level = optimistic?.level ?? reported;
   const effort = capabilitiesFor(session.agent).effort;
-  const levels = effort?.levelsFor(modelId) ?? [];
+  const levels = effort?.sessionPicker ? effort.levelsFor(modelId) : [];
   const canPick = session.state !== "exited" && canWriteTo(session);
 
   const place = useCallback(() => {
@@ -82,7 +100,7 @@ export function EffortPicker({ session }: { session: Session }): React.JSX.Eleme
     const result = await api.setEffort(session.id, next);
     setBusy(null);
     if (result.ok) {
-      setOptimistic(next);
+      setOptimistic({ level: next, modelId, updatedAt: reportedAt });
       setOpen(false);
     } else {
       setError(result.error ?? "couldn't change effort");

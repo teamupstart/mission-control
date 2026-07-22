@@ -39,7 +39,7 @@ const { HARNESS_CAPABILITIES, capabilitiesFor, skillsAgents, supportsSessionEffo
 const { HARNESSES } = await import("../src/server/harness/index.ts");
 const { buildApp } = await import("../src/server/routes.ts");
 const { ModePicker } = await import("../src/web/components/ModePicker.tsx");
-const { EffortPicker } = await import("../src/web/components/EffortPicker.tsx");
+const { EffortPicker, reconcileOptimisticEffort } = await import("../src/web/components/EffortPicker.tsx");
 const { pickableModes } = await import("../src/web/lib/format.ts");
 const { reloadOwed, pendingReloads } = await import("../src/server/skills/reload.ts");
 const { tickTargets } = await import("../src/server/foreman/queue-machine.ts");
@@ -124,11 +124,12 @@ test("each shipped harness declares its launch-time effort syntax", () => {
 });
 
 test("the live effort picker follows the selected model, not the launch default", () => {
-  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max"), true);
+  assert.equal(capabilitiesFor("codex").effort?.levelsFor("gpt-5.6-sol").includes("max"), true);
+  assert.equal(supportsSessionEffort("codex", "gpt-5.6-sol", "max"), false);
   assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
   assert.equal(supportsSessionEffort("claude", "claude-opus-4-8", "max"), true);
-  assert.equal(capabilitiesFor("claude").effort?.sessionPicker.command, "/model");
-  assert.equal(capabilitiesFor("codex").effort?.sessionPicker.command, "/model");
+  assert.equal(capabilitiesFor("claude").effort?.sessionPicker?.command, "/model");
+  assert.equal(capabilitiesFor("codex").effort?.sessionPicker, null);
 });
 
 test("every capability's null path is exercised, by a real harness or a named fixture", () => {
@@ -201,21 +202,27 @@ test("a harness with no permission modes offers none to pick, so the picker draw
   }
 });
 
-test("a live session renders its effort as a picker, with only its model's options", () => {
+test("only a harness with session-only effort control renders a live picker", () => {
   const sol = renderToStaticMarkup(
     createElement(EffortPicker, {
       session: mkSession({ agent: "codex", meta: meta({ modelId: "gpt-5.6-sol", thinkingLevel: "high" }) }),
     }),
   );
-  assert.match(sol, /Change effort for this session/);
-  const older = renderToStaticMarkup(
+  assert.doesNotMatch(sol, /Change effort for this session/);
+  const claude = renderToStaticMarkup(
     createElement(EffortPicker, {
-      session: mkSession({ agent: "codex", meta: meta({ modelId: "gpt-5.5", thinkingLevel: "high" }) }),
+      session: mkSession({ agent: "claude", meta: meta({ thinkingLevel: "high" }) }),
     }),
   );
-  // The menu itself mounts after a click, but the same model-aware selector feeds it.
-  assert.equal(supportsSessionEffort("codex", "gpt-5.5", "max"), false);
-  assert.match(older, /Reasoning effort: high/);
+  assert.match(claude, /Change effort for this session/);
+});
+
+test("a newer conflicting metadata read clears an optimistic effort", () => {
+  const optimistic = { level: "max" as const, modelId: "claude-opus-4-8", updatedAt: 10 };
+  assert.equal(reconcileOptimisticEffort(optimistic, "high", "claude-opus-4-8", 10), optimistic);
+  assert.equal(reconcileOptimisticEffort(optimistic, "max", "claude-opus-4-8", 11), null);
+  assert.equal(reconcileOptimisticEffort(optimistic, "high", "claude-opus-4-8", 11), null);
+  assert.equal(reconcileOptimisticEffort(optimistic, "high", "claude-sonnet-4-6", 10), null);
 });
 
 // ---- skills ----

@@ -7,7 +7,7 @@ import { unref } from "./util/timers.ts";
 import { sessionMessages } from "./harness/index.ts";
 import { fixSummaries, retainFixLogs } from "./nomistakes-fixes.ts";
 import type { Registry } from "./registry.ts";
-import type { NmActiveStep, NmFinding, NmRunSummary, NmStep } from "@shared/types.ts";
+import type { NmActiveStep, NmFinding, NmGateResponse, NmRunSummary, NmStep } from "@shared/types.ts";
 
 /** How often to refresh no-mistakes status for gated repos (ms). */
 const NM_POLL_MS = Number(envVar("NM_POLL_MS") ?? 5000);
@@ -63,15 +63,24 @@ export async function fetchStatus(cwd: string): Promise<NmRunSummary | null> {
 
 /** Repos with a respond in flight - blocks a second concurrent decision. */
 const responding = new Set<string>();
+const responseByRun = new Map<string, NmGateResponse>();
+const RESPONSE_HISTORY_CAP = 200;
 
 export function isResponding(cwd: string): boolean {
   return responding.has(cwd);
+}
+
+/** Current dashboard response for a run. Exported as a narrow test seam. */
+export function responseForRun(runId: string): NmGateResponse | null {
+  return responseByRun.get(runId) ?? null;
 }
 
 export interface RespondOpts {
   findings?: string[];
   instructions?: string;
   step?: string;
+  /** The polled gate this dashboard action answered, used to surface async delivery. */
+  runId?: string;
   /**
    * Called when the spawned `axi respond` did NOT exit cleanly, so nothing here can
    * claim the decision reached the gate. Deliberately opaque: this module knows only
@@ -113,19 +122,55 @@ export async function respond(
   if (opts.step) args.push("--step", opts.step);
 
   responding.add(cwd);
+  if (opts.runId) {
+    if (!responseByRun.has(opts.runId) && responseByRun.size >= RESPONSE_HISTORY_CAP) {
+      responseByRun.delete(responseByRun.keys().next().value!);
+    }
+    responseByRun.set(opts.runId, {
+      runId: opts.runId,
+      step: opts.step ?? "",
+      action,
+      findingIds: opts.findings ?? [],
+      status: "submitting",
+      error: null,
+    });
+  }
   // Optimistic: reflect the acted-on gate immediately, before the blocking respond returns.
   void pollAndReconcile(registry);
 
   // Background: run to completion, then reconcile the resulting cross-session state.
   run(bin, args, { cwd, timeoutMs: 10 * 60 * 1000 })
-    .then(async (res) => {
-      if (res.code !== 0) {
-        console.error(`[nomistakes] respond ${action} failed:`, res.stderr.trim());
+    .then(
+      async (res) => {
+        if (res.code !== 0) {
+          const error = res.stderr.trim() || `no-mistakes exited with status ${res.code}`;
+          console.error(`[nomistakes] respond ${action} failed:`, error);
+          if (opts.runId) {
+            const prior = responseByRun.get(opts.runId);
+            if (prior) responseByRun.set(opts.runId, { ...prior, status: "failed", error });
+          }
+          opts.onUndelivered?.();
+        } else if (opts.runId) {
+          const prior = responseByRun.get(opts.runId);
+          if (prior) responseByRun.set(opts.runId, { ...prior, status: "submitted" });
+        }
+        await pollAndReconcile(registry);
+      },
+      async (err) => {
+        const error = err instanceof Error ? err.message : String(err);
+        console.error("[nomistakes] respond error:", err);
+        if (opts.runId) {
+          const prior = responseByRun.get(opts.runId);
+          if (prior) responseByRun.set(opts.runId, { ...prior, status: "failed", error });
+        }
         opts.onUndelivered?.();
-      }
-      await pollAndReconcile(registry);
-    })
-    .catch((err) => console.error("[nomistakes] respond error:", err))
+        await pollAndReconcile(registry);
+      },
+    )
+    // A reconcile failure says nothing about whether the CLI delivered the response.
+    // Log it without retracting the byline or changing the delivery state; the regular
+    // poller will try the same read again.
+    .catch((err) => console.error("[nomistakes] response reconcile error:", err))
     .finally(() => responding.delete(cwd));
 
   return { ok: true };
@@ -153,8 +198,15 @@ export async function pollAndReconcile(registry: Registry): Promise<void> {
   const runs = new Map<string, NmRunSummary>();
   await Promise.all(
     cwds.map(async (cwd) => {
-      const s = await fetchStatus(cwd);
-      if (s && s.branch) runs.set(s.branch, timeRun(s)); // dedup: several worktrees can report one run
+      const fetched = await fetchStatus(cwd);
+      if (fetched && fetched.branch) {
+        const response = responseByRun.get(fetched.id) ?? null;
+        const s = response ? { ...fetched, response } : fetched;
+        const prior = runs.get(s.branch);
+        // Several worktrees can report one run. Keep the copy carrying the in-flight
+        // dashboard decision so a later duplicate cannot erase its acknowledgement.
+        if (!prior || s.response || !prior.response) runs.set(s.branch, timeRun(s));
+      }
     }),
   );
   registry.reconcileNomistakes([...runs.values()]);
@@ -532,6 +584,7 @@ export function summarize(run: NmRun | null): NmRunSummary | null {
     steps: run.steps,
     activeSteps: run.activeSteps,
     findings: run.gate?.findings ?? [],
+    response: null,
     outcome: run.outcome,
   };
 }

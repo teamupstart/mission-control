@@ -43,7 +43,7 @@ const { logGateReply, dropGateReply, gateRepliesFor, pruneGateReplies, hooksEver
   await import("../src/server/db.ts");
 const { classifyPending } = await import("../src/server/foreman/pending.ts");
 const { applyVerdict, planFromVerdict } = await import("../src/server/foreman/verdict.ts");
-const { respond, isResponding } = await import("../src/server/nomistakes.ts");
+const { respond, isResponding, responseForRun } = await import("../src/server/nomistakes.ts");
 import { gateParked } from "@shared/session.ts";
 import type { GateReplyRow } from "../src/server/db.ts";
 import type { ForemanActions, ReviewContext, Verdict } from "../src/server/foreman/verdict.ts";
@@ -314,20 +314,39 @@ test("a respond the gate never received reports itself undelivered", async () =>
   const cwd = tmp("respond-fail-");
   writeFileSync(join(cwd, "respond-fails"), "");
   const undo: string[] = [];
-  const r = await respond(noSessions, cwd, "fix", { onUndelivered: () => undo.push("retracted") });
+  const runId = "run-dashboard-fail";
+  const r = await respond(noSessions, cwd, "fix", {
+    runId,
+    step: "review",
+    findings: ["the-finding"],
+    onUndelivered: () => undo.push("retracted"),
+  });
   // Accepted only means SPAWNED. Delivery isn't known yet - that's the whole problem.
   assert.equal(r.ok, true);
   await settled(cwd);
   assert.deepEqual(undo, ["retracted"]);
+  assert.deepEqual(responseForRun(runId), {
+    runId,
+    step: "review",
+    action: "fix",
+    findingIds: ["the-finding"],
+    status: "failed",
+    error: "no-mistakes exited with status 1",
+  });
 });
 
 test("a delivered respond keeps its byline", async () => {
   const cwd = tmp("respond-ok-");
+  const runId = "run-dashboard-ok";
   let retracted = false;
-  const r = await respond(noSessions, cwd, "fix", { onUndelivered: () => (retracted = true) });
+  const r = await respond(noSessions, cwd, "fix", {
+    runId,
+    onUndelivered: () => (retracted = true),
+  });
   assert.equal(r.ok, true);
   await settled(cwd);
   assert.equal(retracted, false, "a delivered decision keeps its author");
+  assert.equal(responseForRun(runId)?.status, "submitted", "the next gate can identify the prior response");
 });
 
 // ---- the foreman side: classify -> plan -> apply ----
